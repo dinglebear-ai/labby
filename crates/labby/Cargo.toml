@@ -35,6 +35,7 @@ nix = { version = "0.31", default-features = false, features = [
   "signal",
   "process",
   "user",
+  "fs",
 ] }
 futures.workspace = true
 reqwest.workspace = true

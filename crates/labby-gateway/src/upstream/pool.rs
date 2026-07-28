@@ -27,6 +27,8 @@ mod connect;
 mod connect_stdio;
 #[cfg(test)]
 mod connect_tests;
+#[cfg(all(test, unix))]
+mod connect_unix_tests;
 mod connection;
 mod discover;
 mod ensure;

@@ -1,6 +1,6 @@
 # Transport Configuration
 
-Lab supports two MCP transports: stdio and streamable HTTP. Both expose the same server behavior — transport choice does not change the catalog, schemas, envelopes, or destructive-op policy.
+Lab supports three MCP transports: stdio, streamable HTTP over TCP, and streamable HTTP over a Unix-domain socket. All three expose the same server behavior; transport choice does not change the catalog, schemas, envelopes, or destructive-op policy.
 
 ## Stdio
 
@@ -34,7 +34,7 @@ labby serve --services gateway,marketplace
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LABBY_MCP_TRANSPORT` | `http` | Transport selection. Set to `stdio` for child-process use. |
+| `LABBY_MCP_TRANSPORT` | `http` | Transport selection: `http`, `stdio`, or `unix_socket`. |
 | `LABBY_MCP_HTTP_HOST` | `127.0.0.1` | Bind address. |
 | `LABBY_MCP_HTTP_PORT` | `8765` | Bind port. |
 | `LABBY_MCP_HTTP_TOKEN` | — | Static bearer token for authentication. |
@@ -59,10 +59,47 @@ assets_dir = "/path/to/labby/out"
 
 CLI flags take precedence over env vars, which take precedence over config.toml:
 
-1. `--host`, `--port` (CLI)
+1. `--host`, `--port`, and the legacy hidden `--transport` flag (CLI)
 2. `LABBY_MCP_HTTP_HOST`, `LABBY_MCP_HTTP_PORT`, `LABBY_MCP_TRANSPORT` (env)
 3. `mcp.host`, `mcp.port`, `mcp.transport` (config.toml)
 4. Defaults: `127.0.0.1`, `8765`, `http`
+
+## Streamable HTTP over Unix-Domain Sockets
+
+The `unix_socket` transport serves the same Axum application as HTTP/TCP, including `/mcp`, `/v1/*`, health routes, OAuth routes, and the web UI when assets are available. It is intended for same-host or shared-container-namespace communication. It is not a cross-node transport.
+
+```toml
+[mcp]
+transport = "unix_socket"
+socket_path = "/run/labby/labby.sock"
+socket_mode = "0660"
+socket_uid = 1000
+socket_gid = 1000
+peer_uid = 1000
+# peer_gid = 1000
+```
+
+| Variable | Config key | Default | Description |
+|----------|------------|---------|-------------|
+| `LABBY_MCP_UNIX_SOCKET_PATH` | `mcp.socket_path` | — | Absolute filesystem path, or Linux abstract `@name` notation. Required for `unix_socket`. |
+| `LABBY_MCP_UNIX_SOCKET_MODE` | `mcp.socket_mode` | `0660` | Filesystem socket permissions in octal. Not valid for abstract sockets. |
+| `LABBY_MCP_UNIX_SOCKET_UID` | `mcp.socket_uid` | current owner | Optional filesystem socket owner UID. |
+| `LABBY_MCP_UNIX_SOCKET_GID` | `mcp.socket_gid` | current group | Optional filesystem socket owner GID. |
+| `LABBY_MCP_UNIX_PEER_UID` | `mcp.peer_uid` | — | Optional Linux kernel peer UID allowlist. |
+| `LABBY_MCP_UNIX_PEER_GID` | `mcp.peer_gid` | — | Optional Linux kernel peer GID allowlist. |
+
+Rules:
+
+- Environment values override their `[mcp]` equivalents.
+- Filesystem listeners require an absolute path. Every existing directory in the path must be a real directory owned by root or the listener process's effective UID. Group/world-writable ancestors are rejected unless they are sticky directories such as `/tmp`; missing components are created with a maximum requested mode of `0755`, further restricted by the process umask.
+- Filesystem listeners default to mode `0660`. Labby binds inside a private `0700` staging directory, applies the configured socket mode and optional owner/group there, then atomically publishes the already-hardened socket at the configured path.
+- Startup removes only a verified stale socket. Active sockets, symlinks, regular files, and paths that change during verification are never removed. SIGTERM, Ctrl-C, and normal server exit drop the listener and remove only the exact socket inode created by this process.
+- Linux abstract sockets use `@name`. They have no filesystem owner or mode, so `socket_mode`, `socket_uid`, and `socket_gid` must be omitted.
+- Bearer and OAuth authentication continue to work over the socket. A Unix listener without bearer, OAuth, or peer-credential authorization is refused at startup.
+- Peer-credential mode is Linux-only. The accepted stream's kernel UID/GID is checked before HTTP is served and becomes a local principal such as `unix-peer:uid=1000:gid=1000`. Client-supplied headers are never trusted as peer identity.
+- Kernel credentials are interpreted in the listener process's user namespace. Use peer-credential authorization only when both endpoints share a trusted UID/GID mapping; user-namespaced containers with overlapping numeric IDs require an additional trusted boundary or bearer/OAuth instead.
+- Peer-credential authorization cannot be combined with bearer or OAuth. It is intended for infrastructure and non-user-scoped services because it does not preserve per-user OAuth subject forwarding.
+- The validated directory chain is the operating-system namespace boundary for path replacement. Labby also verifies socket inode identity before stale cleanup and shutdown removal, and refuses to operate when the configured path resolves to an unsafe entry.
 
 ### Stateless MCP lifecycle
 
@@ -73,9 +110,7 @@ The endpoint does not accept legacy `initialize` /
 `notifications/initialized` requests and does not issue or use
 `Mcp-Session-Id`.
 
-The gateway-to-upstream boundary uses that same lifecycle. It sends
-`server/discover` with `2026-07-28` and never retries with legacy
-`initialize`. Upstreams must support the stateless lifecycle.
+The gateway-to-upstream boundary attempts the modern `server/discover` lifecycle first. For recognized lifecycle-compatibility failures it performs one bounded fallback to legacy `initialize`. HTTP/TCP and Unix-socket upstreams use the same lifecycle policy.
 
 ### DNS Rebinding Protection
 
@@ -101,7 +136,7 @@ Auth methods (see [OAUTH.md](../runtime/OAUTH.md) for details):
 - **Static bearer token** via `LABBY_MCP_HTTP_TOKEN` — constant-time comparison.
 - **OAuth mode** via `LABBY_AUTH_MODE=oauth`, `LABBY_PUBLIC_URL`, and Google client credentials.
 - Both can be active simultaneously. Static bearer is checked first.
-- If neither auth method is configured, the router permits local loopback requests only; non-loopback binds are rejected by the safety gate below.
+- If neither auth method is configured, HTTP/TCP permits local loopback operation only; non-loopback binds are rejected by the safety gate below. A Unix listener additionally requires bearer, OAuth, or configured kernel peer credentials.
 
 Auth-adjacent routes mounted on this server, including `/auth/session`,
 `/auth/logout`, `/authorize`, `/auth/google/callback`, and `/token`, remain
@@ -182,9 +217,9 @@ Set LABBY_MCP_HTTP_TOKEN or LABBY_AUTH_MODE=oauth, or bind to 127.0.0.1 for loca
 
 Loopback addresses (`127.0.0.1`, `::1`, `[::1]`, `localhost`) are exempt.
 
-## Middleware Stack (HTTP)
+## Middleware Stack (Hosted Streamable HTTP)
 
-The HTTP server applies middleware in this order (outermost to innermost):
+HTTP/TCP and Unix-domain listeners serve the same router and middleware stack. The hosted server applies middleware in this order (outermost to innermost):
 
 | Layer | Description |
 |-------|-------------|

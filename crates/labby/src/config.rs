@@ -972,7 +972,7 @@ pub struct OutputPreferences {
 /// MCP server defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpPreferences {
-    /// Default transport (`stdio` or `http`).
+    /// Default transport (`stdio`, `http`, or `unix_socket`).
     #[serde(default)]
     pub transport: Option<String>,
     /// Default bind address for the HTTP transport.
@@ -981,6 +981,25 @@ pub struct McpPreferences {
     /// Default port for the HTTP transport.
     #[serde(default)]
     pub port: Option<u16>,
+    /// Filesystem Unix-domain socket path, or Linux abstract `@name` notation,
+    /// used when `transport = "unix_socket"`.
+    #[serde(default)]
+    pub socket_path: Option<PathBuf>,
+    /// Filesystem socket mode in octal, such as `0660` or `0o660`.
+    #[serde(default)]
+    pub socket_mode: Option<String>,
+    /// Optional owner UID applied after binding a filesystem socket.
+    #[serde(default)]
+    pub socket_uid: Option<u32>,
+    /// Optional owner GID applied after binding a filesystem socket.
+    #[serde(default)]
+    pub socket_gid: Option<u32>,
+    /// Optional kernel peer UID allowlist for Unix-socket authorization.
+    #[serde(default)]
+    pub peer_uid: Option<u32>,
+    /// Optional kernel peer GID allowlist for Unix-socket authorization.
+    #[serde(default)]
+    pub peer_gid: Option<u32>,
     /// Additional allowed hosts for DNS rebinding protection.
     #[serde(default)]
     pub allowed_hosts: Option<Vec<String>>,

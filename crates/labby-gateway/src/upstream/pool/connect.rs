@@ -6,7 +6,16 @@
 //! `pub(super)` so the pool module and the sibling `connect_stdio` module can
 //! call them across the module boundary.
 
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStringExt as _;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::time::Instant;
+
+use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
 use rmcp::service::ClientServiceExt;
 use rmcp::transport::streamable_http_client::{
@@ -15,7 +24,7 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::{ClientHandler, RoleClient};
 
 use labby_auth::upstream::cache::OauthClientCache;
-use labby_runtime::gateway_config::UpstreamConfig;
+use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
 
 use super::super::auth::{configured_bearer_token, websocket_authorization_header};
 use super::super::http_client;
@@ -26,8 +35,7 @@ use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 use super::UpstreamConnection;
 use super::connect_stdio::connect_stdio_upstream;
 use super::helpers::{
-    DEFAULT_REQUEST_TIMEOUT, is_websocket_url, max_response_bytes, upstream_target_redacted,
-    upstream_transport,
+    DEFAULT_REQUEST_TIMEOUT, max_response_bytes, upstream_target_redacted, upstream_transport,
 };
 use super::lifecycle_compat::{LifecycleAttempt, compatibility_retry, log_fallback};
 
@@ -86,10 +94,11 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
         subject_scoped = subject.is_some(),
         "upstream connection acquire attempt"
     );
-    let result = if let Some(ref url) = config.url {
-        if is_websocket_url(url) {
-            connect_websocket_upstream(url, config, handler).await
-        } else {
+    let result = match config.effective_transport() {
+        Some(UpstreamTransport::Http) => {
+            let url = config.url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("upstream {} HTTP transport has no url", config.name)
+            })?;
             connect_http_upstream(
                 url,
                 config,
@@ -100,21 +109,36 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
             )
             .await
         }
-    } else if let Some(ref command) = config.command {
-        connect_stdio_upstream(
-            command,
-            &config.args,
-            config,
-            runtime_origin,
-            runtime_owner,
-            handler,
-        )
-        .await
-    } else {
-        Err(anyhow::anyhow!(
+        Some(UpstreamTransport::Websocket) => {
+            let url = config.url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("upstream {} WebSocket transport has no url", config.name)
+            })?;
+            connect_websocket_upstream(url, config, handler).await
+        }
+        Some(UpstreamTransport::Stdio) => {
+            let command = config.command.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("upstream {} stdio transport has no command", config.name)
+            })?;
+            connect_stdio_upstream(
+                command,
+                &config.args,
+                config,
+                runtime_origin,
+                runtime_owner,
+                handler,
+            )
+            .await
+        }
+        Some(UpstreamTransport::UnixSocket) => {
+            let url = config.url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("upstream {} Unix socket transport has no url", config.name)
+            })?;
+            connect_unix_socket_upstream(url, config, subject, oauth_client_cache, handler).await
+        }
+        None => Err(anyhow::anyhow!(
             "upstream {} has neither url nor command",
             config.name
-        ))
+        )),
     };
     match &result {
         Ok((_, tools)) => tracing::info!(
@@ -166,6 +190,79 @@ pub(super) async fn connect_upstream(
         None,
     )
     .await
+}
+
+#[cfg(unix)]
+fn unix_socket_connect_path(path: &str) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    if let Some(name) = path
+        .as_bytes()
+        .strip_prefix(b"@")
+        .filter(|name| !name.is_empty())
+    {
+        let mut address = Vec::with_capacity(name.len() + 1);
+        address.push(0);
+        address.extend_from_slice(name);
+        return PathBuf::from(OsString::from_vec(address));
+    }
+    PathBuf::from(path)
+}
+
+#[cfg(unix)]
+async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
+    url: &str,
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    let socket_path = config.socket_path.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "upstream {} Unix socket transport has no socket_path",
+            config.name
+        )
+    })?;
+
+    // Keep the existing BodyCappedHttpClient and rmcp worker path intact. The
+    // only change is reqwest's connector, so OAuth, bearer headers, lifecycle
+    // fallback, JSON body limits, and per-event SSE limits stay identical to
+    // HTTP/TCP upstreams.
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let client = reqwest::Client::builder()
+        .timeout(DEFAULT_REQUEST_TIMEOUT)
+        .http1_only()
+        .unix_socket(unix_socket_connect_path(socket_path))
+        .build()
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to build Unix socket client for upstream {}: {error}",
+                config.name
+            )
+        })?;
+
+    connect_http_upstream(
+        url,
+        config,
+        subject,
+        oauth_client_cache,
+        Some(&client),
+        handler,
+    )
+    .await
+}
+
+#[cfg(not(unix))]
+async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
+    _url: &str,
+    config: &UpstreamConfig,
+    _subject: Option<&str>,
+    _oauth_client_cache: Option<&OauthClientCache>,
+    _handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    anyhow::bail!(
+        "upstream {} uses unix_socket, which is unsupported on this platform",
+        config.name
+    )
 }
 
 pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
@@ -272,7 +369,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
             let Some(attempt) = compatibility_retry(&error) else {
                 return Err(error);
             };
-            log_fallback(&config.name, "http", attempt, &error);
+            log_fallback(&config.name, upstream_transport(config), attempt, &error);
             connect_http_upstream_once(
                 url,
                 config,
@@ -287,6 +384,36 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     }
 }
 
+fn configured_custom_headers(
+    config: &UpstreamConfig,
+) -> anyhow::Result<HashMap<HeaderName, HeaderValue>> {
+    let mut headers = HashMap::with_capacity(config.headers.len());
+    for (raw_name, raw_value) in &config.headers {
+        let name = HeaderName::from_bytes(raw_name.trim().as_bytes()).map_err(|error| {
+            anyhow::anyhow!(
+                "upstream {} has invalid custom header name {:?}: {error}",
+                config.name,
+                raw_name
+            )
+        })?;
+        if name == AUTHORIZATION {
+            anyhow::bail!(
+                "upstream {} must use bearer_token_env or OAuth for Authorization",
+                config.name
+            );
+        }
+        let value = HeaderValue::from_str(raw_value).map_err(|error| {
+            anyhow::anyhow!(
+                "upstream {} has invalid value for custom header {}: {error}",
+                config.name,
+                name
+            )
+        })?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
 async fn connect_http_upstream_once<H: ClientHandler>(
     url: &str,
     config: &UpstreamConfig,
@@ -298,11 +425,12 @@ async fn connect_http_upstream_once<H: ClientHandler>(
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
-        upstream = %config.name, transport = "http",
+        upstream = %config.name, transport = upstream_transport(config),
         action = "upstream.connect.start", target = %upstream_target_redacted(config),
         "upstream connect start",
     );
-    let transport_config = StreamableHttpClientTransportConfig::with_uri(url);
+    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(url);
+    transport_config.custom_headers = configured_custom_headers(config)?;
 
     // Resolve base HTTP client: reuse the pool-level shared client when
     // available, otherwise build a fresh one (backward-compatible fallback).
@@ -359,7 +487,6 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     }
 
     // Non-OAuth path: optionally inject a static bearer token from env.
-    let mut transport_config = transport_config;
     if let Some(ref env_name) = config.bearer_token_env {
         if let Some(token) = configured_bearer_token(env_name) {
             transport_config.auth_header = Some(token);
@@ -381,7 +508,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     let tools = peer.list_all_tools().await?;
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
-        upstream = %config.name, transport = "http",
+        upstream = %config.name, transport = upstream_transport(config),
         action = "upstream.connect.finish", tool_count = tools.len(),
         "upstream connect finish",
     );

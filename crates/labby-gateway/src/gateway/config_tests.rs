@@ -1,4 +1,6 @@
-use labby_runtime::gateway_config::{GatewayConfig, ProtectedMcpRouteConfig, UpstreamConfig};
+use labby_runtime::gateway_config::{
+    GatewayConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamTransport,
+};
 
 use super::*;
 
@@ -9,6 +11,9 @@ fn sample_config() -> GatewayConfig {
                 enabled: true,
                 name: "a".to_string(),
                 url: Some("http://127.0.0.1:9001".to_string()),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: Vec::new(),
@@ -27,6 +32,9 @@ fn sample_config() -> GatewayConfig {
                 enabled: true,
                 name: "b".to_string(),
                 url: None,
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
                 bearer_token_env: None,
                 command: Some("node".to_string()),
                 args: vec!["server.js".to_string()],
@@ -246,6 +254,9 @@ url = "https://old.example.com/mcp"
             enabled: false,
             name: "new".to_string(),
             url: Some("https://new.example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -280,6 +291,9 @@ fn insert_upstream_adds_new_gateway_entry() {
             enabled: true,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: Some("C_TOKEN".to_string()),
             command: None,
             args: Vec::new(),
@@ -571,6 +585,9 @@ fn insert_upstream_clears_matching_import_tombstone() {
             enabled: false,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -615,6 +632,9 @@ fn insert_upstream_clears_import_tombstone_by_source_identity_after_rename() {
             enabled: false,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -650,6 +670,9 @@ fn insert_upstream_keeps_same_name_tombstone_from_different_source() {
             enabled: false,
             name: "c".to_string(),
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -803,6 +826,9 @@ fn insert_upstream_rejects_duplicate_names() {
             enabled: true,
             name: "a".to_string(),
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -832,6 +858,9 @@ fn write_gateway_config_rejects_both_url_and_command() {
             enabled: true,
             name: "bad".to_string(),
             url: Some("http://127.0.0.1:9001".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: Some("node".to_string()),
             args: Vec::new(),
@@ -862,6 +891,9 @@ fn write_gateway_config_rejects_missing_transport_selector() {
             enabled: true,
             name: "bad".to_string(),
             url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -883,6 +915,81 @@ fn write_gateway_config_rejects_missing_transport_selector() {
     assert_eq!(err.kind(), "invalid_param");
 }
 
+#[cfg(unix)]
+#[test]
+fn write_gateway_config_reports_socket_path_for_invalid_unix_transport() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let cfg = GatewayConfig {
+        upstream: vec![UpstreamConfig {
+            enabled: true,
+            name: "bad-unix".to_string(),
+            url: Some("http://localhost/mcp".to_string()),
+            transport: Some(UpstreamTransport::UnixSocket),
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }],
+        ..GatewayConfig::default()
+    };
+
+    let err = write_gateway_config(&path, &cfg).expect_err("missing socket path");
+    match err {
+        ToolError::InvalidParam { param, .. } => assert_eq!(param, "socket_path"),
+        other => panic!("expected invalid_param, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_gateway_config_reports_headers_for_invalid_authorization_header() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("Authorization".to_string(), "Bearer raw".to_string());
+    let cfg = GatewayConfig {
+        upstream: vec![UpstreamConfig {
+            enabled: true,
+            name: "bad-header".to_string(),
+            url: Some("http://localhost/mcp".to_string()),
+            transport: Some(UpstreamTransport::Http),
+            socket_path: None,
+            headers,
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }],
+        ..GatewayConfig::default()
+    };
+
+    let err = write_gateway_config(&path, &cfg).expect_err("inline authorization header");
+    match err {
+        ToolError::InvalidParam { param, .. } => assert_eq!(param, "headers"),
+        other => panic!("expected invalid_param, got {other:?}"),
+    }
+}
+
 #[test]
 fn insert_upstream_rejects_non_http_scheme() {
     let err = insert_upstream(
@@ -891,6 +998,9 @@ fn insert_upstream_rejects_non_http_scheme() {
             enabled: true,
             name: "ftp".to_string(),
             url: Some("ftp://example.com".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -919,6 +1029,9 @@ fn insert_upstream_rejects_bind_all_address() {
             enabled: true,
             name: "bind-all".to_string(),
             url: Some("http://0.0.0.0:8790".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -947,6 +1060,9 @@ fn insert_upstream_rejects_raw_bearer_token_values_in_bearer_token_env() {
             enabled: true,
             name: "github".to_string(),
             url: Some("https://api.githubcopilot.com/mcp/".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: Some("Bearer ghp_secret".to_string()),
             command: None,
             args: Vec::new(),
@@ -976,6 +1092,9 @@ fn insert_upstream_rejects_name_over_128_chars() {
             enabled: true,
             name: long_name,
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -1004,6 +1123,9 @@ fn insert_upstream_rejects_invalid_chars_in_name() {
             enabled: true,
             name: "evil\x1bgateway".to_string(),
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -1033,6 +1155,9 @@ fn insert_upstream_rejects_bidi_override_in_name() {
             enabled: true,
             name: "safe\u{202e}gateway".to_string(),
             url: Some("https://example.com/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: Vec::new(),
@@ -1065,6 +1190,9 @@ fn insert_upstream_accepts_valid_names() {
                 enabled: true,
                 name: name.to_string(),
                 url: Some("https://example.com/mcp".to_string()),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: Vec::new(),
@@ -1163,6 +1291,9 @@ fn stdio_upstream(command: &str, args: &[&str], env_pairs: &[(&str, &str)]) -> U
         enabled: true,
         name: "test".to_string(),
         url: None,
+        transport: None,
+        socket_path: None,
+        headers: Default::default(),
         bearer_token_env: None,
         command: Some(command.to_string()),
         args: args.iter().map(|s| (*s).to_string()).collect(),
