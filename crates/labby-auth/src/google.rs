@@ -22,7 +22,7 @@ const GOOGLE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// lock. Token exchange / refresh keep the looser 30s bound because they
 /// can legitimately take longer.
 const GOOGLE_JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_hours(1);
+const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizeUrlRequest {
