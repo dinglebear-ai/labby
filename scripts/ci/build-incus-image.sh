@@ -9,6 +9,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$repo_root/target/incus-image-work"
 image_definition="$repo_root/config/incus/labby-image.yaml"
 image_name="labby-incus-x86_64-unknown-linux-gnu.tar.xz"
+distrobuilder_bin="${DISTROBUILDER_BIN:-distrobuilder}"
 secret_env_vars=(
     TS_AUTHKEY
     LABBY_MCP_HTTP_TOKEN
@@ -23,6 +24,16 @@ env_unset_args=()
 for name in "${secret_env_vars[@]}"; do
     env_unset_args+=("-u" "$name")
 done
+
+if [[ "$distrobuilder_bin" == */* ]]; then
+    [[ -x "$distrobuilder_bin" ]] || {
+        printf 'distrobuilder binary is not executable: %s\n' "$distrobuilder_bin" >&2
+        exit 1
+    }
+elif ! command -v "$distrobuilder_bin" >/dev/null 2>&1; then
+    printf 'distrobuilder command not found: %s\n' "$distrobuilder_bin" >&2
+    exit 1
+fi
 
 rm -rf "$work_dir" "$out_dir"
 mkdir -p "$work_dir/files" "$work_dir/rootfs" "$out_dir"
@@ -39,7 +50,7 @@ text = src.read_text()
 dst.write_text(text.replace("@@LABBY_BINARY@@", str(binary)))
 PY
 
-sudo env "${env_unset_args[@]}" distrobuilder build-incus \
+sudo env "${env_unset_args[@]}" "$distrobuilder_bin" build-incus \
     --type=unified \
     "$work_dir/labby-image.yaml" \
     "$work_dir/rootfs" \

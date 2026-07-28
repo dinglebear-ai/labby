@@ -35,6 +35,9 @@ packages:
         - gh
         - ca-certificates
         - curl
+        - jq
+        - ripgrep
+        - lsof
         - rsync
         - xz-utils
         - python3
