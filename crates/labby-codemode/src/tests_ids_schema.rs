@@ -492,4 +492,9 @@ fn builds_catalog_entry_for_tool() {
             .dts
             .contains("declare function callTool(id: \"github::search_issues\"")
     );
+    assert!(
+        candidate
+            .dts
+            .contains("project, filter, or slice large tool results")
+    );
 }

@@ -64,6 +64,9 @@ pub(crate) fn generate_tool_types(
     dts.push_str(&format!("  {namespace_method}: {namespace_interface};\n"));
     dts.push_str("}\n");
     dts.push_str("declare var codemode: CodemodeTools;\n");
+    dts.push_str(
+        "// Keep the final execution return within the configured envelope budget; project, filter, or slice large tool results before returning.\n",
+    );
     dts.push_str(&format!(
         "declare function callTool(id: {tool_id_literal}, params: {input_name}): Promise<{output_name}>;\n"
     ));

@@ -233,6 +233,7 @@ fn code_mode_execute_trace_includes_shape_metadata_and_shaped_result() {
             truncated: true,
             original_size_bytes: 5000,
             shaped_size_bytes: 256,
+            warning: None,
         }),
         ui: None,
         calls: vec![],

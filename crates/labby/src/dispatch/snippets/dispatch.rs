@@ -388,6 +388,7 @@ mod tests {
                 truncated: true,
                 original_size_bytes: 5000,
                 shaped_size_bytes: 256,
+                warning: None,
             }),
             ui: None,
             calls: vec![],

@@ -125,6 +125,8 @@ once and replays its recorded result if the run resumes, instead of re-running i
 // codemode.<upstream>.<tool>() helpers are auto-generated from the live catalog.
 // Use codemode.search() / codemode.describe() for compact docs, and callTool for
 // dynamic ids.
+// Keep the final execution return within the configured envelope budget; project,
+// filter, or slice large results before returning.
 declare function callTool<T = unknown>(
   id: `${string}::${string}`,
   params: Record<string, unknown>
@@ -133,6 +135,25 @@ declare function callTool<T = unknown>(
 
 Successful return: the upstream tool's structuredContent if present, else the parsed \
 text of the first content[0] block. Never the raw MCP envelope.
+
+Reduce before returning. Do not return a large upstream response raw.
+
+BAD:
+```ts
+return await callTool(id, params);
+```
+
+GOOD — project object fields and slice arrays:
+```ts
+const r = await callTool(id, params);
+return r.items.slice(0, 20).map(({ id, name }) => ({ id, name }));
+```
+
+GOOD — filter to the evidence the caller needs:
+```ts
+const r = await callTool(id, params);
+return { failures: r.items.filter(item => item.ok === false) };
+```
 
 Error handling:
 ```ts

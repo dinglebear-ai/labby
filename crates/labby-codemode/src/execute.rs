@@ -105,10 +105,19 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let result_shape_truncated = shaped.metadata.truncated;
         let result_shape_original_size_bytes = shaped.metadata.original_size_bytes;
         let result_shape_shaped_size_bytes = shaped.metadata.shaped_size_bytes;
+        let result_shape_warning_requested = shaped.metadata.warning.is_some();
         response.result = shaped.result;
-        if config.result_shape_policy != CodeModeResultShapePolicy::Off {
+        if config.result_shape_policy != CodeModeResultShapePolicy::Off
+            || result_shape_warning_requested
+        {
             response.result_shaping = Some(shaped.metadata);
         }
+        remove_soft_warning_if_it_breaks_budget(&mut response, &config);
+        let result_shape_warning = response
+            .result_shaping
+            .as_ref()
+            .and_then(|metadata| metadata.warning.as_ref())
+            .is_some();
         let shaped_result = response.result.clone();
         let was_truncated = !response_within_budget(
             &response,
@@ -141,6 +150,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             result_shape_truncated,
             result_shape_original_size_bytes,
             result_shape_shaped_size_bytes,
+            result_shape_warning,
             logs_count = response.logs.len(),
             truncated = was_truncated,
             "code execution complete"
@@ -619,6 +629,34 @@ pub fn discovery_entry_visible(entry: &ToolDescriptor, scope: &ToolScope) -> boo
     entry.kind == CodeModeCatalogKind::Snippet || scope.allows(&entry.namespace, &entry.name)
 }
 
+fn remove_soft_warning_if_it_breaks_budget(
+    response: &mut CodeModeExecutionResponse,
+    config: &CodeModeConfig,
+) {
+    let has_warning = response
+        .result_shaping
+        .as_ref()
+        .and_then(|metadata| metadata.warning.as_ref())
+        .is_some();
+    if !has_warning
+        || response_within_budget(
+            response,
+            config.max_response_bytes,
+            config.max_response_tokens,
+            config.token_estimate_divisor,
+        )
+    {
+        return;
+    }
+
+    if let Some(metadata) = response.result_shaping.as_mut() {
+        metadata.warning = None;
+    }
+    if config.result_shape_policy == CodeModeResultShapePolicy::Off {
+        response.result_shaping = None;
+    }
+}
+
 fn ui_resource_uri(ui_meta: &Value) -> Option<&str> {
     ui_meta.get("resourceUri").and_then(Value::as_str)
 }
@@ -682,6 +720,69 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn large_result_warning_preserves_the_result() {
+        let value = Value::String("x".repeat(7998));
+        let shaped = shape_final_result(
+            Some(value.clone()),
+            CodeModeResultShapePolicy::Truncate,
+            24 * 1024,
+            6000,
+            4,
+        );
+        let mut response = response_with_result(shaped.result.expect("shaped result"));
+        response.result_shaping = Some(shaped.metadata);
+        let config = CodeModeConfig {
+            max_response_bytes: 24 * 1024,
+            max_response_tokens: 6000,
+            token_estimate_divisor: 4,
+            ..CodeModeConfig::default()
+        };
+
+        remove_soft_warning_if_it_breaks_budget(&mut response, &config);
+
+        assert_eq!(response.result, Some(value));
+        assert!(
+            response
+                .result_shaping
+                .as_ref()
+                .and_then(|metadata| metadata.warning.as_deref())
+                .is_some_and(|warning| warning.contains("large result"))
+        );
+    }
+
+    #[test]
+    fn oversized_response_drops_soft_warning_before_hard_truncation() {
+        let value = Value::String("x".repeat(7998));
+        let shaped = shape_final_result(
+            Some(value.clone()),
+            CodeModeResultShapePolicy::Truncate,
+            24 * 1024,
+            6000,
+            4,
+        );
+        let mut response = response_with_result(shaped.result.expect("shaped result"));
+        response.result_shaping = Some(shaped.metadata);
+        response.logs.push("y".repeat(24 * 1024));
+        let config = CodeModeConfig {
+            max_response_bytes: 24 * 1024,
+            max_response_tokens: 6000,
+            token_estimate_divisor: 4,
+            result_shape_policy: CodeModeResultShapePolicy::Truncate,
+            ..CodeModeConfig::default()
+        };
+
+        remove_soft_warning_if_it_breaks_budget(&mut response, &config);
+
+        assert_eq!(response.result, Some(value));
+        assert!(
+            response
+                .result_shaping
+                .as_ref()
+                .is_some_and(|metadata| metadata.warning.is_none())
+        );
     }
 
     #[test]
