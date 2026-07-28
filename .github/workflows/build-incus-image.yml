@@ -47,7 +47,30 @@ env:
 jobs:
   build-image:
     name: Build and smoke Incus image
-    runs-on: [self-hosted, unraid]
+    # GitHub-hosted on purpose. Do not move this to [self-hosted, unraid]
+    # without first proving the runner can sustain the debootstrap fetch while
+    # ci.yml is running.
+    #
+    # This job runs a ~200-package serial debootstrap fetch. The four
+    # tootie-ci-runner-* runners share one Unraid host with essentially the
+    # whole ci.yml matrix, and `concurrency` here only serializes this workflow
+    # against itself, never against CI. Under that contention the fetches
+    # stall rather than fail cleanly: in run 30329336992 an 81 KB .deb took
+    # 750 s (~109 B/s) and debconf-i18n/kbd exhausted wget's retry budget,
+    # surfacing as "E: Couldn't download packages". Which packages die is
+    # random, so a lucky re-run can pass and hide the problem.
+    #
+    # History: PR #266 moved this to ubuntu-latest and left guard comments.
+    # e47996e2 ("fix(mcp): address stateless review findings") reverted both
+    # jobs and deleted those comments as unrelated collateral; every run after
+    # it was red, the last green was 81c2452d on ubuntu-latest.
+    #
+    # PR #266's original reason (no snapd for the distrobuilder snap) is now
+    # obsolete — abf0ce23 builds distrobuilder from a SHA256-pinned Go release.
+    # The blocker today is purely network starvation, so self-hosted is not
+    # impossible, just currently unreliable. Tradeoff accepted: ubuntu-latest
+    # gives up the warm soldr/zccache store for the release build in step 8.
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
@@ -147,7 +170,9 @@ jobs:
     name: Publish immutable Incus image and advance rolling alias
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build-image
-    runs-on: [self-hosted, unraid]
+    # Consumes the artifact produced by the GitHub-hosted build job above; kept
+    # on the same runner class so the two stay consistent.
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
