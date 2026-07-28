@@ -15,6 +15,7 @@ pub mod helpers;
 pub mod incus;
 #[cfg(feature = "gateway")]
 pub mod internal;
+pub mod logs;
 pub mod oauth;
 pub mod params;
 pub mod serve;
@@ -72,6 +73,8 @@ pub enum Command {
     Docs(docs::DocsArgs),
     /// Quick reachability check for configured services.
     Health,
+    /// Tail the active Labby service journal.
+    Logs(logs::LogsArgs),
     /// Bootstrap the supported Incus Labby gateway container.
     Setup(setup::SetupArgs),
     /// Manage the supported Incus Labby gateway container.
@@ -104,6 +107,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Doctor(args) => doctor::run(args, format).await,
         Command::Docs(args) => docs::run(args, format),
         Command::Health => health::run(format).await,
+        Command::Logs(args) => logs::run(args).await,
         Command::Setup(args) => setup::run(args, format).await,
         Command::Incus(args) => incus::run(args, format).await,
         Command::Update(args) => update::run(args, format).await,
