@@ -7,7 +7,6 @@ import {
   Logs,
   RefreshCcw,
   Settings2,
-  Sparkles,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -20,9 +19,7 @@ import type { CommandPaletteItem } from './command-palette-data'
 const ICONS: Record<CommandPaletteItem['icon'], LucideIcon> = {
   gateway: Cable,
   logs: Logs,
-  marketplace: Sparkles,
   settings: Settings2,
-  registry: Sparkles,
   reload: RefreshCcw,
   token: KeyRound,
   setup: ArrowUpRight,

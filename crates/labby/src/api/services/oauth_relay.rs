@@ -1408,6 +1408,7 @@ mod tests {
                     .without_time(),
             );
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
 
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
@@ -1463,6 +1464,7 @@ mod tests {
                     .without_time(),
             );
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
 
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();

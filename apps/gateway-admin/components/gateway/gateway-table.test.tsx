@@ -125,7 +125,7 @@ test('gateway table exposes stale service removal for unknown in-process service
   const staleService: Gateway = {
     ...gateway,
     id: 'stale-registry',
-    name: 'mcpregistry',
+    name: 'missing-service',
     transport: 'in_process',
     source: 'in_process',
     status: {
@@ -142,7 +142,7 @@ test('gateway table exposes stale service removal for unknown in-process service
     warnings: [
       {
         code: 'unknown_service',
-        message: 'service `mcpregistry` is not registered in this lab binary',
+        message: 'service `missing-service` is not registered in this lab binary',
         timestamp: '2026-04-25T12:00:00Z',
       },
     ],

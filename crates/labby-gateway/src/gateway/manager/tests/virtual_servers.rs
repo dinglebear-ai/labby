@@ -45,8 +45,8 @@ async fn stale_virtual_server_with_unknown_service_does_not_break_list() {
     manager
         .seed_config_unchecked_for_tests(GatewayConfig {
             virtual_servers: vec![VirtualServerConfig {
-                id: "mcpregistry".to_string(),
-                service: "mcpregistry".to_string(),
+                id: "missing-service".to_string(),
+                service: "missing-service".to_string(),
                 enabled: true,
                 surfaces: VirtualServerSurfacesConfig {
                     cli: false,
@@ -63,7 +63,7 @@ async fn stale_virtual_server_with_unknown_service_does_not_break_list() {
     let servers = manager.list().await.expect("list should fail open");
     let stale = servers
         .iter()
-        .find(|server| server.id == "mcpregistry")
+        .find(|server| server.id == "missing-service")
         .expect("stale server row");
 
     assert!(!stale.connected);

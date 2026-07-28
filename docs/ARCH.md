@@ -1,8 +1,6 @@
 # Architecture
 
-`lab` is a pluggable homelab CLI and MCP server implemented as a Rust workspace with a split between reusable upstream-facing SDK clients and product-facing dispatch and surface layers.
-
-It also includes a product-local device runtime subsystem. That subsystem is separate from gateway and shared service dispatch code and owns fleet role resolution, device ingest, and master-only control-plane gating.
+`lab` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, setup, doctor, server logs, snippets, and the optional filesystem browser.
 
 ## Core Shape
 
@@ -109,7 +107,6 @@ can keep `unsafe_code = "forbid"` elsewhere.
 - output rendering
 - install/uninstall flows
 - doctor and operator workflows
-- the device runtime and fleet state store
 - product-local dispatch and config-store adapters
 
 It must stay thin at the surface boundary. Reusable gateway, Code Mode, auth,
@@ -255,11 +252,12 @@ The binary resolves those inputs, then constructs clients explicitly.
 
 ## Service Model
 
-Feature-gated product slices currently are `gateway` and `fs`. Bootstrap
-services such as `doctor`, `setup`, and snippets are always-on or
-gateway-gated as described in `crates/labby/Cargo.toml`. Retired product
-surfaces such as marketplace, deploy, ACP/fleet nodes, stash, and ACP registry
-are deleted from the `labby` crate rather than left as sleeping feature gates.
+Feature-gated product slices are `gateway` and `fs`. The supported always-on
+operator services are `doctor`, `server_logs`, `setup`, and `snippets`;
+`lab_admin` is runtime-conditional. Retired ACP, Registry-browser, Marketplace,
+Fleet/device runtime, Deploy-product, and Stash implementations are deleted from
+current source, manifests, packaging, CI, and generated product catalogs rather
+than retained as sleeping aliases.
 
 For a first-class service or capability, add only the surfaces it actually
 supports:

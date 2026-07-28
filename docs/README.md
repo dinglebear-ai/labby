@@ -15,15 +15,10 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [design/component-development.md](./design/component-development.md) and [design/design-system-contract.md](./design/design-system-contract.md) when building or revising Labby web UI components.
 - Use [CONFIG.md](./runtime/CONFIG.md), [INCUS.md](./runtime/INCUS.md), [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md), and [OPERATIONS.md](./OPERATIONS.md) for setup, recommended Incus deployment, gateway runtime choices, and operator workflows.
 - Refer to [OAUTH.md](./runtime/OAUTH.md) for bearer vs OAuth mode selection, Google-backed authorization flow, lab-issued JWT behavior, and callback-forwarding constraints.
-- Use [CALLBACK_RELAY.md](./deploy/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
+- Use [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
 - Use [GATEWAY.md](./services/GATEWAY.md) when managing upstream MCP gateways over CLI, MCP, `/v1/gateway`, or Gateway-managed OAuth protected MCP routes.
-- Use [acp/README.md](./acp/README.md) for ACP service architecture, the `acp` vs `chat` boundary, and gateway integration direction.
-- Use [acp/design.md](./acp/design.md) for ACP design details and [acp/research-findings.md](./acp/research-findings.md) for the supporting research notes.
 - Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.
-- Use [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md) for the SDK/extracted-service Lab-owned registry metadata contract layered onto MCP Registry response `_meta`.
-- Use [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md) and [DEPLOY.md](./runtime/DEPLOY.md) for the master/non-master fleet runtime, device inventory, and deployment model.
 - Use [UNRAID.md](./runtime/UNRAID.md) for the native Unraid `.plg` plugin packaging (`unraid/`), an alternative to the Incus/Docker deployment targets.
-- Use [MONITORS.md](./services/MONITORS.md) for Claude Code monitor definitions (`plugins/monitors/monitors.json`) and the `labby deploy monitor` command.
 - See [UPSTREAM.md](./services/UPSTREAM.md) for upstream MCP gateway setup, configuration, tool merging, circuit breaker behavior, and resource proxying.
 - Consult [TRANSPORT.md](./surfaces/TRANSPORT.md) for stdio and streamable HTTP transport configuration, middleware stack, stateless discovery, and subscriptions.
 - Use [OBSERVABILITY.md](./dev/OBSERVABILITY.md) for the mandatory logging, correlation, redaction, and verification contract.
@@ -32,7 +27,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [DISPATCH.md](./dev/DISPATCH.md) for the shared surface-neutral dispatch-layer contract and dependency rules.
 - Use [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md) for the current status of the older service-layer migration plan.
 - Use [SERVICE_ONBOARDING.md](./dev/SERVICE_ONBOARDING.md) when you are bringing a new service online end to end.
-- Use [SCAFFOLD_AND_AUDIT.md](./dev/SCAFFOLD_AND_AUDIT.md) for the deferred scaffold/audit command contract. [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md) and [FLEET_METHODS.md](./runtime/FLEET_METHODS.md) are historical/extracted-surface references, not current slim Labby gateway-host product surfaces.
+- Use [SCAFFOLD_AND_AUDIT.md](./dev/SCAFFOLD_AND_AUDIT.md) for the deferred scaffold/audit command contract.
 
 ## Reading Paths
 
@@ -77,11 +72,10 @@ The docs are split by topic so contributors do not have to recover architecture,
 5. [OAUTH.md](./runtime/OAUTH.md) (if deploying with OAuth)
 6. [GATEWAY.md](./services/GATEWAY.md) (if managing upstream MCP gateways)
 7. [UPSTREAM.md](./services/UPSTREAM.md) (if proxying upstream MCP servers)
-8. [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md)
-9. [NODE_RUNTIME_CONTRACT.md](./runtime/NODE_RUNTIME_CONTRACT.md)
-10. [DEPLOY.md](./runtime/DEPLOY.md)
-11. [OPERATIONS.md](./OPERATIONS.md)
-12. [CLI.md](./surfaces/CLI.md)
+8. [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) (when operating the public OAuth relay)
+9. [REVERSE_PROXY.md](./runtime/REVERSE_PROXY.md)
+10. [OPERATIONS.md](./OPERATIONS.md)
+11. [CLI.md](./surfaces/CLI.md)
 
 ## Topic Map
 
@@ -99,32 +93,12 @@ The docs are split by topic so contributors do not have to recover architecture,
   RMCP SDK integration contract: transports, feature posture, handler patterns, auth ownership, and capability rules.
 - [OAUTH.md](./runtime/OAUTH.md)
   HTTP auth modes: static bearer compatibility, internal Google-backed OAuth, lab-issued JWTs, JWKS, RFC 9728 metadata, and redirect/callback forwarding rules.
-- [CALLBACK_RELAY.md](./deploy/CALLBACK_RELAY.md)
-  Public OAuth callback relay cutover, registry import, validation, and rollback.
+- [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md)
+  Public OAuth callback relay cutover, relay-state import, validation, and rollback.
+- [REVERSE_PROXY.md](./runtime/REVERSE_PROXY.md)
+  Reverse-proxy requirements and examples for the web UI, OAuth, native MCP, and protected routes.
 - [GATEWAY.md](./services/GATEWAY.md)
   Gateway control plane: CRUD, reload/test flows, runtime views, tool exposure policy, and Gateway-managed OAuth protected MCP routes.
-- [acp/README.md](./acp/README.md)
-  ACP service entrypoint, first-class service design, and the browser `chat` relationship.
-- [acp/design.md](./acp/design.md)
-  ACP detailed design notes.
-- [acp/research-findings.md](./acp/research-findings.md)
-  ACP supporting research findings.
-- [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md)
-  Lab-owned metadata layered onto mirrored MCP Registry entries: SDK/extracted-service contract, validation, audit fields, filters, and wire shape.
-- [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md)
-  Master/non-master runtime roles, `/v1/nodes/*`, AI CLI inventory upload, queueing, and device OAuth relay.
-- [NODES.md](./runtime/NODES.md)
-  Node-facing CLI/API behavior and controller interactions.
-- [NODE_RUNTIME_CONTRACT.md](./runtime/NODE_RUNTIME_CONTRACT.md)
-  Controller/node runtime split, node-only artifact rules, HTTP surface boundaries, and rollout verification requirements.
-- [FLEET_METHODS.md](./runtime/FLEET_METHODS.md)
-  Fleet WebSocket JSON-RPC method contract and enrollment/session behavior.
-- [DEPLOY.md](./runtime/DEPLOY.md)
-  Device-runtime deployment model for master and non-master machines.
-- [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md)
-  Historical deploy service action/API contract retained for extracted/runtime reference.
-- [MONITORS.md](./services/MONITORS.md)
-  Claude Code monitor definitions and `labby deploy monitor`.
 - [UPSTREAM.md](./services/UPSTREAM.md)
   Upstream MCP proxy gateway: config, discovery, tool collision handling, circuit breaker, resource proxying.
 - [TRANSPORT.md](./surfaces/TRANSPORT.md)
@@ -132,7 +106,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - `apps/gateway-admin/README.md`
   Labby admin UI: local frontend workflow, static export, and same-origin deployment model.
 - [design/component-development.md](./design/component-development.md)
-  Web UI component workflow: feature specs, `/dev/*` live read-only previews, render iteration, design-system review, and browser verification.
+  Web UI component workflow: feature specs, render iteration, design-system review, and browser verification.
 - [design/design-system-contract.md](./design/design-system-contract.md)
   Labby web UI design-system contract: Aurora tokens, typography, surfaces, components, page patterns, accessibility, and approval rules.
 - [SERVICES.md](./dev/SERVICES.md)

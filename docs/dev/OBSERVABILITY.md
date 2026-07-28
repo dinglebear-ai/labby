@@ -112,7 +112,6 @@ product surface, including:
 
 - `/auth/session`
 - `/auth/logout`
-- `/v1/nodes/oauth/relay/start`
 - OAuth authorize/callback/token handlers where `lab` itself is the actor
 
 Those routes must not silently bypass the normal dispatch schema just because
@@ -142,20 +141,6 @@ The raw subject remains a credential-adjacent identifier and must not be stored
 in persisted log fields or returned to the Activity UI. A short redacted display
 tag is allowed only for human diagnostics and must not be used for
 authorization or filtering.
-
-### Device Runtime Ingest
-
-Device-runtime HTTP handlers participate in the same API dispatch contract.
-
-At minimum, the following actions must be traceable on the master:
-
-- `device.status`
-- `device.metadata`
-- `device.oauth.relay.start`
-- `fleet.ws.initialize`
-- `fleet.ws.enrollment_required`
-
-Non-master startup warnings for failed websocket connect, initialize, metadata upload, or status push must be logged without leaking device tokens or raw secret config content.
 
 ### Shared Outbound Requests
 
@@ -368,8 +353,8 @@ upstreams are flapping and clients are being shielded from it.
 **Diagnosing reported flapping:**
 
 1. Filter for `action = "catalog.notify"` and group by `source` — that names the
-   emitting site. `peers_notified` vs `peers_skipped` says how much of the fleet
-   each one actually disturbed.
+   emitting site. `peers_notified` vs `peers_skipped` shows how many connected
+   MCP peers actually received the notification.
 2. Check `during_tool_call` on those events. `true` means bindings were
    invalidated mid-turn, which is the reported symptom rather than a correlate.
 3. Check `suppressed_raw_churn_total` on the reconcile logs. Climbing means raw

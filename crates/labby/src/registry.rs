@@ -548,7 +548,7 @@ fn registered_service_kind(
         return RegisteredServiceKind::BuiltInUpstreamApi;
     }
 
-    if matches!(category, Category::Bootstrap | Category::Marketplace) {
+    if matches!(category, Category::Bootstrap) {
         return RegisteredServiceKind::BootstrapOperator;
     }
 

@@ -118,22 +118,8 @@
     },
     {
       "crate_name": "labby-apis",
-      "feature": "acp_registry",
-      "dependencies": [],
-      "included_in_default": false,
-      "included_in_all": true,
-      "classification": "sdk_only",
-      "mapped_crate_feature": null,
-      "exception_reason": null
-    },
-    {
-      "crate_name": "labby-apis",
       "feature": "all",
-      "dependencies": [
-        "deploy",
-        "mcpregistry",
-        "acp_registry"
-      ],
+      "dependencies": [],
       "included_in_default": false,
       "included_in_all": false,
       "classification": "aggregate_default",
@@ -149,26 +135,6 @@
       "classification": "aggregate_default",
       "mapped_crate_feature": "labby/default",
       "exception_reason": "aggregate/default feature"
-    },
-    {
-      "crate_name": "labby-apis",
-      "feature": "deploy",
-      "dependencies": [],
-      "included_in_default": false,
-      "included_in_all": true,
-      "classification": "sdk_only",
-      "mapped_crate_feature": null,
-      "exception_reason": null
-    },
-    {
-      "crate_name": "labby-apis",
-      "feature": "mcpregistry",
-      "dependencies": [],
-      "included_in_default": false,
-      "included_in_all": true,
-      "classification": "sdk_only",
-      "mapped_crate_feature": null,
-      "exception_reason": null
     },
     {
       "crate_name": "labby-apis",
@@ -231,45 +197,6 @@
       "crate_name": "labby-gateway",
       "feature": "testkit",
       "dependencies": [],
-      "included_in_default": false,
-      "included_in_all": false,
-      "classification": "extracted_crate",
-      "mapped_crate_feature": null,
-      "exception_reason": "extracted crate feature"
-    },
-    {
-      "crate_name": "labby-runtime",
-      "feature": "acp_registry",
-      "dependencies": [
-        "dep:labby-apis",
-        "labby-apis/acp_registry"
-      ],
-      "included_in_default": false,
-      "included_in_all": false,
-      "classification": "extracted_crate",
-      "mapped_crate_feature": null,
-      "exception_reason": "extracted crate feature"
-    },
-    {
-      "crate_name": "labby-runtime",
-      "feature": "deploy",
-      "dependencies": [
-        "dep:labby-apis",
-        "labby-apis/deploy"
-      ],
-      "included_in_default": false,
-      "included_in_all": false,
-      "classification": "extracted_crate",
-      "mapped_crate_feature": null,
-      "exception_reason": "extracted crate feature"
-    },
-    {
-      "crate_name": "labby-runtime",
-      "feature": "marketplace",
-      "dependencies": [
-        "dep:labby-apis",
-        "labby-apis/mcpregistry"
-      ],
       "included_in_default": false,
       "included_in_all": false,
       "classification": "extracted_crate",

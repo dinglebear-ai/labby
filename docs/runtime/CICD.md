@@ -54,7 +54,7 @@ The frontend build is required because the Rust binary embeds the exported
 Labby assets. It is a production build gate, not a TypeScript strictness gate:
 `apps/gateway-admin/next.config.mjs` currently sets
 `typescript.ignoreBuildErrors = true`. Run `pnpm test` in
-`apps/gateway-admin` for the frontend unit/ACP test contract.
+`apps/gateway-admin` for the frontend unit and install-script test contract.
 
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
@@ -140,7 +140,7 @@ partially published release.
 
 - **Surface:** GitHub Releases
 - **Container surface:** GitHub Container Registry (`ghcr.io/jmagar/lab`)
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64, Windows x86_64; aarch64 dropped deliberately — rquickjs-sys does not cross-compile and no fleet host is ARM)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and Windows x86_64; aarch64 is not currently supported because the Code Mode native dependency does not cross-compile in the release workflow)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **Package registries:** the `labby-mcp` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
 

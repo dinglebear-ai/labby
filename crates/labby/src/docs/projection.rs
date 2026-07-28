@@ -96,10 +96,7 @@ fn build_service_catalog(
 }
 
 fn sdk_only_feature(meta: &PluginMeta) -> Option<String> {
-    match meta.name {
-        "mcpregistry" => Some("marketplace".to_string()),
-        _ => Some(meta.name.to_string()),
-    }
+    Some(meta.name.to_string())
 }
 
 fn service_doc(
@@ -204,7 +201,7 @@ fn build_feature_matrix(repo_root: &Path) -> Result<FeatureMatrix> {
 
     for (feature, deps) in &lab_features {
         let classification = classify_lab_feature(feature, deps, &api_features);
-        let mapped = mapped_lab_feature(feature, deps, &api_features);
+        let mapped = mapped_lab_feature(deps, &api_features);
         if classification == FeatureClass::ServicePassthrough {
             if !api_features.contains_key(feature.as_str()) {
                 mismatches.push(FeatureMismatch {
@@ -548,7 +545,6 @@ fn classify_api_feature(
 }
 
 fn mapped_lab_feature(
-    feature: &str,
     deps: &[String],
     api_features: &BTreeMap<String, Vec<String>>,
 ) -> Option<String> {
@@ -556,20 +552,6 @@ fn mapped_lab_feature(
         .filter_map(|dep| dep.strip_prefix(LABBY_APIS_PREFIX))
         .find(|dep| api_features.contains_key(*dep))
         .map(|dep| format!("{LABBY_APIS_PREFIX}{dep}"))
-        .or_else(|| compatibility_api_feature(feature, api_features))
-}
-
-fn compatibility_api_feature(
-    feature: &str,
-    api_features: &BTreeMap<String, Vec<String>>,
-) -> Option<String> {
-    let api_feature = match feature {
-        "mcpregistry" => "mcpregistry",
-        _ => return None,
-    };
-    api_features
-        .contains_key(api_feature)
-        .then(|| format!("{LABBY_APIS_PREFIX}{api_feature}"))
 }
 
 fn exception_reason(classification: FeatureClass) -> Option<&'static str> {
@@ -586,17 +568,12 @@ fn exception_reason(classification: FeatureClass) -> Option<&'static str> {
 }
 
 fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
-    // The `device` service surface is gated by the `nodes` cargo feature.
-    let feature_name = match service {
-        "device" => "nodes",
-        other => other,
-    };
     matrix
         .features
         .iter()
         .find(|feature| {
             feature.crate_name == "labby"
-                && feature.feature == feature_name
+                && feature.feature == service
                 && matches!(
                     feature.classification,
                     FeatureClass::ServicePassthrough
@@ -610,14 +587,10 @@ fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
 
 pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
     SurfaceAvailability {
-        cli: !matches!(service, "device" | "fs"),
+        cli: service != "fs",
         mcp: true,
-        api: service_has_action_api_route(service)
-            || matches!(service, "device" | "marketplace" | "doctor" | "setup"),
-        web_ui: matches!(
-            service,
-            "gateway" | "marketplace" | "logs" | "setup" | "device" | "fs"
-        ),
+        api: service != "lab_admin",
+        web_ui: matches!(service, "gateway" | "setup" | "fs"),
     }
 }
 

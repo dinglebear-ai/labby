@@ -9,9 +9,7 @@ export type CommandPaletteGroupKey =
 export type CommandPaletteIconKey =
   | 'gateway'
   | 'logs'
-  | 'marketplace'
   | 'settings'
-  | 'registry'
   | 'reload'
   | 'token'
   | 'setup'
@@ -38,8 +36,8 @@ export const commandPaletteItems: CommandPaletteItem[] = [
     id: 'destination-gateway-admin',
     type: 'destination',
     title: 'Gateway Admin',
-    description: 'Open the primary control plane for routes, upstream servers, policies, and deployments.',
-    keywords: ['gateway', 'gateways', 'admin', 'routes', 'policies', 'deploy'],
+    description: 'Open the primary control plane for routes, upstream servers, and policies.',
+    keywords: ['gateway', 'gateways', 'admin', 'routes', 'policies', 'upstreams'],
     group: 'destinations',
     icon: 'gateway',
     actionHint: 'Open',
@@ -66,17 +64,6 @@ export const commandPaletteItems: CommandPaletteItem[] = [
     icon: 'settings',
     actionHint: 'Open',
     priority: 82,
-  },
-  {
-    id: 'destination-marketplace-registry',
-    type: 'destination',
-    title: 'Marketplace',
-    description: 'Browse plugins, MCP servers, ACP agents, and registry-backed catalog entries in one place.',
-    keywords: ['marketplace', 'registry', 'servers', 'packages', 'catalog', 'mcp', 'acp'],
-    group: 'destinations',
-    icon: 'marketplace',
-    actionHint: 'Open',
-    priority: 80,
   },
   {
     id: 'action-reload-gateways',

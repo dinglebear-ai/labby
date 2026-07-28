@@ -1,0 +1,559 @@
+# MCP
+
+`lab` exposes homelab operations through a compact MCP surface designed for agents, not a giant tool registry.
+
+The RMCP SDK integration contract that underpins this surface lives in
+[RMCP.md](./RMCP.md). The pinned protocol test matrix and extension boundaries
+live in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md). This document owns
+product-facing MCP behavior; `RMCP.md` owns how `lab` uses the RMCP library to
+implement it.
+
+## Transport Modes
+
+`lab` exposes two MCP entrypoints:
+
+- `labby mcp`: local stdio child-process MCP clients such as Claude Desktop and `.mcp.json`
+- `labby serve`: hosted HTTP runtime, including streamable HTTP MCP at `/mcp`
+
+Rules:
+
+- `labby serve` starts the hosted HTTP runtime by default
+- `labby mcp` is the explicit child-process stdio entrypoint
+- HTTP supports `LABBY_AUTH_MODE=bearer|oauth`
+- bearer mode preserves `LABBY_MCP_HTTP_TOKEN`
+- oauth mode requires `LABBY_PUBLIC_URL` and Google client credentials
+- transport changes must not change dispatch or catalog behavior
+- HTTP transport may expose opt-in CORS origins
+
+When the process resolves as a non-controller node, MCP is not exposed at all. Non-controller nodes keep only the local node runtime and the `/v1/nodes/*` HTTP namespace.
+
+## Server Capabilities
+
+`labby serve` advertises these MCP capabilities:
+
+- tools
+- resources
+- prompts
+- completions
+- logging
+
+Those capabilities are enabled together on the same server surface. Capability
+support must reflect the running server, not a partial or hypothetical build.
+
+## HTTP Auth Surface
+
+When `labby serve` is active, `lab` exposes two auth modes:
+
+- `LABBY_AUTH_MODE=bearer`
+  `LABBY_MCP_HTTP_TOKEN` remains the only credential. This preserves existing HTTP deployments.
+- `LABBY_AUTH_MODE=oauth`
+  `lab` runs its own authorization server, brokers Google sign-in server-side, and issues `lab` access tokens plus refresh tokens only when upstream Google auth granted offline refresh capability.
+
+OAuth mode keeps Google access and refresh tokens inside the server. MCP clients only receive `lab` tokens.
+
+OAuth mode adds these unauthenticated discovery and auth endpoints alongside `/mcp`:
+
+- `/.well-known/oauth-authorization-server`
+- `/.well-known/oauth-protected-resource`
+- `/jwks`
+- `/register`
+- `/authorize`
+- `/auth/google/callback`
+- `/token`
+
+Dynamic client registration is intentionally restricted in this first launch:
+
+- redirect URIs must use loopback hosts only (`127.0.0.1`, `localhost`, `::1`)
+- `/revoke` is not implemented in this batch
+- refresh-token rotation is not implemented in this batch
+
+## HTTP Route Posture
+
+When HTTP serving is enabled, the route classes have separate auth contracts:
+
+- `/mcp` is the MCP streamable HTTP endpoint. If bearer or OAuth auth is configured, it requires token auth and does not accept browser sessions.
+- `/v1/*` is the product API. If bearer or OAuth auth is configured, it is protected even when browser UI auth is disabled for static assets.
+- Static web assets serve the Labby browser app shell. Disabling browser UI auth only changes browser-session behavior for the web UI; it is not a switch that disables `/v1` or `/mcp` auth.
+- `/dev/*` routes are development preview routes. They are authenticated whenever bearer or OAuth auth is configured. They are only open when the server is intentionally running with no auth configured, and that posture is local/dev only, not production.
+
+### Protected Route Gateway Subsets
+
+Protected MCP routes can either proxy one legacy backend target or expose a route-scoped Lab gateway subset. A gateway subset reuses the same `LabMcpServer`, `GatewayManager`, and `UpstreamPool` model as `/mcp`, but the route's OAuth resource and scopes define a narrower authorization boundary.
+
+```toml
+[[protected_mcp_routes]]
+name = "media"
+public_host = "mcp.example.com"
+public_path = "/media"
+scopes = ["mcp:media"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["github", "linear", "cortex"]
+services = ["gateway"]
+expose_code_mode = true
+```
+
+The route above exposes only the listed upstreams, the listed built-in Lab services, and Code Mode if `expose_code_mode = true`. The allowlist is enforced for `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, and `codemode`.
+
+The OAuth protected resource remains route-specific: `https://mcp.example.com/media`. A token for one protected route does not authorize another route with a different resource or scope set.
+
+Gateway-subset service mounts are built when `labby serve` starts. Add, update, or remove `gateway_subset` protected routes in config and restart the server so the route-specific MCP service and session manager are rebuilt. Live `gateway.protected_route.add/update/remove` calls reject `gateway_subset` targets with `restart_required` instead of leaving a stale scoped service mounted. Legacy single-target proxy routes continue to use the live protected-route resolver.
+
+## One Tool Per Service
+
+Each service exposes exactly one MCP tool named after the service.
+
+Examples:
+
+```json
+{ "tool": "marketplace", "input": { "action": "mcp.list", "params": { "search": "github", "limit": 10 } } }
+{ "tool": "stash", "input": { "action": "components.list", "params": {} } }
+```
+
+This avoids exploding the tool list into hundreds of tiny tools.
+
+Canonical service tool schema:
+
+- `name`: service name
+- `input.action`: required string
+- `input.params`: optional object
+
+## Action Model
+
+All service tools use the same input shape:
+
+- `action`: dotted action name such as `movie.search`
+- `params`: action-specific object
+
+Naming rule:
+
+- lowercase
+- dot-separated
+- `<resource>.<verb>`
+
+Examples:
+
+- `movie.search`
+- `queue.list`
+- `system.status`
+
+## Action Catalog
+
+Every service declares its action catalog via `ActionSpec` and `ParamSpec`.
+
+That catalog is the source of truth for:
+
+- dispatch validation
+- `help` action output
+- MCP resources
+- top-level aggregated discovery
+- destructive-op policy
+
+The complete generated action inventory is
+[generated/action-catalog.md](./generated/action-catalog.md). Its JSON contract
+is [generated/action-catalog.json](./generated/action-catalog.json) and is a
+global inventory, not the active runtime exposure policy for gateway-filtered
+MCP sessions.
+
+## Discovery
+
+There are three discovery surfaces:
+
+- per-service `help` action
+- per-service resources such as `lab://marketplace/actions`
+- top-level `lab://catalog`
+
+This means agents can discover the available tool shape without guessing.
+
+Per-service resource forms:
+
+- `lab://<service>/actions`
+
+The top-level discovery resource is:
+
+- `lab://catalog`
+
+Code Mode also exposes MCP App UI resources:
+
+- `ui://lab/code-mode/codemode`
+- `ui://lab/code-mode/history`
+
+Gateway administration exposes a separate app entry point to `lab:admin`
+callers:
+
+- tool: `add_server`
+- resource: `ui://lab/gateway/add-server`
+- tool: `gateway_status`
+- resource: `ui://lab/gateway/status`
+
+The Add Server app opens with no tool arguments. App-originated `test` and
+`create` calls delegate to the canonical `gateway.test` and `gateway.add`
+actions, so config validation, persistence, and runtime reconciliation stay in
+the gateway dispatch layer.
+
+`gateway_status` opens a read-only snapshot of the upstreams visible to the
+current route. Its `refresh` callback delegates to `gateway.list`; it does not
+bypass route, service-registry, manager, or scope checks. Both gateway apps are
+therefore advertised only when a gateway manager is mounted, the `gateway`
+service and required action are visible on the route, and the caller has
+`lab:admin`.
+
+MCP hosts commonly cache `tools/list` for the lifetime of a connection. Labby
+emits the matching list-changed notifications when the visible catalog changes,
+but a host that does not refresh on those notifications must reconnect. If a
+new app remains absent after reconnecting, confirm that the running Labby binary
+contains the change rather than relying on the source checkout or a newer local
+binary.
+
+These listed resources return `text/html;profile=mcp-app` and locked-down
+resource metadata for MCP Apps-capable hosts. The `codemode` tool also
+advertises the OpenAI Apps output template at
+`ui://lab/code-mode/codemode.skybridge`, served as `text/html+skybridge`; that
+skybridge resource is reached through tool metadata, not `resources/list`.
+`ui://` resource reads are handled before the local `lab://` discovery fallback
+so UI resources have exact lookup semantics. The Code Mode `ui://` response is
+self-contained HTML; browser/static build verification for the richer Next route
+lives under
+`apps/gateway-admin/app/mcp/code-mode/`.
+The history resource is process-local inspection state, not a durable audit log
+or a hard quota guarantee.
+
+The synthetic `codemode` tool is also the Code Mode snippet surface. Trusted
+local and `lab:admin` callers can discover snippet metadata with
+`codemode.search()`, inspect it with `codemode.describe("snippet.<name>")`, and
+run it with `codemode.run("<name>", input)`. Snippet source is resolved lazily
+inside the live gateway process and is not exposed through public history or
+discovery metadata. `snippets.promote` can turn a successful `codemode`
+`execution_id` into a user snippet; it is destructive/admin-only, writes
+plaintext executable content, and depends on the live in-memory gateway source
+store.
+
+For upstream MCP Apps, Code Mode keeps widget-bearing tools host-visible so the
+host can render their `_meta.ui.resourceUri` resources. Ordinary sibling tools
+remain hidden from `tools/list`, but a rendered app's `callServerTool` callback
+may call an exposed, non-destructive sibling tool on the same routable upstream.
+The exemption is scoped to callback callability and route scope; it does not
+expand the model-facing catalog.
+
+## Top-Level Catalog
+
+`lab://catalog` is generated from the same action metadata that powers
+per-service help. It must never be maintained as a second hand-written
+registry.
+
+Operator-facing surfaces such as `device` and `logs` are registered MCP
+services when they are present in the runtime registry.
+
+## Result Envelope
+
+All MCP tool responses follow a consistent envelope so callers do not need to parse arbitrary strings.
+
+The canonical envelope and error contract lives in [design/SERIALIZATION.md](./design/SERIALIZATION.md) and [ERRORS.md](./ERRORS.md).
+
+Success shape:
+
+- `ok: true`
+- `service`
+- `action`
+- `data`
+- optional `meta`
+
+Error shape:
+
+- `ok: false`
+- `service`
+- `action`
+- structured `error`
+
+The envelope is intended to be the only thing an MCP client needs to parse. Multi-block or prose-heavy responses are explicitly not the default contract.
+
+Code Mode `codemode` preserves its normal text JSON fallback for non-MCP-Apps
+clients and adds MCP `structuredContent` for the call inspector:
+
+- `code_mode_execute_trace` summarizes broker-observed runtime calls, redacted
+  params, status, duration, error kind, result shape, and log count.
+
+Structured traces are summary-only. They do not duplicate raw upstream result
+payloads, and raw tool params never leave the broker boundary. If
+`code_mode.trace_params = false`, params are omitted from traces entirely.
+
+When Code Mode mode advertises synthetic `codemode`, only that tool definition
+includes canonical `_meta.ui.resourceUri` metadata for MCP Apps and
+`openai/outputTemplate` metadata for OpenAI Apps. The v1 MCP App is read-only
+and does not initiate tools from the iframe.
+
+## Prompt Templates
+
+`lab` currently exposes two prompt templates:
+
+- `run-action`
+- `service-discover`
+
+`run-action` is the structured execution prompt. It includes:
+
+- the selected service description when the service exists in the live registry
+- the selected action description, destructive flag, return hint, and declared parameter list when the action exists
+- explicit mention of the built-in `help` and `schema` actions for follow-up discovery
+
+`service-discover` is the discovery prompt. It includes:
+
+- the selected service description, category, and status from the live registry
+- an inline action list with destructive/read-only labeling
+- explicit guidance on when to call `help` or `schema`
+
+Prompt text must be derived from the runtime registry and action metadata, not hand-maintained parallel docs.
+
+## Completions
+
+MCP completions are exposed for prompt and resource references, not arbitrary tool arguments.
+
+Current completion behavior:
+
+- prompt `service` arguments complete from the live service registry
+- `run-action.action` completes from the registry-wide sorted, deduplicated action-name cache
+- completion matching is simple prefix matching
+- unknown prompt or resource references return empty completion sets, not errors
+
+The cached global action-name list exists to avoid re-sorting the full action set on every completion request.
+
+## Logging
+
+The 2026-07-28 protocol removes `logging/setLevel`. Labby does not advertise
+the legacy logging capability or send `notifications/message`; structured
+server-side tracing remains the observability source of truth.
+
+## Structured Error Kinds
+
+Cross-service error vocabulary includes:
+
+- `unknown_action`
+- `unknown_subaction`
+- `missing_param`
+- `invalid_param`
+- `unknown_instance`
+- `auth_failed`
+- `not_found`
+- `rate_limited`
+- `validation_failed`
+- `network_error`
+- `server_error`
+- `decode_error`
+- `internal_error`
+
+Additional dispatch-level cases include:
+
+- `confirmation_required`
+
+The goal is self-correcting clients, not human-only diagnostics.
+
+The stable semantics for these kinds are defined in [ERRORS.md](./ERRORS.md). Do not invent transport-local variants.
+
+## Multi-Instance Services
+
+When a service has multiple configured instances, MCP actions accept `params.instance`.
+
+Rules:
+
+- the dispatcher handles instance lookup
+- service clients remain instance-agnostic
+- unknown labels return `unknown_instance` with valid labels
+
+## Destructive Operations
+
+Destructive operations are marked in `ActionSpec.destructive`.
+
+Lab defines a destructive action as one that can cause permanent loss of data
+that cannot be quickly and easily regenerated or recreated with minimal effort.
+This is narrower than "mutates state": clearing OAuth tokens, enabling or
+disabling a gateway, stopping a process, or removing a disposable container may
+change state, but those actions are not destructive when the state is easily
+recreated. Formatting a drive, deleting a source tree, hard-resetting away
+unrecoverable work, or deleting an entire irreplaceable media folder is
+destructive.
+
+That one flag drives:
+
+- MCP elicitation prompts
+- CLI confirmation behavior
+
+The same action metadata is used for both surfaces so the risk policy cannot drift.
+
+Representative destructive actions include:
+
+- container removal or stack teardown
+- media deletion with file removal
+- queue purge and history deletion
+- network device restart or forget flows
+
+## Elicitation Policy
+
+MCP destructive calls use 2026-07-28 multi round-trip requests (MRTR). When a
+client advertises form elicitation, the server returns `resultType:
+"input_required"` with an elicitation request in `inputRequests`; the client
+retries the original tool call with the answer in `inputResponses`. Labby does
+not create custom `requestState` or send an in-flight `elicitation/create` RPC.
+If elicitation is unavailable, the dispatcher executes normally and does not
+inspect `params.confirm`, headers, or CLI-style confirmation flags. A declined
+or invalid retry returns `confirmation_required`.
+
+Catalog-change notifications are bounded independently. Labby notifies MCP
+peers concurrently and waits up to 5 seconds per peer by default. Operators can
+set `[mcp].catalog_notification_timeout_ms` or
+`LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` to any value from `1` through
+`60000` milliseconds. Timed-out peers are pruned so one stuck client cannot
+stall tool/resource/prompt refresh notifications for other sessions.
+
+Prompts must include:
+
+- service
+- action
+- key params
+- plain-language risk description
+
+## Upstream MRTR
+
+Gateway-proxied upstream tool calls automatically use a dedicated,
+capability-mirroring connection when the downstream client advertises an MRTR
+input capability. Labby invokes the upstream with rmcp's one-round API and
+returns `input_required` unchanged. The downstream client supplies
+`inputResponses` by retrying the original request; Labby does not invoke the
+removed server-initiated elicitation, sampling, or roots callback flow.
+
+## Registry
+
+The runtime registry only exposes enabled services. Discovery reflects the running server, not the theoretical max build.
+
+That means:
+
+- compiled features matter
+- `[services].built_in_upstream_apis_enabled = false` removes built-in upstream API integrations on the next server start while preserving bootstrap/operator tools
+- `--services` filtering matters
+- `lab://catalog` only shows what is actually available
+
+The same catalog builder must feed:
+
+- `lab://catalog`
+- `lab://catalog`
+- CLI help/catalog rendering
+
+Generated/static docs (including `docs/generated/` artifacts) use `build_docs_registry()` and do not change based on local operator config. Runtime discovery reflects the config value at server start.
+
+## Settings Actions
+
+The `setup` Bootstrap service exposes two settings actions for reading and updating non-secret operator preferences:
+
+- `setup({ "action": "settings.state" })` — returns the current non-secret settings including the service runtime policy state, config file path, and surface configuration (MCP transport, auth mode, etc.). No secrets are returned; the response is safe to display verbatim.
+- `setup({ "action": "settings.update", "params": { "services": { "built_in_upstream_apis_enabled": false } } })` — writes the updated setting to `config.toml` (preserves comments and unknown keys) and applies the new policy to gateway discovery immediately. Returns the new settings state with `changed` and `restart_required` fields.
+
+`settings.update` is marked `destructive: true`. MCP confirms through elicitation when the client supports it; clients without elicitation run without a `confirm` parameter gate. Changes to `built_in_upstream_apis_enabled` take effect for gateway discovery immediately but require a `labby serve` restart for HTTP route mounting to reflect the new policy.
+
+## Upstream Tool Merging
+
+When upstream MCP servers are configured (see [UPSTREAM.md](./UPSTREAM.md)), their tools are merged into the `list_tools` response alongside built-in service tools.
+
+## Marketplace Artifact Actions
+
+The `marketplace` service exposes artifact fork, diff, patch, and update workflows via its normal single-tool `action` + `params` shape.
+
+Artifact actions:
+
+- `artifact.fork` returns `ForkResult`
+- `artifact.list` returns `ForkedPluginStatus[]`
+- `artifact.unfork` returns `UnforkResult` and is destructive
+- `artifact.reset` returns `ResetResult` and is destructive
+- `artifact.diff` returns `ArtifactDiffResult`
+- `artifact.patch` returns `PatchResult`
+- `artifact.update.check` returns `UpdateCheckResult[]`
+- `artifact.update.preview` returns `UpdatePreviewResult`
+- `artifact.update.apply` returns `ApplyResult` and is destructive
+- `artifact.merge.suggest` returns `MergeSuggestResult`
+- `artifact.config.set` returns `ConfigSetResult`
+
+Destructive artifact actions use the shared `ActionSpec.destructive` metadata. MCP clients confirm through elicitation when available; clients without elicitation run without a fake parameter gate. CLI callers use `-y` / `--yes`, and HTTP callers include `params.confirm: true`; the confirmation key is stripped before marketplace parsers and domain handlers run.
+
+`artifact.fork` accepts required `params.plugin_id` and optional `params.artifacts`. When `artifacts` is omitted, the action targets a plugin-level fork; otherwise each value must be a relative artifact path.
+
+```json
+{
+  "action": "artifact.fork",
+  "params": { "plugin_id": "demo-plugin@demo-market", "artifacts": ["agents/demo.md"] }
+}
+```
+
+`artifact.list` lists forked plugin artifact stashes. It accepts optional `params.plugin_id` to scope the result to a single plugin.
+
+`artifact.unfork` accepts required `params.plugin_id` and optional `params.artifacts`, and removes fork tracking metadata after confirmation.
+
+`artifact.reset` accepts required `params.plugin_id` and optional `params.artifacts`, and resets forked content after confirmation.
+
+`artifact.diff` accepts required `params.plugin_id` and optional `params.artifact_path`.
+
+`artifact.patch` accepts required `params.plugin_id`, `params.artifact_path`, and `params.patch`, plus optional `params.description`.
+
+`artifact.update.check` accepts an optional `params.plugin_id`. When omitted, it scans all forked `.stash.json` files under the artifact stash root. The response is an array of `{ plugin_id, current_version, available_version, update_available }` records. The checker runs a hardened `git fetch` for the owning marketplace source before reading fetched remote refs.
+
+```json
+{
+  "action": "artifact.update.check",
+  "params": { "plugin_id": "demo-plugin@demo-market" }
+}
+```
+
+`artifact.update.preview` accepts required `params.plugin_id`, computes a three-way update preview, and writes `.pending-update.json` for the later apply step.
+
+```json
+{
+  "action": "artifact.update.preview",
+  "params": { "plugin_id": "demo-plugin@demo-market" }
+}
+```
+
+The preview response includes `upstream_version`, `upstream_commit`, `clean_merges`, `conflicts`, `unchanged`, `upstream_only`, and `user_only`. Clean merges include display diffs where available, while conflicts include base/yours/theirs content and conflict line ranges.
+
+`artifact.update.apply` accepts required `params.plugin_id` and optional `params.strategy`, where strategy is one of `keep_mine`, `take_upstream`, `always_ask`, or `ai_suggest`. Because it is destructive, HTTP callers must also include `params.confirm: true`.
+
+`artifact.merge.suggest` accepts required `params.plugin_id` and `params.artifact_path`.
+
+`artifact.config.set` accepts required `params.plugin_id`, optional `params.strategy`, and optional `params.notify`.
+
+Rules:
+
+- built-in lab service tools always take precedence over upstream tools with the same name
+- cross-upstream duplicate tool names: first discovered wins, later tools are skipped with a warning
+- upstream tools with open circuit breakers (3+ consecutive failures) are excluded from `list_tools`
+- callers do not need to distinguish between built-in and upstream tools
+
+## Upstream Proxy Dispatch
+
+When `call_tool` receives a tool name that is not a built-in service, the dispatcher checks the upstream pool:
+
+- if the tool belongs to a healthy upstream, the call is forwarded
+- the upstream pool records success or failure for circuit breaker tracking
+- on failure, the response uses the `upstream_error` error kind
+- response size is capped at `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` (default 10 MB)
+
+## Resource Proxying
+
+Upstream resource proxying is opt-in per upstream (`proxy_resources = true`).
+
+Upstream resources are namespaced under `lab://upstream/{name}/{original_uri}` to avoid collisions with lab's own resources.
+
+`list_resources` and `read_resource` are proxied to enabled upstreams. Failed resource listings from individual upstreams are logged as warnings; other upstreams continue to serve.
+
+## Resources
+
+Primary resource surfaces:
+
+- `lab://catalog`
+- `lab://<service>/actions`
+- `lab://upstream/{name}/{original_uri}` (when upstream resource proxying is enabled)
+- `lab://gateway/servers` — synthetic index of upstream MCP servers connected to the
+  gateway (name, cached tool/prompt/resource counts, tools-capability health). See
+  [`docs/contracts/gateway-schema-resources.md`](../contracts/gateway-schema-resources.md).
+- `lab://gateway/<name>/schema` — synthetic per-upstream tool catalog
+  (name, description, input_schema, meta), filtered by the upstream's
+  `ToolExposurePolicy`. Lets agents inspect a server's full schema in
+  one read without paying a `code_mode` round-trip.
+
+These are generated from the same catalog data as tool-based help, with upstream resources appended at runtime.

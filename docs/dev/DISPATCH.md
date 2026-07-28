@@ -151,7 +151,7 @@ By default a service's dispatch module does not import or call another service's
 dispatch module. A small set of cross-service edges is explicitly sanctioned for
 composite operations that are intrinsically multi-service. Each sanctioned edge
 is also encoded in the `ALLOWED_EDGES` matrix in
-`crates/lab/tests/architecture_orchestrator.rs`, which fails the build if an
+`crates/labby/tests/architecture_orchestrator.rs`, which fails the build if an
 unlisted `dispatch::<a> → dispatch::<b>` import appears.
 
 Currently sanctioned edges:
@@ -161,13 +161,6 @@ Currently sanctioned edges:
   merge of `.env.draft` into `.env` on a clean health audit. The direction is
   strictly one-way: setup may depend on doctor; doctor must never depend on
   setup.
-- **`marketplace → stash`** — marketplace forks persist as first-class Stash
-  components. `marketplace/stash_bridge.rs` reuses the shared Stash store and
-  adopt path (`stash::store::StashStore` +
-  `stash::service::adopt_component_from_path`) so a fork lands as a
-  `StashOrigin::Marketplace` component instead of a marketplace-private store.
-  The direction is one-way: marketplace may depend on stash; stash must never
-  import or resolve marketplace.
 
 Surface adapters (CLI/MCP/HTTP) must not chain dispatch calls across services
 themselves — composite orchestration belongs in the shared dispatch layer so all
@@ -374,14 +367,15 @@ The end state must not preserve `CLI -> MCP` or `API -> MCP` dependencies.
 One acceptable layout is:
 
 ```text
-crates/lab/src/
+crates/labby/src/
   dispatch.rs
   dispatch/
-    context.rs
-    params.rs
+    helpers.rs
     gateway.rs
-    marketplace.rs
-    stash.rs
+    doctor/
+    server_logs/
+    setup/
+    snippets/
 ```
 
 The exact file breakdown may evolve, but every migrated service must start directory-first: thin `<service>.rs` entrypoint plus a `<service>/` directory with `catalog.rs`, `client.rs`, `params.rs`, and `dispatch.rs`, plus optional domain modules.

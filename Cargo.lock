@@ -1854,6 +1854,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-appender",
+ "tracing-core",
  "tracing-subscriber",
  "ulid",
  "unicode-normalization",
@@ -1963,7 +1964,6 @@ dependencies = [
  "futures",
  "hex",
  "jiff",
- "labby-apis",
  "labby-auth",
  "labby-codemode",
  "labby-openapi",
@@ -2029,7 +2029,6 @@ name = "labby-runtime"
 version = "1.7.0"
 dependencies = [
  "jiff",
- "labby-apis",
  "serde",
  "serde_json",
  "tempfile",

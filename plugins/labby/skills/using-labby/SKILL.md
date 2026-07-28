@@ -32,21 +32,19 @@ use service `help`/`schema` actions through MCP/API dispatch.
 | `labby doctor` | Audit config, auth, and runtime health |
 | `labby health` | Quick availability check |
 | `labby setup` | First-run/setup and plugin install flows |
-| `labby setup install-plugin <name>` | Install a Lab plugin |
-| `labby gateway ...` | Manage proxied upstream MCP gateways |
-| `labby marketplace ...` | Manage marketplace/plugin metadata |
-| `labby registry ...` | MCP Registry install/search when enabled |
+| `labby gateway ...` | Manage proxied upstream MCP gateways and Code Mode |
 | `labby gateway discover` | Scan local MCP client configs for upstream servers |
 | `labby gateway import [-y]` | Import discovered MCP servers into the gateway |
-| `labby logs ...` | Search/tail Lab logs |
-| `labby stash ...` | Component versioning/deployment metadata |
+| `labby server-logs ...` | Search local Labby server logs |
+| `labby snippets ...` | Manage Code Mode snippets |
+| `labby docs ...` | Generate and verify code-owned catalogs |
 
-Use only current top-level commands from `labby --help`. Prefer `setup`,
-`gateway`, `marketplace`, or `registry` for operator workflows.
+Use only current top-level commands from `labby --help`. Prefer `setup` and
+`gateway` for operator workflows.
 
 For command details and workflows, read:
 
-- `references/operator-cli.md` for top-level CLI, setup, docs, doctor, logs, deploy, and marketplace workflows.
+- `references/operator-cli.md` for top-level CLI, setup, docs, doctor, logs, and gateway workflows.
 - `references/gateway-operations.md` for gateway add/update/import/OAuth/protected routes/runtime operations.
 - `references/code-mode.md` for `codemode`, schemas, confirmations, limits, and error recovery.
 - `references/config-reference.md` for `~/.labby/.env`, `config.toml`, and mutable gateway settings.

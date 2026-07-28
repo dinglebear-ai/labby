@@ -17,7 +17,7 @@ running Labby directly on the host.
 |------|----------|-------------|
 | Incus system container | Normal self-hosted gateway deployment | `scripts/incus-bootstrap.sh --version vX.Y.Z` |
 | Bare metal / dedicated VM | The host itself is the gateway appliance | `labby setup --provision --yes` |
-| Docker | Development, compatibility, image smoke, ACP adapter work | `just dev-container` / `just dev-container-debug` |
+| Docker | Development, compatibility, and image smoke | `just dev-container` / `just dev-container-debug` |
 
 See [INCUS.md](./INCUS.md) for the full Incus runbook, bare-metal variant,
 Tailscale setup, rollback, and dependency diagnostics.

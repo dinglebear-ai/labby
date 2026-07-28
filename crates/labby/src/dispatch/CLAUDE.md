@@ -207,26 +207,15 @@ entry, not an MCP-specific adapter. Current examples:
 
 - `gateway` — `crate::dispatch::gateway::dispatch` (gated: `gateway`)
 - `doctor` — `crate::dispatch::doctor::dispatch` (always-on)
-- `marketplace` — `crate::dispatch::marketplace::dispatch` (gated: `marketplace`)
-- `acp` — `crate::dispatch::acp::dispatch::dispatch` (gated: `acp`)
-
 `mcp/services/` is the **exception layer**, not the default. An adapter lives
 there only when it needs MCP-specific behavior that cannot be represented in
 shared dispatch alone — for example:
 
-- `deploy` sets the MCP elicitation context (`McpContext`) before calling the
-  shared dispatch, a protocol detail meaningless to CLI/API.
 - `fs` filters `fs.preview` out of MCP discovery.
-- `nodes` owns MCP-only enrollment actions with no CLI/API equivalent.
 
 Do not add a `mcp/services/<service>.rs` shim for a service unless it genuinely
 needs MCP-specific behavior. A pass-through shim that only delegates to dispatch
 adds indirection without value.
-
-There is no `Category::Acp` variant. ACP uses `Category::Ai` (set in
-`labby_apis::acp::META`), which is coherent: ACP is the agent protocol layer
-that fronts AI providers. Adding a new category variant for a single service
-would violate the stable 10-variant catalog defined in `core/plugin.rs`.
 
 ## `fs` registration
 

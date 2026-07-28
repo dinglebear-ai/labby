@@ -65,18 +65,13 @@ const SHARED_NON_SERVICES: &[&str] = &[
 /// added service is forced through review (an unlisted service dir triggers a
 /// failure in `services_list_is_current`).
 const KNOWN_SERVICES: &[&str] = &[
-    "acp",
-    "deploy",
     "doctor",
     "fs",
     "gateway",
     "lab_admin",
-    "logs",
-    "marketplace",
     "server_logs",
     "setup",
     "snippets",
-    "stash",
 ];
 
 /// Allowed cross-service edges: `(consumer, permitted_sibling)`.
@@ -114,17 +109,6 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     //   relocation of code_mode to a top-level peer is DEFERRED, so this edge
     //   remains sanctioned for now.
     ("snippets", "gateway"),
-    // marketplace → gateway: marketplace.mcp.* delegates install/list to
-    //   gateway::dispatch and reads current_gateway_manager.
-    ("marketplace", "gateway"),
-    // marketplace → node: ACP install fan-out uses node::send to push installs
-    //   to fleet nodes.
-    ("marketplace", "node"),
-    // marketplace → stash: marketplace forks persist adopted plugin components
-    //   through the shared stash store/service (stash_bridge.rs reuses
-    //   stash::store::StashStore + stash::service::adopt_component_from_path)
-    //   instead of reimplementing component persistence.
-    ("marketplace", "stash"),
     // upstream → gateway: TEST-ONLY. upstream/pool unit tests construct a
     //   GatewayManager + GatewayRuntimeHandle to exercise the pool against a
     //   live manager. Production upstream code does not depend on gateway; the
@@ -138,10 +122,6 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
 /// each has a dotted canonical form added alongside it. Remove an entry here
 /// only when the legacy name itself is removed from the catalog.
 const DEPRECATED_ACTION_ALIASES: &[&str] = &[
-    // deploy — bare verbs; canonical dotted forms: deploy.plan/run/rollback.
-    "plan",
-    "run",
-    "rollback",
     // setup — flat snake_case; canonical dotted forms under setup.* added.
     "state",
     "bootstrap",

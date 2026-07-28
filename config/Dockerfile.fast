@@ -14,29 +14,18 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends nodejs zsh \
  && rm -rf /var/lib/apt/lists/*
 
-# Pre-install ACP adapters at known exact versions so each session spawn skips
-# the npx download/cache check and uses a deterministic binary. All versions
-# are pinned exact (no caret/tilde) — npm install acts like npm ci against
-# a fixed manifest. The claude-agent-sdk version determines which Claude Code
-# binary ships and which credentials.json format it accepts; claude-agent-acp
-# pins its transitive SDK with `=`, so the overrides entry is required to hold
-# the bundled Claude Code binary forward to match the host credential format.
-#
-# UPGRADE PROCEDURE (bump adapter + SDK together):
-#   1. Update all version strings in config/acp-adapters.package.json to the
-#      new exact versions. Always bump claude-agent-acp and claude-agent-sdk
-#      together — the overrides entry must match the direct dep.
-#   2. docker build . -f config/Dockerfile.fast --no-cache -t labby:test
-#   3. docker run --rm labby:test claude --version  # verify no SIGILL
-#   4. Commit config/acp-adapters.package.json + Dockerfile.fast together.
-COPY config/acp-adapters.package.json /opt/acp-adapters/package.json
-RUN cd /opt/acp-adapters \
+# Agent CLIs remain available for stdio MCP servers that invoke provider tools.
+# Install only the native CLIs, pinned exactly; ACP adapters are intentionally absent.
+RUN mkdir -p /opt/agent-clis \
+ && cd /opt/agent-clis \
+ && npm init -y >/dev/null \
  && npm install --omit=dev --no-audit --no-fund \
- && ln -sf /opt/acp-adapters/node_modules/.bin/claude /usr/local/bin/claude \
- && ln -sf /opt/acp-adapters/node_modules/.bin/claude-agent-acp /usr/local/bin/claude-agent-acp \
- && ln -sf /opt/acp-adapters/node_modules/.bin/codex /usr/local/bin/codex \
- && ln -sf /opt/acp-adapters/node_modules/.bin/codex-acp /usr/local/bin/codex-acp \
- && ln -sf /opt/acp-adapters/node_modules/.bin/gemini /usr/local/bin/gemini \
+      @anthropic-ai/claude-code@2.1.132 \
+      @openai/codex@0.130.0 \
+      @google/gemini-cli@0.40.0 \
+ && ln -sf /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
+ && ln -sf /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
+ && ln -sf /opt/agent-clis/node_modules/.bin/gemini /usr/local/bin/gemini \
  && npm cache clean --force
 
 # Python MCP servers commonly use `uvx` as their stdio launcher. Install uv

@@ -49,3 +49,17 @@ pub fn captured_logs(buf: &SharedBuf) -> String {
 /// let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
 /// ```
 pub static TRACING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Serializes tests that mutate the process-global MCP catalog coalescer and
+/// churn counters. The production state is intentionally process-global, so
+/// module-local locks do not prevent one parallel test from resetting another's
+/// pending notification or in-flight call gauge.
+pub static CATALOG_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Recomputes tracing callsite interest after a test installs a thread-local
+/// subscriber. Parallel tests may previously have cached a callsite as disabled
+/// under another subscriber, which otherwise makes deterministic log capture
+/// depend on suite order.
+pub fn rebuild_tracing_interest_cache() {
+    tracing_core::callsite::rebuild_interest_cache();
+}

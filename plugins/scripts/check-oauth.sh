@@ -152,16 +152,6 @@ do
     fi
 done
 
-# /v0.1/servers (mcpregistry feature, may not be compiled in)
-STATUS=$(http GET "$BASE_URL/v0.1/servers")
-if [ "$STATUS" = "401" ]; then
-    pass "GET /v0.1/servers → 401 (mcpregistry endpoint is protected)"
-elif [ "$STATUS" = "404" ]; then
-    skip "GET /v0.1/servers → 404 (mcpregistry feature not compiled)"
-else
-    fail "GET /v0.1/servers → $STATUS (expected 401 or 404)"
-fi
-
 # ── 4. Static bearer token ────────────────────────────────────────────────────
 if $HAS_STATIC_TOKEN; then
     header "Static bearer token authentication"
@@ -341,69 +331,7 @@ else
     skip "WWW-Authenticate header check (OAuth not configured)"
 fi
 
-# ── 8. Dev marketplace endpoint ───────────────────────────────────────────────
-header "Dev marketplace endpoint"
-
-# Must be public
-STATUS=$(http POST "$BASE_URL/dev/api/marketplace" \
-    -H "Content-Type: application/json" \
-    -d '{"action":"help"}')
-if [ "$STATUS" = "200" ] || [ "$STATUS" = "400" ] || [ "$STATUS" = "422" ]; then
-    pass "POST /dev/api/marketplace (read action, no auth) → $STATUS (not auth-blocked)"
-elif [ "$STATUS" = "401" ]; then
-    fail "POST /dev/api/marketplace → 401 (dev route must be unauthenticated)"
-fi
-
-# Must block mutating actions
-STATUS=$(http POST "$BASE_URL/dev/api/marketplace" \
-    -H "Content-Type: application/json" \
-    -d '{"action":"plugin.install"}')
-if [ "$STATUS" = "403" ]; then
-    KIND=$(json_field "kind")
-    if [ "$KIND" = "dev_preview_read_only" ]; then
-        pass "POST /dev/api/marketplace (mutating action) → 403 {kind:dev_preview_read_only}"
-    else
-        warn "POST /dev/api/marketplace (mutating action) → 403 but unexpected kind: $KIND"
-    fi
-elif [ "$STATUS" = "401" ]; then
-    fail "POST /dev/api/marketplace (mutating) → 401 (should be 403 — reached auth layer instead of dev guard)"
-else
-    fail "POST /dev/api/marketplace (mutating action) → $STATUS (expected 403)"
-fi
-
-# ── 9. Node self-registration endpoints (public) ──────────────────────────────
-header "Node self-registration endpoints (public)"
-
-for path in "/v1/nodes/hello" "/v1/fleet/hello"; do
-    STATUS=$(http POST "$BASE_URL$path" \
-        -H "Content-Type: application/json" \
-        -d '{"hostname":"test-node","role":"worker"}')
-    if [ "$STATUS" = "200" ] || [ "$STATUS" = "400" ] || [ "$STATUS" = "422" ]; then
-        pass "POST $path (no auth) → $STATUS (not auth-blocked — public self-registration)"
-    elif [ "$STATUS" = "401" ]; then
-        fail "POST $path → 401 (node hello must be public)"
-    elif [ "$STATUS" = "404" ]; then
-        warn "POST $path → 404 (fleet feature may not be mounted)"
-    else
-        warn "POST $path → $STATUS"
-    fi
-done
-
-# WebSocket upgrade endpoint — must be reachable (will fail on HTTP without Upgrade header)
-for path in "/v1/nodes/ws" "/v1/fleet/ws"; do
-    STATUS=$(http GET "$BASE_URL$path" -H "Accept: */*")
-    if [ "$STATUS" = "426" ] || [ "$STATUS" = "400" ] || [ "$STATUS" = "101" ]; then
-        pass "GET $path (no auth) → $STATUS (WebSocket endpoint reachable without auth)"
-    elif [ "$STATUS" = "401" ]; then
-        fail "GET $path → 401 (WebSocket upgrade endpoint must be public — internal auth happens after upgrade)"
-    elif [ "$STATUS" = "404" ]; then
-        warn "GET $path → 404 (fleet feature may not be mounted)"
-    else
-        warn "GET $path → $STATUS"
-    fi
-done
-
-# ── 10. Upstream OAuth callback (public) ─────────────────────────────────────
+# ── 8. Upstream OAuth callback (public) ──────────────────────────────────────
 header "Upstream OAuth browser callback (public)"
 
 # Probe without required query params — must get 400/422 (missing params), not 401.

@@ -108,8 +108,8 @@ COPY crates/ crates/
 # older than the stub rlibs built in the dep-cache layer above, so cargo's
 # fingerprint considers the real workspace sources "unchanged" and skips
 # rebuilding them — linking the empty stub crates (esp. the patched
-# agent-client-protocol, which is not cargo-cleaned) and producing hundreds of
-# "cannot find X in lab_apis/lab_auth/agent_client_protocol" errors. Touch the
+# workspace dependency stubs that Cargo did not clean) and producing hundreds of
+# "cannot find X in labby_apis/labby_auth" errors. Touch the
 # real sources so their mtimes are newer, forcing a from-source rebuild of every
 # workspace crate while keeping the cached third-party dependency artifacts.
 RUN find crates -type f -exec touch {} + \
@@ -124,8 +124,7 @@ LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
 
 # ca-certificates: reqwest uses rustls for TLS but still validates against the
 # system CA bundle — required for outbound HTTPS calls.
-# git: the marketplace feature shells out to `git` (fetch/show/rev-parse) for
-# its update/fork flow — without it that feature is dead in the shipped image.
+# git remains available for operator-managed stdio upstreams and setup workflows.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git gnupg \
  && mkdir -p /etc/apt/keyrings \
@@ -137,9 +136,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends nodejs zsh \
  && rm -rf /var/lib/apt/lists/*
 
-# Agent CLIs used by ACP adapters and by stdio MCP servers that shell out to
-# provider tools. Keep these deterministic so container behavior matches the
-# host credential/runtime format expected by local development.
+# Agent CLIs used by stdio MCP servers that shell out to provider tools.
+# Keep these deterministic so container behavior matches local development.
 RUN mkdir -p /opt/agent-clis \
  && cd /opt/agent-clis \
  && npm init -y >/dev/null \

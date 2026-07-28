@@ -87,15 +87,9 @@
 # ── Workspace ────────────────────────────────────────────────────────────────
 
 [workspace]
-# Root directory for Lab-managed files (fs browsing, stash workspaces).
-# No env var override — config-file only.
-# root = "~/.labby/stash"                  # default: ~/.labby/stash
-
-# ── MCP Registry ─────────────────────────────────────────────────────────────
-
-[mcpregistry]
-# Upstream MCP Registry base URL.
-# url = "https://registry.modelcontextprotocol.io"   # default
+# Root directory for the supported filesystem browser.
+# No env var override; config-file only.
+# root = "~/.labby/workspace"              # default: ~/.labby/workspace
 
 # ── Gateway Spawn Guard ───────────────────────────────────────────────────────
 #
@@ -111,17 +105,6 @@
 # Skip the allowlist entirely. Operator takes full responsibility for
 # any command that appears in the gateway config.
 # disable_spawn_guard = false                             # default: false
-
-# ── Node Runtime ─────────────────────────────────────────────────────────────
-
-[node]
-# Hostname or IP of the master lab instance this node should phone home to.
-# Determines whether this device operates as master or non-master.
-# No env var override — config-file only.
-# controller = "http://node-a:8765"
-
-# How many days to retain node logs in the SQLite store.
-# log_retention_days = 30                # default: 30
 
 # ── Local Log Store ───────────────────────────────────────────────────────────
 
@@ -180,9 +163,9 @@
 # ── OAuth Relay Machines ─────────────────────────────────────────────────────
 
 # Full callback base URL for a named remote OAuth listener.
-# [oauth.machines.node-a]
-# target_url = "http://100.64.0.10:38935/callback/node-a"
-# description = "Node A Claude callback target"
+# [oauth.machines.workstation]
+# target_url = "http://100.64.0.10:38935/callback/workstation"
+# description = "Workstation OAuth callback target"
 # default_port = 38935
 
 # ── Auth ─────────────────────────────────────────────────────────────────────

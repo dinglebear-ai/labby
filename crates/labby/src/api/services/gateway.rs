@@ -550,8 +550,8 @@ mod tests {
             .seed_config_unchecked_for_tests(
                 LabConfig {
                     virtual_servers: vec![VirtualServerConfig {
-                        id: "stale-registry".to_string(),
-                        service: "mcpregistry".to_string(),
+                        id: "stale-service".to_string(),
+                        service: "missing-service".to_string(),
                         enabled: true,
                         surfaces: VirtualServerSurfacesConfig {
                             mcp: true,
@@ -573,7 +573,7 @@ mod tests {
             .await
             .expect("body");
         let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-        assert_eq!(payload[0]["id"], "stale-registry");
+        assert_eq!(payload[0]["id"], "stale-service");
         assert_eq!(payload[0]["warnings"][0]["code"], "unknown_service");
     }
 
@@ -584,8 +584,8 @@ mod tests {
             &path,
             &LabConfig {
                 virtual_servers: vec![VirtualServerConfig {
-                    id: "stale-registry".to_string(),
-                    service: "mcpregistry".to_string(),
+                    id: "stale-service".to_string(),
+                    service: "missing-service".to_string(),
                     enabled: true,
                     surfaces: VirtualServerSurfacesConfig {
                         mcp: true,
@@ -617,7 +617,7 @@ mod tests {
         let migrated = load_gateway_config(&path).expect("load migrated config");
         assert!(migrated.virtual_servers.is_empty());
         assert_eq!(migrated.quarantined_virtual_servers.len(), 1);
-        assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-registry");
+        assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-service");
     }
 
     #[tokio::test]

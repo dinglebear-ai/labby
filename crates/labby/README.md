@@ -13,7 +13,7 @@ Pure SDK/data types live in `crates/labby-apis`. HTTP/OAuth middleware lives in
 ```bash
 cargo build -p labby --all-features
 cargo build -p labby --no-default-features --features gateway
-cargo build -p labby --no-default-features --features marketplace
+cargo build -p labby --no-default-features --features fs
 ```
 
 ## Run
@@ -23,7 +23,7 @@ labby --help
 labby mcp
 labby serve
 labby doctor
-labby marketplace mcp.list --params '{"search":"github","limit":10}'
+labby gateway list
 ```
 
 `labby serve` hosts the product HTTP API, streamable HTTP MCP at `/mcp`, auth
@@ -34,14 +34,11 @@ routes, and the Labby web UI when exported assets are available.
 Supported standalone product slices:
 
 - `gateway`
-- `marketplace`
 - `fs`
-- `deploy`
-- `acp_registry`
 
-`mcpregistry` is a compatibility alias for `marketplace`. Base services such as
-`doctor`, `setup`, `nodes`, `logs`, `stash`, and `acp` are intentionally compiled
-without individual feature flags.
+Always-on operator services are `doctor`, `server_logs`, `setup`, and
+`snippets`. The `lab_admin` service is available only when explicitly enabled
+at runtime.
 
 ## Dispatch
 

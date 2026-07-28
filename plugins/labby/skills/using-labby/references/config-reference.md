@@ -10,8 +10,6 @@ Runtime gateway settings live in `config.toml`; verify exact fields against
 ```
 LAB_MCP_HTTP_TOKEN            # static bearer token for Labby HTTP/MCP
 LAB_GW_<NAME>_AUTH_HEADER     # auth header for one gateway upstream
-LAB_ACP_DB                    # ACP database path
-LAB_ACP_HMAC_SECRET           # ACP permission-signing key
 ```
 
 Use `docs/generated/env-reference.md` for current Labby-owned env vars. For

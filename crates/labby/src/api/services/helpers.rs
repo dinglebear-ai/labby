@@ -573,6 +573,7 @@ mod tests {
                     .without_time(),
             );
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -687,6 +688,7 @@ mod tests {
                     .without_time(),
             );
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

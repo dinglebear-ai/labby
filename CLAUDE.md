@@ -2,9 +2,9 @@
 
 ## What is this?
 
-`labby` is a pluggable homelab control plane and MCP gateway in Rust. One binary exposes CLI, MCP (stdio + streamable HTTP), HTTP API, and Labby web UI surfaces over the same product dispatch layer. The "Slim labby gateway host" pass removed the `marketplace`/`deploy`/`acp_registry`/`acp`/`nodes`/`stash`/`logs`/`device` services and their `labby` crate features entirely (that logic now lives only in `labby-runtime`/`labby-apis`, exercised via `extracted-crate-slices` in CI, not as standalone `labby` product slices). MCP dispatch uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
+`labby` is a Rust MCP gateway and homelab control plane. One binary exposes CLI, MCP (stdio + streamable HTTP + Unix socket), HTTP API, and Labby web UI surfaces over the same product dispatch layer. The retired ACP, Registry-browser, Marketplace-product, Fleet, Deploy-product, Stash, and device-runtime implementations are deleted from current source, manifests, packaging, and CI. MCP dispatch uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
 
-The dispatch modules that actually exist today are `crates/labby/src/dispatch/{doctor,fs,gateway,lab_admin,server_logs,setup,snippets}`. `doctor`, `setup`, and `snippets` (gateway-gated) are always-on bootstrap services. The CLI surface is `serve`, `mcp`, `doctor`, `docs`, `health`, `setup`, `incus`, `update`, `completions`, `gateway`, `snippets`, `oauth`, and `help` — there is no `marketplace`, `stash`, `nodes`, `deploy`, or `acp` command. `docs/generated/cli-help.md` is the authoritative snapshot; regenerate rather than hand-editing command lists.
+The dispatch modules that actually exist today are `crates/labby/src/dispatch/{doctor,fs,gateway,lab_admin,server_logs,setup,snippets}`. `doctor`, `server_logs`, `setup`, and `snippets` (gateway-gated) are always-on operator services, while `lab_admin` is runtime-conditional. The CLI surface is `serve`, `mcp`, `doctor`, `docs`, `health`, `logs`, `setup`, `incus`, `update`, `completions`, `gateway`, `snippets`, `oauth`, and `help` — there is no `marketplace`, `stash`, `nodes`, `deploy`, or `acp` command. `docs/generated/cli-help.md` is the authoritative snapshot; regenerate rather than hand-editing command lists.
 
 Start with `docs/README.md` for the docs index. The topic docs in `docs/` are the source of truth; if this file disagrees with them, this file is stale.
 
@@ -25,9 +25,9 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 | Config / secrets | `~/.labby/config.toml` and `~/.labby/.env`; `$LABBY_HOME` overrides the `~/.labby` root |
 | Worktrees | This checkout carries a busy `.worktrees/` (currently 9 active worktrees). Run `git worktree list` before any workspace-level edit, and never assume the main checkout is the only consumer of `target/`. |
 
-**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --workspace --all-features`, `cargo nextest run --workspace --all-features`, and the equivalent `just` commands as the default truth. The only standalone product feature slices left on `labby` are `gateway` and `fs` (CI job `feature-slices`, matrix `[gateway, fs]`, built with `--no-default-features --features <slice>`); `gateway` is the flagship slice and additionally runs its own nextest suite. Use slices to catch accidental cross-slice coupling, but check warning/removal decisions against the all-features build before deleting shared helpers — per-slice dead-code warnings are an expected consequence of disabling features.
+**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --workspace --all-features`, `cargo nextest run --workspace --all-features`, and the equivalent `just` commands as the default truth. The only standalone product feature slices left on `labby` are `gateway` and `fs` (CI job `feature-slices`, matrix `[gateway, fs]`, built with `--no-default-features --features <slice>`); `gateway` is the flagship slice and additionally runs its own nextest suite. Use slices to catch accidental cross-slice coupling, but check warning/removal decisions against the all-features build before deleting shared helpers — per-slice dead-code warnings are an expected consequence of disabling features. Never reintroduce retired feature flags as compatibility aliases.
 
-The full `labby` feature list is `all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd"]`, with `default = ["gateway-host"]` and `gateway-host = ["gateway"]`. Feature-gated base capabilities that used to be `labby` product slices (`marketplace`, `deploy`, `acp_registry`, `acp`, `nodes`, `stash`) now live only in `labby-runtime`/`labby-apis` and are exercised by the `extracted-crate-slices` CI job, not by `labby` features.
+The full `labby` feature list is `all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd"]`, with `default = ["gateway-host"]` and `gateway-host = ["gateway"]`.
 
 **Service onboarding rule.** When bringing a service online, follow the dispatch/module layout in `docs/dev/SERVICE_ONBOARDING.md`, update generated docs, then validate with the all-features test/build path. The older `labby scaffold service` / `labby audit onboarding` workflow is not part of the current CLI surface unless those commands are restored in code.
 
@@ -92,15 +92,8 @@ labby/
 │   │       ├── lib.rs                # re-exports, feature gates
 │   │       ├── core/                 # HttpClient, Auth, errors, traits; action/plugin/plugin_ui/ssrf
 │   │       │                         # are thin re-exports of labby-primitives
-│   │       ├── acp/                   # ACP provider/session primitives
-│   │       ├── acp_registry/          # SDK-only ACP Registry client
-│   │       ├── mcpregistry/           # SDK-only MCP Registry v0.1 client
-│   │       ├── marketplace/            # marketplace pure data types
-│   │       ├── deploy/                # Deployment/runner primitives
-│   │       ├── device_runtime/        # ALWAYS-ON: local device runtime introspection
 │   │       ├── doctor/                # doctor pure data/client helpers
-│   │       ├── setup/                 # setup pure data/client helpers
-│   │       └── stash/                 # stash pure data types
+│   │       └── setup/                 # setup pure data/client helpers
 │   │
 │   ├── labby-auth/                   # HTTP/OAuth auth middleware and storage
 │   ├── labby-runtime/                # ToolError, config DTOs, path/redaction/backoff helpers
@@ -155,14 +148,6 @@ labby/
 └── CLAUDE.md
 ```
 
-### ACP SDK
-
-The ACP SDK (`agent-client-protocol`) is consumed directly from crates.io at `=0.13.1` with the `unstable` feature. No local vendor patch is in use.
-
-The key API used for model/config discovery is `session_config_options()` — it reads `SessionConfigOption` entries from the raw `NewSessionResponse` before `attach_session` consumes it. Session start bypasses `build_session().start_session()` and calls `send_request_to(Agent, NewSessionRequest::new(&*cwd))` directly to intercept the response. Model switching uses `SetSessionConfigOptionRequest::new(session_id, "model", model_id)`.
-
-When upgrading: pin to an exact version (`=X.Y.Z`), verify the `unstable` feature still compiles, and re-check `session_config_options()` behavior against the new SDK's `SessionConfigOption` / `SessionConfigKind::Select` API.
-
 ## Key Patterns
 
 ### Per-Service Module Structure (in `labby-apis`)
@@ -213,7 +198,7 @@ marketplace({ "action": "schema", "params": { "action": "mcp.install" } })  // p
   request's `inputResponses`.
 - **CLI:** requires `-y` / `--yes` to run non-interactively. `--no-confirm` and `--dry-run` are also honored.
 
-Mark actions `destructive: true` whenever they delete, overwrite, spawn local processes, or push state that can't be trivially reversed (`gateway.test`, `gateway.remove`, `marketplace.mcp.install`, `stash.component.export`, etc.).
+Mark actions `destructive: true` whenever they delete, overwrite, spawn local processes, or push state that cannot be trivially reversed, including `gateway.test`, `gateway.remove`, protected-route mutation, and setup repair actions.
 
 ### Structured error envelopes
 
@@ -431,9 +416,10 @@ linger, `%h` unit paths, or `~/.local/bin/labby` as the supported self-hosted
 gateway service model. Preserve a user-service fallback only if it is explicit
 and clearly non-default.
 
-The Docker Compose stack is still supported only for explicit dev-container,
-prod-like image smoke, and Docker-specific ACP adapter work. Use
-`just dev-container` or `just dev-container-debug` when testing that path.
+The Docker Compose stack is supported only for explicit dev-container and
+prod-like image smoke. The image may include pinned provider CLIs for stdio
+upstreams, but it must not reintroduce retired protocol adapters or product state.
+Use `just dev-container` or `just dev-container-debug` when testing that path.
 
 ### Bearer auth in dev (driving the UI with agent-browser)
 

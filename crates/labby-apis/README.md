@@ -6,24 +6,14 @@ as `clap`, `rmcp`, `axum`, or `anyhow`.
 
 ## Current Modules
 
-Always compiled:
+Current modules:
 
 - `core`
-- `acp`
-- `device_runtime`
 - `doctor`
-- `marketplace`
 - `setup`
-- `stash`
 
-Optional SDK modules:
-
-- `deploy`
-- `mcpregistry`
-- `acp_registry`
-
-`all` enables the optional SDK modules above. `default` enables no optional SDK
-modules.
+The `all` feature is retained as an empty compatibility aggregate. The crate has
+no optional product SDK modules.
 
 ## Contracts
 

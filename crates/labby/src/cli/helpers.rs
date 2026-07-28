@@ -179,6 +179,7 @@ mod tests {
             );
 
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -225,6 +226,7 @@ mod tests {
             );
 
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

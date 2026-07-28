@@ -2,25 +2,21 @@
 //!
 //! This is the single source of truth for SSRF host/IP filtering across the
 //! workspace. It lives in this dependency-free leaf crate (rather than in
-//! `labby-apis` or `labby-gateway`) so every caller — the ACP archive
-//! installer in `labby-apis`, and the gateway dispatch paths in
-//! `labby-gateway` — can depend on the same policy without a directional
+//! `labby-apis` or `labby-gateway`) so supported outbound clients and
+//! gateway dispatch paths can depend on one policy without a directional
 //! constraint on who may depend on whom.
 //!
 //! It is a *preflight* guard, not a complete DNS-rebinding defense. Any code
 //! that performs an outbound request must still avoid unsafe redirects and
-//! must re-validate the connected peer where it can (see the ACP installer in
-//! `labby_apis::acp_registry::installer`, which pins a single validated
-//! address and re-checks the peer IP post-connect).
+//! re-validate the connected peer where the transport exposes that detail.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Reason an externally supplied URL was rejected by the SSRF preflight.
 ///
 /// Carries no caller secrets — messages are built from already-redacted URL
-/// forms / bare host strings. Wrapped into surface error types (`ToolError`,
-/// `AcpInstallerError`) by callers; the
-/// stable error `kind` for all variants is `ssrf_blocked` except
+/// forms / bare host strings. Wrapped into surface error types by callers;
+/// the stable error `kind` for all variants is `ssrf_blocked` except
 /// [`SsrfError::InvalidUrl`] which is `invalid_param`.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SsrfError {

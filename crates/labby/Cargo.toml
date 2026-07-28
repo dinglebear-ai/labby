@@ -1,6 +1,6 @@
 [package]
 name = "labby"
-description = "Rust homelab control plane and Labby MCP gateway for agents, plugins, registries, stash workspaces, setup, logs, and fleet operations."
+description = "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -121,6 +121,7 @@ labby-winjob = { path = "../labby-winjob" }
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
 wiremock.workspace = true
 proptest = "1"
+tracing-core = "0.1"
 
 [lib]
 path = "src/lib.rs"

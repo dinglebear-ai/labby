@@ -6,9 +6,9 @@ tabs, and `.mcp.json` patching from a TUI; that surface is currently deferred.
 
 Current operator surfaces are:
 
-- CLI: `labby marketplace`, `labby gateway`, `labby setup`, `labby stash`,
-  `labby logs`, `labby nodes`, `labby doctor`, `labby health`, and feature-gated
-  `labby deploy`
+- CLI: `labby gateway`, `labby setup`, `labby server-logs`,
+  `labby snippets`, `labby doctor`, `labby health`, `labby docs`, and host/runtime
+  helpers such as `labby incus` and `labby oauth`
 - MCP: `labby mcp` and hosted `/mcp`
 - HTTP/Web: `labby serve`
 - Labby web UI for gateway, settings, docs, snippets, usage, and design-system

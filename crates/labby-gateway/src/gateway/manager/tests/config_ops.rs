@@ -8,36 +8,23 @@ use labby_runtime::gateway_config::{VirtualServerConfig, VirtualServerSurfacesCo
 
 use super::*;
 
-// CWE-532 secret-redaction guard, re-fixtured post-gateway-pivot.
-//
-// Why not the original manager end-to-end path: `set_service_config` only accepts a
-// service that `registry::service_meta` resolves to a `PluginMeta`, and post-pivot
-// that arm resolves ONLY `deploy` — which declares zero env fields. No
-// `service_meta`-resolvable service exposes a `secret: true` field, so the secret
-// branch of `service_config_view` is unreachable through `set_service_config`
-// without a production change (adding e.g. `acp` to `service_meta`).
-//
-// Instead we exercise the actual redaction unit — `service_config_view`, the
-// projection that `set_service_config` returns verbatim — directly against the kept
-// `acp` service's real `PluginMeta`, which declares both a secret field
-// (`LABBY_ACP_HMAC_SECRET`, `secret: true`) and a non-secret one (`LABBY_ACP_DB`). This
-// is the function that enforces the redaction contract; pinning it here keeps the
-// CWE-532 guard live in CI.
+// CWE-532 guard for targeted secret redaction in service configuration views.
+// The local fixture declares one public URL and one secret token.
 #[test]
 fn service_config_get_redacts_secret_values() {
     let mut values = HashMap::new();
-    values.insert("LABBY_ACP_DB".to_string(), "/tmp/acp.db".to_string());
     values.insert(
-        "LABBY_ACP_HMAC_SECRET".to_string(),
-        "super-secret".to_string(),
+        "FIXTURE_URL".to_string(),
+        "http://127.0.0.1:9999".to_string(),
     );
+    values.insert("FIXTURE_TOKEN".to_string(), "super-secret".to_string());
 
-    let config = crate::gateway::projection::service_config_view(&labby_apis::acp::META, &values);
+    let config = crate::gateway::projection::service_config_view(&FIXTURE_SERVICE_META, &values);
 
     let secret = config
         .fields
         .iter()
-        .find(|field| field.name == "LABBY_ACP_HMAC_SECRET")
+        .find(|field| field.name == "FIXTURE_TOKEN")
         .expect("secret field");
     assert!(secret.present);
     assert!(secret.secret);
@@ -51,11 +38,14 @@ fn service_config_get_redacts_secret_values() {
     let non_secret = config
         .fields
         .iter()
-        .find(|field| field.name == "LABBY_ACP_DB")
+        .find(|field| field.name == "FIXTURE_URL")
         .expect("non-secret field");
     assert!(non_secret.present);
     assert!(!non_secret.secret);
-    assert_eq!(non_secret.value_preview.as_deref(), Some("/tmp/acp.db"));
+    assert_eq!(
+        non_secret.value_preview.as_deref(),
+        Some("http://127.0.0.1:9999")
+    );
 }
 
 // Re-fixtured post-gateway-pivot via `service_config_view` directly against the
@@ -65,15 +55,15 @@ fn service_config_get_redacts_secret_values() {
 #[test]
 fn service_config_get_treats_empty_values_as_not_present() {
     let mut values = HashMap::new();
-    values.insert("LABBY_ACP_HMAC_SECRET".to_string(), "token".to_string());
-    values.insert("LABBY_ACP_DB".to_string(), String::new());
+    values.insert("FIXTURE_TOKEN".to_string(), "token".to_string());
+    values.insert("FIXTURE_URL".to_string(), String::new());
 
-    let config = crate::gateway::projection::service_config_view(&labby_apis::acp::META, &values);
+    let config = crate::gateway::projection::service_config_view(&FIXTURE_SERVICE_META, &values);
 
     let db = config
         .fields
         .iter()
-        .find(|field| field.name == "LABBY_ACP_DB")
+        .find(|field| field.name == "FIXTURE_URL")
         .expect("db field");
     assert!(!db.present);
     assert_eq!(db.value_preview, None);
@@ -117,10 +107,13 @@ async fn service_config_get_marks_service_unconfigured_when_required_fields_are_
 #[test]
 fn service_config_get_marks_service_configured_when_required_fields_are_present() {
     let mut values = HashMap::new();
-    values.insert("LABBY_ACP_DB".to_string(), "/tmp/acp.db".to_string());
-    values.insert("LABBY_ACP_HMAC_SECRET".to_string(), "token".to_string());
+    values.insert(
+        "FIXTURE_URL".to_string(),
+        "http://127.0.0.1:9999".to_string(),
+    );
+    values.insert("FIXTURE_TOKEN".to_string(), "token".to_string());
 
-    let config = crate::gateway::projection::service_config_view(&labby_apis::acp::META, &values);
+    let config = crate::gateway::projection::service_config_view(&FIXTURE_SERVICE_META, &values);
 
     assert!(config.configured);
 }

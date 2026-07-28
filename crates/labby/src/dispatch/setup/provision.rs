@@ -14,7 +14,6 @@ use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
-use crate::config::{ConfigScalarPatch, ConfigScalarValue};
 use crate::dispatch::error::ToolError;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_mins(10);
@@ -86,7 +85,6 @@ enum ActionKind {
     TailscaleJoin,
     CacheCleanup,
     AndroidSdk,
-    ControllerConfig,
     HostService,
 }
 
@@ -253,11 +251,6 @@ fn build_plan(skip_deps: bool) -> Vec<ProvisionAction> {
     }
     actions.push(ProvisionAction {
         privilege: Privilege::Root,
-        label: Cow::Borrowed("set Labby node runtime role to controller"),
-        kind: ActionKind::ControllerConfig,
-    });
-    actions.push(ProvisionAction {
-        privilege: Privilege::Root,
         label: Cow::Borrowed(
             "write /etc/systemd/system/labby.service and systemctl enable --now labby",
         ),
@@ -317,7 +310,6 @@ impl ProvisionAction {
             ActionKind::TailscaleJoin => command_success("tailscale", &["ip", "-4"]).await,
             ActionKind::CacheCleanup => caches_cleaned().await,
             ActionKind::AndroidSdk => command_success("adb", &["version"]).await,
-            ActionKind::ControllerConfig => controller_config_ready().await,
             ActionKind::HostService => super::host_service::installed_and_ready().await,
         }
     }
@@ -365,9 +357,6 @@ impl ProvisionAction {
             }
             ActionKind::AndroidSdk => {
                 run_image_provision_action("android-sdk").await?;
-            }
-            ActionKind::ControllerConfig => {
-                ensure_controller_config().await?;
             }
             ActionKind::HostService => {
                 drop(run_checked("systemctl", &["reset-failed", "labby.service"]).await);
@@ -541,72 +530,6 @@ async fn caches_cleaned() -> Result<bool, ToolError> {
         return Ok(false);
     }
     Ok(true)
-}
-
-async fn controller_config_ready() -> Result<bool, ToolError> {
-    let path = provision_config_path();
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(io_error(err)),
-    };
-    let cfg = toml::from_str::<crate::config::LabConfig>(&raw).map_err(|err| ToolError::Sdk {
-        sdk_kind: "invalid_config".into(),
-        message: format!("failed to parse {}: {err}", path.display()),
-    })?;
-    let Some(node) = cfg.node else {
-        return Ok(false);
-    };
-    Ok(
-        node.role == Some(crate::config::NodeRuntimeRole::Controller)
-            && node
-                .controller
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty()),
-    )
-}
-
-async fn ensure_controller_config() -> Result<(), ToolError> {
-    let hostname = run_command("hostname", &[]).await?;
-    if !hostname.status.success() {
-        return Err(ToolError::Sdk {
-            sdk_kind: "internal_error".into(),
-            message: "failed to read container hostname for controller config".into(),
-        });
-    }
-    let controller = hostname.stdout.trim();
-    let controller = if controller.is_empty() {
-        "labby"
-    } else {
-        controller
-    };
-    let path = provision_config_path();
-    crate::config::patch_config_scalars_checked(
-        &path,
-        &[
-            ConfigScalarPatch::new(
-                "node.role",
-                ConfigScalarValue::String("controller".to_string()),
-            ),
-            ConfigScalarPatch::new(
-                "node.controller",
-                ConfigScalarValue::String(controller.to_string()),
-            ),
-        ],
-        &[],
-    )
-    .map_err(|err| ToolError::Sdk {
-        sdk_kind: "invalid_config".into(),
-        message: format!("failed to update {}: {err}", path.display()),
-    })?;
-    let path_arg = path.to_string_lossy().to_string();
-    run_checked("chown", &[&format!("{LABBY_USER}:{LABBY_USER}"), &path_arg]).await?;
-    Ok(())
-}
-
-fn provision_config_path() -> PathBuf {
-    crate::config::config_toml_path()
-        .unwrap_or_else(|| PathBuf::from(format!("{LABBY_HOME}/.config/labby/config.toml")))
 }
 
 fn apt_floor() -> Vec<&'static str> {
@@ -1076,7 +999,6 @@ mod tests {
         assert!(text.contains("[labby] install crgx (user-space)"));
         assert!(text.contains("[root] clean apt + npm caches (image bloat)"));
         assert!(text.contains("[root] install tailscale client"));
-        assert!(text.contains("[root] set Labby node runtime role to controller"));
         assert!(text.contains("[root] write /etc/systemd/system/labby.service"));
         assert!(text.contains("It will NOT:"));
         assert!(text.contains("install or modify Incus"));

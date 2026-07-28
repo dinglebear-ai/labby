@@ -1,361 +1,90 @@
-# Transport Configuration
+# Transport Contract
 
-Lab supports three MCP transports: stdio, streamable HTTP over TCP, and streamable HTTP over a Unix-domain socket. All three expose the same server behavior; transport choice does not change the catalog, schemas, envelopes, or destructive-op policy.
+Labby supports three MCP transports over one execution layer: stdio, streamable
+HTTP over TCP, and streamable HTTP over a Unix-domain socket. Transport choice
+does not change the catalog, schemas, envelopes, or destructive-op policy.
 
 ## Stdio
 
-Stdio is the explicit child-process transport. Use it for Claude Desktop, IDE extensions, and any MCP client that launches lab as a child process.
-
-No authentication is required — security is provided by process-level isolation. The parent process owns the stdio pipes and controls access.
+Run:
 
 ```bash
 labby mcp
-labby mcp --services marketplace
 ```
 
-No network listener is opened. No host, port, or auth configuration is needed.
+Stdio is intended for local editor and desktop clients. Protocol messages use
+stdin/stdout; logs must never be written to stdout.
 
-This shortcut is contractual: code, CLI help, tests, and operator docs must all
-agree that `labby mcp` is the stdio child-process entrypoint unless changed intentionally in one
-coordinated update.
+## Streamable HTTP
 
-## Streamable HTTP (Default)
-
-The HTTP transport mounts the MCP protocol at `/mcp` inside the axum HTTP server, alongside the
-REST API at `/v1/*`. When exported Labby assets are available, the same server also hosts the web UI
-from `/`.
+Run:
 
 ```bash
-labby serve
-labby serve --services gateway,marketplace
+labby serve --host 127.0.0.1 --port 8765
 ```
 
-### Configuration
+The native MCP endpoint is `/mcp`. The hosted runtime also mounts supported
+`/v1/*` APIs, auth routes, health routes, protected MCP routes, and static web
+assets when available.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LABBY_MCP_TRANSPORT` | `http` | Transport selection: `http`, `stdio`, or `unix_socket`. |
-| `LABBY_MCP_HTTP_HOST` | `127.0.0.1` | Bind address. |
-| `LABBY_MCP_HTTP_PORT` | `8765` | Bind port. |
-| `LABBY_MCP_HTTP_TOKEN` | — | Static bearer token for authentication. |
-| `LABBY_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
-| `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` | `5000` | Per-peer deadline for MCP catalog-change notifications. |
-| `LABBY_PUBLIC_URL` | — | Public URL of this lab instance. Its host is added to the allowed-host list in OAuth mode. |
-| `LABBY_CORS_ORIGINS` | — | Comma-separated CORS origin allowlist. |
-| `LABBY_WEB_ASSETS_DIR` | auto-detect | Optional path to exported Labby assets served by `labby serve`. |
+The generated route inventory in
+[../generated/api-routes.md](../generated/api-routes.md) is authoritative.
 
-Config TOML equivalents (env vars take precedence):
+## Streamable HTTP Over A Unix-Domain Socket
 
-```toml
-[mcp]
-transport = "http"
-host = "127.0.0.1"
-port = 8765
-catalog_notification_timeout_ms = 5000
-
-[web]
-assets_dir = "/path/to/labby/out"
-```
-
-CLI flags take precedence over env vars, which take precedence over config.toml:
-
-1. `--host`, `--port`, and the legacy hidden `--transport` flag (CLI)
-2. `LABBY_MCP_HTTP_HOST`, `LABBY_MCP_HTTP_PORT`, `LABBY_MCP_TRANSPORT` (env)
-3. `mcp.host`, `mcp.port`, `mcp.transport` (config.toml)
-4. Defaults: `127.0.0.1`, `8765`, `http`
-
-## Streamable HTTP over Unix-Domain Sockets
-
-The `unix_socket` transport serves the same Axum application as HTTP/TCP, including `/mcp`, `/v1/*`, health routes, OAuth routes, and the web UI when assets are available. It is intended for same-host or shared-container-namespace communication. It is not a cross-node transport.
+`transport = "unix_socket"` serves the same router and middleware stack as
+HTTP/TCP. It is a same-host (or shared-namespace) transport, not a cross-node
+one.
 
 ```toml
 [mcp]
 transport = "unix_socket"
 socket_path = "/run/labby/labby.sock"
 socket_mode = "0660"
-socket_uid = 1000
-socket_gid = 1000
 peer_uid = 1000
-# peer_gid = 1000
 ```
 
-| Variable | Config key | Default | Description |
-|----------|------------|---------|-------------|
-| `LABBY_MCP_UNIX_SOCKET_PATH` | `mcp.socket_path` | — | Absolute filesystem path, or Linux abstract `@name` notation. Required for `unix_socket`. |
-| `LABBY_MCP_UNIX_SOCKET_MODE` | `mcp.socket_mode` | `0660` | Filesystem socket permissions in octal. Not valid for abstract sockets. |
-| `LABBY_MCP_UNIX_SOCKET_UID` | `mcp.socket_uid` | current owner | Optional filesystem socket owner UID. |
-| `LABBY_MCP_UNIX_SOCKET_GID` | `mcp.socket_gid` | current group | Optional filesystem socket owner GID. |
-| `LABBY_MCP_UNIX_PEER_UID` | `mcp.peer_uid` | — | Optional Linux kernel peer UID allowlist. |
-| `LABBY_MCP_UNIX_PEER_GID` | `mcp.peer_gid` | — | Optional Linux kernel peer GID allowlist. |
-
-Rules:
-
-- Environment values override their `[mcp]` equivalents.
-- Filesystem listeners require an absolute path. Every existing directory in the path must be a real directory owned by root or the listener process's effective UID. Group/world-writable ancestors are rejected unless they are sticky directories such as `/tmp`; missing components are created with a maximum requested mode of `0755`, further restricted by the process umask.
-- Filesystem listeners default to mode `0660`. Labby binds inside a private `0700` staging directory, applies the configured socket mode and optional owner/group there, then atomically publishes the already-hardened socket at the configured path.
-- Startup removes only a verified stale socket. Active sockets, symlinks, regular files, and paths that change during verification are never removed. SIGTERM, Ctrl-C, and normal server exit drop the listener and remove only the exact socket inode created by this process.
-- Linux abstract sockets use `@name`. They have no filesystem owner or mode, so `socket_mode`, `socket_uid`, and `socket_gid` must be omitted.
-- Bearer and OAuth authentication continue to work over the socket. A Unix listener without bearer, OAuth, or peer-credential authorization is refused at startup.
-- Peer-credential mode is Linux-only. The accepted stream's kernel UID/GID is checked before HTTP is served and becomes a local principal such as `unix-peer:uid=1000:gid=1000`. Client-supplied headers are never trusted as peer identity.
-- Kernel credentials are interpreted in the listener process's user namespace. Use peer-credential authorization only when both endpoints share a trusted UID/GID mapping; user-namespaced containers with overlapping numeric IDs require an additional trusted boundary or bearer/OAuth instead.
-- Peer-credential authorization cannot be combined with bearer or OAuth. It is intended for infrastructure and non-user-scoped services because it does not preserve per-user OAuth subject forwarding.
-- The validated directory chain is the operating-system namespace boundary for path replacement. Labby also verifies socket inode identity before stale cleanup and shutdown removal, and refuses to operate when the configured path resolves to an unsafe entry.
-
-### Stateless MCP lifecycle
-
-Labby's downstream MCP endpoint implements only the `2026-07-28` stateless
-lifecycle. Clients open with `server/discover` and include the negotiated
-protocol version, client identity, and client capabilities in request `_meta`.
-The endpoint does not accept legacy `initialize` /
-`notifications/initialized` requests and does not issue or use
-`Mcp-Session-Id`.
-
-The gateway-to-upstream boundary attempts the modern `server/discover` lifecycle first. For recognized lifecycle-compatibility failures it performs one bounded fallback to legacy `initialize`. HTTP/TCP and Unix-socket upstreams use the same lifecycle policy.
-
-### DNS Rebinding Protection
-
-The HTTP transport validates the `Host` header against an allowed hosts list. This prevents DNS rebinding attacks where a malicious page redirects its hostname to `127.0.0.1`.
-
-Allowed hosts are assembled from:
-
-1. **Always included:** `localhost`, `127.0.0.1`, `::1`.
-2. **`LABBY_MCP_ALLOWED_HOSTS`** — comma-separated additional hostnames.
-3. **`LABBY_PUBLIC_URL`** — when OAuth mode is enabled, the hostname is automatically extracted and added.
-
-Wildcard (`*`) is rejected with a warning — it would disable Host header validation entirely.
-
-### Authentication
-
-Protected routes (`/v1/*` and `/mcp`) require authentication when a static bearer token or OAuth mode is configured. Unauthenticated routes (`/health`, `/ready`, and OAuth metadata endpoints) are always accessible. The complete generated route inventory, including auth/runtime posture, lives in [generated/api-routes.md](../generated/api-routes.md).
-
-The Labby web UI shell is served publicly when web assets are enabled. The UI then calls the same-origin
-API and MCP routes on the same port.
-
-Auth methods (see [OAUTH.md](../runtime/OAUTH.md) for details):
-
-- **Static bearer token** via `LABBY_MCP_HTTP_TOKEN` — constant-time comparison.
-- **OAuth mode** via `LABBY_AUTH_MODE=oauth`, `LABBY_PUBLIC_URL`, and Google client credentials.
-- Both can be active simultaneously. Static bearer is checked first.
-- If neither auth method is configured, HTTP/TCP permits local loopback operation only; non-loopback binds are rejected by the safety gate below. A Unix listener additionally requires bearer, OAuth, or configured kernel peer credentials.
-
-Auth-adjacent routes mounted on this server, including `/auth/session`,
-`/auth/logout`, `/authorize`, `/auth/google/callback`, and `/token`, remain
-part of the same request-id and structured-error contract even when their
-payloads are not normal `/v1/{service}` dispatches.
-
-### Connecting As A Generic HTTP MCP Client
-
-This is the common case: any MCP-capable app (Raycast, Warp, Claude.ai,
-Claude Desktop, or anything else that speaks streamable HTTP MCP) pointed
-directly at `/mcp` over HTTPS. **It needs only the URL and one auth
-credential — nothing else to install or configure:**
-
-- **Bearer mode**: the client's MCP config takes the server URL
-  (`https://labby.example.com/mcp`) plus an `Authorization: Bearer
-  <LABBY_MCP_HTTP_TOKEN>` header. That's the entire setup.
-- **OAuth mode**: the client's MCP config takes just the URL; the client
-  discovers the authorization/token endpoints via the standard
-  `/.well-known/oauth-authorization-server` metadata and drives the user
-  through the Google login in a browser. No token to copy anywhere.
-
-No `~/.labby/.env`, no local `config.toml`, no `labby` binary on that
-machine at all — the client is a completely independent MCP implementation
-talking straight to the HTTP API.
-
-**This is a different scenario from "remote gateway CLI usage" and "remote
-MCP stdio usage"** (`docs/runtime/ENV.md`) and the CLI-vs-live-daemon /
-stdio-bridge sections in `docs/services/GATEWAY.md`. Those cover running
-the actual `labby` binary itself somewhere other than the daemon's host —
-e.g. `labby gateway add` from a laptop, or `labby serve --transport stdio`
-bridging into the daemon for an editor that wants to spawn a local process
-rather than connect over HTTP directly. Those need `LABBY_MCP_HTTP_TOKEN` and
-`LABBY_PUBLIC_URL`/`LABBY_MCP_GATEWAY_URL` in `~/.labby/.env` specifically
-*because* they're a copy of the `labby` binary trying to locate and
-authenticate to a different one. A generic external HTTP MCP client never
-runs any `labby` code at all, so none of that applies to it.
-
-### Reverse Proxy Requirements For MCP Routes
-
-Streamable HTTP MCP routes are long-lived protocol routes, not ordinary JSON
-REST calls. This applies to Lab's own `/mcp` route and to Gateway-managed
-protected MCP routes such as `https://mcp.example.com/telemetry`.
-
-Any SWAG/nginx, Traefik, or tunnel layer in front of Lab must:
-
-- preserve `Host`
-- set `X-Forwarded-Proto` to the original client scheme
-- forward `Authorization`, `Accept`, `Content-Type`, `Mcp-Protocol-Version`,
-  and every SEP-2243 `Mcp-*` routing header
-- avoid request buffering and response buffering on the MCP route
-- avoid compression on the MCP route
-- use read/write/idle timeouts that allow long-lived SSE streams
-- keep the public path intact until Lab receives the request
-
-Gateway-managed protected MCP routes also need the matching route-specific
-metadata path to reach Lab, for example:
-
-```text
-/.well-known/oauth-protected-resource/telemetry
-```
-
-Do not let a shared OAuth discovery include or edge auth layer swallow those
-path-suffixed metadata requests. Lab must generate the route-specific metadata
-and 401 `WWW-Authenticate` challenge so clients bind tokens to the public route
-resource, not to the private backend URL.
-
-See [GATEWAY.md](../services/GATEWAY.md#gateway-managed-protected-mcp-routes)
-for SWAG/nginx, Traefik, generic tunnel examples, and curl verification.
-
-### Safety Gate
-
-Lab refuses to bind on a non-localhost address without auth:
-
-```text
-refusing to bind HTTP on 0.0.0.0:8765 without authentication.
-Set LABBY_MCP_HTTP_TOKEN or LABBY_AUTH_MODE=oauth, or bind to 127.0.0.1 for local-only access.
-```
-
-Loopback addresses (`127.0.0.1`, `::1`, `[::1]`, `localhost`) are exempt.
-
-## Middleware Stack (Hosted Streamable HTTP)
-
-HTTP/TCP and Unix-domain listeners serve the same router and middleware stack. The hosted server applies middleware in this order (outermost to innermost):
-
-| Layer | Description |
-|-------|-------------|
-| `SetRequestId` | Generates a UUID v4 `x-request-id` for every request that lacks one. |
-| `TraceLayer` | Tracing spans per request with method, path, status, and latency. |
-| `PropagateRequestId` | Echoes `x-request-id` back in the response header. |
-| `TimeoutLayer` | 30-second request timeout. Returns 504 on expiry. |
-| `CompressionLayer` | gzip response compression. |
-| `CorsLayer` | Explicit origin allowlist (see below). |
-| Auth middleware | Bearer token and/or OAuth JWT validation. Applied to protected routes only. |
-
-### CORS
-
-CORS is configured with an explicit origin allowlist. It is not permissive by default.
-
-Always allowed (loopback with common dev ports):
-
-- `http://localhost`, `http://localhost:3000`, `http://localhost:5173`, `http://localhost:8080`
-- `http://127.0.0.1`, `http://127.0.0.1:3000`, `http://127.0.0.1:5173`, `http://127.0.0.1:8080`
-- `http://[::1]`
-
-Additional origins via `LABBY_CORS_ORIGINS` (comma-separated):
-
-```bash
-LABBY_CORS_ORIGINS=https://lab.example.com,https://admin.example.com
-```
-
-Unparseable entries are logged as warnings and skipped.
-
-Allowed methods: GET, POST, OPTIONS.
-Allowed headers: `Authorization`, `Content-Type`, `x-request-id`.
-
-## Route Layout
-
-The HTTP router is role-aware:
-
-- the controller exposes the full operator control plane
-- a non-controller node keeps only `/health`, `/ready`, and `/v1/nodes/*`
-- non-controller nodes do not expose `/mcp`, `/v1/{service}`, `/v1/gateway`, `/v1/openapi.json`, `/v1/docs`, or the Web UI
-
-When HTTP transport is active, the generated route inventory is the canonical
-path/auth matrix:
-
-- [generated/api-routes.md](../generated/api-routes.md)
-- [generated/api-routes.json](../generated/api-routes.json)
-- [generated/openapi.json](../generated/openapi.json)
-
-## Example: Local Development
-
-```bash
-# Bind to localhost, no auth needed when neither static bearer nor OAuth is configured
-labby serve
-# → listening on 127.0.0.1:8765
-
-curl http://localhost:8765/health
-curl http://localhost:8765/v1/marketplace -d '{"action":"help"}'
-# if exported Labby assets exist:
-open http://localhost:8765/
-```
-
-## Example: Network Deployment
-
-```bash
-# In ~/.labby/.env
-LABBY_MCP_TRANSPORT=http
-LABBY_MCP_HTTP_HOST=0.0.0.0
-LABBY_MCP_HTTP_PORT=8765
-LABBY_MCP_HTTP_TOKEN=$(openssl rand -hex 32)
-LABBY_PUBLIC_URL=https://lab.example.com
-
-labby serve
-```
-
-```bash
-curl -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" \
-     https://lab.example.com/v1/marketplace \
-     -d '{"action":"help"}'
-```
-
-## Gateway Trust Model
-
-Gateway admin actions (`/v1/gateway/*`, `labby mcp` → `gateway` tool) manage the upstream MCP
-server registry.  **They can spawn arbitrary local stdio commands with labby's full process
-environment.**  The implications are non-negotiable:
-
-### HTTP surface (`labby serve`)
-
-1. **`/v1/gateway` is never mounted when auth is not configured.**
-   `api/router.rs` refuses to mount the gateway route group when neither a static bearer token
-   (`LABBY_MCP_HTTP_TOKEN`) nor OAuth state (`LABBY_AUTH_MODE=oauth`) is configured.  The startup
-   warning emitted is:
-   ```
-   gateway service routes not mounted: HTTP API has no auth configured
-   ```
-
-2. **All gateway actions except `help` and `schema` require the `lab:admin` scope.**
-   This is enforced by `ActionSpec.requires_admin` in `dispatch/gateway/catalog.rs` — the
-   single source of truth.  Both the API handler (`api/services/gateway.rs`) and the MCP
-   gate (`mcp/context.rs`) read directly from this catalog field; there are no separate
-   bespoke match arms that can drift out of sync.
-
-3. **Requests with no `AuthContext` are denied admin actions.**
-   On the HTTP surface, a missing `Authorization` header yields no `AuthContext` in request
-   extensions.  The gateway handler treats this as "no admin scope" and returns `403 Forbidden`.
-   (`is_none_or(...)` would have allowed unauthenticated requests — it is NOT used here.)
-
-4. **`~/.labby/.env` permissions are tightened at startup.**
-   `cli/serve.rs` calls `heal_env_file_permissions(&env_path)` during gateway manager
-   initialization to chmod `.env` and any `.env.bak.*` sibling files to `0600`, correcting
-   any file that was created without strict permissions.
-
-### MCP surface (`labby mcp`)
-
-Stdio transport has no per-request auth by design — the parent process owns the pipes and
-controls access.  `None` auth means the caller is the orchestrating process (e.g. Claude Code)
-and is trusted as an operator.  Gateway admin actions are therefore allowed on stdio transport
-without a scope check.
-
-**Do not expose `labby mcp` through a network proxy without front-side authentication.**
-An unauthenticated network-accessible stdio process can install arbitrary-command upstreams
-via `gateway.add`.
-
-### What operators must ensure
-
-| Scenario | Required |
-|----------|----------|
-| `labby serve` on LAN / internet | `LABBY_MCP_HTTP_TOKEN` or `LABBY_AUTH_MODE=oauth` |
-| `labby serve` on loopback only | Auth still recommended; loopback-bind is the fallback guard |
-| `labby mcp` over network proxy | Front-side auth on the proxy, not in lab |
-| `labby mcp` as child process | No extra config — process isolation is the boundary |
-
-## Related Docs
-
-- [OAUTH.md](../runtime/OAUTH.md) — bearer vs OAuth mode, registration flow, and JWT validation
-- [UPSTREAM.md](../services/UPSTREAM.md) — upstream MCP proxy
-- [CONFIG.md](../runtime/CONFIG.md) — env var and config.toml loading
-- [MCP.md](./MCP.md) — MCP protocol surface
-- [RMCP.md](./RMCP.md) — RMCP SDK integration contract
-- [DEVICE_RUNTIME.md](../runtime/DEVICE_RUNTIME.md) — controller/node runtime model
+- Filesystem listeners require an absolute path whose existing directory chain
+  contains only real directories owned by root or the process effective UID.
+  Non-sticky group/world-writable ancestors are rejected.
+- Labby binds inside a private `0700` staging directory, applies the configured
+  mode and ownership there, then atomically publishes the hardened socket.
+  Startup reclaims only a verified stale socket; shutdown removes only the exact
+  inode this process created.
+- Linux abstract sockets use `@name` and have no filesystem owner or mode, so
+  `socket_mode`, `socket_uid`, and `socket_gid` must be omitted.
+- Bearer and OAuth continue to work over the socket. Linux peer-credential
+  authorization (`peer_uid` / `peer_gid`) is an alternative that cannot be
+  combined with bearer or OAuth, and is interpreted in the listener's user
+  namespace. A Unix listener with none of the three is refused at startup.
+
+## Authentication
+
+- Operator/admin routes use the configured bearer or OAuth mode.
+- The downstream MCP endpoint implements only the stateless `2026-07-28`
+  lifecycle. The gateway-to-upstream boundary attempts `server/discover` first
+  and performs one bounded fallback to legacy `initialize` for recognized
+  lifecycle-compatibility failures; HTTP/TCP and Unix-socket upstreams share
+  that policy.
+- Protected MCP routes validate route-specific OAuth resources and scopes.
+- OAuth metadata and callback routes are public by protocol design.
+- Browser session cookies are separate from MCP authorization headers.
+
+## Reverse Proxy
+
+A reverse proxy must preserve the request host/scheme information used to build
+OAuth metadata and callback URLs, pass authorization headers, support streaming
+responses, and avoid buffering Streamable HTTP traffic. See
+[../runtime/REVERSE_PROXY.md](../runtime/REVERSE_PROXY.md).
+
+## Host Validation
+
+State-changing same-origin web/API requests are subject to host validation and
+CSRF protections. Do not make a route public merely to simplify browser calls.
+
+## Unsupported Legacy Shapes
+
+The hosted runtime does not expose Fleet/node WebSockets, node enrollment APIs,
+Marketplace preview routes, ACP session endpoints, Stash APIs, or MCP Registry
+compatibility endpoints. Their historical transport contracts are archived under
+[../references/retired-labby](../references/retired-labby/).

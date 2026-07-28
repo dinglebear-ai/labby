@@ -1,291 +1,53 @@
-# CLI
+# CLI Surface
 
-The CLI is the human-facing surface for `lab`. It must remain thin, predictable, and strongly aligned with the underlying service clients.
-
-## Design Rules
-
-- command parsing belongs in `lab`
-- service logic belongs in `lab-apis`
-- output formatting belongs in the output layer
-- destructive commands require explicit confirmation
+The `labby` binary is the operator entrypoint for the supported gateway product.
+Generated command help in [../generated/cli-help.md](../generated/cli-help.md) is
+authoritative when this summary and the binary disagree.
 
 ## Top-Level Commands
 
-The CLI includes:
+- `labby serve` starts the hosted HTTP runtime, including the API, native MCP
+  endpoint, auth routes, and exported web assets.
+- `labby mcp` starts the local stdio MCP transport.
+- `labby gateway` manages upstream MCP servers, protected routes, OAuth, reload,
+  discovery, and Code Mode configuration.
+- `labby setup` performs first-run setup, provisioning, plugin hooks, and host
+  service operations.
+- `labby doctor` audits supported configuration and runtime health.
+- `labby snippets` manages executable Code Mode snippets.
+- `labby docs` generates and verifies code-owned documentation artifacts.
+- `labby health` performs a quick local health check.
+- `labby oauth` runs local OAuth callback-relay helpers.
+- `labby incus` manages the supported Incus gateway container.
+- `labby update` installs a newer Labby release.
+- `labby completions` emits shell completion scripts.
 
-- `mcp`
-- `nodes`
-- `logs`
-- `serve`
-- `gateway` when compiled with `gateway`
-- `marketplace` when compiled with `marketplace`
-- `stash`
-- `setup`
-- `health`
-- `doctor`
-- `oauth`
-- `docs`
-- `completions`
-- `deploy` when compiled with `deploy`
+The runtime-conditional `lab_admin` service is exposed only when explicitly
+enabled. The optional `fs` capability is an MCP/API/web service rather than a
+standalone CLI command group.
 
-Representative command tree:
+## Shared Action Shape
 
-```text
-labby
-├── mcp
-├── nodes
-├── logs
-├── serve
-├── gateway
-├── marketplace
-├── stash
-├── setup
-├── health
-├── doctor
-├── oauth
-├── docs
-├── completions
-└── deploy
+Service-oriented commands ultimately dispatch the same action contract used by
+MCP and HTTP:
+
+```json
+{ "action": "gateway.list", "params": {} }
 ```
 
-## Service Actions
-
-Service actions are exposed through the shared catalog and the MCP/API dispatch
-surfaces. Do not add per-service CLI command trees unless the service needs a
-genuine human-operator workflow that cannot be represented by the shared action
-model.
-
-Examples:
-
-- `labby help`
-- `labby marketplace mcp.meta.set --params '{"name":"io.github.user/server","metadata":{"curation":{"featured":true},"trust":{"reviewed":true}}}'`
-- MCP/API: `stash({ "action": "components.list", "params": {} })`
-
-The CLI must not invent a second semantic model that drifts from MCP, HTTP, or the SDK.
-
-## Output Formats
-
-Supported output modes are:
-
-- human-readable terminal output
-- JSON
-
-The canonical serialization and output-boundary contract lives in [design/SERIALIZATION.md](./design/SERIALIZATION.md).
-The canonical human-readable output language and color policy live in [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md).
-
-Rules:
-
-- human-readable output is the default for interactive TTY use
-- JSON is the machine-readable mode for pipes and automation
-- `lab-apis` types stay presentation-free
-- CLI wrappers or local row types handle human rendering
-
-## Color and TTY Behavior
-
-- use `owo-colors`
-- disable color automatically when stdout is not a TTY
-- honor `NO_COLOR`
-- expose a shared `--color=auto|plain|color` policy rather than per-command color toggles
-
-Examples:
-
-```bash
-# default interactive behavior
-labby doctor
-
-# force plain text even on a TTY
-labby doctor --color=plain
-
-# force styling for pagers like less -R
-labby doctor --color=color | less -R
-
-# pipes stay plain by default in auto mode
-labby doctor | jq
-
-# NO_COLOR still disables styling unless the user explicitly forces color
-NO_COLOR=1 labby doctor
-```
-
-Rules:
-
-- `--json` remains unstyled machine output
-- `--color=auto` is the default and must remain pipe-safe
-- `--color=plain` is the deterministic script and CI escape hatch
-- `--color=color` is the explicit operator override
+Use `--json` for machine-readable output. Human output must remain a rendering
+adapter over the same typed result, not a separate execution path.
 
 ## Destructive Operations
 
-Destructive commands use interactive confirmation by default.
+Actions marked destructive in the service catalog require explicit operator
+confirmation. Non-interactive CLI use passes `-y` or `--yes`. Do not add
+surface-local destructive classifications; `ActionSpec.destructive` is the
+shared source of truth.
 
-Relevant flags:
+## Supported Product Boundary
 
-- `-y` / `--yes`
-- `--no-confirm`
-- `--dry-run`
-
-Policy knobs may also exist via env, but non-interactive shells must still refuse destructive work unless confirmation has been made explicit.
-
-The CLI reads the same destructive flag from `ActionSpec` that MCP uses for elicitation.
-
-## Multi-Instance Services
-
-The CLI must support explicit instance selection where relevant:
-
-```bash
-labby help --all
-```
-
-If there is a clear default instance, that can be used implicitly. Otherwise the command must fail loudly and ask for an instance.
-
-## `labby doctor`
-
-`labby doctor` is a read-only audit command.
-
-It checks:
-
-- env presence
-- URL validity
-- connectivity
-- auth
-- service version visibility
-
-It must support:
-
-- all services
-- one service
-- machine-readable output
-- a quicker validation mode
-
-Exit semantics:
-
-- `0` for OK
-- `1` for warnings
-- `2` for failures
-
-## `labby health`
-
-`labby health` is the product-level health-check surface. It is distinct from repo-level shell helpers.
-
-It must expose normalized service health results using the shared `ServiceStatus` model.
-
-## `labby serve`
-
-`labby serve` is the node runtime entrypoint on every fleet machine.
-
-Rules:
-
-- local hostname plus `[node].controller` decide whether the process is controller or non-controller
-- the controller exposes the Web UI, MCP, `/v1/{service}`, `/v1/gateway`, and `/v1/nodes/*`
-- a non-controller node exposes only `/health`, `/ready`, and `/v1/nodes/*`
-- non-controller startup queues metadata, then opens a long-lived fleet websocket session to the controller
-
-## `labby nodes`
-
-`labby nodes` is the fleet inventory command group. It routes to the configured controller.
-
-Commands:
-
-- `labby nodes list`
-- `labby nodes get <node_id>`
-- `labby nodes enrollments list`
-- `labby nodes enrollments approve <node_id> [--note <text>]`
-- `labby nodes enrollments deny <node_id> [--reason <text>]`
-
-## Install and Uninstall
-
-Top-level `labby install`, `labby uninstall`, `labby init`, and
-`labby registry` are not part of the supported CLI surface. Use the owning
-surfaces instead:
-
-- `labby setup` for first-run and local environment repair flows
-- `labby setup install-plugin <name>` for Lab plugin installation
-- `labby marketplace ...` for marketplace-managed plugin operations
-- `labby marketplace mcp.*` actions for MCP Registry search/install flows when
-  the `marketplace` feature is enabled
-
-These flows are operationally sensitive and must use atomic file writes and backup behavior.
-
-Expected `.mcp.json` behavior:
-
-1. locate the file
-2. parse or initialize it
-3. compute the updated server/plugin list
-4. support dry-run diffing
-5. back up before mutation
-6. write atomically
-7. verify the rewritten file parses
-
-## Marketplace MCP metadata
-
-Lab-owned MCP Registry metadata now lives under the unified Marketplace surface.
-
-Commands:
-
-- `labby marketplace mcp.meta.get --params '{"name":"io.github.user/server","version":"latest"}'`
-- `labby marketplace mcp.meta.set --params '{"name":"io.github.user/server","metadata":{"curation":{"featured":true},"trust":{"reviewed":true}}}'`
-- `labby marketplace mcp.meta.delete --params '{"name":"io.github.user/server","version":"latest"}'`
-
-Rules:
-
-- use Marketplace `mcp.*` actions instead of a standalone `mcpregistry` command
-- pass metadata as JSON params; validation remains in the shared dispatch layer
-- the CLI sets a stable audit actor label when writing metadata
-- metadata validation is enforced by the shared dispatch layer, not by ad hoc CLI checks
-
-See [MCPREGISTRY_METADATA.md](./MCPREGISTRY_METADATA.md) for the contract and allowed fields.
-
-## Shell Completions
-
-The CLI must generate completions rather than hand-maintaining shell-specific assets.
-
-## `labby oauth relay-local`
-
-`labby oauth relay-local` is a browser-side transport helper for OAuth clients that redirect to a
-loopback callback but keep the real OAuth listener on another machine.
-
-Supported forms:
-
-```bash
-labby oauth relay-local --machine node-a --port 38935
-labby oauth relay-local --forward-base http://node.internal.example:38935/callback/node-a --port 38935
-```
-
-Flags:
-
-| Flag | Description |
-| --- | --- |
-| `--machine <id>` | Resolve the forwarding target from `[oauth.machines.<id>]` in `config.toml`. |
-| `--forward-base <url>` | Forward to an explicit callback base URL without a named machine config. |
-| `--port <port>` | Loopback port to bind on the browser machine. Required. |
-| `--json` | Global flag; emit JSON instead of human-readable tables where applicable. |
-
-Rules:
-
-- exactly one of `--machine` or `--forward-base` is required
-- the listener binds only to `127.0.0.1:<port>`
-- `--machine` resolves the target from `[oauth.machines.*]` in `config.toml`
-- `--forward-base` is for ad hoc use when no named machine exists yet
-- the command only forwards the final callback request; it does not mint tokens or run PKCE logic
-- the remote callback listener must already be active before the browser callback arrives
-
-Example named-machine config:
-
-```toml
-[oauth.machines.node-a]
-target_url = "http://node.internal.example:38935/callback/node-a"
-description = "node-a Codex callback listener"
-default_port = 38935
-```
-
-Runtime behavior:
-
-- incoming callback requests are accepted only on loopback
-- the helper forwards the original method, query string, request body, and most headers
-- hop-by-hop headers are stripped before forwarding
-- successful forwarding returns the upstream response as-is
-- failures return transport-oriented HTTP errors on the local loopback callback:
-  - unreachable upstream target -> `502`
-  - upstream timeout -> `504`
-  - unsupported method -> `405`
-
-The node runtime also exposes this relay capability remotely through `POST /v1/nodes/oauth/relay/start`.
+The current CLI does not include ACP sessions, Registry browsing/installing,
+Marketplace product commands, Fleet/node enrollment, Deploy-product commands, or
+Stash workspaces. Historical command contracts are archived under
+[../references/retired-labby](../references/retired-labby/).

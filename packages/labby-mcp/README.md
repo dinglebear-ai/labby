@@ -1,9 +1,9 @@
 # Lab
 
-`lab` is the Rust workspace behind **Labby**, a local-first control plane for
-agent tooling and homelab operations. One binary, `labby`, exposes the same
-operator capabilities through a CLI, an MCP server, an HTTP API, and the Labby
-web UI.
+`lab` is the Rust workspace behind **Labby**, a local-first MCP gateway with
+Code Mode, authentication, protected routes, setup, logs, and an operator web
+UI. One `labby` binary exposes the supported capabilities through CLI, MCP, and
+HTTP surfaces.
 
 The root README is the public entrypoint. The topic docs in
 [docs/](./docs/README.md) own the detailed contracts; when this file and a topic
@@ -29,18 +29,14 @@ Labby is centered on the current gateway/operator surface:
   tools/resources/prompts, apply exposure filters, publish protected MCP routes,
   and optionally collapse the upstream catalog into Code Mode `search` and
   `execute`.
-- **Marketplace and registry** - browse Claude/Codex plugin marketplaces, the
-  official MCP Registry, and the ACP Agent Registry; install plugins, MCP
-  servers, and ACP providers through explicit target-aware workflows.
-- **Stash workspaces** - mirror installable artifacts into `~/.labby/stash`, edit
-  and version component snapshots, preview deployment diffs, and deploy saved
-  artifacts back to configured targets.
-- **ACP chat** - run provider-backed Agent Client Protocol sessions, stream and
-  persist events, and keep the backend service named `acp`. The Labby web UI no
-  longer ships a `/chat` surface for this.
-- **Fleet, setup, logs, and deployment** - run `labby serve` as a controller or
-  node, enroll devices, search local/fleet logs, audit setup health, and deploy
-  the local release binary to SSH targets.
+- **Authentication and protected routes** - run bearer or OAuth authentication,
+  manage route-scoped access, authorize upstream OAuth connections, and publish
+  protected MCP endpoints.
+- **Operator services** - audit setup and runtime health, inspect server logs,
+  manage reusable snippets, and browse an explicitly configured filesystem
+  workspace.
+- **Incus and bare-metal setup** - provision and operate a dedicated Labby
+  gateway host without introducing a separate fleet or deployment product.
 - **Generated discovery** - publish code-owned service, action, environment,
   API route, OpenAPI, MCP help, CLI help, and feature-matrix artifacts under
   [docs/generated](./docs/generated/README.md).
@@ -219,47 +215,17 @@ MCP call shapes:
 Code Mode can call exposed upstream MCP tools only. It cannot call Lab actions
 from inside the sandbox.
 
-### Browse And Install Agent Tooling
-
-```bash
-labby marketplace sources.list --json
-labby marketplace plugins.list --params '{"runtime":"claude"}'
-labby marketplace mcp.list --params '{"search":"postgres","limit":10}'
-labby marketplace agent.list
-```
-
-Destructive install/update/deploy operations require explicit confirmation:
-
-```bash
-labby marketplace mcp.install \
-  --params '{"name":"io.github.user/server","gateway_ids":["default"],"confirm":true}' \
-  -y
-```
-
-Marketplace actions cover Claude/Codex plugins, MCP Registry servers, ACP agents,
-artifact fork/update flows, and device-aware installation targets.
-
-### Work With Stash
-
-```bash
-labby stash help
-```
-
-The `stash` service manages versioned components, provider metadata, target
-config, import/export, diffs, and deploy previews for Lab-managed artifact
-workspaces.
-
-### Operate The Fleet And Logs
+### Audit Health And Logs
 
 ```bash
 labby doctor system
-labby nodes list
-labby logs search node-a oauth
-labby deploy plan node-a
+labby server-logs help
+labby snippets help
 ```
 
-Every supported node runs `labby serve`. One node acts as controller; other nodes
-report status, inventory, and logs back through `/v1/nodes/*`.
+The always-on operator services cover setup and runtime diagnostics, local server
+log inspection, and reusable Code Mode snippets. Enable the optional `fs`
+feature when the gateway should expose a configured filesystem workspace.
 
 ### Drive The API
 
@@ -272,9 +238,9 @@ curl -s -X POST http://127.0.0.1:8765/v1/gateway \
   -d '{"action":"gateway.list","params":{}}'
 ```
 
-Dedicated product routes also exist for catalog discovery, ACP sessions/events,
-setup, stash, logs, gateway OAuth, auth allowlists, OpenAPI, and compatibility
-routes. See [generated API routes](./docs/generated/api-routes.md) and
+Dedicated routes also cover setup, server logs, gateway OAuth, auth allowlists,
+filesystem access, catalog discovery, and OpenAPI. See
+[generated API routes](./docs/generated/api-routes.md) and
 [OpenAPI](./docs/generated/openapi.json).
 
 ## Runtime Surfaces
@@ -307,7 +273,7 @@ Configuration is split deliberately:
 | Data | Location | Examples |
 | --- | --- | --- |
 | Secrets and endpoint values | `~/.labby/.env` | `LABBY_MCP_HTTP_TOKEN`, `LABBY_GOOGLE_CLIENT_SECRET`, upstream bearer token env values |
-| Preferences | `config.toml` | transport, CORS, auth mode, workspace root, gateway spawn guard, registry URLs |
+| Preferences | `config.toml` | transport, CORS, auth mode, workspace root, gateway spawn guard, and upstream behavior |
 
 `config.toml` is searched in this order:
 
@@ -390,13 +356,13 @@ The workspace uses Rust 2024, resolver 3, and a single workspace version.
 
 | Path | Role |
 | --- | --- |
-| [crates/labby-apis](./crates/labby-apis) | Pure SDK/domain crate for shared models, auth primitives, metadata, registry clients, ACP types, setup/doctor/stash/marketplace/device/deploy types. |
+| [crates/labby-apis](./crates/labby-apis) | Shared SDK contracts for core HTTP behavior, setup, and doctor. |
 | [crates/labby-auth](./crates/labby-auth) | OAuth/JWT/session middleware, route support, and upstream OAuth runtime. |
 | [crates/labby-runtime](./crates/labby-runtime) | Surface-neutral contracts and helpers: `ToolError`, gateway config DTOs, dispatch helpers, redaction, path safety, and security helpers. |
 | [crates/labby-codemode](./crates/labby-codemode) | Client-neutral Code Mode runner kernel, broker, result shaping, snippets, and TypeScript descriptor generation. |
 | [crates/labby-gateway](./crates/labby-gateway) | Gateway manager, upstream MCP proxy pool, Code Mode host adapter, discovery/imports, virtual servers, protected routes, and OAuth lifecycle. |
 | [crates/labby-web](./crates/labby-web) | Embedded/filesystem web asset serving with symlink escape defense. |
-| [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, product dispatch, ACP orchestration, logs, setup, and output rendering. |
+| [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, gateway dispatch, logs, setup, snippets, filesystem access, and output rendering. |
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
 | [apps/gateway-admin](./apps/gateway-admin/README.md) | Labby web UI, statically exported and served by `labby serve`. |
 | [plugins](./plugins) | Claude/Codex plugin assets, skills, hooks, and monitor definitions. |
@@ -468,13 +434,10 @@ recommended agent gateway runtime.
 ### Dev Container
 
 The Compose stack is a trusted local operator environment, not a hardened
-generic deployment. It bind-mounts host Lab state, agent credentials/plugin
-caches, the repo, and built web assets; secrets are loaded from the mounted
-`/home/labby/.labby/.env`. The image pre-installs ACP adapters
-(`claude-agent-acp`, `codex-acp`, `gemini`) so session spawns use deterministic
-local binaries rather than repeated `npx` installs. Rebuild the image when
-changing Dockerfiles or adapter versions; use `just dev` or `just dev-debug`
-for ordinary Labby binary swaps.
+generic deployment. It bind-mounts Labby state, the repository, and built web
+assets; secrets are loaded from the mounted `/home/labby/.labby/.env`. The image
+installs pinned Claude, Codex, and Gemini CLIs for stdio upstreams that invoke
+provider tools. It does not install ACP adapters or mount ACP-specific state.
 
 ### Releases
 
@@ -486,17 +449,8 @@ Release prep is version/changelog first, then tag:
 4. Push a `vX.Y.Z` tag.
 
 The release workflow builds Linux and Windows archives with checksums, publishes
-the GitHub Release, pushes GHCR images, and includes the generated marketplace
-artifact.
-
-### ACP Runtime Notes
-
-The Rust ACP SDK is pinned exactly in
-[crates/labby/Cargo.toml](./crates/labby/Cargo.toml) as
-`agent-client-protocol = "=0.13.1"` with the `unstable` feature. Model/config
-discovery depends on reading `session_config_options()` from the raw
-`NewSessionResponse` before `attach_session`, and model switching uses
-`SetSessionConfigOptionRequest`. Re-check those APIs before upgrading the SDK.
+the GitHub Release and GHCR images, packages the npm launcher, and publishes
+Labby's `server.json` metadata to the official MCP Registry.
 
 ### Plugin Setup Hooks
 
@@ -532,8 +486,8 @@ Start at [docs/README.md](./docs/README.md). High-value entrypoints:
 - [OAuth](./docs/runtime/OAUTH.md)
 - [Transport](./docs/surfaces/TRANSPORT.md)
 - [Gateway](./docs/services/GATEWAY.md)
-- [Marketplace](./docs/services/MARKETPLACE.md)
-- [ACP](./docs/acp/README.md)
+- [Setup](./docs/services/SETUP.md)
+- [Server Logs](./docs/services/SERVER_LOGS.md)
 - [Testing](./docs/dev/TESTING.md)
 - [Operations](./docs/OPERATIONS.md)
 

@@ -85,6 +85,8 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
         run: python3 "$LABBY_CHANGED_PATHS" --event "$EVENT_NAME" --output "$GITHUB_OUTPUT" --write-changed-files changed-files.txt
+      - name: Enforce retired feature boundary
+        run: scripts/check-retired-features.sh
 
   unraid-plugin-check:
     name: Unraid plugin checksums
@@ -310,11 +312,9 @@ jobs:
     # gated off), so this job overrides the global `-D warnings`. The
     # all-features `check`/`clippy`/`test` jobs above remain the authoritative
     # warning-clean signal.
-    # The "Slim labby gateway host" pass (fdb23858) removed the
-    # marketplace/deploy/acp_registry/acp/nodes/stash features from this crate
-    # entirely (they now live only in labby-runtime and labby-apis, covered by
-    # extracted-crate-slices below) — gateway and fs are the only standalone
-    # product slices left on `labby` itself.
+    # Retired ACP, Registry, Marketplace, Deploy, Fleet, and Stash product
+    # surfaces are deleted from the workspace. Gateway and fs are the only
+    # standalone product slices left on `labby` itself.
     # Slices are compile checks, EXCEPT gateway: the flagship slice also runs
     # its test suite so omission-side tests (#[cfg(not(feature = ...))] —
     # registry omission tests, the no-feature rejection helpers) actually
@@ -370,16 +370,8 @@ jobs:
             command: cargo check -p labby-codemode --all-targets --locked
           - name: labby-gateway
             command: cargo check -p labby-gateway --all-targets --locked
-          - name: labby-runtime-minimal
+          - name: labby-runtime
             command: cargo check -p labby-runtime --no-default-features --all-targets --locked
-          - name: labby-runtime-marketplace
-            command: cargo check -p labby-runtime --no-default-features --features marketplace --all-targets --locked
-          - name: labby-runtime-acp-registry
-            command: cargo check -p labby-runtime --no-default-features --features acp_registry --all-targets --locked
-          - name: labby-runtime-deploy
-            command: cargo check -p labby-runtime --no-default-features --features deploy --all-targets --locked
-          - name: labby-runtime-all-features
-            command: cargo check -p labby-runtime --no-default-features --features marketplace,acp_registry,deploy --all-targets --locked
           - name: labby-web
             command: cargo check -p labby-web --all-targets --locked
           - name: labby-winjob
@@ -467,8 +459,6 @@ jobs:
         run: |
           cargo test -p labby --all-features --locked cli::serve::tests::http_mcp_
           cargo test -p labby --all-features --locked stateless_subscription_receives_catalog_notifications
-      - name: Registry metadata and canonical serde
-        run: cargo test -p labby-apis --features mcpregistry --locked mcpregistry
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
@@ -856,8 +846,7 @@ jobs:
             sleep 3
           done
           echo "/health OK"
-          # The marketplace update/fork flow shells out to `git` — assert the
-          # runtime image actually ships it, or that feature is dead in prod.
+          # Operator-managed stdio upstreams and setup workflows may invoke git.
           docker exec lab-ci-smoke git --version
           echo "git present OK"
 

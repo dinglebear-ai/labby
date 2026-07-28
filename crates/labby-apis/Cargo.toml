@@ -1,6 +1,6 @@
 [package]
 name = "labby-apis"
-description = "Pure Rust SDK for homelab service APIs (Servarr, Plex, qBittorrent, Unraid, UniFi, etc.)"
+description = "Shared SDK contracts for Labby gateway setup, doctor, and core HTTP behavior."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -36,15 +36,8 @@ tokio = { workspace = true, features = [
 wiremock.workspace = true
 
 [features]
-acp_registry = []
-all = [
-  "deploy",
-  "mcpregistry",
-  "acp_registry",
-]
+all = []
 default = []
-deploy = []
-mcpregistry = []
 test-utils = []
 [lints]
 workspace = true

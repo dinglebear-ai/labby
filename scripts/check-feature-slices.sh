@@ -21,30 +21,12 @@ run cargo check -p labby-gateway --all-targets
 run cargo check -p labby-web --all-targets
 run cargo check -p labby-winjob --all-targets
 
-labby_runtime_features=(
-  ""
-  "marketplace"
-  "acp_registry"
-  "deploy"
-  "marketplace,acp_registry,deploy"
-)
-
-for features in "${labby_runtime_features[@]}"; do
-  if [[ -z "$features" ]]; then
-    run cargo check -p labby-runtime --no-default-features --all-targets
-  else
-    run cargo check -p labby-runtime --no-default-features --features "$features" --all-targets
-  fi
-done
+run cargo check -p labby-runtime --no-default-features --all-targets
 
 labby_product_features=(
   ""
   "gateway"
-  "marketplace"
   "fs"
-  "deploy"
-  "acp_registry"
-  "gateway,marketplace"
   "all"
 )
 
@@ -55,6 +37,4 @@ for features in "${labby_product_features[@]}"; do
     run cargo check -p labby --no-default-features --features "$features" --all-targets
   fi
 done
-
-run cargo check -p labby --no-default-features --features mcpregistry --all-targets
 run cargo check -p labby --all-features --all-targets

@@ -564,8 +564,8 @@ test('gatewayApi.list keeps loading when a stale in-process service is present',
       {
         'gateway.list': () => ([
           {
-            id: 'mcpregistry',
-            name: 'mcpregistry',
+            id: 'missing-service',
+            name: 'missing-service',
             source: 'in_process',
             configured: true,
             enabled: false,
@@ -585,7 +585,7 @@ test('gatewayApi.list keeps loading when a stale in-process service is present',
             warnings: [],
             config_summary: {
               transport: 'in_process',
-              target: 'mcpregistry',
+              target: 'missing-service',
             },
           },
         ]),
@@ -594,7 +594,7 @@ test('gatewayApi.list keeps loading when a stale in-process service is present',
         const gateways = await gatewayApi.list()
 
         assert.equal(gateways.length, 1)
-        assert.equal(gateways[0]?.id, 'mcpregistry')
+        assert.equal(gateways[0]?.id, 'missing-service')
         assert.equal(gateways[0]?.discovery.tools.length, 0)
         assert.equal(gateways[0]?.status.discovered_tool_count, 0)
       },
@@ -616,8 +616,8 @@ test('gatewayApi.list logs degraded gateway row warning counts once', async () =
       {
         'gateway.list': () => ([
           {
-            id: 'mcpregistry',
-            name: 'mcpregistry',
+            id: 'missing-service',
+            name: 'missing-service',
             source: 'in_process',
             configured: true,
             enabled: false,
@@ -637,12 +637,12 @@ test('gatewayApi.list logs degraded gateway row warning counts once', async () =
             warnings: [
               {
                 code: 'unknown_service',
-                message: 'service `mcpregistry` is not registered in this lab binary',
+                message: 'service `missing-service` is not registered in this lab binary',
               },
             ],
             config_summary: {
               transport: 'in_process',
-              target: 'mcpregistry',
+              target: 'missing-service',
             },
           },
         ]),

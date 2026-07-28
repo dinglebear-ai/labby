@@ -1,9 +1,9 @@
 # Labby
 
-`labby` is the Rust workspace behind **Labby**, a local-first control plane for
-agent tooling and homelab operations. One binary, `labby`, exposes the same
-operator capabilities through a CLI, an MCP server (stdio and streamable HTTP),
-an HTTP API, and the Labby web UI.
+`labby` is the Rust workspace behind **Labby**, a local-first MCP gateway and
+control plane for agent tooling and homelab operations. One binary, `labby`,
+exposes the same operator capabilities through a CLI, an MCP server (stdio,
+streamable HTTP, and Unix-domain socket), an HTTP API, and the Labby web UI.
 
 Canonical remote: `git@github.com:dinglebear-ai/labby.git`. The older
 `jmagar/lab` and `jmagar/labby` names resolve only through GitHub transfer
@@ -33,6 +33,9 @@ Labby is centered on the current gateway/operator surface:
   tools/resources/prompts, apply exposure filters, publish protected MCP routes,
   and optionally collapse the upstream catalog into Code Mode `search` and
   `execute`.
+- **Authentication and protected routes** - run bearer or OAuth authentication,
+  manage route-scoped access, authorize upstream OAuth connections, and publish
+  protected MCP endpoints.
 - **Code Mode snippets** - author, store, and run reusable JavaScript snippets
   against the upstream catalog, with artifacts persisted under `$LABBY_HOME`.
 - **Setup and doctor** - bootstrap `~/.labby`, provision the host service, and
@@ -40,6 +43,8 @@ Labby is centered on the current gateway/operator surface:
 - **Filesystem service** - scoped, path-safety-checked file operations exposed
   through the same action dispatch as every other service.
 - **Server logs** - search and tail the local `labby serve` log stream.
+- **Incus and bare-metal setup** - provision and operate a dedicated Labby
+  gateway host without introducing a separate fleet or deployment product.
 - **Generated discovery** - publish code-owned service, action, environment,
   API route, OpenAPI, MCP help, CLI help, and feature-matrix artifacts under
   [docs/generated](./docs/generated/README.md).
@@ -238,7 +243,7 @@ gateway Code Mode runner, so they can reach exposed upstream tools but not Lab
 actions. The `snippets` service is gateway-gated: it is unavailable in builds
 without the `gateway` feature.
 
-### Audit Health
+### Audit Health And Logs
 
 ```bash
 labby doctor            # audit every configured service
@@ -247,21 +252,21 @@ labby doctor auth       # auth/OAuth env vars, files, permissions
 labby doctor proxy      # public Lab and protected MCP proxy endpoints
 labby doctor oauth-relay
 labby health            # lightweight liveness/readiness probe
+labby logs              # tail the active deployment's service journal
 ```
 
 `labby doctor --json` is the CI-friendly form; the exit code reflects the worst
 severity found.
 
 > **Removed surfaces.** Earlier releases documented `labby marketplace`,
-> `labby stash`, `labby nodes`, `labby logs`, and `labby deploy`. Those product
-> services were removed by the "Slim labby gateway host" pass: they are absent
-> from the CLI (`docs/generated/cli-help.md`) and from the registered service
-> catalog (`docs/generated/service-catalog.json`). Note that
-> `docs/generated/api-routes.md` still lists `/v1/marketplace`, `/v1/nodes`, and
-> `/v1/acp` rows — that table is generated from the hand-maintained list in
-> `crates/labby/src/docs/routes.rs` and has not been pruned to match. Trust the
-> service catalog over the route table. Plugin marketplace assets now live in
-> the separate [dendrite](https://github.com/jmagar/dendrite) repo.
+> `labby stash`, `labby nodes`, and `labby deploy`, along with ACP chat, the MCP
+> Registry browser, and device/fleet runtimes. Those products have been deleted
+> from source, manifests, packaging, and CI — not merely feature-gated.
+> `scripts/check-retired-features.sh` guards against reintroduction, and the
+> historical designs are archived under
+> [docs/references/retired-labby](./docs/references/retired-labby/). Plugin
+> marketplace assets now live in the separate
+> [dendrite](https://github.com/jmagar/dendrite) repo.
 
 ### Drive The API
 
@@ -311,7 +316,7 @@ Configuration is split deliberately:
 | Data | Location | Examples |
 | --- | --- | --- |
 | Secrets and endpoint values | `~/.labby/.env` | `LABBY_MCP_HTTP_TOKEN`, `LABBY_GOOGLE_CLIENT_SECRET`, upstream bearer token env values |
-| Preferences | `config.toml` | transport, CORS, auth mode, workspace root, gateway spawn guard, registry URLs |
+| Preferences | `config.toml` | transport, CORS, auth mode, workspace root, gateway spawn guard, and upstream behavior |
 
 `config.toml` is searched in this order:
 
@@ -399,14 +404,14 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 | Path | Role |
 | --- | --- |
 | [crates/labby-primitives](./crates/labby-primitives) | Dependency-free leaf crate: `ActionSpec`/`ParamSpec`, `PluginMeta`/`EnvVar`/`Category`, `UiSchema`, static SSRF checks. |
-| [crates/labby-apis](./crates/labby-apis) | Pure SDK/domain crate for shared models, auth primitives, metadata, registry clients, ACP types, setup/doctor/stash/marketplace/device/deploy types. |
+| [crates/labby-apis](./crates/labby-apis) | Shared SDK contracts for core HTTP behavior, setup, and doctor. |
 | [crates/labby-auth](./crates/labby-auth) | OAuth/JWT/session middleware, route support, and upstream OAuth runtime. |
 | [crates/labby-runtime](./crates/labby-runtime) | Surface-neutral contracts and helpers: `ToolError`, gateway config DTOs, dispatch helpers, redaction, path safety, and security helpers. |
 | [crates/labby-codemode](./crates/labby-codemode) | Client-neutral Code Mode runner kernel, broker, result shaping, snippets, and TypeScript descriptor generation. |
 | [crates/labby-gateway](./crates/labby-gateway) | Gateway manager, upstream MCP proxy pool, Code Mode host adapter, discovery/imports, virtual servers, protected routes, and OAuth lifecycle. |
 | [crates/labby-openapi](./crates/labby-openapi) | OpenAPI 3.1 schema assembly for the HTTP surface. |
 | [crates/labby-web](./crates/labby-web) | Embedded/filesystem web asset serving with symlink escape defense. |
-| [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, product dispatch, ACP orchestration, logs, setup, and output rendering. |
+| [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, gateway dispatch, logs, setup, snippets, filesystem access, and output rendering. |
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
 | [crates/xtask](./crates/xtask) | Repo automation tasks; not published. |
 | [apps/gateway-admin](./apps/gateway-admin/README.md) | Labby web UI, statically exported and served by `labby serve`. |
@@ -480,13 +485,10 @@ recommended agent gateway runtime.
 ### Dev Container
 
 The Compose stack is a trusted local operator environment, not a hardened
-generic deployment. It bind-mounts host Lab state, agent credentials/plugin
-caches, the repo, and built web assets; secrets are loaded from the mounted
-`/home/labby/.labby/.env`. The image pre-installs ACP adapters
-(`claude-agent-acp`, `codex-acp`, `gemini`) so session spawns use deterministic
-local binaries rather than repeated `npx` installs. Rebuild the image when
-changing Dockerfiles or adapter versions; use `just dev` or `just dev-debug`
-for ordinary Labby binary swaps.
+generic deployment. It bind-mounts Labby state, the repository, and built web
+assets; secrets are loaded from the mounted `/home/labby/.labby/.env`. The image
+installs pinned Claude, Codex, and Gemini CLIs for stdio upstreams that invoke
+provider tools. It does not install ACP adapters or mount ACP-specific state.
 
 ### Releases
 
@@ -498,17 +500,8 @@ Release prep is version/changelog first, then tag:
 4. Push a `vX.Y.Z` tag.
 
 The release workflow builds Linux and Windows archives with checksums, publishes
-the GitHub Release, pushes GHCR images, and includes the generated marketplace
-artifact.
-
-### ACP Runtime Notes
-
-The Rust ACP SDK is pinned exactly in
-[crates/labby/Cargo.toml](./crates/labby/Cargo.toml) as
-`agent-client-protocol = "=0.13.1"` with the `unstable` feature. Model/config
-discovery depends on reading `session_config_options()` from the raw
-`NewSessionResponse` before `attach_session`, and model switching uses
-`SetSessionConfigOptionRequest`. Re-check those APIs before upgrading the SDK.
+the GitHub Release and GHCR images, packages the npm launcher, and publishes
+Labby's `server.json` metadata to the official MCP Registry.
 
 ### Plugin Setup
 
@@ -548,8 +541,8 @@ Start at [docs/README.md](./docs/README.md). High-value entrypoints:
 - [OAuth](./docs/runtime/OAUTH.md)
 - [Transport](./docs/surfaces/TRANSPORT.md)
 - [Gateway](./docs/services/GATEWAY.md)
-- [Marketplace](./docs/services/MARKETPLACE.md)
-- [ACP](./docs/acp/README.md)
+- [Setup](./docs/services/SETUP.md)
+- [Server Logs](./docs/services/SERVER_LOGS.md)
 - [Testing](./docs/dev/TESTING.md)
 - [Operations](./docs/OPERATIONS.md)
 

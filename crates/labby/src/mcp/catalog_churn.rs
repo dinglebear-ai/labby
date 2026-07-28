@@ -181,13 +181,8 @@ mod tests {
         ChurnSample, InFlightToolCall, in_flight_tool_calls, record_notification, reset_for_test,
     };
 
-    /// The statics are process-global, so the tests that assert on counts must
-    /// not interleave. `cargo nextest` runs each test in its own process, but
-    /// this keeps the file correct under a plain `cargo test` too.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL
+        crate::test_support::CATALOG_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }

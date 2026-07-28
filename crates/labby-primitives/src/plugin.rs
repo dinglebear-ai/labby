@@ -70,8 +70,6 @@ pub enum Category {
     Ai,
     /// Bootstrap utilities (init, doctor, setup).
     Bootstrap,
-    /// Marketplace and registry services (Marketplace, MCP Registry).
-    Marketplace,
 }
 
 impl Category {
@@ -89,7 +87,6 @@ impl Category {
             Self::Notifications => "notifications",
             Self::Ai => "ai",
             Self::Bootstrap => "bootstrap",
-            Self::Marketplace => "marketplace",
         }
     }
 }

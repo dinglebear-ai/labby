@@ -69,22 +69,20 @@ This document captures the locked stack and tooling choices for `lab`.
 
 ## Feature Gating
 
-`labby-apis` owns SDK feature flags. `labby` re-exports true SDK passthroughs and
-also owns product-local feature slices.
+`labby` owns the remaining product feature slices. `labby-apis` keeps an empty
+`all` compatibility aggregate but has no optional product SDK modules.
 
 The practical rules are:
 
-- `labby/default` enables `all`
-- `labby/all` enables the release product surface: `gateway`, `marketplace`,
-  `fs`, `deploy`, `acp_registry`, and `lab-admin`
-- supported standalone product slices are `gateway`, `marketplace`, `fs`,
-  `deploy`, and `acp_registry`
-- `mcpregistry` is a compatibility alias for `marketplace` in `labby`
-- `services-all` is currently empty; removed first-party upstream integrations
-  are not modeled as Cargo features in this checkout
-- base control-plane services such as `doctor`, `setup`, `logs`, `device`,
-  `stash`, and `acp` are intentionally compiled without individual feature
-  flags
+- `labby/default` enables `gateway-host`
+- `labby/all` enables every supported host capability: `lab-admin`, `api-docs`,
+  `gateway-host`, `fs`, and `systemd`
+- supported standalone product slices are `gateway` and `fs`
+- `web-ui`, `api-docs`, `lab-admin`, and `systemd` are helper/runtime features,
+  not retired product aliases
+- `doctor`, `server_logs`, `setup`, and `snippets` are always-on services
+- retired ACP, Registry-browser, Marketplace, Fleet, Deploy-product, and Stash
+  feature names must not return as compatibility aliases
 
 ## Build and Verify
 
@@ -138,6 +136,6 @@ More operational detail lives in [OPERATIONS.md](./OPERATIONS.md).
 
 - no telemetry
 - no background analytics
-- no analytics or telemetry phone-home to third-party services; first-party node-to-controller fleet reporting is intentional runtime behavior
+- no analytics or telemetry phone-home to third-party services
 
 That is a product rule, not just a tooling preference.

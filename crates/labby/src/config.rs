@@ -8,7 +8,7 @@
 //!
 //! Service credentials and instance endpoints belong in `.env`. Non-secret
 //! operator preferences and defaults (logging, CORS, MCP transport, admin
-//! flags, registry URLs, workspace roots) belong in `config.toml`.
+//! flags and workspace roots belong in `config.toml`.
 //!
 //! Multi-instance services follow the `S_<LABEL>_URL` pattern: a service
 //! like `unraid` reads `UNRAID_URL` as the default instance and
@@ -25,8 +25,8 @@ pub(crate) use paths::home_dir;
 use paths::resolve_usage_telemetry_enabled;
 pub use paths::{
     codemode_journal_db_path, codemode_journal_enabled, config_toml_path, dotenv_path,
-    mcpregistry_url, registry_db_path, toml_candidates, usage_db_path, usage_telemetry_enabled,
-    workspace_root_for_home, workspace_root_path,
+    toml_candidates, usage_db_path, usage_telemetry_enabled, workspace_root_for_home,
+    workspace_root_path,
 };
 pub use secret_files::heal_env_file_permissions;
 
@@ -234,7 +234,6 @@ use labby_auth::config as auth_config;
 use serde::{Deserialize, Serialize, Serializer};
 use tempfile::NamedTempFile;
 
-pub const DEFAULT_MCPREGISTRY_URL: &str = "https://registry.modelcontextprotocol.io";
 pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LABBY_WEB_UI_AUTH_DISABLED";
 pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LABBY_WEB_UI_DISABLE_AUTH";
 const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
@@ -273,7 +272,7 @@ pub struct LabConfig {
     /// Logging preferences (overridden by `LABBY_LOG` / `LABBY_LOG_FORMAT` env vars).
     #[serde(default)]
     pub log: LogPreferences,
-    /// Local-master log subsystem preferences.
+    /// Local Labby server-log subsystem preferences.
     #[serde(default)]
     pub local_logs: Option<LocalLogsPreferences>,
     /// HTTP API preferences.
@@ -282,22 +281,12 @@ pub struct LabConfig {
     /// Web UI preferences.
     #[serde(default)]
     pub web: WebPreferences,
-    /// Shared Lab workspace root. Backs the read-only attachment picker and
-    /// local writable stash workspaces.
+    /// Shared Labby workspace root for the optional filesystem browser.
     #[serde(default)]
     pub workspace: WorkspacePreferences,
-    /// MCP Registry upstream preferences.
-    #[serde(default)]
-    pub mcpregistry: McpRegistryPreferences,
     /// OAuth callback relay preferences.
     #[serde(default)]
     pub oauth: OauthPreferences,
-    /// Device runtime preferences.
-    #[serde(default)]
-    pub device: Option<DevicePreferences>,
-    /// Node runtime preferences.
-    #[serde(default)]
-    pub node: Option<NodePreferences>,
     /// Admin tool settings.
     #[serde(default)]
     pub admin: AdminPreferences,
@@ -352,9 +341,6 @@ pub struct LabConfig {
     /// Virtual servers whose backing service is no longer registered in this binary.
     #[serde(default)]
     pub quarantined_virtual_servers: Vec<VirtualServerConfig>,
-    /// Deploy service preferences (feature-gated at the consumer level).
-    #[serde(default)]
-    pub deploy: Option<DeployPreferences>,
     /// Canonical public URL model for the app and MCP gateway.
     ///
     /// Use [`LabConfig::public_urls()`] to read resolved values with env-var
@@ -478,138 +464,6 @@ impl From<&LabConfig> for GatewayConfig {
     }
 }
 
-/// Deploy service preferences — defaults plus per-host overrides.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DeployPreferences {
-    #[serde(default)]
-    pub defaults: Option<DeployDefaults>,
-    #[serde(default)]
-    pub hosts: BTreeMap<String, DeployHostOverride>,
-}
-
-/// Artifact role for deploy targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactRole {
-    Controller,
-    Node,
-}
-
-/// Default policy applied to every deploy target unless overridden.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DeployDefaults {
-    pub remote_path: Option<String>,
-    pub service: Option<String>,
-    #[serde(default)]
-    pub restart: Option<RestartModel>,
-    pub service_scope: Option<ServiceScope>,
-    pub max_parallel: Option<u32>,
-    #[serde(default)]
-    pub canary_hosts: Vec<String>,
-    /// Base URL of the master lab instance that deployed hosts should phone home to.
-    /// e.g. "http://node-a:8765". If absent, phone-home is skipped.
-    pub master_url: Option<String>,
-    /// Artifact role for this deploy target.
-    #[serde(default)]
-    pub artifact_role: Option<ArtifactRole>,
-    /// Cross-compilation target triple, e.g. "aarch64-unknown-linux-gnu".
-    #[serde(default)]
-    pub target_triple: Option<String>,
-    /// Maximum build time in seconds before declaring the build failed.
-    #[serde(default)]
-    pub build_timeout_secs: Option<u64>,
-}
-
-/// Per-host policy overrides for deploy.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DeployHostOverride {
-    pub remote_path: Option<String>,
-    pub service: Option<String>,
-    #[serde(default)]
-    pub restart: Option<RestartModel>,
-    pub service_scope: Option<ServiceScope>,
-    /// Artifact role override for this specific host.
-    #[serde(default)]
-    pub artifact_role: Option<ArtifactRole>,
-    /// Cross-compilation target triple override for this specific host.
-    #[serde(default)]
-    pub target_triple: Option<String>,
-    /// Build timeout override in seconds for this specific host.
-    #[serde(default)]
-    pub build_timeout_secs: Option<u64>,
-}
-
-/// Restart policy used by rollout/update flows after a binary install.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum RestartModel {
-    SystemService { service: String },
-    UserService { service: String },
-    WrapperCommand { command: Vec<String> },
-}
-
-/// Systemd scope for the unit restarted by deploy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceScope {
-    System,
-    User,
-}
-
-/// Device runtime preferences.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DevicePreferences {
-    #[serde(default)]
-    pub master: Option<String>,
-}
-
-/// Explicit runtime role for this node, set in config or via CLI `--role`.
-///
-/// This is the user-facing vocabulary; the internal runtime maps
-/// `Controller → NodeRole::Master` and `Node → NodeRole::NonMaster`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeRuntimeRole {
-    Controller,
-    Node,
-}
-
-/// Node runtime preferences.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NodePreferences {
-    #[serde(default)]
-    pub controller: Option<String>,
-    /// How many days of node logs to retain in the SQLite log store.
-    /// Defaults to 30 days when absent.
-    #[serde(default)]
-    pub log_retention_days: Option<u32>,
-    /// Explicit runtime role for this device.
-    /// When present, skips hostname-based role inference.
-    #[serde(default)]
-    pub role: Option<NodeRuntimeRole>,
-}
-
-/// Runtime role for the current device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DeviceRole {
-    Master,
-    NonMaster,
-}
-
-/// Alias for [`DeviceRole`] used after the `device → node` module rename.
-pub type NodeRole = DeviceRole;
-
-/// Alias for [`ResolvedDeviceRuntime`] used after the `device → node` module rename.
-pub type ResolvedNodeRuntime = ResolvedDeviceRuntime;
-
-/// Resolved device runtime configuration after comparing local and master hosts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResolvedDeviceRuntime {
-    pub local_host: String,
-    pub master_host: String,
-    pub role: DeviceRole,
-}
-
 impl LabConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.code_mode.validate()?;
@@ -711,18 +565,6 @@ impl LabConfig {
         }
         validate_gateway_subset_paths_are_unique(&self.protected_mcp_routes)?;
         Ok(())
-    }
-
-    #[must_use]
-    pub fn controller_host(&self) -> Option<&str> {
-        self.node
-            .as_ref()
-            .and_then(|prefs| prefs.controller.as_deref())
-            .or_else(|| {
-                self.device
-                    .as_ref()
-                    .and_then(|prefs| prefs.master.as_deref())
-            })
     }
 }
 
@@ -1406,30 +1248,10 @@ fn parse_web_ui_auth_disabled_bool(name: &str, value: &str) -> Result<bool> {
 /// Shared workspace root for Lab-managed files.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspacePreferences {
-    /// Root directory used by fs browsing and stash-backed writable workspaces.
-    /// Defaults to `~/.labby/stash`.
+    /// Root directory used by the supported filesystem browser.
+    /// Defaults to `~/.labby/workspace`.
     #[serde(default)]
     pub root: Option<PathBuf>,
-}
-
-/// MCP Registry upstream preferences.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpRegistryPreferences {
-    /// Upstream MCP Registry base URL.
-    #[serde(default = "default_mcpregistry_url_option")]
-    pub url: Option<String>,
-}
-
-impl Default for McpRegistryPreferences {
-    fn default() -> Self {
-        Self {
-            url: default_mcpregistry_url_option(),
-        }
-    }
-}
-
-fn default_mcpregistry_url_option() -> Option<String> {
-    Some(DEFAULT_MCPREGISTRY_URL.to_string())
 }
 
 /// OAuth local relay preferences.
@@ -1852,7 +1674,6 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
                     .map(|path| path.display().to_string())
             )
         }
-        "mcpregistry.url" => serde_json::json!(cfg.mcpregistry.url),
         "public_urls.app" => {
             serde_json::json!(cfg.public_urls.as_ref().and_then(|value| value.app.clone()))
         }
@@ -1879,21 +1700,6 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "gateway.extra_stdio_commands" => serde_json::json!(cfg.gateway.extra_stdio_commands),
         "upstream_request_timeout_ms" => serde_json::json!(cfg.upstream_request_timeout_ms),
         "upstream_relay_timeout_ms" => serde_json::json!(cfg.upstream_relay_timeout_ms),
-        "node.controller" => {
-            serde_json::json!(cfg.node.as_ref().and_then(|value| value.controller.clone()))
-        }
-        "node.log_retention_days" => {
-            serde_json::json!(cfg.node.as_ref().and_then(|value| value.log_retention_days))
-        }
-        "node.role" => serde_json::json!(cfg.node.as_ref().and_then(|value| value.role).map(
-            |role| match role {
-                NodeRuntimeRole::Controller => "controller",
-                NodeRuntimeRole::Node => "node",
-            }
-        )),
-        "device.master" => {
-            serde_json::json!(cfg.device.as_ref().and_then(|value| value.master.clone()))
-        }
         "web.disable_auth" => serde_json::json!(cfg.web.disable_auth),
         "auth" => serde_json::to_value(&cfg.auth).unwrap_or(serde_json::Value::Null),
         "code_mode.enabled" => serde_json::json!(cfg.code_mode.enabled),
@@ -1901,7 +1707,6 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "oauth.machines" => {
             serde_json::to_value(&cfg.oauth.machines).unwrap_or(serde_json::Value::Null)
         }
-        "deploy" => serde_json::to_value(&cfg.deploy).unwrap_or(serde_json::Value::Null),
         "upstream" => serde_json::to_value(&cfg.upstream).unwrap_or(serde_json::Value::Null),
         "upstream_pending" => {
             serde_json::to_value(&cfg.upstream_pending).unwrap_or(serde_json::Value::Null)
@@ -2730,21 +2535,11 @@ assets_dir = "/tmp/labby"
     }
 
     #[test]
-    fn mcpregistry_url_defaults_to_official_registry() {
-        let cfg = toml::from_str::<LabConfig>("").expect("empty config should parse");
-
-        assert_eq!(
-            cfg.mcpregistry.url.as_deref(),
-            Some(DEFAULT_MCPREGISTRY_URL)
-        );
-    }
-
-    #[test]
     fn quarantined_virtual_servers_round_trip_through_toml() {
         let raw = r#"
 [[quarantined_virtual_servers]]
-id = "stale-registry"
-service = "mcpregistry"
+id = "missing-service"
+service = "missing-service"
 enabled = true
 
 [quarantined_virtual_servers.surfaces]
@@ -2752,25 +2547,31 @@ mcp = true
 "#;
         let cfg = toml::from_str::<LabConfig>(raw).expect("quarantine config should parse");
         assert_eq!(cfg.quarantined_virtual_servers.len(), 1);
-        assert_eq!(cfg.quarantined_virtual_servers[0].id, "stale-registry");
-        assert_eq!(cfg.quarantined_virtual_servers[0].service, "mcpregistry");
+        assert_eq!(cfg.quarantined_virtual_servers[0].id, "missing-service");
+        assert_eq!(
+            cfg.quarantined_virtual_servers[0].service,
+            "missing-service"
+        );
         assert!(cfg.quarantined_virtual_servers[0].surfaces.mcp);
 
         let serialized = toml::to_string(&cfg).expect("config should serialize");
         let reparsed =
             toml::from_str::<LabConfig>(&serialized).expect("serialized config should parse");
         assert_eq!(reparsed.quarantined_virtual_servers.len(), 1);
-        assert_eq!(reparsed.quarantined_virtual_servers[0].id, "stale-registry");
+        assert_eq!(
+            reparsed.quarantined_virtual_servers[0].id,
+            "missing-service"
+        );
     }
 
     #[test]
-    fn workspace_root_defaults_to_lab_stash_under_home() {
+    fn workspace_root_defaults_under_labby_home() {
         let cfg = toml::from_str::<LabConfig>("").expect("empty config should parse");
         let home = Path::new("/tmp/lab-home");
 
         assert_eq!(
             workspace_root_for_home(&cfg, home),
-            home.join(".labby").join("stash")
+            home.join(".labby").join("workspace")
         );
     }
 
@@ -2779,14 +2580,14 @@ mcp = true
         let cfg = toml::from_str::<LabConfig>(
             r#"
 [workspace]
-root = "/srv/lab-stash"
+root = "/srv/labby-workspace"
 "#,
         )
         .expect("workspace config should parse");
 
         assert_eq!(
             workspace_root_for_home(&cfg, Path::new("/tmp/ignored")),
-            PathBuf::from("/srv/lab-stash")
+            PathBuf::from("/srv/labby-workspace")
         );
     }
 
@@ -3605,53 +3406,6 @@ services = ["gateway", "nope"]
             err.to_string().contains("sonnar") || err.to_string().contains("nope"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn parses_deploy_defaults_and_host_overrides() {
-        let raw = r#"
-[deploy.defaults]
-remote_path = "/usr/local/bin/labby"
-service = "labby"
-service_scope = "system"
-max_parallel = 4
-canary_hosts = ["mini1"]
-
-[deploy.hosts.mini2]
-remote_path = "/opt/lab/bin/labby"
-service = "lab-worker"
-service_scope = "user"
-"#;
-        let parsed: LabConfig = toml::from_str(raw).unwrap();
-        let d = parsed.deploy.expect("deploy present");
-        let defaults = d.defaults.expect("defaults present");
-        assert_eq!(
-            defaults.remote_path.as_deref(),
-            Some("/usr/local/bin/labby")
-        );
-        assert_eq!(defaults.service.as_deref(), Some("labby"));
-        assert_eq!(defaults.service_scope, Some(ServiceScope::System));
-        assert_eq!(defaults.max_parallel, Some(4));
-        assert_eq!(defaults.canary_hosts, vec!["mini1".to_string()]);
-        let mini2 = d.hosts.get("mini2").expect("mini2 override");
-        assert_eq!(mini2.remote_path.as_deref(), Some("/opt/lab/bin/labby"));
-        assert_eq!(mini2.service_scope, Some(ServiceScope::User));
-    }
-
-    #[test]
-    fn deploy_config_absent_is_none_not_error() {
-        let raw = "[output]\n";
-        let parsed: LabConfig = toml::from_str(raw).unwrap();
-        assert!(parsed.deploy.is_none());
-    }
-
-    #[test]
-    fn deploy_max_parallel_defaults_to_one_for_safety_at_read_time() {
-        let raw = "[deploy.defaults]\nremote_path = \"/usr/local/bin/labby\"\n";
-        let parsed: LabConfig = toml::from_str(raw).unwrap();
-        let d = parsed.deploy.unwrap().defaults.unwrap();
-        // unset remains None; safe default applied at orchestrator entry
-        assert!(d.max_parallel.is_none());
     }
 
     // ── Code Mode: CodeModeConfig defaults ───────────────────────────────────

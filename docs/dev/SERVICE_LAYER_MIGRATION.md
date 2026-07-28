@@ -13,12 +13,11 @@ Current shared-dispatch guidance lives in:
 
 The current product shape is:
 
-- shared execution belongs under `crates/lab/src/dispatch/`
+- shared execution belongs under `crates/labby/src/dispatch/`
 - CLI, MCP, HTTP, and web adapters stay thin over dispatch
-- standalone product slices are `gateway`, `marketplace`, `fs`, `deploy`, and
-  `acp_registry`
-- base control-plane services such as `doctor`, `setup`, `logs`, `device`,
-  `stash`, and `acp` compile without individual feature flags
+- standalone product slices are `gateway` and `fs`
+- `doctor`, `server_logs`, `setup`, and `snippets` are always-on services
+- retired product features are deleted rather than preserved as aliases
 
 If first-party upstream integrations are reintroduced, start from
 `SERVICE_ONBOARDING.md`, update Cargo features intentionally, regenerate docs,

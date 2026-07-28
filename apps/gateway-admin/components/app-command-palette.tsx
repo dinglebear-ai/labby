@@ -329,10 +329,7 @@ export function AppCommandPalette() {
 
     setIsDispatching(true)
     try {
-      // Use performServiceAction (not raw fetch) so that:
-      // 1. assertDevPreviewCanRunAction blocks write actions in /dev preview mode
-      // 2. devPreviewActionUrl rewrites the URL in preview mode correctly
-      // 3. CSRF token is injected via gatewayRequestInit inside performServiceAction
+      // Use performServiceAction so CSRF and error shaping stay consistent.
       const url = serviceActionUrl(service)
       const finalParams = action.destructive ? confirmGatewayParams(params) : params
       const data: unknown = await performServiceAction<unknown, ServiceActionError>({

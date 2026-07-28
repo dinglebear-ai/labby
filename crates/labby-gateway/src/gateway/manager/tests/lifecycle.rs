@@ -217,7 +217,7 @@ async fn runtime_handle_swaps_pool_atomically() {
 }
 
 // Re-fixtured post-gateway-pivot: `deploy` is a kept/registered service and must
-// survive reload; `mcpregistry` is unregistered and must be quarantined.
+// survive reload; `missing-service` is unregistered and must be quarantined.
 #[tokio::test]
 async fn reload_quarantines_virtual_servers_for_unregistered_services() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -237,8 +237,8 @@ async fn reload_quarantines_virtual_servers_for_unregistered_services() {
                     mcp_policy: None,
                 },
                 VirtualServerConfig {
-                    id: "stale-registry".to_string(),
-                    service: "mcpregistry".to_string(),
+                    id: "stale-service".to_string(),
+                    service: "missing-service".to_string(),
                     enabled: true,
                     surfaces: VirtualServerSurfacesConfig {
                         mcp: true,
@@ -261,13 +261,13 @@ async fn reload_quarantines_virtual_servers_for_unregistered_services() {
 
     let listed = manager.list().await.expect("list");
     assert!(listed.iter().any(|server| server.id == "deploy"));
-    assert!(!listed.iter().any(|server| server.id == "stale-registry"));
+    assert!(!listed.iter().any(|server| server.id == "stale-service"));
 
     let migrated = load_gateway_config(&path).expect("load migrated config");
     assert_eq!(migrated.virtual_servers.len(), 1);
     assert_eq!(migrated.virtual_servers[0].id, "deploy");
     assert_eq!(migrated.quarantined_virtual_servers.len(), 1);
-    assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-registry");
+    assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-service");
 }
 
 #[tokio::test]
@@ -275,8 +275,8 @@ async fn reload_does_not_duplicate_existing_quarantined_virtual_server() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
     let stale = VirtualServerConfig {
-        id: "stale-registry".to_string(),
-        service: "mcpregistry".to_string(),
+        id: "stale-service".to_string(),
+        service: "missing-service".to_string(),
         enabled: true,
         surfaces: VirtualServerSurfacesConfig {
             mcp: true,
@@ -303,14 +303,14 @@ async fn reload_does_not_duplicate_existing_quarantined_virtual_server() {
     let migrated = load_gateway_config(&path).expect("load migrated config");
     assert!(migrated.virtual_servers.is_empty());
     assert_eq!(migrated.quarantined_virtual_servers.len(), 1);
-    assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-registry");
+    assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-service");
 }
 
 #[test]
 fn quarantine_migration_is_noop_when_only_existing_quarantine_remains() {
     let stale = VirtualServerConfig {
-        id: "stale-registry".to_string(),
-        service: "mcpregistry".to_string(),
+        id: "stale-service".to_string(),
+        service: "missing-service".to_string(),
         enabled: true,
         surfaces: VirtualServerSurfacesConfig::default(),
         mcp_policy: None,

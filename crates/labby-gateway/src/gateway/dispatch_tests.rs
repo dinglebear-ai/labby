@@ -1619,8 +1619,8 @@ async fn virtual_server_remove_deletes_configured_service_row() {
     manager
         .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
             virtual_servers: vec![labby_runtime::gateway_config::VirtualServerConfig {
-                id: "stale-registry".to_string(),
-                service: "mcpregistry".to_string(),
+                id: "stale-service".to_string(),
+                service: "missing-service".to_string(),
                 enabled: true,
                 surfaces: labby_runtime::gateway_config::VirtualServerSurfacesConfig {
                     mcp: true,
@@ -1635,12 +1635,12 @@ async fn virtual_server_remove_deletes_configured_service_row() {
     let removed = dispatch_with_manager(
         &manager,
         "gateway.virtual_server.remove",
-        json!({"id": "stale-registry"}),
+        json!({"id": "stale-service"}),
     )
     .await
     .expect("remove virtual server");
 
-    assert_eq!(removed["id"], "stale-registry");
+    assert_eq!(removed["id"], "stale-service");
     assert_eq!(removed["warnings"][0]["code"], "unknown_service");
 
     let remaining = dispatch_with_manager(&manager, "gateway.list", json!({}))

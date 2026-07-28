@@ -15,10 +15,6 @@ const SCHEMAS: Record<string, JsonSchemaField[]> = {
     { key: 'category', valueSnippet: '"workflow"', detail: 'Plugin category' },
     { key: 'tags', valueSnippet: '["workflow"]', detail: 'Tags list' },
   ],
-  'marketplace.json': [
-    { key: 'name', valueSnippet: '"Marketplace"', detail: 'Marketplace name', required: true },
-    { key: 'plugins', valueSnippet: '[]', detail: 'Marketplace plugin list', required: true },
-  ],
 }
 
 function schemaForPath(path: string): JsonSchemaField[] {

@@ -327,8 +327,8 @@ async fn evaluate_peers(
 #[cfg(test)]
 mod tests {
     use std::future::Future;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, MutexGuard};
     use std::time::Duration;
 
     use rmcp::service::{MaybeSendFuture, NotificationContext};
@@ -340,6 +340,12 @@ mod tests {
     use crate::mcp::catalog_churn::InFlightToolCall;
     use crate::mcp::catalog_coalesce::{reset_for_test, schedule_catalog_notification};
     use crate::mcp::peers::{PeerRegistry, RegisteredPeer, prune_closed_peers};
+
+    fn serial_catalog() -> MutexGuard<'static, ()> {
+        crate::test_support::CATALOG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[derive(Clone)]
     struct TestServer {
@@ -514,6 +520,7 @@ mod tests {
 
     #[tokio::test]
     async fn notify_catalog_peers_sends_only_changed_kinds() {
+        let _catalog_lock = serial_catalog();
         let (peers, client, client_service, server_handle) = connected_peer_fixture().await;
 
         notify_catalog_peers(
@@ -544,6 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn notify_catalog_peers_all_false_is_noop() {
+        let _catalog_lock = serial_catalog();
         let (peers, client, client_service, server_handle) = connected_peer_fixture().await;
 
         notify_catalog_peers(
@@ -570,6 +578,7 @@ mod tests {
     /// hint verbatim is what made unrelated sessions rebuild their bindings.
     #[tokio::test]
     async fn notify_catalog_peers_notifies_only_peers_whose_contract_moved() {
+        let _catalog_lock = serial_catalog();
         let peers = Arc::new(RwLock::new(Vec::new()));
         let (moved_client, moved_service, moved_handle) = connect_peer(&peers, true).await;
         let (unchanged_client, unchanged_service, unchanged_handle) =
@@ -618,6 +627,7 @@ mod tests {
     /// as a single `tools/list_changed`, not one per trigger.
     #[tokio::test]
     async fn scheduled_notifications_coalesce_into_one_delivery() {
+        let _catalog_lock = serial_catalog();
         reset_for_test();
         crate::mcp::catalog_churn::reset_for_test();
         let peers = Arc::new(RwLock::new(Vec::new()));
@@ -656,6 +666,7 @@ mod tests {
     /// what invalidates the binding the caller is mid-way through using.
     #[tokio::test]
     async fn scheduled_notification_defers_until_the_turn_closes() {
+        let _catalog_lock = serial_catalog();
         reset_for_test();
         crate::mcp::catalog_churn::reset_for_test();
         let peers = Arc::new(RwLock::new(Vec::new()));
@@ -694,6 +705,7 @@ mod tests {
     /// stopped emitting spurious notifications the registry only ever grew.
     #[tokio::test]
     async fn closed_peers_are_pruned_and_live_ones_are_kept() {
+        let _catalog_lock = serial_catalog();
         let peers = Arc::new(RwLock::new(Vec::new()));
         let (_doomed_client, doomed_service, doomed_handle) = connect_peer(&peers, true).await;
         let (_live_client, live_service, live_handle) = connect_peer(&peers, true).await;

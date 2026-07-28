@@ -1,7 +1,7 @@
 {
   "name": "labby-mcp",
   "version": "1.7.0",
-  "description": "Node launcher for Labby, a Rust homelab control plane and MCP gateway for agents, plugins, registries, and fleet operations.",
+  "description": "Node launcher for Labby, a Rust MCP gateway with Code Mode, authentication, upstream discovery, protected routes, CLI, HTTP API, and operator web UI.",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/jmagar/labby#readme",
   "repository": {
@@ -48,12 +48,8 @@
     "cli",
     "http-api",
     "web-ui",
-    "plugin-marketplace",
-    "mcp-registry",
-    "agent-client-protocol",
     "code-mode",
     "oauth",
-    "fleet-management",
     "log-search",
     "local-first",
     "automation"

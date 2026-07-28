@@ -112,22 +112,13 @@ no daemon is reachable.
 
 ## Service Environment Variables
 
-Service credentials follow the standard pattern `{SERVICE}_URL`,
-`{SERVICE}_API_KEY`, `{SERVICE}_TOKEN`, `{SERVICE}_USERNAME`, and
-`{SERVICE}_PASSWORD`, with service-specific exceptions declared in
-`PluginMeta`.
+Supported environment variables are generated from current product metadata.
+Gateway upstream secrets are referenced indirectly by environment-variable name;
+for example, a persisted upstream may point at
+`LABBY_GW_GITHUB_AUTH_HEADER` without storing its value in TOML.
 
-Named instances insert the label before the suffix, for example:
-
-```env
-JELLYFIN_NODE2_URL=http://node2.local:8096
-JELLYFIN_NODE2_API_KEY=replace-me
-OPENACP_NODE2_URL=http://node2.local:21420
-OPENACP_NODE2_TOKEN=replace-me
-```
-
-Use [generated/env-reference.md](./generated/env-reference.md) for the current
-required/optional env var matrix, default ports, secret flags, and examples.
+Use [../generated/env-reference.md](../generated/env-reference.md) for the current
+required/optional environment-variable matrix, secret flags, and examples.
 
 ## Provisioning Environment
 

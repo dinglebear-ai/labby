@@ -165,7 +165,7 @@ curl -fsS --max-time 5 https://callback.tootie.tv/healthz
 ```
 
 For the full cutover and rollback runbook, see
-[deploy/CALLBACK_RELAY.md](./deploy/CALLBACK_RELAY.md).
+[runtime/CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md).
 
 ## Dev/Prod Container Drift
 
@@ -336,52 +336,6 @@ To roll back Code Mode behavior quickly:
    dropped.
 3. Re-enable only after `labby doctor`, `labby gateway list`, and a one-line
    `gateway code exec` smoke pass.
-
-## Device Runtime Operations
-
-In the current Linux `x86_64` v1 target, every supported fleet member runs `labby serve` as a node runtime.
-
-Setup order:
-
-1. Pick one machine as the master and start it first with `labby serve`.
-2. If you use bearer auth, set `LABBY_MCP_HTTP_TOKEN` on the master before starting it and reuse that same token on every non-master device that reports to it.
-3. On each non-master, set the master machine name in `~/.labby/config.toml`:
-
-```toml
-[node]
-controller = "controller"
-```
-
-4. Start each non-master with `labby serve`.
-5. Only use `labby mcp` when you explicitly want a local stdio MCP session instead of the default HTTP runtime.
-
-Operationally:
-
-- one device is the `master`
-- non-controller nodes report to the master over `/v1/nodes/*`
-- node inventory and node logs are queried from the master
-
-Useful commands:
-
-```bash
-labby nodes list
-labby nodes get node-a
-labby logs search node-a oauth
-```
-
-Useful HTTP checks:
-
-```bash
-curl http://<device>:8765/health
-curl -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" http://<controller>:8765/v1/nodes/devices
-```
-
-Current operational limits:
-
-- fleet state is in-memory on the master
-- non-master background uploads reuse the shared static bearer token when bearer auth is enabled
-- non-controller nodes intentionally do not expose Web UI, gateway management, or MCP
-- the master should be reachable on its configured HTTP port before non-masters start reporting to it
 
 ## Install and Patch Workflows
 

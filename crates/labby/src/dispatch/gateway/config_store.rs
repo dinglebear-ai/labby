@@ -218,9 +218,8 @@ mod host_config {
     use crate::dispatch::error::ToolError;
 
     /// Top-level keys `LabConfig` models. On render these are removed from the
-    /// existing document and rewritten from the struct; every other (foreign)
-    /// key is preserved. `[deploy]`/`[device]`/etc. are intentionally rewritten
-    /// from the struct (their comments/formatting are not preserved by design).
+    /// existing document and rewritten from the struct; every other foreign
+    /// key is preserved byte-for-byte.
     const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
         "mcp",
         "log",
@@ -228,10 +227,7 @@ mod host_config {
         "api",
         "web",
         "workspace",
-        "mcpregistry",
         "oauth",
-        "device",
-        "node",
         "admin",
         "services",
         "auth",
@@ -245,7 +241,6 @@ mod host_config {
         "virtual_servers",
         "quarantined_virtual_servers",
         "gateway",
-        "deploy",
         "public_urls",
     ];
 

@@ -213,11 +213,20 @@ pub(crate) fn reset_for_test() {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::MutexGuard;
+
     use super::{Pending, coalesce_window, max_hold, pending, reset_for_test};
+
+    fn serial_catalog() -> MutexGuard<'static, ()> {
+        crate::test_support::CATALOG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
     use crate::mcp::catalog_notifications::CatalogNotificationChanges;
 
     #[test]
     fn merging_accumulates_every_changed_kind() {
+        let _catalog_lock = serial_catalog();
         // A batch must not lose a kind because a later trigger only moved a
         // different one.
         let tools = CatalogNotificationChanges::new(true, false, false);
@@ -232,6 +241,7 @@ mod tests {
 
     #[test]
     fn windows_are_bounded_and_ordered() {
+        let _catalog_lock = serial_catalog();
         // The hold must exceed the settle window, or a burst could never settle
         // before delivery is forced.
         assert!(
@@ -242,6 +252,7 @@ mod tests {
 
     #[test]
     fn pending_starts_empty() {
+        let _catalog_lock = serial_catalog();
         reset_for_test();
         let pending: &Pending = &pending();
         assert!(pending.changes.is_none());

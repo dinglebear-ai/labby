@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use super::{DEFAULT_MCPREGISTRY_URL, LabConfig};
+use super::LabConfig;
 
 pub fn toml_candidates() -> Vec<PathBuf> {
     let mut paths = vec![PathBuf::from("config.toml")];
@@ -22,24 +22,13 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn mcpregistry_url(config: &LabConfig) -> &str {
-    config
-        .mcpregistry
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .unwrap_or(DEFAULT_MCPREGISTRY_URL)
-}
-
-#[must_use]
 pub fn workspace_root_for_home(config: &LabConfig, home: &Path) -> PathBuf {
     config
         .workspace
         .root
         .as_deref()
         .map(|root| expand_home_path(root, home))
-        .unwrap_or_else(|| home.join(".labby/stash"))
+        .unwrap_or_else(|| home.join(".labby/workspace"))
 }
 
 pub fn workspace_root_path(config: &LabConfig) -> Result<PathBuf> {
@@ -83,9 +72,6 @@ fn labby_db(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".labby")
         .join(name)
-}
-pub fn registry_db_path() -> PathBuf {
-    labby_db("registry.db")
 }
 pub fn usage_db_path() -> PathBuf {
     labby_db("usage.db")

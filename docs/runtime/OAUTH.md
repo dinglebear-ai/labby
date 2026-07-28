@@ -189,7 +189,7 @@ machine or invalid target rejects the import without replacing the active
 registry.
 
 For the production cutover and rollback procedure, see
-[CALLBACK_RELAY.md](../deploy/CALLBACK_RELAY.md).
+[CALLBACK_RELAY.md](./CALLBACK_RELAY.md).
 
 ## Codex MCP OAuth Client Setup
 
@@ -237,29 +237,6 @@ mcp_oauth_credentials_store = "file"
 
 This is mainly a headless/SSH workaround. Do not force it for ordinary desktop
 clients where the platform credential store works.
-
-## Node Runtime Relay Start
-
-The same local relay can be started remotely on a fleet node through:
-
-```http
-POST /v1/nodes/oauth/relay/start
-```
-
-Example body:
-
-```json
-{
-  "bind_addr": "127.0.0.1:38935",
-  "target_url": "http://node.internal.example:38935/callback/node-a",
-  "default_port": 38935,
-  "request_timeout_ms": 30000
-}
-```
-
-This reuses the existing local relay implementation. It does not change OAuth token issuance or PKCE handling.
-
-In the current v1 trust model, this endpoint is intended for controller-orchestrated node runtime traffic on the tailnet. It is not exposed as a public operator surface on non-controller nodes; the controller invokes it after authenticating to the target node with the same shared bearer/OAuth controls that protect the rest of `/v1/*`.
 
 ### Using non-loopback redirect URIs
 
@@ -785,8 +762,9 @@ Call a protected endpoint with a `lab` access token:
 
 ```bash
 curl -H "Authorization: Bearer eyJhbG..." \
-     https://lab.example.com/v1/marketplace \
-     -d '{"action":"help"}'
+     https://lab.example.com/v1/gateway \
+     -H "Content-Type: application/json" \
+     -d '{"action":"gateway.list","params":{}}'
 ```
 
 ## Verifying Auth Configuration

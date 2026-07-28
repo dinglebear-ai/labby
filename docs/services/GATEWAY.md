@@ -2,7 +2,7 @@
 
 `lab` exposes a first-class `gateway` management surface for the upstream MCP proxy defined in [UPSTREAM.md](./UPSTREAM.md).
 
-This is separate from the device runtime `master` model. `gateway` remains the upstream MCP control plane and must not be overloaded for fleet device identity, device ingest, or fleet log handling.
+The `gateway` service owns upstream MCP configuration and runtime reconciliation. It does not own unrelated host identity or orchestration concerns.
 
 Use it when you want to inspect, test, add, update, remove, or reload `[[upstream]]` entries without editing `~/.config/labby/config.toml` by hand.
 
@@ -11,7 +11,7 @@ Use it when you want to inspect, test, add, update, remove, or reload `[[upstrea
 - `[[upstream]]` in `~/.config/labby/config.toml` remains the persisted source of truth.
 - `gateway.*` actions mutate that config, reconcile runtime state, and trigger MCP list-changed notifications when the merged catalog changes.
 - In-flight MCP requests keep using the pool they already captured. New requests observe the swapped pool after reconcile completes.
-- gateway management is exposed on the `master` only; non-master devices do not mount `/v1/gateway` or the `/mcp` transport
+- gateway management is exposed by the running Labby gateway host through CLI, MCP, API, and web surfaces
 
 Secrets remain indirect:
 

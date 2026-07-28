@@ -1,8 +1,4 @@
 import { gatewayRequestInit } from './gateway-request.ts'
-import {
-  assertDevPreviewCanRunAction,
-  devPreviewActionUrl,
-} from '@/lib/dev/preview-mode'
 
 export interface ServiceActionError extends Error {
   status: number
@@ -82,15 +78,13 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   createError: ActionErrorFactory<TError>
   source?: string
 }): Promise<T> {
-  assertDevPreviewCanRunAction(action)
-
   let response: Response
   try {
     const init = gatewayRequestInit(action, params, undefined, signal)
     if (source) {
       init.headers = { ...(init.headers as Record<string, string>), 'X-Lab-Source': source }
     }
-    response = await fetch(devPreviewActionUrl(url), init)
+    response = await fetch(url, init)
   } catch (error) {
     if (isAbortError(error)) {
       throw error

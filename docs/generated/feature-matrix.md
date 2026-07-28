@@ -15,19 +15,13 @@ Feature invariant status: clean.
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
-| labby-apis | `acp_registry` | SdkOnly | false | true | - |  |
-| labby-apis | `all` | AggregateDefault | false | false | labby/all | `deploy`<br>`mcpregistry`<br>`acp_registry` |
+| labby-apis | `all` | AggregateDefault | false | false | labby/all |  |
 | labby-apis | `default` | AggregateDefault | false | false | labby/default |  |
-| labby-apis | `deploy` | SdkOnly | false | true | - |  |
-| labby-apis | `mcpregistry` | SdkOnly | false | true | - |  |
 | labby-apis | `test-utils` | HelperInternal | false | false | - |  |
 | labby-auth | `default` | AggregateDefault | true | true | - |  |
 | labby-auth | `http-axum` | ExtractedCrate | true | true | - | `dep:axum`<br>`dep:tower` |
 | labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | true | true | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow` |
 | labby-codemode | `no_features` | ExtractedCrate | true | true | - |  |
 | labby-gateway | `testkit` | ExtractedCrate | false | false | - |  |
-| labby-runtime | `acp_registry` | ExtractedCrate | false | false | - | `dep:labby-apis`<br>`labby-apis/acp_registry` |
-| labby-runtime | `deploy` | ExtractedCrate | false | false | - | `dep:labby-apis`<br>`labby-apis/deploy` |
-| labby-runtime | `marketplace` | ExtractedCrate | false | false | - | `dep:labby-apis`<br>`labby-apis/mcpregistry` |
 | labby-web | `default` | AggregateDefault | true | true | - |  |
 | labby-winjob | `no_features` | ExtractedCrate | false | false | - |  |

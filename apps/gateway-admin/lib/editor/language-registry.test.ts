@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { getEditorDocumentConfig } from './language-registry'
 
-test('maps marketplace file paths to the correct editor language', () => {
+test('maps supported file paths to the correct editor language', () => {
   assert.equal(getEditorDocumentConfig('plugin.json').language, 'json')
   assert.equal(getEditorDocumentConfig('skills/review.md').language, 'markdown')
   assert.equal(getEditorDocumentConfig('scripts/setup.sh').language, 'bash')

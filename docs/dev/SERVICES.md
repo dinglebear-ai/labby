@@ -1,205 +1,52 @@
-# Services
+# Service Model
 
-`lab` is built around product-local control-plane services plus a small set of
-feature-gated product slices. Services follow the shared dispatch contract so
-CLI, MCP, HTTP API, and Labby web adapters can stay thin when a service opts
-into those surfaces.
+Labby registers a small product catalog over one shared dispatch contract. The
+generated [service catalog](../generated/service-catalog.md) is authoritative.
 
-## Per-Service Shape
+## Current Services
 
-Most first-class services or capabilities provide some combination of:
+| Service | Exposure | Surfaces | Ownership |
+| --- | --- | --- | --- |
+| `gateway` | feature-gated | CLI, MCP, API, web | Upstreams, protected routes, virtual servers, OAuth, Code Mode host |
+| `fs` | feature-gated | MCP, API, web | Optional configured filesystem browser |
+| `doctor` | always on | CLI, MCP, API | Supported configuration and runtime diagnostics |
+| `server_logs` | always on | CLI, MCP, API | Local Labby server-log search and inspection |
+| `setup` | always on | CLI, MCP, API, web | Bootstrap, provisioning, plugin hooks, host service |
+| `snippets` | always on | CLI, MCP, API | Code Mode snippet storage and execution metadata |
+| `lab_admin` | runtime-conditional | CLI, MCP | Explicitly enabled administrative actions |
 
-- a `lab-apis` module
-- a typed client
-- request/response types
-- a service-specific error type
-- a shared dispatch entry
-- a `PluginMeta`
-- a health-check implementation
-- a CLI shim
-- an MCP dispatch shim
-- an API shim when the service is exposed over HTTP
+## Registration Rules
 
-Product-local surfaces are split into two categories:
+A first-class service has one canonical action catalog and one shared dispatcher.
+CLI, MCP, HTTP, and web code are adapters over that dispatcher, not separate
+implementations.
 
-- product-local control-plane surfaces, which may live entirely in `lab` when
-  they primarily coordinate runtime behavior inside the product
-- product-local capability modules, whose core logic still belongs in
-  `lab-apis` even when they do not wrap a conventional upstream HTTP API
+- Action metadata lives in `ActionSpec`/`ParamSpec`.
+- Destructive classification is shared across surfaces.
+- Service metadata drives generated catalogs and help.
+- Feature-gated services must compile in their documented slices.
+- Runtime-conditional services remain absent unless explicitly enabled.
 
-`gateway` is the reference control-plane surface and is allowed to live
-entirely in `lab`.
+Reusable gateway, auth, Code Mode, web, and runtime behavior belongs in the
+extracted `labby-*` crates. Product dispatch and configuration adapters belong
+in `crates/labby`. Pure setup/doctor contracts may live in `labby-apis`.
 
-Any future ACP work should follow the capability-module pattern for ACP
-itself: `acp` becomes the first-class capability/service. There is currently
-no `chat` UI route over it — see [Chat / ACP Surface](#chat--acp-surface)
-below.
+## Adding A Service
 
-## Feature Gates
+Add only the surfaces the capability actually supports:
 
-Current standalone product slices are:
+1. define shared metadata and typed request/result contracts;
+2. implement one dispatcher;
+3. register it in the product service registry;
+4. add thin CLI/MCP/API/web adapters as needed;
+5. regenerate catalogs and add architecture tests;
+6. document config, errors, observability, and destructive behavior.
 
-- `gateway`
-- `fs`
+Do not add an empty Cargo feature as a placeholder for a future product.
 
-Retired product surfaces are deleted from the current `labby` crate rather than
-kept as sleeping feature gates:
+## Retired Services
 
-- marketplace and MCP Registry product dispatch
-- deploy
-- ACP/fleet nodes/device runtime
-- stash
-- ACP registry
-
-`mcpregistry` is SDK-only in this repo. It is not a `labby` service alias.
-`services-all` is currently empty because the older first-party upstream
-integrations are not present in this checkout's feature table.
-
-Default feature posture:
-
-- `lab-apis` defaults to no optional SDK modules
-- `labby` defaults to the gateway host package
-- `labby/all` enables the release product surface
-- doctor, setup, snippets, and serve are always-on/gateway-gated base services compiled
-  into every `labby` build
-- SDK capability modules remain available where base or feature-gated services
-  use them
-
-## Generated Inventories
-
-Do not maintain service, env, action, feature, or onboarding matrices by hand in
-this file. The current code-owned inventories are generated under
-[`docs/generated/`](../generated/README.md):
-
-- [service catalog](../generated/service-catalog.md)
-- [environment reference](../generated/env-reference.md)
-- [action catalog](../generated/action-catalog.md)
-- [feature matrix](../generated/feature-matrix.md)
-
-The generated service catalog distinguishes always-on, feature-gated,
-runtime-conditional, synthetic, and SDK-only entries. `device_runtime` remains
-an always-on SDK capability module, but the exposed registry service is
-`device`.
-
-## Service Sources
-
-Historical upstream API specs and research notes may remain under
-`docs/upstream-api/`, but they do not imply a compiled service or Cargo feature.
-The generated feature matrix and service catalog are the current source of
-truth for what this checkout builds.
-
-### Deferred Capability Boundaries
-
-- Radicale
-- Beads write operations, raw SQL, Dolt push/pull/commit, and direct Dolt database access
-- LoggiFly Docker socket access, raw logs, labels, notification sends/tests, and container/OliveTin actions
-- Uptime Kuma status-page mutation, maintenance windows, and fuller supervised socket actor lifecycle
-
-Upstream source coverage lives in [`docs/upstream-api/`](../upstream-api/README.md).
-Implementation coverage lives in [`docs/coverage/`](../coverage/README.md).
-
-## Plugin Metadata
-
-Every service publishes `PluginMeta` alongside the service module.
-
-That metadata drives:
-
-- generated docs and presentation
-- install/uninstall prompts
-- required env validation
-- doctor checks
-- docs and presentation
-
-Metadata includes:
-
-- canonical service name
-- display name
-- short description
-- category
-- docs URL
-- required env vars
-- optional env vars
-- default port
-
-Categories are part of the product model:
-
-- `Media`
-- `Servarr`
-- `Indexer`
-- `Download`
-- `Notes`
-- `Documents`
-- `Network`
-- `Notifications`
-- `Ai`
-- `Bootstrap`
-
-## Multi-Instance Support
-
-Multi-instance support is generic rather than hardcoded per service.
-
-The config layer recognizes:
-
-- `SERVICE_URL` as the default instance
-- `SERVICE_<LABEL>_URL` as named instances
-
-This is especially relevant for:
-
-- Unraid
-- Jellyfin
-- OpenACP
-- Plex
-- qBittorrent
-- any user who runs multiple copies of the same service
-
-The service library layer stays unaware of instance naming. Instance lookup is a binary-level config concern.
-
-OpenACP is registered as `openacp` and represents the upstream OpenACP daemon,
-not Lab's internal `acp` service. Its actions intentionally stay
-non-destructive in Lab's action catalog, so surface-specific destructive
-handling does not apply to prompt/session, config, topic, tunnel, notify, or
-restart actions.
-
-## Adding a New Service
-
-Use [SERVICE_ONBOARDING.md](./SERVICE_ONBOARDING.md) as the authoritative end-to-end checklist.
-
-At a high level:
-
-1. start from the upstream spec in `docs/upstream-api/`
-2. build the `lab-apis` client and types
-3. wire CLI, MCP, and HTTP shims
-4. register the service in feature flags, discovery, dispatch, and metadata
-5. update the coverage doc under `docs/coverage/`
-6. test locally and verify against a real instance when possible
-
-The important rule is that the service client owns logic. CLI, MCP, and HTTP layers only adapt inputs and outputs.
-
-## Service Inventory Direction
-
-The project is intentionally broad but follows one rule: one binary, one consistent control plane, many integrations.
-
-The service set is grouped conceptually, not implemented as unrelated one-offs.
-Use the generated feature matrix rather than older coverage or upstream API
-notes to decide whether a service exists in the current codebase.
-
-Run `just docs-generate` after changing registry entries, `PluginMeta`,
-`ActionSpec`, API route metadata, Cargo features, or onboarding checks. Run
-`just docs-check` before handing off generated-docs changes.
-
-## Product-Local Services
-
-[`GATEWAY.md`](../services/GATEWAY.md) documents a product-local management surface that
-edits and reloads `[[upstream]]` config and therefore does not fit the usual
-`lab-apis` service shape. [`acp/README.md`](../acp/README.md) documents ACP as a
-product-local capability service whose core logic belongs in `lab-apis` while
-its adapters and registration live in `lab`.
-
-## Chat / ACP Surface
-
-The `apps/gateway-admin` `/chat` UI surface over the `acp` capability has been
-removed. `acp` capability/service behavior, where it still exists, is owned by
-`lab-apis` and `lab`, independent of any frontend.
-
-If a chat UI is reintroduced, it should follow `SERVICE_ONBOARDING.md` and
-`DISPATCH.md` like any other first-class integration.
+ACP, ACP Registry, the in-product MCP Registry browser/client, Marketplace,
+Fleet/device runtime, Deploy-product, and Stash are not current services or SDK
+modules. Historical implementation contracts are archived under
+[../references/retired-labby](../references/retired-labby/).
