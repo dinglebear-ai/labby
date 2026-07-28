@@ -944,6 +944,24 @@ fn validate_backend_target(origin: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
+fn invalid_transport_param(reason: &str) -> &'static str {
+    if reason.contains("socket_path") {
+        "socket_path"
+    } else if reason.contains("header") || reason.contains("Authorization") {
+        "headers"
+    } else if reason.contains("bearer_token_env") {
+        "bearer_token_env"
+    } else if reason.contains("OAuth") || reason.contains("oauth") {
+        "oauth"
+    } else if reason.contains("command") {
+        "command"
+    } else if reason.contains("url") {
+        "url"
+    } else {
+        "transport"
+    }
+}
+
 fn validate_upstream(
     upstream: &UpstreamConfig,
     prefs: &GatewayPreferences,
@@ -956,28 +974,39 @@ fn validate_upstream(
     // Reject invalid names, mutually-exclusive auth shapes, and invalid URLs.
     // Name validation lives in UpstreamConfig::validate() so it runs on the
     // TOML load path as well (lab-qxl8.2 / lab-wsed).
-    upstream.validate().map_err(|e| match e {
-        labby_runtime::gateway_config::ConfigError::InvalidName { .. } => ToolError::InvalidParam {
-            message: e.to_string(),
-            param: "name".to_string(),
-        },
-        labby_runtime::gateway_config::ConfigError::ConflictingAuth { .. } => {
-            ToolError::InvalidParam {
-                message: e.to_string(),
-                param: "bearer_token_env".to_string(),
+    upstream.validate().map_err(|e| {
+        let message = e.to_string();
+        match e {
+            labby_runtime::gateway_config::ConfigError::InvalidName { .. } => {
+                ToolError::InvalidParam {
+                    message: e.to_string(),
+                    param: "name".to_string(),
+                }
             }
-        }
-        labby_runtime::gateway_config::ConfigError::MissingOauthUrl { .. }
-        | labby_runtime::gateway_config::ConfigError::InvalidUrl { .. } => {
-            ToolError::InvalidParam {
-                message: e.to_string(),
-                param: "url".to_string(),
+            labby_runtime::gateway_config::ConfigError::ConflictingAuth { .. } => {
+                ToolError::InvalidParam {
+                    message: e.to_string(),
+                    param: "bearer_token_env".to_string(),
+                }
             }
+            labby_runtime::gateway_config::ConfigError::MissingOauthUrl { .. }
+            | labby_runtime::gateway_config::ConfigError::InvalidUrl { .. } => {
+                ToolError::InvalidParam {
+                    message: e.to_string(),
+                    param: "url".to_string(),
+                }
+            }
+            labby_runtime::gateway_config::ConfigError::InvalidTransport { reason, .. } => {
+                ToolError::InvalidParam {
+                    message,
+                    param: invalid_transport_param(&reason).to_string(),
+                }
+            }
+            other => ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: other.to_string(),
+            },
         }
-        other => ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: other.to_string(),
-        },
     })?;
 
     match (&upstream.url, &upstream.command) {

@@ -150,7 +150,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::api::oauth::AuthContext;
-    use crate::api::{router::build_router_with_bearer, state::AppState};
+    use crate::api::{
+        router::{build_router_with_bearer, build_router_with_external_auth},
+        state::AppState,
+    };
     use crate::config::{
         LabConfig, UpstreamConfig, VirtualServerConfig, VirtualServerSurfacesConfig,
     };
@@ -382,6 +385,30 @@ mod tests {
             "expected 404/405 when gateway not mounted, got {}",
             response.status()
         );
+    }
+
+    #[tokio::test]
+    async fn trusted_outer_auth_mounts_gateway_without_bearer_middleware() {
+        let state =
+            AppState::from_registry(build_default_registry()).with_gateway_manager(test_manager());
+        let app = build_router_with_external_auth(state, None, None, None, &[], true)
+            .layer(Extension(admin_auth_context()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/gateway")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"action": "gateway.list", "params": {}}).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     // ── T5: Catalog-parametric scope test ───────────────────────────────────

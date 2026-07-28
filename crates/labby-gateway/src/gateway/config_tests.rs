@@ -1,4 +1,6 @@
-use labby_runtime::gateway_config::{GatewayConfig, ProtectedMcpRouteConfig, UpstreamConfig};
+use labby_runtime::gateway_config::{
+    GatewayConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamTransport,
+};
 
 use super::*;
 
@@ -911,6 +913,81 @@ fn write_gateway_config_rejects_missing_transport_selector() {
 
     let err = write_gateway_config(&path, &cfg).expect_err("missing transport selectors");
     assert_eq!(err.kind(), "invalid_param");
+}
+
+#[cfg(unix)]
+#[test]
+fn write_gateway_config_reports_socket_path_for_invalid_unix_transport() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let cfg = GatewayConfig {
+        upstream: vec![UpstreamConfig {
+            enabled: true,
+            name: "bad-unix".to_string(),
+            url: Some("http://localhost/mcp".to_string()),
+            transport: Some(UpstreamTransport::UnixSocket),
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }],
+        ..GatewayConfig::default()
+    };
+
+    let err = write_gateway_config(&path, &cfg).expect_err("missing socket path");
+    match err {
+        ToolError::InvalidParam { param, .. } => assert_eq!(param, "socket_path"),
+        other => panic!("expected invalid_param, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_gateway_config_reports_headers_for_invalid_authorization_header() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("Authorization".to_string(), "Bearer raw".to_string());
+    let cfg = GatewayConfig {
+        upstream: vec![UpstreamConfig {
+            enabled: true,
+            name: "bad-header".to_string(),
+            url: Some("http://localhost/mcp".to_string()),
+            transport: Some(UpstreamTransport::Http),
+            socket_path: None,
+            headers,
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }],
+        ..GatewayConfig::default()
+    };
+
+    let err = write_gateway_config(&path, &cfg).expect_err("inline authorization header");
+    match err {
+        ToolError::InvalidParam { param, .. } => assert_eq!(param, "headers"),
+        other => panic!("expected invalid_param, got {other:?}"),
+    }
 }
 
 #[test]

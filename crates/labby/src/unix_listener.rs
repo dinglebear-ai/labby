@@ -1,9 +1,15 @@
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
 use std::fs::{self, FileType};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStringExt as _;
+use std::os::unix::fs::{
+    DirBuilderExt as _, FileTypeExt as _, MetadataExt as _, PermissionsExt as _,
+};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -13,6 +19,8 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
 use axum::serve::{IncomingStream, Listener};
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use nix::fcntl::{AT_FDCWD, RenameFlags, renameat2};
 use nix::unistd::{Gid, Uid, chown};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -20,6 +28,7 @@ use crate::api::oauth::AuthContext;
 use crate::config::McpPreferences;
 
 const DEFAULT_SOCKET_MODE: u32 = 0o660;
+const CREATED_PARENT_MODE: u32 = 0o755;
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -132,6 +141,9 @@ pub(super) fn resolve_config(
     }
     if abstract_socket && !cfg!(target_os = "linux") {
         anyhow::bail!("abstract @name Unix sockets are supported only on Linux");
+    }
+    if !abstract_socket && !path.is_absolute() {
+        anyhow::bail!("filesystem Unix socket path must be absolute");
     }
 
     let configured_mode = env_or_config(
@@ -396,17 +408,191 @@ impl Connected<IncomingStream<'_, AuthorizedUnixListener>> for UnixConnectInfo {
     }
 }
 
+fn validate_trusted_directory(metadata: &fs::Metadata, effective_uid: u32) -> Result<()> {
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!(
+            "Unix socket directory chain must contain only real directories, not symlinks or special files"
+        );
+    }
+    let owner_uid = metadata.uid();
+    if owner_uid != 0 && owner_uid != effective_uid {
+        anyhow::bail!(
+            "Unix socket directory chain must be owned by root or effective UID {effective_uid}"
+        );
+    }
+    let mode = metadata.permissions().mode();
+    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+        anyhow::bail!(
+            "Unix socket directory chain must not contain group/world-writable directories without the sticky bit"
+        );
+    }
+    Ok(())
+}
+
+fn validate_final_parent(metadata: &fs::Metadata, effective_uid: u32) -> Result<()> {
+    validate_trusted_directory(metadata, effective_uid)?;
+    if metadata.permissions().mode() & 0o022 != 0 {
+        anyhow::bail!(
+            "Unix socket final parent directory must not be writable by group or other users"
+        );
+    }
+    Ok(())
+}
+
+fn prepare_trusted_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("filesystem Unix socket path must have a parent directory")
+        })?;
+    let effective_uid = Uid::effective().as_raw();
+    let mut current = PathBuf::new();
+
+    for component in parent.components() {
+        match component {
+            Component::RootDir => current.push(Path::new("/")),
+            Component::Normal(name) => current.push(name),
+            Component::CurDir | Component::ParentDir => {
+                anyhow::bail!(
+                    "filesystem Unix socket path must not contain relative path components"
+                );
+            }
+            Component::Prefix(_) => {
+                anyhow::bail!("unsupported Unix socket path prefix");
+            }
+        }
+
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(CREATED_PARENT_MODE);
+                match builder.create(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(error).context("create Unix socket parent directory");
+                    }
+                }
+                fs::symlink_metadata(&current)
+                    .context("inspect created Unix socket parent directory")?
+            }
+            Err(error) => {
+                return Err(error).context("inspect Unix socket directory chain");
+            }
+        };
+        validate_trusted_directory(&metadata, effective_uid)?;
+    }
+
+    let metadata =
+        fs::symlink_metadata(parent).context("reinspect Unix socket final parent directory")?;
+    validate_final_parent(&metadata, effective_uid)
+}
+
+fn publish_socket_no_replace(staging_path: &Path, path: &Path) -> Result<()> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        renameat2(
+            AT_FDCWD,
+            staging_path,
+            AT_FDCWD,
+            path,
+            RenameFlags::RENAME_NOREPLACE,
+        )
+        .context("publish configured Unix socket without replacing an existing entry")?;
+        return Ok(());
+    }
+
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    {
+        if fs::symlink_metadata(path).is_ok() {
+            anyhow::bail!("refusing to replace an existing Unix socket path during publication");
+        }
+        fs::rename(staging_path, path).context("publish configured Unix socket")
+    }
+}
+
+fn bind_filesystem_socket(
+    path: &Path,
+    mode: u32,
+    owner_uid: Option<u32>,
+    owner_gid: Option<u32>,
+) -> Result<UnixListener> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("filesystem Unix socket path must have a parent directory")
+        })?;
+
+    // Bind inside a private directory so the socket is never reachable while it
+    // still has the platform's bind-time permissions. Configure mode/ownership
+    // there, then atomically publish the already-hardened socket into the trusted
+    // parent. This avoids mutating the process-global umask in a multithreaded
+    // daemon.
+    let staging = tempfile::Builder::new()
+        .prefix(".labby-socket-stage-")
+        .tempdir_in(parent)
+        .context("create private Unix socket staging directory")?;
+    fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o700))
+        .context("restrict Unix socket staging directory")?;
+    let staging_path = staging.path().join("socket");
+    let listener = UnixListener::bind(&staging_path).context("bind staged Unix socket")?;
+    fs::set_permissions(&staging_path, fs::Permissions::from_mode(mode))
+        .context("set staged Unix socket permissions")?;
+    if owner_uid.is_some() || owner_gid.is_some() {
+        chown(
+            &staging_path,
+            owner_uid.map(Uid::from_raw),
+            owner_gid.map(Gid::from_raw),
+        )
+        .context("set staged Unix socket owner/group")?;
+    }
+    publish_socket_no_replace(&staging_path, path)?;
+    drop(staging);
+    Ok(listener)
+}
+
+#[cfg(target_os = "linux")]
+fn tokio_abstract_path(path: &Path) -> Result<PathBuf> {
+    let raw = path.as_os_str().as_bytes();
+    let name = raw
+        .strip_prefix(b"@")
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("abstract Unix socket path must use non-empty @name notation")
+        })?;
+    let mut address = Vec::with_capacity(name.len() + 1);
+    address.push(0);
+    address.extend_from_slice(name);
+    Ok(PathBuf::from(OsString::from_vec(address)))
+}
+
 pub(super) async fn bind(config: &UnixListenerConfig) -> Result<AuthorizedUnixListener> {
     if !config.abstract_socket {
-        if let Some(parent) = config.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent).context("create Unix socket parent directory")?;
-        }
+        prepare_trusted_parent(&config.path)?;
         remove_stale_socket_safely(&config.path).await?;
     }
 
-    let listener = UnixListener::bind(&config.path).context("bind configured Unix socket")?;
+    let listener = if config.abstract_socket {
+        #[cfg(target_os = "linux")]
+        {
+            UnixListener::bind(tokio_abstract_path(&config.path)?)
+                .context("bind configured abstract Unix socket")?
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            anyhow::bail!("abstract Unix sockets are supported only on Linux");
+        }
+    } else {
+        bind_filesystem_socket(
+            &config.path,
+            config.mode.unwrap_or(DEFAULT_SOCKET_MODE),
+            config.owner_uid,
+            config.owner_gid,
+        )?
+    };
     if config.abstract_socket {
         return Ok(AuthorizedUnixListener {
             listener,
@@ -423,18 +609,6 @@ pub(super) async fn bind(config: &UnixListenerConfig) -> Result<AuthorizedUnixLi
         path: config.path.clone(),
         identity: SocketIdentity::from_metadata(&metadata),
     });
-
-    if config.owner_uid.is_some() || config.owner_gid.is_some() {
-        chown(
-            &config.path,
-            config.owner_uid.map(Uid::from_raw),
-            config.owner_gid.map(Gid::from_raw),
-        )
-        .context("set Unix socket owner/group")?;
-    }
-    let mode = config.mode.unwrap_or(DEFAULT_SOCKET_MODE);
-    fs::set_permissions(&config.path, fs::Permissions::from_mode(mode))
-        .context("set Unix socket permissions")?;
 
     Ok(AuthorizedUnixListener {
         listener,
@@ -483,11 +657,47 @@ mod tests {
     use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
 
     use axum::serve::Listener as _;
     use tokio::time::timeout;
+    use tracing::instrument::WithSubscriber as _;
 
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    struct CapturedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for CapturedLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture log lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CapturedLogWriter(Arc::clone(&self.0))
+        }
+    }
+
+    impl CapturedLogs {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().expect("capture log lock").clone())
+                .expect("logs are UTF-8")
+        }
+    }
 
     fn config_for(path: PathBuf) -> UnixListenerConfig {
         UnixListenerConfig {
@@ -506,6 +716,24 @@ mod tests {
         assert_eq!(parse_socket_mode("0o640").unwrap(), 0o640);
         assert!(parse_socket_mode("680").is_err());
         assert!(parse_socket_mode("1000").is_err());
+    }
+
+    #[test]
+    fn peer_id_parser_accepts_root_and_rejects_invalid_values() {
+        assert_eq!(
+            parse_id("LABBY_MCP_UNIX_PEER_UID", Some("0".to_string()), None).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            parse_id("LABBY_MCP_UNIX_PEER_GID", None, Some(42)).unwrap(),
+            Some(42)
+        );
+        for invalid in ["", "-1", "not-an-id", "4294967296"] {
+            assert!(
+                parse_id("LABBY_MCP_UNIX_PEER_UID", Some(invalid.to_string()), None).is_err(),
+                "{invalid:?} must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -534,6 +762,13 @@ mod tests {
         assert_eq!(resolved.owner_gid, Some(200));
         assert_eq!(resolved.peer_policy.uid, Some(300));
         assert_eq!(resolved.peer_policy.gid, Some(400));
+
+        let relative = McpPreferences {
+            socket_path: Some(PathBuf::from("relative.sock")),
+            ..McpPreferences::default()
+        };
+        let error = resolve_config(&relative, &|_| None).unwrap_err();
+        assert!(error.to_string().contains("must be absolute"));
 
         #[cfg(target_os = "linux")]
         {
@@ -578,6 +813,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn untrusted_or_symlinked_directory_chain_is_rejected() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let unsafe_parent = tempdir.path().join("unsafe");
+        fs::create_dir(&unsafe_parent).unwrap();
+        fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o777)).unwrap();
+        let error = bind(&config_for(unsafe_parent.join("labby.sock")))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("group/world-writable"));
+
+        let trusted_child = unsafe_parent.join("trusted-child");
+        fs::create_dir(&trusted_child).unwrap();
+        fs::set_permissions(&trusted_child, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = bind(&config_for(trusted_child.join("labby.sock")))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("group/world-writable"));
+
+        let sticky_parent = tempdir.path().join("sticky-final");
+        fs::create_dir(&sticky_parent).unwrap();
+        fs::set_permissions(&sticky_parent, fs::Permissions::from_mode(0o1777)).unwrap();
+        let error = bind(&config_for(sticky_parent.join("labby.sock")))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("final parent"));
+
+        let real_parent = tempdir.path().join("real");
+        fs::create_dir(&real_parent).unwrap();
+        let symlink_parent = tempdir.path().join("linked");
+        std::os::unix::fs::symlink(&real_parent, &symlink_parent).unwrap();
+        let error = bind(&config_for(symlink_parent.join("labby.sock")))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("only real directories"));
+    }
+
+    #[tokio::test]
+    async fn permissive_process_umask_never_publishes_an_overly_broad_socket() {
+        const CHILD_ENV: &str = "LABBY_TEST_PERMISSIVE_UMASK_CHILD";
+        const TEST_NAME: &str =
+            "unix_listener::tests::permissive_process_umask_never_publishes_an_overly_broad_socket";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        use nix::sys::stat::{Mode, umask};
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("initial-mode.sock");
+        prepare_trusted_parent(&path).unwrap();
+        let previous = umask(Mode::empty());
+        let listener_result = bind_filesystem_socket(&path, 0o600, None, None);
+        umask(previous);
+        let listener = listener_result.unwrap();
+        let observed = fs::symlink_metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(observed & !0o600, 0, "initial socket mode was {observed:o}");
+        drop(listener);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn publication_never_replaces_an_existing_entry() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let staging_path = tempdir.path().join("staged.sock");
+        let published_path = tempdir.path().join("published.sock");
+        let listener = UnixListener::bind(&staging_path).unwrap();
+        fs::write(&published_path, b"preserve me").unwrap();
+
+        let error = publish_socket_no_replace(&staging_path, &published_path).unwrap_err();
+        assert!(error.to_string().contains("without replacing"));
+        assert_eq!(fs::read(&published_path).unwrap(), b"preserve me");
+        assert!(staging_path.exists());
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn missing_parent_is_created_without_group_or_world_write_access() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let parent = tempdir.path().join("nested").join("runtime");
+        let path = parent.join("labby.sock");
+
+        let listener = bind(&config_for(path.clone())).await.unwrap();
+        let mode = fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & 0o022, 0, "created parent mode was {mode:o}");
+        assert!(path.exists());
+        drop(listener);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
     async fn stale_socket_is_reclaimed_and_owned_socket_is_cleaned_up() {
         let tempdir = tempfile::tempdir().unwrap();
         let path = tempdir.path().join("stale.sock");
@@ -601,6 +938,36 @@ mod tests {
         fs::write(&path, b"replacement").unwrap();
         drop(listener);
         assert_eq!(fs::read(&path).unwrap(), b"replacement");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn abstract_socket_binds_connects_and_accepts() {
+        let path = PathBuf::from(format!("@labby-hosted-test-{}", std::process::id()));
+        let config = UnixListenerConfig {
+            path: path.clone(),
+            mode: None,
+            owner_uid: None,
+            owner_gid: None,
+            peer_policy: PeerPolicy::default(),
+            abstract_socket: true,
+        };
+        let mut listener = bind(&config).await.unwrap();
+        assert_eq!(
+            listener.listener.local_addr().unwrap().as_abstract_name(),
+            Some(path.as_os_str().as_bytes().strip_prefix(b"@").unwrap())
+        );
+        let accept = tokio::spawn(async move { listener.accept().await.1 });
+        let client = UnixStream::connect(tokio_abstract_path(&path).unwrap())
+            .await
+            .unwrap();
+        let info = timeout(Duration::from_secs(1), accept)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(info.peer.is_some());
+        drop(client);
     }
 
     #[cfg(target_os = "linux")]
@@ -650,18 +1017,21 @@ mod tests {
                 "/peer",
                 get(|Extension(context): Extension<AuthContext>| async move { context.sub }),
             )
-            .layer(axum::Extension(loopback_connect_info()))
+            .layer(Extension(loopback_connect_info()))
             .layer(middleware::from_fn(inject_peer_auth));
         let service = router.into_make_service_with_connect_info::<UnixConnectInfo>();
         let server = tokio::spawn(async move { axum::serve(listener, service).await });
 
         drop(rustls::crypto::ring::default_provider().install_default());
+        // This authority is only an HTTP Host value. The connection itself is
+        // confined to the configured Unix socket, so TLS is neither used nor
+        // appropriate for this transport-level test.
         let response = reqwest::Client::builder()
             .http1_only()
             .unix_socket(path.clone())
             .build()
             .unwrap()
-            .get("http://local.internal/peer")
+            .get("http://localhost/peer")
             .send()
             .await
             .unwrap();
@@ -677,7 +1047,60 @@ mod tests {
         );
 
         server.abort();
-        let _ = server.await;
+        drop(server.await);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn peer_authenticated_web_session_reports_authenticated_admin() {
+        use axum::middleware;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("peer-session.sock");
+        let mut config = config_for(path.clone());
+        config.peer_policy = PeerPolicy {
+            uid: Some(Uid::effective().as_raw()),
+            gid: Some(Gid::effective().as_raw()),
+        };
+        let listener = bind(&config).await.unwrap();
+        let router = crate::api::router::build_router_with_external_auth(
+            crate::api::state::AppState::new(),
+            None,
+            None,
+            None,
+            &[],
+            true,
+        )
+        .layer(axum::Extension(loopback_connect_info()))
+        .layer(middleware::from_fn(inject_peer_auth));
+        let service = router.into_make_service_with_connect_info::<UnixConnectInfo>();
+        let server = tokio::spawn(async move { axum::serve(listener, service).await });
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let response = reqwest::Client::builder()
+            .http1_only()
+            .unix_socket(path.clone())
+            .build()
+            .unwrap()
+            .get("http://localhost/auth/session")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["authenticated"], true);
+        assert_eq!(body["is_admin"], true);
+        assert_eq!(
+            body["user"]["sub"],
+            format!(
+                "unix-peer:uid={}:gid={}",
+                Uid::effective().as_raw(),
+                Gid::effective().as_raw()
+            )
+        );
+
+        server.abort();
+        drop(server.await);
     }
 
     #[cfg(target_os = "linux")]
@@ -691,12 +1114,23 @@ mod tests {
             gid: None,
         };
         let mut listener = bind(&config).await.unwrap();
-        let accept =
-            tokio::spawn(
-                async move { timeout(Duration::from_millis(200), listener.accept()).await },
-            );
-        let client = UnixStream::connect(&path).await.unwrap();
-        assert!(accept.await.unwrap().is_err());
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(logs.clone())
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let rejected = async move { timeout(Duration::from_millis(200), listener.accept()).await }
+            .with_subscriber(dispatch);
+        let (client, rejected) = tokio::join!(UnixStream::connect(&path), rejected);
+        let client = client.unwrap();
+        assert!(rejected.is_err());
         drop(client);
+
+        let output = logs.text();
+        assert!(output.contains("unix_socket.peer_credentials.rejected"));
+        assert!(!output.contains(&path.to_string_lossy().to_string()));
     }
 }

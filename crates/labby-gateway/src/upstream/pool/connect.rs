@@ -7,6 +7,12 @@
 //! call them across the module boundary.
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStringExt as _;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::time::Instant;
 
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
@@ -187,6 +193,22 @@ pub(super) async fn connect_upstream(
 }
 
 #[cfg(unix)]
+fn unix_socket_connect_path(path: &str) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    if let Some(name) = path
+        .as_bytes()
+        .strip_prefix(b"@")
+        .filter(|name| !name.is_empty())
+    {
+        let mut address = Vec::with_capacity(name.len() + 1);
+        address.push(0);
+        address.extend_from_slice(name);
+        return PathBuf::from(OsString::from_vec(address));
+    }
+    PathBuf::from(path)
+}
+
+#[cfg(unix)]
 async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
@@ -209,7 +231,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     let client = reqwest::Client::builder()
         .timeout(DEFAULT_REQUEST_TIMEOUT)
         .http1_only()
-        .unix_socket(socket_path)
+        .unix_socket(unix_socket_connect_path(socket_path))
         .build()
         .map_err(|error| {
             anyhow::anyhow!(

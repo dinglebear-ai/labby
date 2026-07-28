@@ -52,6 +52,8 @@ pub mod process;
 pub mod registry;
 #[cfg(test)]
 pub mod test_support;
+#[cfg(unix)]
+pub(crate) mod unix_listener;
 #[cfg(feature = "fs")]
 pub mod workspace;
 

@@ -88,9 +88,13 @@ mod tests {
         .unwrap();
         assert!(validate_upstream_config(&valid).is_ok());
 
+        let stdio_with_named_token: UpstreamConfig =
+            toml::from_str("name=\"stdio\"\ncommand=\"server\"\nbearer_token_env=\"TOKEN\"\n")
+                .unwrap();
+        assert!(validate_upstream_config(&stdio_with_named_token).is_ok());
+
         for invalid_toml in [
             "name=\"bad\"\ntransport=\"unix_socket\"\nurl=\"http://local.internal/mcp\"\n",
-            "name=\"bad\"\ncommand=\"server\"\nbearer_token_env=\"TOKEN\"\n",
             "name=\"bad\"\nurl=\"ws://local.internal/mcp\"\n[headers]\nx-test=\"value\"\n",
         ] {
             let cfg: UpstreamConfig = toml::from_str(invalid_toml).unwrap();

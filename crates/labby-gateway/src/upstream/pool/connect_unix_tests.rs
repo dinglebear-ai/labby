@@ -1,4 +1,9 @@
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
 use std::io;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStringExt as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -208,7 +213,7 @@ async fn serve_unix_mcp(listener: UnixListener, signals: RequestSignals) -> io::
     }
 }
 
-async fn exercise_unix_socket(socket_path: &str) {
+async fn exercise_unix_socket(socket_path: &str, listener: UnixListener) {
     assert!(
         std::env::var("HOME")
             .ok()
@@ -216,7 +221,6 @@ async fn exercise_unix_socket(socket_path: &str) {
         "HOME is required for the bearer-token integration assertion"
     );
 
-    let listener = UnixListener::bind(socket_path).expect("bind Unix socket");
     let signals = RequestSignals::new();
     let server = tokio::spawn(serve_unix_mcp(listener, signals.clone()));
 
@@ -263,7 +267,8 @@ async fn exercise_unix_socket(socket_path: &str) {
 async fn filesystem_unix_socket_upstream_preserves_http_behavior() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let socket_path = tempdir.path().join("mcp.sock");
-    exercise_unix_socket(socket_path.to_string_lossy().as_ref()).await;
+    let listener = UnixListener::bind(&socket_path).expect("bind filesystem Unix socket");
+    exercise_unix_socket(socket_path.to_string_lossy().as_ref(), listener).await;
 }
 
 #[cfg(target_os = "linux")]
@@ -271,5 +276,15 @@ async fn filesystem_unix_socket_upstream_preserves_http_behavior() {
 async fn abstract_unix_socket_upstream_discovers_and_calls_tool() {
     let sequence = ABSTRACT_SOCKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let socket_path = format!("@labby-uds-{}-{sequence}", std::process::id());
-    exercise_unix_socket(&socket_path).await;
+    let name = socket_path.as_bytes().strip_prefix(b"@").unwrap();
+    let mut address = Vec::with_capacity(name.len() + 1);
+    address.push(0);
+    address.extend_from_slice(name);
+    let listener = UnixListener::bind(PathBuf::from(OsString::from_vec(address)))
+        .expect("bind abstract Unix socket");
+    assert_eq!(
+        listener.local_addr().unwrap().as_abstract_name(),
+        Some(name)
+    );
+    exercise_unix_socket(&socket_path, listener).await;
 }

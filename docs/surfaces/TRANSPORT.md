@@ -81,7 +81,7 @@ peer_uid = 1000
 
 | Variable | Config key | Default | Description |
 |----------|------------|---------|-------------|
-| `LABBY_MCP_UNIX_SOCKET_PATH` | `mcp.socket_path` | — | Filesystem path, or Linux abstract `@name` notation. Required for `unix_socket`. |
+| `LABBY_MCP_UNIX_SOCKET_PATH` | `mcp.socket_path` | — | Absolute filesystem path, or Linux abstract `@name` notation. Required for `unix_socket`. |
 | `LABBY_MCP_UNIX_SOCKET_MODE` | `mcp.socket_mode` | `0660` | Filesystem socket permissions in octal. Not valid for abstract sockets. |
 | `LABBY_MCP_UNIX_SOCKET_UID` | `mcp.socket_uid` | current owner | Optional filesystem socket owner UID. |
 | `LABBY_MCP_UNIX_SOCKET_GID` | `mcp.socket_gid` | current group | Optional filesystem socket owner GID. |
@@ -91,12 +91,15 @@ peer_uid = 1000
 Rules:
 
 - Environment values override their `[mcp]` equivalents.
-- Filesystem listeners default to mode `0660`; configured owner/group are applied after bind.
+- Filesystem listeners require an absolute path. Every existing directory in the path must be a real directory owned by root or the listener process's effective UID. Group/world-writable ancestors are rejected unless they are sticky directories such as `/tmp`; missing components are created with a maximum requested mode of `0755`, further restricted by the process umask.
+- Filesystem listeners default to mode `0660`. Labby binds inside a private `0700` staging directory, applies the configured socket mode and optional owner/group there, then atomically publishes the already-hardened socket at the configured path.
 - Startup removes only a verified stale socket. Active sockets, symlinks, regular files, and paths that change during verification are never removed. SIGTERM, Ctrl-C, and normal server exit drop the listener and remove only the exact socket inode created by this process.
 - Linux abstract sockets use `@name`. They have no filesystem owner or mode, so `socket_mode`, `socket_uid`, and `socket_gid` must be omitted.
 - Bearer and OAuth authentication continue to work over the socket. A Unix listener without bearer, OAuth, or peer-credential authorization is refused at startup.
 - Peer-credential mode is Linux-only. The accepted stream's kernel UID/GID is checked before HTTP is served and becomes a local principal such as `unix-peer:uid=1000:gid=1000`. Client-supplied headers are never trusted as peer identity.
+- Kernel credentials are interpreted in the listener process's user namespace. Use peer-credential authorization only when both endpoints share a trusted UID/GID mapping; user-namespaced containers with overlapping numeric IDs require an additional trusted boundary or bearer/OAuth instead.
 - Peer-credential authorization cannot be combined with bearer or OAuth. It is intended for infrastructure and non-user-scoped services because it does not preserve per-user OAuth subject forwarding.
+- The validated directory chain is the operating-system namespace boundary for path replacement. Labby also verifies socket inode identity before stale cleanup and shutdown removal, and refuses to operate when the configured path resolves to an unsafe entry.
 
 ### Stateless MCP lifecycle
 

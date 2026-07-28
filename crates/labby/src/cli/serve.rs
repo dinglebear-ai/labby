@@ -40,9 +40,8 @@ use crate::output::theme::{CliTheme, ColorPolicy, RenderContext, RenderEnv};
 #[cfg(target_os = "linux")]
 use crate::process::unix::{exe_path, terminate_sigterm};
 use crate::registry::{ToolRegistry, build_default_registry};
-
 #[cfg(unix)]
-mod unix_listener;
+use crate::unix_listener;
 
 #[cfg(unix)]
 type HostedUnixConfig = unix_listener::UnixListenerConfig;
@@ -862,6 +861,7 @@ async fn run_http(
         config_cors_origins,
         notifier,
         mount_http_mcp,
+        peer_auth_enabled,
     )?;
     #[cfg(not(feature = "gateway"))]
     let router = build_http_router(
@@ -872,6 +872,7 @@ async fn run_http(
         config_cors_origins,
         notifier,
         mount_http_mcp,
+        peer_auth_enabled,
     )?;
     tracing::info!(
         subsystem = "api_server",
@@ -883,6 +884,7 @@ async fn run_http(
         web_assets_enabled,
         bearer_token_configured,
         mount_http_mcp,
+        #[cfg(unix)]
         peer_auth_enabled,
     };
     match transport {
@@ -907,6 +909,7 @@ struct HostedListenerStatus {
     web_assets_enabled: bool,
     bearer_token_configured: bool,
     mount_http_mcp: bool,
+    #[cfg(unix)]
     peer_auth_enabled: bool,
 }
 
@@ -1199,6 +1202,7 @@ fn build_http_router(
     config_cors_origins: &[String],
     notifier: PeerNotifier,
     mount_http_mcp: bool,
+    external_auth_configured: bool,
 ) -> Result<axum::Router> {
     let mcp_router = if mount_http_mcp {
         // Build the MCP streamable HTTP service in the serve path (not in the
@@ -1222,12 +1226,13 @@ fn build_http_router(
         state
     };
 
-    Ok(crate::api::router::build_router(
+    Ok(crate::api::router::build_router_with_external_auth(
         state,
         bearer_token,
         auth_state,
         mcp_router,
         config_cors_origins,
+        external_auth_configured,
     ))
 }
 
@@ -2227,6 +2232,7 @@ mod tests {
             &[],
             PeerNotifier::default(),
             false,
+            false,
         )
         .expect("router without http mcp");
 
@@ -2267,6 +2273,7 @@ mod tests {
             &[],
             PeerNotifier::default(),
             true,
+            false,
         )
         .expect("router with http mcp");
 
@@ -2293,6 +2300,7 @@ mod tests {
             &[],
             PeerNotifier::default(),
             true,
+            false,
         )
         .expect("router with HTTP MCP");
         let response = app
@@ -2340,6 +2348,7 @@ mod tests {
             &[],
             PeerNotifier::default(),
             true,
+            false,
         )
         .expect("router with HTTP MCP");
         let response = app
@@ -2396,6 +2405,7 @@ mod tests {
             &[],
             PeerNotifier::default(),
             true,
+            false,
         )
         .expect("router with HTTP MCP");
         let response = app
@@ -2450,6 +2460,7 @@ mod tests {
             &[],
             PeerNotifier::default(),
             true,
+            false,
         )
         .expect("router with HTTP MCP");
         let response = app

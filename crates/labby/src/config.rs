@@ -972,7 +972,7 @@ pub struct OutputPreferences {
 /// MCP server defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpPreferences {
-    /// Default transport (`stdio` or `http`).
+    /// Default transport (`stdio`, `http`, or `unix_socket`).
     #[serde(default)]
     pub transport: Option<String>,
     /// Default bind address for the HTTP transport.

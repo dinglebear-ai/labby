@@ -1313,13 +1313,39 @@ async fn labby_discovery(State(state): State<AppState>) -> axum::response::Respo
     response
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn build_router(
+    state: AppState,
+    bearer_token: Option<String>,
+    auth_state: Option<labby_auth::state::AuthState>,
+    mcp_router: Option<Router<AppState>>,
+    config_cors_origins: &[String],
+) -> Router {
+    build_router_with_external_auth(
+        state,
+        bearer_token,
+        auth_state,
+        mcp_router,
+        config_cors_origins,
+        false,
+    )
+}
+
+/// Build the hosted HTTP router with an optional trusted outer authentication boundary.
+///
+/// `external_auth_configured` is used by the Unix peer-credential listener. The
+/// listener rejects unauthorized streams before HTTP parsing and injects an
+/// `AuthContext` into every accepted request. It therefore enables protected
+/// route publication without installing the bearer/OAuth middleware a second
+/// time. Callers must never set this for a listener that does not enforce and
+/// inject authentication itself.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn build_router_with_external_auth(
     mut state: AppState,
     bearer_token: Option<String>,
     auth_state: Option<labby_auth::state::AuthState>,
     mcp_router: Option<Router<AppState>>,
     config_cors_origins: &[String],
+    external_auth_configured: bool,
 ) -> Router {
     if let Some(ref auth_state) = auth_state {
         state = state.with_oauth_state(auth_state.clone());
@@ -1337,14 +1363,15 @@ pub fn build_router(
     let static_token = bearer_token.map(Arc::<str>::from);
     state = state.with_bearer_token(static_token.clone());
     let auth_state = auth_state.map(Arc::new);
-    let needs_auth = static_token.is_some() || auth_state.is_some();
-    if !needs_auth {
+    let credential_auth_configured = static_token.is_some() || auth_state.is_some();
+    let protected_route_auth_configured = credential_auth_configured || external_auth_configured;
+    if !protected_route_auth_configured {
         tracing::warn!(
-            "HTTP API started without bearer token or OAuth auth state — all protected routes are unprotected"
+            "HTTP API started without bearer, OAuth, or a trusted outer auth boundary — all published routes are unprotected"
         );
     }
 
-    let v1 = build_v1_router(&state, needs_auth);
+    let v1 = build_v1_router(&state, protected_route_auth_configured);
 
     let x_request_id = HeaderName::from_static("x-request-id");
 
@@ -1380,7 +1407,7 @@ pub fn build_router(
             .with_allow_session_cookie(allow_session_cookie);
         layer
     };
-    let v1_protected = if needs_auth {
+    let v1_protected = if credential_auth_configured {
         v1_router.route_layer(make_auth_layer(true))
     } else {
         v1_router
@@ -1391,7 +1418,7 @@ pub fn build_router(
     let actor_key_deriver_for_mcp = state.actor_key_deriver.clone();
     let resource_url_for_mcp = resource_url.clone();
     let mcp_protected = mcp_router.map(|mcp| {
-        if needs_auth {
+        if credential_auth_configured {
             mcp.route_layer(axum::middleware::from_fn(
                 move |request: Request<Body>, next: Next| {
                     authenticate_request(
@@ -1450,7 +1477,7 @@ pub fn build_router(
     // web_ui_auth_disabled = true by default, so auth_session() returns a
     // synthetic authenticated-admin session with no credential check at
     // all to any caller who can reach this port. It does not grant real
-    // /v1/* access (gated separately by needs_auth), but it does render an
+    // /v1/* access (gated separately by the configured auth boundary), but it does render an
     // "authenticated" admin UI shell for unauthenticated visitors. Tracked
     // in lab-0bl3m — not fixed here.
     router = router
@@ -1510,7 +1537,7 @@ pub fn build_router(
         .route("/dev/mockup/", get(dev_mockup))
         .route("/dev/mockup/{name}", get(dev_mockup_named))
         .route("/dev/mockup/{name}/", get(dev_mockup_named));
-    let dev_routes = if needs_auth {
+    let dev_routes = if credential_auth_configured {
         dev_routes.route_layer(make_auth_layer(true))
     } else {
         dev_routes
@@ -1528,7 +1555,7 @@ pub fn build_router(
             &format!("{SERVER_LOGS_BROWSER_ROUTE}/"),
             get(server_logs_app_page),
         );
-    let app_routes = if needs_auth {
+    let app_routes = if credential_auth_configured {
         app_routes.route_layer(make_auth_layer(true))
     } else {
         app_routes

@@ -1,3 +1,4 @@
+use axum::Extension;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -6,6 +7,7 @@ use std::time::Instant;
 use crate::api::ToolError;
 use crate::api::auth_helpers::{log_auth_dispatch, log_auth_dispatch_start, request_id};
 use crate::api::error::ApiError;
+use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
 
 use labby_auth::session::BROWSER_CSRF_HEADER_NAME;
@@ -114,10 +116,37 @@ fn invalid_csrf_response() -> Response {
     response
 }
 
-pub async fn auth_session(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+pub async fn auth_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+) -> impl IntoResponse {
     let start = Instant::now();
     let request_id = request_id(&headers).map(ToOwned::to_owned);
     log_auth_dispatch_start("session.get", request_id.as_deref());
+
+    if let Some(Extension(context)) = auth {
+        let is_admin = context.scopes.iter().any(|scope| scope == "lab:admin");
+        let response = no_store_json(serde_json::json!({
+            "authenticated": true,
+            "login_available": false,
+            "is_admin": is_admin,
+            "user": {
+                "sub": context.sub,
+                "email": context.email,
+            },
+            "expires_at": DEV_SESSION_EXPIRES_AT,
+            "csrf_token": "",
+        }));
+        log_auth_dispatch(
+            "session.get",
+            request_id.as_deref(),
+            start,
+            None,
+            context.actor_key.as_deref(),
+        );
+        return response;
+    }
 
     if state.web_ui_auth_disabled {
         // Dev mode bypasses auth entirely — treat the synthetic dev user as admin

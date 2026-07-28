@@ -168,7 +168,7 @@ Rules:
 | `transport` | `LABBY_MCP_TRANSPORT` | `"http"` | MCP transport: `"stdio"`, `"http"`, or `"unix_socket"` |
 | `host` | `LABBY_MCP_HTTP_HOST` | `"127.0.0.1"` | HTTP/TCP bind address |
 | `port` | `LABBY_MCP_HTTP_PORT` | `8765` | HTTP/TCP bind port |
-| `socket_path` | `LABBY_MCP_UNIX_SOCKET_PATH` | — | Filesystem Unix socket path, or Linux abstract `@name`; required by `unix_socket` |
+| `socket_path` | `LABBY_MCP_UNIX_SOCKET_PATH` | — | Absolute filesystem Unix socket path, or Linux abstract `@name`; required by `unix_socket` |
 | `socket_mode` | `LABBY_MCP_UNIX_SOCKET_MODE` | `"0660"` | Filesystem socket mode in octal; invalid for abstract sockets |
 | `socket_uid` | `LABBY_MCP_UNIX_SOCKET_UID` | current owner | Optional filesystem socket owner UID |
 | `socket_gid` | `LABBY_MCP_UNIX_SOCKET_GID` | current group | Optional filesystem socket owner GID |
@@ -178,7 +178,7 @@ Rules:
 | `show_all` | `LABBY_SHOW_ALL` | `false` | Show the full service catalog regardless of env-var presence |
 | `catalog_notification_timeout_ms` | `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` | `5000` | Per-peer deadline for MCP catalog-change notifications; valid range `1..=60000` milliseconds |
 
-For `unix_socket`, bearer/OAuth authentication continues to work over Streamable HTTP. Linux peer-credential authorization can be selected with `peer_uid` and/or `peer_gid`, but it cannot be combined with bearer or OAuth. A hosted Unix listener without either credential auth or configured peer credentials is rejected at startup. Filesystem listeners safely reclaim only verified stale sockets, apply deterministic mode/ownership, and remove only their own inode at shutdown.
+For `unix_socket`, bearer/OAuth authentication continues to work over Streamable HTTP. Linux peer-credential authorization can be selected with `peer_uid` and/or `peer_gid`, but it cannot be combined with bearer or OAuth. A hosted Unix listener without either credential auth or configured peer credentials is rejected at startup. Filesystem listeners require an absolute path whose existing directory chain contains only real directories owned by root or the process effective UID; non-sticky group/world-writable ancestors are rejected. Labby binds in a private staging directory, applies deterministic mode/ownership before atomic publication, safely reclaims only verified stale sockets, and removes only its own inode at shutdown.
 
 Proxied upstream tool calls automatically use the MRTR-capable path when the
 downstream client advertises an input capability. No relay feature flag is

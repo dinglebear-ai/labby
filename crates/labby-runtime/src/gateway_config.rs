@@ -817,12 +817,9 @@ impl UpstreamConfig {
                 {
                     return Err(invalid("stdio requires a non-empty command"));
                 }
-                if self.oauth.is_some()
-                    || self.bearer_token_env.is_some()
-                    || !self.headers.is_empty()
-                {
+                if self.oauth.is_some() || !self.headers.is_empty() {
                     return Err(invalid(
-                        "stdio cannot configure HTTP authentication or headers",
+                        "stdio cannot configure OAuth or custom HTTP headers",
                     ));
                 }
             }
@@ -1486,7 +1483,6 @@ mod tests {
     #[test]
     fn inferred_transports_enforce_their_field_contracts() {
         for invalid_toml in [
-            "name=\"bad\"\ncommand=\"server\"\nbearer_token_env=\"TOKEN\"\n",
             "name=\"bad\"\ncommand=\"server\"\n[headers]\nx-test=\"value\"\n",
             "name=\"bad\"\nurl=\"ws://local.internal/mcp\"\n[headers]\nx-test=\"value\"\n",
             "name=\"bad\"\nurl=\"http://local.internal/mcp\"\ncommand=\"server\"\n",
@@ -1498,6 +1494,17 @@ mod tests {
                 "config should fail: {invalid_toml}"
             );
         }
+    }
+
+    #[test]
+    fn stdio_preserves_named_bearer_environment_injection() {
+        let cfg: UpstreamConfig = toml::from_str(
+            "name=\"stdio\"\ncommand=\"server\"\nbearer_token_env=\"SERVER_TOKEN\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(cfg.effective_transport(), Some(UpstreamTransport::Stdio));
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]
