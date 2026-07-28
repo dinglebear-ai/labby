@@ -300,34 +300,17 @@ When proxying upstream MCP servers that require OAuth:
 
 See [docs/runtime/OAUTH.md](../docs/runtime/OAUTH.md) for upstream OAuth details.
 
-## Registry and Marketplace
+## Registry and Marketplace (retired)
 
-Lab includes a registry and marketplace for discovering and installing MCP servers, plugins, and ACP providers.
+Labby no longer ships a registry browser, marketplace product, stash
+workspaces, or ACP provider registry. Those implementations were deleted from
+source, manifests, packaging, and CI; `scripts/check-retired-features.sh`
+guards against reintroduction.
 
-### MCP Registry
-
-**Source**: Official MCP Registry (mirrored)
-
-**Metadata enhancement** ([`docs/services/MCPREGISTRY_METADATA.md`](../docs/services/MCPREGISTRY_METADATA.md)):
-- Lab-owned metadata layered onto registry entries
-- Installation guidance and compatibility notes
-- Categorized browsing (devtools, productivity, homelab)
-
-### Marketplace Integration
-
-**Supported marketplaces**:
-- Claude plugin marketplace
-- Codex plugin marketplace
-- MCP Registry
-- ACP Agent Registry
-
-**Operations** (now in `labby-runtime`/`labby-apis`):
-- Browse and search marketplace entries
-- Install plugins/servers to local stash
-- Version management and updates
-- Deployment to configured targets
-
-See [PLUGINS.md](../docs/PLUGINS.md) for plugin architecture.
+Historical designs are archived under
+[docs/references/retired-labby](../docs/references/retired-labby/). Plugin
+marketplace assets now live in the separate
+[dendrite](https://github.com/jmagar/dendrite) repo.
 
 ## Observability and Logging
 
