@@ -1,8 +1,10 @@
-# Lab — Development Instructions
+# Labby — Development Instructions
 
 ## What is this?
 
-`lab` is a pluggable homelab CLI + MCP server SDK in Rust. One binary exposes CLI, MCP, HTTP API, and Labby web UI surfaces for product-local control-plane services. The "Slim labby gateway host" pass removed the `marketplace`/`deploy`/`acp_registry`/`acp`/`nodes`/`stash`/`logs`/`device` services and their `labby` crate features entirely (that logic now lives only in `labby-runtime`/`labby-apis`, exercised via `extracted-crate-slices` in CI, not as standalone `labby` product slices). Standalone Cargo product slices on `labby` now are just `gateway` and `fs`; `doctor`, `setup`, and `snippets` (gateway-gated) are always-on bootstrap services. MCP dispatch still uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
+`labby` is a pluggable homelab control plane and MCP gateway in Rust. One binary exposes CLI, MCP (stdio + streamable HTTP), HTTP API, and Labby web UI surfaces over the same product dispatch layer. The "Slim labby gateway host" pass removed the `marketplace`/`deploy`/`acp_registry`/`acp`/`nodes`/`stash`/`logs`/`device` services and their `labby` crate features entirely (that logic now lives only in `labby-runtime`/`labby-apis`, exercised via `extracted-crate-slices` in CI, not as standalone `labby` product slices). MCP dispatch uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
+
+The dispatch modules that actually exist today are `crates/labby/src/dispatch/{doctor,fs,gateway,lab_admin,server_logs,setup,snippets}`. `doctor`, `setup`, and `snippets` (gateway-gated) are always-on bootstrap services. The CLI surface is `serve`, `mcp`, `doctor`, `docs`, `health`, `setup`, `incus`, `update`, `completions`, `gateway`, `snippets`, `oauth`, and `help` — there is no `marketplace`, `stash`, `nodes`, `deploy`, or `acp` command. `docs/generated/cli-help.md` is the authoritative snapshot; regenerate rather than hand-editing command lists.
 
 Start with `docs/README.md` for the docs index. The topic docs in `docs/` are the source of truth; if this file disagrees with them, this file is stale.
 
@@ -10,16 +12,22 @@ Observability is governed by `docs/dev/OBSERVABILITY.md`. When adding or changin
 Errors are governed by `docs/dev/ERRORS.md`. Serialization and output-boundary rules are governed by `docs/design/SERIALIZATION.md`.
 Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPATCH.md`.
 
-## Long-Lived Branches
+## Repo Facts
 
-- `marketplace-no-mcp` is an intentional long-lived marketplace variant branch,
-  not stale cleanup. It keeps Lab/Labby marketplace plugin and skill entries
-  available while removing bundled MCP server registrations for environments
-  where those servers are already connected through the Labby gateway.
-- Do not merge `marketplace-no-mcp` into `main` by default, and do not delete it
-  as stale unless Jacob explicitly retires the no-MCP marketplace variant.
+| Fact | Value |
+|------|-------|
+| Remote | `git@github.com:dinglebear-ai/labby.git` (the older `jmagar/lab` and `jmagar/labby` names survive only via GitHub transfer redirects — prefer the canonical URL) |
+| Default branch | `main` |
+| Cargo workspace | 11 members, `resolver = "3"`, single `[workspace.package]` version |
+| Edition / MSRV | edition 2024, `rust-version = "1.92"`, toolchain pinned to 1.94.1 in `rust-toolchain.toml` |
+| MCP SDK | `rmcp = "=3.0.0-beta.2"` — exact pin in `[workspace.dependencies]`, and the only repo in the fleet on rmcp 3.x. Bumping it is a breaking change across `crates/labby/src/mcp/` and `crates/labby-gateway/`. |
+| Lint enforcement | `[workspace.lints]` is real here: `unsafe_code = "forbid"`, `mod_module_files = "deny"`, `disallowed_macros = "deny"` (see `/clippy.toml` — bans `#[async_trait]`) |
+| Config / secrets | `~/.labby/config.toml` and `~/.labby/.env`; `$LABBY_HOME` overrides the `~/.labby` root |
+| Worktrees | This checkout carries a busy `.worktrees/` (currently 9 active worktrees). Run `git worktree list` before any workspace-level edit, and never assume the main checkout is the only consumer of `target/`. |
 
-**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --all-features`, `cargo nextest run --all-features`, and the equivalent `just` commands as the default truth. Narrow feature-slice builds are supported for `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; use them to catch accidental cross-slice coupling, but check warning/removal decisions against the normal all-features build before deleting shared helpers. The `acp`, `nodes`, and `stash` slices (plus the `nodes,deploy` pair) are CI compile-check slices for feature-gated base capabilities — members of `all` that a gateway-only build excludes — not supported standalone product slices.
+**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --workspace --all-features`, `cargo nextest run --workspace --all-features`, and the equivalent `just` commands as the default truth. The only standalone product feature slices left on `labby` are `gateway` and `fs` (CI job `feature-slices`, matrix `[gateway, fs]`, built with `--no-default-features --features <slice>`); `gateway` is the flagship slice and additionally runs its own nextest suite. Use slices to catch accidental cross-slice coupling, but check warning/removal decisions against the all-features build before deleting shared helpers — per-slice dead-code warnings are an expected consequence of disabling features.
+
+The full `labby` feature list is `all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd"]`, with `default = ["gateway-host"]` and `gateway-host = ["gateway"]`. Feature-gated base capabilities that used to be `labby` product slices (`marketplace`, `deploy`, `acp_registry`, `acp`, `nodes`, `stash`) now live only in `labby-runtime`/`labby-apis` and are exercised by the `extracted-crate-slices` CI job, not by `labby` features.
 
 **Service onboarding rule.** When bringing a service online, follow the dispatch/module layout in `docs/dev/SERVICE_ONBOARDING.md`, update generated docs, then validate with the all-features test/build path. The older `labby scaffold service` / `labby audit onboarding` workflow is not part of the current CLI surface unless those commands are restored in code.
 
@@ -43,10 +51,17 @@ in `labby-auth`. Shared transport-neutral contracts and helpers (`ToolError`,
 gateway config DTOs, redaction, path-safety, backoff) live in `labby-runtime`.
 Code Mode execution lives in `labby-codemode`. Gateway runtime/proxy
 orchestration — including its own dispatch helpers and the stdio spawn-guard/
-SSRF security checks — lives in `labby-gateway`. Embedded/static web serving
-lives in `labby-web`. Windows process-tree reaping lives in `labby-winjob`.
-CLI, MCP, HTTP API adapters, config loading, product dispatch, and the `labby`
-binary live in `labby`.
+SSRF security checks — lives in `labby-gateway`. OpenAPI schema assembly lives
+in `labby-openapi`. Embedded/static web serving lives in `labby-web`. Windows
+process-tree reaping lives in `labby-winjob`. CLI, MCP, HTTP API adapters,
+config loading, product dispatch, and the `labby` binary live in `labby`.
+Repo automation tasks live in the non-published `xtask` crate.
+
+The 11 workspace members are exactly: `labby-primitives`, `labby-apis`,
+`labby-auth`, `labby-runtime`, `labby-codemode`, `labby-gateway`,
+`labby-openapi`, `labby-web`, `labby-winjob`, `labby`, and `xtask`. Adding or
+removing a crate means editing `[workspace] members` in the root `Cargo.toml`
+and updating this list.
 
 ## OpenWiki
 
@@ -60,7 +75,7 @@ OpenWiki includes repository overview, architecture notes, workflows, domain con
 When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.
 
 ```
-lab/
+labby/
 ├── crates/
 │   ├── labby-primitives/             # Leaf crate: ActionSpec/ParamSpec, PluginMeta/EnvVar/Category,
 │   │   │                             # UiSchema, static SSRF checks. Zero internal deps.
@@ -92,8 +107,10 @@ lab/
 │   ├── labby-codemode/               # Code Mode runner kernel + snippet engine
 │   ├── labby-gateway/                # Gateway manager, upstream pool, OAuth lifecycle,
 │   │                                 # dispatch helpers, stdio spawn-guard/SSRF checks
+│   ├── labby-openapi/                # OpenAPI 3.1 schema assembly for the HTTP surface
 │   ├── labby-web/                    # Embedded/filesystem web asset serving
 │   ├── labby-winjob/                 # Windows Job Object helper crate
+│   ├── xtask/                        # Repo automation tasks (not published)
 │   └── labby/                        # BINARY: cli + mcp + api + product dispatch
 │       ├── Cargo.toml                # deps: labby-*, clap, rmcp, axum, anyhow
 │       └── src/
@@ -104,10 +121,18 @@ lab/
 │           ├── cli.rs
 │           ├── mcp/
 │           │   ├── registry.rs       # runtime tool registration
+│           │   ├── server.rs         # ServerHandler impl (rmcp 3.x)
+│           │   ├── handlers_tools/   # list_tools/call_tool handlers
+│           │   ├── call_tool.rs      # product + upstream + Code Mode call routing
+│           │   ├── catalog.rs        # upstream tool catalog, coalescing, churn tracking
+│           │   ├── peers.rs          # per-peer contract negotiation
+│           │   ├── elicitation.rs    # MRTR destructive-action elicitation
 │           │   ├── resources.rs      # action catalog as MCP resources
 │           │   ├── error.rs          # structured JSON errors
 │           │   └── services/         # one dispatch module per service
 │           ├── mcp.rs
+│           ├── dispatch/             # shared product dispatch (doctor, fs, gateway,
+│           │                         # lab_admin, server_logs, setup, snippets)
 │           ├── api/                  # axum HTTP API
 │           │   ├── state.rs          # AppState — Catalog + ToolRegistry (Arc-wrapped)
 │           │   ├── error.rs          # ApiError + IntoResponse mapping
@@ -116,8 +141,15 @@ lab/
 │           │   └── services/         # per-service route groups
 │           ├── config.rs             # ~/.labby/.env + config.toml loading (CWD → ~/.labby/ → ~/.config/labby/)
 │           └── output.rs             # table/json formatting
-├── Cargo.toml                        # workspace
+├── apps/gateway-admin/               # Next.js Labby web UI, statically exported
+├── packages/labby-mcp/               # npm launcher wrapper (`npx -y labby-mcp mcp`)
+├── plugins/                          # Claude/Codex plugin assets (labby, vibin, testing, …)
+├── scripts/                          # install.sh/install.ps1, incus-bootstrap.sh, CI helpers
+├── openwiki/                         # generated repository wiki
+├── Cargo.toml                        # workspace: 11 members, resolver 3, shared lints
+├── rust-toolchain.toml               # pinned 1.94.1 (MSRV is 1.92)
 ├── Justfile
+├── clippy.toml                       # disallowed_macros config (bans #[async_trait])
 ├── deny.toml
 ├── docs/README.md
 └── CLAUDE.md
@@ -169,7 +201,7 @@ marketplace({ "action": "schema", "params": { "action": "mcp.install" } })  // p
 - **Action naming:** `<resource>.<verb>`, lowercase, dot-separated.
 - **Built-in actions:** every tool accepts `help` and `schema` without declaring them.
 - **Discovery:** `lab://<service>/actions` MCP resource + `lab://catalog` resource.
-- **Shared catalog.** `build_catalog()` is a single function feeding the `lab://catalog` MCP resource and the `lab help` CLI subcommand. Never duplicate catalog logic — extend the builder.
+- **Shared catalog.** `build_catalog()` is a single function feeding the `lab://catalog` MCP resource and the `labby help` CLI subcommand. Never duplicate catalog logic — extend the builder.
 - **Multi-instance services.** When `{SERVICE}_{LABEL}_URL` env vars exist, callers pass `params.instance: "<label>"`. Unknown labels return a structured `unknown_instance` envelope listing valid labels.
 
 ### Destructive actions
@@ -210,7 +242,7 @@ See `docs/surfaces/MCP.md` for the MCP surface and `docs/CONVENTIONS.md` for the
 8. Create the shared dispatch layer in `crates/labby/src/dispatch/foo/` following the required layout in `crates/labby/src/dispatch/CLAUDE.md` (catalog.rs, client.rs, params.rs, dispatch.rs + entry `foo.rs`)
 9. Create CLI subcommands in `crates/labby/src/cli/foo.rs` calling the dispatch layer
 10. Create API route group in `crates/labby/src/api/services/foo.rs` calling the dispatch layer
-11. Register in `crates/labby/src/registry.rs` (via `register_service!` inside `build_default_registry()`), `crates/labby/src/cli.rs`, and `crates/labby/src/api/router.rs`
+11. Register in `crates/labby/src/registry.rs` (call `reg.register(RegisteredService { .. })` inside `build_default_registry()`, using the `dispatch_fn!` macro for the dispatch pointer), `crates/labby/src/cli.rs`, and `crates/labby/src/api/router.rs`
 12. Add `foo = ["labby-apis/foo"]` passthrough to `crates/labby/Cargo.toml`
 
 A service is not fully online until one successful path and one failing path are traceable end to end without leaking secrets.
@@ -256,7 +288,7 @@ Every service entry-point file that participates in generated metadata declares 
 ### Error Handling
 
 - `labby-apis`: use `thiserror` for typed errors per service; every service error wraps `ApiError` transparently.
-- `lab` binary: use `anyhow` to wrap everything.
+- `labby` binary: use `anyhow` to wrap everything.
 - Always return `Result<T>`, never panic.
 - `docs/dev/ERRORS.md` is canonical for stable `kind` values, dispatcher-level kinds, MCP and HTTP envelope behavior, and status mapping.
 - Do not invent service-local error vocabularies or drift MCP and HTTP error semantics apart.
@@ -325,27 +357,44 @@ All formatting lives in `crates/labby/src/output.rs`. `labby-apis` types are pur
 | serde + serde_json | serialization | labby-apis |
 | thiserror | library errors | labby-apis |
 | wiremock | HTTP mocking (tests) | labby-apis |
-| clap | CLI parsing (derive) | lab |
-| rmcp | MCP server | lab |
-| dotenvy | .env loading | lab |
-| toml | config parsing | lab |
-| tracing | structured logging | lab |
-| anyhow | binary errors | lab |
+| clap | CLI parsing (derive) | labby |
+| rmcp | MCP server | labby |
+| dotenvy | .env loading | labby |
+| toml | config parsing | labby |
+| tracing | structured logging | labby |
+| anyhow | binary errors | labby |
 
 ## Dev Commands
 
 ```bash
-just check      # cargo check --workspace
-just test       # cargo nextest run --workspace --all-features
-just lint       # cargo clippy + cargo fmt --check
-just deny       # cargo deny check
-just build      # cargo build --workspace --all-features
-just build-release  # cargo build --workspace --all-features --release
-just run        # cargo run --all-features -- <args>
-just fmt        # cargo fmt --all
-just clean      # cargo clean
-just mcp-token  # rotate the MCP bearer token in ~/.labby/.env
+just check          # cargo check --workspace --all-features
+just test           # cargo nextest run --workspace --all-features
+just test-integration # nextest --run-ignored ignored-only (needs live services)
+just lint           # skill-drift + cargo-wrapper smoke, then clippy -D warnings + fmt --check
+just deny           # cargo deny check
+just build          # cargo build --workspace --all-features --profile release-fast
+just build-release  # release build + install to bin/labby + symlink ~/.local/bin/labby
+just install        # build-release + symlink
+just docs-generate  # labby docs generate — refresh docs/generated/*
+just docs-check     # labby docs check — fail if generated artifacts are stale
+just web-build      # cd apps/gateway-admin && pnpm build
+just host-sync      # rebuild + install binary + restart the host labby service
+just run -- help    # cargo run --all-features -- <args>
+just fmt            # cargo fmt --all
+just clean          # cargo clean
+just mcp-token      # rotate LABBY_MCP_HTTP_TOKEN in ~/.labby/.env
 ```
+
+`just build` uses the `release-fast` profile (optimized, no LTO / `codegen-units=1`)
+rather than a debug build — run `cargo build --workspace --all-features` directly
+when you need debug assertions and full unwinding. `just lint` is a superset of
+clippy+fmt: it also runs `plugins/scripts/check-dozzle-skill` (skill drift) and
+`scripts/test-cargo-rustc-wrapper.sh`, so a bare clippy run is not equivalent.
+
+Generated artifacts under `docs/generated/` (service catalog, action catalog,
+env reference, API routes, OpenAPI, feature matrix, MCP help, CLI help) are
+code-owned. Never hand-edit them; run `just docs-generate` and verify with
+`just docs-check` — CI enforces freshness in the `docs-check` job.
 
 Releases: `release-please.yml` watches green CI runs on `main`, maintains a
 release PR that bumps `[workspace.package] version` in `Cargo.toml` (and the
@@ -362,7 +411,8 @@ Default verification targets the all-features build. If you run a reduced featur
 ### Operator tooling
 
 - **`labby doctor`** — comprehensive health audit: checks env vars, reachability, auth, version for every enabled service. Emits human-readable table by default, `--json` for CI. Exit code reflects worst severity.
-- **`bin/health-check`** — repo-level shell helper for CI/CD smoke tests.
+- **`labby health`** — lightweight liveness/readiness probe against a running `labby serve`.
+- **`plugins/scripts/health-check`** — repo-level shell helper for CI/CD smoke tests. (`bin/` holds built binaries, not scripts.)
 
 ### Labby gateway runtime
 
@@ -390,10 +440,13 @@ prod-like image smoke, and Docker-specific ACP adapter work. Use
 When OAuth is configured (`LABBY_AUTH_MODE=oauth`), browser users still hit the Google login flow. Automation tooling (e.g. `agent-browser`, curl) can pass the static bearer token as a header and be treated as an admin session for both `/v1/*` API calls AND the AuthBootstrap session-state endpoint.
 
 ```bash
-TOKEN=$(grep "LABBY_MCP_HTTP_TOKEN" .env | cut -d= -f2)
+TOKEN=$(awk -F= '/^LABBY_MCP_HTTP_TOKEN=/{print $2}' ~/.labby/.env)
 
-# All /v1/* calls
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8765/v1/acp/provider
+# Generic /v1/{service} action dispatch
+curl -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"gateway.list","params":{}}' \
+  http://localhost:8765/v1/gateway
 
 # /auth/session — returns synthetic admin session for the bearer holder.
 # Without this the UI's AuthBootstrap renders the sign-in page even though
@@ -402,7 +455,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8765/auth/session
 
 # agent-browser carries the header into every same-origin request.
 agent-browser --session test set viewport 1280 800
-agent-browser --session test open http://localhost:8765/chat \
+agent-browser --session test open http://localhost:8765/gateways \
   --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
 ```
 
@@ -433,26 +486,58 @@ just test-integration
 
 ## CI
 
-- GitHub Actions
-- Matrix: linux x86_64
-- Checks: clippy, rustfmt, cargo-deny, nextest
-- Release: release-please → GitHub Releases with pre-built binaries (linux x86_64, linux aarch64)
+- GitHub Actions, `.github/workflows/ci.yml`, gated behind a single `ci-gate` job.
+- Platforms: Linux x86_64 for the main jobs, plus dedicated `test-windows` and
+  `palette-windows` jobs. There is no aarch64 CI or release target.
+- Rust checks: `fmt`, `clippy` (`-D warnings`), `deny`, `check`, `msrv` (1.92.0),
+  `test` / `test-fork`, `rust-coverage`.
+- Slice checks: `feature-slices` (`gateway`, `fs`) and `extracted-crate-slices`
+  (per-feature checks of `labby-auth`, `labby-runtime`, and friends).
+- MCP checks: `mcp-regressions`, `mcp-conformance`, `codemode-runner-smoke`,
+  and the separate `mcp-upstream-drift.yml` workflow.
+- Other: `docs-check`, `frontend-assets`, `gateway-admin-browser`, `npm-launcher`,
+  `actionlint`, `unraid-plugin-check`, `container`, `release-smoke`.
+- Release: `release-please.yml` maintains the release PR; merging it tags
+  `vX.Y.Z` and triggers `release.yml`, which builds
+  `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` archives with
+  checksums, publishes the GitHub Release, and pushes the GHCR image.
+  aarch64 Linux was dropped because `rquickjs-sys` (Code Mode QuickJS) cannot
+  cross-compile for it and no fleet host is aarch64.
 
 ## Style
 
-- Rust 2024 edition, latest stable toolchain
+- Rust 2024 edition; toolchain pinned to 1.94.1, MSRV 1.92
 - `cargo fmt` with default settings
 - `cargo clippy` with no allowed warnings
+- `unsafe_code = "forbid"` workspace-wide. The one exception is `labby-winjob`,
+  which is a separate crate precisely so the main workspace can keep the ban.
+- No `#[async_trait]`. `disallowed_macros = "deny"` in `[workspace.lints.clippy]`
+  plus `/clippy.toml` enforce this at compile time, not by review.
 - Treat all-features warnings as real; treat narrow feature-slice warnings as diagnostic only until confirmed in the normal all-features build
 - Prefer `impl Trait` over `Box<dyn Trait>` where possible
 - Prefer concrete types over generics unless sharing demands it
 - Never add `clap`, `rmcp`, `axum`, or `anyhow` to `labby-apis` — they belong in product/runtime crates only
 - **No `mod.rs` files.** Modern Rust module style only: a module `foo` is declared in `foo.rs` sibling to its `foo/` directory, never in `foo/mod.rs`
 
-## Plugin setup hooks and install flow
+## Plugin setup and install flow
 
-Plugin setup is owned by the binary. `labby setup check` is read-only, `labby setup repair` is idempotent, and `labby setup plugin-hook --no-repair` is audit mode.
+Plugin setup is owned by the binary. `labby setup check` is read-only,
+`labby setup repair` is idempotent, and `labby setup plugin-hook --no-repair`
+is audit mode. Those commands remain part of the CLI surface and are exercised
+by `just validate-plugin`.
 
-**The plugin ships no binary and never auto-installs.** Installation is explicit: `scripts/install.sh` (release download → `~/.local/bin/labby`, cargo fallback) or `cargo install`, then `labby setup` for the first-run flow. The checked-in `plugins/labby` hooks are advisory shims that resolve `labby` from `PATH`: SessionStart runs `labby setup plugin-hook --no-repair` (audit only) and prints an install pointer when labby is absent; ConfigChange runs `labby setup plugin-hook` to sync changed plugin settings. Keep hooks that shape — never re-bundle a binary into `plugins/labby/bin/`, reference `${CLAUDE_PLUGIN_ROOT}/bin/labby`, or make a hook install/repair anything at session start.
+**`plugins/labby` ships skills, an MCP config, and `userConfig` only — no
+Claude Code hooks and no binary.** The former `plugins/labby/hooks/hooks.json`
+(SessionStart / ConfigChange shims) has been removed; do not reintroduce a
+`hooks/` directory or a `hooks` key in `.claude-plugin/plugin.json`. Operators
+run `labby setup` themselves.
 
-Do not add Docker Compose, systemd, or service bootstrap logic to plugin hook scripts.
+Installation is explicit: `scripts/install.sh` (release download →
+`~/.local/bin/labby`, cargo fallback) or `cargo install`, then `labby setup`
+for the first-run flow. Never bundle a binary into `plugins/labby/bin/`,
+reference `${CLAUDE_PLUGIN_ROOT}/bin/labby`, or add Docker Compose, systemd, or
+service bootstrap logic to any plugin asset.
+
+Note: `apps/gateway-admin/hooks/` and `apps/gateway-admin/lib/hooks/` are React
+hooks (application source code). They are unrelated to Claude Code hooks and
+must not be touched by plugin-hook cleanup.

@@ -46,6 +46,8 @@ use crate::mcp::error::DispatchError;
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::admin_app_resources_visible;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, spawn_dispatch_notification};
+#[cfg(feature = "gateway")]
+use crate::mcp::permanent_tools::PermanentToolId;
 use crate::mcp::result_format::{
     estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
@@ -401,8 +403,14 @@ impl LabMcpServer {
             }
 
             // ── Gateway Code Mode execution. Both public names share one backend;
-            // only `codemode_ui` is advertised with MCP App metadata.
-            if service == CODE_MODE_TOOL_NAME || service == CODE_MODE_UI_TOOL_NAME {
+            // only `codemode_ui` is advertised with MCP App metadata. The
+            // text-only name resolves through the permanent tool registry so its
+            // identity survives upstream churn.
+            if matches!(
+                self.registry.permanent_tools().resolve(&service),
+                Some(PermanentToolId::CodeMode)
+            ) || service == CODE_MODE_UI_TOOL_NAME
+            {
                 if !self.route_scope.exposes_code_mode() {
                     let elapsed_ms = start.elapsed().as_millis();
                     self.log_route_scope_denial(

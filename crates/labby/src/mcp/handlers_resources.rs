@@ -1914,11 +1914,12 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             transport,
             None,
         );
-        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+        let tool_context = scoped_context(running.peer().clone(), &["lab"]);
+        let resource_context = scoped_context(running.peer().clone(), &["lab:read"]);
 
         let tools = running
             .service()
-            .list_tools_impl(None, context.clone())
+            .list_tools_impl(None, tool_context)
             .await
             .expect("list tools");
         let codemode_tool = tools
@@ -1950,7 +1951,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
 
         let resources = running
             .service()
-            .list_resources_impl(None, context.clone())
+            .list_resources_impl(None, resource_context.clone())
             .await
             .expect("list resources");
         let uris = resources
@@ -1972,7 +1973,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             .service()
             .read_resource_impl(
                 ReadResourceRequestParams::new(CODE_MODE_APP_URI),
-                context.clone(),
+                resource_context.clone(),
             )
             .await
             .expect("read Code Mode UI resource");
@@ -1987,7 +1988,10 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
 
         let upstream_read = running
             .service()
-            .read_resource_impl(ReadResourceRequestParams::new(UPSTREAM_UI_URI), context)
+            .read_resource_impl(
+                ReadResourceRequestParams::new(UPSTREAM_UI_URI),
+                resource_context,
+            )
             .await
             .expect("read upstream UI resource");
         let ResourceContents::TextResourceContents {

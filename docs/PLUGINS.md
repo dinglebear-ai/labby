@@ -18,11 +18,11 @@ owned by `labby setup`.
 
 Skills and MCP configuration only. Its `.mcp.json` connects over HTTP to a
 running `labby serve` (`${user_config.server_url}/mcp`), so machines that
-install the plugin remotely never need a local binary at all. Hooks are
-advisory: SessionStart runs `labby setup plugin-hook --no-repair` when `labby`
-is on PATH and prints an install pointer when it is not; ConfigChange syncs
-plugin settings via `labby setup plugin-hook` (again only when installed).
-Nothing is auto-installed or auto-repaired at session start.
+install the plugin remotely never need a local binary at all. The plugin ships
+**no Claude Code hooks** — the former `hooks/hooks.json` (SessionStart /
+ConfigChange shims) was removed. Run `labby setup plugin-hook` manually to sync
+settings, or `--no-repair` for a read-only audit. Nothing is auto-installed or
+auto-repaired at session start.
 
 ## Marketplace distribution
 

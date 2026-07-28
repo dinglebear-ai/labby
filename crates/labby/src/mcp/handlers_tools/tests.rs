@@ -1629,11 +1629,20 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
         running.peer().clone(),
     );
 
+    let contract_tools = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
     let result = running
         .service()
         .list_tools_impl(None, context)
         .await
         .expect("list tools");
+    assert_eq!(
+        result.tools, contract_tools,
+        "tools/list and the notification contract must use identical descriptors"
+    );
     let names = result
         .tools
         .iter()
@@ -4072,5 +4081,29 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
     assert_ne!(
         code_mode_contract, raw_contract,
         "per-peer evaluation is required; these sessions do not share a contract"
+    );
+}
+
+#[tokio::test]
+async fn peer_contract_removes_codemode_when_execute_scope_is_revoked() {
+    let manager = code_mode_manager(true).await;
+    let authorized = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    )
+    .peer_contract();
+    let mut unauthorized = authorized.clone();
+    unauthorized.audience.code_mode_execute_allowed = false;
+
+    let authorized = authorized.visible_contract().await;
+    let unauthorized = unauthorized.visible_contract().await;
+
+    assert!(authorized.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(!unauthorized.tools.contains(CODE_MODE_TOOL_NAME));
+    assert_ne!(
+        authorized.contract_hash, unauthorized.contract_hash,
+        "revoking execute scope changes the client-visible descriptor contract"
     );
 }

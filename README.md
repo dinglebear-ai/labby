@@ -1,9 +1,13 @@
-# Lab
+# Labby
 
-`lab` is the Rust workspace behind **Labby**, a local-first control plane for
+`labby` is the Rust workspace behind **Labby**, a local-first control plane for
 agent tooling and homelab operations. One binary, `labby`, exposes the same
-operator capabilities through a CLI, an MCP server, an HTTP API, and the Labby
-web UI.
+operator capabilities through a CLI, an MCP server (stdio and streamable HTTP),
+an HTTP API, and the Labby web UI.
+
+Canonical remote: `git@github.com:dinglebear-ai/labby.git`. The older
+`jmagar/lab` and `jmagar/labby` names resolve only through GitHub transfer
+redirects.
 
 The root README is the public entrypoint. The topic docs in
 [docs/](./docs/README.md) own the detailed contracts; when this file and a topic
@@ -11,7 +15,7 @@ doc disagree, fix the topic doc first and then refresh this summary.
 
 ## Contents
 
-- [What Lab Does](#what-lab-does)
+- [What Labby Does](#what-labby-does)
 - [Quick Start](#quick-start)
 - [Core Workflows](#core-workflows)
 - [Runtime Surfaces](#runtime-surfaces)
@@ -21,7 +25,7 @@ doc disagree, fix the topic doc first and then refresh this summary.
 - [Development](#development)
 - [Documentation](#documentation)
 
-## What Lab Does
+## What Labby Does
 
 Labby is centered on the current gateway/operator surface:
 
@@ -29,25 +33,24 @@ Labby is centered on the current gateway/operator surface:
   tools/resources/prompts, apply exposure filters, publish protected MCP routes,
   and optionally collapse the upstream catalog into Code Mode `search` and
   `execute`.
-- **Marketplace and registry** - browse Claude/Codex plugin marketplaces, the
-  official MCP Registry, and the ACP Agent Registry; install plugins, MCP
-  servers, and ACP providers through explicit target-aware workflows.
-- **Stash workspaces** - mirror installable artifacts into `~/.labby/stash`, edit
-  and version component snapshots, preview deployment diffs, and deploy saved
-  artifacts back to configured targets.
-- **ACP chat** - run provider-backed Agent Client Protocol sessions, stream and
-  persist events, and keep the backend service named `acp`. The Labby web UI no
-  longer ships a `/chat` surface for this.
-- **Fleet, setup, logs, and deployment** - run `labby serve` as a controller or
-  node, enroll devices, search local/fleet logs, audit setup health, and deploy
-  the local release binary to SSH targets.
+- **Code Mode snippets** - author, store, and run reusable JavaScript snippets
+  against the upstream catalog, with artifacts persisted under `$LABBY_HOME`.
+- **Setup and doctor** - bootstrap `~/.labby`, provision the host service, and
+  run a health audit across env, reachability, auth, and versions.
+- **Filesystem service** - scoped, path-safety-checked file operations exposed
+  through the same action dispatch as every other service.
+- **Server logs** - search and tail the local `labby serve` log stream.
 - **Generated discovery** - publish code-owned service, action, environment,
   API route, OpenAPI, MCP help, CLI help, and feature-matrix artifacts under
   [docs/generated](./docs/generated/README.md).
 
-Lab no longer exposes the old Radarr/Sonarr/Plex-style service catalog in this
-branch. Use the generated catalogs below for the current surface instead of
-copying command or action lists by hand.
+The registered services on this branch are exactly `doctor`, `fs`, `gateway`,
+`lab_admin`, `server_logs`, `setup`, and `snippets`. The older
+`marketplace`/`stash`/`acp`/`nodes`/`deploy`/`logs`/`device` product services
+were removed by the "Slim labby gateway host" pass; their domain types survive
+in `labby-runtime`/`labby-apis` but are no longer registered services and have
+no CLI commands. Use the generated catalogs below for the current surface
+instead of copying command or action lists by hand.
 
 ## Quick Start
 
@@ -56,7 +59,7 @@ copying command or action lists by hand.
 Linux/macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.sh | sh
 labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
@@ -70,7 +73,7 @@ npx -y labby-mcp mcp
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.ps1 | iex
 labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
@@ -97,8 +100,8 @@ Prerequisites:
 - `openssl` if you want to generate a bearer token manually.
 
 ```bash
-git clone https://github.com/jmagar/lab.git
-cd lab
+git clone git@github.com:dinglebear-ai/labby.git
+cd labby
 just install
 just web-build
 labby serve --host 127.0.0.1 --port 8765
@@ -168,7 +171,7 @@ labby mcp
 ```
 
 `labby serve` starts the hosted HTTP runtime: `/v1` product APIs, `/mcp`
-streamable HTTP MCP, auth routes, node runtime endpoints, and static Labby web
+streamable HTTP MCP, auth routes, OAuth relay endpoints, and static Labby web
 assets when an export is available. `labby mcp` is the stdio MCP entrypoint for
 local MCP clients.
 
@@ -193,7 +196,7 @@ The stdio spawn guard allows known runtimes such as `npx`, `uvx`, `docker`,
 
 ### Use Code Mode
 
-When `[code_mode].enabled = true`, Lab hides raw proxied upstream tools from MCP
+When `[code_mode].enabled = true`, Labby hides raw proxied upstream tools from MCP
 `list_tools()` and exposes the canonical synthetic `codemode` tool.
 
 ```bash
@@ -209,57 +212,56 @@ MCP call shapes:
 ```
 
 ```json
-{ "code": "async () => callTool(\"github::search_issues\", {\"query\":\"repo:jmagar/lab gateway\"})" }
+{ "code": "async () => callTool(\"github::search_issues\", {\"query\":\"repo:dinglebear-ai/labby gateway\"})" }
 ```
 
 ```json
 { "code": "async () => codemode.run(\"gateway-summary\", {\"includeHealth\": true})" }
 ```
 
-Code Mode can call exposed upstream MCP tools only. It cannot call Lab actions
+Code Mode can call exposed upstream MCP tools only. It cannot call Labby actions
 from inside the sandbox.
 
-### Browse And Install Agent Tooling
+### Work With Code Mode Snippets
 
 ```bash
-labby marketplace sources.list --json
-labby marketplace plugins.list --params '{"runtime":"claude"}'
-labby marketplace mcp.list --params '{"search":"postgres","limit":10}'
-labby marketplace agent.list
+labby snippets list
+labby snippets get gateway-summary
+labby snippets create --name my-snippet --file ./my-snippet.js
+labby snippets validate my-snippet
+labby snippets exec my-snippet
+labby snippets test my-snippet
 ```
 
-Destructive install/update/deploy operations require explicit confirmation:
+Snippets are stored per-user under `$LABBY_HOME` and executed through the
+gateway Code Mode runner, so they can reach exposed upstream tools but not Lab
+actions. The `snippets` service is gateway-gated: it is unavailable in builds
+without the `gateway` feature.
+
+### Audit Health
 
 ```bash
-labby marketplace mcp.install \
-  --params '{"name":"io.github.user/server","gateway_ids":["default"],"confirm":true}' \
-  -y
+labby doctor            # audit every configured service
+labby doctor system     # local env vars, Docker, disk, toolchain
+labby doctor auth       # auth/OAuth env vars, files, permissions
+labby doctor proxy      # public Lab and protected MCP proxy endpoints
+labby doctor oauth-relay
+labby health            # lightweight liveness/readiness probe
 ```
 
-Marketplace actions cover Claude/Codex plugins, MCP Registry servers, ACP agents,
-artifact fork/update flows, and device-aware installation targets.
+`labby doctor --json` is the CI-friendly form; the exit code reflects the worst
+severity found.
 
-### Work With Stash
-
-```bash
-labby stash help
-```
-
-The `stash` service manages versioned components, provider metadata, target
-config, import/export, diffs, and deploy previews for Lab-managed artifact
-workspaces.
-
-### Operate The Fleet And Logs
-
-```bash
-labby doctor system
-labby nodes list
-labby logs search node-a oauth
-labby deploy plan node-a
-```
-
-Every supported node runs `labby serve`. One node acts as controller; other nodes
-report status, inventory, and logs back through `/v1/nodes/*`.
+> **Removed surfaces.** Earlier releases documented `labby marketplace`,
+> `labby stash`, `labby nodes`, `labby logs`, and `labby deploy`. Those product
+> services were removed by the "Slim labby gateway host" pass: they are absent
+> from the CLI (`docs/generated/cli-help.md`) and from the registered service
+> catalog (`docs/generated/service-catalog.json`). Note that
+> `docs/generated/api-routes.md` still lists `/v1/marketplace`, `/v1/nodes`, and
+> `/v1/acp` rows — that table is generated from the hand-maintained list in
+> `crates/labby/src/docs/routes.rs` and has not been pruned to match. Trust the
+> service catalog over the route table. Plugin marketplace assets now live in
+> the separate [dendrite](https://github.com/jmagar/dendrite) repo.
 
 ### Drive The API
 
@@ -272,9 +274,11 @@ curl -s -X POST http://127.0.0.1:8765/v1/gateway \
   -d '{"action":"gateway.list","params":{}}'
 ```
 
-Dedicated product routes also exist for catalog discovery, ACP sessions/events,
-setup, stash, logs, gateway OAuth, auth allowlists, OpenAPI, and compatibility
-routes. See [generated API routes](./docs/generated/api-routes.md) and
+Dedicated product routes also exist for catalog discovery (`/v1/{service}/actions`),
+setup, doctor, snippets, filesystem, server logs, gateway OAuth
+(`/v1/gateway/oauth/*`), OAuth relay, auth allowlists (`/v1/auth/allowed-emails`),
+`/v1/openapi`, and the browser session routes under `/auth/*`. See
+[generated API routes](./docs/generated/api-routes.md) and
 [OpenAPI](./docs/generated/openapi.json).
 
 ## Runtime Surfaces
@@ -285,7 +289,7 @@ routes. See [generated API routes](./docs/generated/api-routes.md) and
 | MCP stdio | `labby mcp` | Local editor/desktop MCP clients. |
 | MCP HTTP | `labby serve` plus `/mcp` | Streamable HTTP MCP with bearer or OAuth JWT auth. |
 | HTTP API | `labby serve` plus `/v1/*` | Generic `POST /v1/{service}` action dispatch plus dedicated product routes. |
-| Web UI | `labby serve` plus exported assets | Main routes are `/` (overview), `/gateways`, `/snippets`, `/usage`, `/settings`, `/docs`, and `/design-system`. |
+| Web UI | `labby serve` plus exported assets | Main routes are `/` (overview), `/gateways`, `/gateway`, `/snippets`, `/usage`, `/settings` (with `core`, `services`, `services/[service]`, `surfaces`, `features`, `doctor`, `extract`, `advanced` subpages), `/docs`, `/design-system`, and `/mcp/code-mode`. |
 
 MCP service tools use the shared action shape:
 
@@ -386,20 +390,28 @@ Markdown link checker, live health check, or onboarding policy audit.
 
 ## Architecture
 
-The workspace uses Rust 2024, resolver 3, and a single workspace version.
+The workspace has 11 members and uses Rust 2024, resolver 3, a single
+`[workspace.package]` version, shared `[workspace.dependencies]`, and shared
+`[workspace.lints]` (`unsafe_code = "forbid"`, `mod_module_files = "deny"`,
+`disallowed_macros = "deny"`). The MCP SDK is pinned exactly as
+`rmcp = "=3.0.0-beta.2"`.
 
 | Path | Role |
 | --- | --- |
+| [crates/labby-primitives](./crates/labby-primitives) | Dependency-free leaf crate: `ActionSpec`/`ParamSpec`, `PluginMeta`/`EnvVar`/`Category`, `UiSchema`, static SSRF checks. |
 | [crates/labby-apis](./crates/labby-apis) | Pure SDK/domain crate for shared models, auth primitives, metadata, registry clients, ACP types, setup/doctor/stash/marketplace/device/deploy types. |
 | [crates/labby-auth](./crates/labby-auth) | OAuth/JWT/session middleware, route support, and upstream OAuth runtime. |
 | [crates/labby-runtime](./crates/labby-runtime) | Surface-neutral contracts and helpers: `ToolError`, gateway config DTOs, dispatch helpers, redaction, path safety, and security helpers. |
 | [crates/labby-codemode](./crates/labby-codemode) | Client-neutral Code Mode runner kernel, broker, result shaping, snippets, and TypeScript descriptor generation. |
 | [crates/labby-gateway](./crates/labby-gateway) | Gateway manager, upstream MCP proxy pool, Code Mode host adapter, discovery/imports, virtual servers, protected routes, and OAuth lifecycle. |
+| [crates/labby-openapi](./crates/labby-openapi) | OpenAPI 3.1 schema assembly for the HTTP surface. |
 | [crates/labby-web](./crates/labby-web) | Embedded/filesystem web asset serving with symlink escape defense. |
 | [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, product dispatch, ACP orchestration, logs, setup, and output rendering. |
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
+| [crates/xtask](./crates/xtask) | Repo automation tasks; not published. |
 | [apps/gateway-admin](./apps/gateway-admin/README.md) | Labby web UI, statically exported and served by `labby serve`. |
-| [plugins](./plugins) | Claude/Codex plugin assets, skills, hooks, and monitor definitions. |
+| [packages/labby-mcp](./packages/labby-mcp) | npm launcher wrapper behind `npx -y labby-mcp mcp`. |
+| [plugins](./plugins) | Claude/Codex plugin assets and skills. |
 | [docs](./docs/README.md) | Topic documentation and generated inventories. |
 
 Shared behavior belongs in the shared execution layer. Upstream/domain logic
@@ -498,29 +510,33 @@ discovery depends on reading `session_config_options()` from the raw
 `NewSessionResponse` before `attach_session`, and model switching uses
 `SetSessionConfigOptionRequest`. Re-check those APIs before upgrading the SDK.
 
-### Plugin Setup Hooks
+### Plugin Setup
 
-The `plugins/labby` plugin ships skills, commands, and MCP config, not a
-`labby` binary. SessionStart runs `labby setup plugin-hook --no-repair` when
-`labby` is on PATH and prints an install pointer otherwise. ConfigChange runs
-`labby setup plugin-hook` to sync settings. Hooks should stay advisory: no binary
-bundling, no auto-install, and no Docker/systemd bootstrap.
+The `plugins/labby` plugin ships skills, an MCP config, and `userConfig` — not a
+`labby` binary, and no Claude Code hooks. The former
+`plugins/labby/hooks/hooks.json` (SessionStart / ConfigChange shims) has been
+removed; operators run `labby setup` themselves. Do not reintroduce a `hooks/`
+directory, bundle a binary under `plugins/labby/bin/`, or add
+Docker/systemd bootstrap logic to plugin assets.
+
+`labby setup plugin-hook` remains a CLI command for on-demand audit and settings
+sync (`--no-repair` for read-only), exercised by `just validate-plugin`.
 
 ## Related Servers
 
-- [soma](https://github.com/jmagar/soma) - RMCP runtime for provider-backed MCP servers.
-- [unifi-rmcp](https://github.com/jmagar/runifi) - UniFi controller REST API bridge.
-- [tailscale-rmcp](https://github.com/jmagar/rtailscale) - Tailscale API bridge for devices, users, and tailnet operations.
-- [unraid-rmcp](https://github.com/jmagar/runraid) - Unraid GraphQL bridge for NAS and server management.
-- [apprise-rmcp](https://github.com/jmagar/rapprise) - Apprise notification fan-out bridge for many delivery backends.
-- [gotify-rmcp](https://github.com/jmagar/rgotify) - Gotify push notification bridge for sends, messages, apps, and clients.
-- [arcane-rmcp](https://github.com/jmagar/rarcane) - Arcane Docker management bridge for containers and related resources.
-- [yarr](https://github.com/jmagar/yarr) - Media-stack bridge for Sonarr, Radarr, Prowlarr, Plex, and related services.
-- [ytdl-rmcp](https://github.com/jmagar/rytdl) - Media download and metadata workflow server.
-- [synapse-rmcp](https://github.com/jmagar/synapse) - Local Synapse workflow server for scout and flux actions.
-- [cortex](https://github.com/jmagar/cortex) - Syslog and homelab log aggregation MCP server.
-- [axon](https://github.com/jmagar/axon) - RAG, crawl, scrape, extract, and semantic search project.
-- [lumen](https://github.com/jmagar/lumen) - Local semantic code search MCP server.
+- [soma](https://github.com/dinglebear-ai/soma) - RMCP runtime for provider-backed MCP servers.
+- [unifi-rmcp](https://github.com/dinglebear-ai/runifi) - UniFi controller REST API bridge.
+- [tailscale-rmcp](https://github.com/dinglebear-ai/rtailscale) - Tailscale API bridge for devices, users, and tailnet operations.
+- [unraid](https://github.com/dinglebear-ai/unraid) - Unraid monorepo; the Rust GraphQL bridge (`runraid`) lives in `unraid-rs/`.
+- [apprise-rmcp](https://github.com/dinglebear-ai/rapprise) - Apprise notification fan-out bridge for many delivery backends.
+- [gotify-rmcp](https://github.com/dinglebear-ai/rgotify) - Gotify push notification bridge for sends, messages, apps, and clients.
+- [arcane-rmcp](https://github.com/dinglebear-ai/rarcane) - Arcane Docker management bridge for containers and related resources.
+- [yarr](https://github.com/dinglebear-ai/yarr) - Media-stack bridge for Sonarr, Radarr, Prowlarr, Plex, and related services.
+- [ytdl-rmcp](https://github.com/dinglebear-ai/rytdl) - Media download and metadata workflow server.
+- [synapse-rmcp](https://github.com/dinglebear-ai/synapse) - Local Synapse workflow server for scout and flux actions.
+- [cortex](https://github.com/dinglebear-ai/cortex) - Syslog and homelab log aggregation MCP server.
+- [axon](https://github.com/dinglebear-ai/axon) - RAG, crawl, scrape, extract, and semantic search project.
+- [lumen](https://github.com/dinglebear-ai/lumen) - Local semantic code search MCP server.
 
 ## Documentation
 

@@ -447,7 +447,7 @@ impl LabMcpServer {
         };
 
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
-        let before = self.snapshot_tool_catalog().await;
+        let before = self.snapshot_tool_catalog_for_request(context).await;
         let mut response = match broker
             .execute(
                 code,
@@ -460,13 +460,13 @@ impl LabMcpServer {
             .await
         {
             Ok(response) => {
-                let after = self.snapshot_tool_catalog().await;
+                let after = self.snapshot_tool_catalog_for_request(context).await;
                 self.notify_catalog_changes(after.changes_since(&before), SOURCE_MCP_CALL_CODEMODE)
                     .await;
                 response
             }
             Err(err) => {
-                let after = self.snapshot_tool_catalog().await;
+                let after = self.snapshot_tool_catalog_for_request(context).await;
                 self.notify_catalog_changes(after.changes_since(&before), SOURCE_MCP_CALL_CODEMODE)
                     .await;
                 let calls = err.calls().to_vec();

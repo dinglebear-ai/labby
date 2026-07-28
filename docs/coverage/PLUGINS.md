@@ -13,7 +13,6 @@ Only `labby` (coupled to the `labby` binary) and `scripts` (shared tooling) are 
 | Type | Detail |
 |------|--------|
 | manifest | `.claude-plugin/plugin.json` |
-| hook | `hooks/hooks.json` |
 | skill | `skills/creating-snippets/SKILL.md` |
 | skill | `skills/using-labby/SKILL.md` |
 | .mcp.json | `lab` -> `${user_config.server_url}/mcp` |

@@ -9,15 +9,16 @@ or auto-repair anything. It ships:
 - the `creating-snippets` skill for Labby Code Mode snippet authoring,
 - an HTTP MCP server entry pointing at a running `labby serve`
   (`${user_config.server_url}/mcp` — remote machines never need a local binary),
-- advisory hooks: SessionStart reports setup status via
-  `labby setup plugin-hook --no-repair` when `labby` is on `PATH` (and prints
-  an install pointer when it is not); ConfigChange syncs plugin settings via
-  `labby setup plugin-hook`.
+- `userConfig` settings declared in `.claude-plugin/plugin.json`.
+
+The plugin ships **no Claude Code hooks**. The former `hooks/hooks.json`
+(SessionStart / ConfigChange shims) was removed; run `labby setup` yourself
+after changing plugin settings.
 
 ## Installing labby (server host only)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jmagar/labby/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.sh | sh
 labby setup
 ```
 
@@ -32,5 +33,6 @@ for convenience, but GitHub is the canonical installer source.
 ## Configuration
 
 Plugin settings (server URL, auth mode, token, …) are declared in
-`.claude-plugin/plugin.json` `userConfig` and synced into `~/.labby/.env` as
-`LAB_*` variables by `labby setup plugin-hook` when settings change.
+`.claude-plugin/plugin.json` `userConfig`. Sync them into `~/.labby/.env` by
+running `labby setup plugin-hook` manually after changing settings — this is no
+longer triggered automatically by a ConfigChange hook.
