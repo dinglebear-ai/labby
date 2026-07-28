@@ -53,27 +53,60 @@ active_roots=(
 
 forbidden_pattern='pub mod (acp|acp_registry|mcpregistry|marketplace|device_runtime|deploy|stash)|feature = "(acp_registry|mcpregistry|marketplace|deploy)"|labby_apis::(acp|acp_registry|mcpregistry|marketplace|device_runtime|deploy|stash)|mcpregistry.url|ACP_SESSION_CWD|NodeRuntimeRole|DevicePreferences|ResolvedDeviceRuntime|/v1/(acp|stash|marketplace|nodes|fleet)|/dev/api/marketplace|marketplaceActionUrl|nodeDetailUrl|nodeLogsSearchUrl'
 
-if rg -n --hidden \
-  --glob '!.git/**' \
-  --glob '!target/**' \
-  --glob '!scripts/check-retired-features.sh' \
-  "$forbidden_pattern" "${active_roots[@]}"; then
-  printf 'retired-feature guard: forbidden active identifier found
-' >&2
-  failed=1
+# Portable POSIX grep, not ripgrep: this guard runs in the lightweight `changes`
+# CI job, which installs no extra tooling. A missing `rg` previously made the
+# scan silently pass while flipping the two presence checks below into false
+# failures.
+scan_roots=()
+for root in "${active_roots[@]}"; do
+  [[ -e "$root" ]] && scan_roots+=("$root")
+done
+
+if (( ${#scan_roots[@]} == 0 )); then
+  printf 'retired-feature guard: no scannable roots found; refusing to pass vacuously\n' >&2
+  exit 1
 fi
 
-if ! rg -q 'io\.modelcontextprotocol\.registry/publisher-provided' server.json; then
-  printf 'retired-feature guard: server.json no longer publishes Labby to the official MCP Registry
-' >&2
-  failed=1
-fi
+# grep exits 0 on match, 1 on no match, >1 on error. Only 1 is a clean pass.
+set +e
+grep -rEn --binary-files=without-match \
+  --exclude-dir=.git \
+  --exclude-dir=target \
+  --exclude-dir=node_modules \
+  --exclude='check-retired-features.sh' \
+  -- "$forbidden_pattern" "${scan_roots[@]}"
+grep_status=$?
+set -e
 
-if ! rg -q 'mcp-publisher' .github/workflows/release.yml; then
-  printf 'retired-feature guard: MCP Registry publication workflow is missing
-' >&2
-  failed=1
-fi
+case "$grep_status" in
+  0)
+    printf 'retired-feature guard: forbidden active identifier found\n' >&2
+    failed=1
+    ;;
+  1) ;;
+  *)
+    printf 'retired-feature guard: scan failed (grep exit %s)\n' "$grep_status" >&2
+    failed=1
+    ;;
+esac
+
+require_present() {
+  local pattern="$1" file="$2" message="$3"
+  if [[ ! -f "$file" ]]; then
+    printf 'retired-feature guard: %s (missing file: %s)\n' "$message" "$file" >&2
+    failed=1
+    return
+  fi
+  if ! grep -qE -- "$pattern" "$file"; then
+    printf 'retired-feature guard: %s\n' "$message" >&2
+    failed=1
+  fi
+}
+
+require_present 'io\.modelcontextprotocol\.registry/publisher-provided' server.json \
+  'server.json no longer publishes Labby to the official MCP Registry'
+require_present 'mcp-publisher' .github/workflows/release.yml \
+  'MCP Registry publication workflow is missing'
 
 if (( failed != 0 )); then
   exit 1
