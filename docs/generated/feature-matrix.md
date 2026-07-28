@@ -20,7 +20,7 @@ Feature invariant status: clean.
 | labby-apis | `test-utils` | HelperInternal | false | false | - |  |
 | labby-auth | `default` | AggregateDefault | true | true | - |  |
 | labby-auth | `http-axum` | ExtractedCrate | true | true | - | `dep:axum`<br>`dep:tower` |
-| labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | true | true | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow` |
+| labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | true | true | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow`<br>`dep:labby-runtime` |
 | labby-codemode | `no_features` | ExtractedCrate | true | true | - |  |
 | labby-gateway | `testkit` | ExtractedCrate | false | false | - |  |
 | labby-web | `default` | AggregateDefault | true | true | - |  |

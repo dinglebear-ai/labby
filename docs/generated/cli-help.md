@@ -15,6 +15,7 @@ Commands:
   doctor       Audit configured services and report problems
   docs         Generate and verify code-owned documentation artifacts
   health       Quick reachability check for configured services
+  logs         Tail the active Labby service journal
   setup        Bootstrap the supported Incus Labby gateway container
   incus        Manage the supported Incus Labby gateway container
   update       Update labby from the latest GitHub release
@@ -376,6 +377,38 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby logs`
+
+```text
+Tail the active Labby service journal
+
+Usage: logs [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+  -n, --lines <LINES>
+          Number of historical log lines to print before following
+
+          [default: 200]
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --no-follow
+          Print the selected lines and exit instead of following the journal
+
+      --container <CONTAINER>
+          Explicit Incus container name. Auto-detects a running Labby container otherwise
 
   -h, --help
           Print help

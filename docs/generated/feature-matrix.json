@@ -175,7 +175,8 @@
       "dependencies": [
         "dep:rmcp-client",
         "dep:oauth2",
-        "dep:anyhow"
+        "dep:anyhow",
+        "dep:labby-runtime"
       ],
       "included_in_default": true,
       "included_in_all": true,
