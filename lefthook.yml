@@ -1,21 +1,35 @@
+# Pre-commit must stay fast (target <30s) so "commit early, commit often"
+# survives. Workspace-scale gates (clippy, test, build) belong in pre-push or
+# CI, never here. Enforced by scripts/check_lefthook_pre_commit_speed.py.
+#
+# 2026-07-28: `cargo clippy --workspace --all-features` ran here on EVERY
+# commit against 11 crates / 479 locked deps with incremental=false. It timed
+# out a commit that only deleted generated markdown. Moved to pre-push.
+
 pre-commit:
+  parallel: true
   commands:
     rustfmt:
-      run: cargo fmt --all --check
-    clippy:
-      run: cargo clippy --workspace --all-features -- -D warnings
+      glob: "*.rs"
+      run: scripts/with_timeout.sh 30 -- cargo fmt -- --check {staged_files}
+
+    toml-fmt:
+      glob: "*.toml"
+      run: scripts/with_timeout.sh 30 -- taplo check {staged_files}
+
+    # Convention enforcement: bans clap/rmcp/ratatui/anyhow/tabled in
+    # labby-apis/labby-auth (per crates/labby-apis/CLAUDE.md). Just `bans` —
+    # CI runs the full check (advisories/licenses/sources).
+    # Gated on manifests: bans can only change when a manifest does.
     cargo-deny-bans:
-      # Convention enforcement: bans clap/rmcp/ratatui/anyhow/tabled in
-      # lab-apis/lab-auth (per crates/lab-apis/CLAUDE.md). Just `bans` —
-      # CI runs the full check (advisories/licenses/sources).
-      # Guard: skip gracefully if cargo-deny is not installed locally.
-      # Install: cargo install cargo-deny
+      glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/*/Cargo.toml}"
       run: |
         if ! command -v cargo-deny >/dev/null 2>&1; then
-          echo "cargo-deny not installed — skipping bans check (install with: cargo install cargo-deny)"
+          echo "cargo-deny not installed — skipping bans check (cargo install cargo-deny)"
           exit 0
         fi
-        cargo deny check bans
+        scripts/with_timeout.sh 60 -- cargo deny check bans
+
     aurora-radius:
       glob: "{apps/gateway-admin/*.{ts,tsx,css},apps/gateway-admin/**/*.{ts,tsx,css}}"
       run: |
@@ -25,3 +39,14 @@ pre-commit:
           echo "$added"
           exit 1
         fi
+
+    lefthook-speed:
+      glob: "lefthook.yml"
+      run: scripts/with_timeout.sh 10 -- python3 scripts/check_lefthook_pre_commit_speed.py
+
+pre-push:
+  parallel: false
+  commands:
+    # The workspace-scale gate that used to run on every commit.
+    clippy:
+      run: scripts/with_timeout.sh 900 -- cargo clippy --workspace --all-features -- -D warnings
