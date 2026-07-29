@@ -29,6 +29,29 @@ pub struct ForwardResponse {
     pub body: Bytes,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OAuthCallbackQueryPresence {
+    pub has_code: bool,
+    pub has_state: bool,
+    pub has_issuer: bool,
+}
+
+pub(crate) fn oauth_callback_query_presence(query: Option<&str>) -> OAuthCallbackQueryPresence {
+    let mut presence = OAuthCallbackQueryPresence::default();
+    let Some(query) = query else {
+        return presence;
+    };
+    for (name, _) in url::form_urlencoded::parse(query.as_bytes()) {
+        match name.as_ref() {
+            "code" => presence.has_code = true,
+            "state" => presence.has_state = true,
+            "iss" => presence.has_issuer = true,
+            _ => {}
+        }
+    }
+    presence
+}
+
 impl PublicRelayForwarder {
     pub fn new() -> Result<Self, PublicRelayError> {
         drop(rustls::crypto::ring::default_provider().install_default());
@@ -64,6 +87,23 @@ impl PublicRelayForwarder {
             ));
         }
         url.set_query(request.query.as_deref().filter(|query| !query.is_empty()));
+        let query_presence = oauth_callback_query_presence(url.query());
+        let request_id = request
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok());
+        tracing::debug!(
+            surface = "api",
+            service = "oauth_relay",
+            action = "callback",
+            stage = "forward_request",
+            request_id,
+            target = %target_label,
+            query_has_code = query_presence.has_code,
+            query_has_state = query_presence.has_state,
+            query_has_issuer = query_presence.has_issuer,
+            "public oauth callback relay outbound request prepared"
+        );
 
         let mut builder = self.client.request(request.method, url);
         for (name, value) in &filter_public_request_headers(&request.headers) {
@@ -225,7 +265,7 @@ mod tests {
         forward_to_with_parts(
             &upstream,
             "extra/path".into(),
-            Some("code=abc&state=xyz".into()),
+            Some("code=abc&state=xyz&iss=https%3A%2F%2Fdinglebear.ai".into()),
             HeaderMap::new(),
             Bytes::from_static(b"callback-body"),
         )
@@ -241,13 +281,31 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .to_string(),
-            "/callback/dookie/extra/path?code=abc&state=xyz"
+            "/callback/dookie/extra/path?code=abc&state=xyz&iss=https%3A%2F%2Fdinglebear.ai"
         );
         assert_eq!(
             upstream.seen_body.lock().unwrap().as_ref(),
             b"callback-body"
         );
         upstream.handle.abort();
+    }
+
+    #[test]
+    fn oauth_callback_query_presence_detects_names_without_exposing_values() {
+        assert_eq!(
+            oauth_callback_query_presence(Some(
+                "code=secret-code&state=secret-state&iss=https%3A%2F%2Fdinglebear.ai"
+            )),
+            OAuthCallbackQueryPresence {
+                has_code: true,
+                has_state: true,
+                has_issuer: true,
+            }
+        );
+        assert_eq!(
+            oauth_callback_query_presence(Some("error=access_denied")),
+            OAuthCallbackQueryPresence::default()
+        );
     }
 
     #[tokio::test]

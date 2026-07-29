@@ -30,9 +30,13 @@ test-integration:
     cargo nextest run --workspace --all-features --run-ignored ignored-only
 
 # Lint
-lint: skill-drift test-cargo-wrapper
+lint: skill-drift test-cargo-wrapper rust-toolchain-sync
     cargo clippy --workspace --all-features -- -D warnings
     cargo fmt --all -- --check
+
+# Verify Cargo, rust-toolchain, CI, container, and active docs agree on the MSRV.
+rust-toolchain-sync:
+    scripts/check-rust-toolchain-sync.sh
 
 # Check hand-authored skills for known stale or unsafe patterns
 skill-drift:

@@ -82,17 +82,6 @@ jobs:
 
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
-        with:
-          # This job runs on ubuntu-latest (see the runs-on note above), so the
-          # runner is a fresh VM every time and the action's default `minimal`
-          # preset — which is right for the persistent self-hosted runners —
-          # leaves every cache layer off. Step 8 then does a full
-          # `cargo build --workspace --all-features --locked --release` stone
-          # cold: run 30329336992 reported `cache summary: target=disabled
-          # build=disabled/disabled cargo-registry=disabled/disabled` and
-          # `hit_rate=0.0%`. `full` turns on the build, target, and
-          # cargo-registry layers so the release build is cached across runs.
-          cache-preset: full
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:

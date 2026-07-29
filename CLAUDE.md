@@ -19,7 +19,7 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 | Remote | `git@github.com:dinglebear-ai/labby.git` (the older `jmagar/lab` and `jmagar/labby` names survive only via GitHub transfer redirects — prefer the canonical URL) |
 | Default branch | `main` |
 | Cargo workspace | 11 members, `resolver = "3"`, single `[workspace.package]` version |
-| Edition / MSRV | edition 2024, `rust-version = "1.92"`, toolchain pinned to 1.94.1 in `rust-toolchain.toml` |
+| Edition / MSRV | edition 2024, `rust-version = "1.97.1"`, toolchain pinned to 1.97.1 in `rust-toolchain.toml` |
 | MCP SDK | `rmcp = "=3.0.0-beta.2"` — exact pin in `[workspace.dependencies]`, and the only repo in the fleet on rmcp 3.x. Bumping it is a breaking change across `crates/labby/src/mcp/` and `crates/labby-gateway/`. |
 | Lint enforcement | `[workspace.lints]` is real here: `unsafe_code = "forbid"`, `mod_module_files = "deny"`, `disallowed_macros = "deny"` (see `/clippy.toml` — bans `#[async_trait]`) |
 | Config / secrets | `~/.labby/config.toml` and `~/.labby/.env`; `$LABBY_HOME` overrides the `~/.labby` root |
@@ -129,7 +129,7 @@ labby/
 ├── scripts/                          # install.sh/install.ps1, incus-bootstrap.sh, CI helpers
 ├── openwiki/                         # generated repository wiki
 ├── Cargo.toml                        # workspace: 11 members, resolver 3, shared lints
-├── rust-toolchain.toml               # pinned 1.94.1 (MSRV is 1.92)
+├── rust-toolchain.toml               # pinned 1.97.1 (MSRV is also 1.97.1)
 ├── Justfile
 ├── clippy.toml                       # disallowed_macros config (bans #[async_trait])
 ├── deny.toml
@@ -464,7 +464,7 @@ just test-integration
 - GitHub Actions, `.github/workflows/ci.yml`, gated behind a single `ci-gate` job.
 - Platforms: Linux x86_64 for the main jobs, plus dedicated `test-windows` and
   `palette-windows` jobs. There is no aarch64 CI or release target.
-- Rust checks: `fmt`, `clippy` (`-D warnings`), `deny`, `check`, `msrv` (1.92.0),
+- Rust checks: `fmt`, `clippy` (`-D warnings`), `deny`, `check`, `msrv` (1.97.1),
   `test` / `test-fork`, `rust-coverage`.
 - Slice checks: `feature-slices` (`gateway`, `fs`) and `extracted-crate-slices`
   (per-feature checks of `labby-auth`, `labby-runtime`, and friends).
@@ -481,7 +481,7 @@ just test-integration
 
 ## Style
 
-- Rust 2024 edition; toolchain pinned to 1.94.1, MSRV 1.92
+- Rust 2024 edition; toolchain pinned to 1.97.1, MSRV 1.97.1
 - `cargo fmt` with default settings
 - `cargo clippy` with no allowed warnings
 - `unsafe_code = "forbid"` workspace-wide. The one exception is `labby-winjob`,

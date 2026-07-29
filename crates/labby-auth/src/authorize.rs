@@ -342,8 +342,8 @@ fn authorization_error_redirect(
         .query_pairs_mut()
         .append_pair("error", error_code)
         .append_pair("error_description", &error.to_string())
-        .append_pair("state", &query.state)
-        .append_pair("iss", &crate::metadata::public_base_url(state));
+        .append_pair("state", &query.state);
+    append_authorization_response_issuer(state, &mut redirect);
     Ok(Redirect::to(redirect.as_str()).into_response())
 }
 
@@ -420,8 +420,8 @@ pub async fn callback(
             .query_pairs_mut()
             .append_pair("error", "access_denied")
             .append_pair("error_description", &denial.to_string())
-            .append_pair("state", &request.client_state)
-            .append_pair("iss", &crate::metadata::public_base_url(&state));
+            .append_pair("state", &request.client_state);
+        append_authorization_response_issuer(&state, &mut redirect_target);
         return Ok(Redirect::to(redirect_target.as_str()).into_response());
     }
 
@@ -532,15 +532,46 @@ pub async fn callback(
     redirect_uri
         .query_pairs_mut()
         .append_pair("code", &auth_code)
-        .append_pair("state", &request.client_state)
-        .append_pair("iss", &crate::metadata::public_base_url(&state));
-    debug!(
+        .append_pair("state", &request.client_state);
+    append_authorization_response_issuer(&state, &mut redirect_uri);
+    let (has_code, has_state, has_issuer) = authorization_response_query_presence(&redirect_uri);
+    info!(
         auth_code_id = %auth_code_id,
-        redirect_uri = %redirect_uri,
-        "oauth callback redirecting client back to registered callback"
+        oauth_state_id = %oauth_state_id,
+        client_id = %request_client_id,
+        authorization_response_has_code = has_code,
+        authorization_response_has_state = has_state,
+        authorization_response_has_issuer = has_issuer,
+        redirect_scheme = redirect_uri.scheme(),
+        redirect_host = redirect_uri.host_str(),
+        redirect_path = redirect_uri.path(),
+        "oauth callback authorization response prepared"
     );
 
     Ok(Redirect::to(redirect_uri.as_str()).into_response())
+}
+
+fn append_authorization_response_issuer(state: &AuthState, redirect: &mut url::Url) {
+    if !state.config.codex_issuer_compatibility {
+        redirect
+            .query_pairs_mut()
+            .append_pair("iss", &crate::metadata::public_base_url(state));
+    }
+}
+
+fn authorization_response_query_presence(redirect: &url::Url) -> (bool, bool, bool) {
+    let mut has_code = false;
+    let mut has_state = false;
+    let mut has_issuer = false;
+    for (name, _) in redirect.query_pairs() {
+        match name.as_ref() {
+            "code" => has_code = true,
+            "state" => has_state = true,
+            "iss" => has_issuer = true,
+            _ => {}
+        }
+    }
+    (has_code, has_state, has_issuer)
 }
 
 /// Direct-hit fallback for the registered native `redirect_uri`. In the real
@@ -2641,12 +2672,10 @@ pub mod tests {
             assert!(response.headers().contains_key(header::SET_COOKIE));
         }
 
-        /// The oauth-client callback must also succeed for a non-admin email that
-        /// exists in `allowed_users`.
-        #[tokio::test]
-        async fn oauth_client_callback_succeeds_for_allowlisted_non_admin_email() {
+        async fn oauth_client_callback_location(codex_issuer_compatibility: bool) -> Url {
             let mut config = test_auth_config();
             config.admin_email = "admin@example.com".to_string();
+            config.codex_issuer_compatibility = codex_issuer_compatibility;
             let base_state = test_auth_state_with_config(config).await;
 
             // Register a client.
@@ -2701,7 +2730,6 @@ pub mod tests {
                 .await
                 .unwrap();
 
-            // Success: redirect to client callback with `code` param (no `error`).
             assert_eq!(response.status(), StatusCode::SEE_OTHER);
             let location = response
                 .headers()
@@ -2709,16 +2737,67 @@ pub mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap();
-            let redirect = Url::parse(location).unwrap();
+            Url::parse(location).unwrap()
+        }
+
+        /// The oauth-client callback must also succeed for a non-admin email that
+        /// exists in `allowed_users`.
+        #[tokio::test]
+        async fn oauth_client_callback_succeeds_for_allowlisted_non_admin_email() {
+            let redirect = oauth_client_callback_location(false).await;
             let params: std::collections::HashMap<_, _> = redirect.query_pairs().collect();
             assert!(
                 params.contains_key("code"),
-                "expected code in redirect: {location}"
+                "expected code in redirect: {redirect}"
+            );
+            assert_eq!(
+                params.get("state").map(|value| value.as_ref()),
+                Some("client-xyz")
+            );
+            assert_eq!(
+                params.get("iss").map(|value| value.as_ref()),
+                Some("https://lab.example.com")
             );
             assert!(
                 !params.contains_key("error"),
-                "unexpected error in redirect: {location}"
+                "unexpected error in redirect: {redirect}"
             );
+        }
+
+        #[tokio::test]
+        async fn oauth_client_callback_omits_issuer_in_explicit_codex_compatibility_mode() {
+            let redirect = oauth_client_callback_location(true).await;
+            let params: std::collections::HashMap<_, _> = redirect.query_pairs().collect();
+            assert!(params.contains_key("code"));
+            assert_eq!(
+                params.get("state").map(|value| value.as_ref()),
+                Some("client-xyz")
+            );
+            assert!(!params.contains_key("iss"));
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn oauth_client_callback_logs_redact_redirect_query_values() {
+            let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+            let buf = crate::test_support::global_tracing_buffer();
+            let redirect = oauth_client_callback_location(false).await;
+            let params: std::collections::HashMap<_, _> =
+                redirect.query_pairs().into_owned().collect();
+            let authorization_code = params.get("code").unwrap();
+
+            let logs = crate::test_support::captured_logs(&buf);
+            for secret in [
+                authorization_code.as_str(),
+                "client-xyz",
+                "iss=https%3A%2F%2Flab.example.com",
+                redirect.as_str(),
+            ] {
+                assert!(
+                    !logs.contains(secret),
+                    "OAuth redirect secret leaked into debug logs: {secret}\n{logs}"
+                );
+            }
+            assert!(logs.contains("\"redirect_path\":\"/callback\""), "{logs}");
         }
 
         /// Email not in admin or allowed_users must be rejected in the browser-login

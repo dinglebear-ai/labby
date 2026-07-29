@@ -155,6 +155,12 @@ pub struct AuthConfig {
     pub authorize_requests_per_minute: u32,
     pub token_requests_per_minute: u32,
     pub max_pending_oauth_states: usize,
+    /// Compatibility mode for Codex clients affected by openai/codex#34684.
+    ///
+    /// When enabled, the authorization server does not advertise or emit the
+    /// RFC 9207 `iss` authorization-response parameter. Standards-compliant
+    /// issuer binding remains the default.
+    pub codex_issuer_compatibility: bool,
 
     // ---- Brand / consumer-specific parameterization (see L1 bead) ----
     /// Env var prefix used for diagnostics (e.g. `"LAB"`, `"SYSLOG_MCP"`).
@@ -222,6 +228,7 @@ impl Default for AuthConfig {
             authorize_requests_per_minute: DEFAULT_AUTHORIZE_REQUESTS_PER_MINUTE,
             token_requests_per_minute: DEFAULT_TOKEN_REQUESTS_PER_MINUTE,
             max_pending_oauth_states: DEFAULT_MAX_PENDING_OAUTH_STATES,
+            codex_issuer_compatibility: false,
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             default_data_dir: base_dir,
             session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
@@ -494,6 +501,7 @@ impl AuthConfigBuilder {
         let key_az_rpm = env_key(&prefix, "AUTH_AUTHORIZE_REQUESTS_PER_MINUTE");
         let key_token_rpm = env_key(&prefix, "AUTH_TOKEN_REQUESTS_PER_MINUTE");
         let key_max_pending = env_key(&prefix, "AUTH_MAX_PENDING_OAUTH_STATES");
+        let key_codex_issuer_compatibility = env_key(&prefix, "AUTH_CODEX_ISSUER_COMPATIBILITY");
         let key_enc_key = env_key(&prefix, "TOKEN_ENCRYPTION_KEY");
         let key_scopes_supported = env_key(&prefix, "AUTH_SCOPES_SUPPORTED");
         let key_machine_clients = env_key(&prefix, "AUTH_MACHINE_CLIENTS_JSON");
@@ -542,6 +550,8 @@ impl AuthConfigBuilder {
                 .unwrap_or(DEFAULT_TOKEN_REQUESTS_PER_MINUTE),
             max_pending_oauth_states: read_usize(&vars, &key_max_pending)?
                 .unwrap_or(DEFAULT_MAX_PENDING_OAUTH_STATES),
+            codex_issuer_compatibility: read_bool(&vars, &key_codex_issuer_compatibility)?
+                .unwrap_or(false),
             env_prefix: prefix,
             default_data_dir: base_dir,
             session_cookie_name: self.session_cookie_name,
@@ -693,6 +703,18 @@ fn read_usize(vars: &HashMap<String, String>, key: &str) -> Result<Option<usize>
         .transpose()
 }
 
+fn read_bool(vars: &HashMap<String, String>, key: &str) -> Result<Option<bool>, AuthError> {
+    read_string(vars, key)
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" => Ok(true),
+            "0" | "false" => Ok(false),
+            other => Err(AuthError::Config(format!(
+                "{key} must be `true`, `false`, `1`, or `0`, got `{other}`"
+            ))),
+        })
+        .transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AuthConfig, AuthConfigBuilder, AuthMode, AuthModeConfig, MachineClientConfig};
@@ -726,6 +748,28 @@ mod tests {
         assert_eq!(cfg.sqlite_path.file_name().unwrap(), "auth.db");
         assert_eq!(cfg.key_path.file_name().unwrap(), "auth-jwt.pem");
         assert_eq!(cfg.google.callback_path, "/auth/google/callback");
+        assert!(!cfg.codex_issuer_compatibility);
+    }
+
+    #[test]
+    fn codex_issuer_compatibility_is_explicit_and_validated() {
+        let cfg = AuthConfig::from_sources(fake_env_with_many([(
+            "LAB_AUTH_CODEX_ISSUER_COMPATIBILITY",
+            "true",
+        )]))
+        .unwrap();
+        assert!(cfg.codex_issuer_compatibility);
+
+        let error = AuthConfig::from_sources(fake_env_with_many([(
+            "LAB_AUTH_CODEX_ISSUER_COMPATIBILITY",
+            "sometimes",
+        )]))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("LAB_AUTH_CODEX_ISSUER_COMPATIBILITY must be")
+        );
     }
 
     #[test]

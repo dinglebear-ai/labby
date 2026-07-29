@@ -5,7 +5,7 @@ members = ["crates/labby-apis", "crates/labby", "crates/labby-auth", "crates/lab
 [workspace.package]
 version = "1.8.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.97.1"
 keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
 description = "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI."
 license = "MIT OR Apache-2.0"

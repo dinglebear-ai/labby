@@ -30,7 +30,7 @@ jobs when their changed-path category is enabled:
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
-| MSRV | `rust_compile` | `cargo +1.92.0 check --workspace --all-features --all-targets --locked` |
+| MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
 | Feature slices | `rust_compile` | `cargo check -p labby --no-default-features --features <slice>` |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |

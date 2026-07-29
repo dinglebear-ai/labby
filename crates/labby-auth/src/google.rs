@@ -22,7 +22,7 @@ const GOOGLE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// lock. Token exchange / refresh keep the looser 30s bound because they
 /// can legitimately take longer.
 const GOOGLE_JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_secs(60 * 60);
+const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_hours(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizeUrlRequest {
@@ -651,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn google_exchange_parses_subject_and_refresh_token() {
-        let provider = mocked_google_provider().await;
+        let (_server, provider) = mocked_google_provider().await;
         let token = provider.exchange_code("code", "verifier").await.unwrap();
         assert_eq!(token.subject, "google-subject-123");
         assert_eq!(token.refresh_token.as_deref(), Some("refresh-token"));
@@ -680,7 +680,7 @@ mod tests {
 
     #[tokio::test]
     async fn google_exchange_rejects_unsigned_id_tokens() {
-        let provider = mocked_google_provider_with_id_token(test_id_token()).await;
+        let (_server, provider) = mocked_google_provider_with_id_token(test_id_token()).await;
         let error = provider
             .exchange_code("code", "verifier")
             .await
@@ -693,7 +693,7 @@ mod tests {
 
     #[tokio::test]
     async fn google_exchange_rejects_wrong_audience_in_id_token() {
-        let provider =
+        let (_server, provider) =
             mocked_google_provider_with_id_token(signed_test_id_token("other-client", false, true))
                 .await;
         let error = provider
@@ -708,7 +708,7 @@ mod tests {
 
     #[tokio::test]
     async fn google_exchange_rejects_expired_id_token() {
-        let provider =
+        let (_server, provider) =
             mocked_google_provider_with_id_token(signed_test_id_token("client-id", true, true))
                 .await;
         let error = provider
@@ -723,7 +723,7 @@ mod tests {
 
     #[tokio::test]
     async fn google_exchange_rejects_wrong_issuer_in_id_token() {
-        let provider =
+        let (_server, provider) =
             mocked_google_provider_with_id_token(signed_test_id_token("client-id", false, false))
                 .await;
         let error = provider
@@ -804,7 +804,7 @@ mod tests {
             .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
         *provider.jwks_cache.write().await = Some(CachedGoogleJwks {
             jwks: wrong_test_jwks(),
-            expires_at: Instant::now() + Duration::from_secs(3600),
+            expires_at: Instant::now() + Duration::from_hours(1),
         });
 
         let exchange = provider.exchange_code("code", "verifier").await.unwrap();
@@ -833,11 +833,13 @@ mod tests {
         .unwrap()
     }
 
-    async fn mocked_google_provider() -> GoogleProvider {
+    async fn mocked_google_provider() -> (MockServer, GoogleProvider) {
         mocked_google_provider_with_id_token(signed_test_id_token("client-id", false, true)).await
     }
 
-    async fn mocked_google_provider_with_id_token(id_token: String) -> GoogleProvider {
+    async fn mocked_google_provider_with_id_token(
+        id_token: String,
+    ) -> (MockServer, GoogleProvider) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/token"))
@@ -855,12 +857,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        test_google_provider()
+        let provider = test_google_provider()
             .with_endpoints(
                 server.uri().parse::<Url>().unwrap(),
                 server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
             )
-            .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap())
+            .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
+        (server, provider)
     }
 
     fn sample_request() -> AuthorizeUrlRequest {

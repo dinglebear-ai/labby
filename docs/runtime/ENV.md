@@ -37,6 +37,7 @@ LABBY_AUTH_ACCESS_TOKEN_TTL_SECS=3600
 LABBY_AUTH_REFRESH_TOKEN_TTL_SECS=2592000
 LABBY_AUTH_CODE_TTL_SECS=300
 LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE=120
+LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY=false
 LABBY_AUTH_MACHINE_CLIENTS_JSON=[{"client_id":"ci-agent","client_secret":"replace-me","resources":["https://lab.example.com/mcp"],"scopes":["lab"]}]
 LABBY_AUTH_ENTERPRISE_ISSUERS_JSON=[{"issuer":"https://idp.example.com","jwks_uri":"https://idp.example.com/jwks","allowed_client_ids":["ci-agent"]}]
 ```
@@ -50,6 +51,7 @@ Rules:
 - oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and `LABBY_AUTH_ADMIN_EMAIL`
 - `LABBY_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Future SQLite-backed allowlist (web-UI managed) will grant access to additional users.
 - `LABBY_GOOGLE_CALLBACK_URL` optionally sends the browser callback to a webapp host that differs from the stable OAuth issuer in `LABBY_PUBLIC_URL`
+- `LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY=true` is an explicit temporary workaround for [openai/codex#34684](https://github.com/openai/codex/issues/34684); it disables RFC 9207 response-issuer advertisement and emission and should be removed after affected Codex clients are fixed
 - the old external issuer variables (`LABBY_OAUTH_ISSUER`, `LABBY_OAUTH_AUDIENCE`, `LABBY_OAUTH_CLIENT_ID`) are no longer used
 - `LABBY_PUBLIC_URL` also feeds RFC 9728 metadata, JWT issuer/audience, and HTTP allowed-host derivation
 

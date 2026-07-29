@@ -17,6 +17,7 @@ use serde_json::json;
 use crate::api::error::{ApiError, ToolError};
 use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
+use crate::oauth::public_relay::forward::oauth_callback_query_presence;
 use crate::oauth::public_relay::{
     ForwardRequest, ImportReport, MachineId, MutationReport, PUBLIC_QUERY_LIMIT_BYTES,
     PUBLIC_REQUEST_BODY_LIMIT_BYTES, PublicRelayEntry, PublicRelayError, PublicRelayHealth,
@@ -96,11 +97,20 @@ async fn callback(
     body: Body,
 ) -> Response {
     let started = Instant::now();
+    let request_id = request_id(&headers).map(ToOwned::to_owned);
     let machine_raw = params.get("machine_id").map(String::as_str).unwrap_or("");
     let machine_id = match MachineId::parse(machine_raw) {
         Ok(machine_id) => machine_id,
         Err(error) => {
-            return public_error_response_logged(error, started, None, machine_raw, &method, None);
+            return public_error_response_logged(
+                error,
+                started,
+                None,
+                machine_raw,
+                &method,
+                None,
+                request_id.as_deref(),
+            );
         }
     };
     if uri
@@ -114,8 +124,23 @@ async fn callback(
             machine_raw,
             &method,
             None,
+            request_id.as_deref(),
         );
     }
+    let query_presence = oauth_callback_query_presence(uri.query());
+    tracing::info!(
+        surface = "api",
+        service = "oauth_relay",
+        action = "callback",
+        stage = "receive",
+        request_id = request_id.as_deref(),
+        machine_id = %machine_id,
+        method = %method,
+        query_has_code = query_presence.has_code,
+        query_has_state = query_presence.has_state,
+        query_has_issuer = query_presence.has_issuer,
+        "public oauth callback relay request received"
+    );
     if content_length_exceeds_limit(&headers, PUBLIC_REQUEST_BODY_LIMIT_BYTES) {
         return public_error_response_logged(
             PublicRelayError::BodyTooLarge,
@@ -124,6 +149,7 @@ async fn callback(
             machine_raw,
             &method,
             None,
+            request_id.as_deref(),
         );
     }
     let suffix_path = match suffix_after_machine(uri.path(), &machine_id) {
@@ -136,6 +162,7 @@ async fn callback(
                 machine_raw,
                 &method,
                 None,
+                request_id.as_deref(),
             );
         }
     };
@@ -149,6 +176,7 @@ async fn callback(
             machine_raw,
             &method,
             None,
+            request_id.as_deref(),
         );
     };
     let target = match manager.resolve(&machine_id).await {
@@ -161,6 +189,7 @@ async fn callback(
                 machine_raw,
                 &method,
                 None,
+                request_id.as_deref(),
             );
         }
     };
@@ -180,6 +209,7 @@ async fn callback(
                 machine_raw,
                 &method,
                 None,
+                request_id.as_deref(),
             );
         }
     };
@@ -194,6 +224,7 @@ async fn callback(
                 machine_raw,
                 &method,
                 Some(error.to_string()),
+                request_id.as_deref(),
             );
         }
     };
@@ -215,7 +246,9 @@ async fn callback(
             tracing::info!(
                 surface = "api",
                 service = "oauth_relay",
-                action = "callback.forward",
+                action = "callback",
+                stage = "complete",
+                request_id = request_id.as_deref(),
                 machine_id = %machine_id,
                 method = %method,
                 status = forwarded.status.as_u16(),
@@ -228,7 +261,9 @@ async fn callback(
             tracing::warn!(
                 surface = "api",
                 service = "oauth_relay",
-                action = "callback.forward",
+                action = "callback",
+                stage = "complete",
+                request_id = request_id.as_deref(),
                 machine_id = %machine_id,
                 method = %method,
                 kind = error.kind(),
@@ -346,6 +381,7 @@ fn public_error_response_logged(
     machine_raw: &str,
     method: &Method,
     source: Option<String>,
+    request_id: Option<&str>,
 ) -> Response {
     let status = public_error_status(&error);
     let machine_label = public_log_machine_label(machine_id, machine_raw);
@@ -353,6 +389,8 @@ fn public_error_response_logged(
         surface = "api",
         service = "oauth_relay",
         action = "callback",
+        stage = "rejected",
+        request_id,
         machine_id = machine_label.as_str(),
         method = %method,
         status = status.as_u16(),
@@ -1424,23 +1462,58 @@ mod tests {
         let app =
             crate::api::router::build_router_with_bearer(state, Some("secret-token".into()), None);
         drop(
-            app.oneshot(
+            app.clone().oneshot(
                 Request::builder()
-                    .uri("/callback/dookie?code=abc&state=secret-state")
+                    .uri(
+                        "/callback/dookie?code=abc&state=secret-state&iss=https%3A%2F%2Fdinglebear.ai",
+                    )
+                    .header("x-request-id", "issuer-callback")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap(),
         );
+        let oversized_query = "%41".repeat(PUBLIC_QUERY_LIMIT_BYTES / 3 + 2);
+        let oversized = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/callback/dookie?{oversized_query}"))
+                    .header("x-request-id", "oversized-query")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
         drop(_guard);
         let logs = crate::test_support::captured_logs(&buf);
         assert!(!logs.contains("code=abc"), "{logs}");
         assert!(!logs.contains("secret-state"), "{logs}");
+        assert!(!logs.contains("dinglebear.ai"), "{logs}");
         assert!(
             !logs.contains("http://100.88.16.79:38935/callback/dookie"),
             "{logs}"
+        );
+        for expected in [
+            "\"action\":\"callback\"",
+            "\"stage\":\"receive\"",
+            "\"request_id\":\"issuer-callback\"",
+            "\"query_has_code\":true",
+            "\"query_has_state\":true",
+            "\"query_has_issuer\":true",
+            "\"stage\":\"rejected\"",
+            "\"request_id\":\"oversized-query\"",
+        ] {
+            assert!(logs.contains(expected), "missing {expected} in:\n{logs}");
+        }
+        assert!(
+            !logs.lines().any(|line| {
+                line.contains("\"request_id\":\"oversized-query\"")
+                    && line.contains("\"stage\":\"receive\"")
+            }),
+            "oversized query reached presence parsing/logging:\n{logs}"
         );
     }
 

@@ -168,7 +168,43 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - name: Install Playwright runtime libraries
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" = "0" ]; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libnspr4 \
+              libnss3
+          else
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libnspr4 \
+              libnss3
+          fi
+      # The self-hosted runner image carries the matching Playwright browser.
+      # Playwright's installer rejects Ubuntu 26.04 even when that browser is
+      # already cached, so verify the image contract with a real headless launch
+      # instead of invoking the unsupported installer.
+      - name: Verify cached Playwright browser launch
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const { chromium } = require("playwright");
+
+          (async () => {
+            const executable = chromium.executablePath();
+            if (!fs.existsSync(executable)) {
+              throw new Error(`Missing cached Playwright browser: ${executable}`);
+            }
+            const browser = await chromium.launch({ headless: true });
+            await browser.close();
+            console.log(`Verified cached Playwright browser launch: ${executable}`);
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
       - run: pnpm test:browser
 
   fmt:
@@ -186,6 +222,8 @@ jobs:
       # sibling repo sat seven releases out of sync unnoticed.
       - name: Check version sync
         run: bash scripts/check-version-sync.sh
+      - name: Check Rust toolchain sync
+        run: bash scripts/check-rust-toolchain-sync.sh
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
         with:
@@ -244,7 +282,7 @@ jobs:
       - run: cargo check --workspace --all-features --locked
 
   msrv:
-    name: MSRV 1.92
+    name: MSRV
     runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -259,8 +297,8 @@ jobs:
       - name: Install minimum supported Rust
         uses: ./.github/actions/setup-rust-kache
         with:
-          toolchain: "1.92.0"
-      - run: cargo +1.92.0 check --workspace --all-features --all-targets --locked
+          toolchain: "1.97.1"
+      - run: cargo +1.97.1 check --workspace --all-features --all-targets --locked
 
   codemode-runner-smoke:
     name: Code Mode runner smoke
