@@ -1,5 +1,5 @@
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
-# Requires Rust 1.92+ (Cargo.toml: rust-version = "1.92", edition = "2024")
+# Requires Rust 1.97.1+ (Cargo.toml: rust-version = "1.97.1", edition = "2024")
 # TODO: pin by digest (FROM rust:1-slim@sha256:...) for reproducible builds —
 #       floating tag resolves a fresh image per build.
 FROM rust:1-slim AS builder

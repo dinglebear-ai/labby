@@ -96,7 +96,7 @@ Override install behavior with `LABBY_INSTALL_DIR`, `LABBY_INSTALL_VERSION`, or
 
 Prerequisites:
 
-- Rust 1.92 or newer. CI/release currently verifies with Rust 1.94.1.
+- Rust 1.97.1 or newer. CI/release verifies with Rust 1.97.1.
 - `just` for repo commands.
 - `cargo-nextest` for the main test suite.
 - `pnpm 9.15.9` for the Labby web UI. The repo pins this in

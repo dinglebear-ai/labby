@@ -49,7 +49,7 @@ impl RefreshLocks {
 /// window (so a fix shows up promptly) while still cutting a dead credential's
 /// call volume against the authorization server by roughly two orders of
 /// magnitude versus retrying on every single request.
-pub const REFRESH_FAILURE_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+pub const REFRESH_FAILURE_COOLDOWN: Duration = Duration::from_mins(5);
 
 /// Per-`(upstream_name, subject)` "is this credential known-broken right now"
 /// cache.

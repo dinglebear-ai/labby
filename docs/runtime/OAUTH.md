@@ -37,6 +37,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_MACHINE_CLIENTS_JSON` | client credentials | JSON array of preregistered machine clients. Each entry selects exactly one of `client_secret` or `jwks` and lists allowed `resources` and `scopes`. |
 | `LABBY_AUTH_ENTERPRISE_ISSUERS_JSON` | enterprise authorization | JSON array of trusted ID-JAG issuers with inline `jwks` or HTTPS `jwks_uri` and optional `allowed_client_ids`. |
 | `LABBY_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired pending authorization + browser-login states stored at once. Defaults to `1024`. |
+| `LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY` | no | Explicit temporary workaround for [openai/codex#34684](https://github.com/openai/codex/issues/34684). When `true`, Labby neither advertises nor emits the RFC 9207 authorization-response `iss` parameter. Defaults to `false`; remove the override after the affected Codex callback handling is fixed. |
 
 ## Startup Behavior
 

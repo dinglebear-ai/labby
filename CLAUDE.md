@@ -464,7 +464,7 @@ just test-integration
 - GitHub Actions, `.github/workflows/ci.yml`, gated behind a single `ci-gate` job.
 - Platforms: Linux x86_64 for the main jobs, plus dedicated `test-windows` and
   `palette-windows` jobs. There is no aarch64 CI or release target.
-- Rust checks: `fmt`, `clippy` (`-D warnings`), `deny`, `check`, `msrv` (1.92.0),
+- Rust checks: `fmt`, `clippy` (`-D warnings`), `deny`, `check`, `msrv` (1.97.1),
   `test` / `test-fork`, `rust-coverage`.
 - Slice checks: `feature-slices` (`gateway`, `fs`) and `extracted-crate-slices`
   (per-feature checks of `labby-auth`, `labby-runtime`, and friends).

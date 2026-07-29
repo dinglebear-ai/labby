@@ -37,7 +37,7 @@ and report independently but are not `ci-gate` dependencies.
 | actionlint | `workflow` | `go run github.com/rhysd/actionlint/cmd/actionlint@latest` |
 | frontend-assets | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin` |
 | check | `rust_compile` | `cargo check --workspace --all-features` |
-| msrv | `rust_compile` | `cargo +1.92.0 check --workspace --all-features --all-targets --locked` |
+| msrv | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
 | feature-slices | `rust_compile` | `cargo check -p labby --no-default-features --features <slice>` per slice (`gateway`/`fs`) — catches cross-slice coupling (a shared module unconditionally referencing a feature-gated one). Gates compilation only; overrides the global `-D warnings` because per-slice dead-code warnings are expected. |
 | extracted-crate-slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | fmt | `rust_compile` | `cargo fmt --all -- --check` |

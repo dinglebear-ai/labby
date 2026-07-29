@@ -186,6 +186,8 @@ jobs:
       # sibling repo sat seven releases out of sync unnoticed.
       - name: Check version sync
         run: bash scripts/check-version-sync.sh
+      - name: Check Rust toolchain sync
+        run: bash scripts/check-rust-toolchain-sync.sh
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
         with:

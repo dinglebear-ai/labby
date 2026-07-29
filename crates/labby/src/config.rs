@@ -947,6 +947,10 @@ pub struct AuthFileConfig {
     /// `LABBY_AUTH_MAX_PENDING_OAUTH_STATES`.
     #[serde(default)]
     pub max_pending_oauth_states: Option<usize>,
+    /// Work around Codex clients that strip the RFC 9207 response issuer.
+    /// Overridden by `LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY`.
+    #[serde(default)]
+    pub codex_issuer_compatibility: Option<bool>,
 }
 
 const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &[
@@ -1099,6 +1103,13 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
             "LABBY_AUTH_MAX_PENDING_OAUTH_STATES",
             config
                 .max_pending_oauth_states
+                .map(|value| value.to_string()),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY",
+            config
+                .codex_issuer_compatibility
                 .map(|value| value.to_string()),
         );
     }
@@ -2387,6 +2398,7 @@ future = "keep"
             machine_clients: None,
             enterprise_issuers: None,
             max_pending_oauth_states: Some(256),
+            codex_issuer_compatibility: Some(true),
         };
 
         let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
@@ -2401,6 +2413,7 @@ future = "keep"
         assert_eq!(resolved.authorize_requests_per_minute, 15);
         assert_eq!(resolved.token_requests_per_minute, 25);
         assert_eq!(resolved.max_pending_oauth_states, 256);
+        assert!(resolved.codex_issuer_compatibility);
     }
 
     #[test]
@@ -2988,7 +3001,7 @@ max_response_tokens = 3000
         let default_cfg = LabConfig::default();
         assert_eq!(
             default_cfg.upstream_request_timeout(),
-            Duration::from_millis(30_000)
+            Duration::from_secs(30)
         );
 
         let cfg = toml::from_str::<LabConfig>(
@@ -2999,10 +3012,7 @@ upstream_request_timeout_ms = 60000
         .expect("root upstream request timeout parses");
 
         assert_eq!(cfg.upstream_request_timeout_ms, Some(60_000));
-        assert_eq!(
-            cfg.upstream_request_timeout(),
-            Duration::from_millis(60_000)
-        );
+        assert_eq!(cfg.upstream_request_timeout(), Duration::from_mins(1));
         cfg.validate().expect("timeout validates");
     }
 
@@ -3012,10 +3022,7 @@ upstream_request_timeout_ms = 60000
         // relayed elicitation is not aborted while a human is answering.
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.upstream_relay_timeout_ms, None);
-        assert_eq!(
-            default_cfg.upstream_relay_timeout(),
-            Duration::from_millis(300_000)
-        );
+        assert_eq!(default_cfg.upstream_relay_timeout(), Duration::from_mins(5));
 
         let cfg = toml::from_str::<LabConfig>(
             r"
@@ -3024,7 +3031,7 @@ upstream_relay_timeout_ms = 600000
         )
         .expect("root upstream relay timeout parses");
         assert_eq!(cfg.upstream_relay_timeout_ms, Some(600_000));
-        assert_eq!(cfg.upstream_relay_timeout(), Duration::from_millis(600_000));
+        assert_eq!(cfg.upstream_relay_timeout(), Duration::from_mins(10));
         cfg.validate().expect("relay timeout validates");
     }
 

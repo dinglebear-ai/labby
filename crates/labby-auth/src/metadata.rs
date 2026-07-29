@@ -49,7 +49,11 @@ pub async fn authorization_server_metadata(
         } else {
             Vec::new()
         },
-        authorization_response_iss_parameter_supported: true,
+        // Codex 0.144.3 drops `iss` from its local callback before handing the
+        // response to rmcp (openai/codex#34684). Operators may explicitly
+        // disable RFC 9207 response-issuer binding until that client defect is
+        // fixed; standards-compliant metadata remains the default.
+        authorization_response_iss_parameter_supported: !state.config.codex_issuer_compatibility,
         client_id_metadata_document_supported: true,
         authorization_grant_profiles_supported: if has_enterprise_issuers {
             vec!["urn:ietf:params:oauth:grant-profile:id-jag".to_string()]
@@ -135,11 +139,41 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
-        assert_eq!(json["authorization_response_iss_parameter_supported"], true);
+        assert_eq!(
+            json["authorization_response_iss_parameter_supported"], true,
+            "RFC 9207 issuer binding must remain the default"
+        );
         assert_eq!(json["client_id_metadata_document_supported"], true);
         assert_eq!(
             json["revocation_endpoint"],
             "https://lab.example.com/revoke"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorization_server_metadata_supports_explicit_codex_issuer_compatibility() {
+        use crate::authorize::tests::{test_auth_config, test_auth_state_with_config};
+
+        let mut config = test_auth_config();
+        config.codex_issuer_compatibility = true;
+
+        let app = router(test_auth_state_with_config(config).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["authorization_response_iss_parameter_supported"],
+            false
         );
     }
 
