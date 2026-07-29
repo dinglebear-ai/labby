@@ -8,7 +8,6 @@ This directory contains the GitHub Actions workflows for `lab`. The authoritativ
 |------|---------|---------|
 | `workflows/ci.yml` | push/PR to `main`, weekly schedule, manual dispatch | Correctness, release-smoke, and container-smoke checks |
 | `workflows/labeler.yml` | pull request activity | Applies path-based documentation, dependency, and JavaScript labels |
-| `workflows/openwiki-update.yml` | daily schedule, manual dispatch | Refreshes `/openwiki` through the OpenAI-compatible gateway on the trusted `linux-lab` runner |
 | `workflows/release.yml` | push of `v*.*.*` tag, manual dispatch | Release builds, container image, and GitHub Release |
 | `workflows/stale.yml` | weekly schedule, manual dispatch | Marks and closes inactive issues and pull requests with protected-label exemptions |
 | `workflows/mcp-upstream-drift.yml` | weekly schedule, manual dispatch | Compares pinned MCP spec/rmcp baselines, maps upstream changes to Labby owners/tests, and updates one actionable issue |

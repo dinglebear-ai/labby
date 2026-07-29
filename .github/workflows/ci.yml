@@ -409,7 +409,6 @@ jobs:
         with:
           install_args: just
       - run: just docs-check
-      - run: python3 scripts/ci/check-openwiki.py
 
   clippy:
     name: Clippy
