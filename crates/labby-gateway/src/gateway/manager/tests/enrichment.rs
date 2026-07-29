@@ -76,14 +76,14 @@ async fn enrich_preview_unknown_upstream_is_mapped() {
 async fn enrich_preview_all_respects_route_visible_upstreams() {
     let (manager, pool) = code_mode_manager_with_upstreams(vec![
         fixture_http_upstream("github"),
-        fixture_http_upstream("rustarr"),
+        fixture_http_upstream("gateway-alpha"),
     ])
     .await;
     pool.insert_entry_for_tests("github", healthy_entry_with_tool("github", "search_repos"))
         .await;
     pool.insert_entry_for_tests(
-        "rustarr",
-        healthy_entry_with_tool("rustarr", "movie_search"),
+        "gateway-alpha",
+        healthy_entry_with_tool("gateway-alpha", "status_get"),
     )
     .await;
 
@@ -129,7 +129,7 @@ async fn enrich_preview_rejects_route_hidden_explicit_upstream() {
             },
             GatewayEnrichmentScope {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
-                    "rustarr".to_string()
+                    "gateway-alpha".to_string()
                 ])),
             },
         )
@@ -475,7 +475,7 @@ async fn enrich_apply_rejects_route_hidden_upstream_before_hint_validation() {
             },
             GatewayEnrichmentScope {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
-                    "rustarr".to_string()
+                    "gateway-alpha".to_string()
                 ])),
             },
         )
@@ -488,12 +488,12 @@ async fn enrich_apply_rejects_route_hidden_upstream_before_hint_validation() {
 #[tokio::test]
 async fn add_returns_scoped_enrichment_suggestion_for_new_upstream() {
     let (manager, pool) =
-        code_mode_manager_with_upstreams(vec![fixture_http_upstream("rustarr")]).await;
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("gateway-alpha")]).await;
     pool.insert_entry_for_tests("github", healthy_entry_with_tool("github", "search_repos"))
         .await;
     pool.insert_entry_for_tests(
-        "rustarr",
-        healthy_entry_with_tool("rustarr", "movie_search"),
+        "gateway-alpha",
+        healthy_entry_with_tool("gateway-alpha", "status_get"),
     )
     .await;
 
@@ -504,13 +504,13 @@ async fn add_returns_scoped_enrichment_suggestion_for_new_upstream() {
 
     let suggestion = view.enrichment_suggestion.expect("suggestion");
     assert_eq!(suggestion.upstream, "github");
-    assert_ne!(suggestion.upstream, "rustarr");
+    assert_ne!(suggestion.upstream, "gateway-alpha");
 }
 
 #[tokio::test]
 async fn add_suppresses_enrichment_suggestion_for_route_hidden_upstream() {
     let (manager, pool) =
-        code_mode_manager_with_upstreams(vec![fixture_http_upstream("rustarr")]).await;
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("gateway-alpha")]).await;
     pool.insert_entry_for_tests("github", healthy_entry_with_tool("github", "search_repos"))
         .await;
 
@@ -522,7 +522,7 @@ async fn add_suppresses_enrichment_suggestion_for_route_hidden_upstream() {
             None,
             GatewayEnrichmentScope {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
-                    "rustarr".to_string()
+                    "gateway-alpha".to_string()
                 ])),
             },
         )
@@ -545,7 +545,7 @@ async fn pending_import_approve_returns_scoped_metadata_insufficient_suggestion(
     pending.imported_from = Some(fixture_import_source("paperless"));
     manager
         .seed_config_unchecked_for_tests(GatewayConfig {
-            upstream: vec![fixture_http_upstream("rustarr")],
+            upstream: vec![fixture_http_upstream("gateway-alpha")],
             upstream_pending: vec![pending],
             ..GatewayConfig::default()
         })
@@ -576,7 +576,7 @@ async fn pending_import_approve_suppresses_suggestion_for_route_hidden_upstream(
     pending.imported_from = Some(fixture_import_source("paperless"));
     manager
         .seed_config_unchecked_for_tests(GatewayConfig {
-            upstream: vec![fixture_http_upstream("rustarr")],
+            upstream: vec![fixture_http_upstream("gateway-alpha")],
             upstream_pending: vec![pending],
             ..GatewayConfig::default()
         })
@@ -587,7 +587,7 @@ async fn pending_import_approve_suppresses_suggestion_for_route_hidden_upstream(
             "paperless",
             GatewayEnrichmentScope {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
-                    "rustarr".to_string()
+                    "gateway-alpha".to_string()
                 ])),
             },
         )

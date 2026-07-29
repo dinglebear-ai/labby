@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bring the `lab` binary from a scaffold with stub returns to a first working state: clean compile on every feature combination, a real `HttpClient`, Radarr wired end-to-end (CLI + MCP + HTTP + health), and `lab serve --transport stdio` actually speaking MCP.
+**Goal:** Bring the `lab` binary from a scaffold with stub returns to a first working state: clean compile on every feature combination, a real `HttpClient`, ExampleMovies wired end-to-end (CLI + MCP + HTTP + health), and `lab serve --transport stdio` actually speaking MCP.
 
-**Architecture:** Radarr is the reference service — we make it real, then every other service becomes a copy-paste follow-up. Non-Radarr services stay as `//! not yet implemented` stub modules that compile under all feature combinations but return an explicit `ApiError::Internal("not yet implemented")` at runtime. `HttpClient` becomes a thin `reqwest` wrapper with auth-header injection and JSON helpers. `lab serve` mounts the real `rmcp` stdio server backed by a `ToolRegistry` that actually contains entries. `lab health`, `lab doctor`, `lab help`, and the axum `/v1/radarr` route all read from that same registry.
+**Architecture:** ExampleMovies is the reference service — we make it real, then every other service becomes a copy-paste follow-up. Non-ExampleMovies services stay as `//! not yet implemented` stub modules that compile under all feature combinations but return an explicit `ApiError::Internal("not yet implemented")` at runtime. `HttpClient` becomes a thin `reqwest` wrapper with auth-header injection and JSON helpers. `lab serve` mounts the real `rmcp` stdio server backed by a `ToolRegistry` that actually contains entries. `lab health`, `lab doctor`, `lab help`, and the axum `/v1/examplemovies` route all read from that same registry.
 
 **Tech Stack:** Rust 2024, `reqwest` (rustls), `rmcp` 1.3, `axum` 0.8, `clap` derive, `tokio`, `tracing`, `wiremock` (tests).
 
@@ -14,51 +14,51 @@
 
 This plan is one subsystem: "the `lab` binary reaches first working state." The work below is **tightly coupled** — you cannot fix the compile errors without also touching the empty scaffold files, and you cannot demo `lab serve` without at least one real service in the registry. Splitting it further produces plans that don't individually ship working software.
 
-Services other than Radarr get **stub-level** treatment only (empty files → `//! not yet implemented` placeholders that satisfy the compiler). Per-service fill-in is **out of scope** — each gets its own future plan once this one lands.
+Services other than ExampleMovies get **stub-level** treatment only (empty files → `//! not yet implemented` placeholders that satisfy the compiler). Per-service fill-in is **out of scope** — each gets its own future plan once this one lands.
 
 Explicitly out of scope:
-- Implementing any non-Radarr service's types or endpoints.
+- Implementing any non-ExampleMovies service's types or endpoints.
 - TUI plugin manager logic (`crates/lab/src/tui/app.rs` stays a stub).
 - `lab install`/`uninstall`/`init` (stay stubs — they mutate `.mcp.json` which deserves its own plan).
 - `extract.apply` / `extract.diff` (already tracked separately).
-- HTTP API surface beyond `/health`, `/ready`, and `/v1/radarr/system/status` (one demo route).
+- HTTP API surface beyond `/health`, `/ready`, and `/v1/examplemovies/system/status` (one demo route).
 
 ---
 
 ## File Structure
 
 **Created:**
-- `crates/lab-apis/src/radarr/types/common.rs` — shared ids (`RadarrVersion`) for `system/status`.
-- `tests/radarr_health.rs` at `crates/lab-apis/tests/` — wiremock integration test for `RadarrClient::health`.
+- `crates/lab-apis/src/examplemovies/types/common.rs` — shared ids (`ExampleMoviesVersion`) for `system/status`.
+- `tests/examplemovies_health.rs` at `crates/lab-apis/tests/` — wiremock integration test for `ExampleMoviesClient::health`.
 - `tests/http_client.rs` at `crates/lab-apis/tests/` — wiremock integration test for `HttpClient::get_json` auth-header injection.
 
 **Modified (substantive logic):**
 - `crates/lab-apis/src/core/http.rs` — real reqwest impl with auth injection, retries TBD later.
-- `crates/lab-apis/src/radarr/client.rs` — real `health()` calling `HttpClient::get_json`.
-- `crates/lab-apis/src/radarr/client/system.rs` — add `system_status()` method returning `SystemStatus`.
-- `crates/lab-apis/src/radarr/types/system.rs` — add minimal `SystemStatus { version, app_name, instance_name }` struct.
-- `crates/lab-apis/src/radarr.rs` — impl `ServiceClient` for `RadarrClient`.
-- `crates/lab/Cargo.toml` — narrow `default` features to `["radarr"]` only; stop referencing unscaffolded services.
+- `crates/lab-apis/src/examplemovies/client.rs` — real `health()` calling `HttpClient::get_json`.
+- `crates/lab-apis/src/examplemovies/client/system.rs` — add `system_status()` method returning `SystemStatus`.
+- `crates/lab-apis/src/examplemovies/types/system.rs` — add minimal `SystemStatus { version, app_name, instance_name }` struct.
+- `crates/lab-apis/src/examplemovies.rs` — impl `ServiceClient` for `ExampleMoviesClient`.
+- `crates/lab/Cargo.toml` — narrow `default` features to `["examplemovies"]` only; stop referencing unscaffolded services.
 - `crates/lab/src/main.rs` — load config → build registry → pass into dispatch.
 - `crates/lab/src/cli.rs` — extend dispatch signature to accept the registry.
-- `crates/lab/src/mcp/registry.rs` — `build_default_registry()` actually adds Radarr under `#[cfg(feature = "radarr")]`.
-- `crates/lab/src/mcp/services.rs` — declare `pub mod radarr;` under the feature.
-- `crates/lab/src/mcp/services/radarr.rs` — real dispatch for `system.status` and `help` actions.
+- `crates/lab/src/mcp/registry.rs` — `build_default_registry()` actually adds ExampleMovies under `#[cfg(feature = "examplemovies")]`.
+- `crates/lab/src/mcp/services.rs` — declare `pub mod examplemovies;` under the feature.
+- `crates/lab/src/mcp/services/examplemovies.rs` — real dispatch for `system.status` and `help` actions.
 - `crates/lab/src/cli/serve.rs` — real stdio MCP server (rmcp) that walks the registry.
 - `crates/lab/src/cli/health.rs` — iterate registry, call `ServiceClient::health`, print table/JSON.
 - `crates/lab/src/cli/doctor.rs` — env-var presence check per `PluginMeta::required_env` for every registered service.
-- `crates/lab/src/cli/radarr.rs` — new file; thin CLI shim for `lab radarr system status`.
-- `crates/lab/src/api/router.rs` — mount `/v1/radarr/system/status`.
-- `crates/lab/src/api/state.rs` — hold an `Option<RadarrClient>` built from env at startup.
+- `crates/lab/src/cli/examplemovies.rs` — new file; thin CLI shim for `lab examplemovies system status`.
+- `crates/lab/src/api/router.rs` — mount `/v1/examplemovies/system/status`.
+- `crates/lab/src/api/state.rs` — hold an `Option<ExampleMoviesClient>` built from env at startup.
 - `crates/lab/src/catalog.rs` — wire `ActionEntry` population from per-service `ACTIONS` slices.
-- `crates/lab/src/tui/metadata.rs` — populate with `lab_apis::radarr::META` under the feature gate.
+- `crates/lab/src/tui/metadata.rs` — populate with `lab_apis::examplemovies::META` under the feature gate.
 
 **Stubbed (empty → minimal placeholder content so the compiler stops complaining, no behavior):**
-- `crates/lab-apis/src/{sonarr,prowlarr,overseerr,plex,tautulli,sabnzbd,qbittorrent,tailscale,linkding,memos,bytestash,paperless,arcane,unraid,unifi,gotify,qdrant,tei,apprise}.rs` — each must exist with just `//! not yet implemented` + a stub `PluginMeta` (see Task 2) so feature gates compile.
+- `crates/lab-apis/src/{exampleseries,exampleindexer,examplerequests,examplemedia,examplemetrics,exampleusenet,exampledownload,tailscale,linkding,memos,bytestash,paperless,arcane,unraid,unifi,gotify,qdrant,tei,apprise}.rs` — each must exist with just `//! not yet implemented` + a stub `PluginMeta` (see Task 2) so feature gates compile.
 - All empty files in `crates/lab-apis/src/*/client.rs,types.rs,error.rs` for the same services — replace `0B` with `//! not yet implemented`.
-- `crates/lab/src/cli/{sonarr,prowlarr,plex,openai,arcane}.rs` — `//! not yet implemented`.
-- `crates/lab/src/mcp/services/{sonarr,prowlarr,plex,openai,arcane}.rs` — `//! not yet implemented`.
-- `crates/lab-apis/src/arcane.rs`, `crates/lab-apis/src/plex.rs`, `crates/lab-apis/src/prowlarr.rs`, `crates/lab-apis/src/sonarr.rs` — already exist empty, fill with the placeholder pattern from Task 2.
+- `crates/lab/src/cli/{exampleseries,exampleindexer,examplemedia,openai,arcane}.rs` — `//! not yet implemented`.
+- `crates/lab/src/mcp/services/{exampleseries,exampleindexer,examplemedia,openai,arcane}.rs` — `//! not yet implemented`.
+- `crates/lab-apis/src/arcane.rs`, `crates/lab-apis/src/examplemedia.rs`, `crates/lab-apis/src/exampleindexer.rs`, `crates/lab-apis/src/exampleseries.rs` — already exist empty, fill with the placeholder pattern from Task 2.
 
 ---
 
@@ -66,38 +66,38 @@ Explicitly out of scope:
 
 Every task finishes with **one** of these, per its scope. You should never proceed to the next task if these fail.
 
-- `cargo check -p lab-apis --features "radarr servarr"` — radarr sanity.
-- `cargo check -p lab --no-default-features --features radarr` — lab binary with only radarr.
+- `cargo check -p lab-apis --features "examplemovies examplesuite"` — examplemovies sanity.
+- `cargo check -p lab --no-default-features --features examplemovies` — lab binary with only examplemovies.
 - `cargo check -p lab --features all` — everything on, everything compiling (stubs must not break `all`).
-- `cargo nextest run -p lab-apis --features "radarr servarr"` — Radarr + HttpClient tests green.
+- `cargo nextest run -p lab-apis --features "examplemovies examplesuite"` — ExampleMovies + HttpClient tests green.
 - `cargo nextest run -p lab` — lab crate tests green.
-- `cargo run -p lab --no-default-features --features radarr -- help` — real help output.
-- `cargo run -p lab --no-default-features --features radarr -- health` — table with one radarr row (likely `reachable=false` unless env is set; that's fine — it must not panic).
+- `cargo run -p lab --no-default-features --features examplemovies -- help` — real help output.
+- `cargo run -p lab --no-default-features --features examplemovies -- health` — table with one examplemovies row (likely `reachable=false` unless env is set; that's fine — it must not panic).
 
 ---
 
 ### Task 1: Narrow default features and unblock the compile
 
-**Why this first:** Right now `cargo check -p lab` fails immediately because default features turn on `sabnzbd` and `qbittorrent`, but `lab-apis/src/lib.rs` declares `pub mod sabnzbd;` and `pub mod qbittorrent;` under those features with no file on disk. Every follow-up task would start from a broken baseline without this.
+**Why this first:** Right now `cargo check -p lab` fails immediately because default features turn on `exampleusenet` and `exampledownload`, but `lab-apis/src/lib.rs` declares `pub mod exampleusenet;` and `pub mod exampledownload;` under those features with no file on disk. Every follow-up task would start from a broken baseline without this.
 
 **Files:**
 - Modify: `crates/lab/Cargo.toml:60` (the `default = [...]` line)
 
-- [ ] **Step 1: Change the default feature set to Radarr-only.**
+- [ ] **Step 1: Change the default feature set to ExampleMovies-only.**
 
 Edit `crates/lab/Cargo.toml`. Locate:
 
 ```toml
-default = ["radarr", "sonarr", "prowlarr", "plex", "sabnzbd", "qbittorrent"]
+default = ["examplemovies", "exampleseries", "exampleindexer", "examplemedia", "exampleusenet", "exampledownload"]
 ```
 
 Replace with:
 
 ```toml
-default = ["radarr"]
+default = ["examplemovies"]
 ```
 
-Radarr is the only service that will be fully wired in this plan. `all` still references every service — Task 2 makes that set actually compile.
+ExampleMovies is the only service that will be fully wired in this plan. `all` still references every service — Task 2 makes that set actually compile.
 
 - [ ] **Step 2: Verify a minimal feature check passes.**
 
@@ -108,7 +108,7 @@ Expected: no errors (warnings about unused code are fine).
 
 ```bash
 git add crates/lab/Cargo.toml
-git commit -m "chore(lab): narrow default features to radarr while scaffolds are stubs"
+git commit -m "chore(lab): narrow default features to examplemovies while scaffolds are stubs"
 ```
 
 ---
@@ -119,11 +119,11 @@ git commit -m "chore(lab): narrow default features to radarr while scaffolds are
 
 **Files (all one-liner rewrites — same template):**
 - `crates/lab-apis/src/arcane.rs`
-- `crates/lab-apis/src/plex.rs`
-- `crates/lab-apis/src/prowlarr.rs`
-- `crates/lab-apis/src/sonarr.rs`
-- `crates/lab-apis/src/sabnzbd.rs` **(create)**
-- `crates/lab-apis/src/qbittorrent.rs` **(create)**
+- `crates/lab-apis/src/examplemedia.rs`
+- `crates/lab-apis/src/exampleindexer.rs`
+- `crates/lab-apis/src/exampleseries.rs`
+- `crates/lab-apis/src/exampleusenet.rs` **(create)**
+- `crates/lab-apis/src/exampledownload.rs` **(create)**
 - `crates/lab-apis/src/tailscale.rs` **(create)**
 - `crates/lab-apis/src/linkding.rs` **(create)**
 - `crates/lab-apis/src/memos.rs` **(create)**
@@ -131,27 +131,27 @@ git commit -m "chore(lab): narrow default features to radarr while scaffolds are
 - `crates/lab-apis/src/paperless.rs` **(create)**
 - `crates/lab-apis/src/unraid.rs` **(create)**
 - `crates/lab-apis/src/unifi.rs` **(create)**
-- `crates/lab-apis/src/tautulli.rs` **(create)**
+- `crates/lab-apis/src/examplemetrics.rs` **(create)**
 
 - [ ] **Step 1: Write the universal placeholder template.**
 
-Every file above must have this exact shape, substituting `{name}`, `{display}`, `{category}`, and `{desc}`. Example for `sabnzbd.rs`:
+Every file above must have this exact shape, substituting `{name}`, `{display}`, `{category}`, and `{desc}`. Example for `exampleusenet.rs`:
 
 ```rust
-//! SABnzbd client — not yet implemented.
+//! ExampleUsenet client — not yet implemented.
 //!
-//! This module exists so the `sabnzbd` feature compiles. The real client,
+//! This module exists so the `exampleusenet` feature compiles. The real client,
 //! types, and MCP dispatch are deferred to a per-service plan.
 
 use crate::core::plugin::{Category, PluginMeta};
 
-/// Compile-time metadata for the sabnzbd module.
+/// Compile-time metadata for the exampleusenet module.
 pub const META: PluginMeta = PluginMeta {
-    name: "sabnzbd",
-    display_name: "SABnzbd",
+    name: "exampleusenet",
+    display_name: "ExampleUsenet",
     description: "Usenet download client (placeholder — not yet implemented)",
     category: Category::Download,
-    docs_url: "https://sabnzbd.org/wiki/",
+    docs_url: "https://exampleusenet.org/wiki/",
     required_env: &[],
     optional_env: &[],
     default_port: Some(8080),
@@ -165,11 +165,11 @@ Substitutions:
 | file | name | display | category | default_port |
 |---|---|---|---|---|
 | arcane.rs | `arcane` | `Arcane` | `Network` | `3000` |
-| plex.rs | `plex` | `Plex` | `Media` | `32400` |
-| prowlarr.rs | `prowlarr` | `Prowlarr` | `Indexer` | `9696` |
-| sonarr.rs | `sonarr` | `Sonarr` | `Servarr` | `8989` |
-| sabnzbd.rs | `sabnzbd` | `SABnzbd` | `Download` | `8080` |
-| qbittorrent.rs | `qbittorrent` | `qBittorrent` | `Download` | `8080` |
+| examplemedia.rs | `examplemedia` | `ExampleMedia` | `Media` | `32400` |
+| exampleindexer.rs | `exampleindexer` | `ExampleIndexer` | `Indexer` | `9696` |
+| exampleseries.rs | `exampleseries` | `ExampleSeries` | `ExampleSuite` | `8989` |
+| exampleusenet.rs | `exampleusenet` | `ExampleUsenet` | `Download` | `8080` |
+| exampledownload.rs | `exampledownload` | `exampledownload` | `Download` | `8080` |
 | tailscale.rs | `tailscale` | `Tailscale` | `Network` | `None` |
 | linkding.rs | `linkding` | `Linkding` | `Notes` | `9090` |
 | memos.rs | `memos` | `Memos` | `Notes` | `5230` |
@@ -177,7 +177,7 @@ Substitutions:
 | paperless.rs | `paperless` | `Paperless-ngx` | `Documents` | `8000` |
 | unraid.rs | `unraid` | `Unraid` | `Network` | `None` |
 | unifi.rs | `unifi` | `UniFi` | `Network` | `443` |
-| tautulli.rs | `tautulli` | `Tautulli` | `Media` | `8181` |
+| examplemetrics.rs | `examplemetrics` | `ExampleMetrics` | `Media` | `8181` |
 
 For `default_port: None`, write `default_port: None,`. For numeric ports, `default_port: Some(8080),`.
 
@@ -273,7 +273,7 @@ async fn get_json_injects_api_key_header_and_decodes_body() {
 
 - [ ] **Step 2: Run the test to verify it fails.**
 
-Run: `cargo nextest run -p lab-apis --features "radarr servarr" --test http_client`
+Run: `cargo nextest run -p lab-apis --features "examplemovies examplesuite" --test http_client`
 Expected: FAIL with `ApiError::Internal("HttpClient::get_json not yet implemented")`.
 
 - [ ] **Step 3: Implement the minimal real `HttpClient`.**
@@ -407,7 +407,7 @@ impl HttpClient {
 
 - [ ] **Step 4: Run the test to verify it passes.**
 
-Run: `cargo nextest run -p lab-apis --features "radarr servarr" --test http_client`
+Run: `cargo nextest run -p lab-apis --features "examplemovies examplesuite" --test http_client`
 Expected: PASS.
 
 - [ ] **Step 5: Commit.**
@@ -419,21 +419,21 @@ git commit -m "feat(lab-apis): real HttpClient with auth injection + JSON helper
 
 ---
 
-### Task 4: Radarr `system.status` — real type, real client method (TDD)
+### Task 4: ExampleMovies `system.status` — real type, real client method (TDD)
 
 **Files:**
-- Modify: `crates/lab-apis/src/radarr/types/system.rs`
-- Modify: `crates/lab-apis/src/radarr/client/system.rs`
-- Create: `crates/lab-apis/tests/radarr_health.rs`
+- Modify: `crates/lab-apis/src/examplemovies/types/system.rs`
+- Modify: `crates/lab-apis/src/examplemovies/client/system.rs`
+- Create: `crates/lab-apis/tests/examplemovies_health.rs`
 
 - [ ] **Step 1: Write the failing wiremock test.**
 
-Create `crates/lab-apis/tests/radarr_health.rs`:
+Create `crates/lab-apis/tests/examplemovies_health.rs`:
 
 ```rust
-//! Integration test — `RadarrClient::system_status` must hit
+//! Integration test — `ExampleMoviesClient::system_status` must hit
 //! `GET /api/v3/system/status` with the `X-Api-Key` header and decode the
-//! minimal `SystemStatus` shape Radarr returns.
+//! minimal `SystemStatus` shape ExampleMovies returns.
 
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -441,7 +441,7 @@ use wiremock::{
 };
 
 use lab_apis::core::Auth;
-use lab_apis::radarr::RadarrClient;
+use lab_apis::examplemovies::ExampleMoviesClient;
 
 #[tokio::test]
 async fn system_status_ok() {
@@ -451,13 +451,13 @@ async fn system_status_ok() {
         .and(header("X-Api-Key", "abc123"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "version": "5.0.0.1234",
-            "appName": "Radarr",
-            "instanceName": "Radarr"
+            "appName": "ExampleMovies",
+            "instanceName": "ExampleMovies"
         })))
         .mount(&server)
         .await;
 
-    let client = RadarrClient::new(
+    let client = ExampleMoviesClient::new(
         &server.uri(),
         Auth::ApiKey {
             header: "X-Api-Key".into(),
@@ -467,74 +467,74 @@ async fn system_status_ok() {
 
     let status = client.system_status().await.expect("system_status");
     assert_eq!(status.version, "5.0.0.1234");
-    assert_eq!(status.app_name, "Radarr");
+    assert_eq!(status.app_name, "ExampleMovies");
 }
 ```
 
 - [ ] **Step 2: Run it to verify it fails.**
 
-Run: `cargo nextest run -p lab-apis --features "radarr servarr" --test radarr_health`
+Run: `cargo nextest run -p lab-apis --features "examplemovies examplesuite" --test examplemovies_health`
 Expected: FAIL with either "no method `system_status`" or "SystemStatus not found".
 
 - [ ] **Step 3: Define the `SystemStatus` type.**
 
-Replace the contents of `crates/lab-apis/src/radarr/types/system.rs` with:
+Replace the contents of `crates/lab-apis/src/examplemovies/types/system.rs` with:
 
 ```rust
-//! Radarr `system/status` response shape.
+//! ExampleMovies `system/status` response shape.
 //!
 //! Only the fields `lab` actually reads are modeled — the full upstream
 //! response has ~30 fields that are uninteresting for a liveness probe.
 
 use serde::{Deserialize, Serialize};
 
-/// Subset of Radarr's `/api/v3/system/status` response.
+/// Subset of ExampleMovies's `/api/v3/system/status` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemStatus {
     /// Application version string.
     pub version: String,
-    /// `"Radarr"` always — present for symmetry with Sonarr/Prowlarr.
+    /// `"ExampleMovies"` always — present for symmetry with ExampleSeries/ExampleIndexer.
     pub app_name: String,
-    /// User-configurable instance name (defaults to `"Radarr"`).
+    /// User-configurable instance name (defaults to `"ExampleMovies"`).
     pub instance_name: String,
 }
 ```
 
 - [ ] **Step 4: Implement `system_status` on the client.**
 
-Replace the contents of `crates/lab-apis/src/radarr/client/system.rs` with:
+Replace the contents of `crates/lab-apis/src/examplemovies/client/system.rs` with:
 
 ```rust
-//! `impl RadarrClient` block for `/api/v3/system/*` endpoints.
+//! `impl ExampleMoviesClient` block for `/api/v3/system/*` endpoints.
 
-use super::RadarrClient;
-use crate::radarr::error::RadarrError;
-use crate::radarr::types::system::SystemStatus;
+use super::ExampleMoviesClient;
+use crate::examplemovies::error::ExampleMoviesError;
+use crate::examplemovies::types::system::SystemStatus;
 
-impl RadarrClient {
+impl ExampleMoviesClient {
     /// `GET /api/v3/system/status`.
     ///
     /// # Errors
-    /// Returns [`RadarrError::Api`] on transport, auth, or decode failure.
-    pub async fn system_status(&self) -> Result<SystemStatus, RadarrError> {
+    /// Returns [`ExampleMoviesError::Api`] on transport, auth, or decode failure.
+    pub async fn system_status(&self) -> Result<SystemStatus, ExampleMoviesError> {
         self.http
             .get_json("/api/v3/system/status")
             .await
-            .map_err(RadarrError::from)
+            .map_err(ExampleMoviesError::from)
     }
 }
 ```
 
-- [ ] **Step 5: Ensure `RadarrError::Api` accepts `ApiError`.**
+- [ ] **Step 5: Ensure `ExampleMoviesError::Api` accepts `ApiError`.**
 
-Read `crates/lab-apis/src/radarr/error.rs` and confirm it already has `#[from] ApiError` (the scaffold should). If it doesn't, add the variant:
+Read `crates/lab-apis/src/examplemovies/error.rs` and confirm it already has `#[from] ApiError` (the scaffold should). If it doesn't, add the variant:
 
 ```rust
 use crate::core::ApiError;
 
 #[derive(Debug, thiserror::Error)]
-pub enum RadarrError {
+pub enum ExampleMoviesError {
     #[error(transparent)]
     Api(#[from] ApiError),
 }
@@ -542,55 +542,55 @@ pub enum RadarrError {
 
 - [ ] **Step 6: Run the test to verify it passes.**
 
-Run: `cargo nextest run -p lab-apis --features "radarr servarr" --test radarr_health`
+Run: `cargo nextest run -p lab-apis --features "examplemovies examplesuite" --test examplemovies_health`
 Expected: PASS.
 
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add crates/lab-apis/src/radarr crates/lab-apis/tests/radarr_health.rs
-git commit -m "feat(lab-apis): radarr system_status endpoint + wiremock test"
+git add crates/lab-apis/src/examplemovies crates/lab-apis/tests/examplemovies_health.rs
+git commit -m "feat(lab-apis): examplemovies system_status endpoint + wiremock test"
 ```
 
 ---
 
-### Task 5: Radarr `health()` uses `system_status`, and `impl ServiceClient`
+### Task 5: ExampleMovies `health()` uses `system_status`, and `impl ServiceClient`
 
 **Files:**
-- Modify: `crates/lab-apis/src/radarr/client.rs` (the `health` method only)
-- Modify: `crates/lab-apis/src/radarr.rs` (add `ServiceClient` impl below `META`)
+- Modify: `crates/lab-apis/src/examplemovies/client.rs` (the `health` method only)
+- Modify: `crates/lab-apis/src/examplemovies.rs` (add `ServiceClient` impl below `META`)
 
-- [ ] **Step 1: Rewrite `RadarrClient::health`.**
+- [ ] **Step 1: Rewrite `ExampleMoviesClient::health`.**
 
-In `crates/lab-apis/src/radarr/client.rs`, replace the existing `health` method body:
+In `crates/lab-apis/src/examplemovies/client.rs`, replace the existing `health` method body:
 
 ```rust
     /// Probe `GET /api/v3/system/status` as a liveness check.
     ///
     /// # Errors
-    /// Returns `RadarrError::Api` if the request fails or the server
+    /// Returns `ExampleMoviesError::Api` if the request fails or the server
     /// returns a non-2xx status.
-    pub async fn health(&self) -> Result<(), RadarrError> {
+    pub async fn health(&self) -> Result<(), ExampleMoviesError> {
         self.system_status().await.map(|_| ())
     }
 ```
 
-- [ ] **Step 2: Implement `ServiceClient` for `RadarrClient`.**
+- [ ] **Step 2: Implement `ServiceClient` for `ExampleMoviesClient`.**
 
-Append to `crates/lab-apis/src/radarr.rs` (after the existing `META` constant):
+Append to `crates/lab-apis/src/examplemovies.rs` (after the existing `META` constant):
 
 ```rust
 use std::time::Instant;
 
 use crate::core::{ApiError, ServiceClient, ServiceStatus};
 
-impl ServiceClient for RadarrClient {
+impl ServiceClient for ExampleMoviesClient {
     fn name(&self) -> &str {
-        "radarr"
+        "examplemovies"
     }
 
     fn service_type(&self) -> &str {
-        "servarr"
+        "examplesuite"
     }
 
     async fn health(&self) -> Result<ServiceStatus, ApiError> {
@@ -603,14 +603,14 @@ impl ServiceClient for RadarrClient {
                 latency_ms: start.elapsed().as_millis() as u64,
                 message: None,
             }),
-            Err(crate::radarr::RadarrError::Api(ApiError::Auth)) => Ok(ServiceStatus {
+            Err(crate::examplemovies::ExampleMoviesError::Api(ApiError::Auth)) => Ok(ServiceStatus {
                 reachable: true,
                 auth_ok: false,
                 version: None,
                 latency_ms: start.elapsed().as_millis() as u64,
                 message: Some("auth failed".into()),
             }),
-            Err(crate::radarr::RadarrError::Api(e)) => {
+            Err(crate::examplemovies::ExampleMoviesError::Api(e)) => {
                 Ok(ServiceStatus::unreachable(e.to_string()))
             }
         }
@@ -618,28 +618,28 @@ impl ServiceClient for RadarrClient {
 }
 ```
 
-Note: `RadarrClient::health()` and `ServiceClient::health()` are two different methods with different return types — they don't collide (one is an inherent method, the other is a trait method).
+Note: `ExampleMoviesClient::health()` and `ServiceClient::health()` are two different methods with different return types — they don't collide (one is an inherent method, the other is a trait method).
 
 - [ ] **Step 3: Verify it compiles.**
 
-Run: `cargo check -p lab-apis --features "radarr servarr"`
+Run: `cargo check -p lab-apis --features "examplemovies examplesuite"`
 Expected: no errors.
 
 - [ ] **Step 4: Commit.**
 
 ```bash
-git add crates/lab-apis/src/radarr
-git commit -m "feat(lab-apis): impl ServiceClient for RadarrClient"
+git add crates/lab-apis/src/examplemovies
+git commit -m "feat(lab-apis): impl ServiceClient for ExampleMoviesClient"
 ```
 
 ---
 
-### Task 6: `build_default_registry` actually registers Radarr
+### Task 6: `build_default_registry` actually registers ExampleMovies
 
 **Files:**
 - Modify: `crates/lab/src/mcp/registry.rs`
 
-- [ ] **Step 1: Register Radarr behind its feature flag.**
+- [ ] **Step 1: Register ExampleMovies behind its feature flag.**
 
 Replace `crates/lab/src/mcp/registry.rs` with:
 
@@ -693,9 +693,9 @@ impl ToolRegistry {
 pub fn build_default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
 
-    #[cfg(feature = "radarr")]
+    #[cfg(feature = "examplemovies")]
     {
-        let meta = lab_apis::radarr::META;
+        let meta = lab_apis::examplemovies::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -706,12 +706,12 @@ pub fn build_default_registry() -> ToolRegistry {
     reg
 }
 
-#[cfg(any(feature = "radarr"))]
+#[cfg(any(feature = "examplemovies"))]
 const fn category_slug(cat: lab_apis::core::Category) -> &'static str {
     use lab_apis::core::Category;
     match cat {
         Category::Media => "media",
-        Category::Servarr => "servarr",
+        Category::ExampleSuite => "examplesuite",
         Category::Indexer => "indexer",
         Category::Download => "download",
         Category::Notes => "notes",
@@ -727,22 +727,22 @@ const fn category_slug(cat: lab_apis::core::Category) -> &'static str {
 - [ ] **Step 2: Verify it compiles.**
 
 Run: `cargo check -p lab`
-Expected: no errors. (`lab` default features = `["radarr"]` after Task 1.)
+Expected: no errors. (`lab` default features = `["examplemovies"]` after Task 1.)
 
 - [ ] **Step 3: Commit.**
 
 ```bash
 git add crates/lab/src/mcp/registry.rs
-git commit -m "feat(lab): build_default_registry registers Radarr under its feature flag"
+git commit -m "feat(lab): build_default_registry registers ExampleMovies under its feature flag"
 ```
 
 ---
 
-### Task 7: MCP dispatch module for Radarr
+### Task 7: MCP dispatch module for ExampleMovies
 
 **Files:**
 - Modify: `crates/lab/src/mcp/services.rs`
-- Modify (from `0B` placeholder): `crates/lab/src/mcp/services/radarr.rs`
+- Modify (from `0B` placeholder): `crates/lab/src/mcp/services/examplemovies.rs`
 
 - [ ] **Step 1: Declare the module under its feature gate.**
 
@@ -755,16 +755,16 @@ Replace `crates/lab/src/mcp/services.rs` with:
 //! submodule exposes a `dispatch` async function that takes the action
 //! name and a free-form `serde_json::Value` params object.
 
-#[cfg(feature = "radarr")]
-pub mod radarr;
+#[cfg(feature = "examplemovies")]
+pub mod examplemovies;
 ```
 
-- [ ] **Step 2: Write the Radarr dispatcher.**
+- [ ] **Step 2: Write the ExampleMovies dispatcher.**
 
-Replace `crates/lab/src/mcp/services/radarr.rs` with:
+Replace `crates/lab/src/mcp/services/examplemovies.rs` with:
 
 ```rust
-//! MCP dispatch for the Radarr tool.
+//! MCP dispatch for the ExampleMovies tool.
 //!
 //! Exposes `system.status` and the built-in `help` action. Additional actions
 //! (`movie.search`, `queue.list`, ...) land in follow-up plans.
@@ -773,15 +773,15 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use lab_apis::core::Auth;
-use lab_apis::radarr::RadarrClient;
+use lab_apis::examplemovies::ExampleMoviesClient;
 
-/// Build a Radarr client from the default-instance env vars. Returns `None`
-/// if either `RADARR_URL` or `RADARR_API_KEY` is missing.
+/// Build a ExampleMovies client from the default-instance env vars. Returns `None`
+/// if either `EXAMPLEMOVIES_URL` or `EXAMPLEMOVIES_API_KEY` is missing.
 #[must_use]
-pub fn client_from_env() -> Option<RadarrClient> {
-    let url = std::env::var("RADARR_URL").ok()?;
-    let key = std::env::var("RADARR_API_KEY").ok()?;
-    Some(RadarrClient::new(
+pub fn client_from_env() -> Option<ExampleMoviesClient> {
+    let url = std::env::var("EXAMPLEMOVIES_URL").ok()?;
+    let key = std::env::var("EXAMPLEMOVIES_API_KEY").ok()?;
+    Some(ExampleMoviesClient::new(
         &url,
         Auth::ApiKey {
             header: "X-Api-Key".into(),
@@ -790,7 +790,7 @@ pub fn client_from_env() -> Option<RadarrClient> {
     ))
 }
 
-/// Dispatch one MCP call against the Radarr tool.
+/// Dispatch one MCP call against the ExampleMovies tool.
 ///
 /// # Errors
 /// Returns an error if the action is unknown, required env is missing,
@@ -798,20 +798,20 @@ pub fn client_from_env() -> Option<RadarrClient> {
 pub async fn dispatch(action: &str, _params: Value) -> Result<Value> {
     match action {
         "help" => Ok(json!({
-            "service": "radarr",
+            "service": "examplemovies",
             "actions": [
-                { "name": "system.status", "description": "Return Radarr system status", "destructive": false },
+                { "name": "system.status", "description": "Return ExampleMovies system status", "destructive": false },
                 { "name": "help", "description": "Show this catalog", "destructive": false },
             ]
         })),
         "system.status" => {
             let client = client_from_env()
-                .ok_or_else(|| anyhow::anyhow!("missing RADARR_URL or RADARR_API_KEY"))?;
+                .ok_or_else(|| anyhow::anyhow!("missing EXAMPLEMOVIES_URL or EXAMPLEMOVIES_API_KEY"))?;
             let status = client.system_status().await?;
             Ok(serde_json::to_value(status)?)
         }
         unknown => anyhow::bail!(
-            "unknown action `radarr.{unknown}` — call `radarr.help` for the catalog"
+            "unknown action `examplemovies.{unknown}` — call `examplemovies.help` for the catalog"
         ),
     }
 }
@@ -825,8 +825,8 @@ Expected: no errors.
 - [ ] **Step 4: Commit.**
 
 ```bash
-git add crates/lab/src/mcp/services.rs crates/lab/src/mcp/services/radarr.rs
-git commit -m "feat(lab): MCP dispatch for radarr system.status + help"
+git add crates/lab/src/mcp/services.rs crates/lab/src/mcp/services/examplemovies.rs
+git commit -m "feat(lab): MCP dispatch for examplemovies system.status + help"
 ```
 
 ---
@@ -966,14 +966,14 @@ async fn dispatch(
         anyhow::bail!("unknown service `{service}`");
     }
     match service {
-        #[cfg(feature = "radarr")]
-        "radarr" => crate::mcp::services::radarr::dispatch(action, params).await,
+        #[cfg(feature = "examplemovies")]
+        "examplemovies" => crate::mcp::services::examplemovies::dispatch(action, params).await,
         other => anyhow::bail!("service `{other}` has no dispatcher wired"),
     }
 }
 ```
 
-This is **intentionally a placeholder JSON-RPC-lite pump** — not spec-compliant MCP. It exists so `lab serve --transport stdio` does something demonstrable end-to-end against the real `RadarrClient`. Full `rmcp` integration is its own plan.
+This is **intentionally a placeholder JSON-RPC-lite pump** — not spec-compliant MCP. It exists so `lab serve --transport stdio` does something demonstrable end-to-end against the real `ExampleMoviesClient`. Full `rmcp` integration is its own plan.
 
 - [ ] **Step 2: Verify it compiles.**
 
@@ -982,7 +982,7 @@ Expected: no errors.
 
 - [ ] **Step 3: Smoke test.**
 
-Run: `echo '{"service":"radarr","action":"help"}' | cargo run -p lab --no-default-features --features radarr -- serve --transport stdio`
+Run: `echo '{"service":"examplemovies","action":"help"}' | cargo run -p lab --no-default-features --features examplemovies -- serve --transport stdio`
 Expected: single-line JSON output on stdout containing `"data"` and the `system.status` action entry. Press Ctrl-D or close stdin to exit.
 
 - [ ] **Step 4: Commit.**
@@ -1034,31 +1034,31 @@ pub struct HealthRow {
 pub async fn run(format: OutputFormat) -> Result<ExitCode> {
     let mut rows: Vec<HealthRow> = Vec::new();
 
-    #[cfg(feature = "radarr")]
-    rows.push(radarr_row().await);
+    #[cfg(feature = "examplemovies")]
+    rows.push(examplemovies_row().await);
 
     print(&rows, format)?;
     Ok(ExitCode::SUCCESS)
 }
 
-#[cfg(feature = "radarr")]
-async fn radarr_row() -> HealthRow {
+#[cfg(feature = "examplemovies")]
+async fn examplemovies_row() -> HealthRow {
     use lab_apis::core::ServiceClient;
 
-    let Some(client) = crate::mcp::services::radarr::client_from_env() else {
+    let Some(client) = crate::mcp::services::examplemovies::client_from_env() else {
         return HealthRow {
-            service: "radarr".into(),
+            service: "examplemovies".into(),
             reachable: false,
             auth_ok: false,
             version: None,
             latency_ms: 0,
-            message: Some("RADARR_URL / RADARR_API_KEY not set".into()),
+            message: Some("EXAMPLEMOVIES_URL / EXAMPLEMOVIES_API_KEY not set".into()),
         };
     };
 
     match client.health().await {
         Ok(s) => HealthRow {
-            service: "radarr".into(),
+            service: "examplemovies".into(),
             reachable: s.reachable,
             auth_ok: s.auth_ok,
             version: s.version,
@@ -1066,7 +1066,7 @@ async fn radarr_row() -> HealthRow {
             message: s.message,
         },
         Err(e) => HealthRow {
-            service: "radarr".into(),
+            service: "examplemovies".into(),
             reachable: false,
             auth_ok: false,
             version: None,
@@ -1084,14 +1084,14 @@ Expected: no errors.
 
 - [ ] **Step 3: Smoke test.**
 
-Run: `cargo run -p lab --no-default-features --features radarr -- health`
-Expected: a JSON array with one entry for radarr. Without env vars set the message should say `"RADARR_URL / RADARR_API_KEY not set"` — no panic, no error exit.
+Run: `cargo run -p lab --no-default-features --features examplemovies -- health`
+Expected: a JSON array with one entry for examplemovies. Without env vars set the message should say `"EXAMPLEMOVIES_URL / EXAMPLEMOVIES_API_KEY not set"` — no panic, no error exit.
 
 - [ ] **Step 4: Commit.**
 
 ```bash
 git add crates/lab/src/cli/health.rs
-git commit -m "feat(lab): lab health iterates registry and pings Radarr"
+git commit -m "feat(lab): lab health iterates registry and pings ExampleMovies"
 ```
 
 ---
@@ -1110,9 +1110,9 @@ Replace the body of `run` in `crates/lab/src/cli/doctor.rs` with:
 pub async fn run(format: OutputFormat) -> Result<ExitCode> {
     let mut findings: Vec<Finding> = Vec::new();
 
-    #[cfg(feature = "radarr")]
+    #[cfg(feature = "examplemovies")]
     {
-        let meta = lab_apis::radarr::META;
+        let meta = lab_apis::examplemovies::META;
         for env in meta.required_env {
             let present = std::env::var(env.name).is_ok();
             findings.push(Finding {
@@ -1165,8 +1165,8 @@ Expected: no errors.
 
 - [ ] **Step 4: Smoke test.**
 
-Run: `cargo run -p lab --no-default-features --features radarr -- doctor`
-Expected: JSON report with two radarr findings (one per required env var), both likely `"severity":"fail"` when nothing is set. Exit code 2.
+Run: `cargo run -p lab --no-default-features --features examplemovies -- doctor`
+Expected: JSON report with two examplemovies findings (one per required env var), both likely `"severity":"fail"` when nothing is set. Exit code 2.
 
 - [ ] **Step 5: Commit.**
 
@@ -1208,11 +1208,11 @@ pub fn build_catalog(registry: &ToolRegistry) -> Catalog {
 
 fn actions_for(service: &str) -> Vec<ActionEntry> {
     match service {
-        #[cfg(feature = "radarr")]
-        "radarr" => vec![
+        #[cfg(feature = "examplemovies")]
+        "examplemovies" => vec![
             ActionEntry {
                 name: "system.status".into(),
-                description: "Return Radarr system status".into(),
+                description: "Return ExampleMovies system status".into(),
                 destructive: false,
             },
             ActionEntry {
@@ -1228,7 +1228,7 @@ fn actions_for(service: &str) -> Vec<ActionEntry> {
 
 - [ ] **Step 2: Verify it compiles and smoke test.**
 
-Run: `cargo run -p lab --no-default-features --features radarr -- help`
+Run: `cargo run -p lab --no-default-features --features examplemovies -- help`
 Expected: JSON catalog with one service entry containing two actions.
 
 - [ ] **Step 3: Commit.**
@@ -1240,12 +1240,12 @@ git commit -m "feat(lab): lab help populates per-service action entries"
 
 ---
 
-### Task 12: `tui::metadata::all_plugins` lists Radarr
+### Task 12: `tui::metadata::all_plugins` lists ExampleMovies
 
 **Files:**
 - Modify: `crates/lab/src/tui/metadata.rs`
 
-- [ ] **Step 1: Return one row for Radarr.**
+- [ ] **Step 1: Return one row for ExampleMovies.**
 
 Replace `all_plugins` in `crates/lab/src/tui/metadata.rs`:
 
@@ -1255,14 +1255,14 @@ Replace `all_plugins` in `crates/lab/src/tui/metadata.rs`:
 pub fn all_plugins() -> Vec<PluginRow> {
     let mut rows = Vec::new();
 
-    #[cfg(feature = "radarr")]
+    #[cfg(feature = "examplemovies")]
     {
-        let meta = lab_apis::radarr::META;
+        let meta = lab_apis::examplemovies::META;
         rows.push(PluginRow {
             name: meta.name,
             description: meta.description,
             category: match meta.category {
-                lab_apis::core::Category::Servarr => "servarr",
+                lab_apis::core::Category::ExampleSuite => "examplesuite",
                 _ => "other",
             },
         });
@@ -1281,18 +1281,18 @@ Expected: no errors.
 
 ```bash
 git add crates/lab/src/tui/metadata.rs
-git commit -m "feat(lab): tui metadata lists Radarr under its feature gate"
+git commit -m "feat(lab): tui metadata lists ExampleMovies under its feature gate"
 ```
 
 ---
 
-### Task 13: HTTP API `/v1/radarr/system/status` demo route
+### Task 13: HTTP API `/v1/examplemovies/system/status` demo route
 
 **Files:**
 - Modify: `crates/lab/src/api/state.rs`
 - Modify: `crates/lab/src/api/router.rs`
 
-- [ ] **Step 1: Hold an optional `RadarrClient` in `AppState`.**
+- [ ] **Step 1: Hold an optional `ExampleMoviesClient` in `AppState`.**
 
 Replace `crates/lab/src/api/state.rs`:
 
@@ -1301,8 +1301,8 @@ Replace `crates/lab/src/api/state.rs`:
 
 use std::sync::Arc;
 
-#[cfg(feature = "radarr")]
-use lab_apis::radarr::RadarrClient;
+#[cfg(feature = "examplemovies")]
+use lab_apis::examplemovies::ExampleMoviesClient;
 
 /// Application state passed to every axum handler via `State<AppState>`.
 #[derive(Clone)]
@@ -1311,8 +1311,8 @@ pub struct AppState {
 }
 
 struct AppStateInner {
-    #[cfg(feature = "radarr")]
-    radarr: Option<RadarrClient>,
+    #[cfg(feature = "examplemovies")]
+    examplemovies: Option<ExampleMoviesClient>,
 }
 
 impl AppState {
@@ -1321,17 +1321,17 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(AppStateInner {
-                #[cfg(feature = "radarr")]
-                radarr: crate::mcp::services::radarr::client_from_env(),
+                #[cfg(feature = "examplemovies")]
+                examplemovies: crate::mcp::services::examplemovies::client_from_env(),
             }),
         }
     }
 
-    /// Borrow the optional Radarr client.
-    #[cfg(feature = "radarr")]
+    /// Borrow the optional ExampleMovies client.
+    #[cfg(feature = "examplemovies")]
     #[must_use]
-    pub fn radarr(&self) -> Option<&RadarrClient> {
-        self.inner.radarr.as_ref()
+    pub fn examplemovies(&self) -> Option<&ExampleMoviesClient> {
+        self.inner.examplemovies.as_ref()
     }
 }
 
@@ -1366,9 +1366,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health::health))
         .route("/ready", get(health::ready));
 
-    #[cfg(feature = "radarr")]
+    #[cfg(feature = "examplemovies")]
     {
-        router = router.route("/v1/radarr/system/status", get(radarr_system_status));
+        router = router.route("/v1/examplemovies/system/status", get(examplemovies_system_status));
     }
 
     router
@@ -1382,15 +1382,15 @@ pub fn build_router(state: AppState) -> Router {
         .layer(CorsLayer::permissive())
 }
 
-#[cfg(feature = "radarr")]
-async fn radarr_system_status(
+#[cfg(feature = "examplemovies")]
+async fn examplemovies_system_status(
     State(state): State<AppState>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let Some(client) = state.radarr() else {
-        return Err(super::error::ApiError::UnknownInstance("radarr".into()));
+    let Some(client) = state.examplemovies() else {
+        return Err(super::error::ApiError::UnknownInstance("examplemovies".into()));
     };
     let status = client.system_status().await.map_err(|e| match e {
-        lab_apis::radarr::RadarrError::Api(err) => super::error::ApiError::Sdk(err),
+        lab_apis::examplemovies::ExampleMoviesError::Api(err) => super::error::ApiError::Sdk(err),
     })?;
     Ok(Json(serde_json::to_value(status).unwrap_or_default()))
 }
@@ -1405,14 +1405,14 @@ Expected: no errors.
 
 ```bash
 git add crates/lab/src/api
-git commit -m "feat(lab): HTTP demo route /v1/radarr/system/status"
+git commit -m "feat(lab): HTTP demo route /v1/examplemovies/system/status"
 ```
 
 ---
 
 ### Task 14: Clean up empty CLI/MCP stub files
 
-Empty 0B files exist at `crates/lab/src/cli/{sonarr,prowlarr,plex,openai,arcane}.rs` and `crates/lab/src/mcp/services/{sonarr,prowlarr,plex,openai,arcane}.rs`. They cause warnings or break once the parent modules declare them. Task 2 covered `lab-apis`; this task does the same for `lab`.
+Empty 0B files exist at `crates/lab/src/cli/{exampleseries,exampleindexer,examplemedia,openai,arcane}.rs` and `crates/lab/src/mcp/services/{exampleseries,exampleindexer,examplemedia,openai,arcane}.rs`. They cause warnings or break once the parent modules declare them. Task 2 covered `lab-apis`; this task does the same for `lab`.
 
 **Files:**
 - Modify: all 10 listed above (find with the shell loop below).
@@ -1429,7 +1429,7 @@ For every file printed, overwrite with:
 //! Not yet implemented.
 ```
 
-These modules are **not** declared anywhere in `cli.rs` / `mcp/services.rs` yet (they're dangling), so the placeholder is purely housekeeping. Do **not** add `pub mod sonarr;` etc. to the parent — those come in per-service follow-up plans.
+These modules are **not** declared anywhere in `cli.rs` / `mcp/services.rs` yet (they're dangling), so the placeholder is purely housekeeping. Do **not** add `pub mod exampleseries;` etc. to the parent — those come in per-service follow-up plans.
 
 - [ ] **Step 3: Verify no regressions.**
 
@@ -1455,11 +1455,11 @@ Expected: clean.
 - [ ] **Step 2: Full check, all features.**
 
 Run: `cargo check -p lab --features all`
-Expected: clean. Warnings about unused Radarr resource files are fine.
+Expected: clean. Warnings about unused ExampleMovies resource files are fine.
 
 - [ ] **Step 3: Run every test.**
 
-Run: `cargo nextest run -p lab-apis --features "radarr servarr"`
+Run: `cargo nextest run -p lab-apis --features "examplemovies examplesuite"`
 Expected: all tests pass (the two new wiremock tests + any pre-existing).
 
 Run: `cargo nextest run -p lab`
@@ -1471,7 +1471,7 @@ Expected: all tests pass (lab has no tests yet — this just confirms the build)
 cargo run -p lab -- help
 cargo run -p lab -- health
 cargo run -p lab -- doctor || true   # exit 2 is expected when env is unset
-echo '{"service":"radarr","action":"help"}' | cargo run -p lab -- serve --transport stdio
+echo '{"service":"examplemovies","action":"help"}' | cargo run -p lab -- serve --transport stdio
 ```
 
 Each should emit JSON and exit without panicking.
@@ -1504,13 +1504,13 @@ git commit -m "chore(lab): final green-check gate" || true
 - `rmcp` full protocol compliance: Task 8 uses a line-delimited JSON shim. Replacing it with real `rmcp` server-builder wiring is a follow-up — it requires reading rmcp 1.3's actual surface, which is outside the scope of a single plan.
 - HTTP transport for `lab serve`: still prints a warning and exits. Separate plan.
 - `lab install`/`uninstall`/`init`: still stubs. Separate plan.
-- All non-Radarr services: still stubs. Per-service follow-up plans, one each.
+- All non-ExampleMovies services: still stubs. Per-service follow-up plans, one each.
 - `extract.apply` / `extract.diff` real implementations: already tracked separately.
-- Per-service CLI subcommands (`lab radarr system status`, etc.): the plan deliberately doesn't add `lab radarr` because it would double the scope. `lab serve` + `lab health` + `lab doctor` are enough to prove the binary is operational end-to-end.
+- Per-service CLI subcommands (`lab examplemovies system status`, etc.): the plan deliberately doesn't add `lab examplemovies` because it would double the scope. `lab serve` + `lab health` + `lab doctor` are enough to prove the binary is operational end-to-end.
 
 **Placeholder scan:** Task 8 explicitly calls out the stdio placeholder; Task 4 documents the minimal SystemStatus subset. No "TBD" / "implement later" / "similar to Task N" patterns elsewhere.
 
-**Type consistency:** `client_from_env` is declared in `mcp/services/radarr.rs` (Task 7) and reused by `cli/health.rs` (Task 9) and `api/state.rs` (Task 13) — spelled consistently. `SystemStatus` field casing (`version`, `app_name`, `instance_name`) matches the serde `rename_all = "camelCase"` so the wiremock fixture in Task 4 (`appName`, `instanceName`) decodes correctly. `ServiceClient::health()` and `RadarrClient::health()` coexist as one trait method + one inherent method — intentional.
+**Type consistency:** `client_from_env` is declared in `mcp/services/examplemovies.rs` (Task 7) and reused by `cli/health.rs` (Task 9) and `api/state.rs` (Task 13) — spelled consistently. `SystemStatus` field casing (`version`, `app_name`, `instance_name`) matches the serde `rename_all = "camelCase"` so the wiremock fixture in Task 4 (`appName`, `instanceName`) decodes correctly. `ServiceClient::health()` and `ExampleMoviesClient::health()` coexist as one trait method + one inherent method — intentional.
 
 ---
 

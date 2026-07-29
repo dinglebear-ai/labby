@@ -95,7 +95,7 @@ async fn service_config_get_marks_service_unconfigured_when_required_fields_are_
 
     assert!(
         !config.configured,
-        "plex should remain unconfigured until every required field is present"
+        "gateway_alpha should remain unconfigured until every required field is present"
     );
 }
 
@@ -225,8 +225,8 @@ async fn batch_add_returns_successful_views_and_preserves_errors() {
 }
 
 // Re-fixtured post-gateway-pivot: the virtual server is backed by the kept
-// `deploy` service (no plex/radarr env fixtures involved). Asserts a concurrent
-// root config mutation and a virtual-server surface mutation both persist.
+// `deploy` service rather than retired service env fixtures. Asserts a concurrent root
+// config mutation and a virtual-server surface mutation both persist.
 #[tokio::test]
 async fn concurrent_root_and_virtual_server_mutations_both_persist() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -270,12 +270,12 @@ async fn concurrent_root_and_virtual_server_mutations_both_persist() {
 
     let persisted = load_gateway_config(&path).expect("load persisted config");
     assert!(persisted.code_mode.enabled);
-    let plex = persisted
+    let gateway_alpha = persisted
         .virtual_servers
         .iter()
         .find(|server| server.id == "deploy")
-        .expect("plex virtual server persisted");
-    assert!(plex.surfaces.mcp);
+        .expect("gateway_alpha virtual server persisted");
+    assert!(gateway_alpha.surfaces.mcp);
 }
 
 // Store-seam env persistence guard (rewritten in the gateway extraction).
@@ -297,8 +297,8 @@ async fn bearer_token_credential_write_persists_through_store_seam() {
 
     manager
         .add(
-            fixture_stdio_upstream("plex"),
-            Some("plex-token".to_string()),
+            fixture_stdio_upstream("gateway-alpha"),
+            Some("gateway_alpha-token".to_string()),
             None,
             None,
         )
@@ -307,8 +307,10 @@ async fn bearer_token_credential_write_persists_through_store_seam() {
 
     let values = read_env_values(&env_path).expect("read env values written via store seam");
     assert_eq!(
-        values.get("LABBY_GW_PLEX_AUTH_HEADER").map(String::as_str),
-        Some("Bearer plex-token"),
+        values
+            .get("LABBY_GW_GATEWAY_ALPHA_AUTH_HEADER")
+            .map(String::as_str),
+        Some("Bearer gateway_alpha-token"),
         "bearer credential must be persisted to the .env file through the store seam"
     );
 }

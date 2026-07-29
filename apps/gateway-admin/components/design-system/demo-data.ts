@@ -157,7 +157,7 @@ export const metricCards = [
 
 export const denseRows = [
   {
-    gateway: 'plex-prod',
+    gateway: 'gateway_beta-prod',
     transport: 'streamable_http',
     tools: '18 exposed',
     health: 'Healthy',
@@ -175,19 +175,19 @@ export const denseRows = [
     health: 'Healthy',
   },
   {
-    gateway: 'radarr-main',
+    gateway: 'gateway_alpha-main',
     transport: 'streamable_http',
     tools: '12 exposed',
     health: 'Healthy',
   },
   {
-    gateway: 'sonarr-main',
+    gateway: 'hidden_upstream-main',
     transport: 'streamable_http',
     tools: '11 exposed',
     health: 'Healthy',
   },
   {
-    gateway: 'prowlarr-edge',
+    gateway: 'indexer_alpha-edge',
     transport: 'sse',
     tools: '7 exposed',
     health: 'Error',

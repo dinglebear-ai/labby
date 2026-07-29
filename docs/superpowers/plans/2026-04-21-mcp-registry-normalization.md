@@ -27,9 +27,9 @@
 ### Redundant MCP wrapper modules to retire or convert
 
 - Review/remove or convert to test-only:
-  - `crates/lab/src/mcp/services/prowlarr.rs`
-  - `crates/lab/src/mcp/services/plex.rs`
-  - `crates/lab/src/mcp/services/sabnzbd.rs`
+  - `crates/lab/src/mcp/services/exampleindexer.rs`
+  - `crates/lab/src/mcp/services/examplemedia.rs`
+  - `crates/lab/src/mcp/services/exampleusenet.rs`
   - `crates/lab/src/mcp/services/linkding.rs`
   - `crates/lab/src/mcp/services/mcpregistry.rs`
   - `crates/lab/src/mcp/services/bytestash.rs`
@@ -42,17 +42,17 @@
   - `crates/lab/src/mcp/services/extract.rs`
   - `crates/lab/src/mcp/services/gateway.rs`
   - `crates/lab/src/mcp/services/logs.rs`
-  - `crates/lab/src/mcp/services/radarr.rs`
+  - `crates/lab/src/mcp/services/examplemovies.rs`
   - `crates/lab/src/mcp/services/deploy.rs`
   - `crates/lab/src/mcp/services/lab_admin.rs`
 
 ### Optional follow-up cleanup
 
 - Review later for full architectural consistency:
-  - `crates/lab/src/mcp/services/sonarr.rs`
-  - `crates/lab/src/mcp/services/qbittorrent.rs`
+  - `crates/lab/src/mcp/services/exampleseries.rs`
+  - `crates/lab/src/mcp/services/exampledownload.rs`
   - `crates/lab/src/mcp/services/memos.rs`
-  - `crates/lab/src/mcp/services/overseerr.rs`
+  - `crates/lab/src/mcp/services/examplerequests.rs`
   - `crates/lab/src/mcp/services/gotify.rs`
   - `crates/lab/src/mcp/services/openai.rs`
   - `crates/lab/src/mcp/services/qdrant.rs`
@@ -75,9 +75,9 @@ These are still thin wrappers, but they are not currently in the broken hybrid s
 
 ### Migrate now to direct dispatch-only registration
 
-- `prowlarr`
-- `plex`
-- `sabnzbd`
+- `exampleindexer`
+- `examplemedia`
+- `exampleusenet`
 - `linkding`
 - `mcpregistry`
 - `bytestash`
@@ -86,7 +86,7 @@ These are still thin wrappers, but they are not currently in the broken hybrid s
 
 ### Already removed from active MCP module table as stale wrappers
 
-- `tautulli`
+- `examplemetrics`
 - `tailscale`
 
 ### Preserve as real MCP-owned modules for now
@@ -94,16 +94,16 @@ These are still thin wrappers, but they are not currently in the broken hybrid s
 - `extract`
 - `gateway`
 - `logs`
-- `radarr`
+- `examplemovies`
 - `deploy`
 - `lab_admin`
 
 ### Decide explicitly later if full normalization is desired
 
-- `sonarr`
-- `qbittorrent`
+- `exampleseries`
+- `exampledownload`
 - `memos`
-- `overseerr`
+- `examplerequests`
 - `gotify`
 - `openai`
 - `qdrant`
@@ -129,14 +129,14 @@ Keep MCP-owned modules:
 - extract
 - gateway
 - logs
-- radarr
+- examplemovies
 - deploy
 - lab_admin
 
 Normalize migrated services:
-- prowlarr
-- plex
-- sabnzbd
+- exampleindexer
+- examplemedia
+- exampleusenet
 - linkding
 - mcpregistry
 - bytestash
@@ -160,18 +160,18 @@ Ensure these registrations use shared dispatch directly:
 ```rust
 register_service!(
     reg,
-    "prowlarr",
-    prowlarr,
-    actions = crate::dispatch::prowlarr::ACTIONS,
-    dispatch = dispatch_fn!(crate::dispatch::prowlarr::dispatch)
+    "exampleindexer",
+    exampleindexer,
+    actions = crate::dispatch::exampleindexer::ACTIONS,
+    dispatch = dispatch_fn!(crate::dispatch::exampleindexer::dispatch)
 );
 ```
 
 Repeat the same pattern for:
 
 ```rust
-plex
-sabnzbd
+examplemedia
+exampleusenet
 linkding
 mcpregistry
 bytestash
@@ -191,15 +191,15 @@ dispatch = dispatch_fn!(crate::dispatch::unifi::dispatch)
 Delete module declarations for services that no longer need a live MCP wrapper:
 
 ```rust
-#[cfg(feature = "prowlarr")]
-pub mod prowlarr;
+#[cfg(feature = "exampleindexer")]
+pub mod exampleindexer;
 ```
 
 Apply the same removal for:
 
 ```rust
-plex
-sabnzbd
+examplemedia
+exampleusenet
 linkding
 mcpregistry
 bytestash
@@ -230,9 +230,9 @@ git commit -m "refactor: normalize migrated mcp registry wiring"
 
 **Files:**
 - Modify/Delete:
-  - `crates/lab/src/mcp/services/prowlarr.rs`
-  - `crates/lab/src/mcp/services/plex.rs`
-  - `crates/lab/src/mcp/services/sabnzbd.rs`
+  - `crates/lab/src/mcp/services/exampleindexer.rs`
+  - `crates/lab/src/mcp/services/examplemedia.rs`
+  - `crates/lab/src/mcp/services/exampleusenet.rs`
   - `crates/lab/src/mcp/services/linkding.rs`
   - `crates/lab/src/mcp/services/mcpregistry.rs`
   - `crates/lab/src/mcp/services/bytestash.rs`
@@ -256,9 +256,9 @@ For each file, mark it as:
 Initial expectation:
 
 ```text
-prowlarr: test-only
-plex: test-only
-sabnzbd: live wrapper only
+exampleindexer: test-only
+examplemedia: test-only
+exampleusenet: live wrapper only
 linkding: test-only
 mcpregistry: test-only
 bytestash: test-only
@@ -273,7 +273,7 @@ Delete files that provide no remaining value after registry normalization.
 Expected likely deletion:
 
 ```text
-crates/lab/src/mcp/services/sabnzbd.rs
+crates/lab/src/mcp/services/exampleusenet.rs
 ```
 
 If a file is only:
@@ -302,7 +302,7 @@ Move service-catalog tests into the owning dispatch module where ACTIONS live.
 
 - [ ] **Step 4: Move one test file at a time**
 
-Example for `prowlarr`:
+Example for `exampleindexer`:
 
 ```rust
 #[cfg(test)]
@@ -350,7 +350,7 @@ git commit -m "refactor: remove stale mcp wrapper modules"
   - `crates/lab/src/mcp/services/extract.rs`
   - `crates/lab/src/mcp/services/gateway.rs`
   - `crates/lab/src/mcp/services/logs.rs`
-  - `crates/lab/src/mcp/services/radarr.rs`
+  - `crates/lab/src/mcp/services/examplemovies.rs`
   - `crates/lab/src/mcp/services/lab_admin.rs`
   - `crates/lab/src/mcp/services.rs`
   - `crates/lab/src/registry.rs`
@@ -379,7 +379,7 @@ pub mod deploy;
 pub mod extract;
 pub mod gateway;
 pub mod logs;
-pub mod radarr;
+pub mod examplemovies;
 
 // Internal/admin MCP-specific modules
 pub mod lab_admin;
@@ -425,10 +425,10 @@ git commit -m "docs: clarify intentional mcp-owned service modules"
 Review:
 
 ```text
-sonarr
-qbittorrent
+exampleseries
+exampledownload
 memos
-overseerr
+examplerequests
 gotify
 openai
 qdrant
@@ -524,8 +524,8 @@ git commit -m "chore: remove mcp wrapper warning noise from serve startup"
 
 - Do not touch service behavior in `dispatch/` unless you are only moving tests.
 - Do not move `deploy` or `lab_admin` off the MCP layer without re-checking their MCP-specific behavior first.
-- `sabnzbd` is the easiest hybrid candidate to fully normalize because its registry already sources actions from `dispatch`.
-- `radarr` is not a pure const-based service; keep its `actions()` path intact unless the dispatch layer is reworked first.
+- `exampleusenet` is the easiest hybrid candidate to fully normalize because its registry already sources actions from `dispatch`.
+- `examplemovies` is not a pure const-based service; keep its `actions()` path intact unless the dispatch layer is reworked first.
 - `unifi` already has direct dispatch registration but still leaves a compiled MCP test shell; decide whether those tests belong in dispatch or in a registry-level test.
 
 ## Review note

@@ -231,9 +231,9 @@ Generate real TypeScript `declare namespace codemode` declarations from upstream
 
 ```typescript
 declare namespace codemode {
-  namespace radarr {
+  namespace example_upstream {
     /**
-     * Search for movies in Radarr
+     * Search for movies in Example upstream
      * @param query - Search query string
      */
     function movieSearch(params: {
@@ -303,7 +303,7 @@ Register the `codemode` Proxy namespace in both sandbox engines, capture console
 
 ### Proxy Implementation
 
-**Boa path:** `JsProxyBuilder` two-level nested Proxy. Outer intercepts upstream namespace access (`codemode.radarr`), inner intercepts tool name access (`codemode.radarr.movieSearch`). Inner `get` trap returns async function calling existing `callTool` native with reconstructed tool ID via bidirectional camelCase map.
+**Boa path:** `JsProxyBuilder` two-level nested Proxy. Outer intercepts upstream namespace access (`codemode.example_upstream`), inner intercepts tool name access (`codemode.example_upstream.movieSearch`). Inner `get` trap returns async function calling existing `callTool` native with reconstructed tool ID via bidirectional camelCase map.
 
 **Javy path:** Generate JS proxy code string (via `code_mode_preamble.rs`) and prepend to user code before subprocess. Creates `codemode` Proxy namespace + `toolIdMap` constant in QuickJS environment.
 
@@ -321,7 +321,7 @@ Register the `codemode` Proxy namespace in both sandbox engines, capture console
 Previous plan had `codemode.__meta__.upstreams()` routed through `call_upstream_tool()` with special-case ID. Revised: inject as pre-computed preamble variable.
 
 - Boa: inject via `context.global_object().set(js_string!("__upstreams__"), ...)`
-- Javy: prepend `const __upstreams__ = ["radarr","sonarr","plex"];` to preamble
+- Javy: prepend `const __upstreams__ = ["alpha","beta","gamma"];` to preamble
 
 The broker stays a pure ID-to-pool router.
 
@@ -642,7 +642,7 @@ Tests run via mcporter directly against the live gateway (`lab` server, `http://
 | Feature | Cloudflare | Lab | Rationale |
 |---------|-----------|-----|-----------|
 | Tool naming | Underscores: `my_server_list_items` | camelCase: `myServerListItems` | Multi-upstream gateways read better in camelCase |
-| Namespace format | Flat `declare const codemode: { toolName: ... }` | Nested `declare namespace codemode { namespace radarr { ... } }` | Preserves upstream identity, better tab-completion |
+| Namespace format | Flat `declare const codemode: { toolName: ... }` | Nested `declare namespace codemode { namespace example_upstream { ... } }` | Preserves upstream identity, better tab-completion |
 | Sandbox engine | V8 (Dynamic Worker isolate) | Boa (in-process) + QuickJS/Javy (subprocess) | No V8 available on self-hosted Rust |
 | Module loading | `modules` param for custom ES modules | Not supported | Complexity vs benefit on homelab |
 | Network from sandbox | Configurable via `globalOutbound` (Fetcher) | Hard-blocked | Security: no network from untrusted sandbox |

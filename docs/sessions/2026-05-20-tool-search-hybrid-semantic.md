@@ -119,7 +119,7 @@ curl -X PUT http://localhost:53333/collections/lab-tools -d '{...schema...}'
 | `docker container inspect logs` | `logs` (22.0) + `doctor` (2.0) — noise tool returned | `logs` (22.0) only — floor drops doctor |
 | `synapse compose docker stats exec` | `zsh_alan_stats` (20.4) beats every docker tool | `arcane_container_list` #1, `zsh_alan_stats` absent from top 5 |
 | `list running docker containers` | All lab services at noise floor (2.0) | Docker container tools rank #1-3 via semantic |
-| `add a new tv show` | Random lab services at noise floor | `sonarr_series_add` #1 via semantic |
+| `find recent network clients` | Random lab services at noise floor | `unifi_clients_list` #1 via semantic |
 | `http://192.168.x.x` upstream URL | Rejected ("private IP blocked") | Accepted (homelab context) |
 
 ## Verification Evidence

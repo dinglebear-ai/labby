@@ -142,51 +142,68 @@ function textUi(required = false, kind: FieldKindKey = 'text'): UiFieldSchema {
 }
 
 const MOCK_SERVICES: Record<string, ServiceSchema> = {
-  radarr: {
-    name: 'radarr',
-    display_name: 'Radarr',
-    description: 'Movie automation service.',
-    category: 'Servarr',
+  unifi: {
+    name: 'unifi',
+    display_name: 'UniFi',
+    description: 'Network controller.',
+    category: 'Network',
     supports_multi_instance: true,
-    default_port: 7878,
+    default_port: 8443,
     env: [
-      { name: 'RADARR_URL', description: 'Base URL for Radarr.', example: 'http://radarr.local:7878', secret: false, required: true, ui: textUi(true, 'url') },
-      { name: 'RADARR_API_KEY', description: 'Radarr API key.', example: '••••••••', secret: true, required: true, ui: textUi(true, 'secret') },
+      {
+        name: 'UNIFI_URL',
+        description: 'Base URL of the UniFi controller',
+        example: 'https://unifi.example.com',
+        secret: false,
+        required: true,
+        ui: textUi(true, 'url'),
+      },
+      {
+        name: 'UNIFI_API_KEY',
+        description: 'UniFi API key',
+        example: '',
+        secret: true,
+        required: true,
+        ui: textUi(true, 'secret'),
+      },
     ],
   },
-  sonarr: {
-    name: 'sonarr',
-    display_name: 'Sonarr',
-    description: 'Series automation service.',
-    category: 'Servarr',
+  apprise: {
+    name: 'apprise',
+    display_name: 'Apprise',
+    description: 'Notification gateway.',
+    category: 'Notifications',
     supports_multi_instance: true,
-    default_port: 8989,
+    default_port: 8000,
     env: [
-      { name: 'SONARR_URL', description: 'Base URL for Sonarr.', example: 'http://sonarr.local:8989', secret: false, required: true, ui: textUi(true, 'url') },
-      { name: 'SONARR_API_KEY', description: 'Sonarr API key.', example: '••••••••', secret: true, required: true, ui: textUi(true, 'secret') },
-    ],
-  },
-  plex: {
-    name: 'plex',
-    display_name: 'Plex',
-    description: 'Media server status and library access.',
-    category: 'Media',
-    supports_multi_instance: false,
-    default_port: 32400,
-    env: [
-      { name: 'PLEX_URL', description: 'Base URL for Plex.', example: 'http://plex.local:32400', secret: false, required: true, ui: textUi(true, 'url') },
-      { name: 'PLEX_TOKEN', description: 'Plex access token.', example: '••••••••', secret: true, required: true, ui: textUi(true, 'secret') },
+      {
+        name: 'APPRISE_URL',
+        description: 'Base URL of the Apprise API',
+        example: 'https://apprise.example.com',
+        secret: false,
+        required: true,
+        ui: textUi(true, 'url'),
+      },
+      {
+        name: 'APPRISE_TOKEN',
+        description: 'Apprise API token',
+        example: '',
+        secret: true,
+        required: true,
+        ui: textUi(true, 'secret'),
+      },
     ],
   },
 }
 
 const MOCK_DRAFT_ENTRIES: DraftEntry[] = [
-  { key: 'LAB_MCP_HTTP_HOST', value: '127.0.0.1' },
-  { key: 'LAB_MCP_HTTP_PORT', value: '3101' },
-  { key: 'LAB_LOG', value: 'lab=info,lab_apis=warn' },
-  { key: 'LAB_LOG_FORMAT', value: 'json' },
-  { key: 'RADARR_URL', value: 'http://radarr.local:7878' },
-  { key: 'RADARR_API_KEY', value: '********' },
+  { key: "LABBY_MCP_HTTP_HOST", value: "127.0.0.1" },
+  { key: "LABBY_MCP_HTTP_PORT", value: "3101" },
+  { key: "LABBY_LOG", value: "labby=info" },
+  { key: "LABBY_LOG_FORMAT", value: "json" },
+  { key: 'UNIFI_URL', value: 'https://unifi.example.com' },
+  { key: 'UNIFI_API_KEY', value: '***' },
+  { key: 'APPRISE_URL', value: 'https://apprise.example.com' },
 ]
 
 function mockSetupSnapshot(): SetupSnapshot {
@@ -202,7 +219,7 @@ function mockSetupSnapshot(): SetupSnapshot {
     draft_mtime_unix_seconds: null,
     state: {
       kind: 'partially_configured',
-      missing: ['SONARR_URL', 'SONARR_API_KEY', 'PLEX_URL', 'PLEX_TOKEN'],
+      missing: ['APPRISE_TOKEN'],
       services: Object.keys(MOCK_SERVICES),
     },
   }
@@ -539,7 +556,7 @@ export const setupApi = {
   installedPlugins(signal?: AbortSignal): Promise<InstalledPlugin[]> {
     if (USE_MOCK_DATA) {
       signal?.throwIfAborted?.()
-      return Promise.resolve([{ id: 'lab-radarr@lab', service: 'radarr' }])
+      return Promise.resolve([{ id: 'lab-unifi@lab', service: 'unifi' }])
     }
     return setupAction<InstalledPlugin[]>('installed_plugins', {}, signal)
   },
@@ -548,13 +565,13 @@ export const setupApi = {
     if (USE_MOCK_DATA) {
       signal?.throwIfAborted?.()
       return Promise.resolve({
-        plugins: [{ id: 'lab-radarr@lab', service: 'radarr' }],
+        plugins: [{ id: 'lab-unifi@lab', service: 'unifi' }],
         services: Object.values(MOCK_SERVICES).map((schema) => ({
           name: schema.name,
           display_name: schema.display_name,
           description: schema.description,
-          configured: schema.name === 'radarr',
-          plugin_installed: schema.name === 'radarr',
+          configured: schema.name === 'unifi',
+          plugin_installed: schema.name === 'unifi',
           plugin_package_id: `lab-${schema.name}@lab`,
           required_env: schema.env.filter((env) => env.required).map((env) => env.name),
         })),

@@ -174,12 +174,12 @@ async fn sqlite_store_round_trips_upstream_stdio_proxy_server() {
 #[tokio::test]
 async fn sqlite_store_round_trips_virtual_secure_server_with_surface_policy() {
     let store = test_store().await;
-    let mut server = ManagedServerRecord::virtual_service("plex", PublishMode::Secure);
+    let mut server = ManagedServerRecord::virtual_service("examplemedia", PublishMode::Secure);
     server.surface_policy.mcp = true;
     server.surface_policy.api = false;
 
     store.upsert_server(&server).await.expect("upsert");
-    let row = store.get_server_by_name("plex").await.expect("get").expect("server");
+    let row = store.get_server_by_name("examplemedia").await.expect("get").expect("server");
 
     assert_eq!(row.source_kind, SourceKind::VirtualService);
     assert!(row.surface_policy.mcp);
@@ -346,7 +346,7 @@ async fn gateway_manager_lists_upstream_and_virtual_servers_from_sqlite() {
     let manager = test_manager_with_sqlite().await;
     manager
         .store()
-        .upsert_server(&ManagedServerRecord::virtual_service("plex", PublishMode::Secure))
+        .upsert_server(&ManagedServerRecord::virtual_service("examplemedia", PublishMode::Secure))
         .await
         .expect("seed");
     manager
@@ -356,7 +356,7 @@ async fn gateway_manager_lists_upstream_and_virtual_servers_from_sqlite() {
         .expect("seed");
 
     let list = manager.list_servers().await.expect("list");
-    assert!(list.iter().any(|server| server.name == "plex"));
+    assert!(list.iter().any(|server| server.name == "examplemedia"));
     assert!(list.iter().any(|server| server.name == "filesystem"));
 }
 
@@ -452,14 +452,14 @@ fn secure_publication_rejects_stdio_sources() {
 
 #[test]
 fn route_is_derived_from_canonicalized_name() {
-    let server = ManagedServerRecord::virtual_service("Plex Main", PublishMode::Secure);
+    let server = ManagedServerRecord::virtual_service("ExampleMedia Main", PublishMode::Secure);
     let route = derive_secure_route(&server).expect("route");
-    assert_eq!(route, "/mcp/servers/plex-main");
+    assert_eq!(route, "/mcp/servers/examplemedia-main");
 }
 
 #[test]
 fn names_that_canonicalize_to_same_route_are_rejected() {
-    assert!(routes_conflict("Plex Main", "plex-main"));
+    assert!(routes_conflict("ExampleMedia Main", "examplemedia-main"));
 }
 ```
 
@@ -496,7 +496,7 @@ Rules:
 - `PublishMode::Secure` -> isolated only
 - `UpstreamStdio + Secure` -> invalid
 - derive route from canonicalized validated name
-- derive required auth scope from canonical name, for example `mcp:server:plex-main`
+- derive required auth scope from canonical name, for example `mcp:server:examplemedia-main`
 
 - [ ] **Step 4: Re-run the targeted tests**
 
@@ -532,16 +532,16 @@ Add tests to `crates/lab/src/mcp/published_servers.rs`:
 ```rust
 #[tokio::test]
 async fn secure_virtual_server_lists_only_its_tool() {
-    let handler = test_isolated_virtual_handler("plex").await;
+    let handler = test_isolated_virtual_handler("examplemedia").await;
     let tools = handler.list_tools_for_test().await;
 
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name.as_ref(), "plex");
+    assert_eq!(tools[0].name.as_ref(), "examplemedia");
 }
 
 #[tokio::test]
 async fn secure_virtual_server_exposes_no_lab_catalog_resource() {
-    let handler = test_isolated_virtual_handler("plex").await;
+    let handler = test_isolated_virtual_handler("examplemedia").await;
     let resources = handler.list_resources_for_test().await;
 
     assert!(!resources.iter().any(|resource| resource.uri == "lab://catalog"));
@@ -549,8 +549,8 @@ async fn secure_virtual_server_exposes_no_lab_catalog_resource() {
 
 #[tokio::test]
 async fn isolated_server_has_its_own_peer_notifier() {
-    let runtime = test_isolated_runtime("plex").await;
-    assert_eq!(runtime.server_name(), "plex");
+    let runtime = test_isolated_runtime("examplemedia").await;
+    assert_eq!(runtime.server_name(), "examplemedia");
 }
 ```
 
@@ -618,9 +618,9 @@ Add tests to `crates/lab/src/api/router.rs`:
 ```rust
 #[tokio::test]
 async fn secure_server_route_requires_matching_server_scope() {
-    let app = test_app_with_secure_server("plex-main").await;
+    let app = test_app_with_secure_server("examplemedia-main").await;
     let response = app
-        .oneshot(authenticated_request_without_scope("/mcp/servers/plex-main"))
+        .oneshot(authenticated_request_without_scope("/mcp/servers/examplemedia-main"))
         .await
         .expect("response");
 
@@ -629,11 +629,11 @@ async fn secure_server_route_requires_matching_server_scope() {
 
 #[tokio::test]
 async fn secure_server_route_accepts_matching_server_scope() {
-    let app = test_app_with_secure_server("plex-main").await;
+    let app = test_app_with_secure_server("examplemedia-main").await;
     let response = app
         .oneshot(authenticated_request_with_scope(
-            "/mcp/servers/plex-main",
-            "mcp:server:plex-main",
+            "/mcp/servers/examplemedia-main",
+            "mcp:server:examplemedia-main",
         ))
         .await
         .expect("response");
@@ -709,7 +709,7 @@ async fn gateway_server_export_returns_selected_servers_as_json_bundle() {
     let value = dispatch_with_manager(
         &manager,
         "gateway.server.export",
-        json!({ "names": ["github", "plex"] }),
+        json!({ "names": ["github", "examplemedia"] }),
     )
     .await
     .expect("export");
@@ -804,7 +804,7 @@ Update:
 CLI examples:
 
 ```bash
-lab gateway server export --name plex
+lab gateway server export --name examplemedia
 lab gateway server export --all
 lab gateway server import --mode validate --file servers.json
 lab gateway server import --mode upsert --file servers.json
@@ -846,20 +846,20 @@ Add tests to `apps/gateway-admin/lib/server/gateway-adapter.test.ts`:
 ```ts
 it("maps secure servers with derived isolated route metadata", async () => {
   const view = adaptGatewayServer({
-    name: "plex-main",
+    name: "examplemedia-main",
     publish_mode: "secure",
     source_kind: "virtual_service",
-    secure_scope: "mcp:server:plex-main",
+    secure_scope: "mcp:server:examplemedia-main",
   });
 
   expect(view.publishMode).toBe("secure");
-  expect(view.routePath).toBe("/mcp/servers/plex-main");
-  expect(view.requiredScope).toBe("mcp:server:plex-main");
+  expect(view.routePath).toBe("/mcp/servers/examplemedia-main");
+  expect(view.requiredScope).toBe("mcp:server:examplemedia-main");
 });
 
 it("preserves non-mcp surface policy from the backend model", async () => {
   const view = adaptGatewayServer({
-    name: "plex-main",
+    name: "examplemedia-main",
     surface_policy: { cli: true, api: false, mcp: true, webui: false },
   });
 

@@ -16,7 +16,7 @@ export interface PaletteAction {
   subcommand: string;
   service: string;
   action: string;
-  /** Human display, e.g. "radarr: movie.search". */
+  /** Human display, e.g. "gateway: gateway.list". */
   label: string;
   description: string;
   category: string;
@@ -42,7 +42,7 @@ export function actionMatches(action: PaletteAction, query: string): boolean {
   if (!needle) return true;
   const haystack = `${action.subcommand} ${action.label} ${action.description} ${action.category}`.toLowerCase();
   if (haystack.includes(needle)) return true;
-  // Loose subsequence match on the subcommand so "rms" matches "radarr.movie.search".
+  // Loose subsequence match on the subcommand so "gwl" matches "gateway.gateway.list".
   return isSubsequence(needle.replace(/\s+/g, ""), action.subcommand.toLowerCase());
 }
 

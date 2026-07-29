@@ -609,9 +609,9 @@ mod tests {
         github.upstream_name = "github".to_string();
         store.record_call(github).await.unwrap();
 
-        let mut rustarr = sample_record(1_001);
-        rustarr.upstream_name = "rustarr".to_string();
-        store.record_call(rustarr).await.unwrap();
+        let mut gateway_alpha = sample_record(1_001);
+        gateway_alpha.upstream_name = "gateway-alpha".to_string();
+        store.record_call(gateway_alpha).await.unwrap();
 
         let metrics = store
             .metrics(UsageMetricsQuery {

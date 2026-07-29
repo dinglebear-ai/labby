@@ -223,7 +223,7 @@ pub struct PluginSyncArgs {
 
 #[derive(Debug, Args)]
 pub struct PluginMutationArgs {
-    /// Service name, for example `plex` or `radarr`.
+    /// Service name, for example `unifi` or `apprise`.
     pub service: String,
     /// Skip confirmation for destructive actions.
     #[arg(short = 'y', long, alias = "no-confirm")]

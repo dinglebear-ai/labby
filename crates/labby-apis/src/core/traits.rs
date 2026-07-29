@@ -11,10 +11,10 @@ use crate::core::status::ServiceStatus;
 
 /// Common surface implemented by every service client.
 pub trait ServiceClient: Send + Sync {
-    /// Short module name (matches `PluginMeta::name`, e.g. `"radarr"`).
+    /// Short module name (matches `PluginMeta::name`, e.g. `"gateway-alpha"`).
     fn name(&self) -> &'static str;
 
-    /// Logical category label (e.g. `"servarr"`, `"media"`, `"network"`).
+    /// Logical category label (e.g. `"upstream"`, `"ops"`, `"network"`).
     /// String-form rather than the `Category` enum so external implementors
     /// can use labels we don't ship.
     fn service_type(&self) -> &'static str;

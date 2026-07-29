@@ -64,18 +64,18 @@ const MOCK_DOCTOR_REPORT: DoctorReport = {
       elapsed_ms: 4,
     },
     {
-      service: 'radarr',
+      service: 'unifi',
       category: 'service',
       severity: 'ok',
-      message: 'Mock Radarr configuration is complete.',
+      message: 'Mock UniFi configuration is complete.',
       elapsed_ms: 7,
     },
     {
-      service: 'sonarr',
+      service: 'apprise',
       category: 'service',
       severity: 'warn',
-      message: 'Mock Sonarr credentials are not configured.',
-      hint: 'Add SONARR_URL and SONARR_API_KEY before using live mode.',
+      message: 'Mock Apprise credentials are not configured.',
+      hint: 'Add APPRISE_URL and APPRISE_TOKEN before using live mode.',
       elapsed_ms: 2,
     },
   ],
@@ -117,8 +117,8 @@ export const doctorApi = {
       return Promise.resolve({
         service,
         category: 'service',
-        severity: service === 'sonarr' || service === 'plex' ? 'warn' : 'ok',
-        message: service === 'sonarr' || service === 'plex'
+        severity: service === 'apprise' ? 'warn' : 'ok',
+        message: service === 'apprise'
           ? `Mock ${service} credentials are incomplete.`
           : `Mock ${service} probe passed.`,
         elapsed_ms: 5,

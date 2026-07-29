@@ -74,7 +74,7 @@ export const extractApi = {
   async listHosts(signal?: AbortSignal): Promise<string[]> {
     if (USE_MOCK_DATA) {
       signal?.throwIfAborted?.()
-      return ['lab-node-1', 'media-node']
+      return ['lab-node-1', 'lab-node-2']
     }
     return extractAction<string[]>('list_hosts', {}, signal)
   },
@@ -91,34 +91,34 @@ export const extractApi = {
         : { mode: 'fleet' }
       return {
         target,
-        found: ['radarr', 'sonarr'],
+        found: ['unifi', 'apprise'],
         creds: [
           {
-            service: 'radarr',
-            url: 'http://radarr.local:7878',
-            env_field: 'RADARR_URL',
+            service: 'unifi',
+            url: 'https://unifi.example.com',
+            env_field: 'UNIFI_URL',
             secret_present: true,
-            source_host: 'media-node',
-            probe_host: 'radarr.local',
-            runtime: { container_name: 'radarr', image: 'lscr.io/linuxserver/radarr:latest' },
+            source_host: 'lab-node-1',
+            probe_host: 'unifi.example.com',
+            runtime: { container_name: 'unifi', image: 'ghcr.io/example/unifi:latest' },
             url_verified: true,
           },
           {
-            service: 'sonarr',
-            url: 'http://sonarr.local:8989',
-            env_field: 'SONARR_URL',
-            secret_present: true,
-            source_host: 'media-node',
-            probe_host: 'sonarr.local',
-            runtime: { container_name: 'sonarr', image: 'lscr.io/linuxserver/sonarr:latest' },
+            service: 'apprise',
+            url: 'https://apprise.example.com',
+            env_field: 'APPRISE_URL',
+            secret_present: false,
+            source_host: 'lab-node-1',
+            probe_host: 'apprise.example.com',
+            runtime: { container_name: 'apprise', image: 'caronc/apprise:latest' },
             url_verified: true,
           },
         ],
         warnings: [
           {
-            service: 'plex',
-            host: 'media-node',
-            message: 'Mock scan found a Plex container but no token in mounted config.',
+            service: 'apprise',
+            host: 'lab-node-1',
+            message: 'Mock scan found an Apprise container but no API token in mounted config.',
           },
         ],
       }

@@ -23,11 +23,11 @@ Both surfaces are **re-runnable** — Setup detects existing config and pre-popu
 
 | Source | What it provides | Endpoint |
 |--------|-----------------|----------|
-| `~/.labby/.env` | Service URLs, API keys, tokens (masked) | `GET /dev/api/nodeinfo` → `env` map |
-| `~/.labby/config.toml` | Bind host, master URL, node controller | `GET /dev/api/nodeinfo` → `local_host`, `controller`, `master_url` |
+| `~/.labby/.env` | Service URLs, API keys, tokens (masked) | `GET /dev/api/systeminfo` → `env` map |
+| `~/.labby/config.toml` | Bind host, master URL, node controller | `GET /dev/api/systeminfo` → `local_host`, `controller`, `master_url` |
 | `/v1/nodes` | Live node connectivity (requires token) | `GET /v1/nodes` |
 
-`/dev/api/nodeinfo` is unauthenticated and reads env vars from the running process (dotenvy loads `.env` at startup). Secrets are masked as `***` — the UI treats `***` as "value already set; leave blank to keep."
+`/dev/api/systeminfo` is unauthenticated and reads env vars from the running process (dotenvy loads `.env` at startup). Secrets are masked as `***` — the UI treats `***` as "value already set; leave blank to keep."
 
 ### Write Path
 
@@ -69,7 +69,7 @@ Phase 2 unlocks when PreFlight 1 passes. The sidebar lists all 21 services by ca
 
 ### Re-run mode
 
-On load, the wizard calls `/dev/api/nodeinfo`. If env values exist:
+On load, the wizard calls `/dev/api/systeminfo`. If env values exist:
 - Re-run banner shown on step 1
 - All fields pre-populated (secrets as `***`)
 - Nodes fleet restored from `node.controller` + live `/v1/nodes`
@@ -101,7 +101,7 @@ Switches to OAuth mode automatically if `LAB_AUTH_MODE=oauth` or Google credenti
 **Nodes**
 
 - This device always at index 0 as `THIS DEVICE + MASTER`, locked checkbox, master radio pre-selected
-- Hostname resolved from `/dev/api/nodeinfo` → `controller` field (same as `node.controller` in config.toml)
+- Hostname resolved from `/dev/api/systeminfo` → `controller` field (same as `node.controller` in config.toml)
 - Additional nodes from `/v1/nodes` with **live** connected status
 - "Scan ~/.ssh/config" button appends SSH hosts from `deploy.config.list`
 - Manual add field for SSH aliases
@@ -116,20 +116,20 @@ Switches to OAuth mode automatically if `LAB_AUTH_MODE=oauth` or Google credenti
 - Fields driven by `svc.fields[]` array (envKey, type, placeholder, hint, optional)
 - Field types: `url`, `password` (eye toggle, `***` placeholder when set), `text`
 - Test Connection: simulated in mockup; real implementation calls `doctor.service_probe`
-- Values pre-populated from `/dev/api/nodeinfo → env`
+- Values pre-populated from `/dev/api/systeminfo → env`
 
 **Service catalog with exact env vars:**
 
 | Service | URL key | Auth key | Auth type |
 |---------|---------|----------|-----------|
-| Radarr | `RADARR_URL` | `RADARR_API_KEY` | X-Api-Key header |
-| Sonarr | `SONARR_URL` | `SONARR_API_KEY` | X-Api-Key header |
-| Prowlarr | `PROWLARR_URL` | `PROWLARR_API_KEY` | X-Api-Key header |
-| Overseerr | `OVERSEERR_URL` | `OVERSEERR_API_KEY` | X-Api-Key header |
-| Tautulli | `TAUTULLI_URL` | `TAUTULLI_API_KEY` | ?apikey= query param |
-| Plex | `PLEX_URL` | `PLEX_TOKEN` | X-Plex-Token header |
-| SABnzbd | `SABNZBD_URL` | `SABNZBD_API_KEY` | ?apikey= query param |
-| qBittorrent | `QBITTORRENT_URL` | `QBITTORRENT_USERNAME` + `QBITTORRENT_PASSWORD` | Session cookie |
+| ExampleMovies | `EXAMPLEMOVIES_URL` | `EXAMPLEMOVIES_API_KEY` | X-Api-Key header |
+| ExampleSeries | `EXAMPLESERIES_URL` | `EXAMPLESERIES_API_KEY` | X-Api-Key header |
+| ExampleIndexer | `EXAMPLEINDEXER_URL` | `EXAMPLEINDEXER_API_KEY` | X-Api-Key header |
+| ExampleRequests | `EXAMPLEREQUESTS_URL` | `EXAMPLEREQUESTS_API_KEY` | X-Api-Key header |
+| ExampleMetrics | `EXAMPLEMETRICS_URL` | `EXAMPLEMETRICS_API_KEY` | ?apikey= query param |
+| ExampleMedia | `EXAMPLEMEDIA_URL` | `EXAMPLEMEDIA_TOKEN` | X-ExampleMedia-Token header |
+| ExampleUsenet | `EXAMPLEUSENET_URL` | `EXAMPLEUSENET_API_KEY` | ?apikey= query param |
+| exampledownload | `EXAMPLEDOWNLOAD_URL` | `EXAMPLEDOWNLOAD_USERNAME` + `EXAMPLEDOWNLOAD_PASSWORD` | Session cookie |
 | Unraid | `UNRAID_URL` | `UNRAID_API_KEY` | X-API-Key header |
 | UniFi | `UNIFI_URL` | `UNIFI_API_KEY` | X-API-KEY header |
 | Tailscale | `TAILSCALE_URL` | `TAILSCALE_API_KEY` | Bearer token |

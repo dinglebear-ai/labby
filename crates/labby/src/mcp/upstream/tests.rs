@@ -8,10 +8,17 @@ use rmcp::model::{CallToolResult, ContentBlock};
 #[test]
 fn normalize_upstream_result_preserves_user_errors_without_poisoning_health() {
     let upstream = CallToolResult::error(vec![ContentBlock::text(
-        build_error("radarr", "movie.add", "missing_param", "need title").to_string(),
+        build_error(
+            "gateway-alpha",
+            "status.update",
+            "missing_param",
+            "need title",
+        )
+        .to_string(),
     )]);
 
-    let (_, kind, counts_as_failure) = normalize_upstream_result("radarr", "call_tool", upstream);
+    let (_, kind, counts_as_failure) =
+        normalize_upstream_result("gateway-alpha", "call_tool", upstream);
 
     assert_eq!(kind, "missing_param");
     assert!(!counts_as_failure);

@@ -124,7 +124,7 @@ Metadata includes:
 Categories are part of the product model:
 
 - `Media`
-- `Servarr`
+- `ExampleSuite`
 - `Indexer`
 - `Download`
 - `Notes`
@@ -146,10 +146,10 @@ The config layer recognizes:
 This is especially relevant for:
 
 - Unraid
-- Jellyfin
+- ExampleStream
 - OpenACP
-- Plex
-- qBittorrent
+- ExampleMedia
+- exampledownload
 - any user who runs multiple copies of the same service
 
 The service library layer stays unaware of instance naming. Instance lookup is a binary-level config concern.

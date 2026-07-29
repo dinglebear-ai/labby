@@ -13,13 +13,13 @@
 ## File Map
 
 **Modified:**
-- `crates/lab/src/mcp/registry.rs` — remove radarr cfg gate from `category_slug`, register all 21 services
+- `crates/lab/src/mcp/registry.rs` — remove examplemovies cfg gate from `category_slug`, register all 21 services
 - `crates/lab/src/mcp/services.rs` — declare all 21 dispatcher modules
 - `crates/lab/src/mcp/services/extract.rs` — migrate local ActionSpec stand-ins to real types
-- `crates/lab/src/mcp/services/radarr.rs` — add `pub const ACTIONS`
+- `crates/lab/src/mcp/services/examplemovies.rs` — add `pub const ACTIONS`
 - `crates/lab/src/cli/serve.rs` — add all 21 services to dispatch match
 - `crates/lab/src/catalog.rs` — add `convert_actions()`, wire all 21 services
-- `crates/lab/src/cli.rs` — add radarr subcommand + service stubs
+- `crates/lab/src/cli.rs` — add examplemovies subcommand + service stubs
 - `crates/lab/src/cli/doctor.rs` — generic over all services via META list
 - `crates/lab/src/cli/health.rs` — generic over all services via service list
 - `crates/lab/src/api/state.rs` — add clients for all real-SDK services
@@ -27,11 +27,11 @@
 - `crates/lab/src/api.rs` — declare `services` module
 
 **Created:**
-- `crates/lab/src/mcp/services/{sonarr,prowlarr,plex,tautulli,sabnzbd,qbittorrent,tailscale,linkding,memos,bytestash,paperless,arcane,unraid,unifi,overseerr,gotify,openai,qdrant,tei,apprise}.rs` — 20 dispatcher stubs (arcane, plex, sonarr, openai, prowlarr already exist as empty files; 15 need to be created)
-- `crates/lab/src/cli/radarr.rs` — reference CLI shim
-- `crates/lab/src/cli/{sonarr,prowlarr,plex,tautulli,sabnzbd,qbittorrent,tailscale,linkding,memos,bytestash,paperless,arcane,unraid,unifi,overseerr,gotify,openai,qdrant,tei,apprise}.rs` — CLI stubs (some exist, some need creating)
+- `crates/lab/src/mcp/services/{exampleseries,exampleindexer,examplemedia,examplemetrics,exampleusenet,exampledownload,tailscale,linkding,memos,bytestash,paperless,arcane,unraid,unifi,examplerequests,gotify,openai,qdrant,tei,apprise}.rs` — 20 dispatcher stubs (arcane, examplemedia, exampleseries, openai, exampleindexer already exist as empty files; 15 need to be created)
+- `crates/lab/src/cli/examplemovies.rs` — reference CLI shim
+- `crates/lab/src/cli/{exampleseries,exampleindexer,examplemedia,examplemetrics,exampleusenet,exampledownload,tailscale,linkding,memos,bytestash,paperless,arcane,unraid,unifi,examplerequests,gotify,openai,qdrant,tei,apprise}.rs` — CLI stubs (some exist, some need creating)
 - `crates/lab/src/api/services.rs` — module declaration
-- `crates/lab/src/api/services/{extract,radarr,sonarr,...}.rs` — per-service HTTP handlers
+- `crates/lab/src/api/services/{extract,examplemovies,exampleseries,...}.rs` — per-service HTTP handlers
 
 ---
 
@@ -40,19 +40,19 @@
 **Files:**
 - Modify: `crates/lab/src/mcp/registry.rs`
 
-The function is currently gated `#[cfg(feature = "radarr")]` but it only uses `lab_apis::core::Category`, which is always available. This blocks registering any other service.
+The function is currently gated `#[cfg(feature = "examplemovies")]` but it only uses `lab_apis::core::Category`, which is always available. This blocks registering any other service.
 
 - [ ] **Step 1: Remove the cfg gate from `category_slug`**
 
 In `crates/lab/src/mcp/registry.rs`, replace:
 
 ```rust
-#[cfg(feature = "radarr")]
+#[cfg(feature = "examplemovies")]
 const fn category_slug(cat: lab_apis::core::Category) -> &'static str {
     use lab_apis::core::Category;
     match cat {
         Category::Media => "media",
-        Category::Servarr => "servarr",
+        Category::ExampleSuite => "examplesuite",
         Category::Indexer => "indexer",
         Category::Download => "download",
         Category::Notes => "notes",
@@ -72,7 +72,7 @@ const fn category_slug(cat: lab_apis::core::Category) -> &'static str {
     use lab_apis::core::Category;
     match cat {
         Category::Media => "media",
-        Category::Servarr => "servarr",
+        Category::ExampleSuite => "examplesuite",
         Category::Indexer => "indexer",
         Category::Download => "download",
         Category::Notes => "notes",
@@ -97,7 +97,7 @@ Expected: no errors.
 
 ```bash
 rtk git add crates/lab/src/mcp/registry.rs
-rtk git commit -m "fix(mcp): make category_slug always available, not radarr-gated"
+rtk git commit -m "fix(mcp): make category_slug always available, not examplemovies-gated"
 ```
 
 ---
@@ -212,17 +212,17 @@ rtk git commit -m "fix(extract): migrate local ActionSpec stand-ins to real lab_
 
 ---
 
-## Task 3: Add `pub const ACTIONS` to Radarr and fix catalog builder
+## Task 3: Add `pub const ACTIONS` to ExampleMovies and fix catalog builder
 
 **Files:**
-- Modify: `crates/lab/src/mcp/services/radarr.rs`
+- Modify: `crates/lab/src/mcp/services/examplemovies.rs`
 - Modify: `crates/lab/src/catalog.rs`
 
-The radarr dispatcher duplicates its action list in two places: the hardcoded `Vec` in `catalog.rs::actions_for()` and the help arm of `dispatch()`. Consolidate to a single `pub const ACTIONS`.
+The examplemovies dispatcher duplicates its action list in two places: the hardcoded `Vec` in `catalog.rs::actions_for()` and the help arm of `dispatch()`. Consolidate to a single `pub const ACTIONS`.
 
 - [ ] **Step 1: Write the failing test**
 
-In `crates/lab/src/mcp/services/radarr.rs`, add:
+In `crates/lab/src/mcp/services/examplemovies.rs`, add:
 
 ```rust
 #[cfg(test)]
@@ -230,12 +230,12 @@ mod tests {
     use super::ACTIONS;
 
     #[test]
-    fn radarr_has_system_status_action() {
+    fn examplemovies_has_system_status_action() {
         assert!(ACTIONS.iter().any(|a| a.name == "system.status"));
     }
 
     #[test]
-    fn radarr_has_help_action() {
+    fn examplemovies_has_help_action() {
         assert!(ACTIONS.iter().any(|a| a.name == "help"));
     }
 }
@@ -244,24 +244,24 @@ mod tests {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-rtk cargo test -p lab --features radarr -- mcp::services::radarr::tests 2>&1 | tail -10
+rtk cargo test -p lab --features examplemovies -- mcp::services::examplemovies::tests 2>&1 | tail -10
 ```
 
 Expected: compile error — `ACTIONS` not defined.
 
-- [ ] **Step 3: Add `pub const ACTIONS` to radarr dispatcher**
+- [ ] **Step 3: Add `pub const ACTIONS` to examplemovies dispatcher**
 
-In `crates/lab/src/mcp/services/radarr.rs`, add these imports and constant after the existing `use` lines:
+In `crates/lab/src/mcp/services/examplemovies.rs`, add these imports and constant after the existing `use` lines:
 
 ```rust
 use lab_apis::core::action::{ActionSpec, ParamSpec};
 
-/// Action catalog for the radarr tool.
+/// Action catalog for the examplemovies tool.
 /// Read by `catalog.rs`, `mcp/resources.rs`, and the `help` dispatch arm.
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "system.status",
-        description: "Return Radarr system status and version",
+        description: "Return ExampleMovies system status and version",
         destructive: false,
         returns: "SystemStatus",
         params: &[],
@@ -280,7 +280,7 @@ Then replace the hardcoded help arm in `dispatch()`:
 
 ```rust
 "help" => Ok(serde_json::json!({
-    "service": "radarr",
+    "service": "examplemovies",
     "actions": ACTIONS.iter().map(|a| serde_json::json!({
         "name": a.name,
         "description": a.description,
@@ -295,7 +295,7 @@ Then replace the hardcoded help arm in `dispatch()`:
 })),
 ```
 
-- [ ] **Step 4: Add `convert_actions` helper to catalog and wire extract + radarr**
+- [ ] **Step 4: Add `convert_actions` helper to catalog and wire extract + examplemovies**
 
 Replace the entire contents of `crates/lab/src/catalog.rs` with:
 
@@ -322,7 +322,7 @@ pub struct ServiceCatalog {
     pub name: String,
     /// Short human description from `PluginMeta::description`.
     pub description: String,
-    /// Category slug (Media, Servarr, Notifications, etc.).
+    /// Category slug (Media, ExampleSuite, Notifications, etc.).
     pub category: String,
     /// List of actions exposed by the service.
     pub actions: Vec<ActionEntry>,
@@ -372,8 +372,8 @@ fn convert_actions(specs: &[lab_apis::core::ActionSpec]) -> Vec<ActionEntry> {
 fn actions_for(service: &str) -> Vec<ActionEntry> {
     match service {
         "extract" => convert_actions(crate::mcp::services::extract::ACTIONS),
-        #[cfg(feature = "radarr")]
-        "radarr" => convert_actions(crate::mcp::services::radarr::ACTIONS),
+        #[cfg(feature = "examplemovies")]
+        "examplemovies" => convert_actions(crate::mcp::services::examplemovies::ACTIONS),
         _ => Vec::new(),
     }
 }
@@ -382,10 +382,10 @@ fn actions_for(service: &str) -> Vec<ActionEntry> {
 - [ ] **Step 5: Run tests to verify**
 
 ```bash
-rtk cargo test -p lab --features radarr -- mcp::services::radarr::tests 2>&1 | tail -10
+rtk cargo test -p lab --features examplemovies -- mcp::services::examplemovies::tests 2>&1 | tail -10
 ```
 
-Expected: both radarr tests pass.
+Expected: both examplemovies tests pass.
 
 - [ ] **Step 6: Compile check**
 
@@ -398,8 +398,8 @@ Expected: no errors.
 - [ ] **Step 7: Commit**
 
 ```bash
-rtk git add crates/lab/src/mcp/services/radarr.rs crates/lab/src/catalog.rs
-rtk git commit -m "feat(catalog): add ACTIONS to radarr dispatcher, drive catalog from ACTIONS slices"
+rtk git add crates/lab/src/mcp/services/examplemovies.rs crates/lab/src/catalog.rs
+rtk git commit -m "feat(catalog): add ACTIONS to examplemovies dispatcher, drive catalog from ACTIONS slices"
 ```
 
 ---
@@ -442,7 +442,7 @@ Expected: `FAILED` — extract not found in registry.
 
 - [ ] **Step 3: Register extract in `build_default_registry`**
 
-In `crates/lab/src/mcp/registry.rs`, add the extract block before the radarr block in `build_default_registry`:
+In `crates/lab/src/mcp/registry.rs`, add the extract block before the examplemovies block in `build_default_registry`:
 
 ```rust
 #[must_use]
@@ -459,9 +459,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "radarr")]
+    #[cfg(feature = "examplemovies")]
     {
-        let meta = lab_apis::radarr::META;
+        let meta = lab_apis::examplemovies::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -489,8 +489,8 @@ async fn dispatch(
     }
     match service {
         "extract" => crate::mcp::services::extract::dispatch(action, params).await,
-        #[cfg(feature = "radarr")]
-        "radarr" => crate::mcp::services::radarr::dispatch(action, params).await,
+        #[cfg(feature = "examplemovies")]
+        "examplemovies" => crate::mcp::services::examplemovies::dispatch(action, params).await,
         other => anyhow::bail!("service `{other}` has no dispatcher wired"),
     }
 }
@@ -524,9 +524,9 @@ rtk git commit -m "feat(mcp): register extract in default registry and serve dis
 
 Each feature-gated service needs a dispatcher module with `pub const ACTIONS: &[ActionSpec]` (empty until implemented) and a `dispatch()` that returns a "not yet implemented" error. This unlocks registering them so `lab help` lists them all even before their client logic is written.
 
-The 20 services are: `radarr` (already done), `sonarr`, `prowlarr`, `plex`, `tautulli`, `sabnzbd`, `qbittorrent`, `tailscale`, `linkding`, `memos`, `bytestash`, `paperless`, `arcane`, `unraid`, `unifi`, `overseerr`, `gotify`, `openai`, `qdrant`, `tei`, `apprise`.
+The 20 services are: `examplemovies` (already done), `exampleseries`, `exampleindexer`, `examplemedia`, `examplemetrics`, `exampleusenet`, `exampledownload`, `tailscale`, `linkding`, `memos`, `bytestash`, `paperless`, `arcane`, `unraid`, `unifi`, `examplerequests`, `gotify`, `openai`, `qdrant`, `tei`, `apprise`.
 
-Stubs for `sonarr`, `prowlarr`, `plex`, `arcane`, `openai` already exist as 25-byte placeholder files — they need to be replaced with real stubs. The other 14 need to be created.
+Stubs for `exampleseries`, `exampleindexer`, `examplemedia`, `arcane`, `openai` already exist as 25-byte placeholder files — they need to be replaced with real stubs. The other 14 need to be created.
 
 - [ ] **Step 1: Generate all 19 stub dispatcher files**
 
@@ -535,14 +535,14 @@ Run this script from the workspace root:
 ```bash
 cd /home/jmagar/workspace/lab
 
-SERVICES=(sonarr prowlarr plex tautulli sabnzbd qbittorrent tailscale linkding memos bytestash paperless arcane unraid unifi overseerr gotify openai qdrant tei apprise)
+SERVICES=(exampleseries exampleindexer examplemedia examplemetrics exampleusenet exampledownload tailscale linkding memos bytestash paperless arcane unraid unifi examplerequests gotify openai qdrant tei apprise)
 
 for svc in "${SERVICES[@]}"; do
 cat > "crates/lab/src/mcp/services/${svc}.rs" << RUST
 //! MCP dispatch stub for the \`${svc}\` tool.
 //!
 //! Replace this stub with a real implementation when the service client
-//! is ready. See \`radarr.rs\` for the reference pattern.
+//! is ready. See \`examplemovies.rs\` for the reference pattern.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -580,30 +580,30 @@ Replace `crates/lab/src/mcp/services.rs` with:
 //!
 //! Every module exports `pub const ACTIONS: &[ActionSpec]` and
 //! `pub async fn dispatch(action: &str, params: Value) -> Result<Value>`.
-//! See `radarr.rs` for the reference implementation.
+//! See `examplemovies.rs` for the reference implementation.
 
 pub mod extract;
 
-#[cfg(feature = "radarr")]
-pub mod radarr;
+#[cfg(feature = "examplemovies")]
+pub mod examplemovies;
 
-#[cfg(feature = "sonarr")]
-pub mod sonarr;
+#[cfg(feature = "exampleseries")]
+pub mod exampleseries;
 
-#[cfg(feature = "prowlarr")]
-pub mod prowlarr;
+#[cfg(feature = "exampleindexer")]
+pub mod exampleindexer;
 
-#[cfg(feature = "plex")]
-pub mod plex;
+#[cfg(feature = "examplemedia")]
+pub mod examplemedia;
 
-#[cfg(feature = "tautulli")]
-pub mod tautulli;
+#[cfg(feature = "examplemetrics")]
+pub mod examplemetrics;
 
-#[cfg(feature = "sabnzbd")]
-pub mod sabnzbd;
+#[cfg(feature = "exampleusenet")]
+pub mod exampleusenet;
 
-#[cfg(feature = "qbittorrent")]
-pub mod qbittorrent;
+#[cfg(feature = "exampledownload")]
+pub mod exampledownload;
 
 #[cfg(feature = "tailscale")]
 pub mod tailscale;
@@ -629,8 +629,8 @@ pub mod unraid;
 #[cfg(feature = "unifi")]
 pub mod unifi;
 
-#[cfg(feature = "overseerr")]
-pub mod overseerr;
+#[cfg(feature = "examplerequests")]
+pub mod examplerequests;
 
 #[cfg(feature = "gotify")]
 pub mod gotify;
@@ -667,9 +667,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "radarr")]
+    #[cfg(feature = "examplemovies")]
     {
-        let meta = lab_apis::radarr::META;
+        let meta = lab_apis::examplemovies::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -677,9 +677,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "sonarr")]
+    #[cfg(feature = "exampleseries")]
     {
-        let meta = lab_apis::sonarr::META;
+        let meta = lab_apis::exampleseries::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -687,9 +687,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "prowlarr")]
+    #[cfg(feature = "exampleindexer")]
     {
-        let meta = lab_apis::prowlarr::META;
+        let meta = lab_apis::exampleindexer::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -697,9 +697,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "plex")]
+    #[cfg(feature = "examplemedia")]
     {
-        let meta = lab_apis::plex::META;
+        let meta = lab_apis::examplemedia::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -707,9 +707,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "tautulli")]
+    #[cfg(feature = "examplemetrics")]
     {
-        let meta = lab_apis::tautulli::META;
+        let meta = lab_apis::examplemetrics::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -717,9 +717,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "sabnzbd")]
+    #[cfg(feature = "exampleusenet")]
     {
-        let meta = lab_apis::sabnzbd::META;
+        let meta = lab_apis::exampleusenet::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -727,9 +727,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "qbittorrent")]
+    #[cfg(feature = "exampledownload")]
     {
-        let meta = lab_apis::qbittorrent::META;
+        let meta = lab_apis::exampledownload::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -817,9 +817,9 @@ pub fn build_default_registry() -> ToolRegistry {
         });
     }
 
-    #[cfg(feature = "overseerr")]
+    #[cfg(feature = "examplerequests")]
     {
-        let meta = lab_apis::overseerr::META;
+        let meta = lab_apis::examplerequests::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -897,20 +897,20 @@ async fn dispatch(
     }
     match service {
         "extract" => crate::mcp::services::extract::dispatch(action, params).await,
-        #[cfg(feature = "radarr")]
-        "radarr" => crate::mcp::services::radarr::dispatch(action, params).await,
-        #[cfg(feature = "sonarr")]
-        "sonarr" => crate::mcp::services::sonarr::dispatch(action, params).await,
-        #[cfg(feature = "prowlarr")]
-        "prowlarr" => crate::mcp::services::prowlarr::dispatch(action, params).await,
-        #[cfg(feature = "plex")]
-        "plex" => crate::mcp::services::plex::dispatch(action, params).await,
-        #[cfg(feature = "tautulli")]
-        "tautulli" => crate::mcp::services::tautulli::dispatch(action, params).await,
-        #[cfg(feature = "sabnzbd")]
-        "sabnzbd" => crate::mcp::services::sabnzbd::dispatch(action, params).await,
-        #[cfg(feature = "qbittorrent")]
-        "qbittorrent" => crate::mcp::services::qbittorrent::dispatch(action, params).await,
+        #[cfg(feature = "examplemovies")]
+        "examplemovies" => crate::mcp::services::examplemovies::dispatch(action, params).await,
+        #[cfg(feature = "exampleseries")]
+        "exampleseries" => crate::mcp::services::exampleseries::dispatch(action, params).await,
+        #[cfg(feature = "exampleindexer")]
+        "exampleindexer" => crate::mcp::services::exampleindexer::dispatch(action, params).await,
+        #[cfg(feature = "examplemedia")]
+        "examplemedia" => crate::mcp::services::examplemedia::dispatch(action, params).await,
+        #[cfg(feature = "examplemetrics")]
+        "examplemetrics" => crate::mcp::services::examplemetrics::dispatch(action, params).await,
+        #[cfg(feature = "exampleusenet")]
+        "exampleusenet" => crate::mcp::services::exampleusenet::dispatch(action, params).await,
+        #[cfg(feature = "exampledownload")]
+        "exampledownload" => crate::mcp::services::exampledownload::dispatch(action, params).await,
         #[cfg(feature = "tailscale")]
         "tailscale" => crate::mcp::services::tailscale::dispatch(action, params).await,
         #[cfg(feature = "linkding")]
@@ -927,8 +927,8 @@ async fn dispatch(
         "unraid" => crate::mcp::services::unraid::dispatch(action, params).await,
         #[cfg(feature = "unifi")]
         "unifi" => crate::mcp::services::unifi::dispatch(action, params).await,
-        #[cfg(feature = "overseerr")]
-        "overseerr" => crate::mcp::services::overseerr::dispatch(action, params).await,
+        #[cfg(feature = "examplerequests")]
+        "examplerequests" => crate::mcp::services::examplerequests::dispatch(action, params).await,
         #[cfg(feature = "gotify")]
         "gotify" => crate::mcp::services::gotify::dispatch(action, params).await,
         #[cfg(feature = "openai")]
@@ -952,20 +952,20 @@ Replace `actions_for()` in `crates/lab/src/catalog.rs`:
 fn actions_for(service: &str) -> Vec<ActionEntry> {
     match service {
         "extract" => convert_actions(crate::mcp::services::extract::ACTIONS),
-        #[cfg(feature = "radarr")]
-        "radarr" => convert_actions(crate::mcp::services::radarr::ACTIONS),
-        #[cfg(feature = "sonarr")]
-        "sonarr" => convert_actions(crate::mcp::services::sonarr::ACTIONS),
-        #[cfg(feature = "prowlarr")]
-        "prowlarr" => convert_actions(crate::mcp::services::prowlarr::ACTIONS),
-        #[cfg(feature = "plex")]
-        "plex" => convert_actions(crate::mcp::services::plex::ACTIONS),
-        #[cfg(feature = "tautulli")]
-        "tautulli" => convert_actions(crate::mcp::services::tautulli::ACTIONS),
-        #[cfg(feature = "sabnzbd")]
-        "sabnzbd" => convert_actions(crate::mcp::services::sabnzbd::ACTIONS),
-        #[cfg(feature = "qbittorrent")]
-        "qbittorrent" => convert_actions(crate::mcp::services::qbittorrent::ACTIONS),
+        #[cfg(feature = "examplemovies")]
+        "examplemovies" => convert_actions(crate::mcp::services::examplemovies::ACTIONS),
+        #[cfg(feature = "exampleseries")]
+        "exampleseries" => convert_actions(crate::mcp::services::exampleseries::ACTIONS),
+        #[cfg(feature = "exampleindexer")]
+        "exampleindexer" => convert_actions(crate::mcp::services::exampleindexer::ACTIONS),
+        #[cfg(feature = "examplemedia")]
+        "examplemedia" => convert_actions(crate::mcp::services::examplemedia::ACTIONS),
+        #[cfg(feature = "examplemetrics")]
+        "examplemetrics" => convert_actions(crate::mcp::services::examplemetrics::ACTIONS),
+        #[cfg(feature = "exampleusenet")]
+        "exampleusenet" => convert_actions(crate::mcp::services::exampleusenet::ACTIONS),
+        #[cfg(feature = "exampledownload")]
+        "exampledownload" => convert_actions(crate::mcp::services::exampledownload::ACTIONS),
         #[cfg(feature = "tailscale")]
         "tailscale" => convert_actions(crate::mcp::services::tailscale::ACTIONS),
         #[cfg(feature = "linkding")]
@@ -982,8 +982,8 @@ fn actions_for(service: &str) -> Vec<ActionEntry> {
         "unraid" => convert_actions(crate::mcp::services::unraid::ACTIONS),
         #[cfg(feature = "unifi")]
         "unifi" => convert_actions(crate::mcp::services::unifi::ACTIONS),
-        #[cfg(feature = "overseerr")]
-        "overseerr" => convert_actions(crate::mcp::services::overseerr::ACTIONS),
+        #[cfg(feature = "examplerequests")]
+        "examplerequests" => convert_actions(crate::mcp::services::examplerequests::ACTIONS),
         #[cfg(feature = "gotify")]
         "gotify" => convert_actions(crate::mcp::services::gotify::ACTIONS),
         #[cfg(feature = "openai")]
@@ -1011,10 +1011,10 @@ fn all_features_registers_all_services() {
     // extract is always present
     assert!(names.contains(&"extract"), "extract missing from registry");
     // spot-check a few feature-gated ones (compiled in with --all-features)
-    #[cfg(feature = "radarr")]
-    assert!(names.contains(&"radarr"), "radarr missing from registry");
-    #[cfg(feature = "sonarr")]
-    assert!(names.contains(&"sonarr"), "sonarr missing from registry");
+    #[cfg(feature = "examplemovies")]
+    assert!(names.contains(&"examplemovies"), "examplemovies missing from registry");
+    #[cfg(feature = "exampleseries")]
+    assert!(names.contains(&"exampleseries"), "exampleseries missing from registry");
     #[cfg(feature = "apprise")]
     assert!(names.contains(&"apprise"), "apprise missing from registry");
 }
@@ -1050,30 +1050,30 @@ rtk git commit -m "feat(mcp): wire all 21 services into registry, dispatch, and 
 
 ---
 
-## Task 6: Add the Radarr CLI shim (reference implementation)
+## Task 6: Add the ExampleMovies CLI shim (reference implementation)
 
 **Files:**
-- Create: `crates/lab/src/cli/radarr.rs`
+- Create: `crates/lab/src/cli/examplemovies.rs`
 - Modify: `crates/lab/src/cli.rs`
 
 This is the template every other CLI shim will follow: ~20 lines, parse args, call client, format output. No business logic.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `crates/lab/src/cli/radarr.rs` with just the test:
+Create `crates/lab/src/cli/examplemovies.rs` with just the test:
 
 ```rust
-//! `lab radarr` — CLI shim for the Radarr service.
+//! `lab examplemovies` — CLI shim for the ExampleMovies service.
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn system_status_args_parse() {
         use clap::Parser;
-        use super::RadarrArgs;
+        use super::ExampleMoviesArgs;
 
-        // Subcommand `lab radarr system-status` should parse.
-        let args = RadarrArgs::try_parse_from(["radarr", "system-status"]);
+        // Subcommand `lab examplemovies system-status` should parse.
+        let args = ExampleMoviesArgs::try_parse_from(["examplemovies", "system-status"]);
         assert!(args.is_ok(), "failed to parse: {args:?}");
     }
 }
@@ -1082,17 +1082,17 @@ mod tests {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-rtk cargo test -p lab --features radarr -- cli::radarr::tests 2>&1 | tail -10
+rtk cargo test -p lab --features examplemovies -- cli::examplemovies::tests 2>&1 | tail -10
 ```
 
-Expected: compile error — `RadarrArgs` not defined.
+Expected: compile error — `ExampleMoviesArgs` not defined.
 
-- [ ] **Step 3: Implement the Radarr CLI shim**
+- [ ] **Step 3: Implement the ExampleMovies CLI shim**
 
-Replace the contents of `crates/lab/src/cli/radarr.rs` with:
+Replace the contents of `crates/lab/src/cli/examplemovies.rs` with:
 
 ```rust
-//! `lab radarr` — CLI shim for the Radarr service.
+//! `lab examplemovies` — CLI shim for the ExampleMovies service.
 //!
 //! Thin shim: parse → call client → format. No business logic here.
 //! See `crates/lab/src/cli/CLAUDE.md` for the shim rules.
@@ -1104,30 +1104,30 @@ use clap::{Args, Subcommand};
 
 use crate::output::{OutputFormat, print};
 
-/// `lab radarr` arguments.
+/// `lab examplemovies` arguments.
 #[derive(Debug, Args)]
-pub struct RadarrArgs {
+pub struct ExampleMoviesArgs {
     #[command(subcommand)]
-    pub command: RadarrCommand,
+    pub command: ExampleMoviesCommand,
 }
 
-/// Radarr subcommands.
+/// ExampleMovies subcommands.
 #[derive(Debug, Subcommand)]
-pub enum RadarrCommand {
-    /// Return Radarr system status and version.
+pub enum ExampleMoviesCommand {
+    /// Return ExampleMovies system status and version.
     SystemStatus,
 }
 
-/// Run the `lab radarr` subcommand.
+/// Run the `lab examplemovies` subcommand.
 ///
 /// # Errors
 /// Returns an error if the client is not configured or the API call fails.
-pub async fn run(args: RadarrArgs, format: OutputFormat) -> Result<ExitCode> {
-    let client = crate::mcp::services::radarr::client_from_env()
-        .ok_or_else(|| anyhow::anyhow!("RADARR_URL and RADARR_API_KEY must be set"))?;
+pub async fn run(args: ExampleMoviesArgs, format: OutputFormat) -> Result<ExitCode> {
+    let client = crate::mcp::services::examplemovies::client_from_env()
+        .ok_or_else(|| anyhow::anyhow!("EXAMPLEMOVIES_URL and EXAMPLEMOVIES_API_KEY must be set"))?;
 
     match args.command {
-        RadarrCommand::SystemStatus => {
+        ExampleMoviesCommand::SystemStatus => {
             let status = client.system_status().await?;
             print(&status, format)?;
         }
@@ -1141,17 +1141,17 @@ mod tests {
     #[test]
     fn system_status_args_parse() {
         use clap::Parser;
-        use super::RadarrArgs;
+        use super::ExampleMoviesArgs;
 
-        let args = RadarrArgs::try_parse_from(["radarr", "system-status"]);
+        let args = ExampleMoviesArgs::try_parse_from(["examplemovies", "system-status"]);
         assert!(args.is_ok(), "failed to parse: {args:?}");
     }
 }
 ```
 
-- [ ] **Step 4: Wire the radarr subcommand in `cli.rs`**
+- [ ] **Step 4: Wire the examplemovies subcommand in `cli.rs`**
 
-In `crates/lab/src/cli.rs`, add `radarr` to the module list and enum:
+In `crates/lab/src/cli.rs`, add `examplemovies` to the module list and enum:
 
 ```rust
 pub mod completions;
@@ -1162,32 +1162,32 @@ pub mod install;
 pub mod plugins;
 pub mod serve;
 
-#[cfg(feature = "radarr")]
-pub mod radarr;
+#[cfg(feature = "examplemovies")]
+pub mod examplemovies;
 ```
 
 Add to `Command` enum:
 
 ```rust
-/// Radarr movie collection manager.
-#[cfg(feature = "radarr")]
-Radarr(radarr::RadarrArgs),
+/// ExampleMovies movie collection manager.
+#[cfg(feature = "examplemovies")]
+ExampleMovies(examplemovies::ExampleMoviesArgs),
 ```
 
 Add to `dispatch` match:
 
 ```rust
-#[cfg(feature = "radarr")]
-Command::Radarr(args) => radarr::run(args, format).await,
+#[cfg(feature = "examplemovies")]
+Command::ExampleMovies(args) => examplemovies::run(args, format).await,
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
 
 ```bash
-rtk cargo test -p lab --features radarr -- cli::radarr::tests 2>&1 | tail -10
+rtk cargo test -p lab --features examplemovies -- cli::examplemovies::tests 2>&1 | tail -10
 ```
 
-Expected: `test cli::radarr::tests::system_status_args_parse ... ok`
+Expected: `test cli::examplemovies::tests::system_status_args_parse ... ok`
 
 - [ ] **Step 6: Compile check**
 
@@ -1200,8 +1200,8 @@ Expected: no errors.
 - [ ] **Step 7: Commit**
 
 ```bash
-rtk git add crates/lab/src/cli/radarr.rs crates/lab/src/cli.rs
-rtk git commit -m "feat(cli): add radarr subcommand as reference CLI shim"
+rtk git add crates/lab/src/cli/examplemovies.rs crates/lab/src/cli.rs
+rtk git commit -m "feat(cli): add examplemovies subcommand as reference CLI shim"
 ```
 
 ---
@@ -1212,21 +1212,21 @@ rtk git commit -m "feat(cli): add radarr subcommand as reference CLI shim"
 - Create: 19 CLI stub files
 - Modify: `crates/lab/src/cli.rs`
 
-Services `sonarr`, `prowlarr`, `plex`, `arcane`, `openai` have 25-byte placeholder files — replace them. The other 14 need to be created. All stubs should follow the same pattern and compile correctly.
+Services `exampleseries`, `exampleindexer`, `examplemedia`, `arcane`, `openai` have 25-byte placeholder files — replace them. The other 14 need to be created. All stubs should follow the same pattern and compile correctly.
 
 - [ ] **Step 1: Generate all 19 CLI stub files**
 
 ```bash
 cd /home/jmagar/workspace/lab
 
-SERVICES=(sonarr prowlarr plex tautulli sabnzbd qbittorrent tailscale linkding memos bytestash paperless arcane unraid unifi overseerr gotify openai qdrant tei apprise)
+SERVICES=(exampleseries exampleindexer examplemedia examplemetrics exampleusenet exampledownload tailscale linkding memos bytestash paperless arcane unraid unifi examplerequests gotify openai qdrant tei apprise)
 
 for svc in "${SERVICES[@]}"; do
 cat > "crates/lab/src/cli/${svc}.rs" << RUST
 //! \`lab ${svc}\` — CLI stub (not yet implemented).
 //!
 //! Replace this stub once \`${svc}\`'s SDK client is complete.
-//! See \`radarr.rs\` for the reference pattern.
+//! See \`examplemovies.rs\` for the reference pattern.
 
 use std::process::ExitCode;
 
@@ -1259,13 +1259,13 @@ Note: the above uses bash parameter expansion for capitalization. Run it in bash
 ```bash
 python3 -c "
 import os
-services = ['sonarr','prowlarr','plex','tautulli','sabnzbd','qbittorrent','tailscale','linkding','memos','bytestash','paperless','arcane','unraid','unifi','overseerr','gotify','openai','qdrant','tei','apprise']
+services = ['exampleseries','exampleindexer','examplemedia','examplemetrics','exampleusenet','exampledownload','tailscale','linkding','memos','bytestash','paperless','arcane','unraid','unifi','examplerequests','gotify','openai','qdrant','tei','apprise']
 for svc in services:
     cap = svc[0].upper() + svc[1:]
     content = f'''//! \`lab {svc}\` — CLI stub (not yet implemented).
 //!
 //! Replace this stub once \`{svc}\`'s SDK client is complete.
-//! See \`radarr.rs\` for the reference pattern.
+//! See \`examplemovies.rs\` for the reference pattern.
 
 use std::process::ExitCode;
 
@@ -1300,18 +1300,18 @@ print(f'Created {len(services)} CLI stubs')
 Add to the module declarations in `crates/lab/src/cli.rs`:
 
 ```rust
-#[cfg(feature = "sonarr")]
-pub mod sonarr;
-#[cfg(feature = "prowlarr")]
-pub mod prowlarr;
-#[cfg(feature = "plex")]
-pub mod plex;
-#[cfg(feature = "tautulli")]
-pub mod tautulli;
-#[cfg(feature = "sabnzbd")]
-pub mod sabnzbd;
-#[cfg(feature = "qbittorrent")]
-pub mod qbittorrent;
+#[cfg(feature = "exampleseries")]
+pub mod exampleseries;
+#[cfg(feature = "exampleindexer")]
+pub mod exampleindexer;
+#[cfg(feature = "examplemedia")]
+pub mod examplemedia;
+#[cfg(feature = "examplemetrics")]
+pub mod examplemetrics;
+#[cfg(feature = "exampleusenet")]
+pub mod exampleusenet;
+#[cfg(feature = "exampledownload")]
+pub mod exampledownload;
 #[cfg(feature = "tailscale")]
 pub mod tailscale;
 #[cfg(feature = "linkding")]
@@ -1328,8 +1328,8 @@ pub mod arcane;
 pub mod unraid;
 #[cfg(feature = "unifi")]
 pub mod unifi;
-#[cfg(feature = "overseerr")]
-pub mod overseerr;
+#[cfg(feature = "examplerequests")]
+pub mod examplerequests;
 #[cfg(feature = "gotify")]
 pub mod gotify;
 #[cfg(feature = "openai")]
@@ -1345,18 +1345,18 @@ pub mod apprise;
 Add to the `Command` enum:
 
 ```rust
-#[cfg(feature = "sonarr")]
-Sonarr(sonarr::SonarrArgs),
-#[cfg(feature = "prowlarr")]
-Prowlarr(prowlarr::ProwlarrArgs),
-#[cfg(feature = "plex")]
-Plex(plex::PlexArgs),
-#[cfg(feature = "tautulli")]
-Tautulli(tautulli::TautulliArgs),
-#[cfg(feature = "sabnzbd")]
-Sabnzbd(sabnzbd::SabnzbdArgs),
-#[cfg(feature = "qbittorrent")]
-Qbittorrent(qbittorrent::QbittorrentArgs),
+#[cfg(feature = "exampleseries")]
+ExampleSeries(exampleseries::ExampleSeriesArgs),
+#[cfg(feature = "exampleindexer")]
+ExampleIndexer(exampleindexer::ExampleIndexerArgs),
+#[cfg(feature = "examplemedia")]
+ExampleMedia(examplemedia::ExampleMediaArgs),
+#[cfg(feature = "examplemetrics")]
+ExampleMetrics(examplemetrics::ExampleMetricsArgs),
+#[cfg(feature = "exampleusenet")]
+ExampleUsenet(exampleusenet::ExampleUsenetArgs),
+#[cfg(feature = "exampledownload")]
+ExampleDownload(exampledownload::ExampleDownloadArgs),
 #[cfg(feature = "tailscale")]
 Tailscale(tailscale::TailscaleArgs),
 #[cfg(feature = "linkding")]
@@ -1373,8 +1373,8 @@ Arcane(arcane::ArcaneArgs),
 Unraid(unraid::UnraidArgs),
 #[cfg(feature = "unifi")]
 Unifi(unifi::UnifiArgs),
-#[cfg(feature = "overseerr")]
-Overseerr(overseerr::OverseerrArgs),
+#[cfg(feature = "examplerequests")]
+ExampleRequests(examplerequests::ExampleRequestsArgs),
 #[cfg(feature = "gotify")]
 Gotify(gotify::GotifyArgs),
 #[cfg(feature = "openai")]
@@ -1390,18 +1390,18 @@ Apprise(apprise::AppriseArgs),
 Add to the `dispatch` match:
 
 ```rust
-#[cfg(feature = "sonarr")]
-Command::Sonarr(args) => sonarr::run(args, format).await,
-#[cfg(feature = "prowlarr")]
-Command::Prowlarr(args) => prowlarr::run(args, format).await,
-#[cfg(feature = "plex")]
-Command::Plex(args) => plex::run(args, format).await,
-#[cfg(feature = "tautulli")]
-Command::Tautulli(args) => tautulli::run(args, format).await,
-#[cfg(feature = "sabnzbd")]
-Command::Sabnzbd(args) => sabnzbd::run(args, format).await,
-#[cfg(feature = "qbittorrent")]
-Command::Qbittorrent(args) => qbittorrent::run(args, format).await,
+#[cfg(feature = "exampleseries")]
+Command::ExampleSeries(args) => exampleseries::run(args, format).await,
+#[cfg(feature = "exampleindexer")]
+Command::ExampleIndexer(args) => exampleindexer::run(args, format).await,
+#[cfg(feature = "examplemedia")]
+Command::ExampleMedia(args) => examplemedia::run(args, format).await,
+#[cfg(feature = "examplemetrics")]
+Command::ExampleMetrics(args) => examplemetrics::run(args, format).await,
+#[cfg(feature = "exampleusenet")]
+Command::ExampleUsenet(args) => exampleusenet::run(args, format).await,
+#[cfg(feature = "exampledownload")]
+Command::ExampleDownload(args) => exampledownload::run(args, format).await,
 #[cfg(feature = "tailscale")]
 Command::Tailscale(args) => tailscale::run(args, format).await,
 #[cfg(feature = "linkding")]
@@ -1418,8 +1418,8 @@ Command::Arcane(args) => arcane::run(args, format).await,
 Command::Unraid(args) => unraid::run(args, format).await,
 #[cfg(feature = "unifi")]
 Command::Unifi(args) => unifi::run(args, format).await,
-#[cfg(feature = "overseerr")]
-Command::Overseerr(args) => overseerr::run(args, format).await,
+#[cfg(feature = "examplerequests")]
+Command::ExampleRequests(args) => examplerequests::run(args, format).await,
 #[cfg(feature = "gotify")]
 Command::Gotify(args) => gotify::run(args, format).await,
 #[cfg(feature = "openai")]
@@ -1438,7 +1438,7 @@ Command::Apprise(args) => apprise::run(args, format).await,
 rtk cargo check -p lab --all-features 2>&1 | grep "^error" | head -20
 ```
 
-Expected: no errors. If there are type-name mismatches (e.g. `QbittorrentArgs` vs `QBittorrentArgs`), fix the capitalization in the generated stub to match what you put in `cli.rs`.
+Expected: no errors. If there are type-name mismatches (e.g. `ExampleDownloadArgs` vs `ExampleDownloadArgs`), fix the capitalization in the generated stub to match what you put in `cli.rs`.
 
 - [ ] **Step 4: Commit**
 
@@ -1455,7 +1455,7 @@ rtk git commit -m "feat(cli): add stub subcommands for all 20 feature-gated serv
 - Modify: `crates/lab/src/cli/doctor.rs`
 - Modify: `crates/lab/src/cli/health.rs`
 
-Both currently have a single `#[cfg(feature = "radarr")]` block. They should iterate the same service list that `build_default_registry()` uses. The pattern: iterate a list of `(&'static str, &[EnvVar])` tuples derived from each service's `META`, no per-service cfg blocks needed.
+Both currently have a single `#[cfg(feature = "examplemovies")]` block. They should iterate the same service list that `build_default_registry()` uses. The pattern: iterate a list of `(&'static str, &[EnvVar])` tuples derived from each service's `META`, no per-service cfg blocks needed.
 
 - [ ] **Step 1: Write the failing test for doctor**
 
@@ -1476,12 +1476,12 @@ mod tests {
     }
 
     #[test]
-    fn service_env_checks_includes_radarr_when_enabled() {
+    fn service_env_checks_includes_examplemovies_when_enabled() {
         let checks = service_env_checks();
-        #[cfg(feature = "radarr")]
+        #[cfg(feature = "examplemovies")]
         assert!(
-            checks.iter().any(|(name, _)| *name == "radarr"),
-            "radarr must appear in doctor checks when radarr feature is enabled"
+            checks.iter().any(|(name, _)| *name == "examplemovies"),
+            "examplemovies must appear in doctor checks when examplemovies feature is enabled"
         );
     }
 }
@@ -1552,26 +1552,26 @@ pub fn service_env_checks() -> Vec<(&'static str, &'static [EnvVar])> {
     // extract is always-on.
     list.push((lab_apis::extract::META.name, lab_apis::extract::META.required_env));
 
-    #[cfg(feature = "radarr")]
-    list.push((lab_apis::radarr::META.name, lab_apis::radarr::META.required_env));
+    #[cfg(feature = "examplemovies")]
+    list.push((lab_apis::examplemovies::META.name, lab_apis::examplemovies::META.required_env));
 
-    #[cfg(feature = "sonarr")]
-    list.push((lab_apis::sonarr::META.name, lab_apis::sonarr::META.required_env));
+    #[cfg(feature = "exampleseries")]
+    list.push((lab_apis::exampleseries::META.name, lab_apis::exampleseries::META.required_env));
 
-    #[cfg(feature = "prowlarr")]
-    list.push((lab_apis::prowlarr::META.name, lab_apis::prowlarr::META.required_env));
+    #[cfg(feature = "exampleindexer")]
+    list.push((lab_apis::exampleindexer::META.name, lab_apis::exampleindexer::META.required_env));
 
-    #[cfg(feature = "plex")]
-    list.push((lab_apis::plex::META.name, lab_apis::plex::META.required_env));
+    #[cfg(feature = "examplemedia")]
+    list.push((lab_apis::examplemedia::META.name, lab_apis::examplemedia::META.required_env));
 
-    #[cfg(feature = "tautulli")]
-    list.push((lab_apis::tautulli::META.name, lab_apis::tautulli::META.required_env));
+    #[cfg(feature = "examplemetrics")]
+    list.push((lab_apis::examplemetrics::META.name, lab_apis::examplemetrics::META.required_env));
 
-    #[cfg(feature = "sabnzbd")]
-    list.push((lab_apis::sabnzbd::META.name, lab_apis::sabnzbd::META.required_env));
+    #[cfg(feature = "exampleusenet")]
+    list.push((lab_apis::exampleusenet::META.name, lab_apis::exampleusenet::META.required_env));
 
-    #[cfg(feature = "qbittorrent")]
-    list.push((lab_apis::qbittorrent::META.name, lab_apis::qbittorrent::META.required_env));
+    #[cfg(feature = "exampledownload")]
+    list.push((lab_apis::exampledownload::META.name, lab_apis::exampledownload::META.required_env));
 
     #[cfg(feature = "tailscale")]
     list.push((lab_apis::tailscale::META.name, lab_apis::tailscale::META.required_env));
@@ -1597,8 +1597,8 @@ pub fn service_env_checks() -> Vec<(&'static str, &'static [EnvVar])> {
     #[cfg(feature = "unifi")]
     list.push((lab_apis::unifi::META.name, lab_apis::unifi::META.required_env));
 
-    #[cfg(feature = "overseerr")]
-    list.push((lab_apis::overseerr::META.name, lab_apis::overseerr::META.required_env));
+    #[cfg(feature = "examplerequests")]
+    list.push((lab_apis::examplerequests::META.name, lab_apis::examplerequests::META.required_env));
 
     #[cfg(feature = "gotify")]
     list.push((lab_apis::gotify::META.name, lab_apis::gotify::META.required_env));
@@ -1671,12 +1671,12 @@ mod tests {
     }
 
     #[test]
-    fn service_env_checks_includes_radarr_when_enabled() {
+    fn service_env_checks_includes_examplemovies_when_enabled() {
         let checks = service_env_checks();
-        #[cfg(feature = "radarr")]
+        #[cfg(feature = "examplemovies")]
         assert!(
-            checks.iter().any(|(name, _)| *name == "radarr"),
-            "radarr must appear in doctor checks when radarr feature is enabled"
+            checks.iter().any(|(name, _)| *name == "examplemovies"),
+            "examplemovies must appear in doctor checks when examplemovies feature is enabled"
         );
     }
 }
@@ -1728,18 +1728,18 @@ pub async fn run(format: OutputFormat) -> Result<ExitCode> {
 
     rows.push(extract_row().await);
 
-    #[cfg(feature = "radarr")]
-    rows.push(radarr_row().await);
+    #[cfg(feature = "examplemovies")]
+    rows.push(examplemovies_row().await);
 
     // All other services are stubs — report not-configured until wired.
     // Remove a service from this list when its client_from_env() is implemented.
     for svc in [
-        #[cfg(feature = "sonarr")] "sonarr",
-        #[cfg(feature = "prowlarr")] "prowlarr",
-        #[cfg(feature = "plex")] "plex",
-        #[cfg(feature = "tautulli")] "tautulli",
-        #[cfg(feature = "sabnzbd")] "sabnzbd",
-        #[cfg(feature = "qbittorrent")] "qbittorrent",
+        #[cfg(feature = "exampleseries")] "exampleseries",
+        #[cfg(feature = "exampleindexer")] "exampleindexer",
+        #[cfg(feature = "examplemedia")] "examplemedia",
+        #[cfg(feature = "examplemetrics")] "examplemetrics",
+        #[cfg(feature = "exampleusenet")] "exampleusenet",
+        #[cfg(feature = "exampledownload")] "exampledownload",
         #[cfg(feature = "tailscale")] "tailscale",
         #[cfg(feature = "linkding")] "linkding",
         #[cfg(feature = "memos")] "memos",
@@ -1748,7 +1748,7 @@ pub async fn run(format: OutputFormat) -> Result<ExitCode> {
         #[cfg(feature = "arcane")] "arcane",
         #[cfg(feature = "unraid")] "unraid",
         #[cfg(feature = "unifi")] "unifi",
-        #[cfg(feature = "overseerr")] "overseerr",
+        #[cfg(feature = "examplerequests")] "examplerequests",
         #[cfg(feature = "gotify")] "gotify",
         #[cfg(feature = "openai")] "openai",
         #[cfg(feature = "qdrant")] "qdrant",
@@ -1774,24 +1774,24 @@ async fn extract_row() -> HealthRow {
     }
 }
 
-#[cfg(feature = "radarr")]
-async fn radarr_row() -> HealthRow {
+#[cfg(feature = "examplemovies")]
+async fn examplemovies_row() -> HealthRow {
     use lab_apis::core::ServiceClient;
 
-    let Some(client) = crate::mcp::services::radarr::client_from_env() else {
+    let Some(client) = crate::mcp::services::examplemovies::client_from_env() else {
         return HealthRow {
-            service: "radarr".into(),
+            service: "examplemovies".into(),
             reachable: false,
             auth_ok: false,
             version: None,
             latency_ms: 0,
-            message: Some("RADARR_URL / RADARR_API_KEY not set".into()),
+            message: Some("EXAMPLEMOVIES_URL / EXAMPLEMOVIES_API_KEY not set".into()),
         };
     };
 
     match <_ as ServiceClient>::health(&client).await {
         Ok(s) => HealthRow {
-            service: "radarr".into(),
+            service: "examplemovies".into(),
             reachable: s.reachable,
             auth_ok: s.auth_ok,
             version: s.version,
@@ -1799,7 +1799,7 @@ async fn radarr_row() -> HealthRow {
             message: s.message,
         },
         Err(e) => HealthRow {
-            service: "radarr".into(),
+            service: "examplemovies".into(),
             reachable: false,
             auth_ok: false,
             version: None,
@@ -1840,13 +1840,13 @@ rtk git commit -m "feat(cli): make doctor and health generic over all services"
 **Files:**
 - Create: `crates/lab/src/api/services.rs`
 - Create: `crates/lab/src/api/services/extract.rs`
-- Create: `crates/lab/src/api/services/radarr.rs`
+- Create: `crates/lab/src/api/services/examplemovies.rs`
 - Create: `crates/lab/src/api/services/<stub>.rs` — 19 stubs
 - Modify: `crates/lab/src/api.rs`
 - Modify: `crates/lab/src/api/router.rs`
 - Modify: `crates/lab/src/api/state.rs`
 
-The current router has `GET /v1/radarr/system/status` — an individual endpoint. The CLAUDE.md specifies `POST /v1/<service>` with `{ "action": "...", "params": {} }` dispatch, mirroring the MCP surface exactly. Rework the router to this shape.
+The current router has `GET /v1/examplemovies/system/status` — an individual endpoint. The CLAUDE.md specifies `POST /v1/<service>` with `{ "action": "...", "params": {} }` dispatch, mirroring the MCP surface exactly. Rework the router to this shape.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1905,26 +1905,26 @@ Create `crates/lab/src/api/services.rs`:
 
 pub mod extract;
 
-#[cfg(feature = "radarr")]
-pub mod radarr;
+#[cfg(feature = "examplemovies")]
+pub mod examplemovies;
 
-#[cfg(feature = "sonarr")]
-pub mod sonarr;
+#[cfg(feature = "exampleseries")]
+pub mod exampleseries;
 
-#[cfg(feature = "prowlarr")]
-pub mod prowlarr;
+#[cfg(feature = "exampleindexer")]
+pub mod exampleindexer;
 
-#[cfg(feature = "plex")]
-pub mod plex;
+#[cfg(feature = "examplemedia")]
+pub mod examplemedia;
 
-#[cfg(feature = "tautulli")]
-pub mod tautulli;
+#[cfg(feature = "examplemetrics")]
+pub mod examplemetrics;
 
-#[cfg(feature = "sabnzbd")]
-pub mod sabnzbd;
+#[cfg(feature = "exampleusenet")]
+pub mod exampleusenet;
 
-#[cfg(feature = "qbittorrent")]
-pub mod qbittorrent;
+#[cfg(feature = "exampledownload")]
+pub mod exampledownload;
 
 #[cfg(feature = "tailscale")]
 pub mod tailscale;
@@ -1950,8 +1950,8 @@ pub mod unraid;
 #[cfg(feature = "unifi")]
 pub mod unifi;
 
-#[cfg(feature = "overseerr")]
-pub mod overseerr;
+#[cfg(feature = "examplerequests")]
+pub mod examplerequests;
 
 #[cfg(feature = "gotify")]
 pub mod gotify;
@@ -2011,14 +2011,14 @@ async fn handle(
 }
 ```
 
-- [ ] **Step 5: Create the radarr HTTP handler**
+- [ ] **Step 5: Create the examplemovies HTTP handler**
 
-Create `crates/lab/src/api/services/radarr.rs`:
+Create `crates/lab/src/api/services/examplemovies.rs`:
 
 ```rust
-//! HTTP route group for the `radarr` service.
+//! HTTP route group for the `examplemovies` service.
 //!
-//! POST /v1/radarr — dispatches to `mcp::services::radarr::dispatch`.
+//! POST /v1/examplemovies — dispatches to `mcp::services::examplemovies::dispatch`.
 
 use axum::{Json, Router, extract::State, routing::post};
 use serde::Deserialize;
@@ -2026,7 +2026,7 @@ use serde_json::Value;
 
 use super::super::{error::ApiResult, state::AppState};
 
-/// Request body for `POST /v1/radarr`.
+/// Request body for `POST /v1/examplemovies`.
 #[derive(Debug, Deserialize)]
 pub struct ActionRequest {
     pub action: String,
@@ -2034,7 +2034,7 @@ pub struct ActionRequest {
     pub params: Value,
 }
 
-/// Build the radarr route group.
+/// Build the examplemovies route group.
 #[must_use]
 pub fn routes(state: AppState) -> Router {
     Router::new()
@@ -2046,7 +2046,7 @@ async fn handle(
     State(_state): State<AppState>,
     Json(req): Json<ActionRequest>,
 ) -> ApiResult<Json<Value>> {
-    let result = crate::mcp::services::radarr::dispatch(&req.action, req.params)
+    let result = crate::mcp::services::examplemovies::dispatch(&req.action, req.params)
         .await
         .map_err(|e| super::super::error::ApiError::Internal(e.to_string()))?;
     Ok(Json(result))
@@ -2059,7 +2059,7 @@ async fn handle(
 cd /home/jmagar/workspace/lab
 mkdir -p crates/lab/src/api/services
 
-SERVICES=(sonarr prowlarr plex tautulli sabnzbd qbittorrent tailscale linkding memos bytestash paperless arcane unraid unifi overseerr gotify openai qdrant tei apprise)
+SERVICES=(exampleseries exampleindexer examplemedia examplemetrics exampleusenet exampledownload tailscale linkding memos bytestash paperless arcane unraid unifi examplerequests gotify openai qdrant tei apprise)
 
 for svc in "${SERVICES[@]}"; do
 cat > "crates/lab/src/api/services/${svc}.rs" << RUST
@@ -2153,39 +2153,39 @@ pub fn build_router(state: AppState) -> Router {
     // extract is always-on.
     router = router.nest("/v1/extract", services::extract::routes(state.clone()));
 
-    #[cfg(feature = "radarr")]
+    #[cfg(feature = "examplemovies")]
     {
-        router = router.nest("/v1/radarr", services::radarr::routes(state.clone()));
+        router = router.nest("/v1/examplemovies", services::examplemovies::routes(state.clone()));
     }
 
-    #[cfg(feature = "sonarr")]
+    #[cfg(feature = "exampleseries")]
     {
-        router = router.nest("/v1/sonarr", services::sonarr::routes(state.clone()));
+        router = router.nest("/v1/exampleseries", services::exampleseries::routes(state.clone()));
     }
 
-    #[cfg(feature = "prowlarr")]
+    #[cfg(feature = "exampleindexer")]
     {
-        router = router.nest("/v1/prowlarr", services::prowlarr::routes(state.clone()));
+        router = router.nest("/v1/exampleindexer", services::exampleindexer::routes(state.clone()));
     }
 
-    #[cfg(feature = "plex")]
+    #[cfg(feature = "examplemedia")]
     {
-        router = router.nest("/v1/plex", services::plex::routes(state.clone()));
+        router = router.nest("/v1/examplemedia", services::examplemedia::routes(state.clone()));
     }
 
-    #[cfg(feature = "tautulli")]
+    #[cfg(feature = "examplemetrics")]
     {
-        router = router.nest("/v1/tautulli", services::tautulli::routes(state.clone()));
+        router = router.nest("/v1/examplemetrics", services::examplemetrics::routes(state.clone()));
     }
 
-    #[cfg(feature = "sabnzbd")]
+    #[cfg(feature = "exampleusenet")]
     {
-        router = router.nest("/v1/sabnzbd", services::sabnzbd::routes(state.clone()));
+        router = router.nest("/v1/exampleusenet", services::exampleusenet::routes(state.clone()));
     }
 
-    #[cfg(feature = "qbittorrent")]
+    #[cfg(feature = "exampledownload")]
     {
-        router = router.nest("/v1/qbittorrent", services::qbittorrent::routes(state.clone()));
+        router = router.nest("/v1/exampledownload", services::exampledownload::routes(state.clone()));
     }
 
     #[cfg(feature = "tailscale")]
@@ -2228,9 +2228,9 @@ pub fn build_router(state: AppState) -> Router {
         router = router.nest("/v1/unifi", services::unifi::routes(state.clone()));
     }
 
-    #[cfg(feature = "overseerr")]
+    #[cfg(feature = "examplerequests")]
     {
-        router = router.nest("/v1/overseerr", services::overseerr::routes(state.clone()));
+        router = router.nest("/v1/examplerequests", services::examplerequests::routes(state.clone()));
     }
 
     #[cfg(feature = "gotify")]
@@ -2291,7 +2291,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 10: Simplify `AppState` — remove Radarr-specific field**
+- [ ] **Step 10: Simplify `AppState` — remove ExampleMovies-specific field**
 
 The API handlers now call `mcp::services::<s>::dispatch()` directly (which calls `client_from_env()` inline), so `AppState` doesn't need to hold individual service clients. Replace `crates/lab/src/api/state.rs` with:
 
@@ -2395,5 +2395,5 @@ gh pr create --title "feat: core CLI completion — all 21 services wired, docto
 - doctor and health iterate services generically from META
 - HTTP API overhauled from individual endpoint routes to POST /v1/<service> action dispatch
 - AppState simplified (clients constructed per-request via client_from_env)
-- Radarr CLI shim added as reference implementation"
+- ExampleMovies CLI shim added as reference implementation"
 ```

@@ -23,7 +23,7 @@ built binary into the local PATH and the Incus gateway container.
 A single-repo CI investigation (`lab`'s `release-please` and `OpenWiki` workflows both
 failing) grew into: (1) a fleet-wide rollout of the OpenWiki fix across ~20 repos plus 12
 new operator docs in `~/docs`, (2) a full chezmoi dotfiles reconciliation including
-retiring `.rustarr`/`.lab` in favor of `.yarr`/`.labby`, (3) diagnosing and fixing a
+retiring `.exampleclient`/`.lab` in favor of `.examplegateway`/`.labby`, (3) diagnosing and fixing a
 self-hosted GitHub Actions runner on `steamy` that was dying whenever its console window
 closed, and (4) a deep, verified-against-source-code fix for `release-please`'s
 incompatibility with this repo's Cargo workspace structure, ending in a real `v1.0.0`
@@ -47,7 +47,7 @@ release built, tagged, and synced onto the local machine and the Incus container
    sync, new-repo-setup checklist), build a combined `.gitignore` reference, and SSH into
    `squirts` to document the remote Dolt server backing `beads`.
 5. **Dispatched 9 parallel research agents** (OpenWiki+beads/Dolt, squirts SSH review,
-   lavra, yarr-rmcp node packaging + xtask/mcporter, template-rmcp xtask patterns +
+   lavra, examplegateway-rmcp node packaging + xtask/mcporter, template-rmcp xtask patterns +
    other patterns, axon CI path-gating, MCP registry docs, no-mcp branch sync x2) while
    directly executing the mechanical rollout (14 direct-push repos, `axon` via
    [PR #390](https://github.com/jmagar/axon/pull/390) since its `main` is protected,
@@ -65,9 +65,9 @@ release built, tagged, and synced onto the local machine and the Incus container
    (`.cargo/config.toml`, `.ssh/config`, `.npmrc`, `.codex/.credentials.json`, etc.),
    confirmed live-newer-than-source via mtime before `re-add`ing each, skipped
    `fzf-git.sh` (externally pinned, not a re-add candidate), ran two pending
-   `run_onchange` scripts manually, left one cosmetic `.rustarr` permission-mode
+   `run_onchange` scripts manually, left one cosmetic `.exampleclient` permission-mode
    mismatch unresolved (flagged, not fixed).
-10. **User retired `.rustarr`/`.lab`, added `.yarr`/`.labby`** — `chezmoi forget`
+10. **User retired `.exampleclient`/`.lab`, added `.examplegateway`/`.labby`** — `chezmoi forget`
     (unmanage, not delete) on the old dirs, `chezmoi add --encrypt` on the new dirs'
     config/`.env` files only (not the full multi-hundred-MB runtime directories).
 11. **User asked for repo status again** — CI on `lab` was stuck `queued` for hours;
@@ -150,10 +150,10 @@ release built, tagged, and synced onto the local machine and the Incus container
   (`System.Threading.Tasks.TaskCanceledException` / "Runner execution been cancelled").
   It had no supervision/auto-restart, unlike the working `rmcp-template` runner on the
   same machine, which uses a hidden VBScript + `run-loop.cmd` pattern.
-- `~/.rustarr` had genuinely diverged live-vs-source permission bits (`750`/`640` live vs.
+- `~/.exampleclient` had genuinely diverged live-vs-source permission bits (`750`/`640` live vs.
   chezmoi's declared `private_` target of `700`/`644`) — likely intentional for a
   systemd service's group-read access. Left unresolved rather than guessed at (now moot,
-  `.rustarr` was subsequently retired by the user in favor of `.yarr`).
+  `.exampleclient` was subsequently retired by the user in favor of `.examplegateway`).
 
 ## Technical Decisions
 
@@ -167,7 +167,7 @@ release built, tagged, and synced onto the local machine and the Incus container
   trusting it in CI, and validated the `release-please` config change against a real
   pushed throwaway branch (not local files) before pushing to `main`, after two prior
   guesses had already cost real CI cycles.
-- Did not force through the `.rustarr` permission-mode diff during chezmoi reconciliation
+- Did not force through the `.exampleclient` permission-mode diff during chezmoi reconciliation
   — applying it would have loosened `Cargo.lock`-adjacent-secret-file permissions
   (`640→644`) without understanding why the live value was more restrictive.
 - Skipped `memos` in the OpenWiki fleet rollout rather than guessing at a fork remote —
@@ -236,7 +236,7 @@ its own tracked issue.
 - **File tools (Read/Edit/Write)**: config/workflow edits across `lab` and doc authoring
   under `~/docs`.
 - **Agent tool (parallel research)**: 9 concurrent research agents dispatched for the
-  fleet-documentation task (OpenWiki/beads/Dolt, squirts SSH, lavra, yarr-rmcp packaging
+  fleet-documentation task (OpenWiki/beads/Dolt, squirts SSH, lavra, examplegateway-rmcp packaging
   + testing, template-rmcp xtask + patterns, axon CI gating, MCP registry docs, no-mcp
   branch sync ×2). All completed successfully; no failures or retries needed.
 - **`computer-use` MCP**: attempted first for the `steamy` runner investigation; the user
@@ -313,8 +313,8 @@ its own tracked issue.
 | `release.yml` "Create Release" job | Failed whenever the release already existed (i.e. always, now that `release-please` pre-creates it) | Uploads build artifacts to the existing release without attempting an invalid `edit --generate-notes` |
 | `labby` binary (local + Incus container) | `0.30.0` | `1.0.0`, verified matching on both |
 | `~/docs` | No dedicated OpenWiki/beads/lavra/xtask/MCP-registry/no-mcp docs existed | 12 new docs + combined `.gitignore` live and chezmoi-tracked |
-| `.rustarr` / `.lab` (dotfiles) | chezmoi-managed | Unmanaged (live directories untouched, safe to delete later) |
-| `.yarr` / `.labby` (dotfiles) | Unmanaged | Config/`.env` files tracked, encrypted |
+| `.exampleclient` / `.lab` (dotfiles) | chezmoi-managed | Unmanaged (live directories untouched, safe to delete later) |
+| `.examplegateway` / `.labby` (dotfiles) | Unmanaged | Config/`.env` files tracked, encrypted |
 
 ## Verification Evidence
 
@@ -355,10 +355,10 @@ its own tracked issue.
   (rather than `version.workspace = true`) — would have made `release-type: "rust"` work
   natively, but is a much larger, invasive change across 11 crates with no clear benefit
   over the chosen fix.
-- **Force-applying the `.rustarr` chezmoi permission-mode diff** during dotfiles
+- **Force-applying the `.exampleclient` chezmoi permission-mode diff** during dotfiles
   reconciliation — declined because it would have loosened permissions on a
   secrets-adjacent file without understanding why the live value was more restrictive
-  (moot now that `.rustarr` has since been retired).
+  (moot now that `.exampleclient` has since been retired).
 - **Wiring up `memos`'s OpenWiki workflow** — declined; its git remote points at the
   upstream `usememos/memos` project, not the user's own fork, so pushing there would have
   affected a third-party public repository.

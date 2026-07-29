@@ -2,13 +2,9 @@ import {
   Activity,
   Bell,
   Bot,
-  Boxes,
-  Download,
   FileText,
-  Film,
   Network,
   PlugZap,
-  Search,
   StickyNote,
   Terminal,
   type LucideIcon,
@@ -19,10 +15,6 @@ import type { LauncherEntry } from "@/lib/launcherCatalog";
 // Category → icon. Labby's catalog categories are one of a fixed set (see
 // PluginMeta::Category); anything unknown falls back to a generic terminal glyph.
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
-  media: Film,
-  servarr: Boxes,
-  indexer: Search,
-  download: Download,
   notes: StickyNote,
   documents: FileText,
   network: Network,

@@ -896,7 +896,7 @@ mod tests {
     fn namespace_tokens_track_enabled_upstreams_and_hints() {
         let tokens = code_mode_namespace_tokens(&config(vec![
             upstream("github", true, Some("search repositories")),
-            upstream("rustarr", true, None),
+            upstream("gateway-alpha", true, None),
             upstream("disabled", false, Some("ignored")),
         ]));
 
@@ -907,7 +907,7 @@ mod tests {
                 .iter()
                 .any(|t| t.contains("github") && t.contains("search repositories"))
         );
-        assert!(tokens.iter().any(|t| t.contains("rustarr")));
+        assert!(tokens.iter().any(|t| t.contains("gateway-alpha")));
         assert!(!tokens.iter().any(|t| t.contains("disabled")));
     }
 
@@ -919,7 +919,7 @@ mod tests {
         let before = code_mode_namespace_tokens(&config(vec![upstream("github", true, None)]));
         let after = code_mode_namespace_tokens(&config(vec![
             upstream("github", true, None),
-            upstream("rustarr", true, None),
+            upstream("gateway-alpha", true, None),
         ]));
 
         assert!(diff_catalogs(&snapshot(before), &snapshot(after)).tools_changed);
@@ -943,7 +943,7 @@ mod tests {
         // so the Code-Mode reconcile diff reports no change — no `tools/list_changed`.
         let tokens = code_mode_namespace_tokens(&config(vec![
             upstream("github", true, Some("search repositories")),
-            upstream("rustarr", true, None),
+            upstream("gateway-alpha", true, None),
         ]));
 
         assert!(!diff_catalogs(&snapshot(tokens.clone()), &snapshot(tokens)).tools_changed);
@@ -954,7 +954,7 @@ mod tests {
         let before = code_mode_namespace_tokens(&config(vec![upstream("github", true, None)]));
         let mut after = code_mode_namespace_tokens(&config(vec![
             upstream("github", true, None),
-            upstream("rustarr", true, Some("manage media")),
+            upstream("gateway-alpha", true, Some("manage status")),
         ]));
         after.insert("youtube_search_ui".to_string());
 
@@ -962,7 +962,7 @@ mod tests {
 
         // The namespace token must render as a bare upstream name, not the raw
         // `\u{1}`-delimited sentinel, and must not be mistaken for a tool.
-        assert_eq!(delta.namespaces_added, vec!["rustarr".to_string()]);
+        assert_eq!(delta.namespaces_added, vec!["gateway-alpha".to_string()]);
         assert_eq!(delta.added, vec!["youtube_search_ui".to_string()]);
         assert!(delta.removed.is_empty());
         assert!(delta.namespaces_removed.is_empty());

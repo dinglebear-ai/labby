@@ -38,10 +38,10 @@ fn run_action_prompt() -> Prompt {
         Some("Execute a lab service action with structured parameters".to_string()),
         Some(vec![
             PromptArgument::new("service")
-                .with_description("Service name (e.g. radarr, sonarr)")
+                .with_description("Service name (e.g. gateway, snippets)")
                 .with_required(true),
             PromptArgument::new("action")
-                .with_description("Action to perform (e.g. movie.search)")
+                .with_description("Action to perform (e.g. status.get)")
                 .with_required(true),
             PromptArgument::new("params")
                 .with_description("JSON parameters for the action")
@@ -220,33 +220,33 @@ mod tests {
     use serde_json::Value;
     use std::collections::HashMap;
 
-    const SEARCH_PARAMS: &[ParamSpec] = &[
+    const STATUS_PARAMS: &[ParamSpec] = &[
         ParamSpec {
-            name: "query",
+            name: "detail",
             ty: "string",
             required: true,
-            description: "Movie title to search for",
+            description: "Status detail to retrieve",
         },
         ParamSpec {
             name: "limit",
             ty: "integer",
             required: false,
-            description: "Maximum results to return",
+            description: "Maximum entries to return",
         },
     ];
 
     const ACTIONS: &[ActionSpec] = &[
         ActionSpec {
-            name: "movie.search",
-            description: "Search Radarr for movies",
+            name: "status.get",
+            description: "Get Gateway alpha status",
             destructive: false,
             requires_admin: false,
-            params: SEARCH_PARAMS,
-            returns: "MovieSearchResult[]",
+            params: STATUS_PARAMS,
+            returns: "StatusResult[]",
         },
         ActionSpec {
-            name: "movie.delete",
-            description: "Delete a movie from Radarr",
+            name: "status.reset",
+            description: "Reset Gateway alpha status",
             destructive: true,
             requires_admin: false,
             params: &[],
@@ -257,9 +257,9 @@ mod tests {
     fn registry() -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.register(RegisteredService {
-            name: "radarr",
-            description: "Manage movies and Radarr queues",
-            category: "media",
+            name: "gateway-alpha",
+            description: "Manage Gateway alpha status",
+            category: "network",
             kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
             status: "available",
             actions: ACTIONS,
@@ -278,32 +278,32 @@ mod tests {
     #[test]
     fn run_action_prompt_includes_catalog_context() {
         let mut args = HashMap::new();
-        args.insert("service".to_string(), "radarr".to_string());
-        args.insert("action".to_string(), "movie.search".to_string());
+        args.insert("service".to_string(), "gateway-alpha".to_string());
+        args.insert("action".to_string(), "status.get".to_string());
 
         let prompt = get(&registry(), "run-action", &args).expect("prompt should exist");
         let text = serde_json::to_string(&prompt.messages).expect("messages serialize");
 
-        assert!(text.contains("Manage movies and Radarr queues"));
-        assert!(text.contains("query:string (required, Movie title to search for)"));
-        assert!(text.contains("limit:integer (optional, Maximum results to return)"));
+        assert!(text.contains("Manage Gateway alpha status"));
+        assert!(text.contains("detail:string (required, Status detail to retrieve)"));
+        assert!(text.contains("limit:integer (optional, Maximum entries to return)"));
         assert!(text.contains("Built-in discovery actions are always available"));
         assert!(text.contains("schema"));
-        assert!(text.contains("movie.search"));
+        assert!(text.contains("status.get"));
     }
 
     #[test]
     fn service_discover_prompt_inlines_action_catalog() {
         let mut args = HashMap::new();
-        args.insert("service".to_string(), "radarr".to_string());
+        args.insert("service".to_string(), "gateway-alpha".to_string());
 
         let prompt = get(&registry(), "service-discover", &args).expect("prompt should exist");
         let text = serde_json::to_string(&prompt.messages).expect("messages serialize");
 
         assert!(text.contains("Inline action catalog"));
-        assert!(text.contains("`movie.search`: Search Radarr for movies [read-only]"));
-        assert!(text.contains("`movie.delete`: Delete a movie from Radarr [destructive]"));
+        assert!(text.contains("`status.get`: Get Gateway alpha status [read-only]"));
+        assert!(text.contains("`status.reset`: Reset Gateway alpha status [destructive]"));
         assert!(text.contains("schema"));
-        assert!(!text.contains("First, call `radarr` with action `help`"));
+        assert!(!text.contains("First, call `gateway_alpha` with action `help`"));
     }
 }

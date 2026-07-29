@@ -126,12 +126,12 @@ Active plan path: `/home/jmagar/workspace/lab/docs/superpowers/plans/2026-04-25-
 1. Ran `bd show lab-bg3e.1` and confirmed the locked design decisions for `UiSchema`, `EnvVar.ui`, `PluginMeta.supports_multi_instance`, audit enforcement, scaffold updates, and Bootstrap doc drift.
 2. Read `superpowers:using-superpowers`, `superpowers:writing-plans`, and, after a verification command failed, `superpowers:systematic-debugging`.
 3. Inspected current metadata state and found partial implementation already existed: `EnvVar.ui`, `PluginMeta.supports_multi_instance`, and a non-locked `plugin_ui.rs` shape.
-4. Identified the bead-covered 23-service scope as `radarr`, `sonarr`, `prowlarr`, `overseerr`, `tautulli`, `arcane`, `plex`, `sabnzbd`, `qbittorrent`, `unifi`, `qdrant`, `tei`, `tailscale`, `apprise`, `gotify`, `bytestash`, `linkding`, `memos`, `openai`, `paperless`, `unraid`, `extract`, and `device_runtime`.
+4. Identified the bead-covered 23-service scope as `examplemovies`, `exampleseries`, `exampleindexer`, `examplerequests`, `examplemetrics`, `arcane`, `examplemedia`, `exampleusenet`, `exampledownload`, `unifi`, `qdrant`, `tei`, `tailscale`, `apprise`, `gotify`, `bytestash`, `linkding`, `memos`, `openai`, `paperless`, `unraid`, `extract`, and `device_runtime`.
 5. Created the implementation plan at `/home/jmagar/workspace/lab/docs/superpowers/plans/2026-04-25-lab-bg3e1-completion.md`.
 6. Replaced the partial `UiSchema` shape with the bead-locked const-friendly shape and added file path validation tests in `crates/lab-apis/src/core/plugin_ui.rs:11`.
 7. Added onboarding audit checks for `supports_multi_instance`, `EnvVar.ui: Some(...)`, and `help_url` scheme validation in `crates/lab/src/audit/checks/ui_schema.rs:7`.
 8. Updated scaffold output to emit explicit `EnvVar.ui` metadata and `supports_multi_instance` in `crates/lab/src/scaffold/templates/lab_apis_service.tpl:38`.
-9. Filled remaining `ui: None` metadata in ACP and tightened optional-field schemas in qBittorrent and MCP Registry.
+9. Filled remaining `ui: None` metadata in ACP and tightened optional-field schemas in exampledownload and MCP Registry.
 10. Updated stale Bootstrap docs in `crates/lab-apis/src/extract/CLAUDE.md:46` and `crates/lab-apis/CLAUDE.md:3`.
 11. Ran metadata, targeted Rust, audit CLI, and build verification.
 12. Wrote this report.
@@ -162,7 +162,7 @@ Active plan path: `/home/jmagar/workspace/lab/docs/superpowers/plans/2026-04-25-
 - `crates/lab/src/audit/onboarding.rs` - included UI schema checks in service reports.
 - `crates/lab/src/scaffold/templates/lab_apis_service.tpl` - scaffold now emits explicit `EnvVar.ui` metadata and `supports_multi_instance`.
 - `crates/lab-apis/src/acp.rs` - replaced `ui: None` with optional text/secret schema constants.
-- `crates/lab-apis/src/qbittorrent.rs` - changed optional username env var to optional text schema.
+- `crates/lab-apis/src/exampledownload.rs` - changed optional username env var to optional text schema.
 - `crates/lab-apis/src/mcpregistry.rs` - changed optional registry URL env var to optional URL schema.
 - `crates/lab-apis/src/extract/CLAUDE.md` - retired stale Bootstrap-only category wording.
 - `crates/lab-apis/CLAUDE.md` - updated feature-count and always-on module wording.
@@ -182,7 +182,7 @@ Active plan path: `/home/jmagar/workspace/lab/docs/superpowers/plans/2026-04-25-
 - `cargo test -p lab ui_schema --all-features`; failed because package name `lab` was ambiguous.
 - `cargo test --manifest-path crates/lab/Cargo.toml ui_schema --all-features`; failed due unrelated `crates/lab/tests/logs_api.rs` compile errors.
 - `cargo test --manifest-path crates/lab/Cargo.toml --lib ui_schema --all-features`; passed.
-- `cargo run --manifest-path crates/lab/Cargo.toml --all-features -- audit onboarding radarr mcpregistry --json`; metadata checks passed, command exited `1` due unrelated generic onboarding failures.
+- `cargo run --manifest-path crates/lab/Cargo.toml --all-features -- audit onboarding examplemovies mcpregistry --json`; metadata checks passed, command exited `1` due unrelated generic onboarding failures.
 - `cargo build --all-features`; failed due unrelated `crates/lab/src/dispatch/marketplace/update.rs` compile errors.
 - `cargo build -p lab-apis --all-features`; passed.
 - `cargo build --manifest-path crates/lab/Cargo.toml --all-features`; failed due unrelated `crates/lab/src/dispatch/marketplace/update.rs` compile errors.
@@ -237,7 +237,7 @@ test audit::checks::ui_schema::tests::ui_schema_check_passes_when_all_env_vars_h
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 793 filtered out
 ```
 
-`cargo run --manifest-path crates/lab/Cargo.toml --all-features -- audit onboarding radarr mcpregistry --json`:
+`cargo run --manifest-path crates/lab/Cargo.toml --all-features -- audit onboarding examplemovies mcpregistry --json`:
 
 ```text
 metadata.supports_multi_instance: Pass
@@ -282,7 +282,7 @@ FAILED: crates/lab/src/dispatch/marketplace/update.rs E0308, E0277, E0282
 - Audit check: `crates/lab/src/audit/checks/ui_schema.rs:7`.
 - Scaffold metadata: `crates/lab/src/scaffold/templates/lab_apis_service.tpl:38`.
 - ACP metadata fill: `crates/lab-apis/src/acp.rs:40`.
-- qBittorrent optional username schema: `crates/lab-apis/src/qbittorrent.rs:49`.
+- exampledownload optional username schema: `crates/lab-apis/src/exampledownload.rs:49`.
 - MCP Registry optional URL schema: `crates/lab-apis/src/mcpregistry.rs:30`.
 - Bootstrap doc update: `crates/lab-apis/src/extract/CLAUDE.md:46`.
 - lab-apis doc update: `crates/lab-apis/CLAUDE.md:3`.

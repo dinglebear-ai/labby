@@ -5,8 +5,8 @@
 # Prints a one-line pass/fail per service with HTTP status + latency.
 #
 # Usage:  bin/health-check                # checks all configured services
-#         bin/health-check radarr         # quiet solo check
-#         bin/health-check radarr plex    # check only specified
+#         bin/health-check unifi          # quiet solo check
+#         bin/health-check unifi tailscale # check only specified
 #         bin/health-check -v             # verbose (show curl errors + body)
 
 set -euo pipefail
@@ -154,24 +154,6 @@ if [ "$SOLO_MODE" -eq 0 ]; then
     echo "labby health-check  ${D}($ENV_FILE)${N}"
     echo
 fi
-
-# ── Servarr stack ─────────────────────────────────────────────────────────────
-launch_probe radarr   "${RADARR_URL:-}/api/v3/system/status"     -H "X-Api-Key: ${RADARR_API_KEY:-}"
-launch_probe sonarr   "${SONARR_URL:-}/api/v3/system/status"     -H "X-Api-Key: ${SONARR_API_KEY:-}"
-launch_probe prowlarr "${PROWLARR_URL:-}/api/v1/system/status"   -H "X-Api-Key: ${PROWLARR_API_KEY:-}"
-
-# ── Media ─────────────────────────────────────────────────────────────────────
-launch_probe plex      "${PLEX_URL:-}/identity"                  -H "X-Plex-Token: ${PLEX_TOKEN:-}" -H "Accept: application/json"
-launch_probe tautulli "${TAUTULLI_URL:-}/api/v2" -G \
-    --data-urlencode "apikey=${TAUTULLI_API_KEY:-}" \
-    --data-urlencode "cmd=status"
-
-# ── Downloaders ───────────────────────────────────────────────────────────────
-launch_probe sabnzbd     "${SABNZBD_URL:-}/api?mode=version&output=json&apikey=${SABNZBD_API_KEY:-}"
-launch_probe qbittorrent "${QBITTORRENT_URL:-}/api/v2/auth/login" \
-    --data-urlencode "username=${QBITTORRENT_USERNAME:-}" \
-    --data-urlencode "password=${QBITTORRENT_PASSWORD:-}" \
-    -H "Referer: ${QBITTORRENT_URL:-}"
 
 # ── Network ───────────────────────────────────────────────────────────────────
 launch_probe tailscale "${TAILSCALE_URL:-}/api/v2/tailnet/${TAILSCALE_TAILNET:--}/devices" \

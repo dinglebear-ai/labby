@@ -76,7 +76,7 @@ fn sample_gateway_subset_route(name: &str, path: &str, host: &str) -> ProtectedM
     route.backend_url = String::new();
     route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
         labby_runtime::gateway_config::ProtectedGatewaySubsetTarget {
-            upstreams: vec!["sonarr".to_string()],
+            upstreams: vec!["gateway-alpha".to_string()],
             services: Vec::new(),
             expose_code_mode: false,
         },
@@ -760,13 +760,13 @@ fn insert_protected_route_rejects_duplicate_gateway_subset_path_across_hosts() {
     let mut cfg = GatewayConfig::default();
     insert_protected_mcp_route(
         &mut cfg,
-        sample_gateway_subset_route("media-a", "/media", "mcp-a.example.com"),
+        sample_gateway_subset_route("media-a", "/ops", "mcp-a.example.com"),
     )
     .expect("first");
 
     let err = insert_protected_mcp_route(
         &mut cfg,
-        sample_gateway_subset_route("media-b", "/media", "mcp-b.example.com"),
+        sample_gateway_subset_route("media-b", "/ops", "mcp-b.example.com"),
     )
     .expect_err("scoped MCP router is mounted by path, so duplicate subset paths fail");
 
@@ -777,8 +777,8 @@ fn insert_protected_route_rejects_duplicate_gateway_subset_path_across_hosts() {
 #[test]
 fn validate_protected_route_rejects_duplicate_gateway_subset_path_across_hosts() {
     let routes = vec![
-        sample_gateway_subset_route("media-a", "/media", "mcp-a.example.com"),
-        sample_gateway_subset_route("media-b", "/media", "mcp-b.example.com"),
+        sample_gateway_subset_route("media-a", "/ops", "mcp-a.example.com"),
+        sample_gateway_subset_route("media-b", "/ops", "mcp-b.example.com"),
     ];
 
     let err = validate_protected_mcp_routes(&routes)
@@ -1181,7 +1181,12 @@ fn insert_upstream_rejects_bidi_override_in_name() {
 #[test]
 fn insert_upstream_accepts_valid_names() {
     // Positive test: ensure we didn't over-block valid names.
-    let valid_names = ["my-gateway", "plex.primary", "cursor_mcp", "abc123"];
+    let valid_names = [
+        "my-gateway",
+        "gateway_alpha.primary",
+        "cursor_mcp",
+        "abc123",
+    ];
     for name in &valid_names {
         let mut cfg = GatewayConfig::default();
         insert_upstream(

@@ -4,7 +4,7 @@
 
 **Goal:** Make `cargo clippy --workspace --all-features -- -D warnings` exit cleanly so the lefthook pre-commit hook stops blocking every commit.
 
-**Architecture:** Hybrid approach. Most of the 378 warnings are noise from two rules firing on scaffold code that will be rewritten service-by-service (`missing_docs` on servarr types, `clippy::unused_async` on stubbed `pub async fn foo() { Ok(Vec::new()) }` methods). Relax those two workspace-wide with a TODO to re-enable once services land. Fix everything else — metadata, real quality issues in `http.rs`, a potential truncation bug in `radarr.rs`, and the handful of mechanical fixes in `cli/`, `api/error.rs`, `config.rs`, and `extract/transport.rs`.
+**Architecture:** Hybrid approach. Most of the 378 warnings are noise from two rules firing on scaffold code that will be rewritten service-by-service (`missing_docs` on examplesuite types, `clippy::unused_async` on stubbed `pub async fn foo() { Ok(Vec::new()) }` methods). Relax those two workspace-wide with a TODO to re-enable once services land. Fix everything else — metadata, real quality issues in `http.rs`, a potential truncation bug in `examplemovies.rs`, and the handful of mechanical fixes in `cli/`, `api/error.rs`, `config.rs`, and `extract/transport.rs`.
 
 **Tech Stack:** Rust 2024, clippy (pedantic + nursery + cargo), lefthook.
 
@@ -27,22 +27,22 @@ Captured from `cargo clippy --workspace --all-features --all-targets` on commit 
 
 | Count | Rule | Location |
 |------:|------|----------|
-| 228 | `missing_docs` (struct fields) | `crates/lab-apis/src/servarr/types/*` |
-| 52  | `clippy::unused_async` | `extract/transport.rs`, `radarr/client/{movies,queue,indexers,download_clients,tags,history,...}.rs` stubs |
-| 37  | `missing_docs` (enum variants) | `servarr/types/command.rs` and siblings |
-| 23  | `clippy::doc_markdown` | `core/auth.rs`, `core/plugin.rs`, `radarr/**`, `openai/**` (product names without backticks) |
+| 228 | `missing_docs` (struct fields) | `crates/lab-apis/src/examplesuite/types/*` |
+| 52  | `clippy::unused_async` | `extract/transport.rs`, `examplemovies/client/{movies,queue,indexers,download_clients,tags,history,...}.rs` stubs |
+| 37  | `missing_docs` (enum variants) | `examplesuite/types/command.rs` and siblings |
+| 23  | `clippy::doc_markdown` | `core/auth.rs`, `core/plugin.rs`, `examplemovies/**`, `openai/**` (product names without backticks) |
 | 6   | `clippy::cargo_common_metadata` | `lab`, `lab-apis` (readme/keywords/categories × 2 packages) |
 | 5   | `clippy::unnecessary_wraps` | `cli/completions.rs`, `cli/install.rs` |
 | 4   | `clippy::needless_pass_by_value` | `cli/completions.rs`, `cli/install.rs` |
 | 4   | `clippy::used_underscore_binding` | `extract/transport.rs` |
-| 3   | `clippy::expect_used` | `core/http.rs:23`, `tests/http_client.rs:37`, `tests/radarr_health.rs:48` |
+| 3   | `clippy::expect_used` | `core/http.rs:23`, `tests/http_client.rs:37`, `tests/examplemovies_health.rs:48` |
 | 3   | `clippy::missing_const_for_fn` | `extract/types.rs`, `api/error.rs`, `mcp/envelope.rs` |
-| 3   | `clippy::cast_possible_truncation` | `radarr.rs:93` + `radarr.rs:100` (`as_millis() as u64`) |
+| 3   | `clippy::cast_possible_truncation` | `examplemovies.rs:93` + `examplemovies.rs:100` (`as_millis() as u64`) |
 | 2   | `clippy::future_not_send` | `core/http.rs:89` (`post_json<B>` where `B: !Sync`) |
 | 2   | `clippy::match_same_arms` | `api/error.rs:73,75` |
 | 2   | `clippy::missing_panics_doc` | `core/http.rs:19` |
 | 2   | `clippy::collapsible_if` | `config.rs:56, 117` |
-| 2   | `clippy::struct_excessive_bools` | `servarr/types/notification.rs:21`, `servarr/types/system.rs:9` |
+| 2   | `clippy::struct_excessive_bools` | `examplesuite/types/notification.rs:21`, `examplesuite/types/system.rs:9` |
 | ~6  | misc (or_fun_call, unused_qualifications, unnecessary_literal_bound, too_long_first_doc_paragraph, double_must_use) | scattered |
 
 **Total: 378 warnings.**
@@ -60,16 +60,16 @@ Strategy: Task 1 removes 265 (228 + 37) by relaxing `missing_docs`. Task 2 remov
 
 **Modified (real code quality):**
 - `crates/lab-apis/src/core/http.rs` — fix `expect_used`, `future_not_send` (change `post_json<B>` to require `B: Sync`), `missing_panics_doc`.
-- `crates/lab-apis/src/radarr.rs` — fix `cast_possible_truncation` in `ServiceClient::health` by using `.min(u64::MAX as u128)` or `u64::try_from(...).unwrap_or(u64::MAX)`.
-- `crates/lab-apis/src/core/auth.rs`, `crates/lab-apis/src/core/plugin.rs`, `crates/lab-apis/src/radarr/**`, `crates/lab-apis/src/openai/**` — `doc_markdown` backtick fixes.
+- `crates/lab-apis/src/examplemovies.rs` — fix `cast_possible_truncation` in `ServiceClient::health` by using `.min(u64::MAX as u128)` or `u64::try_from(...).unwrap_or(u64::MAX)`.
+- `crates/lab-apis/src/core/auth.rs`, `crates/lab-apis/src/core/plugin.rs`, `crates/lab-apis/src/examplemovies/**`, `crates/lab-apis/src/openai/**` — `doc_markdown` backtick fixes.
 - `crates/lab/src/cli/completions.rs`, `crates/lab/src/cli/install.rs` — drop `Result` wrappers, take args by reference.
 - `crates/lab/src/api/error.rs` — merge duplicate match arms; `const fn` on an eligible method.
 - `crates/lab/src/config.rs` — collapse two nested `if`s.
 - `crates/lab/src/mcp/envelope.rs` — `const fn` on eligible method.
 - `crates/lab-apis/src/extract/types.rs` — `const fn`.
 - `crates/lab-apis/src/extract/transport.rs` — drop underscore prefix from 4 bindings (they're used in `Err(...)` constructors; rename or `#[allow]`).
-- `crates/lab-apis/src/servarr/types/notification.rs`, `crates/lab-apis/src/servarr/types/system.rs` — `#[allow(clippy::struct_excessive_bools)]` on the two offending structs (Radarr's API literally has that many bool flags; refactoring the DTO is the wrong fix).
-- Test files `crates/lab-apis/tests/http_client.rs`, `crates/lab-apis/tests/radarr_health.rs` — replace `.expect("...")` with `.unwrap()` is NOT the answer (both are denied). Add `#![allow(clippy::expect_used)]` at the top of test files.
+- `crates/lab-apis/src/examplesuite/types/notification.rs`, `crates/lab-apis/src/examplesuite/types/system.rs` — `#[allow(clippy::struct_excessive_bools)]` on the two offending structs (ExampleMovies's API literally has that many bool flags; refactoring the DTO is the wrong fix).
+- Test files `crates/lab-apis/tests/http_client.rs`, `crates/lab-apis/tests/examplemovies_health.rs` — replace `.expect("...")` with `.unwrap()` is NOT the answer (both are denied). Add `#![allow(clippy::expect_used)]` at the top of test files.
 
 **Modified (hook):** nothing — `lefthook.yml` already runs the right command. If Task 10 shows clippy clean, the hook just starts passing.
 
@@ -86,7 +86,7 @@ Run at the end of each task unless otherwise noted:
 
 ### Task 1: Relax `missing_docs` workspace-wide
 
-**Why first:** This single change removes 265 of 378 warnings (70%). The `missing_docs` lint is valuable once types are stable, but right now it fires on every scaffold field in `servarr/types/` — most of which will be rewritten per-service. Keeping it on creates a ratchet where every plan must add docstrings to fields it isn't touching, which produces drive-by churn. Turn it off here, add a tracking TODO, and re-enable it in a dedicated documentation pass once all 21 services have landed real types.
+**Why first:** This single change removes 265 of 378 warnings (70%). The `missing_docs` lint is valuable once types are stable, but right now it fires on every scaffold field in `examplesuite/types/` — most of which will be rewritten per-service. Keeping it on creates a ratchet where every plan must add docstrings to fields it isn't touching, which produces drive-by churn. Turn it off here, add a tracking TODO, and re-enable it in a dedicated documentation pass once all 21 services have landed real types.
 
 **Files:**
 - Modify: `Cargo.toml:68` (workspace lints)
@@ -211,13 +211,13 @@ git commit -m "chore(cargo): add readme/keywords/categories metadata"
 
 ### Task 4: `clippy::doc_markdown` — backtick mass fix
 
-**Why:** 23 warnings. Product names (`SABnzbd`, `ByteStash`, `OpenAI`, `OpenAPI`, `qBittorrent`, `Memos`, `Linkding`, `Paperless-ngx`, etc.) appearing in `///` comments without backticks. Clippy wants them backticked so rustdoc formats them as code. Purely mechanical.
+**Why:** 23 warnings. Product names (`ExampleUsenet`, `ByteStash`, `OpenAI`, `OpenAPI`, `exampledownload`, `Memos`, `Linkding`, `Paperless-ngx`, etc.) appearing in `///` comments without backticks. Clippy wants them backticked so rustdoc formats them as code. Purely mechanical.
 
 **Files (23 hit sites, condensed by file):**
 - `crates/lab-apis/src/core/auth.rs:28` — `ByteStash`
-- `crates/lab-apis/src/core/plugin.rs:51,53,…` — `SABnzbd`, `ByteStash`, `Linkding`, `Paperless-ngx`, etc.
-- `crates/lab-apis/src/radarr/client/download_clients.rs:11` — `SABnzbd`
-- `crates/lab-apis/src/radarr/client/quality.rs:32` — `OpenAPI`
+- `crates/lab-apis/src/core/plugin.rs:51,53,…` — `ExampleUsenet`, `ByteStash`, `Linkding`, `Paperless-ngx`, etc.
+- `crates/lab-apis/src/examplemovies/client/download_clients.rs:11` — `ExampleUsenet`
+- `crates/lab-apis/src/examplemovies/client/quality.rs:32` — `OpenAPI`
 - `crates/lab-apis/src/openai/types.rs:11` — `OpenAI`
 - `crates/lab-apis/src/openai/client.rs:9` — `OpenAI`
 - …and ~15 more scattered sites
@@ -234,9 +234,9 @@ For each hit, use the `Edit` tool to wrap the product name in backticks. Example
 
 | Before | After |
 |--------|-------|
-| `/// Usenet download client (SABnzbd, ...).` | ``/// Usenet download client (`SABnzbd`, ...).`` |
+| `/// Usenet download client (ExampleUsenet, ...).` | ``/// Usenet download client (`ExampleUsenet`, ...).`` |
 | `/// Client for the OpenAI API.` | ``/// Client for the `OpenAI` API.`` |
-| `/// See the Radarr OpenAPI spec.` | ``/// See the Radarr `OpenAPI` spec.`` |
+| `/// See the ExampleMovies OpenAPI spec.` | ``/// See the ExampleMovies `OpenAPI` spec.`` |
 | `/// Memos, Linkding, ByteStash.` | ``/// `Memos`, `Linkding`, `ByteStash`.`` |
 
 Clippy's own suggestion output (which the CLI printed) tells you exactly which word to backtick for each line. Follow clippy's suggestion verbatim — do not paraphrase the comment.
@@ -330,7 +330,7 @@ The `+ Sync` bound on `B` is the minimal fix: the future captures `&B` across an
 Run: `cargo clippy --workspace --all-features --all-targets 2>&1 | grep -cE "(expect_used|missing_panics_doc|future_not_send)"`
 Expected: `0` in `core/http.rs` specifically (the 2 remaining `expect_used` hits in the test files are Task 8).
 
-Run: `cargo test -p lab-apis --features "radarr servarr"` — all tests still pass.
+Run: `cargo test -p lab-apis --features "examplemovies examplesuite"` — all tests still pass.
 
 - [ ] **Step 4: Commit.**
 
@@ -341,16 +341,16 @@ git commit -m "fix(http): document panic, allow startup expect, require Sync on 
 
 ---
 
-### Task 6: `radarr.rs` cast truncation (real correctness fix)
+### Task 6: `examplemovies.rs` cast truncation (real correctness fix)
 
 **Why:** `clippy::cast_possible_truncation` on `start.elapsed().as_millis() as u64` at lines 93 and 100. `as_millis()` returns `u128`. On an impossibly-long-lived health check (>584 million years) this would wrap. The fix is cheap — use `u64::try_from(...).unwrap_or(u64::MAX)`.
 
 **Files:**
-- Modify: `crates/lab-apis/src/radarr.rs:93, 100`
+- Modify: `crates/lab-apis/src/examplemovies.rs:93, 100`
 
 - [ ] **Step 1: Read the current impl.**
 
-Read `crates/lab-apis/src/radarr.rs` lines 86-110.
+Read `crates/lab-apis/src/examplemovies.rs` lines 86-110.
 
 - [ ] **Step 2: Replace both cast sites.**
 
@@ -370,13 +370,13 @@ with this (both occurrences):
 Run: `cargo clippy --workspace --all-features --all-targets 2>&1 | grep -c cast_possible_truncation`
 Expected: `0` (or whatever count was baseline minus 2 if there are other unrelated hits).
 
-Run: `cargo test -p lab-apis --features "radarr servarr"` — still green.
+Run: `cargo test -p lab-apis --features "examplemovies examplesuite"` — still green.
 
 - [ ] **Step 4: Commit.**
 
 ```bash
-git add crates/lab-apis/src/radarr.rs
-git commit -m "fix(radarr): saturate latency_ms conversion instead of truncating"
+git add crates/lab-apis/src/examplemovies.rs
+git commit -m "fix(examplemovies): saturate latency_ms conversion instead of truncating"
 ```
 
 ---
@@ -422,11 +422,11 @@ git commit -m "refactor(cli): drop Result wrappers and take install args by refe
 
 ### Task 8: Test-file `expect_used` allow
 
-**Why:** 2 hits in `tests/http_client.rs:37` and `tests/radarr_health.rs:48`. Integration tests MUST fail loud on unexpected `None`/`Err` — `.expect(...)` is idiomatic. The workspace lint should be relaxed for `tests/` specifically.
+**Why:** 2 hits in `tests/http_client.rs:37` and `tests/examplemovies_health.rs:48`. Integration tests MUST fail loud on unexpected `None`/`Err` — `.expect(...)` is idiomatic. The workspace lint should be relaxed for `tests/` specifically.
 
 **Files:**
 - Modify: `crates/lab-apis/tests/http_client.rs:1`
-- Modify: `crates/lab-apis/tests/radarr_health.rs:1`
+- Modify: `crates/lab-apis/tests/examplemovies_health.rs:1`
 
 - [ ] **Step 1: Add file-level allow to both test files.**
 
@@ -451,7 +451,7 @@ Expected: `0`.
 - [ ] **Step 3: Commit.**
 
 ```bash
-git add crates/lab-apis/tests/http_client.rs crates/lab-apis/tests/radarr_health.rs
+git add crates/lab-apis/tests/http_client.rs crates/lab-apis/tests/examplemovies_health.rs
 git commit -m "test: allow expect/unwrap in integration test files"
 ```
 
@@ -481,9 +481,9 @@ For each: add the `const` keyword to the function signature, e.g. `pub fn kind(&
 
 Read those regions. Merge nested `if a { if b { ... } }` into `if a && b { ... }` — clippy shows the exact rewrite.
 
-- [ ] **Step 4: `clippy::struct_excessive_bools` on `servarr/types/notification.rs:21` and `servarr/types/system.rs:9`.**
+- [ ] **Step 4: `clippy::struct_excessive_bools` on `examplesuite/types/notification.rs:21` and `examplesuite/types/system.rs:9`.**
 
-These are DTOs that mirror Radarr's API shape; the bools are fixed by upstream. Add a per-struct allow:
+These are DTOs that mirror ExampleMovies's API shape; the bools are fixed by upstream. Add a per-struct allow:
 
 ```rust
 #[allow(clippy::struct_excessive_bools)]
@@ -568,7 +568,7 @@ Run: `git log --oneline -12` and confirm the expected sequence of clippy-cleanup
 - `cargo_common_metadata` (6 warnings) — Task 3 ✅
 - `doc_markdown` (23 warnings) — Task 4 ✅
 - `expect_used` + `missing_panics_doc` + `future_not_send` in `core/http.rs` — Task 5 ✅
-- `cast_possible_truncation` in `radarr.rs` — Task 6 ✅
+- `cast_possible_truncation` in `examplemovies.rs` — Task 6 ✅
 - `unnecessary_wraps` + `needless_pass_by_value` in `cli/` — Task 7 ✅
 - `expect_used` in test files — Task 8 ✅
 - `match_same_arms`, `missing_const_for_fn`, `collapsible_if`, `struct_excessive_bools`, `used_underscore_binding`, and misc single-digit rules — Task 9 ✅

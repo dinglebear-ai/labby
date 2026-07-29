@@ -2,7 +2,7 @@
 
 The original service-layer migration plan targeted first-party upstream
 integrations that are no longer present in this checkout's Cargo feature table.
-Treat older references to services such as Radarr, ByteStash, and UniFi as
+Treat older references to services such as Example upstream, ByteStash, and UniFi as
 historical context, not current implementation guidance.
 
 Current shared-dispatch guidance lives in:

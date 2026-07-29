@@ -96,7 +96,7 @@ scopes = ["mcp:media"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr", "radarr", " prowlarr "]
+upstreams = ["exampleseries", "examplemovies", " exampleindexer "]
 services = ["gateway"]
 expose_code_mode = true
 "#;
@@ -110,7 +110,7 @@ expose_code_mode = true
     assert_eq!(route.upstream, None);
     assert!(route.is_gateway_subset());
     let target = route.gateway_subset_target().expect("gateway subset");
-    assert_eq!(target.upstreams, vec!["sonarr", "radarr", "prowlarr"]);
+    assert_eq!(target.upstreams, vec!["exampleseries", "examplemovies", "exampleindexer"]);
     assert_eq!(target.services, vec!["gateway"]);
     assert!(target.expose_code_mode);
 }
@@ -146,7 +146,7 @@ backend_url = "http://10.0.0.2:3100/mcp"
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr"]
+upstreams = ["exampleseries"]
 "#;
 
     let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
@@ -493,7 +493,7 @@ mod tests {
     fn root_allows_everything() {
         let scope = McpRouteScope::Root;
         assert!(scope.allows_service("gateway"));
-        assert!(scope.allows_upstream("sonarr"));
+        assert!(scope.allows_upstream("exampleseries"));
         assert!(scope.exposes_code_mode());
         assert_eq!(scope.label(), "root");
     }
@@ -502,13 +502,13 @@ mod tests {
     fn protected_subset_allows_only_configured_names() {
         let scope = McpRouteScope::protected_subset(
             "media",
-            ["sonarr", "radarr"],
+            ["exampleseries", "examplemovies"],
             ["gateway"],
             true,
         );
         assert!(scope.allows_service("gateway"));
         assert!(!scope.allows_service("logs"));
-        assert!(scope.allows_upstream("sonarr"));
+        assert!(scope.allows_upstream("exampleseries"));
         assert!(!scope.allows_upstream("github"));
         assert!(scope.exposes_code_mode());
         assert_eq!(scope.label(), "protected:media");
@@ -1442,7 +1442,7 @@ fn protected_gateway_subset_route() -> crate::config::ProtectedMcpRouteConfig {
         health_path: None,
         target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
             crate::config::ProtectedGatewaySubsetTarget {
-                upstreams: vec!["sonarr".to_string(), "radarr".to_string()],
+                upstreams: vec!["exampleseries".to_string(), "examplemovies".to_string()],
                 services: vec!["gateway".to_string()],
                 expose_code_mode: true,
             },
@@ -1744,7 +1744,7 @@ scopes = ["mcp:media"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr", "radarr", "prowlarr"]
+upstreams = ["exampleseries", "examplemovies", "exampleindexer"]
 services = ["gateway"]
 expose_code_mode = true
 ```
@@ -1841,7 +1841,7 @@ scopes = ["mcp:media"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr", "radarr"]
+upstreams = ["exampleseries", "examplemovies"]
 services = ["gateway"]
 expose_code_mode = true
 EOF

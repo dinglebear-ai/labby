@@ -171,16 +171,8 @@ fn generate_tool_types_sanitizes_reserved_digits_empty_dollar_and_collision_adja
         ("9lives", "2fa setup", "codemode._9lives._2fa_setup"),
         ("", "", "codemode._._"),
         ("cash$box", "$charge", "codemode.cash$box.$charge"),
-        (
-            "movie.search",
-            "list-tags",
-            "codemode.movie_search.list_tags",
-        ),
-        (
-            "movie_search",
-            "list.tags",
-            "codemode.movie_search.list_tags",
-        ),
+        ("status.get", "list-tags", "codemode.status_get.list_tags"),
+        ("status_get", "list.tags", "codemode.status_get.list_tags"),
     ];
 
     for (namespace, tool, expected) in cases {

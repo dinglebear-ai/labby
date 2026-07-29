@@ -44,16 +44,16 @@ use std::sync::{
 
 const TEST_ACTIONS_ONE: &[ActionSpec] = &[
     ActionSpec {
-        name: "queue.list",
-        description: "List queue",
+        name: "status.get",
+        description: "Get status",
         destructive: false,
         requires_admin: false,
         params: &[],
         returns: "object",
     },
     ActionSpec {
-        name: "movie.search",
-        description: "Search movies",
+        name: "health.get",
+        description: "Get health",
         destructive: false,
         requires_admin: false,
         params: &[],
@@ -63,16 +63,16 @@ const TEST_ACTIONS_ONE: &[ActionSpec] = &[
 
 const TEST_ACTIONS_TWO: &[ActionSpec] = &[
     ActionSpec {
-        name: "calendar.list",
-        description: "List calendar",
+        name: "status.list",
+        description: "List status entries",
         destructive: false,
         requires_admin: false,
         params: &[],
         returns: "object",
     },
     ActionSpec {
-        name: "movie.lookup",
-        description: "Look up movie",
+        name: "health.list",
+        description: "List health entries",
         destructive: false,
         requires_admin: false,
         params: &[],
@@ -133,18 +133,18 @@ fn destructive_counting_dispatch_mrtr(
 fn completion_test_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(RegisteredService {
-        name: "radarr",
-        description: "Movies",
-        category: "media",
+        name: "hidden-upstream",
+        description: "Hidden upstream",
+        category: "network",
         kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
         status: "available",
         actions: TEST_ACTIONS_ONE,
         dispatch: noop_dispatch,
     });
     registry.register(RegisteredService {
-        name: "sonarr",
-        description: "Shows",
-        category: "media",
+        name: "gateway-alpha",
+        description: "Gateway alpha",
+        category: "network",
         kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
         status: "available",
         actions: TEST_ACTIONS_TWO,
@@ -1675,7 +1675,7 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
     assert!(names.contains(&"youtube_search_ui"));
     assert!(!names.contains(&"youtube_probe"));
     assert!(names.contains(&CODE_MODE_TOOL_NAME));
-    assert!(!names.contains(&"radarr"));
+    assert!(!names.contains(&"hidden-upstream"));
 }
 
 #[tokio::test]
@@ -1893,9 +1893,9 @@ async fn protected_code_mode_list_tools_hides_raw_siblings_and_disallowed_builti
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
-            "media",
+            "ops",
             ["apps"],
-            ["radarr"],
+            ["gateway-alpha"],
             true,
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
@@ -1920,8 +1920,8 @@ async fn protected_code_mode_list_tools_hides_raw_siblings_and_disallowed_builti
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
 
-    assert!(!names.contains(&"radarr"));
-    assert!(!names.contains(&"sonarr"));
+    assert!(!names.contains(&"gateway-alpha"));
+    assert!(!names.contains(&"hidden-upstream"));
     assert!(names.contains(&CODE_MODE_TOOL_NAME));
     assert!(names.contains(&"youtube_search_ui"));
     assert!(!names.contains(&"youtube_probe"));
@@ -1933,9 +1933,9 @@ async fn protected_list_tools_hides_code_mode_when_route_disables_it() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
-            "media",
+            "ops",
             ["apps"],
-            ["radarr"],
+            ["gateway-alpha"],
             false,
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
@@ -1960,7 +1960,7 @@ async fn protected_list_tools_hides_code_mode_when_route_disables_it() {
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
 
-    assert!(names.contains(&"radarr"));
+    assert!(names.contains(&"gateway-alpha"));
     assert!(
         !names.contains(&CODE_MODE_TOOL_NAME),
         "codemode must not be advertised when expose_code_mode=false: {names:?}"
@@ -1972,16 +1972,17 @@ async fn codemode_description_lists_route_scoped_enabled_upstreams() {
     let apps = fixture_upstream_config("apps");
     let mut hidden = fixture_upstream_config("hidden");
     hidden.enabled = false;
-    let sonarr = fixture_upstream_config("sonarr");
+    let gateway_alpha = fixture_upstream_config("hidden-upstream");
     let pool = Arc::new(UpstreamPool::new());
-    let manager = code_mode_manager_with_pool_multi(true, vec![apps, hidden, sonarr], pool).await;
+    let manager =
+        code_mode_manager_with_pool_multi(true, vec![apps, hidden, gateway_alpha], pool).await;
     let server = test_server(
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
-            "media",
+            "ops",
             ["apps"],
-            ["radarr"],
+            ["gateway-alpha"],
             true,
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
@@ -2014,7 +2015,7 @@ async fn codemode_description_lists_route_scoped_enabled_upstreams() {
     assert!(description.contains("## Available upstream namespaces"));
     assert!(description.contains("- `apps`"));
     assert!(!description.contains("- `hidden`"));
-    assert!(!description.contains("- `sonarr`"));
+    assert!(!description.contains("- `hidden-upstream`"));
     assert!(description.contains("Never guess helper or method names"));
 }
 
@@ -2024,9 +2025,9 @@ async fn protected_list_tools_filters_disallowed_builtins_when_code_mode_is_off(
         completion_test_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
-            "media",
+            "ops",
             ["apps"],
-            ["radarr"],
+            ["gateway-alpha"],
             false,
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
@@ -2051,8 +2052,8 @@ async fn protected_list_tools_filters_disallowed_builtins_when_code_mode_is_off(
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
 
-    assert!(names.contains(&"radarr"));
-    assert!(!names.contains(&"sonarr"));
+    assert!(names.contains(&"gateway-alpha"));
+    assert!(!names.contains(&"hidden-upstream"));
     assert!(!names.contains(&CODE_MODE_TOOL_NAME));
 }
 
@@ -3672,9 +3673,9 @@ async fn protected_scope_denies_direct_code_mode_calls_when_hidden() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
-            "media",
-            ["sonarr"],
-            ["radarr"],
+            "ops",
+            ["hidden-upstream"],
+            ["gateway-alpha"],
             false,
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
@@ -3801,7 +3802,7 @@ async fn gateway_add_through_mcp_protected_route_suppresses_hidden_enrichment_su
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
                 upstream: vec![{
-                    let mut upstream = fixture_upstream_config("rustarr");
+                    let mut upstream = fixture_upstream_config("gateway-alpha");
                     upstream.enabled = false;
                     upstream
                 }],
@@ -3828,8 +3829,8 @@ async fn gateway_add_through_mcp_protected_route_suppresses_hidden_enrichment_su
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
-            "media-route",
-            ["rustarr".to_string()],
+            "ops-route",
+            ["gateway-alpha".to_string()],
             ["gateway".to_string()],
             true,
         ),
@@ -3902,7 +3903,7 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
                 upstream: vec![{
-                    let mut upstream = fixture_upstream_config("rustarr");
+                    let mut upstream = fixture_upstream_config("gateway-alpha");
                     upstream.enabled = false;
                     upstream
                 }],
@@ -3917,8 +3918,8 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
-            "media-route",
-            ["rustarr".to_string()],
+            "ops-route",
+            ["gateway-alpha".to_string()],
             ["gateway".to_string()],
             true,
         ),
@@ -3970,21 +3971,21 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
 }
 
 #[tokio::test]
-#[ignore = "gateway-pivot: hardcoded plex/radarr fixtures; rework with kept-service fixtures post-pivot"]
 async fn service_actions_json_filters_to_allowed_mcp_actions() {
     let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
     let manager = Arc::new(
         crate::dispatch::gateway::config_store::test_gateway_manager(
             std::path::PathBuf::from("config.toml"),
             runtime,
-        ),
+        )
+        .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry())),
     );
     manager
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
                 virtual_servers: vec![crate::config::VirtualServerConfig {
-                    id: "deploy".to_string(),
-                    service: "deploy".to_string(),
+                    id: "doctor-readonly".to_string(),
+                    service: "doctor".to_string(),
                     enabled: true,
                     surfaces: crate::config::VirtualServerSurfacesConfig {
                         cli: false,
@@ -3993,7 +3994,7 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
                         webui: false,
                     },
                     mcp_policy: Some(crate::config::VirtualServerMcpPolicyConfig {
-                        allowed_actions: vec!["server.info".to_string()],
+                        allowed_actions: vec!["system.checks".to_string()],
                     }),
                 }],
                 ..crate::config::LabConfig::default()
@@ -4010,18 +4011,18 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
     );
 
     let value = server
-        .service_actions_json("deploy")
+        .service_actions_json("doctor")
         .await
         .expect("service actions");
     let actions = value.as_array().expect("array");
     assert!(actions.iter().any(|action| action["name"] == "help"));
     assert!(actions.iter().any(|action| action["name"] == "schema"));
-    assert!(actions.iter().any(|action| action["name"] == "server.info"));
     assert!(
-        !actions
+        actions
             .iter()
-            .any(|action| action["name"] == "session.list")
+            .any(|action| action["name"] == "system.checks")
     );
+    assert!(!actions.iter().any(|action| action["name"] == "audit.full"));
 }
 
 /// Regression: the Code Mode regime is per-route, so the notification fanout

@@ -21,7 +21,7 @@
   - Replace the old “per-service dispatch modules” contract with an exception-only module list.
   - Keep only `deploy`, `fs`, and `nodes` declarations.
 - Delete: thin or tests-only wrappers under `crates/lab/src/mcp/services/` that have no MCP-specific behavior.
-- Modify: selected dispatch entrypoints (`radarr`, `linkding`, `paperless`, `plex`, `unifi`, `lab_admin`) to preserve useful tests from deleted wrappers.
+- Modify: selected dispatch entrypoints (`examplemovies`, `linkding`, `paperless`, `examplemedia`, `unifi`, `lab_admin`) to preserve useful tests from deleted wrappers.
 - Modify: scaffold/audit code under `crates/lab/src/scaffold*` and `crates/lab/src/audit/checks/*` so future services do not regenerate or require MCP wrapper files.
 - Modify: docs (`crates/lab/src/mcp/CLAUDE.md`, `docs/SERVICE_ONBOARDING.md`, `docs/SCAFFOLD_AND_AUDIT.md`, selected coverage docs) so documented onboarding matches the new registry contract.
 - Create: `docs/sessions/2026-04-25-lab-cgxg-completion.md` after verification.
@@ -57,7 +57,7 @@ crate::mcp::services::fs::{ACTIONS, dispatch}
 Use direct `actions()` overrides for services that do not expose a top-level `ACTIONS` const:
 
 ```rust
-crate::dispatch::radarr::actions()
+crate::dispatch::examplemovies::actions()
 crate::dispatch::unifi::actions()
 crate::dispatch::marketplace::actions()
 ```
@@ -77,10 +77,10 @@ Expected: PASS, with no stale `mcp/services` dead-code warnings.
 **Files:**
 - Modify: `crates/lab/src/mcp/services.rs`
 - Delete stale wrappers in `crates/lab/src/mcp/services/*.rs` except `deploy.rs`, `fs.rs`, and `nodes.rs`
-- Modify: `crates/lab/src/dispatch/radarr.rs`
+- Modify: `crates/lab/src/dispatch/examplemovies.rs`
 - Modify: `crates/lab/src/dispatch/linkding.rs`
 - Modify: `crates/lab/src/dispatch/paperless.rs`
-- Modify: `crates/lab/src/dispatch/plex.rs`
+- Modify: `crates/lab/src/dispatch/examplemedia.rs`
 - Modify: `crates/lab/src/dispatch/unifi.rs`
 - Modify: `crates/lab/src/dispatch/lab_admin.rs`
 
@@ -93,10 +93,10 @@ Keep only MCP-specific exception modules and comments explaining why each remain
 Add missing assertions to dispatch-layer tests where wrapper files currently hold unique checks:
 
 ```rust
-// radarr: core read-only actions in actions()
+// examplemovies: core read-only actions in actions()
 // linkding: full core catalog and destructive bookmark.delete
 // paperless: full resource catalog smoke check
-// plex: full core catalog and destructive actions
+// examplemedia: full core catalog and destructive actions
 // unifi: help/read-only catalog plus action-count parity
 // lab_admin: help and onboarding.audit catalog tests
 ```
@@ -166,7 +166,7 @@ Replace stale references to deleted wrapper files with registry/direct-dispatch 
 - [ ] **Step 1: Search for stale references**
 
 ```bash
-rg -n "mcp::services::(apprise|arcane|bytestash|doctor|extract|gateway|gotify|lab_admin|linkding|logs|marketplace|memos|openai|overseerr|paperless|plex|prowlarr|qbittorrent|qdrant|radarr|sabnzbd|sonarr|tei|unifi)|crate::mcp::services::(apprise|arcane|bytestash|doctor|extract|gateway|gotify|lab_admin|linkding|logs|marketplace|memos|openai|overseerr|paperless|plex|prowlarr|qbittorrent|qdrant|radarr|sabnzbd|sonarr|tei|unifi)|crates/lab/src/mcp/services/(apprise|arcane|bytestash|doctor|extract|gateway|gotify|lab_admin|linkding|logs|marketplace|memos|openai|overseerr|paperless|plex|prowlarr|qbittorrent|qdrant|radarr|sabnzbd|sonarr|tei|unifi)\.rs" crates/lab/src docs/coverage docs/SERVICE_ONBOARDING.md docs/SCAFFOLD_AND_AUDIT.md crates/lab/src/mcp/CLAUDE.md
+rg -n "mcp::services::(apprise|arcane|bytestash|doctor|extract|gateway|gotify|lab_admin|linkding|logs|marketplace|memos|openai|examplerequests|paperless|examplemedia|exampleindexer|exampledownload|qdrant|examplemovies|exampleusenet|exampleseries|tei|unifi)|crate::mcp::services::(apprise|arcane|bytestash|doctor|extract|gateway|gotify|lab_admin|linkding|logs|marketplace|memos|openai|examplerequests|paperless|examplemedia|exampleindexer|exampledownload|qdrant|examplemovies|exampleusenet|exampleseries|tei|unifi)|crates/lab/src/mcp/services/(apprise|arcane|bytestash|doctor|extract|gateway|gotify|lab_admin|linkding|logs|marketplace|memos|openai|examplerequests|paperless|examplemedia|exampleindexer|exampledownload|qdrant|examplemovies|exampleusenet|exampleseries|tei|unifi)\.rs" crates/lab/src docs/coverage docs/SERVICE_ONBOARDING.md docs/SCAFFOLD_AND_AUDIT.md crates/lab/src/mcp/CLAUDE.md
 ```
 
 Expected: no hits for deleted wrappers.
@@ -190,7 +190,7 @@ Expected: PASS and no warnings caused by stale MCP service wrappers.
 - [ ] **Step 4: Run relevant tests**
 
 ```bash
-cargo test -p lab --all-features registry::tests dispatch::radarr::tests dispatch::linkding::tests dispatch::paperless::tests dispatch::plex::tests dispatch::unifi::tests dispatch::lab_admin::tests --no-fail-fast
+cargo test -p lab --all-features registry::tests dispatch::examplemovies::tests dispatch::linkding::tests dispatch::paperless::tests dispatch::examplemedia::tests dispatch::unifi::tests dispatch::lab_admin::tests --no-fail-fast
 ```
 
 Expected: PASS for the moved/affected tests.

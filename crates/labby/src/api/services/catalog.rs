@@ -6,7 +6,7 @@
 //!
 //! The response shape matches `lib/types/command-catalog.ts` in gateway-admin:
 //! ```json
-//! { "services": [{ "name": "radarr", "description": "...", "actions": [...] }] }
+//! { "services": [{ "name": "gateway-alpha", "description": "...", "actions": [...] }] }
 //! ```
 
 use std::sync::OnceLock;
@@ -151,7 +151,7 @@ mod tests {
             status: "available".to_string(),
             requires_http_subject: false,
             actions: vec![ActionEntry {
-                name: "queue.list".to_string(),
+                name: "health.list".to_string(),
                 description: "List queue".to_string(),
                 destructive: false,
                 requires_admin: false,
@@ -177,8 +177,11 @@ mod tests {
     #[tokio::test]
     async fn returns_only_enabled_services() {
         let state = test_state_with_catalog(
-            vec![make_service("radarr"), make_service("sonarr")],
-            HashSet::from(["radarr".to_string()]),
+            vec![
+                make_service("gateway-alpha"),
+                make_service("hidden-upstream"),
+            ],
+            HashSet::from(["gateway-alpha".to_string()]),
         );
 
         let response = catalog_router(state)
@@ -201,7 +204,7 @@ mod tests {
 
         let services = value["services"].as_array().unwrap();
         assert_eq!(services.len(), 1, "only enabled services should appear");
-        assert_eq!(services[0]["name"], "radarr");
+        assert_eq!(services[0]["name"], "gateway-alpha");
     }
 
     #[tokio::test]
@@ -224,8 +227,8 @@ mod tests {
     #[tokio::test]
     async fn response_shape_has_actions_with_params() {
         let state = test_state_with_catalog(
-            vec![make_service("radarr")],
-            HashSet::from(["radarr".to_string()]),
+            vec![make_service("gateway-alpha")],
+            HashSet::from(["gateway-alpha".to_string()]),
         );
 
         let response = catalog_router(state)
@@ -239,11 +242,11 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         let svc = &value["services"][0];
-        assert_eq!(svc["name"], "radarr");
+        assert_eq!(svc["name"], "gateway-alpha");
         assert!(svc["actions"].is_array());
 
         let action = &svc["actions"][0];
-        assert_eq!(action["name"], "queue.list");
+        assert_eq!(action["name"], "health.list");
         assert_eq!(action["destructive"], false);
         assert!(action["params"].is_array());
 
@@ -359,8 +362,8 @@ mod tests {
     #[tokio::test]
     async fn response_includes_etag_header() {
         let state = test_state_with_catalog(
-            vec![make_service("radarr")],
-            HashSet::from(["radarr".to_string()]),
+            vec![make_service("gateway-alpha")],
+            HashSet::from(["gateway-alpha".to_string()]),
         );
 
         let response = catalog_router(state)

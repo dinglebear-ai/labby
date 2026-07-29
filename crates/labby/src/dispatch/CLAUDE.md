@@ -153,7 +153,7 @@ pub fn client_from_instance(label: Option<&str>) -> Result<&'static <Service>Cli
 
 `InstancePool::build(prefix, closure)` scans for `{PREFIX}_URL` (default instance) and `{PREFIX}_{LABEL}_URL` (named instances) at first call, caching all clients in a single `OnceLock`. `resolve(None)` returns the default instance; `resolve(Some("label"))` returns the named one. Both return `ToolError::UnknownInstance` if the label is absent.
 
-> **Header casing:** The default is `X-Api-Key` (Servarr convention). Some APIs enforce specific casing:
+> **Header casing:** The default is `X-Api-Key`. Some APIs enforce specific casing:
 > - Unraid: `X-API-Key` — matches the Unraid server's exact validation
 > - UniFi: `X-API-KEY` — all caps, matches UniFi Network Application spec
 > HTTP headers are case-insensitive on the wire, but some servers validate exact casing.

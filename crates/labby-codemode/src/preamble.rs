@@ -100,14 +100,14 @@ const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &["search", "describe", "run", "ste
 /// Convert a dotted/hyphenated/slashed/coloned tool name to snake_case.
 ///
 /// Examples (Cloudflare parity):
-/// - `movie.search` → `movie_search`
+/// - `status.get` → `status_get`
 /// - `tv-show.get` → `tv_show_get`
 /// - `create/issue` → `createissue`
 /// - `list:repos` → `listrepos`
 /// - `delete` → `delete_` (reserved word)
 /// - `2fa_setup` → `_2fa_setup` (leading digit prefixed with `_`)
 ///
-/// KNOWN COLLISION: `movie.search` and `movie_search` both map to `movie_search`
+/// KNOWN COLLISION: `status.get` and `status_get` both map to `status_get`
 /// — last insert wins when building the namespace. A `tracing::debug!` is emitted
 /// when a collision is detected.
 pub(crate) fn tool_name_to_snake(name: &str) -> String {
@@ -641,12 +641,12 @@ mod tests {
     #[test]
     fn tool_name_to_snake_converts_dotted_names() {
         // PRESENCE: basic dotted/hyphenated name conversion (Cloudflare parity)
-        assert_eq!(tool_name_to_snake("movie.search"), "movie_search");
+        assert_eq!(tool_name_to_snake("status.get"), "status_get");
         assert_eq!(tool_name_to_snake("tv-show.get"), "tv_show_get");
         // PRESENCE: reserved word gets underscore suffix
         assert_eq!(tool_name_to_snake("delete"), "delete_");
         // ABSENCE: separators must not appear in snake output
-        assert!(!tool_name_to_snake("movie.search").contains('.'));
+        assert!(!tool_name_to_snake("status.get").contains('.'));
         assert!(!tool_name_to_snake("tv-show.get").contains('-'));
     }
 
@@ -871,7 +871,7 @@ mod tests {
 
     #[test]
     fn generate_js_proxy_emits_codemode_global_and_method() {
-        let tool = descriptor("radarr", "movie.search");
+        let tool = descriptor("gateway-alpha", "status.get");
         let js = proxy(&[tool]).expect("proxy");
 
         // PRESENCE: preserves the platform-created codemode object
@@ -889,7 +889,7 @@ mod tests {
         );
         // PRESENCE: snake_case method routes to the dotted tool id
         assert!(
-            js.contains("radarr::movie.search"),
+            js.contains("gateway-alpha::status.get"),
             "method must route to dotted tool id"
         );
         // PRESENCE: null-safe params guard (no nullish-coalescing dependency)
@@ -947,8 +947,8 @@ mod tests {
 
     #[test]
     fn generate_js_proxy_rejects_sanitized_tool_collisions() {
-        let dotted = descriptor("demo", "movie.search");
-        let underscored = descriptor("demo", "movie_search");
+        let dotted = descriptor("demo", "status.get");
+        let underscored = descriptor("demo", "status_get");
 
         let err =
             proxy(&[dotted, underscored]).expect_err("sanitized collisions must not be last-wins");

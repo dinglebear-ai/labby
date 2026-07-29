@@ -171,7 +171,7 @@ is not mistaken for a layout mistake during review or onboarding:
   The complexity is encapsulated inside `GatewayManager`, which is the right
   place for it given the runtime state it owns.
 - **No `labby-apis` counterpart is expected.** Unlike pure upstream API services
-  (radarr, unraid, …), the gateway's "client" manages local process and config
+  (example-upstream, unraid, …), the gateway's "client" manages local process and config
   state, which the `labby-apis` layer (no `tokio`-spawned children, no config
   files) deliberately does not own.
 

@@ -3,20 +3,20 @@
     Blocking waiting for file lock on package cache
     Checking lab-apis v0.2.2 (/home/jmagar/workspace/lab/crates/lab-apis)
 warning: unreachable pattern
-  --> crates/lab-apis/src/sabnzbd.rs:77:13
+  --> crates/lab-apis/src/exampleusenet.rs:77:13
    |
 77 |             Err(e) => Ok(ServiceStatus::degraded(e.to_string())),
    |             ^^^^^^ no value can reach this
    |
 note: multiple earlier patterns match some of the same values
-  --> crates/lab-apis/src/sabnzbd.rs:77:13
+  --> crates/lab-apis/src/exampleusenet.rs:77:13
    |
-68 |             Err(SabnzbdError::Api(ApiError::Auth)) => Ok(ServiceStatus {
+68 |             Err(ExampleUsenetError::Api(ApiError::Auth)) => Ok(ServiceStatus {
    |             -------------------------------------- matches some of the same values
 ...
-75 |             Err(SabnzbdError::Api(ApiError::Network(e))) => Ok(ServiceStatus::unreachable(e)),
+75 |             Err(ExampleUsenetError::Api(ApiError::Network(e))) => Ok(ServiceStatus::unreachable(e)),
    |             -------------------------------------------- matches some of the same values
-76 |             Err(SabnzbdError::Api(e)) => Ok(ServiceStatus::degraded(e.to_string())),
+76 |             Err(ExampleUsenetError::Api(e)) => Ok(ServiceStatus::degraded(e.to_string())),
    |             ------------------------- matches some of the same values
 77 |             Err(e) => Ok(ServiceStatus::degraded(e.to_string())),
    |             ^^^^^^ collectively making this unreachable
@@ -81,85 +81,85 @@ warning: function `handle` is never used
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/radarr.rs:10:8
+  --> crates/lab/src/api/services/examplemovies.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/radarr.rs:14:10
+  --> crates/lab/src/api/services/examplemovies.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/sonarr.rs:10:8
+  --> crates/lab/src/api/services/exampleseries.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/sonarr.rs:14:10
+  --> crates/lab/src/api/services/exampleseries.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/prowlarr.rs:10:8
+  --> crates/lab/src/api/services/exampleindexer.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/prowlarr.rs:14:10
+  --> crates/lab/src/api/services/exampleindexer.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/plex.rs:10:8
+  --> crates/lab/src/api/services/examplemedia.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/plex.rs:14:10
+  --> crates/lab/src/api/services/examplemedia.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/tautulli.rs:10:8
+  --> crates/lab/src/api/services/examplemetrics.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/tautulli.rs:14:10
+  --> crates/lab/src/api/services/examplemetrics.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/sabnzbd.rs:10:8
+  --> crates/lab/src/api/services/exampleusenet.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/sabnzbd.rs:14:10
+  --> crates/lab/src/api/services/exampleusenet.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/qbittorrent.rs:10:8
+  --> crates/lab/src/api/services/exampledownload.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/qbittorrent.rs:14:10
+  --> crates/lab/src/api/services/exampledownload.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
@@ -261,13 +261,13 @@ warning: function `handle` is never used
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/overseerr.rs:10:8
+  --> crates/lab/src/api/services/examplerequests.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/overseerr.rs:14:10
+  --> crates/lab/src/api/services/examplerequests.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^

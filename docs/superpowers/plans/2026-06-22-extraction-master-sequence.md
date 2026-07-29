@@ -16,8 +16,8 @@ In scope: the six-crate gateway stack — `lab-runtime`, `lab-auth` (finish),
 `lab-codemode`, `lab-gateway`, `lab-gateway-web`, `lab-gatewayd`.
 
 Explicitly **out of scope** (deferred, not part of this sequence): the ten REST
-service clients (sonarr/radarr/prowlarr/overseerr/plex/sabnzbd/qbittorrent/
-tautulli/tracearr/bazarr) and the native-dispatch *second* `CodeModeHost` that
+service clients (exampleseries/examplemovies/exampleindexer/examplerequests/examplemedia/exampleusenet/exampledownload/
+examplemetrics/exampletrace/examplesubtitles) and the native-dispatch *second* `CodeModeHost` that
 would let Code Mode script them. Those are a future consumer of the extracted
 `lab-codemode` kernel and get their own plan once this stack lands.
 

@@ -8,13 +8,13 @@ import type { Gateway } from '@/lib/types/gateway'
 
 const gateway: Gateway = {
   id: 'gw_1',
-  name: 'Plex Control Plane',
+  name: 'Gateway beta Control Plane',
   transport: 'http',
   source: 'custom',
   configured: true,
   enabled: true,
   config: {
-    url: 'https://plex.example.com/mcp',
+    url: 'https://gateway_beta.example.com/mcp',
   },
   status: {
     healthy: true,

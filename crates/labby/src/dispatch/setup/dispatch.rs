@@ -1440,13 +1440,13 @@ mod tests {
 
     #[tokio::test]
     async fn schema_get_filter_returns_subset() {
-        let v = dispatch("schema.get", json!({"services": ["radarr"]}))
+        let v = dispatch("schema.get", json!({"services": ["gateway-alpha"]}))
             .await
             .unwrap();
         let services = v.get("services").and_then(Value::as_object).unwrap();
         // With filter, only requested services that have meta should appear.
         for key in services.keys() {
-            assert_eq!(key, "radarr");
+            assert_eq!(key, "gateway-alpha");
         }
     }
 

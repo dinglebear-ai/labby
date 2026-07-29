@@ -42,7 +42,7 @@ Here are libraries and packages we recommend to start with steering the model:
 * Styling / UI: Tailwind CSS, shadcn/ui, Radix Themes
 * Icons: Material Symbols, Heroicons, Lucide
 * Animation: Motion
-* Fonts: San Serif, Inter, Geist, Mona Sans, IBM Plex Sans, Manrope
+* Fonts: San Serif, Inter, Geist, Mona Sans, IBM Sans, Manrope
 These packages are not an exhaustive list and we have seen many different application styles.
 Below you’ll find an easy way to iterate over frontend abstractions on the API. We’re excited to see how users can unlock creativity with GPT-5.
 ## Interactive Example

@@ -107,8 +107,8 @@ git stash pop
 
 | Area | Before | After |
 |------|--------|-------|
-| Resource URIs | Re-probe doubled prefix: `lab://upstream/plex/lab://upstream/plex/...` | Prefix applied once; guard skips rewrite if already prefixed |
-| Duplicate gateway POST | Returns 422 `invalid_param` | Returns 409 `{"kind":"conflict","message":"...","existing_id":"plex"}` |
+| Resource URIs | Re-probe doubled prefix: `lab://upstream/examplemedia/lab://upstream/examplemedia/...` | Prefix applied once; guard skips rewrite if already prefixed |
+| Duplicate gateway POST | Returns 422 `invalid_param` | Returns 409 `{"kind":"conflict","message":"...","existing_id":"examplemedia"}` |
 | Add-gateway dialog on name collision | Toast dismisses dialog | Inline error shown; dialog stays open for rename |
 | Gateway detail: tabs | Below the main header card | Inside the header card, directly under name/endpoint |
 | Gateway detail: surface toggles | Pill row inside card body | AppHeader strip alongside timestamp |

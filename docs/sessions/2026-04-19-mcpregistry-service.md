@@ -176,4 +176,4 @@ cargo clippy --all-features
 - Create PR from `bd-lab-77y5/mcpregistry-service` into `main`.
 - Follow-up security bead: validate `MCPREGISTRY_URL` at startup against RFC-1918 blocklist (flagged as `SECURITY HIGH` in bead comments).
 - Wave 3 integration tests (noted in bead Testing section): `cli_install_with_remote_calls_gateway_add` and `cli_install_no_remotes_prints_error_and_exits` require wiremock wiring that was deferred.
-- TUI `metadata.rs` — add `mcpregistry` to the plugin manager (currently only `radarr` is wired).
+- TUI `metadata.rs` — add `mcpregistry` to the plugin manager (currently only `examplemovies` is wired).

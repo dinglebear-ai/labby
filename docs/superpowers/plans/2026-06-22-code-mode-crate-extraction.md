@@ -8,7 +8,7 @@
 runner, its parent-side broker/driver, the result-shaping helpers, and the
 snippet *engine* — into a standalone `lab-codemode` crate that exposes a generic
 `CodeModeHost` trait. Labby's `gateway` becomes the first implementor of that
-trait; any future server (e.g. a media/Servarr server that scripts REST APIs via
+trait; any future server (e.g. a media/ExampleSuite server that scripts REST APIs via
 Code Mode) becomes a second implementor without depending on the gateway runtime.
 
 **Relationship to the gateway extraction plan:** This plan is a dependency of,
@@ -212,7 +212,7 @@ Labby files that become thin adapters / shims (no logic):
   Re-export `run_code_mode_runner_stdio()` for `cli/internal.rs`.
 - [ ] **Task 6 — Docs + dead-doc cleanup.** Author `lab-codemode/CLAUDE.md`
   (merge the two code_mode CLAUDE.md files). Correct stale lines: the gateway
-  CLAUDE.md "search() entry point", the root CLAUDE.md radarr/sonarr references,
+  CLAUDE.md "search() entry point", the root CLAUDE.md examplemovies/exampleseries references,
   and any remaining Wasmtime/fuel mentions.
 - [ ] **Task 7 — Tests.** Move runtime-only tests into the crate. Keep/port the
   hardening assertions: env isolation, `PR_SET_DUMPABLE`, timeout kind
@@ -226,8 +226,8 @@ Labby files that become thin adapters / shims (no logic):
 
 ## Out of scope (explicitly deferred)
 
-- The ten REST service clients (sonarr/radarr/prowlarr/overseerr/plex/sabnzbd/
-  qbittorrent/tautulli/tracearr/bazarr) and the native-dispatch `CodeModeHost`
+- The ten REST service clients (exampleseries/examplemovies/exampleindexer/examplerequests/examplemedia/exampleusenet/
+  exampledownload/examplemetrics/exampletrace/examplesubtitles) and the native-dispatch `CodeModeHost`
   that would let Code Mode script them. None of those services exist in this repo
   today, and the extraction does not depend on them. They are a *second host* of
   the extracted kernel, planned separately once the crate exists.

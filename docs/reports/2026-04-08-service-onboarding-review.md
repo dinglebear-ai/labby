@@ -4,7 +4,7 @@ Date: 2026-04-08
 
 Scope:
 
-- `radarr`
+- `examplemovies`
 - `bytestash`
 - `unifi`
 
@@ -29,7 +29,7 @@ The main issue is not leaked business logic. The issue is repeated surface-layer
 
 That repetition has already produced drift:
 
-- Radarr uses a bespoke typed CLI
+- ExampleMovies uses a bespoke typed CLI
 - ByteStash and UniFi use an action-driven CLI that mirrors MCP
 - HTTP API handlers are nearly identical copy-paste wrappers
 - MCP service modules duplicate env-based client construction and common param helpers
@@ -46,11 +46,11 @@ The core architectural rule is holding:
 - upstream response parsing lives in `lab-apis`
 - service endpoint methods live in the SDK clients
 
-Radarr is the best expression of this pattern because its SDK is split by resource modules instead of growing into one giant client file.
+ExampleMovies is the best expression of this pattern because its SDK is split by resource modules instead of growing into one giant client file.
 
 Relevant files:
 
-- [client.rs](/home/jmagar/workspace/lab/crates/lab-apis/src/radarr/client.rs)
+- [client.rs](/home/jmagar/workspace/lab/crates/lab-apis/src/examplemovies/client.rs)
 - [client.rs](/home/jmagar/workspace/lab/crates/lab-apis/src/bytestash/client.rs)
 - [client.rs](/home/jmagar/workspace/lab/crates/lab-apis/src/unifi/client.rs)
 
@@ -70,7 +70,7 @@ The HTTP API service modules are thin wrappers around the service dispatchers. T
 
 Relevant files:
 
-- [radarr.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/radarr.rs)
+- [examplemovies.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/examplemovies.rs)
 - [bytestash.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/bytestash.rs)
 - [unifi.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/unifi.rs)
 
@@ -78,7 +78,7 @@ Relevant files:
 
 ### 1. HTTP API handlers are duplicated almost verbatim
 
-The Radarr, ByteStash, and UniFi HTTP API handlers all follow the same structure:
+The ExampleMovies, ByteStash, and UniFi HTTP API handlers all follow the same structure:
 
 - accept `ActionRequest`
 - call the matching MCP dispatcher
@@ -88,7 +88,7 @@ The Radarr, ByteStash, and UniFi HTTP API handlers all follow the same structure
 
 Files:
 
-- [radarr.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/radarr.rs#L12)
+- [examplemovies.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/examplemovies.rs#L12)
 - [bytestash.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/bytestash.rs#L12)
 - [unifi.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/unifi.rs#L12)
 
@@ -100,7 +100,7 @@ Each HTTP API handler receives `State(_state): State<AppState>` and ignores it.
 
 Files:
 
-- [radarr.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/radarr.rs#L13)
+- [examplemovies.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/examplemovies.rs#L13)
 - [bytestash.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/bytestash.rs#L13)
 - [unifi.rs](/home/jmagar/workspace/lab/crates/lab/src/api/services/unifi.rs#L13)
 
@@ -110,7 +110,7 @@ That means the HTTP API surface is not yet using app state as the canonical depe
 
 Each service MCP dispatcher builds its own client from env:
 
-- Radarr: historical `crates/lab/src/mcp/services/radarr.rs`
+- ExampleMovies: historical `crates/lab/src/mcp/services/examplemovies.rs`
 - ByteStash: historical `crates/lab/src/mcp/services/bytestash.rs`
 - UniFi: historical `crates/lab/src/mcp/services/unifi.rs`
 
@@ -125,9 +125,9 @@ This is still surface logic, not service business logic, but it is a strong cand
 
 ### 4. CLI shape has already drifted across services
 
-Radarr uses a bespoke typed subcommand tree:
+ExampleMovies uses a bespoke typed subcommand tree:
 
-- [radarr.rs](/home/jmagar/workspace/lab/crates/lab/src/cli/radarr.rs#L18)
+- [examplemovies.rs](/home/jmagar/workspace/lab/crates/lab/src/cli/examplemovies.rs#L18)
 
 ByteStash and UniFi use free-form `action` plus `key=value` params that mirror MCP:
 
@@ -147,12 +147,12 @@ This is low-risk duplication and should be extracted immediately.
 
 ### 6. MCP service modules are becoming large monoliths
 
-UniFi and Radarr in particular are already large action-switch modules:
+UniFi and ExampleMovies in particular are already large action-switch modules:
 
 - historical `crates/lab/src/mcp/services/unifi.rs`
-- historical `crates/lab/src/mcp/services/radarr.rs`
+- historical `crates/lab/src/mcp/services/examplemovies.rs`
 
-This is survivable for a while, but it is the next likely maintainability pressure point. Radarr’s SDK already solved this pattern well by splitting endpoint logic by resource. MCP may eventually need a lighter version of that organization.
+This is survivable for a while, but it is the next likely maintainability pressure point. ExampleMovies’s SDK already solved this pattern well by splitting endpoint logic by resource. MCP may eventually need a lighter version of that organization.
 
 ## What Is Not The Problem
 

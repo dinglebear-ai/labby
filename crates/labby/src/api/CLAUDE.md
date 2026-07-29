@@ -7,8 +7,8 @@ This directory is the **HTTP transport layer** for `lab`. It's a third peer to t
 The API mirrors the MCP action+subaction dispatch shape so clients can share logic across transports:
 
 ```
-POST /v1/radarr
-{ "action": "movie.search", "params": { "query": "The Matrix" } }
+POST /v1/gateway
+{ "action": "gateway.list", "params": {} }
 ```
 
 - **One route group per service**, mounted at `/v1/<service>`.
@@ -86,7 +86,7 @@ not the JSON request body. That header must not be reintroduced.
 Per-service route modules under `services/` are `#[cfg(feature = "<service>")]`. The router builder conditionally mounts them:
 
 ```rust
-mount_if_enabled!(v1, state, "radarr", "radarr", radarr);
+mount_if_enabled!(v1, state, "<feature>", "<service>", service_module);
 ```
 
 The macro expands to a `#[cfg(feature)]`-gated `router.nest()` call. All feature-gated services are registered this way — never write the expansion by hand.

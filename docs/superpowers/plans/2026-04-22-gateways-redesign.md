@@ -257,7 +257,7 @@ test('gateway filters render checkbox groups instead of selects', () => {
   const markup = renderToStaticMarkup(
     <GatewayFilters
       mode="gateways"
-      search="plex"
+      search="examplemedia"
       gatewayFilters={{ status: ['configured'], source: ['lab'], transport: ['stdio'] }}
       toolFilters={emptyToolFilters}
       onSearchChange={() => {}}
@@ -515,7 +515,7 @@ test('gateway table condensed mode pulls launcher metadata into the identity row
     />,
   )
 
-  assert.match(markup, /https:\/\/plex\.example\.com\/mcp/)
+  assert.match(markup, /https:\/\/examplemedia\.example\.com\/mcp/)
   assert.doesNotMatch(markup, /Reload required to apply policy changes/)
 })
 ```

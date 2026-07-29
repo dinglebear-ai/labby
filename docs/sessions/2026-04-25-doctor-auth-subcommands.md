@@ -93,7 +93,7 @@ cargo test --workspace --all-features
 # Live subcommand verification
 ./target/debug/lab doctor auth          # → 10 checks, all pass, grouped output
 ./target/debug/lab doctor system        # → 43 checks grouped by category
-./target/debug/lab doctor service radarr # → healthy (2ms)
+./target/debug/lab doctor service examplemovies # → healthy (2ms)
 ./target/debug/lab doctor service doesnotexist # → structured error, exit 1
 ./target/debug/lab doctor services      # → 20 services parallel, service names shown
 ./target/debug/lab doctor              # → full audit, 75 findings (unchanged behavior)
@@ -129,7 +129,7 @@ cargo test --workspace --all-features
 | `cargo test --workspace --all-features` | All pass | 2292 passed, 3 ignored | ✓ |
 | `lab doctor auth` | 10 checks, grouped | 10 checks, 5 groups | ✓ |
 | `lab doctor system` | System checks only | 43 findings grouped | ✓ |
-| `lab doctor service radarr` | healthy (fast) | healthy (2ms) | ✓ |
+| `lab doctor service examplemovies` | healthy (fast) | healthy (2ms) | ✓ |
 | `lab doctor service doesnotexist` | structured error | `invalid_param`, exit 1 | ✓ |
 | `lab doctor services` | service names + statuses | 20 services with names | ✓ |
 | `lab doctor` (no args) | full audit unchanged | 75 findings streamed | ✓ |

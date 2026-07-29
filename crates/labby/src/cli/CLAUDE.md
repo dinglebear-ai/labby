@@ -23,8 +23,8 @@ Without `-y` and on a TTY, prompt the user before executing. Without `-y` and **
 Services that support batch operations expose a positional-variadic pattern:
 
 ```bash
-lab radarr add 603 604 605          # → radarr_client.add_many(&[603, 604, 605])
-lab sonarr delete 12 13 14 --yes    # destructive, requires -y
+lab <service> add 603 604 605          # batch create
+lab <service> delete 12 13 14 --yes    # destructive, requires -y
 ```
 
 The CLI collects the args and calls the `_many` variant on the client. The client decides whether to parallelize or serialize.

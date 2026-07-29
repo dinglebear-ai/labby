@@ -9,7 +9,7 @@
 /// Compile-time metadata for one dotted action exposed by a service.
 #[derive(Debug, Clone, Copy)]
 pub struct ActionSpec {
-    /// Dotted action name, e.g. `"movie.search"` or `"queue.list"`.
+    /// Dotted action name, e.g. `"status.get"` or `"health.list"`.
     pub name: &'static str,
     /// One-line human-readable description.
     pub description: &'static str,

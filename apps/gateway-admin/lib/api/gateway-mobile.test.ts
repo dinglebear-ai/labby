@@ -28,14 +28,14 @@ test('buildGatewayEndpointPreview joins stdio command and args for stdio gateway
 test('buildGatewayEndpointPreview returns labby mcp command for in-process gateways', () => {
   const gateway = {
     ...mockGateways[0],
-    name: 'radarr',
+    name: 'gateway_alpha',
     transport: 'in_process' as const,
     config: {
       proxy_resources: true,
     },
   }
 
-  assert.equal(buildGatewayEndpointPreview(gateway), 'labby mcp --services radarr')
+  assert.equal(buildGatewayEndpointPreview(gateway), 'labby mcp --services gateway_alpha')
 })
 
 test('filterGatewayTools matches name and description case-insensitively', () => {

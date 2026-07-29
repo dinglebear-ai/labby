@@ -161,7 +161,7 @@ git commit -m "feat: add shared http request instrumentation"
 - Modify: `crates/lab/src/cli.rs`
 - Modify: `crates/lab/src/cli/unifi.rs`
 - Modify: `crates/lab/src/cli/bytestash.rs`
-- Modify: `crates/lab/src/cli/radarr.rs` if needed for parity
+- Modify: `crates/lab/src/cli/examplemovies.rs` if needed for parity
 - Modify: `crates/lab/src/cli/serve.rs`
 - Modify: `crates/lab/src/api/services/*.rs` via shared pattern or helper
 - Modify: `crates/lab/src/api/router.rs`

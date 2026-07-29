@@ -275,7 +275,10 @@ mod tests {
         assert!(Cli::try_parse_from(["lab", "gateway", "remove", "fixture-http"]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "import", "--all", "--yes"]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "quarantine", "list"]).is_ok());
-        assert!(Cli::try_parse_from(["lab", "gateway", "quarantine", "restore", "plex"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["lab", "gateway", "quarantine", "restore", "gateway-alpha"])
+                .is_ok()
+        );
         assert!(Cli::try_parse_from(["lab", "gateway", "reload"]).is_ok());
         assert!(
             Cli::try_parse_from([

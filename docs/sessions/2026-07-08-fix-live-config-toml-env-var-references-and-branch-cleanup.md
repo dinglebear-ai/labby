@@ -18,9 +18,9 @@ Found and fixed a real gap in a prior session's `LAB_*` → `LABBY_*` environmen
 
 1. User shared a screenshot of the Labby admin UI (`labby.tootie.tv/gateway/?id=google-calendar`) showing a failed connection test with the error: `oauth_required: internal_error: client_secret_env 'LAB_GOOGLE_CLIENT_SECRET' is configured but env var 'LAB_GOOGLE_CLIENT_SECRET' is not set or is empty`.
 2. Identified the root cause: the prior session's `LAB_*` → `LABBY_*` rename covered Rust source, docs, scripts, and the container's `.env` file *keys*, but never touched the *values* stored in the container's `config.toml` — specifically the `bearer_token_env` and `client_secret_env` fields on `[[upstream]]` entries, which store an env var name as a string to look up at connect time.
-3. Ran `incus exec labby -- grep -n "LAB_" /home/labby/.labby/config.toml` and found 15 stale references: 10 `bearer_token_env` values (rustify, rustifi, rustscale, apprise-mcp, rmcp-template, steamy-windows-mcp, github, rustarr, axon, cortex, windows-mcp) and 4 `client_secret_env` values (all `LAB_GOOGLE_CLIENT_SECRET`, on google-drive/gmail/calendar/people).
+3. Ran `incus exec labby -- grep -n "LAB_" /home/labby/.labby/config.toml` and found 15 stale references: 10 `bearer_token_env` values (rustify, rustifi, rustscale, apprise-mcp, rmcp-template, steamy-windows-mcp, github, exampleclient, axon, cortex, windows-mcp) and 4 `client_secret_env` values (all `LAB_GOOGLE_CLIENT_SECRET`, on google-drive/gmail/calendar/people).
 4. Backed up `config.toml` on the container (`config.toml.bak.<timestamp>`), renamed all 15 values with `perl -pi -e 's/"LAB_/"LABBY_/g'`, confirmed zero remaining non-`LABBY_` `LAB_` references, restarted the `labby` service, and confirmed clean startup logs.
-5. Verified via authenticated `/v1/gateway` `gateway.test` calls: all 6 bearer-token upstreams tested (rustify, rustifi, rustscale, github, rustarr, cortex) now connect cleanly with `last_error: null`; `google-calendar` progressed from the hard config error to the normal `oauth_needs_reauth` state; a separate `axon` failure was confirmed to be an unrelated `502 Bad Gateway` from axon's own service, not an env var issue.
+5. Verified via authenticated `/v1/gateway` `gateway.test` calls: all 6 bearer-token upstreams tested (rustify, rustifi, rustscale, github, exampleclient, cortex) now connect cleanly with `last_error: null`; `google-calendar` progressed from the hard config error to the normal `oauth_needs_reauth` state; a separate `axon` failure was confirmed to be an unrelated `502 Bad Gateway` from axon's own service, not an env var issue.
 6. User re-tested `google-calendar` in the browser and saw a follow-up message (`oauth_needs_reauth: ... refresh failed recently; skipping retry until cooldown elapses`), which was explained as the pre-existing `RefreshFailureCache` circuit breaker (from an earlier, unrelated session) correctly withholding retries after the genuine failures caused by the stale env var name; user then completed the browser OAuth re-authorization directly, resolving it.
 7. User directed a full branch/sync cleanup. Fetched with `--prune`, confirmed local `main` already matched `origin/main` exactly (no dirty files, no unpushed commits) from the prior session's `save-to-md` run.
 8. Checked local and remote branches: `main` (current) and `marketplace-no-mcp` (a documented long-lived variant branch, explicitly excluded from cleanup per this repo's `CLAUDE.md`) locally; two additional stale remote branches, `origin/claude/bold-chaum-49f836` and `origin/claude/nostalgic-villani-597ea3`.
@@ -94,7 +94,7 @@ No bead activity observed. `bd ready` was not re-run this session; no beads were
 | area | before | after |
 |---|---|---|
 | Live `config.toml` `bearer_token_env`/`client_secret_env` values | 15 references to non-existent `LAB_*` env vars (broken since the prior session's `.env` key rename) | All 15 renamed to `LABBY_*`, matching the actual `.env` keys |
-| Bearer-token upstreams (rustify, rustifi, rustscale, github, rustarr, cortex) | Failing to connect (env var not found) | Connecting cleanly, `last_error: null` |
+| Bearer-token upstreams (rustify, rustifi, rustscale, github, exampleclient, cortex) | Failing to connect (env var not found) | Connecting cleanly, `last_error: null` |
 | Google OAuth upstreams (drive, gmail, calendar, people) | Hard config error (`client_secret_env` var not found) | Normal `oauth_needs_reauth` state; resolved by user's browser re-authorization |
 | Remote branches | `origin/claude/bold-chaum-49f836`, `origin/claude/nostalgic-villani-597ea3` present (both merged, stale) | Both deleted; only `origin/main` and `origin/marketplace-no-mcp` remain |
 
@@ -104,7 +104,7 @@ No bead activity observed. `bd ready` was not re-run this session; no beads were
 |---|---|---|---|
 | `incus exec labby -- grep -n '"LAB_[^B]' /home/labby/.labby/config.toml` (post-fix) | No matches (all renamed to `LABBY_`) | No output | pass |
 | `incus exec labby -- systemctl is-active labby` (post-restart) | `active` | `active` | pass |
-| `gateway.test` for rustify/rustifi/rustscale/github/rustarr/cortex | `last_error: null` | `last_error: null` for all 6 | pass |
+| `gateway.test` for rustify/rustifi/rustscale/github/exampleclient/cortex | `last_error: null` | `last_error: null` for all 6 | pass |
 | `gateway.test` for google-calendar | Past the config error | `oauth_required: oauth_needs_reauth: authorization required` (expected OAuth state, not a config bug) | pass |
 | `git merge-base --is-ancestor origin/claude/nostalgic-villani-597ea3 origin/main` | Merged | `MERGED` | pass |
 | `gh pr list --head claude/bold-chaum-49f836 --state all` | Merged (to justify deletion despite failed ancestry check) | `196 ... MERGED` | pass |

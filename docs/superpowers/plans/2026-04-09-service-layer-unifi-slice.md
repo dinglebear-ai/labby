@@ -40,9 +40,9 @@ This slice should mirror the current UniFi MCP decomposition instead of collapsi
 - `docs/SERVICE_LAYER_MIGRATION.md`
 
 **Do not modify in this slice unless a test forces it:**
-- `crates/lab/src/cli/radarr.rs`
-- `crates/lab/src/api/services/radarr.rs`
-- `crates/lab/src/mcp/services/radarr.rs`
+- `crates/lab/src/cli/examplemovies.rs`
+- `crates/lab/src/api/services/examplemovies.rs`
+- `crates/lab/src/mcp/services/examplemovies.rs`
 
 ## Constraints
 
@@ -456,11 +456,11 @@ git commit -m "docs: mark unifi service migration complete"
 
 ## Follow-On Slice
 
-After this plan lands, the next slice should be Radarr:
+After this plan lands, the next slice should be ExampleMovies:
 
-- create `crates/lab/src/services/radarr.rs`
-- move Radarr machine-facing dispatch ownership there
-- point MCP and HTTP API at `services::radarr`
+- create `crates/lab/src/services/examplemovies.rs`
+- move ExampleMovies machine-facing dispatch ownership there
+- point MCP and HTTP API at `services::examplemovies`
 - map the typed CLI onto the same shared execution path
 
 That follow-on should be a separate plan because the typed CLI mapping is a distinct concern from UniFi's action-style migration.

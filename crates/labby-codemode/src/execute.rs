@@ -1040,7 +1040,7 @@ mod tests {
         let result = broker
             .call_tool_id(
                 "__lab_internal::describe_types",
-                json!({ "id": "radarr::movie_search" }),
+                json!({ "id": "gateway_alpha::status_get" }),
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &ToolScope::default(),

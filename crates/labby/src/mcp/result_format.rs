@@ -142,7 +142,7 @@ pub(crate) fn format_dispatch_result(
 /// Priority:
 /// 1. Downcast to [`DispatchError`] — gives structured kind + optional extras.
 /// 2. Parse `e.to_string()` as JSON `{ "kind": "…" }` — covers `ToolError`
-///    errors that were serialized to string before entering anyhow (radarr).
+///    errors that were serialized to string before entering anyhow.
 /// 3. Fall back to `"internal_error"`.
 pub(crate) fn extract_error_info(e: &anyhow::Error) -> (&'static str, String, Option<Value>) {
     // 1. Structured DispatchError
@@ -158,7 +158,7 @@ pub(crate) fn extract_error_info(e: &anyhow::Error) -> (&'static str, String, Op
         };
         return (de.kind, de.message.clone(), extra);
     }
-    // 2. ToolError serialized as JSON string (legacy radarr path)
+    // 2. ToolError serialized as a JSON string by legacy service paths.
     let msg = e.to_string();
     if let Ok(v) = serde_json::from_str::<Value>(&msg)
         && let Some(kind_str) = v.get("kind").and_then(|k| k.as_str())

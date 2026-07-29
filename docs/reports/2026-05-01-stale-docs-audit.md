@@ -33,7 +33,7 @@ lanes:
   `docs/generated/`, `docs/features/`, and `docs/design/`.
 - Added explicit ACP Registry coverage/upstream notes and a NotebookLM upstream
   contract note.
-- Updated qBittorrent coverage for username/password login fallback and SID
+- Updated exampledownload coverage for username/password login fallback and SID
   shortcut behavior.
 - Updated service docs for always-on exposed services and Dozzle inventory.
 - Added `dozzle` to the `lab-apis` `all` feature list so the code matches the

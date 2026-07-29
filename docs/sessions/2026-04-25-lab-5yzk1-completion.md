@@ -96,7 +96,7 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M crates/lab-apis/src/extract/client.rs
  M crates/lab-apis/src/mcpregistry.rs
  M crates/lab-apis/src/mcpregistry/types.rs
- M crates/lab-apis/src/qbittorrent.rs
+ M crates/lab-apis/src/exampledownload.rs
  M crates/lab/src/acp.rs
  M crates/lab/src/acp/persistence.rs
  M crates/lab/src/acp/registry.rs
@@ -172,8 +172,8 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M crates/lab/src/dispatch/node.rs
  M crates/lab/src/dispatch/node/send.rs
  M crates/lab/src/dispatch/paperless.rs
- M crates/lab/src/dispatch/plex.rs
- M crates/lab/src/dispatch/radarr.rs
+ M crates/lab/src/dispatch/examplemedia.rs
+ M crates/lab/src/dispatch/examplemovies.rs
  M crates/lab/src/dispatch/unifi.rs
  M crates/lab/src/dispatch/upstream/pool.rs
  M crates/lab/src/dispatch/upstream/transport/websocket.rs
@@ -198,15 +198,15 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  D crates/lab/src/mcp/services/memos.rs
  M crates/lab/src/mcp/services/nodes.rs
  D crates/lab/src/mcp/services/openai.rs
- D crates/lab/src/mcp/services/overseerr.rs
+ D crates/lab/src/mcp/services/examplerequests.rs
  D crates/lab/src/mcp/services/paperless.rs
- D crates/lab/src/mcp/services/plex.rs
- D crates/lab/src/mcp/services/prowlarr.rs
- D crates/lab/src/mcp/services/qbittorrent.rs
+ D crates/lab/src/mcp/services/examplemedia.rs
+ D crates/lab/src/mcp/services/exampleindexer.rs
+ D crates/lab/src/mcp/services/exampledownload.rs
  D crates/lab/src/mcp/services/qdrant.rs
- D crates/lab/src/mcp/services/radarr.rs
- D crates/lab/src/mcp/services/sabnzbd.rs
- D crates/lab/src/mcp/services/sonarr.rs
+ D crates/lab/src/mcp/services/examplemovies.rs
+ D crates/lab/src/mcp/services/exampleusenet.rs
+ D crates/lab/src/mcp/services/exampleseries.rs
  D crates/lab/src/mcp/services/tei.rs
  D crates/lab/src/mcp/services/unifi.rs
  M crates/lab/src/node/enrollment/store.rs
@@ -254,14 +254,14 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M docs/coverage/mcpregistry.md
  M docs/coverage/memos.md
  M docs/coverage/paperless.md
- M docs/coverage/plex.md
- M docs/coverage/qbittorrent.md
+ M docs/coverage/examplemedia.md
+ M docs/coverage/exampledownload.md
  M docs/coverage/qdrant.md
- M docs/coverage/radarr.md
- M docs/coverage/sabnzbd.md
- M docs/coverage/sonarr.md
+ M docs/coverage/examplemovies.md
+ M docs/coverage/exampleusenet.md
+ M docs/coverage/exampleseries.md
  M docs/coverage/tailscale.md
- M docs/coverage/tautulli.md
+ M docs/coverage/examplemetrics.md
  M docs/coverage/tei.md
  M docs/coverage/unifi.md
  M docs/coverage/unraid.md
@@ -409,7 +409,7 @@ cargo build --workspace --all-features
 target/debug/lab apprise invalid_action
 target/debug/lab arcane volume.delete
 target/debug/lab arcane volume.delete -y --dry-run
-target/debug/lab sonarr series.list --dry-run
+target/debug/lab exampleseries series.list --dry-run
 just check
 just build
 ```
@@ -446,7 +446,7 @@ Arguments:
 Command:
 
 ```bash
-rg -n 'mcp::services|action: Option<String>|unwrap_or_else\(\|\| "help"|PossibleValuesParser::new\(ACTIONS' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,overseerr,paperless,plex,prowlarr,qbittorrent,qdrant,sabnzbd,sonarr,tailscale,tautulli,tei,unraid}.rs
+rg -n 'mcp::services|action: Option<String>|unwrap_or_else\(\|\| "help"|PossibleValuesParser::new\(ACTIONS' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,examplerequests,paperless,examplemedia,exampleindexer,exampledownload,qdrant,exampleusenet,exampleseries,tailscale,examplemetrics,tei,unraid}.rs
 ```
 
 Result: exit 1 with no matches, as expected.
@@ -456,7 +456,7 @@ Result: exit 1 with no matches, as expected.
 Command:
 
 ```bash
-rg -n 'default_value = "help", value_parser = action_parser\(ACTIONS\)' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,overseerr,paperless,plex,prowlarr,qbittorrent,qdrant,sabnzbd,sonarr,tailscale,tautulli,tei,unraid}.rs
+rg -n 'default_value = "help", value_parser = action_parser\(ACTIONS\)' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,examplerequests,paperless,examplemedia,exampleindexer,exampledownload,qdrant,exampleusenet,exampleseries,tailscale,examplemetrics,tei,unraid}.rs
 ```
 
 Result: exit 0 with 17 matches, one for each target shim.
@@ -466,7 +466,7 @@ Result: exit 0 with 17 matches, one for each target shim.
 Command:
 
 ```bash
-rg -n 'crate::dispatch::(apprise|arcane|linkding|memos|openai|overseerr|paperless|plex|prowlarr|qbittorrent|qdrant|sabnzbd|sonarr|tailscale|tautulli|tei|unraid)::dispatch' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,overseerr,paperless,plex,prowlarr,qbittorrent,qdrant,sabnzbd,sonarr,tailscale,tautulli,tei,unraid}.rs
+rg -n 'crate::dispatch::(apprise|arcane|linkding|memos|openai|examplerequests|paperless|examplemedia|exampleindexer|exampledownload|qdrant|exampleusenet|exampleseries|tailscale|examplemetrics|tei|unraid)::dispatch' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,examplerequests,paperless,examplemedia,exampleindexer,exampledownload,qdrant,exampleusenet,exampleseries,tailscale,examplemetrics,tei,unraid}.rs
 ```
 
 Result: exit 0 with 17 dispatch-layer matches.
@@ -495,7 +495,7 @@ Command:
 
 ```bash
 set -e
-for svc in apprise arcane linkding memos openai overseerr paperless plex prowlarr qbittorrent qdrant sabnzbd sonarr tailscale tautulli tei unraid; do
+for svc in apprise arcane linkding memos openai examplerequests paperless examplemedia exampleindexer exampledownload qdrant exampleusenet exampleseries tailscale examplemetrics tei unraid; do
   target/debug/lab "$svc" --help | grep -q 'possible values:'
   echo "$svc: possible values ok"
 done
@@ -509,16 +509,16 @@ arcane: possible values ok
 linkding: possible values ok
 memos: possible values ok
 openai: possible values ok
-overseerr: possible values ok
+examplerequests: possible values ok
 paperless: possible values ok
-plex: possible values ok
-prowlarr: possible values ok
-qbittorrent: possible values ok
+examplemedia: possible values ok
+exampleindexer: possible values ok
+exampledownload: possible values ok
 qdrant: possible values ok
-sabnzbd: possible values ok
-sonarr: possible values ok
+exampleusenet: possible values ok
+exampleseries: possible values ok
 tailscale: possible values ok
-tautulli: possible values ok
+examplemetrics: possible values ok
 tei: possible values ok
 unraid: possible values ok
 ```
@@ -555,12 +555,12 @@ Result: exit 0.
 
 ### Non-destructive action field regression check
 
-Command: `target/debug/lab sonarr series.list --dry-run`
+Command: `target/debug/lab exampleseries series.list --dry-run`
 
 Result: exit 0.
 
 ```text
-[dry-run] would dispatch sonarr action `series.list` with params: {}
+[dry-run] would dispatch exampleseries action `series.list` with params: {}
 ```
 
 ### Arcane final help sample

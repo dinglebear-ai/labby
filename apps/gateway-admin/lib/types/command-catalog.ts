@@ -40,7 +40,7 @@ export interface CatalogService {
   name: string
   /** Short human description. */
   description: string
-  /** Category slug (Media, Servarr, Notifications, etc.). */
+  /** Category slug (Network, Notifications, etc.). */
   category: string
   /** Implementation status: `"available"` or `"stub"`. */
   status: string

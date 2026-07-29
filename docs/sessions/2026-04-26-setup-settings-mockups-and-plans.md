@@ -16,7 +16,7 @@ Design and implement the Setup + Settings UI mockups for the Labby web admin too
 
 ## Session Overview
 
-Built two complete interactive HTML mockups for the Setup wizard and Settings page, wired them to the live Rust backend via a new `/dev/api/nodeinfo` endpoint, replaced the Labby logo with a network-node SVG, conducted a code review with three findings fixed, and produced two detailed React implementation plans totaling 23 tasks covering the complete Tier 2 migration.
+Built two complete interactive HTML mockups for the Setup wizard and Settings page, wired them to the live Rust backend via a new `/dev/api/systeminfo` endpoint, replaced the Labby logo with a network-node SVG, conducted a code review with three findings fixed, and produced two detailed React implementation plans totaling 23 tasks covering the complete Tier 2 migration.
 
 ## Sequence of Events
 
@@ -30,8 +30,8 @@ Built two complete interactive HTML mockups for the Setup wizard and Settings pa
 8. Built the Setup wizard mockup (`setup.html`) — 7-step flow, phase 1/2 mechanics, Aurora design system, service icons from selfhst CDN with brand color backgrounds
 9. Fixed multiple visual defects: Nodes panel outside `step2` nesting, Finalize button leaking into phase 1, services overflowing, mobile stepper labels
 10. Built the Settings page mockup (`settings.html`) — nested rail, 5 panels, Doctor/Extract panels
-11. Added `/dev/api/nodeinfo` — unauthenticated Rust endpoint returning `local_host`, `controller`, `master_url` from config.toml plus masked env vars from process environment
-12. Pre-populated all wizard fields from live env (RADARR_URL, PLEX_TOKEN, LAB_MCP_HTTP_TOKEN, etc.)
+11. Added `/dev/api/systeminfo` — unauthenticated Rust endpoint returning `local_host`, `controller`, `master_url` from config.toml plus masked env vars from process environment
+12. Pre-populated all wizard fields from live env (EXAMPLEMOVIES_URL, EXAMPLEMEDIA_TOKEN, LAB_MCP_HTTP_TOKEN, etc.)
 13. Wired PreFlight 1 to `scripts/check-oauth.sh` logic via real `fetch()` calls; verified all 5 checks pass against the live server
 14. Wired `check-oauth.sh` §6–10 into PreFlight 2 (OAuth discovery, JWKS, WWW-Authenticate, callback, service probes)
 15. Updated `docs/design/component-development.md` with the two-tier serving model
@@ -43,7 +43,7 @@ Built two complete interactive HTML mockups for the Setup wizard and Settings pa
 
 - `app/(admin)/dev/route.ts` with `export const dynamic = 'force-static'` caused Next.js to generate `out/dev` (no extension) which axum served as `application/octet-stream` — root cause of the download behavior
 - The other concurrent Claude session (ccd-cli, PID ~136918) was stripping dev-tooling code from `web.rs` because a stale comment said `/dev/*` pages belonged to the Next.js SPA fallback
-- `dotenvy::from_path` loads env vars into the process environment at startup; `std::env::vars()` in the `dev_nodeinfo` handler correctly reads them without pre-sourcing the `.env` file
+- `dotenvy::from_path` loads env vars into the process environment at startup; `std::env::vars()` in the `dev_systeminfo` handler correctly reads them without pre-sourcing the `.env` file
 - `fleetDeviceList` (Nodes panel) was placed outside `step2`'s `</section>` tag — always visible regardless of active step
 - `Finalize & Commit` button used `position: absolute` without `position: relative` on the parent sidebar, allowing it to escape `overflow: hidden` into phase 1
 - The selfhst CDN serves SVG icons at `/svg/{slug}.svg` — prefer over PNG for transparent backgrounds on dark surfaces
@@ -53,7 +53,7 @@ Built two complete interactive HTML mockups for the Setup wizard and Settings pa
 ## Technical Decisions
 
 - **Handlers in `router.rs` not `web.rs`**: The concurrent Claude session actively strips dev-tooling functions from `web.rs`. The `component-development.md` doc was updated to document this constraint explicitly.
-- **`/dev/api/nodeinfo` unauthenticated**: The setup wizard runs before auth is configured; the endpoint only exposes non-secret config values and masked secrets, making unauthenticated access acceptable.
+- **`/dev/api/systeminfo` unauthenticated**: The setup wizard runs before auth is configured; the endpoint only exposes non-secret config values and masked secrets, making unauthenticated access acceptable.
 - **Read env from `std::env::vars()`** not from the `.env` file directly: dotenvy loads all vars into the process environment at startup, making file re-reading redundant and avoiding permission/path issues.
 - **Network-node logo** (Concept D): Communicates multi-node architecture. 6 satellite nodes + layered central hub. Works at all sizes. Implemented as inline SVG in all contexts.
 - **Setup wizard outside `(admin)` group**: Needs its own layout without AppSidebar. React plan creates `app/(wizard)/setup/` route group with AuthBootstrap but no AppSidebar.
@@ -64,7 +64,7 @@ Built two complete interactive HTML mockups for the Setup wizard and Settings pa
 
 | File | Change |
 |------|--------|
-| `crates/lab/src/api/router.rs` | Added `dev_mockup`, `dev_mockup_named`, `dev_nodeinfo` handlers; fixed XSS, secret masking, misleading comment |
+| `crates/lab/src/api/router.rs` | Added `dev_mockup`, `dev_mockup_named`, `dev_systeminfo` handlers; fixed XSS, secret masking, misleading comment |
 | `crates/lab/src/api/web.rs` | Linter rewrites (embedded asset support) |
 | `apps/gateway-admin/public/icon.svg` | Replaced old "L" logo with network-node SVG |
 | `apps/gateway-admin/public/icon-dark-32x32.png` | Regenerated with sharp from new SVG |
@@ -72,7 +72,7 @@ Built two complete interactive HTML mockups for the Setup wizard and Settings pa
 | `apps/gateway-admin/public/apple-icon.png` | Regenerated at 180×180 with sharp |
 | `apps/gateway-admin/app/favicon.ico` | Generated at 32×32 with sharp |
 | `apps/gateway-admin/app/dev/route.ts` | Deleted — was generating `out/dev` file causing download |
-| `docs/design/component-development.md` | Added two-tier serving model, nodeinfo endpoint pattern |
+| `docs/design/component-development.md` | Added two-tier serving model, systeminfo endpoint pattern |
 | `docs/superpowers/specs/2026-04-25-setup-settings-design.md` | New — locked feature design spec |
 | `docs/superpowers/plans/2026-04-26-setup-wizard.md` | New — 14-task React implementation plan |
 | `docs/superpowers/plans/2026-04-26-settings-page.md` | New — 9-task React implementation plan |
@@ -91,9 +91,9 @@ cd apps/gateway-admin && pnpm add -D sharp
 # Generate all icon sizes from SVG
 node -e "const sharp = require('...'); ..." # generates 4 files
 
-# Verify nodeinfo returns env values
-wget -qO- http://localhost:8765/dev/api/nodeinfo | python3 -c "..."
-# Result: env keys: 52, RADARR_URL: http://100.64.0.11:7878
+# Verify systeminfo returns env values
+wget -qO- http://localhost:8765/dev/api/systeminfo | python3 -c "..."
+# Result: env keys: 52, EXAMPLEMOVIES_URL: http://100.64.0.11:7878
 
 # Configure mcporter for Chrome DevTools
 mcporter config add chrome-devtools --command "npx" --arg "-y" --arg "chrome-devtools-mcp@latest" --arg "--browserUrl=http://100.64.0.11:9222" --scope home
@@ -110,7 +110,7 @@ git commit -m "fix(dev): address code review findings"
 | `/dev/setup` downloading as file named "download" | `app/dev/route.ts` + `force-static` generated `out/dev` (no extension) → `application/octet-stream` | Deleted `route.ts`, removed `out/dev` |
 | `/dev/setup` showing gateways page | Trailing slash mismatch: browser requests `/dev/setup/` but route was only `/dev/setup` | Added both `/dev/{name}` and `/dev/{name}/` routes |
 | Linter stripping dev handlers from `router.rs` | Concurrent ccd-cli Claude session treating dev code as unrelated to production | Kept handlers in `router.rs`, documented constraint in `component-development.md`, committed repeatedly |
-| `env keys: 0` in nodeinfo | Binary compiled from stripped version of router.rs; also initial attempt read from file instead of process env | Rebuilt binary; switched to `std::env::vars()` |
+| `env keys: 0` in systeminfo | Binary compiled from stripped version of router.rs; also initial attempt read from file instead of process env | Rebuilt binary; switched to `std::env::vars()` |
 | Nodes panel always visible in phase 2 | `</section>` closing `step2` appeared before the Nodes panel HTML | Moved `</section>` to after the Nodes panel |
 | `TAILSCALE_TOKEN` not loading | Actual env var is `TAILSCALE_API_KEY`, not `TAILSCALE_TOKEN` | Fixed `envKey` in services catalog |
 
@@ -120,7 +120,7 @@ git commit -m "fix(dev): address code review findings"
 |---------|--------|-------|
 | `/dev/setup` | Download prompt | Full 7-step wizard with real preflight checks |
 | `/dev/settings` | Old gateway-focused stub | Full settings rail with 5 panels |
-| `/dev/api/nodeinfo` | Not present | Returns hostname, controller, master_url, masked env vars |
+| `/dev/api/systeminfo` | Not present | Returns hostname, controller, master_url, masked env vars |
 | Labby logo | "L" gradient square | Network-node SVG at all sizes |
 | PreFlight 1 | Generic system checks (disk, port, runtime) | Real HTTP checks matching check-oauth.sh §2–5,§8 |
 | Secret masking | `_API_KEY`, `_TOKEN`, `_PASSWORD`, `_SECRET`, `_CLIENT_SECRET` | Added `_KEY` (covers signing/HMAC keys); removed redundant `_CLIENT_SECRET` |
@@ -132,7 +132,7 @@ git commit -m "fix(dev): address code review findings"
 |---------|----------|--------|--------|
 | `wget -qO- http://localhost:8765/dev/setup \| wc -c` | ~100000 (setup.html) | 114517 | ✅ |
 | `wget -qO- http://localhost:8765/dev/settings \| wc -c` | ~50000 (settings.html) | 51508 | ✅ |
-| `wget -qO- http://localhost:8765/dev/api/nodeinfo` | JSON with controller="node-a" | `{"local_host":"node-a","controller":"node-a","master_url":"http://node-a:8765","env":{...52 keys...}}` | ✅ |
+| `wget -qO- http://localhost:8765/dev/api/systeminfo` | JSON with controller="node-a" | `{"local_host":"node-a","controller":"node-a","master_url":"http://node-a:8765","env":{...52 keys...}}` | ✅ |
 | PreFlight 1 in browser | All 5 checks pass, transition to phase 2 | All pass, sidebar slides in | ✅ |
 | Code review build | No errors | Exit code 0 | ✅ |
 
@@ -140,7 +140,7 @@ git commit -m "fix(dev): address code review findings"
 
 - **Linter stripping routes**: The concurrent Claude session actively rewrites `router.rs`. Each deploy requires verifying the binary contains `superpowers/brainstorm` strings. Rollback: `git revert` the fix commit and rebuild.
 - **Deferred writes**: Finalize & Commit currently logs to console only. No data loss risk but users expect persistence. Resolves when lab-bg3e.3 ships.
-- **Unauthenticated nodeinfo**: `/dev/api/nodeinfo` is intentionally unauthenticated but returns service topology (URLs, hostnames). Acceptable for localhost-only setups; risk increases if `LAB_MCP_HTTP_HOST=0.0.0.0` without auth.
+- **Unauthenticated systeminfo**: `/dev/api/systeminfo` is intentionally unauthenticated but returns service topology (URLs, hostnames). Acceptable for localhost-only setups; risk increases if `LAB_MCP_HTTP_HOST=0.0.0.0` without auth.
 
 ## Decisions Not Taken
 
@@ -172,5 +172,5 @@ git commit -m "fix(dev): address code review findings"
 2. **Execute Settings Page plan** (`docs/superpowers/plans/2026-04-26-settings-page.md`) — 9 tasks, depends on Tasks 1–6 of Setup plan (shared components)
 3. **Lab-bg3e.3** (setup dispatch service) — required before Finalize & Commit writes real data
 4. **Lab-bg3e.1** (UiSchema/PluginMeta extensions) — currently in progress, required before `<ServiceForm>` can render schema-driven fields
-5. **Tests for `dev_nodeinfo`** — code review flagged missing tests for auth bypass, masking, and prefix filtering (deferred)
+5. **Tests for `dev_systeminfo`** — code review flagged missing tests for auth bypass, masking, and prefix filtering (deferred)
 6. **Convert blocking `std::fs` in `dev_mockup_response`** to async tokio equivalents (deferred — dev-only, low impact)

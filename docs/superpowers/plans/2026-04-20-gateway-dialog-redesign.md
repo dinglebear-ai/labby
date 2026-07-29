@@ -98,17 +98,17 @@ const SERVICE_BRANDS: Record<string, string> = {
   linkding: '#7C5CBF',
   memos: '#3478F6',
   openai: '#10A37F',
-  overseerr: '#E5870A',
+  examplerequests: '#E5870A',
   paperless: '#17BC6C',
-  plex: '#CC7B19',
-  prowlarr: '#F16529',
-  qbittorrent: '#2F99E0',
+  examplemedia: '#CC7B19',
+  exampleindexer: '#F16529',
+  exampledownload: '#2F99E0',
   qdrant: '#DC244C',
-  radarr: '#F0BC40',
-  sabnzbd: '#F4A623',
-  sonarr: '#35C5F4',
+  examplemovies: '#F0BC40',
+  exampleusenet: '#F4A623',
+  exampleseries: '#35C5F4',
   tailscale: '#1E5EFF',
-  tautulli: '#D9A21B',
+  examplemetrics: '#D9A21B',
   tei: '#FF9D00',
   unifi: '#0559C9',
   unraid: '#F45B00',
@@ -125,17 +125,17 @@ const SERVICE_LOGOS: Record<string, string | null> = {
   memos: null,
   tei: null,
   openai: siw('openai'),
-  overseerr: siw('overseerr'),
+  examplerequests: siw('examplerequests'),
   paperless: siw('paperlessngx'),
-  plex: siw('plex'),
-  prowlarr: siw('prowlarr'),
-  qbittorrent: siw('qbittorrent'),
+  examplemedia: siw('examplemedia'),
+  exampleindexer: siw('exampleindexer'),
+  exampledownload: siw('exampledownload'),
   qdrant: siw('qdrant'),
-  radarr: siw('radarr'),
-  sabnzbd: siw('sabnzbd'),
-  sonarr: siw('sonarr'),
+  examplemovies: siw('examplemovies'),
+  exampleusenet: siw('exampleusenet'),
+  exampleseries: siw('exampleseries'),
   tailscale: siw('tailscale'),
-  tautulli: siw('tautulli'),
+  examplemetrics: siw('examplemetrics'),
   unifi: siw('ubiquiti'),
   unraid: siw('unraid'),
 }
@@ -528,17 +528,17 @@ const SERVICE_ENV_PREFIXES: Record<string, string> = {
   LINKDING: 'linkding',
   MEMOS: 'memos',
   OPENAI: 'openai',
-  OVERSEERR: 'overseerr',
+  EXAMPLEREQUESTS: 'examplerequests',
   PAPERLESS: 'paperless',
-  PLEX: 'plex',
-  PROWLARR: 'prowlarr',
-  QBITTORRENT: 'qbittorrent',
+  EXAMPLEMEDIA: 'examplemedia',
+  EXAMPLEINDEXER: 'exampleindexer',
+  EXAMPLEDOWNLOAD: 'exampledownload',
   QDRANT: 'qdrant',
-  RADARR: 'radarr',
-  SABNZBD: 'sabnzbd',
-  SONARR: 'sonarr',
+  EXAMPLEMOVIES: 'examplemovies',
+  EXAMPLEUSENET: 'exampleusenet',
+  EXAMPLESERIES: 'exampleseries',
   TAILSCALE: 'tailscale',
-  TAUTULLI: 'tautulli',
+  EXAMPLEMETRICS: 'examplemetrics',
   TEI: 'tei',
   UNIFI: 'unifi',
   UNRAID: 'unraid',
@@ -626,7 +626,7 @@ Locate the closing `</div>` of the scrollable body (`<div className="flex-1 min-
     <div className="relative">
       <textarea
         className="w-full min-h-[180px] rounded-md border border-border bg-background px-3 py-2 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-        placeholder={'RADARR_URL=http://localhost:7878\nRADARR_API_KEY=abc123'}
+        placeholder={'EXAMPLEMOVIES_URL=http://localhost:7878\nEXAMPLEMOVIES_API_KEY=abc123'}
         value={envText}
         onChange={(e) => setEnvText(e.target.value)}
       />
@@ -1208,10 +1208,10 @@ cd apps/gateway-admin && npm run dev
 - Switch to Custom tab
 - Confirm ENV chip is visible
 - Click ENV — confirm drawer slides out from the right edge of the dialog, right corners of dialog flatten
-- Paste `RADARR_URL=http://localhost:7878\nRADARR_API_KEY=testkey` into ENV textarea
+- Paste `EXAMPLEMOVIES_URL=http://localhost:7878\nEXAMPLEMOVIES_API_KEY=testkey` into ENV textarea
 - Confirm "Valid · 1 service" badge appears
-- Confirm "radarr" pill appears
-- Click "Apply to form" — confirm Name field populates with "radarr", URL populates with `http://localhost:7878`, drawer closes
+- Confirm "examplemovies" pill appears
+- Click "Apply to form" — confirm Name field populates with "examplemovies", URL populates with `http://localhost:7878`, drawer closes
 - Click ENV chip again — confirm it closes (toggle behavior)
 
 - [ ] **Step 4: Verify Custom tab — JSON drawer**

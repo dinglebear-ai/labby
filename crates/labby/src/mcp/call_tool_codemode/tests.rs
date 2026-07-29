@@ -109,7 +109,7 @@ fn code_mode_description_contains_protocol_contract() {
             hint: None,
         },
         CodeModeUpstreamDescription {
-            name: "rustarr".to_string(),
+            name: "gateway-alpha".to_string(),
             hint: None,
         },
     ]);
@@ -129,7 +129,7 @@ fn code_mode_description_contains_protocol_contract() {
     assert!(description.contains("Never guess helper or method names"));
     assert!(description.contains("Available upstream namespaces"));
     assert!(description.contains("- `github`"));
-    assert!(description.contains("- `rustarr`"));
+    assert!(description.contains("- `gateway-alpha`"));
     assert!(description.contains("writeArtifact"));
     assert!(description.contains("call_budget_exceeded"));
     assert!(
@@ -158,7 +158,7 @@ fn code_mode_description_renders_approved_upstream_hints() {
             hint: Some("search repositories, issues, pull requests, and code".to_string()),
         },
         CodeModeUpstreamDescription {
-            name: "rustarr".to_string(),
+            name: "gateway-alpha".to_string(),
             hint: None,
         },
     ]);
@@ -166,7 +166,7 @@ fn code_mode_description_renders_approved_upstream_hints() {
     assert!(
         description.contains("- `github` -- search repositories, issues, pull requests, and code")
     );
-    assert!(description.contains("- `rustarr`"));
+    assert!(description.contains("- `gateway-alpha`"));
 }
 
 #[test]

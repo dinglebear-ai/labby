@@ -163,7 +163,7 @@ The following files were dirty at session save time. Some changes came from this
 | `crates/lab-apis/src/acp_registry/client.rs` | modified | ACP Registry client enrichment work. |
 | `crates/lab-apis/src/acp_registry/types.rs` | modified | ACP Registry type enrichment work. |
 | `crates/lab-apis/src/extract/client.rs` | modified | Dirty at save time; exact purpose not re-audited during save. |
-| `crates/lab-apis/src/extract/parsers/radarr.rs` | modified | Dirty at save time; exact purpose not re-audited during save. |
+| `crates/lab-apis/src/extract/parsers/examplemovies.rs` | modified | Dirty at save time; exact purpose not re-audited during save. |
 | `crates/lab-apis/src/extract/runtime.rs` | modified | Dirty at save time; exact purpose not re-audited during save. |
 | `crates/lab-apis/src/extract/ssh_config.rs` | modified | Dirty at save time; exact purpose not re-audited during save. |
 | `crates/lab-apis/src/extract/transport.rs` | modified | Dirty at save time; exact purpose not re-audited during save. |
@@ -229,7 +229,7 @@ The following files were dirty at session save time. Some changes came from this
 | `git rev-parse --short HEAD` | Returned `2f6d76c6`. |
 | `git log --oneline -5` | Returned recent commits headed by `2f6d76c6 docs: setup+settings feature design spec + component-development doc update`. |
 | `git status --short` | Returned the dirty file list captured in **Files Modified**. |
-| `git log --oneline --name-only -10` | Returned recent commit/file history, including Marketplace v2, dev mockup, nodeinfo, and component-development commits. |
+| `git log --oneline --name-only -10` | Returned recent commit/file history, including Marketplace v2, dev mockup, systeminfo, and component-development commits. |
 | `pwd` | Returned `/home/jmagar/workspace/lab`. |
 | `git worktree list | grep $(pwd) | head -1` | Returned `/home/jmagar/workspace/lab                                   2f6d76c6 [bd-security/marketplace-p1-fixes]`. |
 | `gh pr view --json number,title,url 2>/dev/null || echo "none"` | Returned PR #29 JSON for the P1 Marketplace security fixes PR. |

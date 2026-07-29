@@ -44,14 +44,14 @@ const WINDOW_SCALE: Record<MetricsWindow, number> = { '1h': 1, '24h': 14, '7d': 
 
 const MOCK_TOOLS: Array<{ name: string; weight: number; failRate: number; actions: string[] }> = [
   { name: 'code_execute', weight: 26, failRate: 0.08, actions: ['call_tool'] },
-  { name: 'radarr', weight: 19, failRate: 0.03, actions: ['movie.search', 'movie.add', 'queue.list'] },
-  { name: 'sonarr', weight: 17, failRate: 0.04, actions: ['series.search', 'episode.list', 'queue.list'] },
+  { name: 'unifi', weight: 19, failRate: 0.03, actions: ['clients.list', 'devices.list', 'health.get'] },
+  { name: 'apprise', weight: 17, failRate: 0.04, actions: ['notify.send', 'config.list'] },
   { name: 'cortex', weight: 14, failRate: 0.06, actions: ['logs.search', 'logs.stats'] },
   { name: 'code_search', weight: 12, failRate: 0.02, actions: ['call_tool'] },
   { name: 'tailscale', weight: 9, failRate: 0.05, actions: ['devices.list', 'device.get'] },
   { name: 'gotify', weight: 6, failRate: 0.01, actions: ['message.send'] },
   { name: 'unraid', weight: 4, failRate: 0.09, actions: ['array.status', 'docker.list'] },
-  { name: 'qbittorrent', weight: 2, failRate: 0.12, actions: ['torrent.list', 'torrent.add'] },
+  { name: 'axon', weight: 2, failRate: 0.12, actions: ['search', 'query'] },
 ]
 
 const MOCK_AGENTS: Array<{
@@ -78,9 +78,9 @@ const ERROR_KINDS = ['rate_limited', 'auth_failed', 'not_found', 'validation_fai
 
 /** Tool → upstream server, for per-server traffic rollups. */
 const TOOL_UPSTREAM: Record<string, string> = {
-  radarr: 'media-stack',
-  sonarr: 'media-stack',
-  qbittorrent: 'downloads',
+  unifi: 'network',
+  apprise: 'notifications',
+  axon: 'knowledge',
   code_execute: 'code-mode',
   code_search: 'code-mode',
   cortex: 'cortex',

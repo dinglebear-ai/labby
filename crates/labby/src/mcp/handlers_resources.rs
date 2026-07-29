@@ -2435,8 +2435,8 @@ for (const value of [
     async fn protected_scope_omits_disallowed_service_action_resources() {
         let server =
             resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "media",
-                ["sonarr"],
+                "ops",
+                ["gateway-alpha"],
                 ["gateway"],
                 false,
             ))
@@ -2526,8 +2526,8 @@ for (const value of [
     async fn protected_scope_hides_code_mode_app_resources_when_disabled() {
         let server =
             resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "media",
-                ["sonarr"],
+                "ops",
+                ["gateway-alpha"],
                 ["gateway"],
                 false,
             ))
@@ -2559,8 +2559,8 @@ for (const value of [
     async fn protected_scope_denies_code_mode_app_resource_read_when_disabled() {
         let server =
             resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "media",
-                ["sonarr"],
+                "ops",
+                ["gateway-alpha"],
                 ["gateway"],
                 false,
             ))
@@ -2591,8 +2591,8 @@ for (const value of [
     async fn protected_scope_denies_disallowed_service_action_resource_read() {
         let server =
             resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "media",
-                ["sonarr"],
+                "ops",
+                ["gateway-alpha"],
                 ["gateway"],
                 false,
             ))
@@ -2621,8 +2621,8 @@ for (const value of [
     async fn protected_scope_allows_allowed_service_action_resource_read() {
         let server =
             resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "media",
-                ["sonarr"],
+                "ops",
+                ["gateway-alpha"],
                 ["gateway"],
                 false,
             ))
@@ -2720,8 +2720,8 @@ for (const value of [
     async fn protected_scope_history_resource_hides_unscoped_entries() {
         let server =
             code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "media",
-                ["sonarr"],
+                "ops",
+                ["gateway-alpha"],
                 ["gateway"],
                 true,
             ))

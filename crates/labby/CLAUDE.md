@@ -43,9 +43,9 @@ When adding new services, use the full `dispatch/<service>/` directory layout fr
 
 ## CLI: Two Implementation Tiers
 
-**Tier 1 (typed):** `radarr` — typed `clap` `Subcommand` enum with named variants per operation. `radarr.rs` is the reference. (`audit` and `scaffold` are infrastructure commands, not service clients.)
-
-**Tier 2 (dispatch-backed thin shims):** All other services — call into `dispatch/<service>/dispatch.rs` directly with a flat action string extracted from CLI args. When a service warrants richer UX, replace with typed subcommands.
+CLI commands are thin adapters over shared dispatch. Service-specific parsing
+belongs in `cli/<service>.rs`; operation semantics stay in
+`dispatch/<service>/`.
 
 ## ToolError Invariants (Critical)
 

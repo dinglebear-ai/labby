@@ -1203,7 +1203,7 @@ Usage: install-plugin [OPTIONS] <SERVICE>
 
 Arguments:
   <SERVICE>
-          Service name, for example `plex` or `radarr`
+          Service name, for example `unifi` or `apprise`
 
 Options:
       --json
@@ -1234,7 +1234,7 @@ Usage: uninstall-plugin [OPTIONS] <SERVICE>
 
 Arguments:
   <SERVICE>
-          Service name, for example `plex` or `radarr`
+          Service name, for example `unifi` or `apprise`
 
 Options:
       --json

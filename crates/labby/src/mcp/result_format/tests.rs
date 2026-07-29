@@ -122,9 +122,9 @@ async fn extract_error_info_preserves_unknown_action_from_real_dispatch_downcast
 fn extract_error_info_preserves_unknown_action_from_json_fallback() {
     let serialized = serde_json::json!({
         "kind": "unknown_action",
-        "message": "unknown action `movie.serch` for service `radarr`",
-        "valid": ["movie.search", "movie.add"],
-        "hint": "movie.search"
+        "message": "unknown action `status.gt` for service `gateway_alpha`",
+        "valid": ["status.get", "status.update"],
+        "hint": "status.get"
     })
     .to_string();
     let anyhow_error = anyhow::anyhow!(serialized);
@@ -132,14 +132,17 @@ fn extract_error_info_preserves_unknown_action_from_json_fallback() {
     let (kind, message, extra) = extract_error_info(&anyhow_error);
 
     assert_eq!(kind, "unknown_action");
-    assert_eq!(message, "unknown action `movie.serch` for service `radarr`");
+    assert_eq!(
+        message,
+        "unknown action `status.gt` for service `gateway_alpha`"
+    );
     let extra = extra.expect("json fallback should preserve structured extras");
     assert_eq!(
         extra["valid"],
-        serde_json::json!(["movie.search", "movie.add"])
+        serde_json::json!(["status.get", "status.update"])
     );
     assert_eq!(extra["param"], Value::Null);
-    assert_eq!(extra["hint"], serde_json::json!("movie.search"));
+    assert_eq!(extra["hint"], serde_json::json!("status.get"));
 }
 
 /// Every kind that `ToolError::kind()` can return must have an explicit arm

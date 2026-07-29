@@ -6,7 +6,7 @@
 
 Define the product and backend contract for treating onboarded Lab services as virtual gateway servers inside Labby.
 
-For this design, Lab-owned services such as `plex`, `unraid`, `overseerr`, and similar integrations should appear and behave like regular MCP gateway servers from the operator's point of view. The immediate goal is not to build service-specific dashboards or richer API workflows. The goal is to make service onboarding, enablement, and MCP exposure management feel identical to managing any other server in the gateway.
+For this design, Lab-owned services such as `examplemedia`, `unraid`, `examplerequests`, and similar integrations should appear and behave like regular MCP gateway servers from the operator's point of view. The immediate goal is not to build service-specific dashboards or richer API workflows. The goal is to make service onboarding, enablement, and MCP exposure management feel identical to managing any other server in the gateway.
 
 ## Scope
 
@@ -51,8 +51,8 @@ Canonical service connection information already understood by Lab's existing su
 
 Examples:
 
-- `PLEX_URL`
-- `PLEX_TOKEN`
+- `EXAMPLEMEDIA_URL`
+- `EXAMPLEMEDIA_TOKEN`
 - `UNRAID_URL`
 - `UNRAID_API_KEY`
 
@@ -141,11 +141,11 @@ This tab presents supported Lab services as icon tiles in a selection grid.
 
 Examples:
 
-- Plex
+- ExampleMedia
 - Unraid
-- Overseerr
+- ExampleRequests
 - Synapse
-- Tautulli
+- ExampleMetrics
 
 Selecting a tile opens a service-specific config step driven by that service's declared config requirements.
 
@@ -253,9 +253,9 @@ For Lab-backed virtual servers, MCP exposure policy must be able to express:
 
 Examples:
 
-- expose all `plex` actions
-- expose only `plex` actions matching a selected subset
-- expose `overseerr` as a server but filter out administrative actions
+- expose all `examplemedia` actions
+- expose only `examplemedia` actions matching a selected subset
+- expose `examplerequests` as a server but filter out administrative actions
 
 ### Enforcement contract
 

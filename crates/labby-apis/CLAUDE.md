@@ -1,6 +1,6 @@
 # lab-apis — Pure SDK Crate
 
-HTTP client library for feature-gated homelab services, plus always-on bootstrap/operator modules such as `device_runtime`, `marketplace`, `acp`, and `doctor`. No binary dependencies (`clap`, `rmcp`,
+HTTP client library for reusable domain clients, plus always-on operator modules such as `doctor` and `setup`. No binary dependencies (`clap`, `rmcp`,
 `ratatui`, `anyhow`, `tabled` are forbidden here — they live in `lab` only).
 
 Sub-docs for key sub-modules:
@@ -8,10 +8,9 @@ Sub-docs for key sub-modules:
 
 ## Feature Flags
 
-Opt-in feature count can drift as registry/bootstrap integrations are added. `core`, `device_runtime`, `marketplace`, `acp`, and `doctor` are always compiled — no gate possible.
+`core`, `doctor`, and `setup` are always compiled. The `all` feature is retained
+as an empty compatibility aggregate for workspace-wide build commands.
 
-- `servarr` is pulled in **transitively** by `radarr`, `sonarr`, `prowlarr` — do not list it
-  in `all` directly.
 - `test-utils` is a reserved marker flag; nothing in the crate is currently gated on it.
 - Default features are set by the `lab` binary crate, not here.
 
@@ -21,8 +20,7 @@ Every service follows: `foo.rs` (module declaration + `META` + `ServiceClient` i
 `foo/` (client.rs, types.rs, error.rs). No `mod.rs` files anywhere.
 
 When a service grows large, `client.rs` becomes a module declaration file with `pub mod`
-sub-modules (`client/chat.rs`, etc.) — same pattern applied recursively. `openai` and
-`overseerr` are the current examples.
+sub-modules (`client/chat.rs`, etc.) — same pattern applied recursively.
 
 **`ServiceClient` impl lives in `foo.rs`, not `client.rs`.** `META` lives there too.
 

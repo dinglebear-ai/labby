@@ -2720,12 +2720,12 @@ root = "/srv/labby-workspace"
 
     // ─── write_service_creds tests ──────────────────────────────────────────
 
-    fn radarr_cred() -> EnvCredential {
+    fn example_cred() -> EnvCredential {
         EnvCredential {
-            service: "radarr".to_owned(),
+            service: "example".to_owned(),
             url: Some("http://localhost:7878".to_owned()),
             secret: Some("abc123".to_owned()),
-            env_field: "RADARR_API_KEY".to_owned(),
+            env_field: "EXAMPLE_API_KEY".to_owned(),
         }
     }
 
@@ -2733,12 +2733,12 @@ root = "/srv/labby-workspace"
     fn write_service_creds_adds_new_keys() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        let outcome = write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
         assert!(outcome.skipped.is_empty());
         assert_eq!(outcome.written, 2);
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("RADARR_URL=http://localhost:7878"));
-        assert!(content.contains("RADARR_API_KEY=abc123"));
+        assert!(content.contains("EXAMPLE_URL=http://localhost:7878"));
+        assert!(content.contains("EXAMPLE_API_KEY=abc123"));
     }
 
     #[test]
@@ -2746,7 +2746,7 @@ root = "/srv/labby-workspace"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "# my comment\nOTHER=val\n").unwrap();
-        write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        write_service_creds(&path, &[example_cred()], false).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("# my comment"));
         assert!(content.contains("OTHER=val"));
@@ -2756,8 +2756,8 @@ root = "/srv/labby-workspace"
     fn write_service_creds_conflict_skip_without_force() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        std::fs::write(&path, "RADARR_API_KEY=oldvalue\n").unwrap();
-        let outcome = write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        std::fs::write(&path, "EXAMPLE_API_KEY=oldvalue\n").unwrap();
+        let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
         assert!(!outcome.skipped.is_empty());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("oldvalue"));
@@ -2768,8 +2768,8 @@ root = "/srv/labby-workspace"
     fn write_service_creds_conflict_overwrite_with_force() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        std::fs::write(&path, "RADARR_API_KEY=oldvalue\n").unwrap();
-        let outcome = write_service_creds(&path, &[radarr_cred()], true).unwrap();
+        std::fs::write(&path, "EXAMPLE_API_KEY=oldvalue\n").unwrap();
+        let outcome = write_service_creds(&path, &[example_cred()], true).unwrap();
         assert!(outcome.skipped.is_empty());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("abc123"));
@@ -2780,11 +2780,11 @@ root = "/srv/labby-workspace"
     fn write_service_creds_is_idempotent_when_matching() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        write_service_creds(&path, &[example_cred()], false).unwrap();
         // Re-running with the exact same creds must be a written=0 no-op --
         // this is the signal crate::dispatch::gateway::config_store relies on
         // to skip a service-client refresh cycle.
-        let outcome = write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
         assert_eq!(outcome.written, 0);
         assert!(outcome.backup_path.is_none());
     }
@@ -3198,14 +3198,14 @@ upstream = " telemetry "
     fn protected_route_gateway_subset_target_parses() {
         let toml = r#"
 [[protected_mcp_routes]]
-name = "media"
+name = "ops"
 public_host = "mcp.example.com"
-public_path = "/media"
-scopes = ["mcp:media"]
+public_path = "/ops"
+scopes = ["mcp:ops"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr", "radarr", " prowlarr "]
+upstreams = ["gateway-alpha", "gateway-beta", " gateway-gamma "]
 services = ["gateway"]
 expose_code_mode = true
 "#;
@@ -3213,12 +3213,15 @@ expose_code_mode = true
         let cfg = parse_normalized_config(toml);
         let route = &cfg.protected_mcp_routes[0];
 
-        assert_eq!(route.name, "media");
+        assert_eq!(route.name, "ops");
         assert_eq!(route.backend_url, "");
         assert_eq!(route.upstream, None);
         assert!(route.is_gateway_subset());
         let target = route.gateway_subset_target().expect("gateway subset");
-        assert_eq!(target.upstreams, vec!["sonarr", "radarr", "prowlarr"]);
+        assert_eq!(
+            target.upstreams,
+            vec!["gateway-alpha", "gateway-beta", "gateway-gamma"]
+        );
         assert_eq!(target.services, vec!["gateway"]);
         assert!(target.expose_code_mode);
     }
@@ -3253,7 +3256,7 @@ backend_url = "http://10.0.0.2:3100/mcp"
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr"]
+upstreams = ["gateway-beta"]
 "#;
 
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
@@ -3275,7 +3278,7 @@ public_path = "/bad"
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr", " "]
+upstreams = ["gateway-alpha", " "]
 "#;
 
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
@@ -3295,20 +3298,20 @@ upstreams = ["sonarr", " "]
 [[protected_mcp_routes]]
 name = "media-a"
 public_host = "mcp-a.example.com"
-public_path = "/media"
+public_path = "/ops"
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr"]
+upstreams = ["gateway-alpha"]
 
 [[protected_mcp_routes]]
 name = "media-b"
 public_host = "mcp-b.example.com"
-public_path = "/media"
+public_path = "/ops"
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["radarr"]
+upstreams = ["gateway-alpha"]
 "#;
 
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
@@ -3388,13 +3391,13 @@ kind = "gateway_subset"
     fn config_validation_rejects_unknown_gateway_subset_targets() {
         let toml = r#"
 [[upstream]]
-name = "sonarr"
-url = "https://sonarr.example.com/mcp"
+name = "gateway-alpha"
+url = "https://gateway_alpha.example.com/mcp"
 
 [[protected_mcp_routes]]
-name = "media"
+name = "ops"
 public_host = "mcp.example.com"
-public_path = "/media"
+public_path = "/ops"
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"

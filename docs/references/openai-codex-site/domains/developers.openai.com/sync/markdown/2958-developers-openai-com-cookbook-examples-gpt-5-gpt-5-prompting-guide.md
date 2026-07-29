@@ -143,7 +143,7 @@ GPT-5 is trained to have excellent baseline aesthetic taste alongside its rigoro
 * Styling / UI: Tailwind CSS, shadcn/ui, Radix Themes
 * Icons: Material Symbols, Heroicons, Lucide
 * Animation: Motion
-* Fonts: San Serif, Inter, Geist, Mona Sans, IBM Plex Sans, Manrope
+* Fonts: San Serif, Inter, Geist, Mona Sans, IBM Sans, Manrope
 #### Zero-to-one app generation
 GPT-5 is excellent at building applications in one shot. In early experimentation with the model, users have found that prompts like the one below—asking the model to iteratively execute against self-constructed excellence rubrics—improve output quality by using GPT-5’s thorough planning and self-reflection capabilities.
 ```

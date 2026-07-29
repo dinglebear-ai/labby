@@ -401,7 +401,7 @@ test('selects the latest history entry and shows failure metadata', async () => 
             error_kind: 'upstream_timeout',
             calls: [
               {
-                id: 'rustarr::qbittorrent.transfer_info',
+                id: 'gateway_alpha::downloader_beta.transfer_info',
                 ok: false,
                 elapsed_ms: 1010,
                 error_kind: 'upstream_timeout',
@@ -418,8 +418,8 @@ test('selects the latest history entry and shows failure metadata', async () => 
   assert.match(container.textContent ?? '', /upstream_timeout/)
   assert.match(container.textContent ?? '', /1.24 s/)
   // upstream/tool are derived from the history call id.
-  assert.match(container.textContent ?? '', /rustarr/)
-  assert.match(container.textContent ?? '', /qbittorrent.transfer_info/)
+  assert.match(container.textContent ?? '', /gateway_alpha/)
+  assert.match(container.textContent ?? '', /downloader_beta.transfer_info/)
   assert.match(container.textContent ?? '', /Result not retained in history/)
   assert.match(container.textContent ?? '', /#6/)
   assert.match(container.textContent ?? '', /#7/)
@@ -597,17 +597,17 @@ test('renders a failed-run trace with auto-expanded failing call', async () => {
         elapsed_ms: 30012,
         calls: [
           {
-            id: 'rustarr::sonarr.series.list',
-            namespace: 'rustarr',
-            tool: 'sonarr.series.list',
+            id: 'gateway_alpha::hidden_upstream.series.list',
+            namespace: 'gateway_alpha',
+            tool: 'hidden_upstream.series.list',
             ok: true,
             elapsed_ms: 214,
             start_ms: 0,
           },
           {
-            id: 'rustarr::qbittorrent.transfer_info',
-            namespace: 'rustarr',
-            tool: 'qbittorrent.transfer_info',
+            id: 'gateway_alpha::downloader_beta.transfer_info',
+            namespace: 'gateway_alpha',
+            tool: 'downloader_beta.transfer_info',
             ok: false,
             elapsed_ms: 1010,
             start_ms: 226,

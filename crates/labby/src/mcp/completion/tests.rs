@@ -13,7 +13,7 @@ use std::pin::Pin;
 
 const TEST_ACTIONS_ONE: &[ActionSpec] = &[
     ActionSpec {
-        name: "queue.list",
+        name: "health.list",
         description: "List queue",
         destructive: false,
         requires_admin: false,
@@ -21,7 +21,7 @@ const TEST_ACTIONS_ONE: &[ActionSpec] = &[
         returns: "object",
     },
     ActionSpec {
-        name: "movie.search",
+        name: "status.get",
         description: "Search movies",
         destructive: false,
         requires_admin: false,
@@ -32,7 +32,7 @@ const TEST_ACTIONS_ONE: &[ActionSpec] = &[
 
 const TEST_ACTIONS_TWO: &[ActionSpec] = &[
     ActionSpec {
-        name: "calendar.list",
+        name: "metrics.list",
         description: "List calendar",
         destructive: false,
         requires_admin: false,
@@ -40,8 +40,8 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
         returns: "object",
     },
     ActionSpec {
-        name: "movie.lookup",
-        description: "Look up movie",
+        name: "status.inspect",
+        description: "Inspect status",
         destructive: false,
         requires_admin: false,
         params: &[],
@@ -59,18 +59,18 @@ fn noop_dispatch(
 fn completion_test_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(RegisteredService {
-        name: "radarr",
-        description: "Movies",
-        category: "media",
+        name: "gateway-alpha",
+        description: "Gateway alpha",
+        category: "ops",
         kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
         status: "available",
         actions: TEST_ACTIONS_ONE,
         dispatch: noop_dispatch,
     });
     registry.register(RegisteredService {
-        name: "sonarr",
-        description: "Shows",
-        category: "media",
+        name: "gateway-beta",
+        description: "Gateway beta",
+        category: "ops",
         kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
         status: "available",
         actions: TEST_ACTIONS_TWO,
@@ -94,11 +94,11 @@ fn completion_run_action_empty_action_prefix_uses_cached_action_names() {
 fn completion_run_action_action_prefix_filters_cached_action_names() {
     let registry = completion_test_registry();
 
-    let completion = complete_prompt_arg(&registry, "run-action", "action", "movie.");
+    let completion = complete_prompt_arg(&registry, "run-action", "action", "status.");
 
     assert_eq!(
         completion.values,
-        vec!["movie.lookup".to_string(), "movie.search".to_string()]
+        vec!["status.get".to_string(), "status.inspect".to_string()]
     );
 }
 
@@ -106,11 +106,11 @@ fn completion_run_action_action_prefix_filters_cached_action_names() {
 fn completion_prompt_service_arguments_filter_service_names() {
     let registry = completion_test_registry();
 
-    let run_action = complete_prompt_arg(&registry, "run-action", "service", "ra");
-    let discover = complete_prompt_arg(&registry, "service-discover", "service", "so");
+    let run_action = complete_prompt_arg(&registry, "run-action", "service", "gateway-a");
+    let discover = complete_prompt_arg(&registry, "service-discover", "service", "gateway-b");
 
-    assert_eq!(run_action.values, vec!["radarr".to_string()]);
-    assert_eq!(discover.values, vec!["sonarr".to_string()]);
+    assert_eq!(run_action.values, vec!["gateway-alpha".to_string()]);
+    assert_eq!(discover.values, vec!["gateway-beta".to_string()]);
 }
 
 #[test]

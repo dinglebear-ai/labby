@@ -770,8 +770,8 @@ controller = [
 ]
 
 services-all = [
-  "radarr",
-  "sonarr",
+  "examplemovies",
+  "exampleseries",
   ...
 ]
 

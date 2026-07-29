@@ -17,7 +17,7 @@ export type MetricsWindow = (typeof METRICS_WINDOWS)[number]
 
 /** A tool ranked by call volume within the window. */
 export interface ToolUsageEntry {
-  /** Service / tool name as dispatched (e.g. `radarr`, `code_execute`). */
+  /** Service / tool name as dispatched (e.g. `gateway_alpha`, `code_execute`). */
   name: string
   /** Total dispatched calls in the window. */
   calls: number
