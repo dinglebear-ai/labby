@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0](https://github.com/dinglebear-ai/labby/compare/v1.7.0...v1.8.0) (2026-07-29)
+
+
+### Added
+
+* **cli:** add deployment-aware labby logs command ([3fec53c](https://github.com/dinglebear-ai/labby/commit/3fec53c49e84956c5c1d7448ae3ed3c3d997179a))
+* **codemode:** warn before oversized result truncation ([923a432](https://github.com/dinglebear-ai/labby/commit/923a432190ea7d6f97bec577163983f5901b58cd))
+* **gateway:** add Unix socket MCP transport ([522a57d](https://github.com/dinglebear-ai/labby/commit/522a57dc3a2af08cc912a31f9f7b0a233ad9832c))
+* **incus:** bake operator diagnostics tools ([1840426](https://github.com/dinglebear-ai/labby/commit/1840426bdfcbb5d3e82ca1a57680d41e7ccc263a))
+* **mcp:** add optional Code Mode app surface ([#277](https://github.com/dinglebear-ai/labby/issues/277)) ([85af8f1](https://github.com/dinglebear-ai/labby/commit/85af8f1da47685a9b4f22fa709682c31f5efb7e4))
+* **mcp:** hash exact peer tool contracts ([d4d49b0](https://github.com/dinglebear-ai/labby/commit/d4d49b01c89c902dd9b7049004056650de47d654))
+
+
+### Fixed
+
+* **auth:** persist CIMD client references for token issuance ([48cf450](https://github.com/dinglebear-ai/labby/commit/48cf450ef69615de95b219168f736bb613abc867))
+* **auth:** preserve Rust 1.90 consumer support ([53dbc47](https://github.com/dinglebear-ai/labby/commit/53dbc4798567f3cacc0f740b3b4de5839ca39133))
+* **auth:** stabilize all-features CI contracts ([f64379c](https://github.com/dinglebear-ai/labby/commit/f64379c7fff3d7de3494afbb45da134993f11897))
+* **auth:** use aws-lc JWT backend ([ea3d44a](https://github.com/dinglebear-ai/labby/commit/ea3d44a06021fe07211ed16153d6c3da005ab1dd))
+* **ci:** build pinned distrobuilder release ([abf0ce2](https://github.com/dinglebear-ai/labby/commit/abf0ce23fcdee7851f3ce3cc5c8f09647bd01cdb))
+* **ci:** drop dangling OpenWiki references after the retirement ([d64958d](https://github.com/dinglebear-ai/labby/commit/d64958df84d81233f36ce7756ff0185fced17aa5))
+* **ci:** drop ripgrep dependency from the retired-feature guard ([c07d9a5](https://github.com/dinglebear-ai/labby/commit/c07d9a51c39d25c6864d4ae0da0e839e6fdda89b))
+* **ci:** enable build caching for the GitHub-hosted Incus image job ([9e6f840](https://github.com/dinglebear-ai/labby/commit/9e6f8403838123038d3701f4f1896340d27e16d3))
+* **ci:** install distrobuilder from apt ([a9a3e58](https://github.com/dinglebear-ai/labby/commit/a9a3e58d962416741310d3b14015d81a08189525))
+* **ci:** isolate Incus image validation ([dcb39a2](https://github.com/dinglebear-ai/labby/commit/dcb39a21ceb1a9a9d3bc642709259de5f53090d9))
+* **ci:** move the Incus image build back to a GitHub-hosted runner ([24cc2ec](https://github.com/dinglebear-ai/labby/commit/24cc2ec15df87c7165311a4c4803dd8b2da8070f))
+* **ci:** pin Cargo Deny runner ([5d9bd25](https://github.com/dinglebear-ai/labby/commit/5d9bd255f766ed1f0d062afff49e38058beda94d))
+* **ci:** satisfy shellcheck SC2015 in the Incus smoke cleanup trap ([dc5658e](https://github.com/dinglebear-ai/labby/commit/dc5658e5e3ccda2810d7e64d360dd89f8197a2b0))
+* **ci:** start Incus daemon before image smoke ([f491aa9](https://github.com/dinglebear-ai/labby/commit/f491aa9ab452169a0fefa0e2f28514504da2dd52))
+* **deps:** resolve all open Dependabot security alerts ([dcbfce2](https://github.com/dinglebear-ai/labby/commit/dcbfce2ed51ea0dc293e417dae5da86a90de60af))
+* **docs:** resync npm launcher README and drop retired OpenWiki section ([0b3db9f](https://github.com/dinglebear-ai/labby/commit/0b3db9f68481934390b2ad8ee1baf10635b4be7f))
+* **gateway:** fall back for misclassified discovery results ([6235d4c](https://github.com/dinglebear-ai/labby/commit/6235d4cc2dc05812c97a04b045fcd202b2c757de))
+* **gateway:** harden Unix socket transport ([9cc7879](https://github.com/dinglebear-ai/labby/commit/9cc78790c9113974f347a472c7b0e5828e1fd3b4))
+* **gateway:** initialize legacy upstreams deterministically ([c4e2352](https://github.com/dinglebear-ai/labby/commit/c4e2352c6d1e15343fec8188e8e8fe21569fc4fc))
+* **gateway:** negotiate upstream lifecycle compatibly ([d95829b](https://github.com/dinglebear-ai/labby/commit/d95829b2d156a4c841a186b770286461f3872b1d))
+* **hooks:** move workspace clippy from pre-commit to pre-push ([cba2fcd](https://github.com/dinglebear-ai/labby/commit/cba2fcd1ced916c338512317ef63284a9143fb47))
+* **mcp:** address stateless review findings ([e47996e](https://github.com/dinglebear-ai/labby/commit/e47996e20c090127f398bed99f6f9d9bf33a368d))
+* **mcp:** preserve legacy lifecycle compatibility ([9aa1f91](https://github.com/dinglebear-ai/labby/commit/9aa1f912bc516678f0cb24386c8abf5b77c81262))
+* **test:** remove shared-counter race between destructive dispatch tests ([6ab4d95](https://github.com/dinglebear-ai/labby/commit/6ab4d95758d31c6d90730bd9a672f2d926c91a15))
+
+
+### Changed
+
+* delete retired Labby product surfaces ([b2b75cc](https://github.com/dinglebear-ai/labby/commit/b2b75cc1166cf007e5a7a4b5a09f0d67eb388097))
+
 ## [1.7.0](https://github.com/dinglebear-ai/labby/compare/v1.6.0...v1.7.0) (2026-07-27)
 
 
