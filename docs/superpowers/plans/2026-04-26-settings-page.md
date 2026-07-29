@@ -4,11 +4,11 @@
 
 **Goal:** Replace the existing read-only `/settings` stub with the full settings rail UI designed in `~/.superpowers/brainstorm/content/settings.html`.
 
-**Architecture:** Settings stays in `app/(admin)/settings/` (uses the existing AppSidebar + AuthBootstrap layout). The page renders a two-column layout: a 160px settings rail on the left and a content panel on the right. All five panels (Core, Services, Doctor, Extract, v2 stubs) are client-side. Data comes from `/dev/api/retired-dev-route` for pre-population and `/v1/nodes` for live node connectivity. Writes are deferred until lab-bg3e.3 ships — Save buttons log to console for now.
+**Architecture:** Settings stays in `app/(admin)/settings/` (uses the existing AppSidebar + AuthBootstrap layout). The page renders a two-column layout: a 160px settings rail on the left and a content panel on the right. All five panels (Core, Services, Doctor, Extract, v2 stubs) are client-side. Data comes from `/dev/api/systeminfo` for pre-population and `/v1/nodes` for live node connectivity. Writes are deferred until lab-bg3e.3 ships — Save buttons log to console for now.
 
 **Tech Stack:** Next.js 16 (output:'export'), React 19, TypeScript, react-hook-form 7, Zod 3, SWR 2, shadcn/ui, Aurora tokens
 
-**Depends on:** Plan 1 (Setup Wizard) — reuses `ServiceForm`, `useSetupState`, `useNodes`, `services-catalog.ts`, `schema.ts`
+**Depends on:** Plan 1 (Setup Wizard) — reuses `ServiceForm`, `useSystemInfo`, `useNodes`, `services-catalog.ts`, `schema.ts`
 
 **Reference:** `~/.superpowers/brainstorm/content/settings.html` (approved mockup), `docs/superpowers/specs/2026-04-26-setup-settings-design.md`
 
@@ -34,7 +34,7 @@ apps/gateway-admin/
         settings-stub.tsx                # NEW — v2 placeholder (Surfaces, Features, Advanced)
 ```
 
-All five panels are independent client components. `ServiceForm` is imported from `@/components/setup/service-form` (built in Plan 1). `useSetupState` and `useNodes` are imported from `@/lib/setup/`.
+All five panels are independent client components. `ServiceForm` is imported from `@/components/setup/service-form` (built in Plan 1). `useSystemInfo` and `useNodes` are imported from `@/lib/setup/`.
 
 ---
 
@@ -150,13 +150,13 @@ import { SettingsServices } from './panels/settings-services'
 import { SettingsDoctor } from './panels/settings-doctor'
 import { SettingsExtract } from './panels/settings-extract'
 import { SettingsStub } from './panels/settings-stub'
-import { useSetupState } from '@/lib/setup/use-retired-dev-route'
+import { useSystemInfo } from '@/lib/setup/use-systeminfo'
 import { cn } from '@/lib/utils'
 import { AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 
 export function SettingsLayout() {
   const [panel, setPanel] = useState<SettingsPanel>('services')
-  const { setupState } = useSetupState()
+  const { systemInfo } = useSystemInfo()
 
   return (
     <div className={cn(AURORA_PAGE_SHELL, 'flex flex-col flex-1')}>
@@ -164,8 +164,8 @@ export function SettingsLayout() {
       <div className="flex flex-1 overflow-hidden">
         <SettingsRail active={panel} onSelect={setPanel} />
         <main className="flex-1 overflow-y-auto p-8">
-          {panel === 'core'     && <SettingsCore     setupState={setupState} />}
-          {panel === 'services' && <SettingsServices  setupState={setupState} />}
+          {panel === 'core'     && <SettingsCore     systemInfo={systemInfo} />}
+          {panel === 'services' && <SettingsServices  systemInfo={systemInfo} />}
           {panel === 'doctor'   && <SettingsDoctor />}
           {panel === 'extract'  && <SettingsExtract />}
           {(panel === 'surfaces' || panel === 'features' || panel === 'advanced') && (
@@ -211,12 +211,12 @@ import {
 import { AURORA_DISPLAY_1, AURORA_MUTED_LABEL, AURORA_MEDIUM_PANEL } from '@/components/aurora/tokens'
 import { cn } from '@/lib/utils'
 import { CoreConfigSchema, type CoreConfig } from '@/lib/setup/schema'
-import type { SetupState } from '@/lib/api/retired-dev-route-client'
+import type { SystemInfo } from '@/lib/api/systeminfo-client'
 
-interface Props { setupState: SetupState | undefined }
+interface Props { systemInfo: SystemInfo | undefined }
 
-export function SettingsCore({ setupState }: Props) {
-  const env = setupState?.env ?? {}
+export function SettingsCore({ systemInfo }: Props) {
+  const env = systemInfo?.env ?? {}
   const [saving, setSaving] = useState(false)
 
   const { register, watch, setValue, handleSubmit } = useForm<CoreConfig>({
@@ -367,9 +367,9 @@ import { SERVICES, SERVICES_BY_ID } from '@/lib/setup/services-catalog'
 import { SERVICE_BRANDS, SERVICE_LOGOS, type ServiceKey } from '@/lib/branding/service-brands'
 import { AURORA_DISPLAY_1, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
 import { cn } from '@/lib/utils'
-import type { SetupState } from '@/lib/api/retired-dev-route-client'
+import type { SystemInfo } from '@/lib/api/systeminfo-client'
 
-interface Props { setupState: SetupState | undefined }
+interface Props { systemInfo: SystemInfo | undefined }
 
 function ServiceIcon({ id, size = 34 }: { id: string; size?: number }) {
   const svc = SERVICES_BY_ID[id]
@@ -401,8 +401,8 @@ function ServiceIcon({ id, size = 34 }: { id: string; size?: number }) {
   )
 }
 
-export function SettingsServices({ setupState }: Props) {
-  const env = setupState?.env ?? {}
+export function SettingsServices({ systemInfo }: Props) {
+  const env = systemInfo?.env ?? {}
   const [expanded, setExpanded] = useState<string | null>(null)
   const [enabled, setEnabled] = useState<Record<string, boolean>>(
     Object.fromEntries(SERVICES.map(s => [s.id, !!env[s.fields[0]?.envKey ?? '']]))
@@ -693,10 +693,10 @@ interface DiscoveredCred {
 
 // Mock data representing extract.scan results
 const MOCK_CREDS: DiscoveredCred[] = [
-  { key: 'RETIRED_UPSTREAM_URL',        value: 'http://100.64.0.11:7878', source: 'docker label', include: true  },
-  { key: 'RETIRED_UPSTREAM_URL',        value: 'https://retired-upstream.example.com',   source: 'docker label', include: true  },
-  { key: 'RETIRED_UPSTREAM_API_KEY',    value: '••••••••••••••••',           source: 'docker label', include: true  },
-  { key: 'RETIRED_UPSTREAM_TOKEN',        value: '••••••••••••••••',           source: '.env file',    include: true  },
+  { key: 'EXAMPLEMOVIES_URL',        value: 'http://100.64.0.11:7878', source: 'docker label', include: true  },
+  { key: 'EXAMPLESERIES_URL',        value: 'https://exampleseries.example.com',   source: 'docker label', include: true  },
+  { key: 'EXAMPLEMOVIES_API_KEY',    value: '••••••••••••••••',           source: 'docker label', include: true  },
+  { key: 'EXAMPLEMEDIA_TOKEN',        value: '••••••••••••••••',           source: '.env file',    include: true  },
   { key: 'UNRAID_API_KEY',    value: '••••••••••••••••',           source: 'config file',  include: false },
 ]
 
@@ -928,8 +928,8 @@ cd apps/gateway-admin && pnpm dev
 Visit `http://localhost:3000/settings/`. Verify:
 1. Settings rail renders with Config / System / v2 Stubs sections
 2. Services panel (default) shows 21-service table with icons
-3. Click "Configure" on Retired upstream → inline form expands with URL pre-populated from env
-4. Click Core rail item → fields pre-populated from retired-dev-route
+3. Click "Configure" on ExampleMovies → inline form expands with URL pre-populated from env
+4. Click Core rail item → fields pre-populated from systeminfo
 5. Click Doctor → summary cards + audit list
 6. Click Extract → Scan button → animated results table → Apply button
 7. Click Surfaces (v2) → coming-soon placeholder

@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+Historical entries use distinct `example*` pseudonyms where retired service
+identifiers were removed. Commit links remain the authoritative historical record.
+
 ## [1.8.0](https://github.com/dinglebear-ai/labby/compare/v1.7.0...v1.8.0) (2026-07-29)
 
 
@@ -599,7 +602,7 @@ All notable changes to this project will be documented in this file.
 
 ### Highlights
 
-- **Skill quality sweep** — systematic review and update of ~70 SKILL.md files across all lab plugins and 10 rmcp workspace repos; fixes include stale script paths, async-trait contradiction in acp/rust, wrong rmcp version in using-rmcp, coercive block removal from paperless-ngx, full rewrites of rarcane and retired-upstream skills, and description rewrites to third-person trigger form for all 9 cortex sub-skills.
+- **Skill quality sweep** — systematic review and update of ~70 SKILL.md files across all lab plugins and 10 rmcp workspace repos; fixes include stale script paths, async-trait contradiction in acp/rust, wrong rmcp version in using-rmcp, coercive block removal from paperless-ngx, full rewrites of rarcane and exampleclient skills, and description rewrites to third-person trigger form for all 9 cortex sub-skills.
 - **Gateway-admin dialog consolidation** — removed stale `delete-gateway-dialog.tsx`, `disable-gateway-dialog.tsx`, and `confirm-dialog.tsx`; refactored `gateway-detail-content`, `gateway-list-content`, `allowed-users-panel`, `app-command-palette`, `session-sidebar`, and `plugin-detail-content` components.
 - **Marketplace silent-error surfacing** — fixed `installPath` handling; surface silent errors in `acp_dispatch`, `claude`, `mcp_dispatch` backends.
 
@@ -633,7 +636,7 @@ All notable changes to this project will be documented in this file.
 | `b43d21fe` | Remove nvidia-skills, qdrant-skills, redis-development, mcp-apps — paths not found |
 | `5b778acc` | Add nvidia-skills, qdrant-skills, redis-development, mcp-apps, mcp-tunnels to marketplaces |
 | `4ae079d5` | docs: final skill quality fixes |
-| `21f7e1c0` | docs: update retired-upstream skill references |
+| `21f7e1c0` | docs: update examplerequests skill references |
 | `cad9cb67` | docs: normalize skill triggers |
 | `f6bf24d9` | docs: refresh plugin skills |
 | `88de5a1b` | Add beads, lavra, superpowers to Codex marketplace |
@@ -660,7 +663,7 @@ All notable changes to this project will be documented in this file.
   carry an `{upstream}/{name}` prefix (mirroring the resource-URI convention),
   with a symmetric strip on `prompts/get` (standard + OAuth subject-scoped
   paths) so upstreams still receive bare names. The collision now surfaces as
-  e.g. `retired-upstream/quick_start` and `retired-upstream/quick_start`.
+  e.g. `exampleclient/quick_start` and `exampleseries/quick_start`.
 
 | Commit | Change |
 |--------|--------|
@@ -1205,7 +1208,7 @@ All notable changes to this project will be documented in this file.
 | `44a3728a` | fix(lab-zmj1): extract CORE_FIELDS to shared module |
 | `77efe9b5` | fix(lab-7bat): remove dead draftValues/setDraftValue from WizardContext |
 | `927a1a6a` | feat(lab-apis,lab): onboard 3 services + extend adguard/glances/uptime-kuma |
-| `9604c93f` | feat(lab-apis,lab): onboard 6 services (dozzle, freshrss, immich, loki, retired-upstream, retired-upstream) |
+| `9604c93f` | feat(lab-apis,lab): onboard 6 services (dozzle, freshrss, immich, loki, exampleindexer, exampleusenet) |
 | `331a38e1` | feat(lab-bg3e.4,bg3e.5): /setup wizard + /settings rail web UI |
 | `9d24b17e` | test(lab-bg3e.3.11): mechanical guard for orchestrator one-way dependencies |
 | `b28d5a28` | refactor(lab-bg3e.3.7): env_merge polish |
@@ -1223,7 +1226,7 @@ All notable changes to this project will be documented in this file.
 
 - **ACP multi-turn drain timeout** — `acp_turn_drain_timeout()` + `DEFAULT_TURN_DRAIN_TIMEOUT` (5 min, overridable via `LAB_ACP_TURN_DRAIN_TIMEOUT_MS`) drains stale messages left by idle-completed turns before starting the next prompt. Prevents a late `PromptResponse`/`StopReason` from poisoning the new inner read loop during long agentic tool calls.
 - **Docs reorganization (lab-in5q)** — 34 docs moved from `docs/` root into `docs/surfaces/`, `docs/runtime/`, `docs/services/`, and `docs/dev/`; CLAUDE.md, README references, and Rust source path comments all updated.
-- **Service onboarding wave** — 9 new services onboarded: dozzle, freshrss, immich, loki, retired-upstream, retired-upstream (wave 1) + 3 more + adguard/glances/uptime-kuma extensions.
+- **Service onboarding wave** — 9 new services onboarded: dozzle, freshrss, immich, loki, exampleindexer, exampleusenet (wave 1) + 3 more + adguard/glances/uptime-kuma extensions.
 - **Setup wizard + settings rail UI (lab-bg3e)** — full `/setup` wizard flow (fleet scan, service creds, config write) and `/settings` side-rail; `write_service_creds` shim, `env_merge` polish, `ToolRegistry` memoization, `doctor.audit.full` timeout, host-validation middleware, fsync-after-persist hardening.
 - **Frontend hardening (lab-qz0z, lab-8l5s, and others)** — RHF state preservation across tab switches, secret-sentinel centralization, schemaBuilder validation hardening, sessionStorage persistence for wizard selections, AbortController for config saves, lazy-mount for inactive ServiceForm tabs.
 - **CI improvements** — release smoke tests, generated-docs pipeline, Windows cache-save fix, cargo-deny advisory exceptions.
@@ -1296,10 +1299,10 @@ All notable changes to this project will be documented in this file.
 | `82478a0b` | chore(release): v0.11.1 — marketplace P1 security follow-up + workspace fs hardening |
 | `2f6d76c6` | docs: setup+settings feature design spec + component-development doc update |
 | `07ccb54c` | fix(dev): ensure dev_mockup routes survive router.rs refactors |
-| `d10b05ec` | fix(dev/retired-dev-route): read env from process (dotenvy already loaded .env at startup) |
-| `991fcd1b` | feat(dev): extend retired-dev-route to return .env values with secrets masked |
+| `d10b05ec` | fix(dev/systeminfo): read env from process (dotenvy already loaded .env at startup) |
+| `991fcd1b` | feat(dev): extend systeminfo to return .env values with secrets masked |
 | `aea3bb59` | fix(dev): restore dev_mockup handlers and page routes |
-| `b1385289` | fix(dev): restore /dev mockup routes + add /dev/api/retired-dev-route |
+| `b1385289` | fix(dev): restore /dev mockup routes + add /dev/api/systeminfo |
 | `265a701e` | feat(dev): add mockup file server at /dev and /dev/:name |
 | `3e8db769` | fix(pr29): address review threads — security, fleet, ACP, marketplace, docs |
 | `f168964b` | fix(lab-zxx5.32): R2 P3 roll-up — redact_home in errors, log tiering, sync_all, dead Sized |
@@ -1327,7 +1330,7 @@ All notable changes to this project will be documented in this file.
 
 - **Marketplace P1 security follow-up (lab-zxx5)** — multi-agent review P1+P2 fixes, install_component/agent.install hardening, SSRF blocklist edges, per-node caps, `redact_home` helper applied to errors and log tiering, partial-extraction detection with fail-closed walk, typed install error markers
 - **Workspace fs hardening (lab-f1t2)** — security headers via subrouter middleware, intra-workspace symlink rejection in openat2 fallback, case-insensitive credential deny-list with path redaction, MCP transport auth requirement documented, MCP↔canonical fs ActionSpec parity locked, AttachmentChip + chat-input + workspace-picker race elimination, UX polish
-- **Dev mockup routes** — mockup file server at `/dev` and `/dev/:name`, `/dev/api/retired-dev-route` returning `.env` values with secrets masked, route survival across router.rs refactors
+- **Dev mockup routes** — mockup file server at `/dev` and `/dev/:name`, `/dev/api/systeminfo` returning `.env` values with secrets masked, route survival across router.rs refactors
 - **Docs** — setup+settings feature design spec, component-development doc update
 
 ### Version bumps

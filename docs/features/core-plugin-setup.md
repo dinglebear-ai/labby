@@ -19,7 +19,7 @@
 
 The Setup/Settings refactor in `lab-bg3e` already specs and plans the right onboarding UX:
 
-- Locked spec: [`docs/superpowers/specs/2026-04-25-setup-settings-design.md`](../superpowers/specs/2026-04-25-setup-settings-design.md) — 7-step wizard at `/setup`, settings rail at `/settings`, `setup.draft.set`/`setup.draft.commit` write path, schema-driven `ServiceForm` over `UiSchema`, `doctor.service_probe` Test buttons, `/dev/api/retired-dev-route` for re-run pre-population.
+- Locked spec: [`docs/superpowers/specs/2026-04-25-setup-settings-design.md`](../superpowers/specs/2026-04-25-setup-settings-design.md) — 7-step wizard at `/setup`, settings rail at `/settings`, `setup.draft.set`/`setup.draft.commit` write path, schema-driven `ServiceForm` over `UiSchema`, `doctor.service_probe` Test buttons, and `setup.state`/`setup.schema.get` for re-run pre-population.
 - React plans: [`docs/superpowers/plans/2026-04-26-setup-wizard.md`](../superpowers/plans/2026-04-26-setup-wizard.md) (14 tasks), [`docs/superpowers/plans/2026-04-26-settings-page.md`](../superpowers/plans/2026-04-26-settings-page.md) (9 tasks).
 - HTML mockups: `~/.superpowers/brainstorm/content/setup.html`, `~/.superpowers/brainstorm/content/settings.html`.
 
@@ -74,7 +74,7 @@ The first acceptance criterion below is to reopen the three premature closures a
 
 ### Wizard integration
 - [ ] Step 4 of the wizard (Services, per the locked spec) gains a per-service "Enable in Claude Code" toggle next to the existing field group. State for the toggle is sourced from `setup.installed_plugins`. Toggling on calls `setup.install_plugin` after the service's draft is committed; toggling off calls `setup.uninstall_plugin`. The wizard never exposes the package ID directly — it derives it from the service name + the configured org prefix.
-- [ ] Step 7 (Finalize) adds a one-line summary of plugin actions taken in this session ("Installed: example-upstream@lab, example-upstream@lab. Uninstalled: none.") below the existing finalize summary.
+- [ ] Step 7 (Finalize) adds a one-line summary of plugin actions taken in this session ("Installed: unifi@lab, apprise@lab. Uninstalled: none.") below the existing finalize summary.
 - [ ] The settings rail (`/settings`) Services panel mirrors the toggle. State stays consistent across `/setup` and `/settings` because both read `setup.installed_plugins`.
 
 ### Distribution
@@ -347,10 +347,10 @@ CLI shims honor `-y` / `--no-confirm` / `--dry-run` per `crates/lab/src/cli/CLAU
 - [`docs/superpowers/specs/2026-04-25-setup-settings-design.md`](../superpowers/specs/2026-04-25-setup-settings-design.md) — locked Setup + Settings spec. Read this first.
 - [`docs/superpowers/plans/2026-04-26-setup-wizard.md`](../superpowers/plans/2026-04-26-setup-wizard.md) — 14-task React plan for `/setup`.
 - [`docs/superpowers/plans/2026-04-26-settings-page.md`](../superpowers/plans/2026-04-26-settings-page.md) — 9-task React plan for `/settings`.
-- `~/.superpowers/brainstorm/content/setup.html`, `settings.html` — interactive Tier-1 mockups (Aurora-styled, pre-populated from `/dev/api/retired-dev-route`).
+- `~/.superpowers/brainstorm/content/setup.html`, `settings.html` — interactive Tier-1 mockups (Aurora-styled, pre-populated through the setup dispatch API).
 - `crates/lab-apis/src/core/plugin_ui.rs` — `UiSchema` type from bg3e.1, source of truth for service field metadata.
 - `crates/lab/src/dispatch/doctor/` — bg3e.2 doctor service, source of `service_probe` and `audit.full`.
-- `crates/lab/src/api/router.rs:565` — existing `/dev/api/retired-dev-route` endpoint, consumed by the wizard for re-run pre-population.
+- `crates/labby/src/dispatch/setup/` — setup state, schema, draft, and settings actions consumed by the wizard.
 - `crates/lab/src/cli/serve.rs:771` — existing `is_loopback_host` helper to reuse for the route gate.
 - `crates/lab/src/cli/serve.rs:784` — existing `filter_registry` pattern; the env-aware `lab help` filter follows it.
 - `docs/DISPATCH.md` — dispatch layer contract; this plan adds one new invariant (loopback-only mount for plugin lifecycle).

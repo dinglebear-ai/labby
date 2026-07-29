@@ -142,14 +142,57 @@ function textUi(required = false, kind: FieldKindKey = 'text'): UiFieldSchema {
 }
 
 const MOCK_SERVICES: Record<string, ServiceSchema> = {
-  "gateway-alpha": {
-    name: "gateway-alpha",
-    display_name: "Gateway alpha",
-    description: "Example dynamic upstream.",
-    category: "Network",
+  unifi: {
+    name: 'unifi',
+    display_name: 'UniFi',
+    description: 'Network controller.',
+    category: 'Network',
     supports_multi_instance: true,
-    default_port: null,
-    env: [],
+    default_port: 8443,
+    env: [
+      {
+        name: 'UNIFI_URL',
+        description: 'Base URL of the UniFi controller',
+        example: 'https://unifi.example.com',
+        secret: false,
+        required: true,
+        ui: textUi(true, 'url'),
+      },
+      {
+        name: 'UNIFI_API_KEY',
+        description: 'UniFi API key',
+        example: '',
+        secret: true,
+        required: true,
+        ui: textUi(true, 'secret'),
+      },
+    ],
+  },
+  apprise: {
+    name: 'apprise',
+    display_name: 'Apprise',
+    description: 'Notification gateway.',
+    category: 'Notifications',
+    supports_multi_instance: true,
+    default_port: 8000,
+    env: [
+      {
+        name: 'APPRISE_URL',
+        description: 'Base URL of the Apprise API',
+        example: 'https://apprise.example.com',
+        secret: false,
+        required: true,
+        ui: textUi(true, 'url'),
+      },
+      {
+        name: 'APPRISE_API_KEY',
+        description: 'Apprise API key',
+        example: '',
+        secret: true,
+        required: true,
+        ui: textUi(true, 'secret'),
+      },
+    ],
   },
 }
 
@@ -158,6 +201,9 @@ const MOCK_DRAFT_ENTRIES: DraftEntry[] = [
   { key: "LABBY_MCP_HTTP_PORT", value: "3101" },
   { key: "LABBY_LOG", value: "labby=info" },
   { key: "LABBY_LOG_FORMAT", value: "json" },
+  { key: 'UNIFI_URL', value: 'https://unifi.example.com' },
+  { key: 'UNIFI_API_KEY', value: '***' },
+  { key: 'APPRISE_URL', value: 'https://apprise.example.com' },
 ]
 
 function mockSetupSnapshot(): SetupSnapshot {
@@ -173,7 +219,7 @@ function mockSetupSnapshot(): SetupSnapshot {
     draft_mtime_unix_seconds: null,
     state: {
       kind: 'partially_configured',
-      missing: [],
+      missing: ['APPRISE_API_KEY'],
       services: Object.keys(MOCK_SERVICES),
     },
   }
@@ -510,7 +556,7 @@ export const setupApi = {
   installedPlugins(signal?: AbortSignal): Promise<InstalledPlugin[]> {
     if (USE_MOCK_DATA) {
       signal?.throwIfAborted?.()
-      return Promise.resolve([{ id: 'lab-gateway-alpha@lab', service: 'gateway-alpha' }])
+      return Promise.resolve([{ id: 'lab-unifi@lab', service: 'unifi' }])
     }
     return setupAction<InstalledPlugin[]>('installed_plugins', {}, signal)
   },
@@ -519,13 +565,13 @@ export const setupApi = {
     if (USE_MOCK_DATA) {
       signal?.throwIfAborted?.()
       return Promise.resolve({
-        plugins: [{ id: 'lab-gateway-alpha@lab', service: 'gateway-alpha' }],
+        plugins: [{ id: 'lab-unifi@lab', service: 'unifi' }],
         services: Object.values(MOCK_SERVICES).map((schema) => ({
           name: schema.name,
           display_name: schema.display_name,
           description: schema.description,
-          configured: schema.name === 'gateway-alpha',
-          plugin_installed: schema.name === 'gateway-alpha',
+          configured: schema.name === 'unifi',
+          plugin_installed: schema.name === 'unifi',
           plugin_package_id: `lab-${schema.name}@lab`,
           required_env: schema.env.filter((env) => env.required).map((env) => env.name),
         })),

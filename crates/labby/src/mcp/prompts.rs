@@ -38,7 +38,7 @@ fn run_action_prompt() -> Prompt {
         Some("Execute a lab service action with structured parameters".to_string()),
         Some(vec![
             PromptArgument::new("service")
-                .with_description("Service name (e.g. gateway_alpha, gateway_alpha)")
+                .with_description("Service name (e.g. gateway, snippets)")
                 .with_required(true),
             PromptArgument::new("action")
                 .with_description("Action to perform (e.g. status.get)")

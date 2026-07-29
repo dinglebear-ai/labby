@@ -2134,29 +2134,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dev_retired_dev_route_is_not_mounted() {
-        let app = build_router_with_bearer(AppState::new(), None, None);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/dev/api/retired-dev-route")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    /// When a service is absent from the runtime registry (e.g. filtered out by
-    /// `--services`), its `/v1/<service>` routes must NOT be mounted — even if
-    /// the feature flag for that service is compiled in.
-    ///
-    /// This test uses an empty registry to simulate `labby serve --services <other>`
-    /// excluding `gateway_alpha`, then verifies that `POST /v1/gateway_alpha` returns 404 rather
-    /// than reaching the handler.
-
-    #[tokio::test]
     async fn bearer_mode_still_accepts_lab_mcp_http_token() {
         let state = AppState::new();
         let app = build_router(state, Some("secret-token".into()), None, None, &[]);

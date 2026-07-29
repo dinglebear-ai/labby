@@ -4,7 +4,7 @@
 
 **Goal:** Replace the existing `/setup` stub with the full 7-step setup wizard designed in the HTML mockup at `~/.superpowers/brainstorm/content/setup.html`.
 
-**Architecture:** The wizard lives at `app/(wizard)/setup/` — a new route group with AuthBootstrap but no AppSidebar. Phase 1 (steps 1–3) is a linear full-page flow; Phase 2 (steps 4–7) slides in a setup-specific sidebar. All data is client-side (static export constraint). Pre-population comes from `GET /dev/api/retired-dev-route` (unauthenticated). Writes are deferred until lab-bg3e.3 ships the setup dispatch service — for now the Finalize button writes to a draft object logged to console.
+**Architecture:** The wizard lives at `app/(wizard)/setup/` — a new route group with AuthBootstrap but no AppSidebar. Phase 1 (steps 1–3) is a linear full-page flow; Phase 2 (steps 4–7) slides in a setup-specific sidebar. All data is client-side (static export constraint). Pre-population comes from `GET /dev/api/systeminfo` (unauthenticated). Writes are deferred until lab-bg3e.3 ships the setup dispatch service — for now the Finalize button writes to a draft object logged to console.
 
 **Tech Stack:** Next.js 16 (output:'export'), React 19, TypeScript, react-hook-form 7, Zod 3, SWR 2, Tailwind CSS, shadcn/ui, Aurora tokens, Manrope/Inter fonts (next/font)
 
@@ -41,10 +41,10 @@ apps/gateway-admin/
       nodes-panel.tsx                     # NEW — device list with live /v1/nodes data
   lib/
     api/
-      retired-dev-route-client.ts                  # NEW — fetch /dev/api/retired-dev-route
+      systeminfo-client.ts                  # NEW — fetch /dev/api/systeminfo
       nodes-client.ts                     # NEW — fetch /v1/nodes (live connectivity)
     setup/
-      use-retired-dev-route.ts                     # NEW — SWR hook for retired-dev-route
+      use-systeminfo.ts                     # NEW — SWR hook for systeminfo
       use-nodes.ts                        # NEW — SWR hook for enrolled nodes
       use-wizard-state.ts                 # NEW — wizard phase/step/draft state
       schema.ts                           # NEW — Zod schemas for all wizard forms
@@ -144,68 +144,68 @@ export interface ServiceDef {
 
 export const SERVICES: ServiceDef[] = [
   {
-    id: 'retired-upstream', name: 'Retired upstream', slug: 'retired-upstream', color: '#F0BC40',
+    id: 'examplemovies', name: 'ExampleMovies', slug: 'examplemovies', color: '#F0BC40',
     category: 'Media', port: 7878,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:7878' },
-      { label: 'API Key', envKey: 'RETIRED_UPSTREAM_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
+      { label: 'URL', envKey: 'EXAMPLEMOVIES_URL', type: 'url', placeholder: 'http://192.168.1.x:7878' },
+      { label: 'API Key', envKey: 'EXAMPLEMOVIES_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
     ],
   },
   {
-    id: 'retired-upstream', name: 'Retired upstream', slug: 'retired-upstream', color: '#35C5F4',
+    id: 'exampleseries', name: 'ExampleSeries', slug: 'exampleseries', color: '#35C5F4',
     category: 'Media', port: 8989,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:8989' },
-      { label: 'API Key', envKey: 'RETIRED_UPSTREAM_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
+      { label: 'URL', envKey: 'EXAMPLESERIES_URL', type: 'url', placeholder: 'http://192.168.1.x:8989' },
+      { label: 'API Key', envKey: 'EXAMPLESERIES_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
     ],
   },
   {
-    id: 'retired-upstream', name: 'Retired upstream', slug: 'retired-upstream', color: '#CC7B19',
+    id: 'examplemedia', name: 'ExampleMedia', slug: 'examplemedia', color: '#CC7B19',
     category: 'Media', port: 32400,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:32400' },
-      { label: 'Token', envKey: 'RETIRED_UPSTREAM_TOKEN', type: 'password', placeholder: 'Your Retired upstream auth token', hint: 'X-Retired upstream-Token header' },
+      { label: 'URL', envKey: 'EXAMPLEMEDIA_URL', type: 'url', placeholder: 'http://192.168.1.x:32400' },
+      { label: 'Token', envKey: 'EXAMPLEMEDIA_TOKEN', type: 'password', placeholder: 'Your ExampleMedia auth token', hint: 'X-ExampleMedia-Token header' },
     ],
   },
   {
-    id: 'retired-upstream', name: 'Retired upstream', slug: 'retired-upstream', color: '#D9A21B',
+    id: 'examplemetrics', name: 'ExampleMetrics', slug: 'examplemetrics', color: '#D9A21B',
     category: 'Media', port: 8181,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:8181' },
-      { label: 'API Key', envKey: 'RETIRED_UPSTREAM_API_KEY', type: 'password', placeholder: 'Found in Settings → Web Interface', hint: '?apikey= query param' },
+      { label: 'URL', envKey: 'EXAMPLEMETRICS_URL', type: 'url', placeholder: 'http://192.168.1.x:8181' },
+      { label: 'API Key', envKey: 'EXAMPLEMETRICS_API_KEY', type: 'password', placeholder: 'Found in Settings → Web Interface', hint: '?apikey= query param' },
     ],
   },
   {
-    id: 'retired-upstream', name: 'Retired upstream', slug: 'retired-upstream', color: '#E5870A',
+    id: 'examplerequests', name: 'ExampleRequests', slug: 'examplerequests', color: '#E5870A',
     category: 'Media', port: 5055,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:5055' },
-      { label: 'API Key', envKey: 'RETIRED_UPSTREAM_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
+      { label: 'URL', envKey: 'EXAMPLEREQUESTS_URL', type: 'url', placeholder: 'http://192.168.1.x:5055' },
+      { label: 'API Key', envKey: 'EXAMPLEREQUESTS_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
     ],
   },
   {
-    id: 'retired-upstream', name: 'Retired upstream', slug: 'retired-upstream', color: '#F16529',
+    id: 'exampleindexer', name: 'ExampleIndexer', slug: 'exampleindexer', color: '#F16529',
     category: 'Indexer', port: 9696,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:9696' },
-      { label: 'API Key', envKey: 'RETIRED_UPSTREAM_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
+      { label: 'URL', envKey: 'EXAMPLEINDEXER_URL', type: 'url', placeholder: 'http://192.168.1.x:9696' },
+      { label: 'API Key', envKey: 'EXAMPLEINDEXER_API_KEY', type: 'password', placeholder: 'Found in Settings → General', hint: 'X-Api-Key header' },
     ],
   },
   {
-    id: 'retired-upstream', name: 'Retired upstream', slug: 'retired-upstream', color: '#F4A623',
+    id: 'exampleusenet', name: 'ExampleUsenet', slug: 'exampleusenet', color: '#F4A623',
     category: 'Downloads', port: 8080,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:8080' },
-      { label: 'API Key', envKey: 'RETIRED_UPSTREAM_API_KEY', type: 'password', placeholder: 'Found in Config → General', hint: '?apikey= query param' },
+      { label: 'URL', envKey: 'EXAMPLEUSENET_URL', type: 'url', placeholder: 'http://192.168.1.x:8080' },
+      { label: 'API Key', envKey: 'EXAMPLEUSENET_API_KEY', type: 'password', placeholder: 'Found in Config → General', hint: '?apikey= query param' },
     ],
   },
   {
-    id: 'retired-upstream', name: 'retired-upstream', slug: 'retired-upstream', color: '#2F99E0',
+    id: 'exampledownload', name: 'exampledownload', slug: 'exampledownload', color: '#2F99E0',
     category: 'Downloads', port: 8080,
     fields: [
-      { label: 'URL', envKey: 'RETIRED_UPSTREAM_URL', type: 'url', placeholder: 'http://192.168.1.x:8080' },
-      { label: 'Username', envKey: 'RETIRED_UPSTREAM_USERNAME', type: 'text', placeholder: 'admin' },
-      { label: 'Password', envKey: 'RETIRED_UPSTREAM_PASSWORD', type: 'password', placeholder: 'Web UI password', hint: 'Session cookie auth' },
+      { label: 'URL', envKey: 'EXAMPLEDOWNLOAD_URL', type: 'url', placeholder: 'http://192.168.1.x:8080' },
+      { label: 'Username', envKey: 'EXAMPLEDOWNLOAD_USERNAME', type: 'text', placeholder: 'admin' },
+      { label: 'Password', envKey: 'EXAMPLEDOWNLOAD_PASSWORD', type: 'password', placeholder: 'Web UI password', hint: 'Session cookie auth' },
     ],
   },
   {
@@ -318,9 +318,9 @@ export const SERVICES_BY_ID = Object.fromEntries(SERVICES.map(s => [s.id, s]))
 
 export const SIDEBAR_SECTIONS: Array<{ label: string; ids: string[] }> = [
   { label: 'Configuration', ids: ['__core__'] },
-  { label: 'Media',         ids: ['retired-upstream', 'retired-upstream', 'retired-upstream', 'retired-upstream', 'retired-upstream'] },
-  { label: 'Indexer',       ids: ['retired-upstream'] },
-  { label: 'Downloads',     ids: ['retired-upstream', 'retired-upstream'] },
+  { label: 'Media',         ids: ['examplemovies', 'exampleseries', 'examplemedia', 'examplemetrics', 'examplerequests'] },
+  { label: 'Indexer',       ids: ['exampleindexer'] },
+  { label: 'Downloads',     ids: ['exampleusenet', 'exampledownload'] },
   { label: 'Infrastructure',ids: ['unraid'] },
   { label: 'Network',       ids: ['unifi', 'tailscale'] },
   { label: 'Docker',        ids: ['arcane'] },
@@ -384,29 +384,29 @@ git commit -m "feat(setup): services catalog + Zod schemas"
 
 ---
 
-## Task 3: retired-dev-route + nodes API clients
+## Task 3: systeminfo + nodes API clients
 
 **Files:**
-- Create: `apps/gateway-admin/lib/api/retired-dev-route-client.ts`
+- Create: `apps/gateway-admin/lib/api/systeminfo-client.ts`
 - Create: `apps/gateway-admin/lib/api/nodes-client.ts`
-- Create: `apps/gateway-admin/lib/setup/use-retired-dev-route.ts`
+- Create: `apps/gateway-admin/lib/setup/use-systeminfo.ts`
 - Create: `apps/gateway-admin/lib/setup/use-nodes.ts`
 
-- [ ] **retired-dev-route client:**
+- [ ] **systeminfo client:**
 
 ```ts
-// apps/gateway-admin/lib/api/retired-dev-route-client.ts
-export interface SetupState {
+// apps/gateway-admin/lib/api/systeminfo-client.ts
+export interface SystemInfo {
   local_host: string
   controller: string
   master_url: string
   env: Record<string, string>
 }
 
-export async function fetchSetupState(signal?: AbortSignal): Promise<SetupState> {
-  const res = await fetch('/dev/api/retired-dev-route', { signal, cache: 'no-store' })
-  if (!res.ok) throw new Error(`retired-dev-route: ${res.status}`)
-  return res.json() as Promise<SetupState>
+export async function fetchSystemInfo(signal?: AbortSignal): Promise<SystemInfo> {
+  const res = await fetch('/dev/api/systeminfo', { signal, cache: 'no-store' })
+  if (!res.ok) throw new Error(`systeminfo: ${res.status}`)
+  return res.json() as Promise<SystemInfo>
 }
 ```
 
@@ -430,18 +430,18 @@ export async function fetchNodes(signal?: AbortSignal): Promise<EnrolledNode[]> 
 - [ ] **useSystemInfo hook:**
 
 ```ts
-// apps/gateway-admin/lib/setup/use-retired-dev-route.ts
+// apps/gateway-admin/lib/setup/use-systeminfo.ts
 'use client'
 import useSWR from 'swr'
-import { fetchSetupState, type SetupState } from '@/lib/api/retired-dev-route-client'
+import { fetchSystemInfo, type SystemInfo } from '@/lib/api/systeminfo-client'
 
-export function useSetupState() {
-  const { data, error, isLoading } = useSWR<SetupState>(
-    '/dev/api/retired-dev-route',
-    () => fetchSetupState(),
+export function useSystemInfo() {
+  const { data, error, isLoading } = useSWR<SystemInfo>(
+    '/dev/api/systeminfo',
+    () => fetchSystemInfo(),
     { revalidateOnFocus: false },
   )
-  return { setupState: data, error, isLoading }
+  return { systemInfo: data, error, isLoading }
 }
 ```
 
@@ -466,8 +466,8 @@ export function useNodes() {
 - [ ] **Commit:**
 
 ```bash
-git add apps/gateway-admin/lib/api/retired-dev-route-client.ts apps/gateway-admin/lib/api/nodes-client.ts apps/gateway-admin/lib/setup/use-retired-dev-route.ts apps/gateway-admin/lib/setup/use-nodes.ts
-git commit -m "feat(setup): retired-dev-route + nodes API clients and SWR hooks"
+git add apps/gateway-admin/lib/api/systeminfo-client.ts apps/gateway-admin/lib/api/nodes-client.ts apps/gateway-admin/lib/setup/use-systeminfo.ts apps/gateway-admin/lib/setup/use-nodes.ts
+git commit -m "feat(setup): systeminfo + nodes API clients and SWR hooks"
 ```
 
 ---
@@ -786,7 +786,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { useNodes } from '@/lib/setup/use-nodes'
-import type { SetupState } from '@/lib/api/retired-dev-route-client'
+import type { SystemInfo } from '@/lib/api/systeminfo-client'
 
 interface NodeRow {
   alias: string
@@ -1068,10 +1068,10 @@ import { NodesPanel } from '@/components/setup/nodes-panel'
 import { AURORA_DISPLAY_2, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
 import { cn } from '@/lib/utils'
 import { CoreConfigSchema, type CoreConfig } from '@/lib/setup/schema'
-import type { SetupState } from '@/lib/api/retired-dev-route-client'
+import type { SystemInfo } from '@/lib/api/systeminfo-client'
 
 interface Props {
-  setupState: SetupState | undefined
+  systemInfo: SystemInfo | undefined
   defaultValues: Partial<CoreConfig>
   onChange: (values: Partial<CoreConfig>) => void
   onNodeChange: (controller: string, masterUrl: string) => void
@@ -1079,8 +1079,8 @@ interface Props {
   masterUrl: string
 }
 
-export function StepCoreConfig({ setupState, defaultValues, onChange, onNodeChange, nodeController, masterUrl }: Props) {
-  const env = setupState?.env ?? {}
+export function StepCoreConfig({ systemInfo, defaultValues, onChange, onNodeChange, nodeController, masterUrl }: Props) {
+  const env = systemInfo?.env ?? {}
 
   const { register, watch, setValue, formState: { errors } } = useForm<CoreConfig>({
     resolver: zodResolver(CoreConfigSchema.partial()),
@@ -1258,7 +1258,7 @@ export function StepCoreConfig({ setupState, defaultValues, onChange, onNodeChan
       {/* NODES */}
       <section className="rounded-aurora-3 border border-aurora-border-strong bg-aurora-panel-medium p-5">
         <NodesPanel
-          thisDevice={setupState?.local_host ?? 'local'}
+          thisDevice={systemInfo?.local_host ?? 'local'}
           controller={nodeController}
           masterUrl={masterUrl}
           onMasterChange={onNodeChange}
@@ -2073,7 +2073,7 @@ import { StepServices } from './steps/step-services'
 import { StepSurfaces } from './steps/step-surfaces'
 import { StepFinalize } from './steps/step-finalize'
 import { Button } from '@/components/ui/button'
-import { useSetupState } from '@/lib/setup/use-retired-dev-route'
+import { useSystemInfo } from '@/lib/setup/use-systeminfo'
 import { useWizardState } from '@/lib/setup/use-wizard-state'
 import { SERVICES } from '@/lib/setup/services-catalog'
 
@@ -2109,7 +2109,7 @@ function LabbyLogo() {
 }
 
 export function SetupWizard() {
-  const { setupState } = useSetupState()
+  const { systemInfo } = useSystemInfo()
   const {
     phase, step, setStep,
     draft, patchCore, patchService, patchSurfaces, patchNodes,
@@ -2117,10 +2117,10 @@ export function SetupWizard() {
     transitionToPhase2,
   } = useWizardState()
 
-  const [activeSvc, setActiveSvc] = useState<string>('retired-upstream')
+  const [activeSvc, setActiveSvc] = useState<string>('examplemovies')
   const [configuredIds, setConfiguredIds] = useState<Set<string>>(new Set())
 
-  const env = setupState?.env ?? {}
+  const env = systemInfo?.env ?? {}
   const isRerun = Object.keys(env).length > 0
 
   const stepKey: string | number = phase === 1 ? step : (typeof step === 'string' ? step : step)
@@ -2249,12 +2249,12 @@ export function SetupWizard() {
             {phase === 1 && step === 1 && <StepWelcome isRerun={isRerun} />}
             {phase === 1 && step === 2 && (
               <StepCoreConfig
-                setupState={setupState}
+                systemInfo={systemInfo}
                 defaultValues={draft.core}
                 onChange={patchCore}
                 onNodeChange={(controller, masterUrl) => patchNodes({ controller, masterUrl })}
-                nodeController={draft.nodes.controller || setupState?.controller || ''}
-                masterUrl={draft.nodes.masterUrl || setupState?.master_url || ''}
+                nodeController={draft.nodes.controller || systemInfo?.controller || ''}
+                masterUrl={draft.nodes.masterUrl || systemInfo?.master_url || ''}
               />
             )}
             {phase === 1 && step === 3 && (
@@ -2347,10 +2347,10 @@ cd apps/gateway-admin && pnpm dev
 Visit `http://localhost:3000/setup/`. Verify:
 1. Welcome step loads with network-node logo
 2. Click "Let's get started" → Core Config step
-3. Fields pre-populate from retired-dev-route (if server running)
+3. Fields pre-populate from systeminfo (if server running)
 4. "Next" → PreFlight 1 → real HTTP checks animate
 5. All pass → Phase 2 sidebar slides in
-6. Click "Retired upstream" → service form with URL pre-populated
+6. Click "ExampleMovies" → service form with URL pre-populated
 7. "Surfaces" rail item → surface toggles
 8. "Finalize & Commit" → success screen
 
@@ -2375,6 +2375,6 @@ These require lab-bg3e.3 (setup dispatch service) to ship first:
 - Real `setup.draft.set` / `setup.draft.commit` writes (currently console.log)
 - Real `setup.finalize` with env_merge and doctor probe
 - PreFlight 2 service-specific URL probes (need `doctor.service_probe`)
-- `setup.state` re-run detection (currently approximated from retired-dev-route env keys)
+- `setup.state` re-run detection (currently approximated from systeminfo env keys)
 
 Track as follow-up tasks once lab-bg3e.3 merges.

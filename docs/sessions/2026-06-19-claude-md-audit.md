@@ -21,10 +21,10 @@ and update the contradicted auto-memory.
 Audited all 15 CLAUDE.md files in the repo. The suite was already high quality;
 the one systemic issue was staleness introduced by commit `d2e2d768` ("pivot lab
 to gateway-focused — rip per-service homelab integrations"), which deleted the
-`retired-upstream`/`retired-upstream`/`retired-upstream`/`openai`/`retired-upstream` client family. Seven CLAUDE.md
+`examplemovies`/`exampleseries`/`examplesuite`/`openai`/`examplerequests` client family. Seven CLAUDE.md
 files still taught from those deleted services (including a phantom
 `mount_if_enabled!` macro that exists nowhere in the codebase, and a Tier‑1 CLI
-reference to a nonexistent `retired-upstream.rs`). Applied 8 targeted edits across 7 files,
+reference to a nonexistent `examplemovies.rs`). Applied 8 targeted edits across 7 files,
 then corrected the now-wrong `project_scaffold_audit` auto-memory.
 
 ## Sequence of Events
@@ -34,15 +34,15 @@ then corrected the now-wrong `project_scaffold_audit` auto-memory.
    `lab-apis/src` modules, dispatch dirs, Justfile targets).
 3. Cross-checked claims against source: found `lab-apis` slimmed to
    `core/marketplace/device_runtime/acp/doctor/setup/stash` (+ feature-gated
-   `deploy/mcpregistry/acp_registry`); confirmed `retired-upstream`/`openai`/`retired-upstream`
+   `deploy/mcpregistry/acp_registry`); confirmed `examplemovies`/`openai`/`examplerequests`
    modules are gone via `git log` (`d2e2d768`).
 4. Produced a quality report; asked user for scope → "🔴 + 🟡 full pass" +
    "delete Batch section".
 5. Applied 🔴 fixes (lab-apis, lab, cli), then 🟡 example re-pointing (api, mcp,
    dispatch, gateway). Discovered `mount_if_enabled!` was a phantom macro and
    replaced it with the real `#[cfg(feature)]` + `nest()` pattern.
-6. Verified no stale refs remained; the two surviving `Retired upstream` mentions are
-   legitimate (live `Category::Retired upstream` enum variant + `X-Api-Key` convention origin).
+6. Verified no stale refs remained; the two surviving `ExampleSuite` mentions are
+   legitimate (live `Category::ExampleSuite` enum variant + `X-Api-Key` convention origin).
 7. Resolved a leftover contradiction: removed the `audit`/`scaffold`
    "infrastructure commands" parenthetical (no such CLI subcommands exist).
 8. Rewrote the `project_scaffold_audit` memory and its `MEMORY.md` index line to
@@ -61,8 +61,8 @@ then corrected the now-wrong `project_scaffold_audit` auto-memory.
 - `crates/lab/src/scaffold/` and `crates/lab/src/audit/` directories and the
   `lab-service-onboarding` skill no longer exist; `docs/dev/SCAFFOLD_AND_AUDIT.md`
   still exists but describes removed tooling.
-- `Category::Retired upstream` is still a real enum variant (`crates/lab-apis/src/core/plugin.rs:52`),
-  so root CLAUDE.md's 10-variant list and the `X-Api-Key (Retired upstream convention)`
+- `Category::ExampleSuite` is still a real enum variant (`crates/lab-apis/src/core/plugin.rs:52`),
+  so root CLAUDE.md's 10-variant list and the `X-Api-Key (ExampleSuite convention)`
   note are accurate — left untouched.
 
 ## Technical Decisions
@@ -80,12 +80,12 @@ then corrected the now-wrong `project_scaffold_audit` auto-memory.
 
 | status | path | previous path | purpose | evidence |
 |---|---|---|---|---|
-| modified | `crates/lab-apis/CLAUDE.md` | — | removed dead `retired-upstream` transitive-feature bullet + `openai`/`retired-upstream` examples | `git diff --stat`: 6 lines |
+| modified | `crates/lab-apis/CLAUDE.md` | — | removed dead `examplesuite` transitive-feature bullet + `openai`/`examplerequests` examples | `git diff --stat`: 6 lines |
 | modified | `crates/lab/CLAUDE.md` | — | Tier‑1 ref → `marketplace.rs`/`nodes.rs`; dropped stale `audit`/`scaffold` parenthetical | `git diff --stat`: 2 lines |
 | modified | `crates/lab/src/api/CLAUDE.md` | — | fixed transport example; replaced phantom `mount_if_enabled!` with real `nest()` pattern | `git diff --stat`: 14 lines |
 | modified | `crates/lab/src/cli/CLAUDE.md` | — | deleted dead "Batch commands" section | `git diff --stat`: 11 deletions |
 | modified | `crates/lab/src/dispatch/CLAUDE.md` | — | domain-module examples → `plugins.rs`/`sources.rs`/`forks.rs`/`artifacts.rs` | `git diff --stat`: 2 lines |
-| modified | `crates/lab/src/dispatch/gateway/CLAUDE.md` | — | `(retired-upstream, unraid, …)` → `(marketplace, mcpregistry, …)` | `git diff --stat`: 2 lines |
+| modified | `crates/lab/src/dispatch/gateway/CLAUDE.md` | — | `(examplemovies, unraid, …)` → `(marketplace, mcpregistry, …)` | `git diff --stat`: 2 lines |
 | modified | `crates/lab/src/mcp/CLAUDE.md` | — | tool-name + register example → `deploy` | `git diff --stat`: 6 lines |
 | modified | `~/.claude/.../memory/project_scaffold_audit.md` | — | rewrote to record scaffold/audit removal (outside repo) | Write tool |
 | modified | `~/.claude/.../memory/MEMORY.md` | — | updated index line to flag REMOVED (outside repo) | Edit tool |
@@ -111,7 +111,7 @@ state was read or changed during the session.
   removed tooling) — flagged in Open Questions rather than edited, since
   rewriting it was outside the requested scope.
 - **Transparency**: All edits verified via post-edit grep sweep (no remaining
-  `retired-upstream|retired-upstream|retired-upstream|retired-upstream|retired-upstream|retired-upstream|mount_if_enabled|add_many`).
+  `examplemovies|exampleseries|examplesuite|examplerequests|exampleindexer|examplemetrics|mount_if_enabled|add_many`).
 
 ## Tools and Skills Used
 
@@ -131,17 +131,17 @@ state was read or changed during the session.
 |---|---|
 | `find . -name CLAUDE.md` | 15 files |
 | `ls crates/lab-apis/src/` | confirmed arr/AI modules absent |
-| `git log ... -- 'crates/lab-apis/src/retired-upstream*'` | `d2e2d768 refactor: pivot lab to gateway-focused — rip per-service homelab integrations` |
+| `git log ... -- 'crates/lab-apis/src/examplemovies*'` | `d2e2d768 refactor: pivot lab to gateway-focused — rip per-service homelab integrations` |
 | `grep -rn 'mount_if_enabled' crates/lab/src` | only hit: the CLAUDE.md doc itself |
 | `grep -A40 '^\[features\]' crates/lab-apis/Cargo.toml` | features: acp_registry, deploy, mcpregistry |
-| `grep -rni '<stale terms>' $(find . -name CLAUDE.md)` (post-edit) | only legitimate `Retired upstream` refs remain |
+| `grep -rni '<stale terms>' $(find . -name CLAUDE.md)` (post-edit) | only legitimate `ExampleSuite` refs remain |
 | `git diff --stat` | 7 files, 17 insertions, 26 deletions |
 
 ## Behavior Changes (Before/After)
 
 | area | before | after |
 |---|---|---|
-| CLAUDE.md examples | referenced deleted services (retired-upstream/retired-upstream/openai/retired-upstream) | reference live services (marketplace/gateway/deploy/nodes) |
+| CLAUDE.md examples | referenced deleted services (examplemovies/exampleseries/openai/examplerequests) | reference live services (marketplace/gateway/deploy/nodes) |
 | api CLAUDE.md mounting | described phantom `mount_if_enabled!` macro | describes real `#[cfg(feature)]` + `nest()` pattern |
 | cli CLAUDE.md | documented removed `add_many` batch capability | section removed |
 | `project_scaffold_audit` memory | claimed scaffold/audit commands are mandatory | records they were removed; points to manual onboarding |
@@ -150,9 +150,9 @@ state was read or changed during the session.
 
 | command | expected | actual | status |
 |---|---|---|---|
-| post-edit stale-term grep over all CLAUDE.md | no arr/AI/macro refs | only `Retired upstream` (enum/convention) | pass |
+| post-edit stale-term grep over all CLAUDE.md | no arr/AI/macro refs | only `ExampleSuite` (enum/convention) | pass |
 | `grep -wE 'openai' $(find . -name CLAUDE.md)` | none | NONE | pass |
-| `grep 'pub enum Category'` source | `Retired upstream` still present | present | pass |
+| `grep 'pub enum Category'` source | `ExampleSuite` still present | present | pass |
 | symlink check (AGENTS.md/GEMINI.md) | symlinks → CLAUDE.md | all symlinks | pass |
 
 ## Risks and Rollback

@@ -132,7 +132,7 @@ Both PRs were squash-merged; rollback would be `git revert <squash-sha>` on main
 ## Next Steps
 
 **Follow-on (not started):**
-- `lab-iwk3.1` and siblings: Pivot rip — remove per-service homelab integrations from `lab-apis` and `lab` crates (retired-upstream family first)
+- `lab-iwk3.1` and siblings: Pivot rip — remove per-service homelab integrations from `lab-apis` and `lab` crates (examplesuite family first)
 - `lab-kvji` epic: Resolve comprehensive PR review findings for gateway-chat-registry-log-ui
 - `lab-tpcp` epic: Wire ACP chat permission approval controls
 - `lab-mgw9` epic: Implement Gateway-managed inline OAuth MCP path proxy

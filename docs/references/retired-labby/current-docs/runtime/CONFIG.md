@@ -7,7 +7,7 @@ Configuration is intentionally split between secrets and preferences.
 | Category | Where | Examples |
 |----------|-------|----------|
 | Secrets | `~/.labby/.env` | `*_API_KEY`, `*_TOKEN`, `*_PASSWORD`, `LABBY_MCP_HTTP_TOKEN` |
-| Service endpoints | `~/.labby/.env` | `RETIRED_UPSTREAM_URL`, `RETIRED_UPSTREAM_URL`, other per-instance upstream URLs |
+| Service endpoints | `~/.labby/.env` | `EXAMPLEMOVIES_URL`, `EXAMPLEMEDIA_URL`, other per-instance upstream URLs |
 | Non-secret preferences and defaults | `config.toml` | logging, MCP transport, CORS, admin flags, registry URLs, workspace roots, per-service prefs |
 
 All `config.toml` values can still be overridden by env vars. Env always wins.
@@ -504,12 +504,12 @@ Credentials belong in env, not TOML.
 Examples:
 
 ```env
-RETIRED_UPSTREAM_URL=http://localhost:7878
-RETIRED_UPSTREAM_API_KEY=abc123
-RETIRED_UPSTREAM_URL=http://localhost:32400
-RETIRED_UPSTREAM_TOKEN=xyz789
-RETIRED_UPSTREAM_URL=http://localhost:8096
-RETIRED_UPSTREAM_API_KEY=replace-me
+EXAMPLEMOVIES_URL=http://localhost:7878
+EXAMPLEMOVIES_API_KEY=abc123
+EXAMPLEMEDIA_URL=http://localhost:32400
+EXAMPLEMEDIA_TOKEN=xyz789
+EXAMPLESTREAM_URL=http://localhost:8096
+EXAMPLESTREAM_API_KEY=replace-me
 OPENACP_URL=http://127.0.0.1:21420
 OPENACP_TOKEN=replace-me
 ```
@@ -539,13 +539,13 @@ UNRAID_BACKUP_URL=https://other.local/graphql
 UNRAID_BACKUP_API_KEY=...
 ```
 
-Retired upstream follows the same pattern:
+ExampleStream follows the same pattern:
 
 ```env
-RETIRED_UPSTREAM_URL=http://localhost:8096
-RETIRED_UPSTREAM_API_KEY=...
-RETIRED_UPSTREAM_NODE2_URL=http://node2.local:8096
-RETIRED_UPSTREAM_NODE2_API_KEY=...
+EXAMPLESTREAM_URL=http://localhost:8096
+EXAMPLESTREAM_API_KEY=...
+EXAMPLESTREAM_NODE2_URL=http://node2.local:8096
+EXAMPLESTREAM_NODE2_API_KEY=...
 ```
 
 OpenACP uses bearer tokens instead of API keys:

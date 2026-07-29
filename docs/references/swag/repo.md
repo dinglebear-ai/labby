@@ -1,5 +1,9 @@
 This file is a merged representation of the entire codebase, combined into a single document by Repomix.
 
+This retained copy is sanitized: retired service identifiers were replaced with
+distinct `example*` pseudonyms. Regenerate from the source repository before
+using examples verbatim.
+
 # File Summary
 
 ## Purpose
@@ -209,8 +213,8 @@ tests/
     test-tools.sh
   test-proxy-confs/
     _template.subdomain.conf.sample
-    retired-upstream.subdomain.conf.sample
-    retired-upstream.subdomain.conf.sample
+    examplestream.subdomain.conf.sample
+    examplemedia.subdomain.conf.sample
   __init__.py
   conftest.py
   test_concurrency.py
@@ -3534,7 +3538,7 @@ swag-mcp uses a single unified tool (`swag`) with an `action` parameter to route
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `action` | SwagAction (enum) | required | Operation to perform |
-| `config_name` | string (max 255) | `""` | Configuration filename (e.g., `retired-upstream.subdomain.conf`) |
+| `config_name` | string (max 255) | `""` | Configuration filename (e.g., `examplestream.subdomain.conf`) |
 | `create_backup` | bool | `true` | Create backup before destructive operations |
 
 ### Action: `list`
@@ -3558,7 +3562,7 @@ Create a new nginx proxy configuration from the Jinja2 template.
 
 | Parameter | Type | Default | Required | Description |
 | --- | --- | --- | --- | --- |
-| `config_name` | string | — | yes | Filename (e.g., `retired-upstream.subdomain.conf`) |
+| `config_name` | string | — | yes | Filename (e.g., `examplestream.subdomain.conf`) |
 | `server_name` | string (max 253) | — | yes | Domain (e.g., `media.example.com`) |
 | `upstream_app` | string (max 100) | — | yes | Container name or IP |
 | `upstream_port` | int (0-65535) | — | yes | Service port |
@@ -5610,7 +5614,7 @@ This document analyzes the current SWAG MCP architecture and proposes solutions 
 **Current Limitation**: All location blocks in a configuration file share the same upstream variables (`$upstream_app`, `$upstream_port`, `$upstream_proto`).
 
 **Goal**: Enable configurations where:
-- Main service (e.g., Retired upstream) runs on `retired-upstream:8096`
+- Main service (e.g., ExampleStream) runs on `examplestream:8096`
 - MCP endpoint runs on a different server (e.g., `ai-server:8080`)
 
 ---
@@ -5691,23 +5695,23 @@ The `add_mcp_location()` method adds MCP blocks to existing configs, but it uses
 
 ## Use Case Examples
 
-### Use Case 1: Retired upstream + Remote AI Service
+### Use Case 1: ExampleStream + Remote AI Service
 
 **Scenario**:
-- Retired upstream media server: `retired-upstream:8096`
+- ExampleStream media server: `examplestream:8096`
 - AI subtitle generator MCP: `ai-gpu-server:8080`
 
 **Desired Configuration**:
 ```nginx
-# retired-upstream.subdomain.conf
+# examplestream.subdomain.conf
 server {
     # ... SSL config ...
 
-    set $upstream_app "retired-upstream";
+    set $upstream_app "examplestream";
     set $upstream_port "8096";
     set $upstream_proto "http";
 
-    # Main Retired upstream service
+    # Main ExampleStream service
     location / {
         proxy_pass $upstream_proto://$upstream_app:$upstream_port;
     }
@@ -5721,17 +5725,17 @@ server {
 }
 ```
 
-### Use Case 2: Retired upstream + Multiple MCP Services
+### Use Case 2: ExampleMedia + Multiple MCP Services
 
 **Scenario**:
-- Retired upstream media server: `retired-upstream:32400`
+- ExampleMedia media server: `examplemedia:32400`
 - Transcoding MCP: `transcode-server:9000`
 - Metadata MCP: `metadata-server:9001`
 
 **Desired Configuration**:
 ```nginx
 location / {
-    proxy_pass https://retired-upstream:32400;
+    proxy_pass https://examplemedia:32400;
 }
 
 location /mcp/transcode {
@@ -5879,27 +5883,27 @@ template_vars = {
 **Same machine (backward compatible)**:
 ```python
 SwagConfigRequest(
-    config_name="retired-upstream.subdomain.conf",
-    server_name="retired-upstream.example.com",
-    upstream_app="retired-upstream",
+    config_name="examplestream.subdomain.conf",
+    server_name="examplestream.example.com",
+    upstream_app="examplestream",
     upstream_port=8096,
     mcp_enabled=True
-    # MCP uses same upstream: retired-upstream:8096
+    # MCP uses same upstream: examplestream:8096
 )
 ```
 
 **Different machine**:
 ```python
 SwagConfigRequest(
-    config_name="retired-upstream.subdomain.conf",
-    server_name="retired-upstream.example.com",
-    upstream_app="retired-upstream",
+    config_name="examplestream.subdomain.conf",
+    server_name="examplestream.example.com",
+    upstream_app="examplestream",
     upstream_port=8096,
     mcp_enabled=True,
     mcp_upstream_app="ai-gpu-server",
     mcp_upstream_port=8080,
     mcp_upstream_proto="http"
-    # Main service: retired-upstream:8096
+    # Main service: examplestream:8096
     # MCP service: ai-gpu-server:8080
 )
 ```
@@ -5952,8 +5956,8 @@ SwagConfigRequest(
 - ❌ More complex management
 
 **Example**:
-- `retired-upstream.subdomain.conf` → `retired-upstream.example.com` → `retired-upstream:8096`
-- `retired-upstream-mcp.subdomain.conf` → `ai.example.com` → `ai-gpu-server:8080`
+- `examplestream.subdomain.conf` → `examplestream.example.com` → `examplestream:8096`
+- `examplestream-mcp.subdomain.conf` → `ai.example.com` → `ai-gpu-server:8080`
 
 **Not recommended** as it doesn't solve the core use case.
 
@@ -6026,9 +6030,9 @@ SwagConfigRequest(
 async def test_create_config_with_remote_mcp_server():
     """Test creating config with MCP on different server."""
     request = SwagConfigRequest(
-        config_name="retired-upstream.subdomain.conf",
-        server_name="retired-upstream.example.com",
-        upstream_app="retired-upstream",
+        config_name="examplestream.subdomain.conf",
+        server_name="examplestream.example.com",
+        upstream_app="examplestream",
         upstream_port=8096,
         mcp_enabled=True,
         mcp_upstream_app="ai-server",
@@ -6037,8 +6041,8 @@ async def test_create_config_with_remote_mcp_server():
 
     result = await swag_manager.create_config(request)
 
-    # Verify main service uses retired-upstream:8096
-    assert 'set $upstream_app "retired-upstream"' in result.content
+    # Verify main service uses examplestream:8096
+    assert 'set $upstream_app "examplestream"' in result.content
     assert 'set $upstream_port "8096"' in result.content
 
     # Verify MCP uses ai-server:8080
@@ -6063,13 +6067,13 @@ async def test_remote_mcp_server_health_check():
 
     # Verify main service is accessible
     main_health = await swag_manager.health_check(
-        SwagHealthCheckRequest(domain="retired-upstream.example.com")
+        SwagHealthCheckRequest(domain="examplestream.example.com")
     )
     assert main_health.success
 
     # Verify MCP endpoint is accessible
     mcp_health = await swag_manager.health_check(
-        SwagHealthCheckRequest(domain="retired-upstream.example.com/mcp")
+        SwagHealthCheckRequest(domain="examplestream.example.com/mcp")
     )
     assert mcp_health.success
 ```
@@ -6081,13 +6085,13 @@ async def test_remote_mcp_server_health_check():
 ### Example Commands
 
 **Create config with remote MCP server**:
-- *"Create a retired-upstream proxy at retired-upstream.example.com using retired-upstream:8096 with MCP on ai-server:8080"*
-- *"Set up retired-upstream at retired-upstream.example.com port 8096, but use ai-gpu-server port 8080 for the MCP endpoint"*
-- *"Add retired-upstream subdomain proxy with main service on retired-upstream:8096 and MCP service on remote-ai:8080"*
+- *"Create a examplestream proxy at examplestream.example.com using examplestream:8096 with MCP on ai-server:8080"*
+- *"Set up examplestream at examplestream.example.com port 8096, but use ai-gpu-server port 8080 for the MCP endpoint"*
+- *"Add examplestream subdomain proxy with main service on examplestream:8096 and MCP service on remote-ai:8080"*
 
 **Update existing config to use remote MCP**:
-- *"Update retired-upstream config to use ai-server:8080 for MCP instead of retired-upstream"*
-- *"Change the MCP upstream for retired-upstream to point to remote-gpu:9000"*
+- *"Update examplestream config to use ai-server:8080 for MCP instead of examplestream"*
+- *"Change the MCP upstream for examplestream to point to remote-gpu:9000"*
 
 ---
 
@@ -6107,27 +6111,27 @@ async def test_remote_mcp_server_health_check():
 **Old API Call** (still works):
 ```python
 SwagConfigRequest(
-    config_name="retired-upstream.subdomain.conf",
-    server_name="retired-upstream.example.com",
-    upstream_app="retired-upstream",
+    config_name="examplestream.subdomain.conf",
+    server_name="examplestream.example.com",
+    upstream_app="examplestream",
     upstream_port=8096,
     mcp_enabled=True
 )
-# Result: Both main and MCP use retired-upstream:8096
+# Result: Both main and MCP use examplestream:8096
 ```
 
 **New API Call**:
 ```python
 SwagConfigRequest(
-    config_name="retired-upstream.subdomain.conf",
-    server_name="retired-upstream.example.com",
-    upstream_app="retired-upstream",
+    config_name="examplestream.subdomain.conf",
+    server_name="examplestream.example.com",
+    upstream_app="examplestream",
     upstream_port=8096,
     mcp_enabled=True,
     mcp_upstream_app="ai-server",
     mcp_upstream_port=8080
 )
-# Result: Main uses retired-upstream:8096, MCP uses ai-server:8080
+# Result: Main uses examplestream:8096, MCP uses ai-server:8080
 ```
 
 ---
@@ -6162,12 +6166,12 @@ location = /.well-known/oauth-protected-resource {
 
 ```nginx
 # Main service
-location ^~ /retired-upstream {
+location ^~ /examplestream {
     proxy_pass $upstream_proto://$upstream_app:$upstream_port;
 }
 
 # MCP service
-location ^~ /retired-upstream/mcp {
+location ^~ /examplestream/mcp {
     proxy_pass $mcp_upstream_proto://$mcp_upstream_app:$mcp_upstream_port/mcp;
 }
 ```
@@ -6302,9 +6306,9 @@ class MCPServiceConfig:
 ### Input Request
 ```python
 SwagConfigRequest(
-    config_name="retired-upstream.subdomain.conf",
-    server_name="retired-upstream.example.com",
-    upstream_app="retired-upstream",
+    config_name="examplestream.subdomain.conf",
+    server_name="examplestream.example.com",
+    upstream_app="examplestream",
     upstream_port=8096,
     upstream_proto="http",
     mcp_enabled=True,
@@ -6320,19 +6324,19 @@ SwagConfigRequest(
 ```nginx
 ## Version 2025/08/20 - MCP 2025-06-18 SWAG Compatible
 # Generated by SWAG MCP Server
-# Service: retired-upstream
-# Domain: retired-upstream.example.com
-# Main Upstream: http://retired-upstream:8096
+# Service: examplestream
+# Domain: examplestream.example.com
+# Main Upstream: http://examplestream:8096
 # MCP Upstream: http://ai-gpu-server:8080
 
 server {
     listen 443 ssl;
-    server_name retired-upstream.example.com;
+    server_name examplestream.example.com;
 
     include /config/nginx/ssl.conf;
 
     # Main service upstream
-    set $upstream_app "retired-upstream";
+    set $upstream_app "examplestream";
     set $upstream_port "8096";
     set $upstream_proto "http";
 
@@ -6368,25 +6372,25 @@ server {
         include /config/nginx/resolver.conf;
         include /config/nginx/mcp.conf;
 
-        # Routes to retired-upstream:8096
+        # Routes to examplestream:8096
         proxy_pass $upstream_proto://$upstream_app:$upstream_port;
     }
 
-    # Default location - main Retired upstream service
+    # Default location - main ExampleStream service
     location / {
         include /config/nginx/authelia-location.conf;
         include /config/nginx/resolver.conf;
         include /config/nginx/proxy.conf;
 
-        # Routes to retired-upstream:8096
+        # Routes to examplestream:8096
         proxy_pass $upstream_proto://$upstream_app:$upstream_port;
     }
 }
 ```
 
 This configuration successfully routes:
-- `https://retired-upstream.example.com/` → `http://retired-upstream:8096` (main service)
-- `https://retired-upstream.example.com/mcp` → `http://ai-gpu-server:8080` (AI service)
+- `https://examplestream.example.com/` → `http://examplestream:8096` (main service)
+- `https://examplestream.example.com/mcp` → `http://ai-gpu-server:8080` (AI service)
 ````
 
 ## File: docs/README.md
@@ -6518,25 +6522,25 @@ See [CONFIG](CONFIG.md) for all variables including logging, rate limiting, retr
 swag(action="list", list_filter="active")
 
 # Create a new proxy config
-swag(action="create", config_name="retired-upstream.subdomain.conf",
-     server_name="media.example.com", upstream_app="retired-upstream",
+swag(action="create", config_name="examplestream.subdomain.conf",
+     server_name="media.example.com", upstream_app="examplestream",
      upstream_port=8096, auth_method="authelia")
 
 # Create with split routing (main app + separate MCP server)
-swag(action="create", config_name="retired-upstream.subdomain.conf",
-     server_name="retired-upstream.example.com", upstream_app="retired-upstream",
+swag(action="create", config_name="examplestream.subdomain.conf",
+     server_name="examplestream.example.com", upstream_app="examplestream",
      upstream_port=8096, mcp_upstream_app="ai-gpu-server",
      mcp_upstream_port=8080)
 
 # View a configuration
-swag(action="view", config_name="retired-upstream.subdomain.conf")
+swag(action="view", config_name="examplestream.subdomain.conf")
 
 # Update a port
-swag(action="update", config_name="retired-upstream.subdomain.conf",
+swag(action="update", config_name="examplestream.subdomain.conf",
      update_field="port", update_value="8097")
 
 # Add MCP endpoint to existing config
-swag(action="update", config_name="retired-upstream.subdomain.conf",
+swag(action="update", config_name="examplemedia.subdomain.conf",
      update_field="add_mcp", update_value="/mcp")
 
 # Check health
@@ -6602,7 +6606,7 @@ When `SWAG_MCP_PROXY_CONFS_URI` is set, it takes precedence over `SWAG_MCP_PROXY
 | Plugin | Category | Description |
 |--------|----------|-------------|
 | [homelab-core](https://github.com/jmagar/claude-homelab) | core | Core agents, commands, skills, and setup/health workflows for homelab management. |
-| [retired-upstream-mcp](https://github.com/jmagar/retired-upstream-mcp) | media | Search movies and TV shows, submit requests, and monitor failed requests via Retired upstream. |
+| [examplerequests-mcp](https://github.com/jmagar/examplerequests-mcp) | media | Search movies and TV shows, submit requests, and monitor failed requests via ExampleRequests. |
 | [unraid-mcp](https://github.com/jmagar/unraid-mcp) | infrastructure | Query, monitor, and manage Unraid servers. |
 | [unifi-mcp](https://github.com/jmagar/unifi-mcp) | infrastructure | Monitor and manage UniFi devices and network health. |
 | [synapse-mcp](https://github.com/jmagar/synapse-mcp) | infrastructure | Docker management and SSH remote operations across homelab hosts. |
@@ -6827,13 +6831,13 @@ swag list ""
 ### Basic Create Commands
 ```bash
 # Minimal create command
-swag create retired-upstream media.example.com retired-upstream 8096
+swag create examplestream media.example.com examplestream 8096
 
 # Create with all default parameters
-swag create retired-upstream media.example.com retired-upstream 32400
+swag create examplemedia media.example.com examplemedia 32400
 
 # Create with explicit http protocol
-swag create retired-upstream tv.example.com retired-upstream 8989 http
+swag create exampleseries tv.example.com exampleseries 8989 http
 ```
 
 ### Create with Different Config Types
@@ -6914,10 +6918,10 @@ swag create test test.example.com -invalid 8080
 ### Basic View Commands
 ```bash
 # View existing configuration
-swag view retired-upstream.subdomain.conf
+swag view examplestream.subdomain.conf
 
 # View configuration without .conf extension
-swag view retired-upstream.subdomain
+swag view examplestream.subdomain
 
 # View different config types
 swag view app.subfolder.conf
@@ -6942,13 +6946,13 @@ swag view .invalid.conf
 ### Basic Edit Commands
 ```bash
 # Edit with backup (default)
-swag edit retired-upstream.subdomain.conf "new configuration content"
+swag edit examplestream.subdomain.conf "new configuration content"
 
 # Edit without backup
-swag edit retired-upstream.subdomain.conf "new content" false
+swag edit examplestream.subdomain.conf "new content" false
 
 # Edit with explicit backup flag
-swag edit retired-upstream.subdomain.conf "new content" true
+swag edit examplestream.subdomain.conf "new content" true
 ```
 
 ### Edit Edge Cases
@@ -6968,10 +6972,10 @@ swag edit nonexistent.conf "content"
 ### Port Updates
 ```bash
 # Update port with backup (default)
-swag update retired-upstream.subdomain.conf port 8097
+swag update examplestream.subdomain.conf port 8097
 
 # Update port without backup
-swag update retired-upstream.subdomain.conf port 8097 false
+swag update examplestream.subdomain.conf port 8097 false
 
 # Update to different ports
 swag update app.subdomain.conf port 80
@@ -7036,13 +7040,13 @@ swag config
 ### Basic Remove Commands
 ```bash
 # Remove with backup (default)
-swag remove retired-upstream.subdomain.conf
+swag remove examplestream.subdomain.conf
 
 # Remove without backup
-swag remove retired-upstream.subdomain.conf false
+swag remove examplestream.subdomain.conf false
 
 # Remove with explicit backup flag
-swag remove retired-upstream.subdomain.conf true
+swag remove examplestream.subdomain.conf true
 ```
 
 ### Remove Edge Cases
@@ -7747,9 +7751,9 @@ proxy_set_header X-Forwarded-Uri $request_uri;
 
 | Variable | Type | Required | Description | Example |
 |----------|------|----------|-------------|---------|
-| `service_name` | string | Yes | Service identifier | `"retired-upstream"` |
+| `service_name` | string | Yes | Service identifier | `"examplestream"` |
 | `server_name` | string | Yes | Domain name | `"media.example.com"` |
-| `upstream_app` | string | Yes | Container/IP | `"retired-upstream"` or `"192.168.1.100"` |
+| `upstream_app` | string | Yes | Container/IP | `"examplestream"` or `"192.168.1.100"` |
 | `upstream_port` | integer | Yes | Port number | `8096` |
 | `upstream_proto` | string | Yes | Protocol | `"http"` or `"https"` |
 
@@ -7771,9 +7775,9 @@ proxy_set_header X-Forwarded-Uri $request_uri;
 ```python
 # Standard web application
 {
-    "service_name": "retired-upstream",
-    "server_name": "retired-upstream.mydomain.com",
-    "upstream_app": "retired-upstream",
+    "service_name": "examplemedia",
+    "server_name": "examplemedia.mydomain.com",
+    "upstream_app": "examplemedia",
     "upstream_port": 32400,
     "upstream_proto": "http",
     "auth_method": "authelia",
@@ -7797,39 +7801,39 @@ proxy_set_header X-Forwarded-Uri $request_uri;
 
 ## Generated Configuration Examples
 
-### Example 1: Standard Subdomain (Retired upstream)
+### Example 1: Standard Subdomain (ExampleMedia)
 
 **Input Variables**:
 ```python
 {
-    "service_name": "retired-upstream",
-    "server_name": "retired-upstream.example.com",
-    "upstream_app": "retired-upstream",
+    "service_name": "examplemedia",
+    "server_name": "examplemedia.example.com",
+    "upstream_app": "examplemedia",
     "upstream_port": 32400,
     "upstream_proto": "http",
     "auth_method": "authelia"
 }
 ```
 
-**Generated Configuration** (`retired-upstream.subdomain.conf`):
+**Generated Configuration** (`examplemedia.subdomain.conf`):
 ```nginx
 ## Version 2025/08/18
 # Generated by SWAG MCP Server
-# Service: retired-upstream
-# Domain: retired-upstream.example.com
-# Upstream: http://retired-upstream:32400
+# Service: examplemedia
+# Domain: examplemedia.example.com
+# Upstream: http://examplemedia:32400
 
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
 
-    server_name retired-upstream.example.com;
+    server_name examplemedia.example.com;
 
     include /config/nginx/ssl.conf;
     client_max_body_size 0;
 
     # Upstream target
-    set $upstream_app "retired-upstream";
+    set $upstream_app "examplemedia";
     set $upstream_port "32400";
     set $upstream_proto "http";
 
@@ -8818,7 +8822,7 @@ Returns all proxy configurations with their status (enabled/disabled).
 ```
 mcp__swag-mcp__swag
   action:       "create"
-  server_name:  (required) Service name, e.g. "retired-upstream", "retired-upstream"
+  server_name:  (required) Service name, e.g. "examplestream", "exampleseries"
   type:         (required) "subdomain" or "subfolder"
   upstream_url: (required) Backend URL, e.g. "http://192.168.1.10:8096"
   auth_method:  (optional) "authelia", "authentik", "basic", "none" — default from server config
@@ -8925,7 +8929,7 @@ The server manages configs at the path configured via `SWAG_MCP_PROXY_CONFS_PATH
 ## Notes
 
 - `subdomain` configs require a wildcard DNS entry or per-subdomain record pointing to SWAG
-- `subfolder` configs proxy via path prefix (e.g. `https://domain.com/retired-upstream/`)
+- `subfolder` configs proxy via path prefix (e.g. `https://domain.com/exampleseries/`)
 - Auth methods: `authelia` and `authentik` require those services to be running and configured
 - QUIC/HTTP3 requires ports 443/UDP to be open in addition to 443/TCP
 ````
@@ -10880,7 +10884,7 @@ class MCPErrorEnhancementMiddleware(Middleware):
             ],
             ErrorCode.INVALID_UPSTREAM_APP: [
                 "Use container name or IP address",
-                "Examples: 'retired-upstream', 'myapp', '192.168.1.100'",
+                "Examples: 'examplestream', 'myapp', '192.168.1.100'",
                 "Avoid special characters except dots and hyphens",
             ],
             ErrorCode.INVALID_FILE_CONTENT: [
@@ -11478,7 +11482,7 @@ class SwagConfigRequest(SwagBaseRequest):
     config_name: str = Field(
         ...,
         pattern=VALID_CONFIG_NAME_FORMAT,
-        description="Configuration filename (e.g., 'retired-upstream.subdomain.conf')",
+        description="Configuration filename (e.g., 'examplestream.subdomain.conf')",
     )
 
     server_name: str = Field(..., max_length=253, description="Domain name for the service")
@@ -13131,8 +13135,8 @@ class ConfigOperations:
 
         """
         # Extract service_name and base_type from config_name
-        config_name = request.config_name  # e.g., "retired-upstream.subdomain.conf"
-        parts = config_name.rsplit(".", 2)  # ['retired-upstream', 'subdomain', 'conf']
+        config_name = request.config_name  # e.g., "examplestream.subdomain.conf"
+        parts = config_name.rsplit(".", 2)  # ['examplestream', 'subdomain', 'conf']
         if len(parts) != 3 or parts[2] != "conf":
             raise ValueError(
                 f"Invalid config_name format. Must be 'service.type.conf' (got: {config_name})"
@@ -16735,8 +16739,8 @@ class SwagManagerService:
     async def create_config(self, request: SwagConfigRequest) -> SwagConfigResult:
         """Create new configuration from template."""
         # Extract service_name and base_type from config_name
-        config_name = request.config_name  # e.g., "retired-upstream.subdomain.conf"
-        parts = config_name.rsplit(".", 2)  # ['retired-upstream', 'subdomain', 'conf']
+        config_name = request.config_name  # e.g., "examplestream.subdomain.conf"
+        parts = config_name.rsplit(".", 2)  # ['examplestream', 'subdomain', 'conf']
         if len(parts) != 3 or parts[2] != "conf":
             raise ValueError(
                 f"Invalid config_name format. Must be 'service.type.conf' (got: {config_name})"
@@ -18641,8 +18645,8 @@ class SwagManagerService:
     async def create_config(self, request: SwagConfigRequest) -> SwagConfigResult:
         """Create new configuration from template."""
         # Extract service_name and base_type from config_name
-        config_name = request.config_name  # e.g., "retired-upstream.subdomain.conf"
-        parts = config_name.rsplit(".", 2)  # ['retired-upstream', 'subdomain', 'conf']
+        config_name = request.config_name  # e.g., "examplestream.subdomain.conf"
+        parts = config_name.rsplit(".", 2)  # ['examplestream', 'subdomain', 'conf']
         if len(parts) != 3 or parts[2] != "conf":
             raise ValueError(
                 f"Invalid config_name format. Must be 'service.type.conf' (got: {config_name})"
@@ -21342,21 +21346,21 @@ def _format_service_error(result: Dict[str, Any]) -> str:
 The tool is designed to work with natural language commands from AI assistants:
 
 ```python
-# Natural language: "Create retired-upstream proxy at media.example.com on port 8096"
+# Natural language: "Create examplestream proxy at media.example.com on port 8096"
 # Maps to parameters:
 {
     "action": "create",
-    "service_name": "retired-upstream",
+    "service_name": "examplestream",
     "server_name": "media.example.com",
-    "upstream_app": "retired-upstream",
+    "upstream_app": "examplestream",
     "upstream_port": 8096
 }
 
-# Natural language: "Update port for retired-upstream config to 8097"
+# Natural language: "Update port for examplestream config to 8097"
 # Maps to parameters:
 {
     "action": "update",
-    "config_name": "retired-upstream.subdomain.conf",
+    "config_name": "examplestream.subdomain.conf",
     "update_field": "port",
     "update_value": "8097"
 }
@@ -21618,7 +21622,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 default="",
-                description="Configuration filename (e.g., 'retired-upstream.subdomain.conf')",
+                description="Configuration filename (e.g., 'examplestream.subdomain.conf')",
                 max_length=255,
             ),
         ] = "",
@@ -21808,20 +21812,20 @@ def register_tools(mcp: FastMCP) -> None:
           - Optional: timeout, follow_redirects
 
         Examples:
-          "Create retired-upstream.subdomain.conf for media.example.com using retired-upstream:8096"
+          "Create examplestream.subdomain.conf for media.example.com using examplestream:8096"
           "List all active proxy configurations"
-          "Show the retired-upstream.subdomain.conf configuration"
+          "Show the examplemedia.subdomain.conf configuration"
           "Update port for crawler.subdomain.conf to 8011"
-          "Add MCP endpoint to retired-upstream.subdomain.conf"
-          "Add MCP location at /ai-service to retired-upstream.subdomain.conf"
+          "Add MCP endpoint to examplestream.subdomain.conf"
+          "Add MCP location at /ai-service to examplemedia.subdomain.conf"
           "Clean up backup files older than 7 days"
           "List all backup files"
 
         Split-routing example (main app on one server, MCP/AI service on a GPU server):
-          action=create, config_name=retired-upstream.subdomain.conf,
-          server_name=retired-upstream.example.com, upstream_app=retired-upstream, upstream_port=8096,
+          action=create, config_name=examplestream.subdomain.conf,
+          server_name=examplestream.example.com, upstream_app=examplestream, upstream_port=8096,
           mcp_upstream_app=ai-gpu-server, mcp_upstream_port=8080
-          → Routes: / → retired-upstream:8096, /mcp → ai-gpu-server:8080
+          → Routes: / → examplestream:8096, /mcp → ai-gpu-server:8080
 
         """
         swag_service = SwagManagerService()
@@ -23566,8 +23570,8 @@ def format_config_list_details(
     Examples:
         format_config_list_details([...], "all", 5) ->
         "Found 5 configurations (all types):
-        📄 retired-upstream.subdomain.conf (1.2 KB, 2025-01-15 14:30:00)
-        📝 retired-upstream.sample (0.8 KB, 2025-01-15 13:45:00)"
+        📄 examplestream.subdomain.conf (1.2 KB, 2025-01-15 14:30:00)
+        📝 examplemedia.sample (0.8 KB, 2025-01-15 13:45:00)"
 
     """
     # Get base message from existing function
@@ -25869,7 +25873,7 @@ def validate_config_filename(filename: str) -> str:
 
     Args:
         filename: Configuration filename or bare name
-            (e.g., "retired-upstream" or "retired-upstream.subdomain.conf")
+            (e.g., "examplestream" or "examplestream.subdomain.conf")
 
     Returns:
         Validated filename if safe
@@ -25912,10 +25916,10 @@ def validate_config_filename(filename: str) -> str:
     if not filename.endswith(".conf") and not filename.endswith(".conf.sample"):
         # Check if it's a bare filename that we can auto-extend
         if not filename.endswith(".") and "." not in filename:
-            # Simple service name like "retired-upstream" -> "retired-upstream.conf"
+            # Simple service name like "examplestream" -> "examplestream.conf"
             filename = f"{filename}.conf"
         elif filename.count(".") == 1 and not filename.endswith("."):
-            # Service with config type like "retired-upstream.subdomain" -> "retired-upstream.subdomain.conf"
+            # Service with config type like "examplestream.subdomain" -> "examplestream.subdomain.conf"
             filename = f"{filename}.conf"
         else:
             # Complex filename that we can't auto-extend safely
@@ -27353,9 +27357,9 @@ location = /_oauth_verify {
 ### Required Variables
 ```python
 template_vars = {
-    'service_name': 'retired-upstream',           # Service identifier
+    'service_name': 'examplestream',           # Service identifier
     'server_name': 'media.example.com',   # Domain name
-    'upstream_app': 'retired-upstream',           # Container/host name
+    'upstream_app': 'examplestream',           # Container/host name
     'upstream_port': 8096,                # Port number
     'upstream_proto': 'http',             # http or https
     'auth_method': 'authelia',            # Authentication for / location
@@ -27433,9 +27437,9 @@ env = Environment(
 # Only one template exists
 template = env.get_template('mcp.subdomain.conf.j2')
 config_content = template.render(
-    service_name='retired-upstream',
+    service_name='examplestream',
     server_name='media.example.com',
-    upstream_app='retired-upstream',
+    upstream_app='examplestream',
     upstream_port=8096,
     upstream_proto='http',
     auth_method='authelia',
@@ -28180,14 +28184,14 @@ server {
 }
 ````
 
-## File: tests/test-proxy-confs/retired-upstream.subdomain.conf.sample
+## File: tests/test-proxy-confs/examplestream.subdomain.conf.sample
 ````
-# Retired upstream sample configuration
+# ExampleStream sample configuration
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
 
-    server_name retired-upstream.*;
+    server_name examplestream.*;
 
     include /config/nginx/ssl.conf;
 
@@ -28202,7 +28206,7 @@ server {
 
         include /config/nginx/proxy.conf;
         include /config/nginx/resolver.conf;
-        set $upstream_app "retired-upstream";
+        set $upstream_app "examplestream";
         set $upstream_port "8096";
         set $upstream_proto "http";
         proxy_pass $upstream_proto://$upstream_app:$upstream_port;
@@ -28210,14 +28214,14 @@ server {
 }
 ````
 
-## File: tests/test-proxy-confs/retired-upstream.subdomain.conf.sample
+## File: tests/test-proxy-confs/examplemedia.subdomain.conf.sample
 ````
-# Retired upstream sample configuration
+# ExampleMedia sample configuration
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
 
-    server_name retired-upstream.*;
+    server_name examplemedia.*;
 
     include /config/nginx/ssl.conf;
 
@@ -28234,7 +28238,7 @@ server {
         include /config/nginx/proxy.conf;
         include /config/nginx/resolver.conf;
 
-        # Retired upstream streaming optimizations
+        # ExampleMedia streaming optimizations
         proxy_buffering off;
         proxy_http_version 1.1;
 
@@ -28243,7 +28247,7 @@ server {
         proxy_send_timeout 86400s;
         proxy_read_timeout 86400s;
 
-        set $upstream_app "retired-upstream";
+        set $upstream_app "examplemedia";
         set $upstream_port "32400";
         set $upstream_proto "http";
         proxy_pass $upstream_proto://$upstream_app:$upstream_port;
@@ -28327,30 +28331,30 @@ def _create_sample_configs(proxy_path: Path) -> None:
     """Create sample configuration files for testing."""
     # Create a few sample .conf files that tests can list and view
     sample_configs = {
-        "retired-upstream.subdomain.conf.sample": """# Retired upstream sample configuration
+        "examplestream.subdomain.conf.sample": """# ExampleStream sample configuration
 server {
     listen 443 ssl;
-    server_name retired-upstream.*;
+    server_name examplestream.*;
 
     include /config/nginx/ssl.conf;
 
     location / {
         include /config/nginx/proxy.conf;
         include /config/nginx/resolver.conf;
-        proxy_pass http://retired-upstream:8096;
+        proxy_pass http://examplestream:8096;
     }
 }""",
-        "retired-upstream.subdomain.conf.sample": """# Retired upstream sample configuration
+        "examplemedia.subdomain.conf.sample": """# ExampleMedia sample configuration
 server {
     listen 443 ssl;
-    server_name retired-upstream.*;
+    server_name examplemedia.*;
 
     include /config/nginx/ssl.conf;
 
     location / {
         include /config/nginx/proxy.conf;
         include /config/nginx/resolver.conf;
-        proxy_pass http://retired-upstream:32400;
+        proxy_pass http://examplemedia:32400;
     }
 }""",
         "_template.subdomain.conf.sample": """# Template sample configuration
@@ -30970,9 +30974,9 @@ class TestMCPRemoteUpstream:
         """Test MCP upstream on different server than main service."""
         request = SwagConfigRequest(
             action="create",
-            config_name="retired-upstream.subdomain.conf",
-            server_name="retired-upstream.example.com",
-            upstream_app="retired-upstream",
+            config_name="examplestream.subdomain.conf",
+            server_name="examplestream.example.com",
+            upstream_app="examplestream",
             upstream_port=8096,
             upstream_proto="http",
             # MCP runs on different server
@@ -30982,17 +30986,17 @@ class TestMCPRemoteUpstream:
         )
 
         # Verify fields are set correctly
-        assert request.upstream_app == "retired-upstream"
+        assert request.upstream_app == "examplestream"
         assert request.upstream_port == 8096
         assert request.mcp_upstream_app == "ai-gpu-server"
         assert request.mcp_upstream_port == 8080
 
         # Create config and verify it contains separate upstream variables
         result = await swag_manager.create_config(request)
-        assert result.filename == "retired-upstream.subdomain.conf"
+        assert result.filename == "examplestream.subdomain.conf"
 
-        # Verify main service uses retired-upstream upstream
-        assert 'set $upstream_app "retired-upstream"' in result.content
+        # Verify main service uses examplestream upstream
+        assert 'set $upstream_app "examplestream"' in result.content
         assert 'set $upstream_port "8096"' in result.content
 
         # Verify MCP service uses ai-gpu-server upstream
@@ -33654,9 +33658,9 @@ class TestResourceMethods:
             config_dir.mkdir()
 
             # Create some sample config files
-            (config_dir / "retired-upstream.subdomain.conf").write_text("retired-upstream config")
-            (config_dir / "retired-upstream.subfolder.conf").write_text("retired-upstream config")
-            (config_dir / "retired-upstream.subdomain.conf.sample").write_text("retired-upstream sample")
+            (config_dir / "examplestream.subdomain.conf").write_text("examplestream config")
+            (config_dir / "examplemedia.subfolder.conf").write_text("examplemedia config")
+            (config_dir / "exampleseries.subdomain.conf.sample").write_text("exampleseries sample")
 
             yield SwagManagerService(config_dir, Path(temp_dir) / "templates")
 
@@ -33666,8 +33670,8 @@ class TestResourceMethods:
 
         assert hasattr(result, "configs")
         assert isinstance(result.configs, list)
-        assert "retired-upstream.subdomain.conf" in result.configs
-        assert "retired-upstream.subfolder.conf" in result.configs
+        assert "examplestream.subdomain.conf" in result.configs
+        assert "examplemedia.subfolder.conf" in result.configs
 
     async def test_get_sample_configs(self, temp_service):
         """Test getting sample configurations."""
@@ -33682,7 +33686,7 @@ class TestResourceMethods:
 
     async def test_get_service_samples(self, temp_service):
         """Test getting samples for specific service."""
-        result = await temp_service.get_service_samples("retired-upstream")
+        result = await temp_service.get_service_samples("exampleseries")
 
         assert hasattr(result, "configs")
         assert isinstance(result.configs, list)
@@ -35051,7 +35055,7 @@ class TestSwagManagerServiceBasic:
         content = """
         server {
             server_name example.com;
-            set $upstream_app "retired-upstream";
+            set $upstream_app "examplestream";
             set $upstream_port "8096";
             location / {
                 proxy_pass http://$upstream_app:$upstream_port;
@@ -35062,7 +35066,7 @@ class TestSwagManagerServiceBasic:
 
         # Test upstream extraction (expects 'set $variable "value";' format)
         upstream = service.mcp_operations.extract_upstream_value(content, "upstream_app")
-        assert upstream == "retired-upstream"
+        assert upstream == "examplestream"
 
         # Test auth method extraction (looks for include statements)
         auth_method = service.mcp_operations.extract_auth_method(content)
@@ -37164,12 +37168,12 @@ The unified `swag` tool supports 10 actions:
 | Action | Purpose | Natural Language Example |
 |--------|---------|--------------------------|
 | `list` | List configurations | "Show all active proxy configurations" |
-| `create` | Create new config | "Create retired-upstream proxy at media.example.com:8096" |
-| `view` | Read config content | "Show the retired-upstream configuration file" |
-| `edit` | Update config content | "Edit the retired-upstream config with new content" |
-| `update` | Update specific field | "Change retired-upstream port to 8097" |
+| `create` | Create new config | "Create examplestream proxy at media.example.com:8096" |
+| `view` | Read config content | "Show the examplestream configuration file" |
+| `edit` | Update config content | "Edit the examplestream config with new content" |
+| `update` | Update specific field | "Change examplestream port to 8097" |
 | `config` | View current defaults | "Show default configuration settings" |
-| `remove` | Delete configuration | "Remove the retired-upstream proxy configuration" |
+| `remove` | Delete configuration | "Remove the examplestream proxy configuration" |
 | `logs` | View SWAG logs | "Show last 100 nginx error log lines" |
 | `cleanup_backups` | Clean old backups | "Clean up backup files older than 7 days" |
 | `health_check` | Test service health | "Check if media.example.com is accessible" |
@@ -37181,11 +37185,11 @@ SWAG MCP now supports running MCP services on different machines than the main w
 ### Use Cases
 
 **Scenario 1: Media Server + AI Service**
-- Retired upstream media server: `retired-upstream:8096`
+- ExampleStream media server: `examplestream:8096`
 - AI subtitle generator: `ai-gpu-server:8080`
 
 **Scenario 2: Application + Multiple MCP Services**
-- Retired upstream media server: `retired-upstream:32400`
+- ExampleMedia media server: `examplemedia:32400`
 - Transcoding MCP: `transcode-server:9000`
 
 ### Configuration Fields
@@ -37205,15 +37209,15 @@ When creating a config, you can now specify separate upstream servers for MCP en
 ### Natural Language Examples
 
 **Same machine (backward compatible)**:
-- *"Create retired-upstream proxy at retired-upstream.example.com:8096 with MCP enabled"*
-  - Both main and MCP use `retired-upstream:8096`
+- *"Create examplestream proxy at examplestream.example.com:8096 with MCP enabled"*
+  - Both main and MCP use `examplestream:8096`
 
 **Remote MCP server**:
-- *"Create retired-upstream proxy at retired-upstream.example.com using retired-upstream:8096 with MCP on ai-server:8080"*
-  - Main: `retired-upstream:8096`, MCP: `ai-server:8080`
+- *"Create examplestream proxy at examplestream.example.com using examplestream:8096 with MCP on ai-server:8080"*
+  - Main: `examplestream:8096`, MCP: `ai-server:8080`
 
-- *"Set up retired-upstream at retired-upstream.example.com port 32400, but use gpu-server port 9000 for MCP"*
-  - Main: `retired-upstream:32400`, MCP: `gpu-server:9000`
+- *"Set up examplemedia at examplemedia.example.com port 32400, but use gpu-server port 9000 for MCP"*
+  - Main: `examplemedia:32400`, MCP: `gpu-server:9000`
 
 ### Traffic Routing
 
@@ -38304,7 +38308,7 @@ All configs are generated from a single Jinja2 template: `templates/mcp.subdomai
 
 | Variable | Type | Required | Description |
 | --- | --- | --- | --- |
-| `service_name` | string | yes | Derived from `config_name` (e.g., `retired-upstream`) |
+| `service_name` | string | yes | Derived from `config_name` (e.g., `examplestream`) |
 | `server_name` | string | yes | Domain name (e.g., `media.example.com`) |
 | `upstream_app` | string | yes | Container name or IP for the main service |
 | `upstream_port` | integer | yes | Port the main service listens on |
@@ -38336,13 +38340,13 @@ With split routing:
 - `/` and `/health` → `upstream_app:upstream_port`
 - `/mcp` and `/session` → `mcp_upstream_app:mcp_upstream_port`
 
-### Example: Retired upstream with a separate AI backend
+### Example: ExampleStream with a separate AI backend
 
 ```
 action=create
-config_name=retired-upstream.subdomain.conf
-server_name=retired-upstream.example.com
-upstream_app=retired-upstream
+config_name=examplestream.subdomain.conf
+server_name=examplestream.example.com
+upstream_app=examplestream
 upstream_port=8096
 upstream_proto=http
 mcp_upstream_app=ai-gpu-server
@@ -38352,11 +38356,11 @@ auth_method=authelia
 ```
 
 This generates:
-- `location /` → `http://retired-upstream:8096` (protected by Authelia)
+- `location /` → `http://examplestream:8096` (protected by Authelia)
 - `location /mcp` → `http://ai-gpu-server:8080` (protected by OAuth verify)
-- `location /health` → `http://retired-upstream:8096` (no auth, for health probes)
+- `location /health` → `http://examplestream:8096` (no auth, for health probes)
 
-If `mcp_upstream_app` is omitted, all three locations proxy to `retired-upstream:8096`.
+If `mcp_upstream_app` is omitted, all three locations proxy to `examplestream:8096`.
 
 ## SSH / remote configuration
 
@@ -38389,7 +38393,7 @@ When `SWAG_MCP_PROXY_CONFS_URI` is set it takes precedence over `SWAG_MCP_PROXY_
 ```
 swag action=list
 swag action=list list_filter=active
-swag action=list list_filter=samples query=retired-upstream offset=0 limit=20
+swag action=list list_filter=samples query=examplemedia offset=0 limit=20
 ```
 
 `list_filter` accepts `all` (default), `active` (`.conf` files only), or `samples` (`.conf.sample` files only).
@@ -38398,9 +38402,9 @@ swag action=list list_filter=samples query=retired-upstream offset=0 limit=20
 
 ```
 swag action=create
-     config_name=retired-upstream.subdomain.conf
-     server_name=retired-upstream.example.com
-     upstream_app=retired-upstream
+     config_name=examplestream.subdomain.conf
+     server_name=examplestream.example.com
+     upstream_app=examplestream
      upstream_port=8096
 ```
 
@@ -38409,7 +38413,7 @@ After creation, a health check runs automatically against `server_name`.
 ### View
 
 ```
-swag action=view config_name=retired-upstream.subdomain.conf
+swag action=view config_name=examplestream.subdomain.conf
 ```
 
 ### Edit
@@ -38418,7 +38422,7 @@ Replaces the full file content:
 
 ```
 swag action=edit
-     config_name=retired-upstream.subdomain.conf
+     config_name=examplestream.subdomain.conf
      new_content="..."
      create_backup=true
 ```
@@ -38428,10 +38432,10 @@ swag action=edit
 Updates a single field in place:
 
 ```
-swag action=update config_name=retired-upstream.subdomain.conf update_field=port update_value=8097
-swag action=update config_name=retired-upstream.subdomain.conf update_field=upstream update_value=retired-upstream-new
-swag action=update config_name=retired-upstream.subdomain.conf update_field=app update_value=retired-upstream:8097
-swag action=update config_name=retired-upstream.subdomain.conf update_field=add_mcp update_value=/mcp
+swag action=update config_name=examplestream.subdomain.conf update_field=port update_value=8097
+swag action=update config_name=examplestream.subdomain.conf update_field=upstream update_value=examplestream-new
+swag action=update config_name=examplestream.subdomain.conf update_field=app update_value=examplestream:8097
+swag action=update config_name=examplestream.subdomain.conf update_field=add_mcp update_value=/mcp
 ```
 
 `update_field` options:
@@ -38448,8 +38452,8 @@ After an update, a health check runs automatically.
 ### Remove
 
 ```
-swag action=remove config_name=retired-upstream.subdomain.conf
-swag action=remove config_name=retired-upstream.subdomain.conf create_backup=false
+swag action=remove config_name=examplestream.subdomain.conf
+swag action=remove config_name=examplestream.subdomain.conf create_backup=false
 ```
 
 ### Logs
@@ -38489,8 +38493,8 @@ Cleanup also runs at server startup. The startup cleanup uses `SWAG_MCP_BACKUP_R
 ### Health check
 
 ```
-swag action=health_check domain=retired-upstream.example.com
-swag action=health_check domain=retired-upstream.example.com timeout=10 follow_redirects=false
+swag action=health_check domain=examplestream.example.com
+swag action=health_check domain=examplestream.example.com timeout=10 follow_redirects=false
 ```
 
 #### Response fields
@@ -38552,7 +38556,7 @@ The `/health` endpoint is also used by the Docker `HEALTHCHECK` directive. It al
 | Plugin | Category | Description |
 |--------|----------|-------------|
 | [homelab-core](https://github.com/jmagar/claude-homelab) | core | Core agents, commands, skills, and setup/health workflows for homelab management. |
-| [retired-upstream-mcp](https://github.com/jmagar/retired-upstream-mcp) | media | Search movies and TV shows, submit requests, and monitor failed requests via Retired upstream. |
+| [examplerequests-mcp](https://github.com/jmagar/examplerequests-mcp) | media | Search movies and TV shows, submit requests, and monitor failed requests via ExampleRequests. |
 | [unraid-mcp](https://github.com/jmagar/unraid-mcp) | infrastructure | Query, monitor, and manage Unraid servers: Docker, VMs, array, parity, and live telemetry. |
 | [unifi-mcp](https://github.com/jmagar/unifi-mcp) | infrastructure | Monitor and manage UniFi devices, clients, firewall rules, and network health. |
 | [gotify-mcp](https://github.com/jmagar/gotify-mcp) | utilities | Send and manage push notifications via a self-hosted Gotify server. |

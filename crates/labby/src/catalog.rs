@@ -28,7 +28,7 @@ pub struct ServiceCatalog {
     pub name: String,
     /// Short human description from `PluginMeta::description`.
     pub description: String,
-    /// Category slug (Media, Upstream, Notifications, etc.).
+    /// Category slug (Network, Notifications, Bootstrap, etc.).
     pub category: String,
     /// Implementation status: `"available"` or `"stub"`.
     ///

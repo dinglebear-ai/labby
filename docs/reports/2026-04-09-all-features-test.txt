@@ -3,20 +3,20 @@
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on artifact directory
 warning: unreachable pattern
-  --> crates/lab-apis/src/retired-upstream.rs:77:13
+  --> crates/lab-apis/src/exampleusenet.rs:77:13
    |
 77 |             Err(e) => Ok(ServiceStatus::degraded(e.to_string())),
    |             ^^^^^^ no value can reach this
    |
 note: multiple earlier patterns match some of the same values
-  --> crates/lab-apis/src/retired-upstream.rs:77:13
+  --> crates/lab-apis/src/exampleusenet.rs:77:13
    |
-68 | ...   Err(Retired upstreamError::Api(ApiError::Auth)) => Ok(ServiceStatus {
+68 | ...   Err(ExampleUsenetError::Api(ApiError::Auth)) => Ok(ServiceStatus {
    |       -------------------------------------- matches some of the same values
 ...
-75 | ...   Err(Retired upstreamError::Api(ApiError::Network(e))) => Ok(ServiceStatus::unreachable(e)),
+75 | ...   Err(ExampleUsenetError::Api(ApiError::Network(e))) => Ok(ServiceStatus::unreachable(e)),
    |       -------------------------------------------- matches some of the same values
-76 | ...   Err(Retired upstreamError::Api(e)) => Ok(ServiceStatus::degraded(e.to_string())),
+76 | ...   Err(ExampleUsenetError::Api(e)) => Ok(ServiceStatus::degraded(e.to_string())),
    |       ------------------------- matches some of the same values
 77 | ...   Err(e) => Ok(ServiceStatus::degraded(e.to_string())),
    |       ^^^^^^ collectively making this unreachable
@@ -39,85 +39,85 @@ warning: function `handle` is never used
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/examplemovies.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/examplemovies.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/exampleseries.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/exampleseries.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/exampleindexer.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/exampleindexer.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/examplemedia.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/examplemedia.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/examplemetrics.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/examplemetrics.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/exampleusenet.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/exampleusenet.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/exampledownload.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/exampledownload.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
@@ -219,13 +219,13 @@ warning: function `handle` is never used
    |          ^^^^^^
 
 warning: function `routes` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:10:8
+  --> crates/lab/src/api/services/examplerequests.rs:10:8
    |
 10 | pub fn routes(_state: AppState) -> Router<AppState> {
    |        ^^^^^^
 
 warning: function `handle` is never used
-  --> crates/lab/src/api/services/retired-upstream.rs:14:10
+  --> crates/lab/src/api/services/examplerequests.rs:14:10
    |
 14 | async fn handle(
    |          ^^^^^^
@@ -917,7 +917,7 @@ test api::services::helpers::tests::destructive_without_confirm_returns_confirma
 test api::services::helpers::tests::unknown_action_returns_unknown_action_and_dispatch_not_called ... ok
 test api::services::helpers::tests::destructive_with_confirm_string_true_does_not_pass ... ok
 test api::services::helpers::tests::dispatch_logs_http_surface_and_request_id ... ok
-test cli::doctor::tests::retired-upstream_in_checks_when_feature_enabled ... ok
+test cli::doctor::tests::examplemovies_in_checks_when_feature_enabled ... ok
 test cli::doctor::tests::extract_is_always_in_checks ... ok
 test api::services::helpers::tests::success_path_returns_json_value ... ok
 test api::services::helpers::tests::error_path_preserves_tool_error_kind ... ok
@@ -951,15 +951,15 @@ test dispatch::bytestash::tests::dispatch_unknown_action_returns_error ... ok
 test dispatch::context::tests::dispatch_context_api_surface ... ok
 test dispatch::context::tests::dispatch_context_with_instance ... ok
 test dispatch::context::tests::dispatch_context_without_instance ... ok
-test dispatch::retired-upstream::tests::action_count_preserved ... ok
-test dispatch::retired-upstream::tests::sdk_error_from_api_auth ... ok
-test dispatch::retired-upstream::tests::no_duplicate_action_names ... ok
+test dispatch::examplemovies::tests::action_count_preserved ... ok
+test dispatch::examplemovies::tests::sdk_error_from_api_auth ... ok
+test dispatch::examplemovies::tests::no_duplicate_action_names ... ok
 test dispatch::bytestash::tests::help_returns_action_list ... ok
-test dispatch::retired-upstream::tests::sdk_error_from_api_not_found ... ok
-test dispatch::retired-upstream::tests::sdk_error_from_network ... ok
-test dispatch::retired-upstream::tests::sdk_error_from_retired-upstream_not_found ... ok
+test dispatch::examplemovies::tests::sdk_error_from_api_not_found ... ok
+test dispatch::examplemovies::tests::sdk_error_from_network ... ok
+test dispatch::examplemovies::tests::sdk_error_from_examplemovies_not_found ... ok
 test dispatch::unifi::tests::action_count_matches_original ... ok
-test dispatch::retired-upstream::tests::unknown_action_includes_valid_list ... ok
+test dispatch::examplemovies::tests::unknown_action_includes_valid_list ... ok
 test dispatch::unifi::tests::devices_list_is_routed_by_service_layer ... ok
 test dispatch::unifi::tests::firewall_zones_list_is_routed_by_service_layer ... ok
 test dispatch::unifi::tests::no_duplicate_action_names ... ok
@@ -986,7 +986,7 @@ test mcp::registry::tests::extract_is_always_registered ... ok
 test mcp::services::bytestash::tests::help_includes_core_read_only_actions ... ok
 test mcp::registry::tests::dispatch_fn_round_trips ... ok
 test dispatch::unifi::tests::unifi_service_help_lists_core_actions ... ok
-test mcp::services::retired-upstream::tests::help_includes_core_read_only_actions ... ok
+test mcp::services::examplemovies::tests::help_includes_core_read_only_actions ... ok
 test mcp::services::unifi::tests::action_count_matches_service_layer ... ok
 test mcp::services::unifi::tests::help_lists_read_only_actions ... ok
 test output::tests::from_json_flag ... ok

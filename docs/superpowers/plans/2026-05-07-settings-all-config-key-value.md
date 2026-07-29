@@ -293,16 +293,16 @@ mod tests {
     #[test]
     fn env_inventory_includes_known_and_unknown_env_keys() {
         let entries = vec![
-            EnvDraftEntry { key: "RETIRED_UPSTREAM_URL".into(), value: "http://retired-upstream:7878".into() },
+            EnvDraftEntry { key: "EXAMPLEMOVIES_URL".into(), value: "http://examplemovies:7878".into() },
             EnvDraftEntry { key: "CUSTOM_LAB_FLAG".into(), value: "enabled".into() },
-            EnvDraftEntry { key: "RETIRED_UPSTREAM_API_KEY".into(), value: "secret".into() },
+            EnvDraftEntry { key: "EXAMPLEMOVIES_API_KEY".into(), value: "secret".into() },
         ];
 
         let views = env_entries_to_config_views(&entries, "/tmp/.env");
 
-        assert!(views.iter().any(|entry| entry.key == "RETIRED_UPSTREAM_URL" && entry.known));
+        assert!(views.iter().any(|entry| entry.key == "EXAMPLEMOVIES_URL" && entry.known));
         assert!(views.iter().any(|entry| entry.key == "CUSTOM_LAB_FLAG" && !entry.known));
-        let secret = views.iter().find(|entry| entry.key == "RETIRED_UPSTREAM_API_KEY").unwrap();
+        let secret = views.iter().find(|entry| entry.key == "EXAMPLEMOVIES_API_KEY").unwrap();
         assert!(secret.secret);
         assert_eq!(secret.value, serde_json::json!("***"));
     }
@@ -1119,7 +1119,7 @@ function entry(partial: Partial<ConfigEntryView>): ConfigEntryView {
 test('groupConfigEntries preserves defined group order and custom entries', () => {
   const groups = groupConfigEntries([
     entry({ key: 'CUSTOM_FLAG', group: 'Custom' }),
-    entry({ key: 'RETIRED_UPSTREAM_URL', group: 'Services' }),
+    entry({ key: 'EXAMPLEMOVIES_URL', group: 'Services' }),
     entry({ key: 'LAB_LOG', group: 'Logging' }),
   ])
 

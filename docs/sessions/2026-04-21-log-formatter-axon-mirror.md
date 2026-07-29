@@ -82,7 +82,7 @@ cargo check --manifest-path crates/lab/Cargo.toml
 script -q -c 'LAB_LOG=info timeout 3 ./target/debug/lab serve 2>&1 || true' /dev/null | cat
 
 # Inspect raw bytes to confirm escape code values
-script -q -c 'LAB_LOG=info RETIRED_UPSTREAM_URL=http://localhost:9999 ./target/debug/lab retired-upstream movie-list' /dev/null | cat | xxd | head -60
+script -q -c 'LAB_LOG=info EXAMPLEMOVIES_URL=http://localhost:9999 ./target/debug/lab examplemovies movie-list' /dev/null | cat | xxd | head -60
 ```
 
 ## Errors Encountered

@@ -215,7 +215,7 @@ fn preview_classifies_entries_with_canonical_quote_semantics() {
     let env_path = dir.path().join(".env");
     std::fs::write(
         &env_path,
-        "RETIRED_UPSTREAM_URL=\"http://retired-upstream.local\"\nRETIRED_UPSTREAM_API_KEY=\"old secret\"\n",
+        "EXAMPLEMOVIES_URL=\"http://examplemovies.local\"\nEXAMPLEMOVIES_API_KEY=\"old secret\"\n",
     )
     .expect("write env");
 
@@ -223,9 +223,9 @@ fn preview_classifies_entries_with_canonical_quote_semantics() {
         &env_path,
         MergeRequest {
             entries: vec![
-                EnvEntry::new("RETIRED_UPSTREAM_URL", "http://retired-upstream.local"),
-                EnvEntry::new("RETIRED_UPSTREAM_API_KEY", "new secret"),
-                EnvEntry::new("RETIRED_UPSTREAM_URL", "http://retired-upstream.local"),
+                EnvEntry::new("EXAMPLEMOVIES_URL", "http://examplemovies.local"),
+                EnvEntry::new("EXAMPLEMOVIES_API_KEY", "new secret"),
+                EnvEntry::new("EXAMPLEINDEXER_URL", "http://exampleindexer.local"),
             ],
             force: false,
             expected_mtime: None,
@@ -233,9 +233,9 @@ fn preview_classifies_entries_with_canonical_quote_semantics() {
     )
     .expect("preview");
 
-    assert!(preview.entries.iter().any(|entry| entry.key == "RETIRED_UPSTREAM_URL" && entry.status == PreviewStatus::Same));
-    assert!(preview.entries.iter().any(|entry| entry.key == "RETIRED_UPSTREAM_API_KEY" && entry.status == PreviewStatus::Conflict));
-    assert!(preview.entries.iter().any(|entry| entry.key == "RETIRED_UPSTREAM_URL" && entry.status == PreviewStatus::New));
+    assert!(preview.entries.iter().any(|entry| entry.key == "EXAMPLEMOVIES_URL" && entry.status == PreviewStatus::Same));
+    assert!(preview.entries.iter().any(|entry| entry.key == "EXAMPLEMOVIES_API_KEY" && entry.status == PreviewStatus::Conflict));
+    assert!(preview.entries.iter().any(|entry| entry.key == "EXAMPLEINDEXER_URL" && entry.status == PreviewStatus::New));
     let rendered = serde_json::to_string(&preview).expect("json");
     assert!(!rendered.contains("old secret"));
     assert!(!rendered.contains("new secret"));
@@ -245,12 +245,12 @@ fn preview_classifies_entries_with_canonical_quote_semantics() {
 fn merge_conflict_warning_does_not_include_existing_or_new_value() {
     let dir = tempfile::tempdir().expect("tempdir");
     let env_path = dir.path().join(".env");
-    std::fs::write(&env_path, "RETIRED_UPSTREAM_API_KEY=old-secret\n").expect("write env");
+    std::fs::write(&env_path, "EXAMPLEMOVIES_API_KEY=old-secret\n").expect("write env");
 
     let outcome = merge(
         &env_path,
         MergeRequest {
-            entries: vec![EnvEntry::new("RETIRED_UPSTREAM_API_KEY", "new-secret")],
+            entries: vec![EnvEntry::new("EXAMPLEMOVIES_API_KEY", "new-secret")],
             force: false,
             expected_mtime: None,
         },
@@ -258,7 +258,7 @@ fn merge_conflict_warning_does_not_include_existing_or_new_value() {
     .expect("merge");
 
     let rendered = format!("{:?}", outcome.skipped);
-    assert!(rendered.contains("RETIRED_UPSTREAM_API_KEY"));
+    assert!(rendered.contains("EXAMPLEMOVIES_API_KEY"));
     assert!(!rendered.contains("old-secret"));
     assert!(!rendered.contains("new-secret"));
 }
@@ -363,27 +363,27 @@ Expected: PASS.
 Use the current type shape from `crates/lab-apis/src/extract/types.rs`. Add:
 
 ```rust
-fn test_extract_report_with_retired-upstream_and_retired-upstream() -> lab_apis::extract::ExtractReport {
+fn test_extract_report_with_examplemovies_and_exampleseries() -> lab_apis::extract::ExtractReport {
     lab_apis::extract::ExtractReport {
         target: ScanTarget::Targeted("/tmp/appdata".parse().expect("uri")),
         uri: Some("/tmp/appdata".parse().expect("uri")),
-        found: vec!["retired-upstream".to_string(), "retired-upstream".to_string()],
+        found: vec!["examplemovies".to_string(), "exampleseries".to_string()],
         creds: vec![
             lab_apis::extract::ServiceCreds {
-                service: "retired-upstream".to_string(),
-                url: Some("http://retired-upstream".to_string()),
-                secret: Some("retired-upstream-secret".to_string()),
-                env_field: "RETIRED_UPSTREAM_API_KEY".to_string(),
+                service: "examplemovies".to_string(),
+                url: Some("http://examplemovies".to_string()),
+                secret: Some("examplemovies-secret".to_string()),
+                env_field: "EXAMPLEMOVIES_API_KEY".to_string(),
                 source_host: None,
                 probe_host: None,
                 runtime: None,
                 url_verified: false,
             },
             lab_apis::extract::ServiceCreds {
-                service: "retired-upstream".to_string(),
-                url: Some("http://retired-upstream".to_string()),
-                secret: Some("retired-upstream-secret".to_string()),
-                env_field: "RETIRED_UPSTREAM_API_KEY".to_string(),
+                service: "exampleseries".to_string(),
+                url: Some("http://exampleseries".to_string()),
+                secret: Some("exampleseries-secret".to_string()),
+                env_field: "EXAMPLESERIES_API_KEY".to_string(),
                 source_host: None,
                 probe_host: None,
                 runtime: None,
@@ -410,15 +410,15 @@ async fn extract_apply_rejects_missing_targeted_uri() {
 fn apply_report_uses_canonical_merge_and_redacted_plan() {
     let dir = tempfile::tempdir().expect("tempdir");
     let env_path = dir.path().join(".env");
-    let report = test_extract_report_with_retired-upstream_and_retired-upstream();
+    let report = test_extract_report_with_examplemovies_and_exampleseries();
 
     let applied = apply_report_to_env(&report, &env_path, false, None).expect("apply");
     let written = std::fs::read_to_string(&env_path).expect("env written");
-    assert!(written.contains("RETIRED_UPSTREAM_URL=http://retired-upstream"));
-    assert!(written.contains("RETIRED_UPSTREAM_API_KEY=retired-upstream-secret"));
+    assert!(written.contains("EXAMPLEMOVIES_URL=http://examplemovies"));
+    assert!(written.contains("EXAMPLESERIES_API_KEY=exampleseries-secret"));
     let json = serde_json::to_string(&applied).expect("json");
-    assert!(!json.contains("retired-upstream-secret"));
-    assert!(!json.contains("retired-upstream-secret"));
+    assert!(!json.contains("examplemovies-secret"));
+    assert!(!json.contains("exampleseries-secret"));
 }
 
 #[test]
@@ -426,16 +426,16 @@ fn apply_report_respects_services_filter() {
     let dir = tempfile::tempdir().expect("tempdir");
     let env_path = dir.path().join(".env");
     let filtered = filter_report_services(
-        test_extract_report_with_retired-upstream_and_retired-upstream(),
-        &["retired-upstream".to_string()],
+        test_extract_report_with_examplemovies_and_exampleseries(),
+        &["exampleseries".to_string()],
     )
     .expect("filter");
 
     apply_report_to_env(&filtered, &env_path, false, None).expect("apply");
 
     let written = std::fs::read_to_string(&env_path).expect("env written");
-    assert!(written.contains("RETIRED_UPSTREAM_URL="));
-    assert!(!written.contains("RETIRED_UPSTREAM_URL="));
+    assert!(written.contains("EXAMPLESERIES_URL="));
+    assert!(!written.contains("EXAMPLEMOVIES_URL="));
 }
 
 #[cfg(unix)]

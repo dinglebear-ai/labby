@@ -74,7 +74,7 @@ export const extractApi = {
   async listHosts(signal?: AbortSignal): Promise<string[]> {
     if (USE_MOCK_DATA) {
       signal?.throwIfAborted?.()
-      return ['lab-node-1', 'media-node']
+      return ['lab-node-1', 'lab-node-2']
     }
     return extractAction<string[]>('list_hosts', {}, signal)
   },
@@ -91,34 +91,34 @@ export const extractApi = {
         : { mode: 'fleet' }
       return {
         target,
-        found: ['gateway_alpha', 'hidden_upstream'],
+        found: ['unifi', 'apprise'],
         creds: [
           {
-            service: 'gateway_alpha',
-            url: 'http://gateway_alpha.local:7878',
-            env_field: 'GATEWAY_ALPHA_URL',
+            service: 'unifi',
+            url: 'https://unifi.example.com',
+            env_field: 'UNIFI_URL',
             secret_present: true,
-            source_host: 'media-node',
-            probe_host: 'gateway_alpha.local',
-            runtime: { container_name: 'gateway_alpha', image: 'lscr.io/linuxserver/gateway_alpha:latest' },
+            source_host: 'lab-node-1',
+            probe_host: 'unifi.example.com',
+            runtime: { container_name: 'unifi', image: 'ghcr.io/example/unifi:latest' },
             url_verified: true,
           },
           {
-            service: 'hidden_upstream',
-            url: 'http://hidden_upstream.local:8989',
-            env_field: 'HIDDEN_UPSTREAM_URL',
+            service: 'apprise',
+            url: 'https://apprise.example.com',
+            env_field: 'APPRISE_URL',
             secret_present: true,
-            source_host: 'media-node',
-            probe_host: 'hidden_upstream.local',
-            runtime: { container_name: 'hidden_upstream', image: 'lscr.io/linuxserver/hidden_upstream:latest' },
+            source_host: 'lab-node-1',
+            probe_host: 'apprise.example.com',
+            runtime: { container_name: 'apprise', image: 'caronc/apprise:latest' },
             url_verified: true,
           },
         ],
         warnings: [
           {
-            service: 'gateway_beta',
-            host: 'media-node',
-            message: 'Mock scan found a Gateway beta container but no token in mounted config.',
+            service: 'apprise',
+            host: 'lab-node-1',
+            message: 'Mock scan found an Apprise container but no API key in mounted config.',
           },
         ],
       }

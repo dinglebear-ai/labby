@@ -229,7 +229,7 @@ The system should support running subsets of the full environment by profile.
 
 Examples:
 
-- `retired-upstream-core`
+- `examplesuite-core`
 - `downloads`
 - `documents-notes`
 - `network`
@@ -275,9 +275,9 @@ A live case includes:
 
 Examples:
 
-- `cli / retired-upstream / system.status / success`
-- `mcp / retired-upstream / movie.get missing-id / expected unknown or not-found failure`
-- `api / POST /retired-upstream system.status / success`
+- `cli / examplemovies / system.status / success`
+- `mcp / examplemovies / movie.get missing-id / expected unknown or not-found failure`
+- `api / POST /examplemovies system.status / success`
 
 ## Destructive Behavior
 

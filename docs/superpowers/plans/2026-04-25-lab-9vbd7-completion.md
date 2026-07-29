@@ -55,7 +55,7 @@ Add a second test named so `cargo test -- extract_error` selects it:
 fn extract_error_info_preserves_unknown_action_from_json_fallback() {
     let serialized = json!({
         "kind": "unknown_action",
-        "message": "unknown action `movie.serch` for service `retired-upstream`",
+        "message": "unknown action `movie.serch` for service `examplemovies`",
         "valid": ["movie.search", "movie.add"],
         "hint": "movie.search"
     })
@@ -65,7 +65,7 @@ fn extract_error_info_preserves_unknown_action_from_json_fallback() {
     let (kind, message, extra) = extract_error_info(&anyhow_error);
 
     assert_eq!(kind, "unknown_action");
-    assert_eq!(message, "unknown action `movie.serch` for service `retired-upstream`");
+    assert_eq!(message, "unknown action `movie.serch` for service `examplemovies`");
     let extra = extra.expect("json fallback should preserve structured extras");
     assert_eq!(extra["valid"], json!(["movie.search", "movie.add"]));
     assert_eq!(extra["param"], Value::Null);

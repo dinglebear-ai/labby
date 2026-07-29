@@ -3138,9 +3138,9 @@ A Gemini extension that acts as a safety net, catching destructive git and files
 Hooks
 Commands
 2
-retired-upstream-mcp
-@jmagar/retired-upstream-mcp
-Retired upstream media request management via MCP tools. Search movies and TV shows, submit requests, and monitor failed requests.
+examplerequests-mcp
+@jmagar/examplerequests-mcp
+ExampleRequests media request management via MCP tools. Search movies and TV shows, submit requests, and monitor failed requests.
 MCP
 Hooks
 Skills

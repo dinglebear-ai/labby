@@ -376,7 +376,7 @@ pub struct ServiceCatalog {
     pub name: String,
     /// Short human description from `PluginMeta::description`.
     pub description: String,
-    /// Category slug (Media, Retired upstream, Notifications, etc.).
+    /// Category slug (Media, ExampleSuite, Notifications, etc.).
     pub category: String,
     /// List of actions exposed by the service.
     pub actions: Vec<ActionEntry>,
@@ -503,11 +503,11 @@ impl ToolRegistry {
 pub fn build_default_registry() -> ToolRegistry {
     let registry = ToolRegistry::new();
     // Services will be registered here as they're wired up, e.g.:
-    // #[cfg(feature = "retired-upstream")]
+    // #[cfg(feature = "examplemovies")]
     // registry.register(RegisteredService {
-    //     name: lab_apis::retired-upstream::META.name,
-    //     description: lab_apis::retired-upstream::META.description,
-    //     category: "retired-upstream",
+    //     name: lab_apis::examplemovies::META.name,
+    //     description: lab_apis::examplemovies::META.description,
+    //     category: "examplesuite",
     // });
     registry
 }
@@ -708,10 +708,10 @@ pub fn help(registry: &ToolRegistry) -> Result<ToolEnvelope<Catalog>> {
 //! No services are wired in this skeleton — they are added in later
 //! service-specific plans.
 
-// #[cfg(feature = "retired-upstream")]
-// pub mod retired-upstream;
-// #[cfg(feature = "retired-upstream")]
-// pub mod retired-upstream;
+// #[cfg(feature = "examplemovies")]
+// pub mod examplemovies;
+// #[cfg(feature = "exampleseries")]
+// pub mod exampleseries;
 // ...
 ```
 
@@ -1300,7 +1300,7 @@ Expected: empty output. (DESIGN rule: modern Rust module style, no `mod.rs`.)
 
 `cargo run -p lab -- --help` output must contain: `serve`, `doctor`, `health`, `plugins`, `install`, `uninstall`, `init`, `help`, `completions`.
 
-Missing subcommands from DESIGN that are deferred (not in this skeleton): per-service commands (`retired-upstream`, `retired-upstream`, …), `extract`, `self-update`. These come in later plans. Note their absence is intentional.
+Missing subcommands from DESIGN that are deferred (not in this skeleton): per-service commands (`examplemovies`, `exampleseries`, …), `extract`, `self-update`. These come in later plans. Note their absence is intentional.
 
 - [ ] **Step 4: Verify final commit state**
 

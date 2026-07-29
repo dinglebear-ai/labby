@@ -40,7 +40,7 @@ Clarified the two-system architecture (ACP local Codex sessions vs. remote fleet
 - **`LIKE '%query%'` skips index** — Leading wildcard forces full table scan. Fixed by requiring `node_id` predicate first (uses `idx_node_logs_node_ts`) before applying LIKE.
 - **`tokio::broadcast` drops frames** — Silently drops `command.output` frames for slow consumers. Replaced with `mpsc(512)`.
 - **`auto_vacuum` is creation-time only** — Setting `PRAGMA auto_vacuum=INCREMENTAL` in the pragma-init hook (runs on every connection open) is a silent no-op after the first write. Must be in the `version < 1` migration branch of `rusqlite_migration`.
-- **MCP demux security** — An open passthrough to `UpstreamPool` would let any enrolled node call `extract.apply` (overwrites `~/.labby/.env`), `retired-upstream.movie.delete`, etc. with master credentials. Implemented as static allowlist (`["lab.help", "lab.catalog", "lab.status"]`) only.
+- **MCP demux security** — An open passthrough to `UpstreamPool` would let any enrolled node call `extract.apply` (overwrites `~/.labby/.env`), `examplemovies.movie.delete`, etc. with master credentials. Implemented as static allowlist (`["lab.help", "lab.catalog", "lab.status"]`) only.
 
 ## Technical Decisions
 

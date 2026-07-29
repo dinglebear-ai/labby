@@ -14,7 +14,7 @@
 
 - `crates/lab/src/cli/helpers.rs`: already contains `action_parser`, `print_dry_run`, `run_action_command`, and `run_confirmable_action_command`; verify the helper remains available.
 - `crates/lab/src/cli/arcane.rs`: only remaining incomplete shim; add `action_parser` import and set `#[arg(default_value = "help", value_parser = action_parser(ACTIONS))]` on `ArcaneArgs.action`.
-- `crates/lab/src/cli/{apprise,linkding,memos,openai,retired-upstream,paperless,retired-upstream,retired-upstream,retired-upstream,qdrant,retired-upstream,retired-upstream,tailscale,retired-upstream,tei,unraid}.rs`: already match the migrated pattern; verify they remain compliant.
+- `crates/lab/src/cli/{apprise,linkding,memos,openai,examplerequests,paperless,examplemedia,exampleindexer,exampledownload,qdrant,exampleusenet,exampleseries,tailscale,examplemetrics,tei,unraid}.rs`: already match the migrated pattern; verify they remain compliant.
 - `docs/sessions/2026-04-25-lab-5yzk1-completion.md`: session report after implementation and verification.
 
 ## Current Findings Before Code Changes
@@ -81,16 +81,16 @@ pub action: String,
 - Verify: `crates/lab/src/cli/linkding.rs`
 - Verify: `crates/lab/src/cli/memos.rs`
 - Verify: `crates/lab/src/cli/openai.rs`
-- Verify: `crates/lab/src/cli/retired-upstream.rs`
+- Verify: `crates/lab/src/cli/examplerequests.rs`
 - Verify: `crates/lab/src/cli/paperless.rs`
-- Verify: `crates/lab/src/cli/retired-upstream.rs`
-- Verify: `crates/lab/src/cli/retired-upstream.rs`
-- Verify: `crates/lab/src/cli/retired-upstream.rs`
+- Verify: `crates/lab/src/cli/examplemedia.rs`
+- Verify: `crates/lab/src/cli/exampleindexer.rs`
+- Verify: `crates/lab/src/cli/exampledownload.rs`
 - Verify: `crates/lab/src/cli/qdrant.rs`
-- Verify: `crates/lab/src/cli/retired-upstream.rs`
-- Verify: `crates/lab/src/cli/retired-upstream.rs`
+- Verify: `crates/lab/src/cli/exampleusenet.rs`
+- Verify: `crates/lab/src/cli/exampleseries.rs`
 - Verify: `crates/lab/src/cli/tailscale.rs`
-- Verify: `crates/lab/src/cli/retired-upstream.rs`
+- Verify: `crates/lab/src/cli/examplemetrics.rs`
 - Verify: `crates/lab/src/cli/tei.rs`
 - Verify: `crates/lab/src/cli/unraid.rs`
 
@@ -99,7 +99,7 @@ pub action: String,
 Run:
 
 ```bash
-rg -n 'mcp::services|action: Option<String>|unwrap_or_else\(\|\| "help"|PossibleValuesParser::new\(ACTIONS' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,retired-upstream,paperless,retired-upstream,retired-upstream,retired-upstream,qdrant,retired-upstream,retired-upstream,tailscale,retired-upstream,tei,unraid}.rs
+rg -n 'mcp::services|action: Option<String>|unwrap_or_else\(\|\| "help"|PossibleValuesParser::new\(ACTIONS' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,examplerequests,paperless,examplemedia,exampleindexer,exampledownload,qdrant,exampleusenet,exampleseries,tailscale,examplemetrics,tei,unraid}.rs
 ```
 
 Expected: no matches.
@@ -107,7 +107,7 @@ Expected: no matches.
 Run:
 
 ```bash
-rg -n 'default_value = "help", value_parser = action_parser\(ACTIONS\)' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,retired-upstream,paperless,retired-upstream,retired-upstream,retired-upstream,qdrant,retired-upstream,retired-upstream,tailscale,retired-upstream,tei,unraid}.rs
+rg -n 'default_value = "help", value_parser = action_parser\(ACTIONS\)' crates/lab/src/cli/{apprise,arcane,linkding,memos,openai,examplerequests,paperless,examplemedia,exampleindexer,exampledownload,qdrant,exampleusenet,exampleseries,tailscale,examplemetrics,tei,unraid}.rs
 ```
 
 Expected: 17 matches.
@@ -127,7 +127,7 @@ Expected: command exits 0.
 Run:
 
 ```bash
-for svc in apprise arcane linkding memos openai retired-upstream paperless retired-upstream retired-upstream retired-upstream qdrant retired-upstream retired-upstream tailscale retired-upstream tei unraid; do
+for svc in apprise arcane linkding memos openai examplerequests paperless examplemedia exampleindexer exampledownload qdrant exampleusenet exampleseries tailscale examplemetrics tei unraid; do
   cargo run -p lab --all-features -- "$svc" --help | grep -q 'possible values:' || exit 1
 done
 ```

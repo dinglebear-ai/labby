@@ -4,7 +4,7 @@
 
 **Goal:** Build a reproducible live end-to-end test environment on SSH host `backup-node` that provisions disposable real service stacks from ZFS golden snapshots, runs catalog-driven CLI/MCP/API coverage, and records structured artifacts.
 
-**Architecture:** The implementation splits into four layers: declarative fixture definitions in-repo, a host-side orchestration contract executed over SSH on `backup-node`, a repo-side live runner that requests environments and executes test matrices, and catalog-driven case generation plus reporting. All 15 services are covered across 7 profiles (`retired-upstream-core`, `media`, `download`, `notes`, `notifications`, `ai`, `all`). The first vertical slice targets `retired-upstream-core` so the environment model, manifest contract, teardown, and one full-surface execution path are proven before broader onboarding — but all fixture definitions and host provisioning logic are built for the full 15-service set from the start.
+**Architecture:** The implementation splits into four layers: declarative fixture definitions in-repo, a host-side orchestration contract executed over SSH on `backup-node`, a repo-side live runner that requests environments and executes test matrices, and catalog-driven case generation plus reporting. All 15 services are covered across 7 profiles (`examplesuite-core`, `media`, `download`, `notes`, `notifications`, `ai`, `all`). The first vertical slice targets `examplesuite-core` so the environment model, manifest contract, teardown, and one full-surface execution path are proven before broader onboarding — but all fixture definitions and host provisioning logic are built for the full 15-service set from the start.
 
 **Tech Stack:** Rust 2024 (`lab` crate), `serde`/`serde_json`, `tokio`, `tracing`, existing CLI/MCP/API surfaces, `just`, SSH, Docker or Docker Compose on `backup-node`, ZFS snapshots/clones, shell helpers in `bin/` where appropriate.
 
@@ -33,17 +33,17 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 
 | Service | Image | Version | Dataset | Snapshot | [REDACTED: rotate credentials before restoring snapshot] | Container Port |
 |---------|-------|---------|---------|----------|----------------|---------------|
-| **Retired upstream** | | | | | | |
-| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 6.1.1.10360 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 7878 |
-| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 4.0.17.2952 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8989 |
-| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 2.3.5.5327 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9696 |
+| **ExampleSuite** | | | | | | |
+| ExampleMovies | `lscr.io/linuxserver/examplemovies:latest` | 6.1.1.10360 | `backup/lab/live/golden/examplemovies` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 7878 |
+| ExampleSeries | `lscr.io/linuxserver/exampleseries:latest` | 4.0.17.2952 | `backup/lab/live/golden/exampleseries` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8989 |
+| ExampleIndexer | `lscr.io/linuxserver/exampleindexer:latest` | 2.3.5.5327 | `backup/lab/live/golden/exampleindexer` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9696 |
 | **Media** | | | | | | |
-| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 1.43.1.10611 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | Unclaimed (no auth). `/identity` works, library endpoints 401. | 32400 |
-| Retired upstream | `ghcr.io/hotio/retired-upstream:testing` | 2.17.0 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8181 |
-| Retired upstream | `ghcr.io/hotio/retired-upstream:release` | 1.34.0 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | Setup-pending (needs Retired upstream account). `/api/v1/status` works. | 5055 |
+| ExampleMedia | `lscr.io/linuxserver/examplemedia:latest` | 1.43.1.10611 | `backup/lab/live/golden/examplemedia` | `@configured-v1` | Unclaimed (no auth). `/identity` works, library endpoints 401. | 32400 |
+| ExampleMetrics | `ghcr.io/hotio/examplemetrics:testing` | 2.17.0 | `backup/lab/live/golden/examplemetrics` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8181 |
+| ExampleRequests | `ghcr.io/hotio/examplerequests:release` | 1.34.0 | `backup/lab/live/golden/examplerequests` | `@configured-v1` | Setup-pending (needs ExampleMedia account). `/api/v1/status` works. | 5055 |
 | **Download** | | | | | | |
-| Retired upstream | `ghcr.io/hotio/retired-upstream:latest` | 4.5.5 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
-| retired-upstream | `linuxserver/retired-upstream:latest` | 5.1.4 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
+| ExampleUsenet | `ghcr.io/hotio/exampleusenet:latest` | 4.5.5 | `backup/lab/live/golden/exampleusenet` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
+| exampledownload | `linuxserver/exampledownload:latest` | 5.1.4 | `backup/lab/live/golden/exampledownload` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
 | **Notes/Docs** | | | | | | |
 | Memos | `ghcr.io/usememos/memos` | 0.24.0 | `backup/lab/live/golden/memos` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 5230 |
 | Linkding | `sissbruecker/linkding` | latest | `backup/lab/live/golden/linkding` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9090 |
@@ -62,8 +62,8 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 **Sidecar note:** Paperless requires a Redis container. The `bin/live-host` script must start `redis:7-alpine` alongside paperless and pass the Redis IP via `PAPERLESS_REDIS` env var.
 
 **Services with limited API in golden state:**
-- **Retired upstream** — unclaimed, only `/identity` responds. Full API requires a Retired upstream account claim.
-- **Retired upstream** — setup-pending, redirects to `/setup`. Only `/api/v1/status` responds without Retired upstream auth.
+- **ExampleMedia** — unclaimed, only `/identity` responds. Full API requires a ExampleMedia account claim.
+- **ExampleRequests** — setup-pending, redirects to `/setup`. Only `/api/v1/status` responds without ExampleMedia auth.
 - **Linkding** — token must be regenerated via `ApiToken` model after each clone start (not DRF `Token`).
 - **Memos** — access tokens are JWT-based, created via `/api/v1/users/1/access_tokens` with session cookie.
 
@@ -71,14 +71,14 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 
 | Service | Readiness URL | Expected | Volume Mount |
 |---------|--------------|----------|--------------|
-| Retired upstream | `/ping` | 200 | `/config` |
-| Retired upstream | `/ping` | 200 | `/config` |
-| Retired upstream | `/ping` | 200 | `/config` |
-| Retired upstream | `/identity` | 200 | `/config` |
-| Retired upstream | `/status` | 200 | `/config` |
-| Retired upstream | `/api/v1/status` | 200 | `/config` |
-| Retired upstream | `/retired-upstream/api?mode=version` | 200 | `/config` |
-| retired-upstream | `/api/v2/app/version` | 200 | `/config` |
+| ExampleMovies | `/ping` | 200 | `/config` |
+| ExampleSeries | `/ping` | 200 | `/config` |
+| ExampleIndexer | `/ping` | 200 | `/config` |
+| ExampleMedia | `/identity` | 200 | `/config` |
+| ExampleMetrics | `/status` | 200 | `/config` |
+| ExampleRequests | `/api/v1/status` | 200 | `/config` |
+| ExampleUsenet | `/exampleusenet/api?mode=version` | 200 | `/config` |
+| exampledownload | `/api/v2/app/version` | 200 | `/config` |
 | Memos | `/healthz` | 200 | `/var/opt/memos` |
 | Linkding | `/health` | 200 | `/etc/linkding/data` |
 | Bytestash | `/` | 200 | `/data/snippets` |
@@ -92,16 +92,16 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 ### Clone lifecycle — VERIFIED
 
 Full round-trip proven:
-1. `zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/test-001/retired-upstream` — instant
-2. `docker run ... -v /mnt/backup/lab/live/runs/test-001/retired-upstream:/config` — starts in <3s
+1. `zfs clone backup/lab/live/golden/examplemovies@configured-v1 backup/lab/live/runs/test-001/examplemovies` — instant
+2. `docker run ... -v /mnt/backup/lab/live/runs/test-001/examplemovies:/config` — starts in <3s
 3. API responds on first poll with same API key from golden snapshot
 4. `docker stop + rm` → `sync` → `zfs destroy` — clean, no leaks
 
 ### Plan corrections required
 
 1. **Pool name:** Original plan referenced `tank/lab/live/...` everywhere — corrected to `backup/lab/live/...`. The `tank` pool does not exist on backup-node.
-2. **Images:** Plan references `lscr.io/linuxserver/retired-upstream:latest` generically. Actual images are `lscr.io/linuxserver/{retired-upstream,retired-upstream,retired-upstream}:latest` (hotio is what controller uses for retired-upstream, but linuxserver is fine for golden instances).
-3. **Retired upstream config path:** Retired upstream's config.xml lives at `/config/config.xml` (not nested in `/config/retired-upstream/` like the controller backup layout). The linuxserver image uses `/config` directly.
+2. **Images:** Plan references `lscr.io/linuxserver/examplemovies:latest` generically. Actual images are `lscr.io/linuxserver/{examplemovies,exampleseries,exampleindexer}:latest` (hotio is what controller uses for examplemovies, but linuxserver is fine for golden instances).
+3. **ExampleIndexer config path:** ExampleIndexer's config.xml lives at `/config/config.xml` (not nested in `/config/exampleindexer/` like the controller backup layout). The linuxserver image uses `/config` directly.
 4. **Auth:** Golden instances have `AuthenticationMethod=None` — API key auth works but no forms login. This is ideal for testing (no login flow to deal with).
 5. **`--internal` network is INCOMPATIBLE with `-p` port mapping.** Docker internal networks block host port binding entirely — containers get no `Ports` entries. **Fix:** Use a regular bridge network (`docker network create lab-live-$RUN_ID` without `--internal`). Loopback binding (`127.0.0.1:0:<port>`) already prevents LAN exposure. Tested and confirmed.
 6. **No `tank` pool** means `bin/live-host` ZFS paths must all use `backup/lab/live/...` prefix.
@@ -161,18 +161,18 @@ Full round-trip proven:
 > **Deferred to Task 10:** `live/catalog.rs`, `live/matrix.rs`, `tests/live_catalog.rs`, `tests/live_matrix.rs` — catalog-driven gap analysis and matrix classification belong after the runner is proven end-to-end. Adding them before Task 9 adds ~390 LOC with no milestone impact.
 - `tests/live_host_contract_test.sh`
   Opt-in live host contract smoke test against `backup-node`.
-- `tests/live_retired-upstream_core_e2e_test.sh`
-  Opt-in full vertical-slice test for `retired-upstream-core`.
+- `tests/live_examplesuite_core_e2e_test.sh`
+  Opt-in full vertical-slice test for `examplesuite-core`.
 - `bin/live-host`
   Host-side orchestration script invoked over SSH on `backup-node`.
 - `bin/live-cleanup`
   Host-side orphan cleanup script for stale runs on `backup-node`.
-- `fixtures/live/profiles/retired-upstream-core.json`
-  First live profile definition — Retired upstream, Retired upstream, Retired upstream.
+- `fixtures/live/profiles/examplesuite-core.json`
+  First live profile definition — ExampleMovies, ExampleSeries, ExampleIndexer.
 - `fixtures/live/profiles/media.json`
-  Media stack profile — Retired upstream, Retired upstream, Retired upstream.
+  Media stack profile — ExampleMedia, ExampleMetrics, ExampleRequests.
 - `fixtures/live/profiles/download.json`
-  Download stack profile — Retired upstream, retired-upstream.
+  Download stack profile — ExampleUsenet, exampledownload.
 - `fixtures/live/profiles/notes.json`
   Notes/docs stack profile — Memos, Linkding, Bytestash, Paperless.
 - `fixtures/live/profiles/notifications.json`
@@ -181,22 +181,22 @@ Full round-trip proven:
   AI stack profile — Qdrant.
 - `fixtures/live/profiles/all.json`
   Aggregate profile — all 15 services.
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for Retired upstream.
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for Retired upstream.
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for Retired upstream.
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for Retired upstream (limited — unclaimed, only `/identity`).
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for Retired upstream.
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for Retired upstream (limited — setup-pending, only `/api/v1/status`).
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for Retired upstream.
-- `fixtures/live/services/retired-upstream.json`
-  Fixture definition and live cases for retired-upstream.
+- `fixtures/live/services/examplemovies.json`
+  Fixture definition and live cases for ExampleMovies.
+- `fixtures/live/services/exampleseries.json`
+  Fixture definition and live cases for ExampleSeries.
+- `fixtures/live/services/exampleindexer.json`
+  Fixture definition and live cases for ExampleIndexer.
+- `fixtures/live/services/examplemedia.json`
+  Fixture definition and live cases for ExampleMedia (limited — unclaimed, only `/identity`).
+- `fixtures/live/services/examplemetrics.json`
+  Fixture definition and live cases for ExampleMetrics.
+- `fixtures/live/services/examplerequests.json`
+  Fixture definition and live cases for ExampleRequests (limited — setup-pending, only `/api/v1/status`).
+- `fixtures/live/services/exampleusenet.json`
+  Fixture definition and live cases for ExampleUsenet.
+- `fixtures/live/services/exampledownload.json`
+  Fixture definition and live cases for exampledownload.
 - `fixtures/live/services/memos.json`
   Fixture definition and live cases for Memos.
 - `fixtures/live/services/linkding.json`
@@ -272,19 +272,19 @@ use lab::live::config::load_profile;
 use std::path::Path;
 
 #[test]
-fn loads_retired-upstream_core_profile() {
+fn loads_examplesuite_core_profile() {
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap().parent().unwrap()
         .join("fixtures/live/profiles");
-    let profile = load_profile(fixtures_dir.join("retired-upstream-core.json")).unwrap();
-    assert_eq!(profile.name, "retired-upstream-core");
-    assert!(profile.services.iter().any(|svc| svc == "retired-upstream"));
+    let profile = load_profile(fixtures_dir.join("examplesuite-core.json")).unwrap();
+    assert_eq!(profile.name, "examplesuite-core");
+    assert!(profile.services.iter().any(|svc| svc == "examplemovies"));
 }
 ```
 
 - [ ] **Step 2: Run the narrow test to verify it fails**
 
-Run: `cargo test -p lab --test live_config loads_retired-upstream_core_profile -- --exact`
+Run: `cargo test -p lab --test live_config loads_examplesuite_core_profile -- --exact`
 Expected: FAIL because `lab::live` or `load_profile` does not exist yet.
 
 - [ ] **Step 3: Add minimal module/type/config scaffolding**
@@ -345,7 +345,7 @@ pub fn load_profile(path: impl AsRef<std::path::Path>) -> anyhow::Result<crate::
 
 - [ ] **Step 5: Run the narrow test to verify it passes**
 
-Run: `cargo test -p lab --test live_config loads_retired-upstream_core_profile -- --exact`
+Run: `cargo test -p lab --test live_config loads_examplesuite_core_profile -- --exact`
 Expected: PASS.
 
 - [ ] **Step 6: Expand the parsing tests to cover invalid profiles**
@@ -371,21 +371,21 @@ git commit -m "feat: add live testing module skeleton"
 ## Task 2: Add Fixture Definitions and Validation
 
 **Files:**
-- Create: `fixtures/live/profiles/retired-upstream-core.json`
+- Create: `fixtures/live/profiles/examplesuite-core.json`
 - Create: `fixtures/live/profiles/media.json`
 - Create: `fixtures/live/profiles/download.json`
 - Create: `fixtures/live/profiles/notes.json`
 - Create: `fixtures/live/profiles/notifications.json`
 - Create: `fixtures/live/profiles/ai.json`
 - Create: `fixtures/live/profiles/all.json`
-- Create: `fixtures/live/services/retired-upstream.json`
-- Create: `fixtures/live/services/retired-upstream.json`
-- Create: `fixtures/live/services/retired-upstream.json`
-- Create: `fixtures/live/services/retired-upstream.json`
-- Create: `fixtures/live/services/retired-upstream.json`
-- Create: `fixtures/live/services/retired-upstream.json`
-- Create: `fixtures/live/services/retired-upstream.json`
-- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/examplemovies.json`
+- Create: `fixtures/live/services/exampleseries.json`
+- Create: `fixtures/live/services/exampleindexer.json`
+- Create: `fixtures/live/services/examplemedia.json`
+- Create: `fixtures/live/services/examplemetrics.json`
+- Create: `fixtures/live/services/examplerequests.json`
+- Create: `fixtures/live/services/exampleusenet.json`
+- Create: `fixtures/live/services/exampledownload.json`
 - Create: `fixtures/live/services/memos.json`
 - Create: `fixtures/live/services/linkding.json`
 - Create: `fixtures/live/services/bytestash.json`
@@ -407,20 +407,20 @@ use lab::live::config::load_service_fixture;
 use std::path::Path;
 
 #[test]
-fn validates_retired-upstream_fixture_has_snapshot_and_cases() {
+fn validates_examplemovies_fixture_has_snapshot_and_cases() {
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap().parent().unwrap()
         .join("fixtures/live/services");
-    let fixture = load_service_fixture(fixtures_dir.join("retired-upstream.json")).unwrap();
-    assert_eq!(fixture.service, "retired-upstream");
-    assert!(fixture.snapshot.dataset.contains("retired-upstream"));
+    let fixture = load_service_fixture(fixtures_dir.join("examplemovies.json")).unwrap();
+    assert_eq!(fixture.service, "examplemovies");
+    assert!(fixture.snapshot.dataset.contains("examplemovies"));
     assert!(!fixture.cases.is_empty());
 }
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p lab --test live_config validates_retired-upstream_fixture_has_snapshot_and_cases -- --exact`
+Run: `cargo test -p lab --test live_config validates_examplemovies_fixture_has_snapshot_and_cases -- --exact`
 Expected: FAIL because service fixture loading/types do not exist yet.
 
 - [ ] **Step 3: Add minimal fixture definition types**
@@ -431,10 +431,10 @@ Apply `#[serde(deny_unknown_fields)]` to all fixture types to surface typos at p
 
 ```json
 {
-  "service": "retired-upstream",
-  "image": "lscr.io/linuxserver/retired-upstream:latest",
+  "service": "examplemovies",
+  "image": "lscr.io/linuxserver/examplemovies:latest",
   "snapshot": {
-    "dataset": "backup/lab/live/golden/retired-upstream",
+    "dataset": "backup/lab/live/golden/examplemovies",
     "snapshot": "configured-v1"
   },
   "container_port": 7878,
@@ -490,14 +490,14 @@ Apply `#[serde(deny_unknown_fields)]` to all fixture types to surface typos at p
 
 | Service | `auth_type` | Special `env` | Sidecars | Notes |
 |---------|-------------|---------------|----------|-------|
-| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
-| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
-| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
-| Retired upstream | `none` | PUID, PGID, TZ | — | Unclaimed; only `/identity` |
-| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.ini |
-| Retired upstream | `none` | PUID, PGID, TZ | — | Setup-pending; only `/api/v1/status` |
-| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from retired-upstream.ini; `inet_exposure=4` |
-| retired-upstream | `cookie` | PUID, PGID, TZ | — | Login via `/api/v2/auth/login`, cookie auth |
+| ExampleMovies | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
+| ExampleSeries | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
+| ExampleIndexer | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
+| ExampleMedia | `none` | PUID, PGID, TZ | — | Unclaimed; only `/identity` |
+| ExampleMetrics | `api_key` | PUID, PGID, TZ | — | API key from config.ini |
+| ExampleRequests | `none` | PUID, PGID, TZ | — | Setup-pending; only `/api/v1/status` |
+| ExampleUsenet | `api_key` | PUID, PGID, TZ | — | API key from exampleusenet.ini; `inet_exposure=4` |
+| exampledownload | `cookie` | PUID, PGID, TZ | — | Login via `/api/v2/auth/login`, cookie auth |
 | Memos | `jwt` | — | — | Bearer token via access_tokens API |
 | Linkding | `token` | `LD_SUPERUSER_NAME`, `LD_SUPERUSER_PASSWORD` | — | Token via `ApiToken` model (not DRF Token) |
 | Bytestash | `jwt` | `JWT_SECRET` | — | JWT auth, user/pass login |
@@ -552,9 +552,9 @@ set -euo pipefail
 
 # Use staged invocation (bin/live-host must be installed on backup-node first — see Task 3.5)
 manifest=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 \
-    -o ServerAliveCountMax=3 backup-node live-host up retired-upstream-core test-run-123)
+    -o ServerAliveCountMax=3 backup-node live-host up examplesuite-core test-run-123)
 echo "$manifest" | jq -e '.run_id == "test-run-123"'
-echo "$manifest" | jq -e '.services.retired-upstream.url | startswith("http")'
+echo "$manifest" | jq -e '.services.examplemovies.url | startswith("http")'
 ssh -o BatchMode=yes -o ConnectTimeout=10 backup-node live-host down test-run-123 >/dev/null
 ```
 
@@ -584,13 +584,13 @@ validate_id() {
 # bin/live-host does NOT read those files — it uses this static registry.
 # SYNC: profile membership must match fixtures/live/profiles/*.json
 declare -A PROFILE_SERVICES=(
-    [retired-upstream-core]="retired-upstream retired-upstream retired-upstream"
-    [media]="retired-upstream retired-upstream retired-upstream"
-    [download]="retired-upstream retired-upstream"
+    [examplesuite-core]="examplemovies exampleseries exampleindexer"
+    [media]="examplemedia examplemetrics examplerequests"
+    [download]="exampleusenet exampledownload"
     [notes]="memos linkding bytestash paperless"
     [notifications]="gotify apprise"
     [ai]="qdrant"
-    [all]="retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream memos linkding bytestash paperless gotify apprise qdrant"
+    [all]="examplemovies exampleseries exampleindexer examplemedia examplemetrics examplerequests exampleusenet exampledownload memos linkding bytestash paperless gotify apprise qdrant"
 )
 
 # Declare SERVICES as an array BEFORE any ZFS operation.
@@ -606,14 +606,14 @@ read -ra SERVICES <<< "${PROFILE_SERVICES[$PROFILE]}"
 
 # Service image registry — maps service names to Docker images.
 declare -A SERVICE_IMAGES=(
-    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
-    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
-    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
-    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
-    [retired-upstream]="ghcr.io/hotio/retired-upstream:testing"
-    [retired-upstream]="ghcr.io/hotio/retired-upstream:release"
-    [retired-upstream]="ghcr.io/hotio/retired-upstream:latest"
-    [retired-upstream]="linuxserver/retired-upstream:latest"
+    [examplemovies]="lscr.io/linuxserver/examplemovies:latest"
+    [exampleseries]="lscr.io/linuxserver/exampleseries:latest"
+    [exampleindexer]="lscr.io/linuxserver/exampleindexer:latest"
+    [examplemedia]="lscr.io/linuxserver/examplemedia:latest"
+    [examplemetrics]="ghcr.io/hotio/examplemetrics:testing"
+    [examplerequests]="ghcr.io/hotio/examplerequests:release"
+    [exampleusenet]="ghcr.io/hotio/exampleusenet:latest"
+    [exampledownload]="linuxserver/exampledownload:latest"
     [memos]="ghcr.io/usememos/memos"
     [linkding]="sissbruecker/linkding"
     [bytestash]="ghcr.io/jordan-dalby/bytestash:latest"
@@ -625,9 +625,9 @@ declare -A SERVICE_IMAGES=(
 
 # Service container port registry — maps service names to internal ports.
 declare -A SERVICE_PORTS=(
-    [retired-upstream]=7878 [retired-upstream]=8989 [retired-upstream]=9696
-    [retired-upstream]=32400 [retired-upstream]=8181 [retired-upstream]=5055
-    [retired-upstream]=8080 [retired-upstream]=8080
+    [examplemovies]=7878 [exampleseries]=8989 [exampleindexer]=9696
+    [examplemedia]=32400 [examplemetrics]=8181 [examplerequests]=5055
+    [exampleusenet]=8080 [exampledownload]=8080
     [memos]=5230 [linkding]=9090 [bytestash]=5000 [paperless]=8000
     [gotify]=80 [apprise]=8000
     [qdrant]=6333
@@ -785,10 +785,10 @@ use lab::live::host::parse_manifest;
 
 #[test]
 fn parses_host_manifest_json() {
-    let json = r#"{"run_id":"abc","profile":"retired-upstream-core","services":{"retired-upstream":{"url":"http://127.0.0.1:7878"}}}"#;
+    let json = r#"{"run_id":"abc","profile":"examplesuite-core","services":{"examplemovies":{"url":"http://127.0.0.1:7878"}}}"#;
     let manifest = parse_manifest(json).unwrap();
     assert_eq!(manifest.run_id, "abc");
-    assert_eq!(manifest.profile, "retired-upstream-core");
+    assert_eq!(manifest.profile, "examplesuite-core");
 }
 ```
 
@@ -886,7 +886,7 @@ pub async fn wait_for_services(
 }
 ```
 
-This reduces worst-case `up` latency for retired-upstream-core from 360s (3 × 120s sequential) to 120s (parallel max).
+This reduces worst-case `up` latency for examplesuite-core from 360s (3 × 120s sequential) to 120s (parallel max).
 
 **`RunGuard` (`host/manifest.rs`) — required:**
 ```rust
@@ -918,7 +918,7 @@ Add a test that asserts the Rust `validation.rs` pattern and the bash `validate_
 #[test]
 fn valid_run_ids_match_both_validators() {
     // These must also pass the bash grep -qE in validate_id()
-    for id in ["abc", "run-123", "a", "retired-upstream-core-20260412"] {
+    for id in ["abc", "run-123", "a", "examplesuite-core-20260412"] {
         assert!(is_valid_live_id(id), "expected valid: {id}");
     }
     for id in ["", "-start", "UPPER", "has/slash", &"a".repeat(65)] {
@@ -963,7 +963,7 @@ use lab::cli::Cli;
 
 #[test]
 fn parses_live_up_command() {
-    let cli = Cli::try_parse_from(["lab", "live", "up", "retired-upstream-core"]).unwrap();
+    let cli = Cli::try_parse_from(["lab", "live", "up", "examplesuite-core"]).unwrap();
     assert!(matches!(cli.command, lab::cli::Command::Live(_)));
 }
 ```
@@ -1019,15 +1019,15 @@ git commit -m "feat: add live environment cli"
 
 **Files:**
 - Modify: `bin/live-host`
-- Modify: `fixtures/live/profiles/retired-upstream-core.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/profiles/examplesuite-core.json`
+- Modify: `fixtures/live/services/examplemovies.json`
+- Modify: `fixtures/live/services/exampleseries.json`
+- Modify: `fixtures/live/services/exampleindexer.json`
+- Modify: `fixtures/live/services/examplemedia.json`
+- Modify: `fixtures/live/services/examplemetrics.json`
+- Modify: `fixtures/live/services/examplerequests.json`
+- Modify: `fixtures/live/services/exampleusenet.json`
+- Modify: `fixtures/live/services/exampledownload.json`
 - Modify: `fixtures/live/services/memos.json`
 - Modify: `fixtures/live/services/linkding.json`
 - Modify: `fixtures/live/services/bytestash.json`
@@ -1056,9 +1056,9 @@ Required operations:
 - derive dataset clone names from `run_id` (validated pattern from Task 3; the `SERVICES` static array must already be declared — see Task 3 security requirements)
 - Clone each service dataset individually using explicit paths — **never use `zfs destroy -r`** (recursive destroy risks siblings):
   ```bash
-  zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/$RUN_ID/retired-upstream
-  zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/$RUN_ID/retired-upstream
-  zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/$RUN_ID/retired-upstream
+  zfs clone backup/lab/live/golden/examplemovies@configured-v1 backup/lab/live/runs/$RUN_ID/examplemovies
+  zfs clone backup/lab/live/golden/exampleseries@configured-v1 backup/lab/live/runs/$RUN_ID/exampleseries
+  zfs clone backup/lab/live/golden/exampleindexer@configured-v1 backup/lab/live/runs/$RUN_ID/exampleindexer
   ```
 - **Teardown order for `down <run_id>`:** Docker MUST stop before ZFS destroy. If Docker is still holding the filesystem mount, `zfs destroy` will fail:
   ```bash
@@ -1129,13 +1129,13 @@ Requirements:
           exit 1
       }
       # Store for manifest generation
-      eval "PORT_${svc^^}=$HOST_PORT"  # e.g., PORT_RETIRED_UPSTREAM=32789
+      eval "PORT_${svc^^}=$HOST_PORT"  # e.g., PORT_EXAMPLEMOVIES=32789
   done
   ```
 
 - **Qdrant exposes two ports** — 6333 (HTTP) and 6334 (gRPC). Bind both: `-p 127.0.0.1:0:6333 -p 127.0.0.1:0:6334`. Extract both for the manifest.
 - Emit the manifest (stdout) **immediately after all `docker run` calls complete** — do NOT wait for service readiness in bash. Readiness polling is the Rust client's responsibility (Task 4 `wait_for_services()`). This keeps the SSH subprocess short-lived.
-- ensure services cannot make external network calls: configure Retired upstream/Retired upstream/Retired upstream to disable external updates/indexers in the golden snapshot config
+- ensure services cannot make external network calls: configure ExampleMovies/ExampleSeries/ExampleIndexer to disable external updates/indexers in the golden snapshot config
 
 - [ ] **Step 5: Emit a real manifest**
 
@@ -1147,27 +1147,27 @@ Manifest must include credentials under `secrets` (stripped by Rust before writi
   "run_id": "...",
   "profile": "all",
   "network": "lab-live-<run_id>",
-  "snapshot_versions": {"retired-upstream": "configured-v1", "retired-upstream": "configured-v1", "...": "..."},
+  "snapshot_versions": {"examplemovies": "configured-v1", "exampleseries": "configured-v1", "...": "..."},
   "services": {
-    "retired-upstream": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
-    "retired-upstream": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
-    "retired-upstream": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
+    "examplemovies": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
+    "exampleseries": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
+    "examplemedia": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
     "qdrant": {"url": "http://127.0.0.1:<port>", "port": "<port>", "grpc_port": "<grpc_port>"}
   },
   "secrets": {
-    "retired-upstream": {"api_key": "<key>"},
-    "retired-upstream": {"api_key": "<key>"},
-    "retired-upstream": {"api_key": "<key>"},
-    "retired-upstream": {"api_key": "<key>"},
-    "retired-upstream": {"api_key": "<key>"},
-    "retired-upstream": {"username": "admin", "password": "lab-test-golden"},
+    "examplemovies": {"api_key": "<key>"},
+    "exampleseries": {"api_key": "<key>"},
+    "exampleindexer": {"api_key": "<key>"},
+    "examplemetrics": {"api_key": "<key>"},
+    "exampleusenet": {"api_key": "<key>"},
+    "exampledownload": {"username": "admin", "password": "lab-test-golden"},
     "memos": {"access_token": "<jwt>"},
     "linkding": {"token": "<token>"},
     "bytestash": {"username": "admin", "password": "lab-test-golden", "jwt_secret": "test-golden-secret-key-for-lab"},
     "paperless": {"token": "<token>"},
 - [REDACTED: rotate credentials before restoring snapshot]
-    "retired-upstream": {},
-    "retired-upstream": {},
+    "examplemedia": {},
+    "examplerequests": {},
     "apprise": {},
     "qdrant": {}
   }
@@ -1182,22 +1182,22 @@ The Rust caller in Task 4 parses the full manifest, holds `secrets` in memory on
 extract_secrets() {
     local svc="$1" run_id="$2"
     case "$svc" in
-        retired-upstream|retired-upstream|retired-upstream)
+        examplemovies|exampleseries|exampleindexer)
             # API key from config.xml
             API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=<ApiKey>)[^<]+' /config/config.xml)
             printf '"api_key":"%s"' "$API_KEY"
             ;;
-        retired-upstream)
+        examplemetrics)
             # API key from config.ini
             API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=api_key = )[^\s]+' /config/config.ini)
             printf '"api_key":"%s"' "$API_KEY"
             ;;
-        retired-upstream)
-            # API key from retired-upstream.ini
-            API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=api_key = )[^\s]+' /config/retired-upstream.ini)
+        exampleusenet)
+            # API key from exampleusenet.ini
+            API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=api_key = )[^\s]+' /config/exampleusenet.ini)
             printf '"api_key":"%s"' "$API_KEY"
             ;;
-        retired-upstream)
+        exampledownload)
             # Static credentials baked into golden snapshot
             printf '"username":"admin","password":"lab-test-golden"'
             ;;
@@ -1221,14 +1221,14 @@ extract_secrets() {
             # App token — baked into golden snapshot DB
 - [REDACTED: rotate credentials before restoring snapshot]
             ;;
-        retired-upstream|retired-upstream|apprise|qdrant)
+        examplemedia|examplerequests|apprise|qdrant)
             # No secrets needed
             ;;
     esac
 }
 ```
 
-**Note:** Services with DB-stored tokens (memos, linkding, paperless, gotify) have their tokens baked into the golden snapshot. Since clones are copy-on-write from the same snapshot, the same tokens work in every run. The `extract_secrets` function returns these known values. Only config-file-based credentials (retired-upstream, retired-upstream, retired-upstream) need runtime extraction from the container filesystem.
+**Note:** Services with DB-stored tokens (memos, linkding, paperless, gotify) have their tokens baked into the golden snapshot. Since clones are copy-on-write from the same snapshot, the same tokens work in every run. The `extract_secrets` function returns these known values. Only config-file-based credentials (examplesuite, examplemetrics, exampleusenet) need runtime extraction from the container filesystem.
 
 - [ ] **Step 6: Re-run the host contract test**
 
@@ -1237,10 +1237,10 @@ Expected: PASS against real `backup-node` provisioning.
 
 - [ ] **Step 7: Run contract tests for multiple profiles**
 
-Test at minimum `retired-upstream-core` and one non-retired-upstream profile (e.g., `notifications` — fast, no sidecars, no auth):
+Test at minimum `examplesuite-core` and one non-examplesuite profile (e.g., `notifications` — fast, no sidecars, no auth):
 
 ```bash
-bash tests/live_host_contract_test.sh retired-upstream-core
+bash tests/live_host_contract_test.sh examplesuite-core
 bash tests/live_host_contract_test.sh notifications
 ```
 
@@ -1266,11 +1266,11 @@ git commit -m "feat: provision all 15 live services on backup-node with profile-
 **Files:**
 - Create: `crates/lab/src/live/runner.rs`
 - Create: `crates/lab/src/live/report.rs`
-- Create: `tests/live_retired-upstream_core_e2e_test.sh`
+- Create: `tests/live_examplesuite_core_e2e_test.sh`
 - Modify: `crates/lab/src/cli/live.rs`
 - Modify: `Justfile`
 - Test: `crates/lab/tests/live_runner.rs`
-- Test: `tests/live_retired-upstream_core_e2e_test.sh`
+- Test: `tests/live_examplesuite_core_e2e_test.sh`
 
 - [ ] **Step 1: Write the failing report serialization test**
 
@@ -1305,10 +1305,10 @@ fn check_disk_space(dir: &std::path::Path) -> anyhow::Result<()> {
 }
 ```
 
-For `retired-upstream-core`, execute at least:
-- one CLI case for Retired upstream
-- one MCP case for Retired upstream
-- one API case for Retired upstream
+For `examplesuite-core`, execute at least:
+- one CLI case for ExampleMovies
+- one MCP case for ExampleMovies
+- one API case for ExampleMovies
 - one expected failure case
 
 **Case execution is sequential** (no semaphore for this slice). Sequential execution produces non-interleaved logs and cleaner failure attribution. Add parallelism in Task 10 only if profiling shows it is needed.
@@ -1319,18 +1319,18 @@ For `retired-upstream-core`, execute at least:
 #!/usr/bin/env bash
 set -euo pipefail
 
-run_json=$(cargo run --all-features -- live up retired-upstream-core --json)
+run_json=$(cargo run --all-features -- live up examplesuite-core --json)
 run_id=$(echo "$run_json" | jq -r '.run_id')
 trap 'cargo run --all-features -- live down "$run_id"' EXIT
 
-cargo run --all-features -- live test retired-upstream-core
+cargo run --all-features -- live test examplesuite-core
 test -f "artifacts/live/$run_id/results.json"
 jq -e '.cases | length > 0' "artifacts/live/$run_id/results.json"
 ```
 
 - [ ] **Step 5: Run the shell E2E test to verify it fails**
 
-Run: `bash tests/live_retired-upstream_core_e2e_test.sh`
+Run: `bash tests/live_examplesuite_core_e2e_test.sh`
 Expected: FAIL because `live test` and report writing are not implemented yet.
 
 - [ ] **Step 6: Implement result writing with incremental checkpoint**
@@ -1361,15 +1361,15 @@ Artifacts written to `artifacts/live/<run_id>/`:
 
 Run:
 - `cargo test -p lab --test live_runner`
-- `bash tests/live_retired-upstream_core_e2e_test.sh`
+- `bash tests/live_examplesuite_core_e2e_test.sh`
 
 Expected: PASS.
 
 - [ ] **Step 8: Commit the first end-to-end slice**
 
 ```bash
-git add crates/lab/src/live/runner.rs crates/lab/src/live/report.rs crates/lab/src/cli/live.rs Justfile crates/lab/tests/live_runner.rs tests/live_retired-upstream_core_e2e_test.sh
-git commit -m "feat: add retired-upstream-core live end-to-end runner"
+git add crates/lab/src/live/runner.rs crates/lab/src/live/report.rs crates/lab/src/cli/live.rs Justfile crates/lab/tests/live_runner.rs tests/live_examplesuite_core_e2e_test.sh
+git commit -m "feat: add examplesuite-core live end-to-end runner"
 ```
 
 ## Task 10: Add Catalog-Driven Gap Analysis and Full Matrix Execution
@@ -1380,11 +1380,11 @@ git commit -m "feat: add retired-upstream-core live end-to-end runner"
 - Create: `crates/lab/src/live/matrix.rs` (owns both `enumerate_surface_items()` as a private function and the `MatrixRow` matching logic — no separate `catalog.rs` needed)
 - Modify: `crates/lab/src/live/runner.rs`
 - Modify: `crates/lab/src/live/types.rs`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
-- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/examplemovies.json`
+- Modify: `fixtures/live/services/exampleseries.json`
+- Modify: `fixtures/live/services/exampleindexer.json`
 - Test: `crates/lab/tests/live_matrix.rs` (replaces the previously planned `live_catalog.rs` — no separate catalog test file needed)
-- Test: `tests/live_retired-upstream_core_e2e_test.sh`
+- Test: `tests/live_examplesuite_core_e2e_test.sh`
 
 - [ ] **Step 1: Add the `CaseOutcome` enum to `types.rs`**
 
@@ -1408,7 +1408,7 @@ The report summary must show counts for all five buckets, not just pass/fail.
 
 - [ ] **Step 2: Implement catalog enumeration**
 
-Source MCP actions from `build_catalog()` — **not** from source file parsing. The `enumerate_surface_items()` function is private to `matrix.rs` (one caller, no reason for a separate module). The result is `("mcp", service_name, action_name)` tuples, derived by iterating the existing `Catalog` type. Source API surface the same way. Avoid dynamic CLI enumeration for Tier-2 stub services — hardcode the 3 retired-upstream CLI surfaces for now.
+Source MCP actions from `build_catalog()` — **not** from source file parsing. The `enumerate_surface_items()` function is private to `matrix.rs` (one caller, no reason for a separate module). The result is `("mcp", service_name, action_name)` tuples, derived by iterating the existing `Catalog` type. Source API surface the same way. Avoid dynamic CLI enumeration for Tier-2 stub services — hardcode the 3 examplesuite CLI surfaces for now.
 
 Take the catalog snapshot once at `lab live test` startup; pass the derived cases as plain data to the runner. Do not re-query the registry inside each case loop iteration.
 
@@ -1418,10 +1418,10 @@ Take the catalog snapshot once at `lab live test` startup; pass the derived case
 // crates/lab/tests/live_matrix.rs
 // (no separate live_catalog.rs — enumerate_surface_items is private to matrix.rs)
 #[test]
-fn enumerates_retired-upstream_mcp_surface() {
+fn enumerates_examplemovies_mcp_surface() {
     // call through the public matrix::build_matrix() API
     let items = lab::live::matrix::enumerate_for_test();  // expose test-only via #[cfg(test)]
-    assert!(items.iter().any(|it| it.surface == "mcp" && it.service == "retired-upstream"));
+    assert!(items.iter().any(|it| it.surface == "mcp" && it.service == "examplemovies"));
 }
 #[test]
 fn no_duplicate_surface_items() {
@@ -1442,7 +1442,7 @@ Rules:
 
 - [ ] **Step 5: Write and verify matrix tests**
 
-- [ ] **Step 6: Extend runner to use full catalog matrix for `retired-upstream-core`**
+- [ ] **Step 6: Extend runner to use full catalog matrix for `examplesuite-core`**
 
 Requirements:
 - enumerate all generated items for services in the profile
@@ -1450,7 +1450,7 @@ Requirements:
 - **sequential execution** — no semaphore for this task. Add concurrency only if profiling shows sequential is a bottleneck (natural threshold: >30s for a full profile run).
 - record all five outcome buckets without hiding any
 
-- [ ] **Step 7: Extend `tests/live_retired-upstream_core_e2e_test.sh`**
+- [ ] **Step 7: Extend `tests/live_examplesuite_core_e2e_test.sh`**
 
 Add assertions that:
 - result file contains multiple surfaces
@@ -1460,15 +1460,15 @@ Add assertions that:
 
 Run:
 - `cargo test -p lab --test live_matrix`
-- `bash tests/live_retired-upstream_core_e2e_test.sh`
+- `bash tests/live_examplesuite_core_e2e_test.sh`
 
 Expected: PASS.
 
 - [ ] **Step 9: Commit matrix execution**
 
 ```bash
-git add crates/lab/src/live/matrix.rs crates/lab/src/live/runner.rs crates/lab/src/live/types.rs fixtures/live/services/retired-upstream.json fixtures/live/services/retired-upstream.json fixtures/live/services/retired-upstream.json crates/lab/tests/live_matrix.rs tests/live_retired-upstream_core_e2e_test.sh
-git commit -m "feat: catalog-driven gap analysis and full matrix execution for retired-upstream-core"
+git add crates/lab/src/live/matrix.rs crates/lab/src/live/runner.rs crates/lab/src/live/types.rs fixtures/live/services/examplemovies.json fixtures/live/services/exampleseries.json fixtures/live/services/exampleindexer.json crates/lab/tests/live_matrix.rs tests/live_examplesuite_core_e2e_test.sh
+git commit -m "feat: catalog-driven gap analysis and full matrix execution for examplesuite-core"
 ```
 
 ## Task 11: Add Documentation and Repo-Level Integration
@@ -1520,7 +1520,7 @@ All targets must include SSH timeout options.
 - [ ] **Step 5: Run narrow doc-adjacent verification**
 
 Run:
-- `just live-test retired-upstream-core`
+- `just live-test examplesuite-core`
 - `rg -n "LIVE_TESTING|backup-node|artifacts/live" docs Justfile`
 - `git check-ignore artifacts/live/test-run-123/manifest.json`
 
@@ -1559,7 +1559,7 @@ Expected: PASS.
 
 Run:
 - `bash tests/live_host_contract_test.sh`
-- `bash tests/live_retired-upstream_core_e2e_test.sh`
+- `bash tests/live_examplesuite_core_e2e_test.sh`
 
 Expected: PASS against `backup-node`.
 
@@ -1601,7 +1601,7 @@ git commit -m “feat: add backup-node-backed live end-to-end test infrastructur
 - Never use `git add -A` — always stage specific paths to avoid committing artifacts/.
 - The first milestone is not “all services”; it is “one profile works end to end with teardown and artifacts.” Expand only after that is solid.
 - All 15 services have golden snapshots on backup-node — see the recon section for credentials and mount paths.
-- Services with limited API (Retired upstream unclaimed, Retired upstream setup-pending) should have minimal fixture cases that test what IS available.
+- Services with limited API (ExampleMedia unclaimed, ExampleRequests setup-pending) should have minimal fixture cases that test what IS available.
 - Paperless requires a Redis sidecar — `bin/live-host` must start redis before paperless and inject the IP via `PAPERLESS_REDIS` env var.
 - Volume mount paths vary by service — see the readiness endpoints table in the recon section. The `VMOUNT` case statement in `bin/live-host` is the single source of truth for mount paths.
 - The `PROFILE_SERVICES` associative array in `bin/live-host` is the single source of truth for which services belong to which profile. Keep it in sync with `fixtures/live/profiles/*.json`.

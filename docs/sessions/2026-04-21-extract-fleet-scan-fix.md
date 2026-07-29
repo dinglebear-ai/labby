@@ -28,7 +28,7 @@ Two separate fixes:
 2. Investigated why fleet scan returned only 5 services from `controller` instead of all 9 across all hosts.
 3. User confirmed via `ssh <host> docker ps` that all 6 SSH hosts have Docker running with containers active — ruling out "no Docker" as the cause.
 4. Traced `supported_service` in `runtime.rs` — found it never fell back to container name when image was present but image-based lookup returned `None`.
-5. Found `binhex/arch-retired-upstream` naming convention — after path stripping, `arch-retired-upstream` didn't match `retired-upstream`.
+5. Found `binhex/arch-exampleindexer` naming convention — after path stripping, `arch-exampleindexer` didn't match `exampleindexer`.
 6. Fixed `supported_service` to fall back to name only for opaque image IDs (hash strings), not named images.
 7. Fixed `service_from_image` to strip `arch-` prefix before matching.
 8. Added `is_opaque_image_id` helper for safe disambiguation.
@@ -40,14 +40,14 @@ Two separate fixes:
 ## Key Findings
 
 - **`supported_service` fallback gap** (`runtime.rs`): `match image { Some(img) => service_from_image(img), None => service_from_name(name) }` — when image was a non-None hash ID, `service_from_image` returned `None` and `service_from_name` was never tried.
-- **`arch-` prefix** (`runtime.rs`): `binhex/arch-retired-upstream` → after path-stripping: `arch-retired-upstream`; this didn't match `retired-upstream` because the prefix wasn't stripped.
-- **Opaque image IDs**: Docker stores only a hex hash (e.g. `5809619fa0e3`) when pulled by digest, discarding repository name. `retired-upstream` and `linkding` on `node-b` were invisible because of this.
+- **`arch-` prefix** (`runtime.rs`): `binhex/arch-exampleindexer` → after path-stripping: `arch-exampleindexer`; this didn't match `exampleindexer` because the prefix wasn't stripped.
+- **Opaque image IDs**: Docker stores only a hex hash (e.g. `5809619fa0e3`) when pulled by digest, discarding repository name. `examplerequests` and `linkding` on `node-b` were invisible because of this.
 - **Filesystem fallback**: Common appdata roots (`/mnt/user/appdata`, `/mnt/appdata`, `/opt/appdata`, `/srv/appdata`) reliably contain service config files even when Docker metadata is unhelpful.
 - **Tailwind arbitrary variants** (`card.tsx`): `[.border-b]:pb-6` applies when the element is a *descendant* of `.border-b`; `[&.border-b]:pb-6` applies when the element *itself* has `.border-b`.
 
 ## Technical Decisions
 
-- **Only fall back to container name for opaque image IDs**: Falling back unconditionally caused `retired-upstream-tvtime` (a named image) to match `retired-upstream` via name tokenization, breaking the `docker_ps_does_not_treat_retired-upstream_adjacent_images_as_retired-upstream` test. Restricting fallback to hashes preserves the intentional "named image is authoritative" invariant.
+- **Only fall back to container name for opaque image IDs**: Falling back unconditionally caused `examplemedia-tvtime` (a named image) to match `examplemedia` via name tokenization, breaking the `docker_ps_does_not_treat_examplemedia_adjacent_images_as_examplemedia` test. Restricting fallback to hashes preserves the intentional "named image is authoritative" invariant.
 - **Docker-first, filesystem-second**: Docker is authoritative for port mapping (actual published host ports). Filesystem scan is supplementary. Services already found via Docker are skipped in the filesystem pass to avoid duplicate creds.
 - **Filesystem scan returns cred even when probe fails**: A found API key is still useful even if the endpoint probe fails (wrong port, firewall, etc.). The `url_verified: false` field signals this state to callers.
 
@@ -80,8 +80,8 @@ cargo nextest run --workspace --all-features
 | Error | Root Cause | Fix |
 |-------|-----------|-----|
 | `supported_service` never falls back to name | `match` arm for `Some(image)` returned early on `None` from image lookup | Added `is_opaque_image_id` guard; only fall back when image is a hash |
-| `arch-retired-upstream` not matched | `service_from_image` didn't strip `arch-` prefix after path stripping | Added `.strip_prefix("arch-")` before SERVICES lookup |
-| `retired-upstream-tvtime` matched `retired-upstream` via name | Naive name fallback applied even to named images | Restricted fallback to opaque image IDs only |
+| `arch-exampleindexer` not matched | `service_from_image` didn't strip `arch-` prefix after path stripping | Added `.strip_prefix("arch-")` before SERVICES lookup |
+| `examplemedia-tvtime` matched `examplemedia` via name | Naive name fallback applied even to named images | Restricted fallback to opaque image IDs only |
 | Duplicate cred (filesystem + Docker same service) | Filesystem scan ran before Docker dedup set was populated | Added `if result.found.contains(&summary.service) { continue; }` at Docker loop start |
 | Orphaned dead code in `scan_fleet_host` | Old Docker loop body left outside any loop after restructuring | Moved into `scan_docker_containers` method |
 | Test `fleet_scan_reads_config_hints_but_does_not_return_secret_when_probe_fails` failed | Old test expected `NothingFound`; new filesystem scan returns cred with `url_verified: false` | Updated test to assert on returned cred fields |
@@ -91,7 +91,7 @@ cargo nextest run --workspace --all-features
 | | Before | After |
 |---|--------|-------|
 | Fleet scan hosts | Only `controller` (first SSH host) | All hosts in `~/.ssh/config` |
-| Services found | 5 (retired-upstream, retired-upstream, retired-upstream, retired-upstream, retired-upstream on controller) | 9/9 across controller + node-b |
+| Services found | 5 (examplemovies, exampledownload, examplemetrics, exampleseries, exampleusenet on controller) | 9/9 across controller + node-b |
 | Opaque-hash containers | Invisible to fleet scan | Matched via container name fallback |
 | `binhex/arch-*` containers | Missed | Matched after `arch-` prefix strip |
 | Probe failure behavior | No cred returned | Cred returned with `url_verified: false` |
@@ -102,7 +102,7 @@ cargo nextest run --workspace --all-features
 | Command | Expected | Actual | Status |
 |---------|----------|--------|--------|
 | `./target/debug/lab extract --json \| jq '.found \| length'` | 9 | 9 | ✅ |
-| `./target/debug/lab extract --json \| jq '[.found[].service] \| sort'` | all 9 services | retired-upstream, retired-upstream, retired-upstream, retired-upstream, retired-upstream, retired-upstream, retired-upstream, retired-upstream, linkding | ✅ |
+| `./target/debug/lab extract --json \| jq '[.found[].service] \| sort'` | all 9 services | examplemovies, exampledownload, examplemetrics, exampleseries, exampleusenet, exampleindexer, examplemedia, examplerequests, linkding | ✅ |
 | `./target/debug/lab extract --json \| jq '[.found[].url_verified] \| all'` | all true | true | ✅ |
 | `cargo nextest run --workspace --all-features` | 335 passed, 0 failed | 335 passed, 0 failed | ✅ |
 | `cargo build --all-features 2>&1 \| grep -c warning` | 0 | 0 | ✅ |
@@ -115,6 +115,6 @@ cargo nextest run --workspace --all-features
 
 ## Next Steps
 
-- **`retired-upstream` has no API key** (`secret=false`): retired-upstream uses session cookies, not a static API key. A follow-up could implement cookie-based auth extraction.
-- **`retired-upstream` and `retired-upstream` URLs contain `/login?` suffix**: These are redirect URLs from probe responses. Consider stripping the path suffix to return a cleaner base URL.
+- **`exampledownload` has no API key** (`secret=false`): exampledownload uses session cookies, not a static API key. A follow-up could implement cookie-based auth extraction.
+- **`examplemetrics` and `exampleindexer` URLs contain `/login?` suffix**: These are redirect URLs from probe responses. Consider stripping the path suffix to return a cleaner base URL.
 - **Only 2 of 6 SSH hosts** had recognized services: `controller` (7) and `node-b` (2). The remaining 4 hosts (`alien`, `mini`, etc.) were scanned but returned nothing — verify whether this is expected given their actual service inventory.

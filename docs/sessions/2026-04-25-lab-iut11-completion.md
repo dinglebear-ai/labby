@@ -239,7 +239,7 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M crates/lab-apis/src/extract/client.rs
  M crates/lab-apis/src/mcpregistry.rs
  M crates/lab-apis/src/mcpregistry/types.rs
- M crates/lab-apis/src/retired-upstream.rs
+ M crates/lab-apis/src/exampledownload.rs
  M crates/lab/Cargo.toml
  M crates/lab/src/acp.rs
  M crates/lab/src/acp/persistence.rs
@@ -319,8 +319,8 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M crates/lab/src/dispatch/node.rs
  M crates/lab/src/dispatch/node/send.rs
  M crates/lab/src/dispatch/paperless.rs
- M crates/lab/src/dispatch/retired-upstream.rs
- M crates/lab/src/dispatch/retired-upstream.rs
+ M crates/lab/src/dispatch/examplemedia.rs
+ M crates/lab/src/dispatch/examplemovies.rs
  M crates/lab/src/dispatch/unifi.rs
  M crates/lab/src/dispatch/upstream/pool.rs
  M crates/lab/src/dispatch/upstream/transport/websocket.rs
@@ -345,15 +345,15 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  D crates/lab/src/mcp/services/memos.rs
  M crates/lab/src/mcp/services/nodes.rs
  D crates/lab/src/mcp/services/openai.rs
- D crates/lab/src/mcp/services/retired-upstream.rs
+ D crates/lab/src/mcp/services/examplerequests.rs
  D crates/lab/src/mcp/services/paperless.rs
- D crates/lab/src/mcp/services/retired-upstream.rs
- D crates/lab/src/mcp/services/retired-upstream.rs
- D crates/lab/src/mcp/services/retired-upstream.rs
+ D crates/lab/src/mcp/services/examplemedia.rs
+ D crates/lab/src/mcp/services/exampleindexer.rs
+ D crates/lab/src/mcp/services/exampledownload.rs
  D crates/lab/src/mcp/services/qdrant.rs
- D crates/lab/src/mcp/services/retired-upstream.rs
- D crates/lab/src/mcp/services/retired-upstream.rs
- D crates/lab/src/mcp/services/retired-upstream.rs
+ D crates/lab/src/mcp/services/examplemovies.rs
+ D crates/lab/src/mcp/services/exampleusenet.rs
+ D crates/lab/src/mcp/services/exampleseries.rs
  D crates/lab/src/mcp/services/tei.rs
  D crates/lab/src/mcp/services/unifi.rs
  M crates/lab/src/node/enrollment/store.rs
@@ -402,14 +402,14 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M docs/coverage/mcpregistry.md
  M docs/coverage/memos.md
  M docs/coverage/paperless.md
- M docs/coverage/retired-upstream.md
- M docs/coverage/retired-upstream.md
+ M docs/coverage/examplemedia.md
+ M docs/coverage/exampledownload.md
  M docs/coverage/qdrant.md
- M docs/coverage/retired-upstream.md
- M docs/coverage/retired-upstream.md
- M docs/coverage/retired-upstream.md
+ M docs/coverage/examplemovies.md
+ M docs/coverage/exampleusenet.md
+ M docs/coverage/exampleseries.md
  M docs/coverage/tailscale.md
- M docs/coverage/retired-upstream.md
+ M docs/coverage/examplemetrics.md
  M docs/coverage/tei.md
  M docs/coverage/unifi.md
  M docs/coverage/unraid.md

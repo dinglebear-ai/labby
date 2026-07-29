@@ -770,8 +770,8 @@ controller = [
 ]
 
 services-all = [
-  "retired-upstream",
-  "retired-upstream",
+  "examplemovies",
+  "exampleseries",
   ...
 ]
 

@@ -13,14 +13,14 @@ working directory: /home/jmagar/workspace/lab
 
 ## User Request
 
-User invoked `/simplify` twice to audit recently changed code for reuse, quality, and efficiency; then pasted compiler warnings about dead `ACTIONS` imports / `dispatch` functions in `mcp/services/tailscale.rs` and `mcp/services/retired-upstream.rs` to be cleaned up.
+User invoked `/simplify` twice to audit recently changed code for reuse, quality, and efficiency; then pasted compiler warnings about dead `ACTIONS` imports / `dispatch` functions in `mcp/services/tailscale.rs` and `mcp/services/examplemetrics.rs` to be cleaned up.
 
 ## Session Overview
 
 - Consolidated dry-run handling across 14 CLI shims into a shared `print_dry_run` helper in `cli/helpers.rs` (net −56 lines).
 - Recovered from a `perl -i -0pe` corruption incident via `git fsck --dangling --unreachable` blob recovery after a `git checkout -- <file>` wiped staged work.
 - Confirmed `.gitignore`'s `proxies`/`proxies/` rules do not affect any tracked files.
-- Removed dead MCP bridge modules `mcp/services/tailscale.rs` and `mcp/services/retired-upstream.rs` (registry already routes directly through `dispatch::{tailscale,retired-upstream}::*`).
+- Removed dead MCP bridge modules `mcp/services/tailscale.rs` and `mcp/services/examplemetrics.rs` (registry already routes directly through `dispatch::{tailscale,examplemetrics}::*`).
 
 ## Sequence of Events
 
@@ -31,15 +31,15 @@ User invoked `/simplify` twice to audit recently changed code for reuse, quality
 5. Re-applied refactor; removed now-dead `#[allow(clippy::print_stdout)]` attributes.
 6. User question on `.gitignore proxies` entries — confirmed no tracked impact; entries redundant but harmless.
 7. Second `/simplify` pass after user committed midway (`9d1d355`).
-8. User pasted 4 warnings about dead code in `mcp/services/{tailscale,retired-upstream}.rs`.
-9. Confirmed no callers via grep; registry uses override arm pointing at `dispatch::{tailscale,retired-upstream}::*` directly.
+8. User pasted 4 warnings about dead code in `mcp/services/{tailscale,examplemetrics}.rs`.
+9. Confirmed no callers via grep; registry uses override arm pointing at `dispatch::{tailscale,examplemetrics}::*` directly.
 10. Deleted both bridge files and their `pub mod` declarations in `mcp/services.rs`.
 11. `cargo check --all-features` passed.
 
 ## Key Findings
 
-- `crates/lab/src/registry.rs:260-266,277-283` — tailscale and retired-upstream register via the override arm (`actions = dispatch::...::ACTIONS`, `dispatch = dispatch::...::dispatch`), bypassing `mcp::services::*`.
-- `crates/lab/src/mcp/services.rs:72-76` (before edit) — declared `pub mod tailscale;` / `pub mod retired-upstream;` but nothing imported them.
+- `crates/lab/src/registry.rs:260-266,277-283` — tailscale and examplemetrics register via the override arm (`actions = dispatch::...::ACTIONS`, `dispatch = dispatch::...::dispatch`), bypassing `mcp::services::*`.
+- `crates/lab/src/mcp/services.rs:72-76` (before edit) — declared `pub mod tailscale;` / `pub mod examplemetrics;` but nothing imported them.
 - `crates/lab/src/cli/helpers.rs` — already contained `print_dry_run` from user's staged work; initial duplicate addition was removed.
 - `.gitignore:23,92` — `proxies` and `proxies/` entries are both redundant; directory has 0 tracked files.
 
@@ -50,14 +50,14 @@ User invoked `/simplify` twice to audit recently changed code for reuse, quality
 
 ## Files Modified
 
-- `crates/lab/src/mcp/services.rs` — removed `tailscale`/`retired-upstream` module declarations.
+- `crates/lab/src/mcp/services.rs` — removed `tailscale`/`examplemetrics` module declarations.
 - `crates/lab/src/mcp/services/tailscale.rs` — deleted (dead bridge).
-- `crates/lab/src/mcp/services/retired-upstream.rs` — deleted (dead bridge).
+- `crates/lab/src/mcp/services/examplemetrics.rs` — deleted (dead bridge).
 - (Previously, in commit `9d1d355`): 14 CLI shims refactored to use `print_dry_run`, plus `cli/helpers.rs` helper.
 
 ## Commands Executed
 
-- `rm crates/lab/src/mcp/services/{tailscale,retired-upstream}.rs`
+- `rm crates/lab/src/mcp/services/{tailscale,examplemetrics}.rs`
 - `rtk cargo check --all-features` → `cargo build (1 crates compiled)` ✓
 - `git fsck --dangling --unreachable` (during earlier recovery)
 
@@ -68,20 +68,20 @@ User invoked `/simplify` twice to audit recently changed code for reuse, quality
 
 ## Behavior Changes (Before/After)
 
-- **Before**: `cargo build --all-features` emitted 4 dead-code warnings for `mcp/services/{tailscale,retired-upstream}.rs`.
+- **Before**: `cargo build --all-features` emitted 4 dead-code warnings for `mcp/services/{tailscale,examplemetrics}.rs`.
 - **After**: Warnings gone; no functional change (registry already bypassed these modules).
 
 ## Verification Evidence
 
 | command | expected | actual | status |
 |---------|----------|--------|--------|
-| `cargo check --all-features` | clean build, no tailscale/retired-upstream dead-code warnings | `cargo build (1 crates compiled)` | ✓ |
-| `grep mcp::services::(tailscale\|retired-upstream)` in crates/ | no callers | 0 matches | ✓ |
+| `cargo check --all-features` | clean build, no tailscale/examplemetrics dead-code warnings | `cargo build (1 crates compiled)` | ✓ |
+| `grep mcp::services::(tailscale\|examplemetrics)` in crates/ | no callers | 0 matches | ✓ |
 
 ## Risks and Rollback
 
 - Risk: low. Deleted modules had no in-tree callers; registry delegation unchanged.
-- Rollback: `git restore --source=HEAD -- crates/lab/src/mcp/services.rs crates/lab/src/mcp/services/tailscale.rs crates/lab/src/mcp/services/retired-upstream.rs`.
+- Rollback: `git restore --source=HEAD -- crates/lab/src/mcp/services.rs crates/lab/src/mcp/services/tailscale.rs crates/lab/src/mcp/services/examplemetrics.rs`.
 
 ## Next Steps
 

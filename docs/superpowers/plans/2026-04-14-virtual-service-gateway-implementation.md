@@ -82,7 +82,7 @@ async fn configured_service_appears_in_list_before_virtual_server_enablement() {
     }).await;
 
     let servers = manager.list().await.expect("list");
-    assert!(servers.iter().any(|server| server.id == "retired-upstream"));
+    assert!(servers.iter().any(|server| server.id == "examplemedia"));
 }
 
 #[tokio::test]
@@ -227,7 +227,7 @@ fn supported_services_lists_metadata_backed_lab_gateways() {
 }
 
 #[tokio::test]
-async fn supported_services_payload_includes_retired-upstream_when_feature_enabled() {
+async fn supported_services_payload_includes_examplemedia_when_feature_enabled() {
     let manager = test_manager();
     let value = dispatch_with_manager(&manager, "gateway.supported_services", json!({}))
         .await
@@ -243,7 +243,7 @@ Run:
 
 ```bash
 cargo test -p lab supported_services_lists_metadata_backed_lab_gateways -- --exact
-cargo test -p lab supported_services_payload_includes_retired-upstream_when_feature_enabled -- --exact
+cargo test -p lab supported_services_payload_includes_examplemedia_when_feature_enabled -- --exact
 ```
 
 Expected: FAIL because the action and payload do not exist.
@@ -293,7 +293,7 @@ Run:
 
 ```bash
 cargo test -p lab supported_services_lists_metadata_backed_lab_gateways -- --exact
-cargo test -p lab supported_services_payload_includes_retired-upstream_when_feature_enabled -- --exact
+cargo test -p lab supported_services_payload_includes_examplemedia_when_feature_enabled -- --exact
 ```
 
 Expected: PASS.
@@ -325,10 +325,10 @@ async fn setting_service_config_writes_canonical_env_backed_fields() {
         &manager,
         "gateway.service_config.set",
         json!({
-            "service": "retired-upstream",
+            "service": "examplemedia",
             "values": {
-                "RETIRED_UPSTREAM_URL": "http://127.0.0.1:32400",
-                "RETIRED_UPSTREAM_TOKEN": "token"
+                "EXAMPLEMEDIA_URL": "http://127.0.0.1:32400",
+                "EXAMPLEMEDIA_TOKEN": "token"
             }
         }),
     ).await.expect("set service config");
@@ -1020,7 +1020,7 @@ export function LabServicePicker({ services, onSelect }: Props) {
 
 - [ ] **Step 4: Create the service config form**
 
-In `service-config-form.tsx`, render fields from metadata rather than one-off handcoded Retired upstream-only or Unraid-only logic.
+In `service-config-form.tsx`, render fields from metadata rather than one-off handcoded ExampleMedia-only or Unraid-only logic.
 
 - [ ] **Step 5: Replace `gateway-form-dialog.tsx`**
 
@@ -1173,12 +1173,12 @@ Verify this exact flow:
 
 1. Open Add Server.
 2. Select `Lab Gateways`.
-3. Choose Retired upstream.
+3. Choose ExampleMedia.
 4. Save canonical config.
-5. Confirm Retired upstream does not appear in the active server list yet.
-6. Confirm Retired upstream appears in the server list as configured/disabled.
-7. Enable Retired upstream as a server.
-8. Confirm the same Retired upstream row now reads enabled/active.
+5. Confirm ExampleMedia does not appear in the active server list yet.
+6. Confirm ExampleMedia appears in the server list as configured/disabled.
+7. Enable ExampleMedia as a server.
+8. Confirm the same ExampleMedia row now reads enabled/active.
 9. Toggle `MCP` off and confirm it is not normally discoverable.
 10. Toggle `MCP` on, restrict actions, and confirm denied actions return `policy_denied`.
 11. Confirm list filters can separate configured, enabled, disabled, connected, and disconnected rows.

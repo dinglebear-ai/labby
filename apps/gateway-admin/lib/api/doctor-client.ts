@@ -64,18 +64,18 @@ const MOCK_DOCTOR_REPORT: DoctorReport = {
       elapsed_ms: 4,
     },
     {
-      service: 'gateway_alpha',
+      service: 'unifi',
       category: 'service',
       severity: 'ok',
-      message: 'Mock Gateway alpha configuration is complete.',
+      message: 'Mock UniFi configuration is complete.',
       elapsed_ms: 7,
     },
     {
-      service: 'hidden_upstream',
+      service: 'apprise',
       category: 'service',
       severity: 'warn',
-      message: 'Mock Hidden upstream credentials are not configured.',
-      hint: 'Add HIDDEN_UPSTREAM_URL and HIDDEN_UPSTREAM_API_KEY before using live mode.',
+      message: 'Mock Apprise credentials are not configured.',
+      hint: 'Add APPRISE_URL and APPRISE_API_KEY before using live mode.',
       elapsed_ms: 2,
     },
   ],
@@ -117,8 +117,8 @@ export const doctorApi = {
       return Promise.resolve({
         service,
         category: 'service',
-        severity: service === 'hidden_upstream' || service === 'gateway_beta' ? 'warn' : 'ok',
-        message: service === 'hidden_upstream' || service === 'gateway_beta'
+        severity: service === 'apprise' ? 'warn' : 'ok',
+        message: service === 'apprise'
           ? `Mock ${service} credentials are incomplete.`
           : `Mock ${service} probe passed.`,
         elapsed_ms: 5,

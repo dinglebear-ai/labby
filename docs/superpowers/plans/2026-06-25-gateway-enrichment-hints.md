@@ -291,13 +291,13 @@ fn code_mode_description_renders_approved_upstream_hints() {
             hint: Some("search repositories, issues, pull requests, and code".to_string()),
         },
         CodeModeUpstreamDescription {
-            name: "retired-upstream".to_string(),
+            name: "exampleclient".to_string(),
             hint: None,
         },
     ]);
 
     assert!(description.contains("- `github` -- search repositories, issues, pull requests, and code"));
-    assert!(description.contains("- `retired-upstream`"));
+    assert!(description.contains("- `exampleclient`"));
 }
 ```
 
@@ -1040,7 +1040,7 @@ For `approve_pending_import`, because it inserts disabled upstreams, generate fr
 
 Add tests:
 - Adding `github` returns a suggestion for `github`.
-- Existing upstream `retired-upstream` is not included in the add response suggestion.
+- Existing upstream `exampleclient` is not included in the add response suggestion.
 - Approving pending `paperless` returns a suggestion/status only for `paperless`.
 - Enrichment failure does not fail add/import approve.
 - A slow deterministic suggestion stub returns the successful add/import response plus `status = "provider_unavailable"` or `status = "metadata_insufficient"` within the timeout.

@@ -17,7 +17,7 @@ Also answered a tooling question mid-session: `.beads/` (Beads issue tracker bac
 | Task 3 | Added `readme`/`keywords`/`categories` to both crate manifests (6 warnings removed) |
 | Task 4 | Backtick-fixed 23 `doc_markdown` product names across 15 files |
 | Task 5 | Fixed `core/http.rs`: `# Panics` doc, startup `#[allow(expect_used)]`, `+ Sync` bound on `post_json` |
-| Task 6 | Fixed `retired-upstream.rs`: `u64::try_from(...).unwrap_or(u64::MAX)` for latency; widened `ServiceClient` trait to `&'static str` |
+| Task 6 | Fixed `examplemovies.rs`: `u64::try_from(...).unwrap_or(u64::MAX)` for latency; widened `ServiceClient` trait to `&'static str` |
 | Task 7 | Rewrote `cli/install.rs` and `cli/completions.rs`: dropped `Result` wrappers, took args by reference |
 | Task 8 | Added `#![allow(clippy::expect_used, clippy::unwrap_used)]` to both integration test files |
 | Task 9 | Scattered fixes: `const fn`, `match_same_arms`, `collapsible_if`, `struct_excessive_bools`, `used_underscore_binding`, `or_fun_call`, `double_must_use`, `too_long_first_doc_paragraph`, `unnecessary_wraps` in `tui/app.rs`/`mcp/meta.rs`/`cli/plugins.rs` |
@@ -28,11 +28,11 @@ Also answered a tooling question mid-session: `.beads/` (Beads issue tracker bac
 
 ## Key Findings
 
-- **378 warnings baseline** (commit `2bbe618`); 265 from `missing_docs` on retired-upstream scaffold fields, 52 from `unused_async` on stub methods — 70% noise removed with 2 config lines.
+- **378 warnings baseline** (commit `2bbe618`); 265 from `missing_docs` on examplesuite scaffold fields, 52 from `unused_async` on stub methods — 70% noise removed with 2 config lines.
 - **`ServiceClient` trait** (`crates/lab-apis/src/core/traits.rs:15,20`) returned `&str` but impls returning `&'static str` are legitimate `unnecessary_literal_bound` fixes — trait signature had to be widened to `&'static str` since Rust requires exact match.
 - **`post_json<B>` future** (`crates/lab-apis/src/core/http.rs:85`) was non-`Send` because `&B` captured across `.await` requires `B: Sync`. Adding `+ Sync` bound is zero-cost at call sites (all pass owned `Serialize` structs).
-- **`too_long_first_doc_paragraph`** at `retired-upstream/types.rs:53` traced to `retired-upstream/types/filesystem.rs:1-4` — clippy attributes the module's `//!` doc to its `mod` declaration site.
-- **`cargo fmt`** reformatted 6 files not touched by the plan (`doctor.rs`, `serve.rs`, `mcp/services/{extract,retired-upstream}.rs`, `retired-upstream/client/system.rs`, `api/router.rs`) — pre-existing style drift, folded into the same commit.
+- **`too_long_first_doc_paragraph`** at `examplemovies/types.rs:53` traced to `examplemovies/types/filesystem.rs:1-4` — clippy attributes the module's `//!` doc to its `mod` declaration site.
+- **`cargo fmt`** reformatted 6 files not touched by the plan (`doctor.rs`, `serve.rs`, `mcp/services/{extract,examplemovies}.rs`, `examplemovies/client/system.rs`, `api/router.rs`) — pre-existing style drift, folded into the same commit.
 - **`.beads/`** is a Beads (git-native issue tracker, `bd` CLI, Dolt-backed) instance; **`.lavra/`** is the Lavra workflow/memory system with `knowledge.jsonl` + `recall.sh`.
 
 ---
@@ -44,7 +44,7 @@ Also answered a tooling question mid-session: `.beads/` (Beads issue tracker bac
 | Relax `missing_docs` workspace-wide | 265 warnings on scaffold fields that will be rewritten per-service; re-enable in a dedicated docs pass |
 | Relax `unused_async` workspace-wide | 52 stubs become legitimately async once `self.http.*` calls land; self-healing |
 | `#[allow(expect_used)]` item-level on `HttpClient::new` | Startup TLS failure is unrecoverable — panicking at init is better than silently failing on first request |
-| `#[allow(struct_excessive_bools)]` on `Notification`/`SystemStatus` | DTOs mirror Retired upstream's API shape 1:1; refactoring would break serde compat |
+| `#[allow(struct_excessive_bools)]` on `Notification`/`SystemStatus` | DTOs mirror ExampleMovies's API shape 1:1; refactoring would break serde compat |
 | File-level `#![allow]` in test files only | Integration tests should fail loud; workspace lint too broad here |
 | Single batched commit vs 9 per-task commits | User explicitly requested "batch the whole plan" |
 | No crate-level `#![allow]` added anywhere | Preserves future warning visibility; item-level only |
@@ -61,29 +61,29 @@ Also answered a tooling question mid-session: `.beads/` (Beads issue tracker bac
 | `crates/lab-apis/src/core/traits.rs` | `fn name/service_type` return `&'static str` |
 | `crates/lab-apis/src/core/http.rs` | `# Panics` doc, `#[allow(expect_used)]`, `B: Serialize + Sync` |
 | `crates/lab-apis/src/core/auth.rs` | Backtick `Memos`, `ByteStash` |
-| `crates/lab-apis/src/core/plugin.rs` | Backtick `Retired upstream`, `retired-upstream`, `Memos`, `Linkding`, `ByteStash`, `UniFi`, `OpenAI` |
-| `crates/lab-apis/src/retired-upstream.rs` | `u64::try_from(...).unwrap_or(u64::MAX)`; `&'static str` impl |
-| `crates/lab-apis/src/retired-upstream/client/download_clients.rs` | Backtick `Retired upstream`, `retired-upstream` |
-| `crates/lab-apis/src/retired-upstream/types/filesystem.rs` | Split `//!` first paragraph; backtick `OpenAPI` |
-| `crates/lab-apis/src/retired-upstream/types/import_list.rs` | Backtick `IMDb` |
-| `crates/lab-apis/src/retired-upstream/types/movie.rs` | Backtick `IMDb` |
-| `crates/lab-apis/src/retired-upstream/types/queue.rs` | Backtick `OpenAPI` |
-| `crates/lab-apis/src/retired-upstream/types.rs` | Backtick `OpenAPI` |
-| `crates/lab-apis/src/retired-upstream/types/command.rs` | Backtick `OpenAPI` |
-| `crates/lab-apis/src/retired-upstream/types/download_client.rs` | Backtick `Retired upstream`, `retired-upstream` |
-| `crates/lab-apis/src/retired-upstream/types/indexer.rs` | Backtick `OpenAPI` |
-| `crates/lab-apis/src/retired-upstream/types/notification.rs` | Backtick `OpenAPI`; `#[allow(struct_excessive_bools)]` |
-| `crates/lab-apis/src/retired-upstream/types/protocol.rs` | Backtick `OpenAPI`, `BitTorrent` |
-| `crates/lab-apis/src/retired-upstream/types/quality.rs` | Backtick `OpenAPI` |
-| `crates/lab-apis/src/retired-upstream/types/release.rs` | Backtick `OpenAPI` |
-| `crates/lab-apis/src/retired-upstream/types/system.rs` | `#[allow(struct_excessive_bools)]` |
-| `crates/lab-apis/src/retired-upstream/types/tag.rs` | Backtick `OpenAPI` |
+| `crates/lab-apis/src/core/plugin.rs` | Backtick `ExampleUsenet`, `exampledownload`, `Memos`, `Linkding`, `ByteStash`, `UniFi`, `OpenAI` |
+| `crates/lab-apis/src/examplemovies.rs` | `u64::try_from(...).unwrap_or(u64::MAX)`; `&'static str` impl |
+| `crates/lab-apis/src/examplemovies/client/download_clients.rs` | Backtick `ExampleUsenet`, `exampledownload` |
+| `crates/lab-apis/src/examplemovies/types/filesystem.rs` | Split `//!` first paragraph; backtick `OpenAPI` |
+| `crates/lab-apis/src/examplemovies/types/import_list.rs` | Backtick `IMDb` |
+| `crates/lab-apis/src/examplemovies/types/movie.rs` | Backtick `IMDb` |
+| `crates/lab-apis/src/examplemovies/types/queue.rs` | Backtick `OpenAPI` |
+| `crates/lab-apis/src/examplesuite/types.rs` | Backtick `OpenAPI` |
+| `crates/lab-apis/src/examplesuite/types/command.rs` | Backtick `OpenAPI` |
+| `crates/lab-apis/src/examplesuite/types/download_client.rs` | Backtick `ExampleUsenet`, `exampledownload` |
+| `crates/lab-apis/src/examplesuite/types/indexer.rs` | Backtick `OpenAPI` |
+| `crates/lab-apis/src/examplesuite/types/notification.rs` | Backtick `OpenAPI`; `#[allow(struct_excessive_bools)]` |
+| `crates/lab-apis/src/examplesuite/types/protocol.rs` | Backtick `OpenAPI`, `BitTorrent` |
+| `crates/lab-apis/src/examplesuite/types/quality.rs` | Backtick `OpenAPI` |
+| `crates/lab-apis/src/examplesuite/types/release.rs` | Backtick `OpenAPI` |
+| `crates/lab-apis/src/examplesuite/types/system.rs` | `#[allow(struct_excessive_bools)]` |
+| `crates/lab-apis/src/examplesuite/types/tag.rs` | Backtick `OpenAPI` |
 | `crates/lab-apis/src/extract/transport.rs` | Rename `_path`/`_dir` → `path`/`dir` |
 | `crates/lab-apis/src/extract/types.rs` | `const fn path()`; `ok_or` → `ok_or_else` |
 | `crates/lab-apis/src/openai/client.rs` | Backtick `OpenAI` |
 | `crates/lab-apis/src/openai/types.rs` | Backtick `OpenAI` |
 | `crates/lab-apis/tests/http_client.rs` | `#![allow(clippy::expect_used, clippy::unwrap_used)]` |
-| `crates/lab-apis/tests/retired-upstream_health.rs` | `#![allow(clippy::expect_used, clippy::unwrap_used)]` |
+| `crates/lab-apis/tests/examplemovies_health.rs` | `#![allow(clippy::expect_used, clippy::unwrap_used)]` |
 | `crates/lab/src/api/error.rs` | Merge duplicate match arms; `const fn kind()` |
 | `crates/lab/src/api/router.rs` | Drop redundant `#[must_use]` on `build_router` |
 | `crates/lab/src/cli.rs` | Wrap stub returns in `Ok(...)` |
@@ -158,7 +158,7 @@ No vector/embedding collections used in this session.
 
 - **Low risk.** All changes are lint suppressions, doc edits, or trivial refactors. No business logic altered.
 - **`B: Sync` on `post_json`** — only risk is a call site passing a non-`Sync` body type. All current call sites pass owned serde structs which are trivially `Sync`. If a future call site uses a non-`Sync` body, the compiler will catch it.
-- **`ServiceClient` trait widened to `&'static str`** — only one impl (`Retired upstreamClient`). All future impls returning string literals will satisfy this automatically.
+- **`ServiceClient` trait widened to `&'static str`** — only one impl (`ExampleMoviesClient`). All future impls returning string literals will satisfy this automatically.
 - **Rollback:** `git revert 1c8a6f4` restores all 44 files in one step.
 
 ---

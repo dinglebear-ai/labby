@@ -23,7 +23,7 @@ Fix a misleading probe error message shown for the qdrant virtual server, then e
 - Polished gateway list view: removed status text labels, simplified warning badge, updated lab server endpoint display
 - Documented a comprehensive gateway detail page redesign spec and created 9 tracking beads
 - Identified and analyzed the virtual server architecture as fundamentally broken; designed the replacement (in-process MCP peers)
-- Fixed `~/.labby/config.toml`: removed recursive retired-upstream upstream, fixed github-chat missing args
+- Fixed `~/.labby/config.toml`: removed recursive examplemedia upstream, fixed github-chat missing args
 - Killed 26 orphaned lab processes left from the infinite recursion bug
 
 ---
@@ -41,9 +41,9 @@ Fix a misleading probe error message shown for the qdrant virtual server, then e
 9. Discussed in-process MCP transport as a replacement for the virtual server hack
 10. User directed: all services should be first-class in-process MCP peers, no virtual server layer
 11. Created 9 beads covering all UI changes and the architecture refactor
-12. User shared server logs showing infinite recursion (lab spawning itself for retired-upstream gateway) and 20+ orphaned processes
-13. Identified two bugs in logs: infinite recursion (retired-upstream upstream), github-chat empty args, discovery running 3-4x
-14. Removed retired-upstream upstream from `~/.labby/config.toml`, fixed github-chat args to `["github-chat-mcp"]`
+12. User shared server logs showing infinite recursion (lab spawning itself for examplemedia gateway) and 20+ orphaned processes
+13. Identified two bugs in logs: infinite recursion (examplemedia upstream), github-chat empty args, discovery running 3-4x
+14. Removed examplemedia upstream from `~/.labby/config.toml`, fixed github-chat args to `["github-chat-mcp"]`
 15. Force-killed all 26 orphaned `target/debug/lab` processes
 
 ---
@@ -53,7 +53,7 @@ Fix a misleading probe error message shown for the qdrant virtual server, then e
 - `gateway-adapter.ts:297` — `humanizeProbeError` was called on ALL `view.warnings` in `normalizeServerView`, including `lab_service` warnings whose raw error strings contain `url (...)` from reqwest, triggering the wrong MCP-specific message
 - `manager.rs:1744-1747` — `discovered_resource_count`, `exposed_resource_count`, `discovered_prompt_count`, `exposed_prompt_count` are hardcoded to `0` for all virtual servers
 - `manager.rs:1718-1719` — virtual server tool counts read from `virtual_server_tool_registry()` (local ToolRegistry), not via MCP discovery
-- `~/.labby/config.toml:68-71` — retired-upstream upstream was configured as `command = "lab" args = ["serve", "--services", "retired-upstream", "mcp", "--stdio"]`, causing lab to spawn itself recursively; 20 generations spawned before detection
+- `~/.labby/config.toml:68-71` — examplemedia upstream was configured as `command = "lab" args = ["serve", "--services", "examplemovies", "mcp", "--stdio"]`, causing lab to spawn itself recursively; 20 generations spawned before detection
 - `~/.labby/config.toml:62-64` — github-chat had `args = []`, meaning `uvx` ran with no arguments, printed help text to stdout, causing serde parse failure on the MCP initialize response
 - `pool.rs` — custom upstreams run full MCP handshake (initialize + list_tools + list_resources + list_prompts); virtual servers do not
 - Discovery running 3-4x per server in logs — likely a reprobe timer stacking bug, not investigated this session
@@ -66,7 +66,7 @@ Fix a misleading probe error message shown for the qdrant virtual server, then e
 - **`extractReqwestUrl` shared helper** — both humanizers need the `url (...)` regex; extracting it eliminates duplication and makes the difference in message explicit
 - **Branch in `normalizeServerView` on `view.source === 'lab_service'`** — `source` is already available, clean discriminator, no new fields needed
 - **In-process MCP peers over self-probing** — for virtual servers, static introspection (reading from the registry) was considered but rejected in favor of full in-process MCP transport so all lifecycle management (circuit breaker, reconnect, health) applies uniformly
-- **Remove retired-upstream upstream entirely** — rather than add self-detection logic, just remove the config entry since the virtual server already covers retired-upstream
+- **Remove examplemedia upstream entirely** — rather than add self-detection logic, just remove the config entry since the virtual server already covers examplemedia
 
 ---
 
@@ -79,7 +79,7 @@ Fix a misleading probe error message shown for the qdrant virtual server, then e
 | `apps/gateway-admin/components/gateway/warnings-pill.tsx` | Changed `{N} issue(s)` to `{N}` |
 | `apps/gateway-admin/lib/api/gateway-mobile.ts` | Changed lab service endpoint preview from `"<name> virtual server"` to `` `lab serve mcp --stdio --services ${gateway.name}` `` |
 | `apps/gateway-admin/docs/gateway-detail-redesign.md` | New file — comprehensive redesign spec for the gateway detail page |
-| `~/.labby/config.toml` | Removed retired-upstream upstream block; fixed github-chat `args: [] → ["github-chat-mcp"]` |
+| `~/.labby/config.toml` | Removed examplemedia upstream block; fixed github-chat `args: [] → ["github-chat-mcp"]` |
 
 ---
 
@@ -104,10 +104,10 @@ git worktree list
 ## Errors Encountered
 
 **Infinite recursion — lab spawning itself**
-- Root cause: `config.toml` had `[[upstream]] name = "retired-upstream" command = "lab" args = ["serve", "--services", "retired-upstream", "mcp", "--stdio"]`
-- Each lab instance read the config and spawned another lab instance for the retired-upstream gateway
-- 20 `lab serve --services retired-upstream mcp --stdio` processes accumulated
-- Resolution: removed the retired-upstream upstream block from config; the virtual server already serves retired-upstream
+- Root cause: `config.toml` had `[[upstream]] name = "examplemedia" command = "lab" args = ["serve", "--services", "examplemovies", "mcp", "--stdio"]`
+- Each lab instance read the config and spawned another lab instance for the examplemedia gateway
+- 20 `lab serve --services examplemovies mcp --stdio` processes accumulated
+- Resolution: removed the examplemedia upstream block from config; the virtual server already serves examplemedia
 
 **github-chat serde error on initialize**
 - Root cause: `args = []` caused `uvx` to run with no target, printing help text to stdout instead of MCP JSON
@@ -124,10 +124,10 @@ git worktree list
 | Area | Before | After |
 |------|--------|-------|
 | Lab service health error message | "Could not connect to http://127.0.0.1:53333. The upstream did not complete the MCP initialize request." | "Could not reach qdrant at http://127.0.0.1:53333/healthz. Verify the service is running and the URL is correct." |
-| Gateway list row status | `● HEALTHY retired-upstream` / `● DISCONNECTED github-chat` | `● retired-upstream` / `● github-chat` (dot only, label in title/aria-label) |
+| Gateway list row status | `● HEALTHY examplemedia` / `● DISCONNECTED github-chat` | `● examplemedia` / `● github-chat` (dot only, label in title/aria-label) |
 | Warnings badge | `⚠ 1 issue` / `⚠ 2 issues` | `⚠ 1` / `⚠ 2` |
 | Lab virtual server endpoint text | `apprise virtual server` | `lab serve mcp --stdio --services apprise` |
-| retired-upstream upstream on startup | Spawns recursive lab child processes, 20+ orphans | Removed; virtual server handles retired-upstream natively |
+| examplemedia upstream on startup | Spawns recursive lab child processes, 20+ orphans | Removed; virtual server handles examplemedia natively |
 | github-chat on startup | `uvx` with no args → serde error, discovery fails | `uvx github-chat-mcp` → proper MCP handshake |
 
 ---
@@ -135,7 +135,7 @@ git worktree list
 ## Risks and Rollback
 
 - `gateway-adapter.ts` change: if a `lab_service` warning message contains text that `humanizeLabServiceHealthError` doesn't handle, it falls back to `return message` (the raw string) — same as before, no regression
-- `config.toml` changes are outside the repo; rollback is manual re-addition of the retired-upstream upstream block and clearing github-chat args
+- `config.toml` changes are outside the repo; rollback is manual re-addition of the examplemedia upstream block and clearing github-chat args
 
 ---
 

@@ -13,7 +13,7 @@ Large multi-service expansion session. Primary deliverables:
 - Comprehensive UniFi dispatch implementation (15 submodules)
 - Bearer token authentication added to the HTTP API router
 - New `docs/RMCP.md` documenting MCP transport/connection protocol
-- Expanded Unraid, Gotify, Retired upstream, and Retired upstream dispatch submodules
+- Expanded Unraid, Gotify, ExampleMovies, and ExampleUsenet dispatch submodules
 - Major README expansion with full service coverage and API reference
 - Version bumped from `0.2.2` → `0.3.0` (minor, new features)
 
@@ -60,8 +60,8 @@ Large multi-service expansion session. Primary deliverables:
 | `.env.example` | Updated env var documentation |
 | `crates/lab-apis/src/core/http.rs` | HTTP client updates |
 | `crates/lab-apis/src/gotify.*` | Gotify client updates |
-| `crates/lab-apis/src/retired-upstream/client/*` | Retired upstream client updates (commands, download_clients, movies, queue) |
-| `crates/lab-apis/src/retired-upstream/client.rs` | Retired upstream client updates |
+| `crates/lab-apis/src/examplemovies/client/*` | ExampleMovies client updates (commands, download_clients, movies, queue) |
+| `crates/lab-apis/src/exampleusenet/client.rs` | ExampleUsenet client updates |
 | `crates/lab-apis/src/unifi/client.rs` | UniFi client additions |
 | `crates/lab-apis/src/unraid.*` | Unraid client expansion |
 | `crates/lab-apis/tests/http_client.rs` | HTTP client test updates |
@@ -70,10 +70,10 @@ Large multi-service expansion session. Primary deliverables:
 | `crates/lab/src/api/services/*.rs` | All 20 service route modules updated |
 | `crates/lab/src/api/error.rs` | API error type updates |
 | `crates/lab/src/api/state.rs` | AppState updates |
-| `crates/lab/src/cli/*.rs` | CLI command updates (bytestash, gotify, health, helpers, retired-upstream, retired-upstream, serve, tei, unifi, unraid) |
+| `crates/lab/src/cli/*.rs` | CLI command updates (bytestash, gotify, health, helpers, examplemedia, exampleusenet, serve, tei, unifi, unraid) |
 | `crates/lab/src/dispatch/gotify/*` | Gotify dispatch (client, dispatch, params) |
-| `crates/lab/src/dispatch/retired-upstream/*` | Retired upstream dispatch (calendar, dispatch, history) |
-| `crates/lab/src/dispatch/retired-upstream/*` | Retired upstream dispatch (catalog, dispatch, params) |
+| `crates/lab/src/dispatch/examplemovies/*` | ExampleMovies dispatch (calendar, dispatch, history) |
+| `crates/lab/src/dispatch/exampleusenet/*` | ExampleUsenet dispatch (catalog, dispatch, params) |
 | `crates/lab/src/dispatch/unifi/*` | UniFi dispatch — 15 submodules (new) |
 | `crates/lab/src/dispatch/unraid/*` | Unraid dispatch (client, dispatch) |
 | `crates/lab/src/mcp/registry.rs` | MCP tool registry updated |
@@ -86,7 +86,7 @@ Large multi-service expansion session. Primary deliverables:
 | `docs/MCP.md` | MCP surface docs updated |
 | `docs/README.md` | Docs index updated |
 | `docs/TESTING.md` | Testing guide updated |
-| `docs/coverage/*.md` | Coverage docs for gotify, retired-upstream, retired-upstream |
+| `docs/coverage/*.md` | Coverage docs for gotify, examplemovies, exampleusenet |
 
 ---
 

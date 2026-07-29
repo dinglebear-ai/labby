@@ -28,7 +28,7 @@ Implemented spec-conformant MCP response envelopes for the `lab` Rust homelab CL
 
 - `crates/lab/src/mcp/envelope.rs` had `ToolEnvelope<T>` + `ToolError` imported in **29 files** — full replacement would have broken the HTTP API layer.
 - `crates/lab/src/cli/serve.rs` uses `rmcp` (not raw JSON-lines stdio) — the plan's description of lines 97-103 was based on an earlier version of the file.
-- `crates/lab/src/mcp/services/retired-upstream.rs` already used `ToolError::UnknownAction` (not `anyhow::bail!`) — plan's Task 4 assumption was stale.
+- `crates/lab/src/mcp/services/examplemovies.rs` already used `ToolError::UnknownAction` (not `anyhow::bail!`) — plan's Task 4 assumption was stale.
 - The `From<DispatchError> for anyhow::Error` explicit impl **conflicts** with anyhow's blanket impl — removed; `DispatchError: std::error::Error` means anyhow handles it automatically.
 - `lab` is a **binary-only** crate (no `lib.rs`) — integration tests in `tests/` cannot import from it; envelope wire tests added as unit tests inside `envelope.rs` instead.
 
@@ -39,7 +39,7 @@ Implemented spec-conformant MCP response envelopes for the `lab` Rust homelab CL
 | Decision | Rationale |
 |----------|-----------|
 | Add builder fns alongside `ToolError` (non-breaking) | 29 files import `ToolError`; HTTP API `IntoResponse` depends on it. Removing it would be a large separate refactor. |
-| `extract_error_info` with two fallback paths | Allows `DispatchError` (new, structured) and serialized `ToolError` (existing retired-upstream path) to both produce correct envelopes without changing retired-upstream's dispatcher. |
+| `extract_error_info` with two fallback paths | Allows `DispatchError` (new, structured) and serialized `ToolError` (existing examplemovies path) to both produce correct envelopes without changing examplemovies's dispatcher. |
 | `static_kind()` mapper instead of `Box::leak` | `Box::leak` would accumulate memory on every error. A static match covers all canonical kind strings safely. |
 | Unit tests in `envelope.rs` (not `tests/`) | Binary-only crate; integration tests can't `use lab::...`. Inline unit tests work without a `lib.rs`. |
 | `&Value` signatures on `build_success` / `build_error_extra` | Clippy `needless_pass_by_value` — functions only read these via serde; ownership not needed. |
@@ -82,10 +82,10 @@ git push --set-upstream origin feat/lab-operational
 
 | Scenario | Before | After |
 |----------|--------|-------|
-| Successful MCP tool call | `"The Matrix"` (raw JSON value) | `{"ok":true,"service":"retired-upstream","action":"movie.search","data":"The Matrix"}` |
-| Unknown action error | `{"kind":"unknown_action","message":"...","valid":[...]}` | `{"ok":false,"service":"retired-upstream","action":"bad.act","error":{"kind":"unknown_action","message":"...","valid":[...]}}` |
-| Auth failure (no env vars) | `{"kind":"auth_failed","message":"..."}` | `{"ok":false,"service":"retired-upstream","action":"movie.list","error":{"kind":"auth_failed","message":"..."}}` |
-| Internal error | `{"kind":"internal_error","message":"..."}` | `{"ok":false,"service":"retired-upstream","action":"...","error":{"kind":"internal_error","message":"..."}}` |
+| Successful MCP tool call | `"The Matrix"` (raw JSON value) | `{"ok":true,"service":"examplemovies","action":"movie.search","data":"The Matrix"}` |
+| Unknown action error | `{"kind":"unknown_action","message":"...","valid":[...]}` | `{"ok":false,"service":"examplemovies","action":"bad.act","error":{"kind":"unknown_action","message":"...","valid":[...]}}` |
+| Auth failure (no env vars) | `{"kind":"auth_failed","message":"..."}` | `{"ok":false,"service":"examplemovies","action":"movie.list","error":{"kind":"auth_failed","message":"..."}}` |
+| Internal error | `{"kind":"internal_error","message":"..."}` | `{"ok":false,"service":"examplemovies","action":"...","error":{"kind":"internal_error","message":"..."}}` |
 
 ---
 
@@ -96,8 +96,8 @@ git push --set-upstream origin feat/lab-operational
 | `cargo check -p lab` | 0 errors | 0 errors | ✅ |
 | `cargo clippy --workspace --all-features -- -D warnings` | No issues | No issues | ✅ |
 | `cargo test --workspace --all-features` | all pass | 29 passed | ✅ |
-| `build_success("retired-upstream","movie.list",&json!([]))["ok"]` | `true` | `true` | ✅ |
-| `build_error("retired-upstream","x","missing_param","")["ok"]` | `false` | `false` | ✅ |
+| `build_success("examplemovies","movie.list",&json!([]))["ok"]` | `true` | `true` | ✅ |
+| `build_error("examplemovies","x","missing_param","")["ok"]` | `false` | `false` | ✅ |
 
 ---
 
@@ -110,7 +110,7 @@ None — no vector DB or embedding operations in this session.
 ## Risks and Rollback
 
 - **Risk:** `extract_error_info`'s `static_kind()` falls back to `"internal_error"` for any kind string not in the match table. Unknown kinds lose their specificity. Acceptable until all dispatchers use `DispatchError` directly.
-- **Risk:** `ToolError`-based errors from retired-upstream lose `valid`/`param`/`hint` only if they aren't present in the serialized JSON — currently they are preserved via the JSON parse path.
+- **Risk:** `ToolError`-based errors from examplemovies lose `valid`/`param`/`hint` only if they aren't present in the serialized JSON — currently they are preserved via the JSON parse path.
 - **Rollback:** `git revert 96cffaa 5847799` restores pre-envelope behavior. `ToolError` / `ToolEnvelope` remain untouched throughout.
 
 ---
@@ -121,7 +121,7 @@ None — no vector DB or embedding operations in this session.
 |-------------|-------------|
 | Full `ToolError` replacement | Breaks 29 HTTP API files; large scope increase not requested |
 | Integration test file `crates/lab/tests/envelope_wire.rs` | Binary-only crate; requires adding `lib.rs` which changes crate type — avoided scope creep |
-| `DispatchError` in retired-upstream dispatcher (changing return type) | Retired upstream already uses `ToolError` with correct structured data; JSON fallback path preserves the info without migration |
+| `DispatchError` in examplemovies dispatcher (changing return type) | ExampleMovies already uses `ToolError` with correct structured data; JSON fallback path preserves the info without migration |
 
 ---
 
@@ -129,12 +129,12 @@ None — no vector DB or embedding operations in this session.
 
 - Should `ToolError` / `ToolEnvelope` eventually be removed once all HTTP API services migrate to `DispatchError`?
 - Should a `lib.rs` be added to `crates/lab` to enable proper integration tests?
-- SDK errors (auth, network, rate-limit) from retired-upstream still surface as `"internal_error"` when the `ToolError::Sdk` kind doesn't match a known static string. A `Retired upstreamError → DispatchError` mapping would fix this.
+- SDK errors (auth, network, rate-limit) from examplemovies still surface as `"internal_error"` when the `ToolError::Sdk` kind doesn't match a known static string. A `ExampleMoviesError → DispatchError` mapping would fix this.
 
 ---
 
 ## Next Steps
 
-- Add `Retired upstreamError → DispatchError` conversion so SDK errors (auth, rate-limit, not_found) surface with correct `kind` rather than `internal_error`.
+- Add `ExampleMoviesError → DispatchError` conversion so SDK errors (auth, rate-limit, not_found) surface with correct `kind` rather than `internal_error`.
 - Apply `DispatchError` pattern to other service dispatchers as they come online (unraid, arcane).
 - Consider adding `DispatchError::elicitation_required` for destructive op confirmation flow when unraid/arcane are implemented.

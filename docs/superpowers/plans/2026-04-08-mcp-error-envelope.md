@@ -17,7 +17,7 @@
 | `crates/lab/src/mcp/envelope.rs` | Replace `ToolEnvelope<T>` + `ToolError` with spec-conformant types; add `build_success` / `build_error` fns |
 | `crates/lab/src/mcp/error.rs` | Add `DispatchError { kind, message }` implementing `std::error::Error`; update existing constructors to return it |
 | `crates/lab/src/cli/serve.rs` | Fix success + error wrapping at lines 98-101; pass `service` + `action` into envelopes; downcast for kind |
-| `crates/lab/src/mcp/services/retired-upstream.rs` | Replace `anyhow::bail!` with `DispatchError` for `unknown_action` and param errors |
+| `crates/lab/src/mcp/services/examplemovies.rs` | Replace `anyhow::bail!` with `DispatchError` for `unknown_action` and param errors |
 | `crates/lab/tests/envelope_wire.rs` | New: snapshot tests asserting wire-shape of success + error envelopes |
 
 ---
@@ -44,7 +44,7 @@ use serde_json::{Value, json};
 /// Build a success envelope.
 ///
 /// ```json
-/// { "ok": true, "service": "retired-upstream", "action": "movie.list", "data": […] }
+/// { "ok": true, "service": "examplemovies", "action": "movie.list", "data": […] }
 /// ```
 #[must_use]
 pub fn build_success(service: &str, action: &str, data: Value) -> Value {
@@ -59,7 +59,7 @@ pub fn build_success(service: &str, action: &str, data: Value) -> Value {
 /// Build an error envelope.
 ///
 /// ```json
-/// { "ok": false, "service": "retired-upstream", "action": "movie.add",
+/// { "ok": false, "service": "examplemovies", "action": "movie.add",
 ///   "error": { "kind": "missing_param", "message": "…" } }
 /// ```
 #[must_use]
@@ -326,14 +326,14 @@ git commit --no-verify -m "feat(serve): emit spec-conformant ok/service/action e
 
 ---
 
-### Task 4: Update retired-upstream dispatcher to use `DispatchError`
+### Task 4: Update examplemovies dispatcher to use `DispatchError`
 
 **Files:**
-- Modify: `crates/lab/src/mcp/services/retired-upstream.rs`
+- Modify: `crates/lab/src/mcp/services/examplemovies.rs`
 
 Replace the two `anyhow::bail!` calls with `DispatchError` so the serve layer recovers the correct kind.
 
-- [ ] **Step 1: Add import at top of retired-upstream.rs**
+- [ ] **Step 1: Add import at top of examplemovies.rs**
 
 Add to the existing imports:
 
@@ -346,7 +346,7 @@ use crate::mcp::error::DispatchError;
 Replace:
 ```rust
         unknown => {
-            anyhow::bail!("unknown action `retired-upstream.{unknown}` — call `retired-upstream.help` for the catalog")
+            anyhow::bail!("unknown action `examplemovies.{unknown}` — call `examplemovies.help` for the catalog")
         }
 ```
 
@@ -354,7 +354,7 @@ With:
 ```rust
         unknown => {
             let valid = ACTIONS.iter().map(|a| a.name.to_string()).collect();
-            return Err(DispatchError::unknown_action("retired-upstream", unknown, valid).into());
+            return Err(DispatchError::unknown_action("examplemovies", unknown, valid).into());
         }
 ```
 
@@ -417,17 +417,17 @@ With:
 
 Replace:
 ```rust
-fn require_client() -> Result<Retired upstreamClient> {
-    client_from_env().ok_or_else(|| anyhow::anyhow!("missing RETIRED_UPSTREAM_URL or RETIRED_UPSTREAM_API_KEY"))
+fn require_client() -> Result<ExampleMoviesClient> {
+    client_from_env().ok_or_else(|| anyhow::anyhow!("missing EXAMPLEMOVIES_URL or EXAMPLEMOVIES_API_KEY"))
 }
 ```
 With:
 ```rust
-fn require_client() -> Result<Retired upstreamClient> {
+fn require_client() -> Result<ExampleMoviesClient> {
     client_from_env().ok_or_else(|| {
         anyhow::Error::from(DispatchError::sdk(
             "auth_failed",
-            "missing RETIRED_UPSTREAM_URL or RETIRED_UPSTREAM_API_KEY",
+            "missing EXAMPLEMOVIES_URL or EXAMPLEMOVIES_API_KEY",
         ))
     })
 }
@@ -436,7 +436,7 @@ fn require_client() -> Result<Retired upstreamClient> {
 - [ ] **Step 7: Check compiles, run clippy**
 
 ```bash
-rtk cargo clippy --features retired-upstream -p lab -- -D warnings
+rtk cargo clippy --features examplemovies -p lab -- -D warnings
 ```
 
 Expected: no errors or warnings.
@@ -444,8 +444,8 @@ Expected: no errors or warnings.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/lab/src/mcp/services/retired-upstream.rs
-git commit --no-verify -m "feat(retired-upstream): use DispatchError for unknown_action, missing_param, auth_failed — kind now recoverable"
+git add crates/lab/src/mcp/services/examplemovies.rs
+git commit --no-verify -m "feat(examplemovies): use DispatchError for unknown_action, missing_param, auth_failed — kind now recoverable"
 ```
 
 ---
@@ -470,9 +470,9 @@ use serde_json::json;
 
 #[test]
 fn success_envelope_shape() {
-    let env = build_success("retired-upstream", "movie.list", json!([{"id": 1, "title": "The Matrix"}]));
+    let env = build_success("examplemovies", "movie.list", json!([{"id": 1, "title": "The Matrix"}]));
     assert_eq!(env["ok"], json!(true));
-    assert_eq!(env["service"], json!("retired-upstream"));
+    assert_eq!(env["service"], json!("examplemovies"));
     assert_eq!(env["action"], json!("movie.list"));
     assert!(env["data"].is_array());
     // no "error" key on success
@@ -481,9 +481,9 @@ fn success_envelope_shape() {
 
 #[test]
 fn error_envelope_shape() {
-    let env = build_error("retired-upstream", "movie.add", "missing_param", "missing required parameter `title`");
+    let env = build_error("examplemovies", "movie.add", "missing_param", "missing required parameter `title`");
     assert_eq!(env["ok"], json!(false));
-    assert_eq!(env["service"], json!("retired-upstream"));
+    assert_eq!(env["service"], json!("examplemovies"));
     assert_eq!(env["action"], json!("movie.add"));
     assert_eq!(env["error"]["kind"], json!("missing_param"));
     assert!(env["error"]["message"].as_str().is_some());
@@ -494,10 +494,10 @@ fn error_envelope_shape() {
 #[test]
 fn error_envelope_with_valid_list() {
     let env = build_error_extra(
-        "retired-upstream",
+        "examplemovies",
         "bad.action",
         "unknown_action",
-        "unknown action `bad.action` for service `retired-upstream`",
+        "unknown action `bad.action` for service `examplemovies`",
         json!({ "valid": ["movie.list", "movie.get"], "param": null, "hint": null }),
     );
     assert_eq!(env["ok"], json!(false));
@@ -575,10 +575,10 @@ Expected: all pass.
 
 - [ ] **Step 3: Manual smoke test of error shape**
 
-With `RETIRED_UPSTREAM_URL` and `RETIRED_UPSTREAM_API_KEY` unset, pipe a bad request through serve and verify the envelope:
+With `EXAMPLEMOVIES_URL` and `EXAMPLEMOVIES_API_KEY` unset, pipe a bad request through serve and verify the envelope:
 
 ```bash
-echo '{"service":"retired-upstream","action":"bad.action","params":{}}' \
+echo '{"service":"examplemovies","action":"bad.action","params":{}}' \
   | cargo run -- serve --transport stdio 2>/dev/null
 ```
 
@@ -586,11 +586,11 @@ Expected output (pretty-printed for readability):
 ```json
 {
   "ok": false,
-  "service": "retired-upstream",
+  "service": "examplemovies",
   "action": "bad.action",
   "error": {
     "kind": "unknown_action",
-    "message": "unknown action `bad.action` for service `retired-upstream`",
+    "message": "unknown action `bad.action` for service `examplemovies`",
     "valid": ["help", "system.status", "system.health", "..."],
     "hint": null,
     "param": null
@@ -617,7 +617,7 @@ git add -A && git commit --no-verify -m "fix(mcp): smoke test fixups"
 - ✅ `missing_param` kind for missing params (Task 4)
 - ✅ `auth_failed` kind for missing env vars (Task 4)
 - ✅ Wire-shape tests (Task 5)
-- ⏳ `rate_limited`, `not_found`, etc. from SDK — these still come through as `internal_error` until `Retired upstreamError → ApiError → DispatchError` mapping is added in a future pass
+- ⏳ `rate_limited`, `not_found`, etc. from SDK — these still come through as `internal_error` until `ExampleMoviesError → ApiError → DispatchError` mapping is added in a future pass
 
 **Placeholder scan:** None found.
 

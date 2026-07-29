@@ -98,17 +98,17 @@ const SERVICE_BRANDS: Record<string, string> = {
   linkding: '#7C5CBF',
   memos: '#3478F6',
   openai: '#10A37F',
-  retired-upstream: '#E5870A',
+  examplerequests: '#E5870A',
   paperless: '#17BC6C',
-  retired-upstream: '#CC7B19',
-  retired-upstream: '#F16529',
-  retired-upstream: '#2F99E0',
+  examplemedia: '#CC7B19',
+  exampleindexer: '#F16529',
+  exampledownload: '#2F99E0',
   qdrant: '#DC244C',
-  retired-upstream: '#F0BC40',
-  retired-upstream: '#F4A623',
-  retired-upstream: '#35C5F4',
+  examplemovies: '#F0BC40',
+  exampleusenet: '#F4A623',
+  exampleseries: '#35C5F4',
   tailscale: '#1E5EFF',
-  retired-upstream: '#D9A21B',
+  examplemetrics: '#D9A21B',
   tei: '#FF9D00',
   unifi: '#0559C9',
   unraid: '#F45B00',
@@ -125,17 +125,17 @@ const SERVICE_LOGOS: Record<string, string | null> = {
   memos: null,
   tei: null,
   openai: siw('openai'),
-  retired-upstream: siw('retired-upstream'),
+  examplerequests: siw('examplerequests'),
   paperless: siw('paperlessngx'),
-  retired-upstream: siw('retired-upstream'),
-  retired-upstream: siw('retired-upstream'),
-  retired-upstream: siw('retired-upstream'),
+  examplemedia: siw('examplemedia'),
+  exampleindexer: siw('exampleindexer'),
+  exampledownload: siw('exampledownload'),
   qdrant: siw('qdrant'),
-  retired-upstream: siw('retired-upstream'),
-  retired-upstream: siw('retired-upstream'),
-  retired-upstream: siw('retired-upstream'),
+  examplemovies: siw('examplemovies'),
+  exampleusenet: siw('exampleusenet'),
+  exampleseries: siw('exampleseries'),
   tailscale: siw('tailscale'),
-  retired-upstream: siw('retired-upstream'),
+  examplemetrics: siw('examplemetrics'),
   unifi: siw('ubiquiti'),
   unraid: siw('unraid'),
 }
@@ -528,17 +528,17 @@ const SERVICE_ENV_PREFIXES: Record<string, string> = {
   LINKDING: 'linkding',
   MEMOS: 'memos',
   OPENAI: 'openai',
-  RETIRED_UPSTREAM: 'retired-upstream',
+  EXAMPLEREQUESTS: 'examplerequests',
   PAPERLESS: 'paperless',
-  RETIRED_UPSTREAM: 'retired-upstream',
-  RETIRED_UPSTREAM: 'retired-upstream',
-  RETIRED_UPSTREAM: 'retired-upstream',
+  EXAMPLEMEDIA: 'examplemedia',
+  EXAMPLEINDEXER: 'exampleindexer',
+  EXAMPLEDOWNLOAD: 'exampledownload',
   QDRANT: 'qdrant',
-  RETIRED_UPSTREAM: 'retired-upstream',
-  RETIRED_UPSTREAM: 'retired-upstream',
-  RETIRED_UPSTREAM: 'retired-upstream',
+  EXAMPLEMOVIES: 'examplemovies',
+  EXAMPLEUSENET: 'exampleusenet',
+  EXAMPLESERIES: 'exampleseries',
   TAILSCALE: 'tailscale',
-  RETIRED_UPSTREAM: 'retired-upstream',
+  EXAMPLEMETRICS: 'examplemetrics',
   TEI: 'tei',
   UNIFI: 'unifi',
   UNRAID: 'unraid',
@@ -626,7 +626,7 @@ Locate the closing `</div>` of the scrollable body (`<div className="flex-1 min-
     <div className="relative">
       <textarea
         className="w-full min-h-[180px] rounded-md border border-border bg-background px-3 py-2 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-        placeholder={'RETIRED_UPSTREAM_URL=http://localhost:7878\nRETIRED_UPSTREAM_API_KEY=abc123'}
+        placeholder={'EXAMPLEMOVIES_URL=http://localhost:7878\nEXAMPLEMOVIES_API_KEY=abc123'}
         value={envText}
         onChange={(e) => setEnvText(e.target.value)}
       />
@@ -1208,10 +1208,10 @@ cd apps/gateway-admin && npm run dev
 - Switch to Custom tab
 - Confirm ENV chip is visible
 - Click ENV — confirm drawer slides out from the right edge of the dialog, right corners of dialog flatten
-- Paste `RETIRED_UPSTREAM_URL=http://localhost:7878\nRETIRED_UPSTREAM_API_KEY=testkey` into ENV textarea
+- Paste `EXAMPLEMOVIES_URL=http://localhost:7878\nEXAMPLEMOVIES_API_KEY=testkey` into ENV textarea
 - Confirm "Valid · 1 service" badge appears
-- Confirm "retired-upstream" pill appears
-- Click "Apply to form" — confirm Name field populates with "retired-upstream", URL populates with `http://localhost:7878`, drawer closes
+- Confirm "examplemovies" pill appears
+- Click "Apply to form" — confirm Name field populates with "examplemovies", URL populates with `http://localhost:7878`, drawer closes
 - Click ENV chip again — confirm it closes (toggle behavior)
 
 - [ ] **Step 4: Verify Custom tab — JSON drawer**

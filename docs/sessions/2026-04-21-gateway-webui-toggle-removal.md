@@ -10,28 +10,28 @@ pr: "#25 fix(auth): gateway admin auth, upstream OAuth, and dispatch fixes - htt
 ---
 
 ## User Request
-Initial session goal: investigate `lab serve` warnings about unused imports in `crates/lab/src/mcp/services/retired-upstream.rs:3` and `crates/lab/src/mcp/services/tailscale.rs:3`.
+Initial session goal: investigate `lab serve` warnings about unused imports in `crates/lab/src/mcp/services/examplemetrics.rs:3` and `crates/lab/src/mcp/services/tailscale.rs:3`.
 
 Follow-on goal: explain what the gateway admin Web UI toggles do for an individual service, then remove the `webui` toggle from the gateway admin detail UI while keeping the Web UI itself.
 
 ## Session Overview
-- Investigated the `lab serve` warnings and found that `retired-upstream` and `tailscale` MCP adapters were using a raw `pub use` re-export pattern that did not match the thin-wrapper adapter shape used by other migrated services.
+- Investigated the `lab serve` warnings and found that `examplemetrics` and `tailscale` MCP adapters were using a raw `pub use` re-export pattern that did not match the thin-wrapper adapter shape used by other migrated services.
 - Changed those two MCP adapter modules to explicit thin wrappers that forward to the shared dispatch layer while still exporting `ACTIONS`.
 - Investigated the meaning of the per-service gateway admin `webui` toggle.
 - Determined that `webui` is persisted as a virtual-server surface flag but is not enforced anywhere analogous to the `cli`, `api`, or `mcp` surfaces.
 - Removed the `webui` toggle from the gateway admin detail surface list in the frontend.
 
 ## Sequence of Events
-1. Read the MCP service conventions and compared the warned `retired-upstream` and `tailscale` service adapters against a migrated sibling adapter (`retired-upstream`) and additional MCP service modules.
+1. Read the MCP service conventions and compared the warned `examplemetrics` and `tailscale` service adapters against a migrated sibling adapter (`examplemovies`) and additional MCP service modules.
 2. Confirmed the warning source: both files only re-exported `dispatch` and `ACTIONS`, which triggered local `unused_imports` warnings in those modules.
-3. Patched `crates/lab/src/mcp/services/retired-upstream.rs` and `crates/lab/src/mcp/services/tailscale.rs` to use the same wrapper pattern as other migrated adapters.
+3. Patched `crates/lab/src/mcp/services/examplemetrics.rs` and `crates/lab/src/mcp/services/tailscale.rs` to use the same wrapper pattern as other migrated adapters.
 4. Investigated gateway-related docs and code after the user asked what the Web UI toggles on an individual gateway do.
 5. Traced the gateway admin UI, gateway API client, and gateway manager surface logic to determine what `webui` means.
 6. Reported that `webui` is only a stored/displayed virtual-server surface state and does not appear to gate or hide any actual per-service Web UI behavior.
 7. After scope correction from the user, removed only the `webui` toggle from the gateway admin detail UI by deleting it from the rendered `surfaceEntries` list.
 
 ## Key Findings
-- `retired-upstream` and `tailscale` MCP adapter warnings came from the re-export form at `crates/lab/src/mcp/services/retired-upstream.rs:3` and `crates/lab/src/mcp/services/tailscale.rs:3`, which differed from the migrated thin-wrapper pattern used by modules such as `retired-upstream`.
+- `examplemetrics` and `tailscale` MCP adapter warnings came from the re-export form at `crates/lab/src/mcp/services/examplemetrics.rs:3` and `crates/lab/src/mcp/services/tailscale.rs:3`, which differed from the migrated thin-wrapper pattern used by modules such as `examplemovies`.
 - The gateway manager stores a `webui` surface alongside `cli`, `api`, and `mcp` in `crates/lab/src/dispatch/gateway/manager.rs:833`-`837` and can mutate it through `set_virtual_server_surface` at `crates/lab/src/dispatch/gateway/manager.rs:967`-`971`.
 - `cli`, `api`, and `mcp` have concrete enforcement points:
   - CLI service gating in `crates/lab/src/cli/helpers.rs:37`
@@ -42,12 +42,12 @@ Follow-on goal: explain what the gateway admin Web UI toggles do for an individu
 - The frontend API client supports mutating the surface with `gateway.virtual_server.set_surface` and a union that includes `'webui'` in `apps/gateway-admin/lib/api/gateway-client.ts:385`-`392`.
 
 ## Technical Decisions
-- Used the existing thin-wrapper MCP adapter pattern for `retired-upstream` and `tailscale` rather than changing registry wiring or dispatch ownership. This aligned those files with the migrated service pattern already present in the codebase.
+- Used the existing thin-wrapper MCP adapter pattern for `examplemetrics` and `tailscale` rather than changing registry wiring or dispatch ownership. This aligned those files with the migrated service pattern already present in the codebase.
 - Kept the gateway `webui` backend model unchanged. The user request was to remove the pointless toggle, not to redesign gateway surface semantics or perform a config/API schema migration.
 - Removed only the frontend rendering of the `webui` toggle. This was the smallest change that matched the user’s request and avoided unnecessary backend churn.
 
 ## Files Modified
-- `crates/lab/src/mcp/services/retired-upstream.rs`: replaced raw re-export with explicit thin wrapper forwarding to `crate::dispatch::retired-upstream::dispatch`.
+- `crates/lab/src/mcp/services/examplemetrics.rs`: replaced raw re-export with explicit thin wrapper forwarding to `crate::dispatch::examplemetrics::dispatch`.
 - `crates/lab/src/mcp/services/tailscale.rs`: replaced raw re-export with explicit thin wrapper forwarding to `crate::dispatch::tailscale::dispatch`.
 - `apps/gateway-admin/components/gateway/gateway-detail-content.tsx`: removed `webui` from the rendered gateway surface toggle list.
 - `docs/sessions/2026-04-21-gateway-webui-toggle-removal.md`: session documentation created from observed context and actions.
@@ -79,14 +79,14 @@ Follow-on goal: explain what the gateway admin Web UI toggles do for an individu
   - Result: established the warning root cause and the fact that `webui` was a rendered but unenforced surface toggle
 
 ## Errors Encountered
-- `lab serve` emitted warnings for unused imports in `crates/lab/src/mcp/services/retired-upstream.rs:3` and `crates/lab/src/mcp/services/tailscale.rs:3`.
+- `lab serve` emitted warnings for unused imports in `crates/lab/src/mcp/services/examplemetrics.rs:3` and `crates/lab/src/mcp/services/tailscale.rs:3`.
   - Root cause: those adapter files used raw symbol re-exports instead of explicit thin wrapper functions, which triggered local `unused_imports` warnings.
   - Resolution: replaced the re-exports with explicit `dispatch(...)` wrapper functions while continuing to export `ACTIONS`.
 
 ## Behavior Changes (Before/After)
 - Before: `apps/gateway-admin/components/gateway/gateway-detail-content.tsx` rendered four virtual-server surface toggles: `cli`, `api`, `mcp`, and `webui`.
 - After: the same component renders only `cli`, `api`, and `mcp`.
-- Before: `retired-upstream` and `tailscale` MCP adapter modules used raw `pub use` re-exports for `dispatch` and `ACTIONS`.
+- Before: `examplemetrics` and `tailscale` MCP adapter modules used raw `pub use` re-exports for `dispatch` and `ACTIONS`.
 - After: both modules expose `ACTIONS` plus explicit forwarding `dispatch(...)` functions matching the migrated adapter pattern.
 
 ## Risks and Rollback

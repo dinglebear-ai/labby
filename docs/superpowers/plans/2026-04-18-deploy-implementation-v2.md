@@ -376,7 +376,7 @@ service_scope = "user"
 
 #[test]
 fn deploy_config_absent_is_none_not_error() {
-    let raw = "[retired-upstream]\nurl = \"http://localhost:7878\"\n";
+    let raw = "[examplemovies]\nurl = \"http://localhost:7878\"\n";
     let parsed: LabConfig = toml::from_str(raw).unwrap();
     assert!(parsed.deploy.is_none());
 }
