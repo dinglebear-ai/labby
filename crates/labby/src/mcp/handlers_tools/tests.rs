@@ -3971,21 +3971,21 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
 }
 
 #[tokio::test]
-#[ignore = "gateway-pivot: hardcoded gateway_alpha/gateway_alpha fixtures; rework with kept-service fixtures post-pivot"]
 async fn service_actions_json_filters_to_allowed_mcp_actions() {
     let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
     let manager = Arc::new(
         crate::dispatch::gateway::config_store::test_gateway_manager(
             std::path::PathBuf::from("config.toml"),
             runtime,
-        ),
+        )
+        .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry())),
     );
     manager
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
                 virtual_servers: vec![crate::config::VirtualServerConfig {
-                    id: "deploy".to_string(),
-                    service: "deploy".to_string(),
+                    id: "doctor-readonly".to_string(),
+                    service: "doctor".to_string(),
                     enabled: true,
                     surfaces: crate::config::VirtualServerSurfacesConfig {
                         cli: false,
@@ -3994,7 +3994,7 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
                         webui: false,
                     },
                     mcp_policy: Some(crate::config::VirtualServerMcpPolicyConfig {
-                        allowed_actions: vec!["server.info".to_string()],
+                        allowed_actions: vec!["system.checks".to_string()],
                     }),
                 }],
                 ..crate::config::LabConfig::default()
@@ -4011,18 +4011,18 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
     );
 
     let value = server
-        .service_actions_json("deploy")
+        .service_actions_json("doctor")
         .await
         .expect("service actions");
     let actions = value.as_array().expect("array");
     assert!(actions.iter().any(|action| action["name"] == "help"));
     assert!(actions.iter().any(|action| action["name"] == "schema"));
-    assert!(actions.iter().any(|action| action["name"] == "server.info"));
     assert!(
-        !actions
+        actions
             .iter()
-            .any(|action| action["name"] == "session.list")
+            .any(|action| action["name"] == "system.checks")
     );
+    assert!(!actions.iter().any(|action| action["name"] == "audit.full"));
 }
 
 /// Regression: the Code Mode regime is per-route, so the notification fanout

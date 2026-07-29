@@ -75,7 +75,7 @@ const MOCK_DOCTOR_REPORT: DoctorReport = {
       category: 'service',
       severity: 'warn',
       message: 'Mock Apprise credentials are not configured.',
-      hint: 'Add APPRISE_URL and APPRISE_API_KEY before using live mode.',
+      hint: 'Add APPRISE_URL and APPRISE_TOKEN before using live mode.',
       elapsed_ms: 2,
     },
   ],

@@ -107,7 +107,7 @@ export const extractApi = {
             service: 'apprise',
             url: 'https://apprise.example.com',
             env_field: 'APPRISE_URL',
-            secret_present: true,
+            secret_present: false,
             source_host: 'lab-node-1',
             probe_host: 'apprise.example.com',
             runtime: { container_name: 'apprise', image: 'caronc/apprise:latest' },
@@ -118,7 +118,7 @@ export const extractApi = {
           {
             service: 'apprise',
             host: 'lab-node-1',
-            message: 'Mock scan found an Apprise container but no API key in mounted config.',
+            message: 'Mock scan found an Apprise container but no API token in mounted config.',
           },
         ],
       }

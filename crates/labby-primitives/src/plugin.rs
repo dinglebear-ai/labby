@@ -34,7 +34,7 @@ pub struct PluginMeta {
 /// One declared environment variable for a plugin.
 #[derive(Debug, Clone, Copy)]
 pub struct EnvVar {
-    /// Env var name, e.g. `"APPRISE_API_KEY"`.
+    /// Env var name, e.g. `"APPRISE_TOKEN"`.
     pub name: &'static str,
     /// Description shown in `labby install` prompts and `labby doctor` output.
     pub description: &'static str,

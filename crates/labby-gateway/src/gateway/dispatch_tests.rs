@@ -993,7 +993,7 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
 // Re-fixtured post-gateway-pivot: backed by the kept `deploy` service and a real
 // `deploy.plan` action (the policy validator checks `allowed_actions` against the
 // service's compiled action catalog, so the action must actually exist for
-// `deploy`). The original `server.info` belonged to a removed gateway_alpha/gateway_alpha service.
+// `deploy`). The original `server.info` belonged to a retired service fixture.
 #[tokio::test]
 async fn virtual_server_policy_validation_uses_service_name() {
     let manager = test_manager();
@@ -1028,7 +1028,7 @@ fn supported_services_lists_metadata_backed_lab_gateways() {
 }
 
 #[tokio::test]
-async fn supported_services_payload_includes_gateway_alpha_when_feature_enabled() {
+async fn supported_services_payload_is_an_array() {
     let manager = test_manager();
     let value = dispatch_with_manager(&manager, "gateway.supported_services", json!({}))
         .await
@@ -1403,7 +1403,7 @@ async fn setting_virtual_server_mcp_policy_persists_allowed_actions() {
 }
 
 // Re-fixtured post-gateway-pivot: assert against the kept `deploy` service's real
-// `deploy.plan` action instead of the removed gateway_alpha/gateway_alpha `server.info`.
+// `deploy.plan` action instead of the retired fixture's `server.info`.
 #[tokio::test]
 async fn service_actions_returns_compiled_action_catalog() {
     let manager = test_manager();

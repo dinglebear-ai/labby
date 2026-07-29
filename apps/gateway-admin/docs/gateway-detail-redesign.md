@@ -97,6 +97,9 @@ Remove the entire conditional block:
 
 Also remove the adjacent "All discovered tools are currently exposed…" summary paragraph (lines 533–543).
 
+> **Historical design record:** The examples below use `demo-upstream` as a
+> placeholder and do not describe the current runtime inventory.
+
 **Where this info moves:**
 - Warning details are accessible via the **Warnings tab** (already exists).
 - The warning badge in the header (`1 warning`) should show a tooltip on hover with the first warning message, so the user never has to click in to get a quick summary.
@@ -115,7 +118,7 @@ Also remove the adjacent "All discovered tools are currently exposed…" summary
 
 **Layout of the new header strip:**
 ```
-[Breadcrumbs: Gateways > example-upstream]       [• Offline] [Expose resources ⚙] [• CLI ○] [• API ○] [• MCP ●] [• WEBUI ○]   [Updated …]
+[Breadcrumbs: Gateways > demo-upstream]       [• Offline] [Expose resources ⚙] [• CLI ○] [• API ○] [• MCP ●] [• WEBUI ○]   [Updated …]
 ```
 
 - Each toggle remains a pill with the status dot, surface label, and switch.
@@ -140,9 +143,9 @@ Also remove the adjacent "All discovered tools are currently exposed…" summary
 
 ### 9. Detail View — Resources: Fix Nested/Recursive URIs
 
-**Observed issue:** Resources for the `example-upstream` (STDIO) gateway show URIs like:
+**Historical example:** Resources for the `demo-upstream` (STDIO) gateway showed URIs like:
 ```
-lab://upstream/example-upstream/lab://upstream/example-upstream/lab://upstream/example-upstream/lab://catalog
+lab://upstream/demo-upstream/lab://upstream/demo-upstream/lab://upstream/demo-upstream/lab://catalog
 ```
 Each row appends the full upstream prefix again, making URIs exponentially longer. This is a **backend bug** in resource URI construction — the upstream pool or gateway manager is prepending the prefix on URIs that already carry it.
 
@@ -159,10 +162,10 @@ Each row appends the full upstream prefix again, making URIs exponentially longe
 
 ### 10. Detail View — Tools vs. Actions Distinction for In-Process Services
 
-**Current state:** For a lab in-process service (e.g. `example-upstream`), the "Tools" count shows 29 because the in-process service exposes 29 actions mapped as MCP tools (one per service action). The custom gateway (example-upstream as STDIO upstream running `labby mcp --services example-upstream`) shows 1 tool (the `example-upstream` MCP tool that dispatches via `action` parameter).
+**Historical example:** For a lab in-process service (represented here as `demo-upstream`), the "Tools" count showed 29 because the in-process service exposed 29 actions mapped as MCP tools (one per service action). The custom gateway (`demo-upstream` as a STDIO upstream) showed one tool that dispatched through an `action` parameter.
 
 **User concern:** These are architecturally different:
-- **Custom STDIO gateway**: 1 MCP tool (`example-upstream`) with N sub-actions dispatched via `action` parameter — tool count = 1, action count = N
+- **Custom STDIO gateway**: 1 MCP tool (`demo-upstream`) with N sub-actions dispatched via `action` parameter — tool count = 1, action count = N
 - **In-process service**: N tools, each mapping directly to a service action — tool count = N
 
 **Display change:**
@@ -174,13 +177,13 @@ Each row appends the full upstream prefix again, making URIs exponentially longe
 
 ### 11. Server Name Collision Detection
 
-**Current state:** Two gateways can share the same name/id (e.g., two `example-upstream` entries). This causes ambiguous routing, duplicate display rows, and potential data corruption on update/delete.
+**Historical example:** Two gateways could share the same name/id (e.g., two `demo-upstream` entries). This caused ambiguous routing, duplicate display rows, and potential data corruption on update/delete.
 
 **Changes needed:**
 
 **Backend (`crates/lab/src/dispatch/gateway/manager.rs` or `api/router.rs`):**
 - On `POST /gateways` (add gateway), check whether a gateway with the same name already exists.
-- Return `409 Conflict` with a structured error: `{ "kind": "conflict", "message": "A gateway named 'example-upstream' already exists.", "existing_id": "example-upstream" }`.
+- Return `409 Conflict` with a structured error: `{ "kind": "conflict", "message": "A gateway named 'demo-upstream' already exists.", "existing_id": "demo-upstream" }`.
 - Same check on in-process service enable if a custom gateway with the same name exists.
 
 **Frontend (`components/gateway/gateway-form-dialog.tsx`):**

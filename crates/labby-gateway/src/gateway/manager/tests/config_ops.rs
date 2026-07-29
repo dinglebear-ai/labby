@@ -225,8 +225,8 @@ async fn batch_add_returns_successful_views_and_preserves_errors() {
 }
 
 // Re-fixtured post-gateway-pivot: the virtual server is backed by the kept
-// `deploy` service (no gateway_alpha/gateway_alpha env fixtures involved). Asserts a concurrent
-// root config mutation and a virtual-server surface mutation both persist.
+// `deploy` service rather than retired service env fixtures. Asserts a concurrent root
+// config mutation and a virtual-server surface mutation both persist.
 #[tokio::test]
 async fn concurrent_root_and_virtual_server_mutations_both_persist() {
     let dir = tempfile::tempdir().expect("tempdir");

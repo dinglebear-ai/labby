@@ -20,5 +20,5 @@ test('mock setup state retains a genuine incomplete secret field', async () => {
   const snapshot = await setupApi.state()
 
   assert.equal(snapshot.state.kind, 'partially_configured')
-  assert.deepEqual(snapshot.state.missing, ['APPRISE_API_KEY'])
+  assert.deepEqual(snapshot.state.missing, ['APPRISE_TOKEN'])
 })

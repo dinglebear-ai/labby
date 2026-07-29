@@ -185,8 +185,8 @@ const MOCK_SERVICES: Record<string, ServiceSchema> = {
         ui: textUi(true, 'url'),
       },
       {
-        name: 'APPRISE_API_KEY',
-        description: 'Apprise API key',
+        name: 'APPRISE_TOKEN',
+        description: 'Apprise API token',
         example: '',
         secret: true,
         required: true,
@@ -219,7 +219,7 @@ function mockSetupSnapshot(): SetupSnapshot {
     draft_mtime_unix_seconds: null,
     state: {
       kind: 'partially_configured',
-      missing: ['APPRISE_API_KEY'],
+      missing: ['APPRISE_TOKEN'],
       services: Object.keys(MOCK_SERVICES),
     },
   }
