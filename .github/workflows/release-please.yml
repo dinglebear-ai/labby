@@ -53,8 +53,7 @@ permissions:
 
 env:
   CARGO_INCREMENTAL: "0"
-  # Persistent per-runner zccache compile store for soldr (replaces sccache).
-  SOLDR_CACHE_DIR: ${{ github.workspace }}/../.soldr-cache
+  # Persistent per-runner zccache compile store for kache (replaces sccache).
 
 concurrency:
   group: release-please-main
@@ -96,8 +95,8 @@ jobs:
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
           persist-credentials: true
 
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
 
       - name: Patch release metadata and regenerate Cargo.lock
         run: |

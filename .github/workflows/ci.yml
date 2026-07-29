@@ -20,8 +20,7 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # Persistent per-runner zccache compile store for soldr.
-  SOLDR_CACHE_DIR: ${{ github.workspace }}/../.soldr-cache
+  # Persistent per-runner zccache compile store for kache.
 
 jobs:
   changes:
@@ -187,8 +186,8 @@ jobs:
       # sibling repo sat seven releases out of sync unnoticed.
       - name: Check version sync
         run: bash scripts/check-version-sync.sh
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -205,8 +204,8 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: Run pinned Cargo Deny
         run: |
           set -euo pipefail
@@ -240,8 +239,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - run: cargo check --workspace --all-features --locked
 
   msrv:
@@ -258,7 +257,7 @@ jobs:
           name: gateway-admin-out
           path: apps/gateway-admin/out
       - name: Install minimum supported Rust
-        uses: ./.github/actions/setup-rust-soldr
+        uses: ./.github/actions/setup-rust-kache
         with:
           toolchain: "1.92.0"
       - run: cargo +1.92.0 check --workspace --all-features --all-targets --locked
@@ -276,8 +275,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: Execute sandbox through the CLI-hosted runner
         run: |
           set -euo pipefail
@@ -342,8 +341,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         if: matrix.slice == 'gateway'
@@ -386,8 +385,8 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - run: ${{ matrix.command }}
 
   docs-check:
@@ -403,8 +402,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: just
@@ -423,8 +422,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
         with:
           components: clippy
       - run: cargo clippy --workspace --all-features --locked -- -D warnings
@@ -445,8 +444,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: MCP route-scope resources/tools and list pagination
         run: |
           cargo test -p labby --all-features --locked mcp::handlers_resources::tests
@@ -482,8 +481,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: Verify Labby auth core and extension contracts
         run: cargo test -p labby-auth --all-features --locked
       - name: Run dated protocol and extension suites
@@ -498,8 +497,7 @@ jobs:
 
   test:
     name: Test
-    # The Linux runner is persistent, so soldr's zccache compile
-    # store persists on local disk across runs (SOLDR_CACHE_DIR at the top of
+    # The Linux runner is persistent, so kache's zccache compile
     # this workflow) — no GitHub-cache save/restore layer needed.
     runs-on: [self-hosted, unraid]
     if: >-
@@ -520,8 +518,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: cargo:cargo-nextest
@@ -554,8 +552,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: cargo:cargo-nextest
@@ -791,9 +789,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - name: Install Rust + soldr
+      - name: Install Rust and kache
         if: runner.os != 'Windows'
-        uses: ./.github/actions/setup-rust-soldr
+        uses: ./.github/actions/setup-rust-kache
       - run: cargo build --workspace --all-features --locked --release
       - name: Verify release binary
         if: runner.os != 'Windows'
@@ -905,8 +903,8 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
@@ -931,7 +929,7 @@ jobs:
     timeout-minutes: 60
     # GitHub-hosted job: neutralize the repo's .cargo/config.toml
     # `rustc-wrapper = scripts/cargo-rustc-wrapper` shim, which Windows runners
-    # cannot exec (os error 193). soldr jobs override this via setup-rust-soldr;
+    # cannot exec (os error 193). kache jobs override this via setup-rust-kache;
     # this hosted job keeps the empty-wrapper disabler at job scope.
     env:
       RUSTC_WRAPPER: ""
@@ -965,8 +963,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac

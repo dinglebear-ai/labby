@@ -39,8 +39,7 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # Persistent per-runner zccache compile store for soldr (replaces sccache).
-  SOLDR_CACHE_DIR: ${{ github.workspace }}/../.soldr-cache
+  # Persistent per-runner zccache compile store for kache (replaces sccache).
   DISTROBUILDER_VERSION: "3.3.1"
   DISTROBUILDER_SHA256: "6c411af7178bb55ef649c708f4f38fc3c30e6ecce901c08d8a389448a900a73a"
 
@@ -69,7 +68,7 @@ jobs:
     # obsolete — abf0ce23 builds distrobuilder from a SHA256-pinned Go release.
     # The blocker today is purely network starvation, so self-hosted is not
     # impossible, just currently unreliable. Tradeoff accepted: ubuntu-latest
-    # gives up the warm soldr/zccache store for the release build in step 8.
+    # gives up the warm kache store for the release build in step 8.
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -81,8 +80,8 @@ jobs:
 
       - uses: ./.github/actions/build-gateway-admin
 
-      - name: Install Rust + soldr
-        uses: ./.github/actions/setup-rust-soldr
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
         with:
           # This job runs on ubuntu-latest (see the runs-on note above), so the
           # runner is a fresh VM every time and the action's default `minimal`
