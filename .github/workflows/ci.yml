@@ -168,7 +168,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      # The self-hosted runner image carries the matching Playwright browser.
+      # Playwright's installer rejects Ubuntu 26.04 even when that browser is
+      # already cached, so verify the image contract without invoking it.
+      - name: Verify cached Playwright browser
+        run: |
+          node -e 'const fs = require("node:fs"); const { chromium } = require("playwright"); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) { console.error("Missing cached Playwright browser: " + executable); process.exit(1); } console.log("Using cached Playwright browser: " + executable);'
       - run: pnpm test:browser
 
   fmt:
