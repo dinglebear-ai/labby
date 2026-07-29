@@ -21,6 +21,20 @@ inputs:
       bare — used by native Windows jobs.
     required: false
     default: "true"
+  cache-preset:
+    description: >-
+      setup-soldr cache preset. "minimal" (default) disables every GitHub
+      Actions cache save/restore layer — correct for the persistent
+      self-hosted runners, whose zccache store already survives on local
+      disk, so the layers would be pure network overhead. Ephemeral
+      GitHub-hosted runners (ubuntu-latest / windows-latest) get a fresh VM
+      every run and MUST override this to "full" (build + target +
+      cargo-registry layers), otherwise every build is stone cold —
+      `cache summary: target=disabled build=disabled/disabled
+      cargo-registry=disabled/disabled`, `hit_rate=0.0%`.
+      Valid: minimal | foundation | full.
+    required: false
+    default: minimal
 runs:
   using: composite
   steps:
@@ -63,17 +77,19 @@ runs:
         targets: ${{ inputs.targets }}
 
     # setup-soldr installs the soldr front door (zccache compilation caching).
-    # cache-preset: minimal — these are persistent self-hosted runners, so the
-    # zccache store persists on local disk and GitHub-cache save/restore layers
-    # would only add network overhead. Compile caching itself stays ON (do NOT
-    # use `cache: false` — that exports SOLDR_BUILD_CACHE_MODE=off and disables
-    # zccache entirely). With shims: true, plain `cargo ...` trampolines into
-    # `soldr cargo ...`. version pins the binary; bump deliberately.
+    # cache-preset defaults to `minimal` for the persistent self-hosted runners:
+    # their zccache store survives on local disk, so GitHub-cache save/restore
+    # layers would only add network overhead. Ephemeral GitHub-hosted runners
+    # must pass `cache-preset: full` — see the input description above.
+    # Compile caching itself stays ON regardless (do NOT use `cache: false` —
+    # that exports SOLDR_BUILD_CACHE_MODE=off and disables zccache entirely).
+    # With shims: true, plain `cargo ...` trampolines into `soldr cargo ...`.
+    # version pins the binary; bump deliberately.
     - name: Install soldr
       uses: zackees/setup-soldr@c4e66a9114a45193605ff4a27404ef74b9b9a6dc # v0
       with:
         version: "0.8.19"
-        cache-preset: minimal
+        cache-preset: ${{ inputs.cache-preset }}
         shims: ${{ inputs.enable-shims }}
         toolchain: ${{ inputs.toolchain }}
         # platform-default keeps the system linker (cc/gcc). soldr's own
@@ -85,11 +101,14 @@ runs:
         # cache-preset keeps it on, so opt out explicitly. zccache compile
         # caching (the actual point of soldr) is unaffected.
         prebuild-deps: none
-        # Persist the zccache compile store across runs, rooted under the
-        # workspace. $GITHUB_WORKSPACE is /_work/<repo>/<repo>, which the runner
-        # farm bind-mounts persistently per runner. setup-soldr derives
-        # SOLDR_CACHE_DIR=<cache-dir>-soldr, so the store is persistent AND
-        # per-runner (no shared mount, no cross-runner exec race).
+        # Runner-local root for the zccache compile store. On the self-hosted
+        # farm $GITHUB_WORKSPACE is /_work/<repo>/<repo>, bind-mounted
+        # persistently per runner, so the store survives across runs AND stays
+        # per-runner (no shared mount, no cross-runner exec race) — that local
+        # persistence is why `minimal` is the right default there.
+        # On ephemeral GitHub-hosted runners this path is wiped with the VM, so
+        # cross-run reuse comes from the GitHub cache layers instead; those jobs
+        # must pass cache-preset: full.
         cache-dir: ${{ github.workspace }}/../.soldr
 
     # GitHub release assets are MUTABLE: the version pin above pins the tag
