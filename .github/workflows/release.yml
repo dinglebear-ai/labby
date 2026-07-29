@@ -34,6 +34,17 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The validation step below shells out to `node` and `npm` (version
+      # lockstep against packages/labby-mcp, plus its test/check/pack smoke).
+      # The self-hosted runners carry neither, so without this the step dies
+      # with `npm: command not found` and exit 127 -- which is why every
+      # release tag since v1.3.1 either failed or was cancelled at preflight,
+      # skipping the build, publish, container, and Incus jobs behind it.
+      # Mirrors the npm-launcher job in ci.yml, which runs the same commands on
+      # the same runner class and works because it sets Node up first.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "lts/*"
       - name: Validate release tag, ancestry, and version lockstep
         if: startsWith(github.ref, 'refs/tags/')
         run: |
