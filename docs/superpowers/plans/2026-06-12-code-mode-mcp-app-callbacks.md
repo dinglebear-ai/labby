@@ -519,7 +519,7 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
     assert!(!names.contains(&"youtube_probe"));
     assert!(names.contains(&CODE_MODE_SEARCH_TOOL_NAME));
     assert!(names.contains(&TOOL_EXECUTE_TOOL_NAME));
-    assert!(!names.contains(&"radarr"));
+    assert!(!names.contains(&"retired-upstream"));
 }
 ```
 

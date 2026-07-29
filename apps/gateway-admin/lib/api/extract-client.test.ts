@@ -43,12 +43,12 @@ test('extractApi.scan performs a targeted scan when uri is provided', async () =
     return new Response(
       JSON.stringify({
         target: { mode: 'targeted', uri: { host: 'node-b', path: '/mnt/appdata' } },
-        found: ['overseerr'],
+        found: ['requester_alpha'],
         creds: [
           {
-            service: 'overseerr',
+            service: 'requester_alpha',
             url: 'http://100.64.0.20:5055/login',
-            env_field: 'OVERSEERR_API_KEY',
+            env_field: 'REQUESTER_ALPHA_API_KEY',
             secret_present: true,
           },
         ],
@@ -119,9 +119,9 @@ test('extract target supports structured ssh uri payloads', async () => {
     found: [],
     creds: [
       {
-        service: 'overseerr',
+        service: 'requester_alpha',
         url: 'http://100.64.0.20:5055/login',
-        env_field: 'OVERSEERR_API_KEY',
+        env_field: 'REQUESTER_ALPHA_API_KEY',
         secret_present: true,
       },
     ],

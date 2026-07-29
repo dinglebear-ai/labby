@@ -110,9 +110,9 @@ test('parses failed-run traces with error kind and call start offsets', () => {
     elapsed_ms: 30012,
     calls: [
       {
-        id: 'rustarr::qbittorrent.transfer_info',
-        namespace: 'rustarr',
-        tool: 'qbittorrent.transfer_info',
+        id: 'gateway_alpha::downloader_beta.transfer_info',
+        namespace: 'gateway_alpha',
+        tool: 'downloader_beta.transfer_info',
         ok: false,
         elapsed_ms: 1010,
         start_ms: 226,

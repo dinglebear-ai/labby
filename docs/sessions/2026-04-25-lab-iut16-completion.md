@@ -91,7 +91,7 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M crates/lab-apis/src/extract/client.rs
  M crates/lab-apis/src/mcpregistry.rs
  M crates/lab-apis/src/mcpregistry/types.rs
- M crates/lab-apis/src/qbittorrent.rs
+ M crates/lab-apis/src/retired-upstream.rs
  M crates/lab/src/acp.rs
  M crates/lab/src/acp/persistence.rs
  M crates/lab/src/acp/registry.rs
@@ -168,8 +168,8 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M crates/lab/src/dispatch/node.rs
  M crates/lab/src/dispatch/node/send.rs
  M crates/lab/src/dispatch/paperless.rs
- M crates/lab/src/dispatch/plex.rs
- M crates/lab/src/dispatch/radarr.rs
+ M crates/lab/src/dispatch/retired-upstream.rs
+ M crates/lab/src/dispatch/retired-upstream.rs
  M crates/lab/src/dispatch/unifi.rs
  M crates/lab/src/dispatch/upstream/pool.rs
  M crates/lab/src/dispatch/upstream/transport/websocket.rs
@@ -194,15 +194,15 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  D crates/lab/src/mcp/services/memos.rs
  M crates/lab/src/mcp/services/nodes.rs
  D crates/lab/src/mcp/services/openai.rs
- D crates/lab/src/mcp/services/overseerr.rs
+ D crates/lab/src/mcp/services/retired-upstream.rs
  D crates/lab/src/mcp/services/paperless.rs
- D crates/lab/src/mcp/services/plex.rs
- D crates/lab/src/mcp/services/prowlarr.rs
- D crates/lab/src/mcp/services/qbittorrent.rs
+ D crates/lab/src/mcp/services/retired-upstream.rs
+ D crates/lab/src/mcp/services/retired-upstream.rs
+ D crates/lab/src/mcp/services/retired-upstream.rs
  D crates/lab/src/mcp/services/qdrant.rs
- D crates/lab/src/mcp/services/radarr.rs
- D crates/lab/src/mcp/services/sabnzbd.rs
- D crates/lab/src/mcp/services/sonarr.rs
+ D crates/lab/src/mcp/services/retired-upstream.rs
+ D crates/lab/src/mcp/services/retired-upstream.rs
+ D crates/lab/src/mcp/services/retired-upstream.rs
  D crates/lab/src/mcp/services/tei.rs
  D crates/lab/src/mcp/services/unifi.rs
  M crates/lab/src/node/enrollment/store.rs
@@ -250,14 +250,14 @@ b7f488af fix(lab-zxx5.30,lab-zxx5.31): partial-extraction detection + fail-close
  M docs/coverage/mcpregistry.md
  M docs/coverage/memos.md
  M docs/coverage/paperless.md
- M docs/coverage/plex.md
- M docs/coverage/qbittorrent.md
+ M docs/coverage/retired-upstream.md
+ M docs/coverage/retired-upstream.md
  M docs/coverage/qdrant.md
- M docs/coverage/radarr.md
- M docs/coverage/sabnzbd.md
- M docs/coverage/sonarr.md
+ M docs/coverage/retired-upstream.md
+ M docs/coverage/retired-upstream.md
+ M docs/coverage/retired-upstream.md
  M docs/coverage/tailscale.md
- M docs/coverage/tautulli.md
+ M docs/coverage/retired-upstream.md
  M docs/coverage/tei.md
  M docs/coverage/unifi.md
  M docs/coverage/unraid.md

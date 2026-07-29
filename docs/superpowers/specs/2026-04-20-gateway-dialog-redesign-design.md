@@ -32,7 +32,7 @@ Redesign the Add Gateway dialog in `gateway-admin` to improve usability for both
 
 - 3-column grid of service cards, `max-height` capped to show exactly 3 rows (~320px) with `overflow-y: auto` and a styled scrollbar for the remaining 12+ services.
 - Each card shows: brand-colored icon box (36×36px with rounded corners), service name, category badge, and a 2-line description clamp.
-- **Brand-colored icon backgrounds:** every service icon box uses the service's brand color (e.g., Radarr gold, Sonarr sky-blue, Plex orange) with the white variant of the logo on top. For services not in Simple Icons (Apprise, Arcane, ByteStash, Gotify, Linkding, Memos, TEI), a white inline SVG renders on the brand background. No external favicon APIs.
+- **Brand-colored icon backgrounds:** every service icon box uses the service's brand color (e.g., Retired upstream gold, Retired upstream sky-blue, Retired upstream orange) with the white variant of the logo on top. For services not in Simple Icons (Apprise, Arcane, ByteStash, Gotify, Linkding, Memos, TEI), a white inline SVG renders on the brand background. No external favicon APIs.
 - **Logo sources:** Simple Icons CDN (`cdn.simpleicons.org/{slug}/ffffff`) for 14 services; inline SVG for 7 services.
 - Clicking a card selects it (highlighted border + accent background tint).
 
@@ -44,7 +44,7 @@ Below the grid (separated by a divider), show:
 
 ### 21 supported services
 
-Apprise, Arcane, ByteStash, Gotify, Linkding, Memos, OpenAI, Overseerr, Paperless, Plex, Prowlarr, qBittorrent, Qdrant, Radarr, SABnzbd, Sonarr, Tailscale, Tautulli, TEI, UniFi, Unraid.
+Apprise, Arcane, ByteStash, Gotify, Linkding, Memos, OpenAI, Retired upstream, Paperless, Retired upstream, Retired upstream, retired-upstream, Qdrant, Retired upstream, Retired upstream, Retired upstream, Tailscale, Retired upstream, TEI, UniFi, Unraid.
 
 ---
 
@@ -84,9 +84,9 @@ Activated by the **ENV** chip in the header. Slides out 300px from the right edg
 - Live `KEY=VALUE` textarea with badge showing parse state (Waiting / Valid N services / Invalid format / No known service)
 - Detected service pills shown below editor
 - Footer: Paste (reads clipboard) + Apply to form buttons
-- Apply populates the Custom form: Name = detected service key (e.g. `radarr`), Transport = `http`, URL = value of `{SERVICE}_URL` env var if present. Closes the drawer on apply.
+- Apply populates the Custom form: Name = detected service key (e.g. `retired-upstream`), Transport = `http`, URL = value of `{SERVICE}_URL` env var if present. Closes the drawer on apply.
 
-**Service detection:** match env var prefixes (`RADARR_`, `SONARR_`, etc.) against the 21 known services.
+**Service detection:** match env var prefixes (`RETIRED_UPSTREAM_`, `RETIRED_UPSTREAM_`, etc.) against the 21 known services.
 
 ### 3d. JSON drawer
 

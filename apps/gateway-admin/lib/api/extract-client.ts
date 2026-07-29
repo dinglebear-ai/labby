@@ -91,34 +91,34 @@ export const extractApi = {
         : { mode: 'fleet' }
       return {
         target,
-        found: ['radarr', 'sonarr'],
+        found: ['gateway_alpha', 'hidden_upstream'],
         creds: [
           {
-            service: 'radarr',
-            url: 'http://radarr.local:7878',
-            env_field: 'RADARR_URL',
+            service: 'gateway_alpha',
+            url: 'http://gateway_alpha.local:7878',
+            env_field: 'GATEWAY_ALPHA_URL',
             secret_present: true,
             source_host: 'media-node',
-            probe_host: 'radarr.local',
-            runtime: { container_name: 'radarr', image: 'lscr.io/linuxserver/radarr:latest' },
+            probe_host: 'gateway_alpha.local',
+            runtime: { container_name: 'gateway_alpha', image: 'lscr.io/linuxserver/gateway_alpha:latest' },
             url_verified: true,
           },
           {
-            service: 'sonarr',
-            url: 'http://sonarr.local:8989',
-            env_field: 'SONARR_URL',
+            service: 'hidden_upstream',
+            url: 'http://hidden_upstream.local:8989',
+            env_field: 'HIDDEN_UPSTREAM_URL',
             secret_present: true,
             source_host: 'media-node',
-            probe_host: 'sonarr.local',
-            runtime: { container_name: 'sonarr', image: 'lscr.io/linuxserver/sonarr:latest' },
+            probe_host: 'hidden_upstream.local',
+            runtime: { container_name: 'hidden_upstream', image: 'lscr.io/linuxserver/hidden_upstream:latest' },
             url_verified: true,
           },
         ],
         warnings: [
           {
-            service: 'plex',
+            service: 'gateway_beta',
             host: 'media-node',
-            message: 'Mock scan found a Plex container but no token in mounted config.',
+            message: 'Mock scan found a Gateway beta container but no token in mounted config.',
           },
         ],
       }

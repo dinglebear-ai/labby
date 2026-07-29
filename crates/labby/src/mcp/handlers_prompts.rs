@@ -529,8 +529,8 @@ mod tests {
     #[tokio::test]
     async fn protected_scope_denies_builtin_prompt_for_disallowed_service() {
         let server = prompt_test_server(McpRouteScope::protected_subset(
-            "media",
-            ["sonarr"],
+            "ops",
+            ["gateway-alpha"],
             ["gateway"],
             false,
         ));
@@ -601,8 +601,8 @@ mod tests {
     #[tokio::test]
     async fn protected_scope_allows_builtin_prompt_for_allowed_service() {
         let server = prompt_test_server(McpRouteScope::protected_subset(
-            "media",
-            ["sonarr"],
+            "ops",
+            ["gateway-alpha"],
             ["gateway"],
             false,
         ));

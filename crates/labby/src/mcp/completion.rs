@@ -16,7 +16,7 @@ pub(crate) fn action_schema() -> serde_json::Map<String, Value> {
         "properties": {
             "action": {
                 "type": "string",
-                "description": "Action to perform (e.g. \"movie.search\"). Use \"help\" to list all actions."
+                "description": "Action to perform (e.g. \"status.get\"). Use \"help\" to list all actions."
             },
             "params": {
                 "type": "object",

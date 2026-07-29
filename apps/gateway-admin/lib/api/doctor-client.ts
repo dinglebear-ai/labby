@@ -64,18 +64,18 @@ const MOCK_DOCTOR_REPORT: DoctorReport = {
       elapsed_ms: 4,
     },
     {
-      service: 'radarr',
+      service: 'gateway_alpha',
       category: 'service',
       severity: 'ok',
-      message: 'Mock Radarr configuration is complete.',
+      message: 'Mock Gateway alpha configuration is complete.',
       elapsed_ms: 7,
     },
     {
-      service: 'sonarr',
+      service: 'hidden_upstream',
       category: 'service',
       severity: 'warn',
-      message: 'Mock Sonarr credentials are not configured.',
-      hint: 'Add SONARR_URL and SONARR_API_KEY before using live mode.',
+      message: 'Mock Hidden upstream credentials are not configured.',
+      hint: 'Add HIDDEN_UPSTREAM_URL and HIDDEN_UPSTREAM_API_KEY before using live mode.',
       elapsed_ms: 2,
     },
   ],
@@ -117,8 +117,8 @@ export const doctorApi = {
       return Promise.resolve({
         service,
         category: 'service',
-        severity: service === 'sonarr' || service === 'plex' ? 'warn' : 'ok',
-        message: service === 'sonarr' || service === 'plex'
+        severity: service === 'hidden_upstream' || service === 'gateway_beta' ? 'warn' : 'ok',
+        message: service === 'hidden_upstream' || service === 'gateway_beta'
           ? `Mock ${service} credentials are incomplete.`
           : `Mock ${service} probe passed.`,
         elapsed_ms: 5,

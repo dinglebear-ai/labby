@@ -17,12 +17,12 @@
 | `crates/lab/src/api/state.rs` | Add `Arc<Catalog>` field, update `new()` |
 | `crates/lab/src/api/router.rs` | Add `GET /v1/{service}/actions` route + handler |
 | `crates/lab/src/catalog.rs` | Make `convert_actions` pub |
-| `crates/lab/src/api/services/sonarr.rs` | Migrate to `ToolError` |
-| `crates/lab/src/api/services/prowlarr.rs` | Migrate to `ToolError` |
-| `crates/lab/src/api/services/plex.rs` | Migrate to `ToolError` |
-| `crates/lab/src/api/services/tautulli.rs` | Migrate to `ToolError` |
-| `crates/lab/src/api/services/sabnzbd.rs` | Migrate to `ToolError` |
-| `crates/lab/src/api/services/qbittorrent.rs` | Migrate to `ToolError` |
+| `crates/lab/src/api/services/retired-upstream.rs` | Migrate to `ToolError` |
+| `crates/lab/src/api/services/retired-upstream.rs` | Migrate to `ToolError` |
+| `crates/lab/src/api/services/retired-upstream.rs` | Migrate to `ToolError` |
+| `crates/lab/src/api/services/retired-upstream.rs` | Migrate to `ToolError` |
+| `crates/lab/src/api/services/retired-upstream.rs` | Migrate to `ToolError` |
+| `crates/lab/src/api/services/retired-upstream.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/tailscale.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/linkding.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/memos.rs` | Migrate to `ToolError` |
@@ -31,7 +31,7 @@
 | `crates/lab/src/api/services/arcane.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/unraid.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/unifi.rs` | Migrate to `ToolError` |
-| `crates/lab/src/api/services/overseerr.rs` | Migrate to `ToolError` |
+| `crates/lab/src/api/services/retired-upstream.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/gotify.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/openai.rs` | Migrate to `ToolError` |
 | `crates/lab/src/api/services/qdrant.rs` | Migrate to `ToolError` |
@@ -44,45 +44,45 @@
 
 ## Task 1: Migrate stub API handlers to ToolError
 
-**Context:** Every stub handler currently returns `ApiResult<Json<Value>>` and wraps the dispatch error with `ApiError::Internal(e.to_string())`. That produces `{"kind":"internal_error"}` for *every* error from those services, discarding the real kind. The radarr handler (already done) is the reference. We need to do the same for all 20 remaining services.
+**Context:** Every stub handler currently returns `ApiResult<Json<Value>>` and wraps the dispatch error with `ApiError::Internal(e.to_string())`. That produces `{"kind":"internal_error"}` for *every* error from those services, discarding the real kind. The retired-upstream handler (already done) is the reference. We need to do the same for all 20 remaining services.
 
 **Current pattern (all 20 stubs look like this):**
 ```rust
-// crates/lab/src/api/services/sonarr.rs
+// crates/lab/src/api/services/retired-upstream.rs
 use crate::api::{error::{ApiError, ApiResult}, state::AppState};
 
 async fn handle(...) -> ApiResult<Json<Value>> {
-    crate::mcp::services::sonarr::dispatch(&req.action, req.params)
+    crate::mcp::services::retired-upstream::dispatch(&req.action, req.params)
         .await
         .map(Json)
         .map_err(|e| ApiError::Internal(e.to_string()))
 }
 ```
 
-**Target pattern (identical to radarr):**
+**Target pattern (identical to retired-upstream):**
 ```rust
 use crate::api::state::AppState;
 
 async fn handle(...) -> Result<Json<Value>, crate::mcp::envelope::ToolError> {
     let start = std::time::Instant::now();
     let action = req.action.clone();
-    let result = crate::mcp::services::sonarr::dispatch(&req.action, req.params).await;
+    let result = crate::mcp::services::retired-upstream::dispatch(&req.action, req.params).await;
     let elapsed_ms = start.elapsed().as_millis();
     match &result {
-        Ok(_) => tracing::info!(service = "sonarr", action, elapsed_ms, "dispatch ok"),
-        Err(e) => tracing::warn!(service = "sonarr", action, elapsed_ms, kind = e.kind(), "dispatch error"),
+        Ok(_) => tracing::info!(service = "retired-upstream", action, elapsed_ms, "dispatch ok"),
+        Err(e) => tracing::warn!(service = "retired-upstream", action, elapsed_ms, kind = e.kind(), "dispatch error"),
     }
     result.map(Json)
 }
 ```
 
 **Files:**
-- Modify: `crates/lab/src/api/services/sonarr.rs`
-- Modify: `crates/lab/src/api/services/prowlarr.rs`
-- Modify: `crates/lab/src/api/services/plex.rs`
-- Modify: `crates/lab/src/api/services/tautulli.rs`
-- Modify: `crates/lab/src/api/services/sabnzbd.rs`
-- Modify: `crates/lab/src/api/services/qbittorrent.rs`
+- Modify: `crates/lab/src/api/services/retired-upstream.rs`
+- Modify: `crates/lab/src/api/services/retired-upstream.rs`
+- Modify: `crates/lab/src/api/services/retired-upstream.rs`
+- Modify: `crates/lab/src/api/services/retired-upstream.rs`
+- Modify: `crates/lab/src/api/services/retired-upstream.rs`
+- Modify: `crates/lab/src/api/services/retired-upstream.rs`
 - Modify: `crates/lab/src/api/services/tailscale.rs`
 - Modify: `crates/lab/src/api/services/linkding.rs`
 - Modify: `crates/lab/src/api/services/memos.rs`
@@ -91,7 +91,7 @@ async fn handle(...) -> Result<Json<Value>, crate::mcp::envelope::ToolError> {
 - Modify: `crates/lab/src/api/services/arcane.rs`
 - Modify: `crates/lab/src/api/services/unraid.rs`
 - Modify: `crates/lab/src/api/services/unifi.rs`
-- Modify: `crates/lab/src/api/services/overseerr.rs`
+- Modify: `crates/lab/src/api/services/retired-upstream.rs`
 - Modify: `crates/lab/src/api/services/gotify.rs`
 - Modify: `crates/lab/src/api/services/openai.rs`
 - Modify: `crates/lab/src/api/services/qdrant.rs`
@@ -101,9 +101,9 @@ async fn handle(...) -> Result<Json<Value>, crate::mcp::envelope::ToolError> {
 
 - [ ] **Step 1: Apply the migration to all 21 service files**
 
-  Replace every occurrence of the old pattern. The exact new content for each file follows the same template — only the service name changes. Apply to all 21 services: `sonarr`, `prowlarr`, `plex`, `tautulli`, `sabnzbd`, `qbittorrent`, `tailscale`, `linkding`, `memos`, `bytestash`, `paperless`, `arcane`, `unraid`, `unifi`, `overseerr`, `gotify`, `openai`, `qdrant`, `tei`, `apprise`, `extract`.
+  Replace every occurrence of the old pattern. The exact new content for each file follows the same template — only the service name changes. Apply to all 21 services: `retired-upstream`, `retired-upstream`, `retired-upstream`, `retired-upstream`, `retired-upstream`, `retired-upstream`, `tailscale`, `linkding`, `memos`, `bytestash`, `paperless`, `arcane`, `unraid`, `unifi`, `retired-upstream`, `gotify`, `openai`, `qdrant`, `tei`, `apprise`, `extract`.
 
-  Template (substitute `SERVICE_NAME` → actual service name, e.g. `sonarr`):
+  Template (substitute `SERVICE_NAME` → actual service name, e.g. `retired-upstream`):
   ```rust
   //! HTTP route group for the `SERVICE_NAME` service.
 
@@ -182,9 +182,9 @@ async fn handle(...) -> Result<Json<Value>, crate::mcp::envelope::ToolError> {
 {
   "services": [
     {
-      "name": "radarr",
+      "name": "retired-upstream",
       "description": "...",
-      "category": "Servarr",
+      "category": "Retired upstream",
       "actions": [
         { "name": "movie.search", "description": "...", "destructive": false }
       ]
@@ -244,7 +244,7 @@ The `GET /v1/{service}/actions` endpoint returns only the `actions` array for th
 
   Then add the route after the `/ready` route (before the per-service nests), and add the handler function at the bottom of the file:
 
-  After `router = router.nest("/v1/extract", ...)`, add before the `#[cfg(feature = "radarr")]` block:
+  After `router = router.nest("/v1/extract", ...)`, add before the `#[cfg(feature = "retired-upstream")]` block:
   ```rust
   router = router.route("/v1/{service}/actions", get(service_actions));
   ```

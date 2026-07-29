@@ -292,7 +292,7 @@ pub(super) fn upstream_target_redacted(config: &UpstreamConfig) -> String {
 /// Namespace an upstream prompt name with its owning upstream, mirroring how
 /// `rewrite_resource_uri` prefixes resources. This keeps prompts with the same
 /// bare name from different upstreams distinct (e.g. two `quick_start` prompts
-/// become `rustarr/quick_start` and `sonarr/quick_start`).
+/// become `gateway_alpha/quick_start` and `gateway_alpha/quick_start`).
 pub(super) fn prefixed_upstream_prompt_name(upstream_name: &str, prompt_name: &str) -> String {
     format!("{upstream_name}/{prompt_name}")
 }

@@ -649,7 +649,7 @@ git commit -m "feat(openapi): param_type_to_schema with tracing::warn on unknown
 **Files:**
 - Modify: `crates/lab/src/api/openapi.rs`
 
-This function walks every service's `&[ActionSpec]` and produces named schema components like `RadarrMovieSearchParams`. These are injected into the OpenAPI components map for documentation.
+This function walks every service's `&[ActionSpec]` and produces named schema components like `Retired upstreamMovieSearchParams`. These are injected into the OpenAPI components map for documentation.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -690,23 +690,23 @@ Add to the `tests` module in `crates/lab/src/api/openapi.rs`:
             },
         ];
 
-        let schemas = super::build_action_schemas("radarr", actions);
+        let schemas = super::build_action_schemas("retired-upstream", actions);
 
-        // movie.search -> RadarrMovieSearchParams
+        // movie.search -> Retired upstreamMovieSearchParams
         assert!(
-            schemas.iter().any(|(name, _)| name == "RadarrMovieSearchParams"),
-            "expected RadarrMovieSearchParams in schemas: {:?}",
+            schemas.iter().any(|(name, _)| name == "Retired upstreamMovieSearchParams"),
+            "expected Retired upstreamMovieSearchParams in schemas: {:?}",
             schemas.iter().map(|(n, _)| n).collect::<Vec<_>>()
         );
 
         // queue.list has no params — should still produce a schema (empty object)
         assert!(
-            schemas.iter().any(|(name, _)| name == "RadarrQueueListParams"),
-            "expected RadarrQueueListParams even for parameterless actions"
+            schemas.iter().any(|(name, _)| name == "Retired upstreamQueueListParams"),
+            "expected Retired upstreamQueueListParams even for parameterless actions"
         );
 
         // Verify the movie.search schema has the right properties
-        let (_, movie_schema) = schemas.iter().find(|(n, _)| n == "RadarrMovieSearchParams").unwrap();
+        let (_, movie_schema) = schemas.iter().find(|(n, _)| n == "Retired upstreamMovieSearchParams").unwrap();
         let j = serde_json::to_value(movie_schema).unwrap();
         assert_eq!(j["type"], "object");
         assert!(j["properties"]["query"].is_object(), "expected query property");
@@ -839,7 +839,7 @@ Add to the `tests` module in `crates/lab/src/api/openapi.rs`:
             returns: "array",
         }];
 
-        let schemas = super::build_action_schemas("radarr", actions);
+        let schemas = super::build_action_schemas("retired-upstream", actions);
         let injector = super::ActionSchemaInjector { schemas };
 
         let mut doc = EmptyDoc::openapi();
@@ -847,8 +847,8 @@ Add to the `tests` module in `crates/lab/src/api/openapi.rs`:
 
         let components = doc.components.expect("components should exist after injection");
         assert!(
-            components.schemas.contains_key("RadarrMovieSearchParams"),
-            "injector should add RadarrMovieSearchParams to components"
+            components.schemas.contains_key("Retired upstreamMovieSearchParams"),
+            "injector should add Retired upstreamMovieSearchParams to components"
         );
     }
 
@@ -941,17 +941,17 @@ Add to the `tests` module:
 ```rust
     #[test]
     fn build_service_paths_produces_post_operations() {
-        let paths = super::build_service_paths(&["radarr", "sonarr"]);
+        let paths = super::build_service_paths(&["retired-upstream", "retired-upstream"]);
         let json = serde_json::to_value(&paths).unwrap();
 
         // Each service should produce a POST /v1/{service} path
-        assert!(json["/v1/radarr"]["post"].is_object(), "/v1/radarr POST missing");
-        assert!(json["/v1/sonarr"]["post"].is_object(), "/v1/sonarr POST missing");
+        assert!(json["/v1/retired-upstream"]["post"].is_object(), "/v1/retired-upstream POST missing");
+        assert!(json["/v1/retired-upstream"]["post"].is_object(), "/v1/retired-upstream POST missing");
 
         // Each path should reference ActionRequest as request body
-        let radarr_post = &json["/v1/radarr"]["post"];
-        assert!(radarr_post["tags"].as_array().unwrap().contains(&serde_json::json!("radarr")));
-        assert!(radarr_post["security"].is_array(), "security should be set");
+        let retired-upstream_post = &json["/v1/retired-upstream"]["post"];
+        assert!(retired-upstream_post["tags"].as_array().unwrap().contains(&serde_json::json!("retired-upstream")));
+        assert!(retired-upstream_post["security"].is_array(), "security should be set");
     }
 
     #[test]

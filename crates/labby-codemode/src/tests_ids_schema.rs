@@ -144,8 +144,7 @@ fn snippet_catalog_json_input_schema_allows_any_json_value() {
 
 #[test]
 fn parse_rejects_lab_id() {
-    let err =
-        CodeModeToolId::parse("lab::radarr.movie.search").expect_err("lab:: ids are rejected");
+    let err = CodeModeToolId::parse("lab::gateway.status.get").expect_err("lab:: ids are rejected");
     match err {
         ToolError::Sdk { sdk_kind, message } => {
             assert_eq!(sdk_kind, "unknown_tool");
@@ -153,7 +152,7 @@ fn parse_rejects_lab_id() {
             // Message points callers at the native Lab service tool, not back
             // through Code Mode.
             assert!(message.contains("native Lab service tool"));
-            assert!(message.contains("radarr"));
+            assert!(message.contains("gateway"));
         }
         other => panic!("expected unknown_tool, got {other:?}"),
     }

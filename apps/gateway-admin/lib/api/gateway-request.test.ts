@@ -49,8 +49,8 @@ test('gatewayRequestInit keeps credentialed requests for session-auth setups', (
 })
 
 test('confirmGatewayParams marks destructive gateway mutations for explicit confirmation', () => {
-  assert.deepEqual(confirmGatewayParams({ id: 'plex' }), {
+  assert.deepEqual(confirmGatewayParams({ id: 'gateway_beta' }), {
     confirm: true,
-    id: 'plex',
+    id: 'gateway_beta',
   })
 })

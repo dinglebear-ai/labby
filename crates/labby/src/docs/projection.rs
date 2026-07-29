@@ -535,7 +535,7 @@ fn classify_api_feature(
 ) -> FeatureClass {
     if matches!(feature, "all" | "default") {
         FeatureClass::AggregateDefault
-    } else if matches!(feature, "servarr" | "test-utils") {
+    } else if matches!(feature, "upstream" | "test-utils") {
         FeatureClass::HelperInternal
     } else if lab_features.contains_key(feature) {
         FeatureClass::ServicePassthrough

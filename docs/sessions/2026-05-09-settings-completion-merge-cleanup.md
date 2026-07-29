@@ -30,7 +30,7 @@ PR #54 completed the settings implementation centered on the global built-in ups
 built_in_upstream_apis_enabled = false
 ```
 
-When disabled, Lab filters built-in upstream API services that talk to external services, including Radarr, Sonarr, Prowlarr, Plex, Tautulli, SABnzbd, qBittorrent, Tailscale, Linkding, Memos, Bytestash, Paperless, Arcane, Unraid, UniFi, Overseerr, Gotify, OpenAI, Qdrant, TEI, Apprise, MCP Registry, AdGuard, Pi-hole, Dozzle, Glances, Jellyfin, Komga, NPM, Uptime Kuma, Neo4j, NotebookLM, OpenACP, Servarr, and other non-bootstrap registry entries.
+When disabled, Lab filters built-in upstream API services that talk to external services, including Retired upstream, Retired upstream, Retired upstream, Retired upstream, Retired upstream, Retired upstream, retired-upstream, Tailscale, Linkding, Memos, Bytestash, Paperless, Arcane, Unraid, UniFi, Retired upstream, Gotify, OpenAI, Qdrant, TEI, Apprise, MCP Registry, AdGuard, Pi-hole, Dozzle, Glances, Retired upstream, Komga, NPM, Uptime Kuma, Neo4j, NotebookLM, OpenACP, Retired upstream, and other non-bootstrap registry entries.
 
 Operator/bootstrap/local services remain available, including `extract`, `gateway`, `doctor`, `setup`, `logs`, `device`, `marketplace`, `acp`, `stash`, `beads`, `deploy`, `fs`, and `loggifly`.
 
@@ -81,7 +81,7 @@ The full `nextest` run passed after rerunning one unrelated flaky websocket test
 3160 tests run: 3160 passed, 1 skipped
 ```
 
-Runtime smoke verified that disabling built-in upstream APIs rejects an upstream service such as Radarr while preserving bootstrap services and preserving TOML comments/unknown tables.
+Runtime smoke verified that disabling built-in upstream APIs rejects an upstream service such as Retired upstream while preserving bootstrap services and preserving TOML comments/unknown tables.
 
 Fresh PR CI passed on the merge-resolution commit `646d910b` before merge:
 

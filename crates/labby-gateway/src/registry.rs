@@ -26,7 +26,7 @@ use std::any::Any;
 /// stand up the in-process MCP server is opaque to the pool: it is recovered by
 /// the injected connector via [`InProcessService::as_any`] downcasting.
 pub trait InProcessService: Any + Send + 'static {
-    /// Stable service name (e.g. `"radarr"`). Used to derive the synthetic
+    /// Stable service name (e.g. `"gateway-alpha"`). Used to derive the synthetic
     /// `in-process:<name>` upstream name and for structured logging.
     fn service_name(&self) -> &'static str;
 

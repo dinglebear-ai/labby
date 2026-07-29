@@ -220,7 +220,7 @@ fn settings_update_value_schema() -> Schema {
 
 /// Convert a dotted action name to `PascalCase` for schema naming.
 ///
-/// `"movie.search"` → `"MovieSearch"`, `"queue.list"` → `"QueueList"`
+/// `"status.get"` → `"StatusGet"`, `"health.list"` → `"HealthList"`
 #[must_use]
 pub fn to_pascal_case(dotted: &str) -> String {
     dotted
@@ -241,7 +241,7 @@ pub fn to_pascal_case(dotted: &str) -> String {
 /// Build named schemas for each service's actions.
 ///
 /// Returns `(name, Schema)` pairs suitable for injection into `OpenAPI` components.
-/// Names follow the pattern `{Service}{Action}Params` — e.g., `RadarrMovieSearchParams`.
+/// Names follow the pattern `{Service}{Action}Params` — e.g., `GatewayListParams`.
 #[must_use]
 pub fn build_action_schemas(services: &[RegisteredService]) -> Vec<(String, RefOr<Schema>)> {
     let mut schemas = Vec::new();
@@ -890,10 +890,10 @@ mod tests {
 
     #[test]
     fn to_pascal_case_basic() {
-        assert_eq!(to_pascal_case("movie.search"), "MovieSearch");
-        assert_eq!(to_pascal_case("queue.list"), "QueueList");
+        assert_eq!(to_pascal_case("status.get"), "StatusGet");
+        assert_eq!(to_pascal_case("health.list"), "HealthList");
         assert_eq!(to_pascal_case("help"), "Help");
-        assert_eq!(to_pascal_case("movie.add"), "MovieAdd");
+        assert_eq!(to_pascal_case("status.update"), "StatusUpdate");
     }
 
     #[test]
@@ -912,11 +912,11 @@ mod tests {
 
     #[test]
     fn build_service_paths_generates_per_service() {
-        let names = vec!["radarr".to_string(), "sonarr".to_string()];
+        let names = vec!["gateway-alpha".to_string(), "gateway-beta".to_string()];
         let paths = build_service_paths(&names);
         assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0].0, "/v1/radarr");
-        assert_eq!(paths[1].0, "/v1/sonarr");
+        assert_eq!(paths[0].0, "/v1/gateway-alpha");
+        assert_eq!(paths[1].0, "/v1/gateway-beta");
     }
 
     #[test]

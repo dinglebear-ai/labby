@@ -4,11 +4,11 @@ This directory is the translation layer between `lab-apis` (pure SDK) and the MC
 
 ## One tool per service
 
-Each enabled service registers exactly one MCP tool in `crates/lab/src/registry.rs` (not `mcp/registry.rs`, which is a thin re-export). The tool name matches the service name (`radarr`, `sonarr`, `gateway`, ...). Normal services register directly from the shared dispatch layer:
+Each enabled service registers exactly one MCP tool in `crates/lab/src/registry.rs` (not `mcp/registry.rs`, which is a thin re-export). The tool name matches the service name. Normal services register directly from the shared dispatch layer:
 
 ```rust
-#[cfg(feature = "radarr")]
-register_service!(reg, "radarr", radarr);
+#[cfg(feature = "gateway")]
+register_service!(reg, "gateway", gateway);
 ```
 
 The default macro path reads `crate::dispatch::<service>::ACTIONS` and calls `crate::dispatch::<service>::dispatch`.

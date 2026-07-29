@@ -27,13 +27,13 @@ async fn configured_service_appears_in_list_before_virtual_server_enablement() {
         .await;
 
     let servers = manager.list().await.expect("list");
-    let plex = servers
+    let gateway_alpha = servers
         .iter()
         .find(|server| server.id == "deploy")
-        .expect("plex server");
-    assert!(plex.configured);
-    assert!(!plex.enabled);
-    assert_eq!(plex.source, "in_process");
+        .expect("gateway_alpha server");
+    assert!(gateway_alpha.configured);
+    assert!(!gateway_alpha.enabled);
+    assert_eq!(gateway_alpha.source, "in_process");
 }
 
 #[tokio::test]
@@ -76,7 +76,7 @@ async fn stale_virtual_server_with_unknown_service_does_not_break_list() {
 }
 
 // CANNOT be re-fixtured without a production change (out of test-only scope): it
-// drives `set_service_config("deploy", {PLEX_TOKEN})`, but `deploy` (the only
+// drives `set_service_config("deploy", {GATEWAY_ALPHA_TOKEN})`, but `deploy` (the only
 // service `registry::service_meta` resolves post-pivot) declares zero env fields, so
 // the call is rejected as an invalid field. Modelling an "incomplete" service needs
 // a service_meta-resolvable service that declares a required env var — none exists
@@ -127,13 +127,16 @@ async fn disabling_virtual_server_preserves_configured_service_listing() {
     manager.seed_config_unchecked_for_tests(cfg).await;
 
     let servers = manager.list().await.expect("list");
-    let plex = servers
+    let gateway_alpha = servers
         .iter()
         .find(|server| server.id == "deploy")
-        .expect("plex server");
-    assert!(plex.configured);
-    assert!(!plex.enabled);
-    assert_eq!(plex.config_summary.target.as_deref(), Some("deploy"));
+        .expect("gateway_alpha server");
+    assert!(gateway_alpha.configured);
+    assert!(!gateway_alpha.enabled);
+    assert_eq!(
+        gateway_alpha.config_summary.target.as_deref(),
+        Some("deploy")
+    );
 }
 
 #[test]
@@ -187,7 +190,7 @@ fn healthy_informational_probe_messages_do_not_create_gateway_warnings() {
 }
 
 // CANNOT be re-fixtured without a production change (out of test-only scope): it
-// drives `set_service_config("deploy", {PLEX_URL, PLEX_TOKEN})`, which `deploy`
+// drives `set_service_config("deploy", {GATEWAY_ALPHA_URL, GATEWAY_ALPHA_TOKEN})`, which `deploy`
 // rejects (it declares no env fields). The surface assertions that follow don't need
 // the config write, but the `.expect()` on it panics first. Needs a
 // service_meta-resolvable service that declares env fields — none exists post-pivot.

@@ -45,14 +45,14 @@ test('unmaskValue converts undefined and empty string to empty string', () => {
 })
 
 test('unmaskValue returns non-sentinel values unchanged', () => {
-  assert.equal(unmaskValue('http://radarr.local:7878'), 'http://radarr.local:7878')
+  assert.equal(unmaskValue('http://gateway_alpha.local:7878'), 'http://gateway_alpha.local:7878')
   assert.equal(unmaskValue('info'), 'info')
 })
 
 // ── buildServiceFormDefaults secret skip ─────────────────────────────────────
 
 const SECRET_VAR: ServiceEnvVar = {
-  name: 'RADARR_API_KEY',
+  name: 'GATEWAY_ALPHA_API_KEY',
   description: 'API key',
   example: '••••••••',
   secret: true,
@@ -60,31 +60,31 @@ const SECRET_VAR: ServiceEnvVar = {
 }
 
 const URL_VAR: ServiceEnvVar = {
-  name: 'RADARR_URL',
+  name: 'GATEWAY_ALPHA_URL',
   description: 'Base URL',
-  example: 'http://radarr.local:7878',
+  example: 'http://gateway_alpha.local:7878',
   secret: false,
   required: true,
 }
 
 test('buildServiceFormDefaults masks stored secrets in defaults', () => {
   const { defaults } = buildServiceFormDefaults([SECRET_VAR, URL_VAR], {
-    RADARR_API_KEY: STORED_SECRET_MARKER,
-    RADARR_URL: 'http://radarr.local:7878',
+    GATEWAY_ALPHA_API_KEY: STORED_SECRET_MARKER,
+    GATEWAY_ALPHA_URL: 'http://gateway_alpha.local:7878',
   })
   // Secret fields with the sentinel become blank — "leave blank to keep current"
-  assert.equal(defaults.RADARR_API_KEY, '')
+  assert.equal(defaults.GATEWAY_ALPHA_API_KEY, '')
   // Non-secret values are preserved
-  assert.equal(defaults.RADARR_URL, 'http://radarr.local:7878')
+  assert.equal(defaults.GATEWAY_ALPHA_URL, 'http://gateway_alpha.local:7878')
 })
 
 test('buildServiceFormDefaults marks fields with stored-secret as hasStoredSecret', () => {
   const { fields } = buildServiceFormDefaults([SECRET_VAR, URL_VAR], {
-    RADARR_API_KEY: STORED_SECRET_MARKER,
-    RADARR_URL: 'http://radarr.local:7878',
+    GATEWAY_ALPHA_API_KEY: STORED_SECRET_MARKER,
+    GATEWAY_ALPHA_URL: 'http://gateway_alpha.local:7878',
   })
-  const secretField = fields.find((f) => f.name === 'RADARR_API_KEY')
-  assert.ok(secretField, 'RADARR_API_KEY field must exist')
+  const secretField = fields.find((f) => f.name === 'GATEWAY_ALPHA_API_KEY')
+  assert.ok(secretField, 'GATEWAY_ALPHA_API_KEY field must exist')
   assert.equal(secretField.secret, true, 'field must be marked secret')
   assert.equal(
     secretField.hasStoredSecret,
@@ -95,7 +95,7 @@ test('buildServiceFormDefaults marks fields with stored-secret as hasStoredSecre
 
 test('buildServiceFormDefaults returns empty default for missing draft entries', () => {
   const { defaults } = buildServiceFormDefaults([URL_VAR], {})
-  assert.equal(defaults.RADARR_URL, '')
+  assert.equal(defaults.GATEWAY_ALPHA_URL, '')
 })
 
 // ── save filter — placeholder skip ──────────────────────────────────────────
@@ -104,7 +104,7 @@ test('save filter skips secret placeholder values', () => {
   // Simulates the filter logic in service-client.tsx save() function.
   // Secret fields with blank or sentinel values must not be written.
   const SKIP_VALUES = ['', STORED_SECRET_MARKER, '********']
-  const fields = new Map([['RADARR_API_KEY', { secret: true }]])
+  const fields = new Map([['GATEWAY_ALPHA_API_KEY', { secret: true }]])
 
   function shouldWrite(key: string, value: string): boolean {
     const field = fields.get(key)
@@ -112,19 +112,19 @@ test('save filter skips secret placeholder values', () => {
     return !SKIP_VALUES.includes(value)
   }
 
-  assert.equal(shouldWrite('RADARR_API_KEY', ''), false)
-  assert.equal(shouldWrite('RADARR_API_KEY', STORED_SECRET_MARKER), false)
-  assert.equal(shouldWrite('RADARR_API_KEY', '********'), false)
-  assert.equal(shouldWrite('RADARR_API_KEY', 'actual-new-key'), true)
+  assert.equal(shouldWrite('GATEWAY_ALPHA_API_KEY', ''), false)
+  assert.equal(shouldWrite('GATEWAY_ALPHA_API_KEY', STORED_SECRET_MARKER), false)
+  assert.equal(shouldWrite('GATEWAY_ALPHA_API_KEY', '********'), false)
+  assert.equal(shouldWrite('GATEWAY_ALPHA_API_KEY', 'actual-new-key'), true)
   // Non-secret fields always pass through
-  assert.equal(shouldWrite('RADARR_URL', ''), true)
+  assert.equal(shouldWrite('GATEWAY_ALPHA_URL', ''), true)
 })
 
 // ── empty-value behavior for non-secret fields ───────────────────────────────
 
 test('empty non-secret draft value produces empty default', () => {
   const { defaults } = buildServiceFormDefaults([URL_VAR], {
-    RADARR_URL: '',
+    GATEWAY_ALPHA_URL: '',
   })
-  assert.equal(defaults.RADARR_URL, '')
+  assert.equal(defaults.GATEWAY_ALPHA_URL, '')
 })

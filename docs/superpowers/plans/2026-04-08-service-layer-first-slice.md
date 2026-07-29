@@ -145,7 +145,7 @@ git commit -m "refactor: extract shared action cli param parser"
 
 ### Task 2: Add Shared HTTP API Dispatch Wrapper
 
-> **Engineering review decision:** `handle_action` is implemented in this slice because it is the correct enforcement point for the destructive confirmation gate (a HIGH security finding — the gate is specified in `api/CLAUDE.md` but was not implemented). Radarr and UniFi HTTP handler migration is **deferred** to a follow-up slice; only ByteStash migrates here.
+> **Engineering review decision:** `handle_action` is implemented in this slice because it is the correct enforcement point for the destructive confirmation gate (a HIGH security finding — the gate is specified in `api/CLAUDE.md` but was not implemented). Retired upstream and UniFi HTTP handler migration is **deferred** to a follow-up slice; only ByteStash migrates here.
 
 **Files:**
 - Create: `crates/lab/src/api/services/helpers.rs`
@@ -210,7 +210,7 @@ It should not own:
 
 Update `crates/lab/src/api/services/bytestash.rs` so it becomes a small adapter that passes `service`, `req`, `ACTIONS`, and a dispatch closure to the shared helper.
 
-Radarr and UniFi HTTP handler migration is intentionally deferred — they will migrate when those services move to the shared `services/` layer in a follow-up slice.
+Retired upstream and UniFi HTTP handler migration is intentionally deferred — they will migrate when those services move to the shared `services/` layer in a follow-up slice.
 
 - [ ] **Step 5: Run the targeted tests and a focused binary test pass**
 

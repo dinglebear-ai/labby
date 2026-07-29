@@ -9,7 +9,7 @@ use crate::types::UiLink;
 pub(crate) fn lab_action_unknown_tool_hint() -> String {
     "Code Mode handles host-provided tools only. For Lab actions, call the native \
      Lab service tool with arguments={action:<dotted.action>, params:{...}}. \
-     Example: radarr(arguments={action:\"movie.search\", params:{query:\"Matrix\"}})."
+     Example: gateway(arguments={action:\"gateway.list\", params:{}})."
         .to_string()
 }
 

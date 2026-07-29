@@ -291,7 +291,7 @@ const MOCK_PLUGINS: Plugin[] = [
   { id: 'tdd@ccw', name: 'tdd-workflows', mkt: 'claude-code-workflows', ver: '1.3.0', desc: 'Test-driven development — red-green-refactor cycle, coverage analysis, and test architecture patterns.', tags: ['tdd', 'testing', 'workflow'], installed: true, installedAt: '2026-03-02', updatedAt: '2026-04-01' },
   { id: 'comp-review@ccw', name: 'comprehensive-review', mkt: 'claude-code-workflows', ver: '1.3.0', desc: 'Multi-perspective code review with architect, security, and performance specialized agents in parallel.', tags: ['review', 'security', 'perf'], installed: true, installedAt: '2026-03-02', updatedAt: '2026-04-01' },
   // jmagar-lab
-  { id: 'lab@jl', name: 'lab', mkt: 'jmagar-lab', ver: '0.7.0', desc: 'Homelab control plane — CLI, MCP server, HTTP API for 24 services (Radarr, Sonarr, Plex, UniFi, Unraid, and more).', tags: ['homelab', 'mcp', 'cli', 'rust'], installed: true, installedAt: '2026-04-21', updatedAt: '2026-04-22' },
+  { id: 'lab@jl', name: 'lab', mkt: 'jmagar-lab', ver: '0.7.0', desc: 'Homelab control plane — CLI, MCP server, HTTP API for 24 services (Retired upstream, Retired upstream, Retired upstream, UniFi, Unraid, and more).', tags: ['homelab', 'mcp', 'cli', 'rust'], installed: true, installedAt: '2026-04-21', updatedAt: '2026-04-22' },
 ]
 
 // ── Canned Artifacts ─────────────────────────────────────────────────────────

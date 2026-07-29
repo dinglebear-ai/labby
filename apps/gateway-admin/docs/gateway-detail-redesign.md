@@ -115,7 +115,7 @@ Also remove the adjacent "All discovered tools are currently exposed…" summary
 
 **Layout of the new header strip:**
 ```
-[Breadcrumbs: Gateways > plex]       [• Offline] [Expose resources ⚙] [• CLI ○] [• API ○] [• MCP ●] [• WEBUI ○]   [Updated …]
+[Breadcrumbs: Gateways > example-upstream]       [• Offline] [Expose resources ⚙] [• CLI ○] [• API ○] [• MCP ●] [• WEBUI ○]   [Updated …]
 ```
 
 - Each toggle remains a pill with the status dot, surface label, and switch.
@@ -140,9 +140,9 @@ Also remove the adjacent "All discovered tools are currently exposed…" summary
 
 ### 9. Detail View — Resources: Fix Nested/Recursive URIs
 
-**Observed issue:** Resources for the `plex` (STDIO) gateway show URIs like:
+**Observed issue:** Resources for the `example-upstream` (STDIO) gateway show URIs like:
 ```
-lab://upstream/plex/lab://upstream/plex/lab://upstream/plex/lab://catalog
+lab://upstream/example-upstream/lab://upstream/example-upstream/lab://upstream/example-upstream/lab://catalog
 ```
 Each row appends the full upstream prefix again, making URIs exponentially longer. This is a **backend bug** in resource URI construction — the upstream pool or gateway manager is prepending the prefix on URIs that already carry it.
 
@@ -159,10 +159,10 @@ Each row appends the full upstream prefix again, making URIs exponentially longe
 
 ### 10. Detail View — Tools vs. Actions Distinction for In-Process Services
 
-**Current state:** For a lab in-process service (e.g. `plex`), the "Tools" count shows 29 because the in-process service exposes 29 actions mapped as MCP tools (one per service action). The custom gateway (plex as STDIO upstream running `labby mcp --services plex`) shows 1 tool (the `plex` MCP tool that dispatches via `action` parameter).
+**Current state:** For a lab in-process service (e.g. `example-upstream`), the "Tools" count shows 29 because the in-process service exposes 29 actions mapped as MCP tools (one per service action). The custom gateway (example-upstream as STDIO upstream running `labby mcp --services example-upstream`) shows 1 tool (the `example-upstream` MCP tool that dispatches via `action` parameter).
 
 **User concern:** These are architecturally different:
-- **Custom STDIO gateway**: 1 MCP tool (`plex`) with N sub-actions dispatched via `action` parameter — tool count = 1, action count = N
+- **Custom STDIO gateway**: 1 MCP tool (`example-upstream`) with N sub-actions dispatched via `action` parameter — tool count = 1, action count = N
 - **In-process service**: N tools, each mapping directly to a service action — tool count = N
 
 **Display change:**
@@ -174,13 +174,13 @@ Each row appends the full upstream prefix again, making URIs exponentially longe
 
 ### 11. Server Name Collision Detection
 
-**Current state:** Two gateways can share the same name/id (e.g., two `plex` entries). This causes ambiguous routing, duplicate display rows, and potential data corruption on update/delete.
+**Current state:** Two gateways can share the same name/id (e.g., two `example-upstream` entries). This causes ambiguous routing, duplicate display rows, and potential data corruption on update/delete.
 
 **Changes needed:**
 
 **Backend (`crates/lab/src/dispatch/gateway/manager.rs` or `api/router.rs`):**
 - On `POST /gateways` (add gateway), check whether a gateway with the same name already exists.
-- Return `409 Conflict` with a structured error: `{ "kind": "conflict", "message": "A gateway named 'plex' already exists.", "existing_id": "plex" }`.
+- Return `409 Conflict` with a structured error: `{ "kind": "conflict", "message": "A gateway named 'example-upstream' already exists.", "existing_id": "example-upstream" }`.
 - Same check on in-process service enable if a custom gateway with the same name exists.
 
 **Frontend (`components/gateway/gateway-form-dialog.tsx`):**

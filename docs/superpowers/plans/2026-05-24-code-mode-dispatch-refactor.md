@@ -327,7 +327,7 @@ async fn search_expands_builtin_matches_to_action_candidates() {
         .await
         .unwrap();
 
-    assert_eq!(results.first().map(|r| r.id.as_str()), Some("lab::radarr.movie.search"));
+    assert_eq!(results.first().map(|r| r.id.as_str()), Some("lab::retired-upstream.movie.search"));
     assert!(results.iter().all(|r| r.schema_available));
 }
 ```
@@ -366,12 +366,12 @@ async fn schema_returns_lab_action_bindings() {
     let broker = CodeModeBroker::new(&registry, None);
 
     let schema = broker
-        .schema("lab::radarr.movie.search", CodeModeCaller::TrustedLocal, CodeModeSurface::Cli)
+        .schema("lab::retired-upstream.movie.search", CodeModeCaller::TrustedLocal, CodeModeSurface::Cli)
         .await
         .unwrap();
 
     assert_eq!(schema.kind, "lab_action");
-    assert!(schema.bindings.typescript.contains("callTool(\"lab::radarr.movie.search\""));
+    assert!(schema.bindings.typescript.contains("callTool(\"lab::retired-upstream.movie.search\""));
 }
 ```
 
@@ -398,7 +398,7 @@ async fn search_keeps_builtin_candidates_when_upstream_search_is_unavailable() {
         .await
         .unwrap();
 
-    assert!(results.iter().any(|r| r.id == "lab::radarr.movie.search"));
+    assert!(results.iter().any(|r| r.id == "lab::retired-upstream.movie.search"));
 }
 ```
 
@@ -434,7 +434,7 @@ Extend the existing `gateway_cli_parses_commands` test with:
 
 ```rust
 assert!(Cli::try_parse_from(["lab", "gateway", "code", "search", "movie.search"]).is_ok());
-assert!(Cli::try_parse_from(["lab", "gateway", "code", "schema", "lab::radarr.movie.search"]).is_ok());
+assert!(Cli::try_parse_from(["lab", "gateway", "code", "schema", "lab::retired-upstream.movie.search"]).is_ok());
 assert!(Cli::try_parse_from([
     "lab",
     "gateway",

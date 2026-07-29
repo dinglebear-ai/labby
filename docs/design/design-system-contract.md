@@ -538,7 +538,7 @@ Rules:
 
 ### Service Brand Identity
 
-External-service brand colors (Plex orange, Sonarr cyan, Radarr yellow, etc.) are kept in `lib/branding/service-brands.ts`, not inlined in components. They are the single sanctioned exception to the "no raw hex" rule because they encode third-party brand identity rather than Aurora UI tone.
+External-service brand colors (Example upstream orange, Example upstream cyan, Example upstream yellow, etc.) are kept in `lib/branding/service-brands.ts`, not inlined in components. They are the single sanctioned exception to the "no raw hex" rule because they encode third-party brand identity rather than Aurora UI tone.
 
 ### Empty, Loading, Success, Warning, Error States
 

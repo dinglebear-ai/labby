@@ -29,13 +29,13 @@ Initial session prompt:
 
 Later session requests:
 
-1. Address Rust compiler warnings in `crates/lab/src/dispatch/upstream/pool.rs`, `crates/lab/src/mcp/services/tautulli.rs`, and `crates/lab/src/mcp/services/tailscale.rs`.
+1. Address Rust compiler warnings in `crates/lab/src/dispatch/upstream/pool.rs`, `crates/lab/src/mcp/services/retired-upstream.rs`, and `crates/lab/src/mcp/services/tailscale.rs`.
 2. Explain the cause of those warnings in plain language.
 3. Save the current session as a markdown document with concrete repo and git context.
 
 ## Session Overview
 
-The visible session shifted from an initial UI badge-placement request to Rust warning cleanup work. The executed code edits changed `Instant` calls in the upstream pool and touched the MCP service wrappers for `tautulli` and `tailscale`. No build or test verification was run in the visible session. This file records the session state and the repo context at capture time.
+The visible session shifted from an initial UI badge-placement request to Rust warning cleanup work. The executed code edits changed `Instant` calls in the upstream pool and touched the MCP service wrappers for `retired-upstream` and `tailscale`. No build or test verification was run in the visible session. This file records the session state and the repo context at capture time.
 
 ## Sequence of Events
 
@@ -43,7 +43,7 @@ The visible session shifted from an initial UI badge-placement request to Rust w
 2. Repository operating instructions and environment context were provided for `/home/jmagar/workspace/lab`.
 3. A Rust warning report was provided for:
    - unnecessary qualification warnings in [pool.rs](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs)
-   - dead code warnings for `dispatch` in [tautulli.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tautulli.rs) and [tailscale.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs)
+   - dead code warnings for `dispatch` in [retired-upstream.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/retired-upstream.rs) and [tailscale.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs)
 4. The warning locations were inspected with `rg` and `sed`.
 5. `pool.rs` was patched to replace `std::time::Instant::now` with `Instant::now` at the warning sites.
 6. The two MCP service files were patched during the session.
@@ -57,10 +57,10 @@ The visible session shifted from an initial UI badge-placement request to Rust w
 ## Key Findings
 
 - [crates/lab/src/dispatch/upstream/pool.rs:497](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs:497), [pool.rs:499](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs:499), [pool.rs:526](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs:526), [pool.rs:527](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs:527), [pool.rs:528](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs:528), and [pool.rs:978](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs:978) now use `Instant::now()`, and the file already imports `Instant` via `use std::time::{Duration, Instant};`.
-- [crates/lab/src/registry.rs:264](/home/jmagar/workspace/lab/crates/lab/src/registry.rs:264) and [registry.rs:281](/home/jmagar/workspace/lab/crates/lab/src/registry.rs:281) show the registry dispatching directly to `crate::dispatch::tautulli::dispatch` and `crate::dispatch::tailscale::dispatch`.
-- [crates/lab/src/mcp/services/tautulli.rs:9](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tautulli.rs:9) still defines a local `pub async fn dispatch(...)` wrapper at capture time.
+- [crates/lab/src/registry.rs:264](/home/jmagar/workspace/lab/crates/lab/src/registry.rs:264) and [registry.rs:281](/home/jmagar/workspace/lab/crates/lab/src/registry.rs:281) show the registry dispatching directly to `crate::dispatch::retired-upstream::dispatch` and `crate::dispatch::tailscale::dispatch`.
+- [crates/lab/src/mcp/services/retired-upstream.rs:9](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/retired-upstream.rs:9) still defines a local `pub async fn dispatch(...)` wrapper at capture time.
 - [crates/lab/src/mcp/services/tailscale.rs:9](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs:9) still defines a local `pub async fn dispatch(...)` wrapper at capture time.
-- [crates/lab/src/mcp/services/tautulli.rs:7](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tautulli.rs:7) and [tailscale.rs:7](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs:7) export `ACTIONS`, but the wrapper functions remain present.
+- [crates/lab/src/mcp/services/retired-upstream.rs:7](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/retired-upstream.rs:7) and [tailscale.rs:7](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs:7) export `ACTIONS`, but the wrapper functions remain present.
 - `gh pr view --json number,title,url` returned PR `#25`, titled `fix(auth): gateway admin auth, upstream OAuth, and dispatch fixes`.
 - `CODEX_THREAD_ID=019db23c-d45b-7443-9602-396dcff9fa5e` was exposed in the environment.
 - No active plan file was observed under `.omc/plans/` at capture time.
@@ -75,7 +75,7 @@ The visible session shifted from an initial UI badge-placement request to Rust w
 ## Files Modified
 
 - [crates/lab/src/dispatch/upstream/pool.rs](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs) - replaced redundant `std::time::Instant::now` qualification at the reported warning sites.
-- [crates/lab/src/mcp/services/tautulli.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tautulli.rs) - MCP adapter file touched during the warning-cleanup session.
+- [crates/lab/src/mcp/services/retired-upstream.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/retired-upstream.rs) - MCP adapter file touched during the warning-cleanup session.
 - [crates/lab/src/mcp/services/tailscale.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs) - MCP adapter file touched during the warning-cleanup session.
 - [docs/sessions/2026-04-21-warning-cleanup-session.md](/home/jmagar/workspace/lab/docs/sessions/2026-04-21-warning-cleanup-session.md) - session documentation created from observed context.
 
@@ -123,7 +123,7 @@ fcc5554 merge: bd-work/gh-webhook (lab-17th.1-12 gh-webhook crate)
  M crates/lab-apis/src/extract/CLAUDE.md
  M crates/lab-apis/src/extract/client.rs
  M crates/lab-apis/src/extract/runtime.rs
- M crates/lab-apis/src/servarr/CLAUDE.md
+ M crates/lab-apis/src/retired-upstream/CLAUDE.md
  M crates/lab/CLAUDE.md
  M crates/lab/src/api/auth_helpers.rs
  M crates/lab/src/api/browser_session.rs
@@ -134,17 +134,17 @@ fcc5554 merge: bd-work/gh-webhook (lab-17th.1-12 gh-webhook crate)
  M crates/lab/src/cli/linkding.rs
  M crates/lab/src/cli/memos.rs
  M crates/lab/src/cli/openai.rs
- M crates/lab/src/cli/overseerr.rs
+ M crates/lab/src/cli/retired-upstream.rs
  M crates/lab/src/cli/paperless.rs
- M crates/lab/src/cli/plex.rs
- M crates/lab/src/cli/prowlarr.rs
- M crates/lab/src/cli/qbittorrent.rs
+ M crates/lab/src/cli/retired-upstream.rs
+ M crates/lab/src/cli/retired-upstream.rs
+ M crates/lab/src/cli/retired-upstream.rs
  M crates/lab/src/cli/qdrant.rs
- M crates/lab/src/cli/sabnzbd.rs
+ M crates/lab/src/cli/retired-upstream.rs
  M crates/lab/src/cli/serve.rs
- M crates/lab/src/cli/sonarr.rs
+ M crates/lab/src/cli/retired-upstream.rs
  M crates/lab/src/cli/tailscale.rs
- M crates/lab/src/cli/tautulli.rs
+ M crates/lab/src/cli/retired-upstream.rs
  M crates/lab/src/cli/tei.rs
  M crates/lab/src/cli/unraid.rs
  M crates/lab/src/dispatch/upstream/pool.rs
@@ -153,7 +153,7 @@ fcc5554 merge: bd-work/gh-webhook (lab-17th.1-12 gh-webhook crate)
  M crates/lab/src/mcp/server.rs
  M crates/lab/src/mcp/services.rs
  M crates/lab/src/mcp/services/tailscale.rs
- M crates/lab/src/mcp/services/tautulli.rs
+ M crates/lab/src/mcp/services/retired-upstream.rs
  M crates/lab/src/tui/preview.rs
  M docs/TUI.md
  D monitors/monitors.json
@@ -303,25 +303,25 @@ CODEX_THREAD_ID=019db23c-d45b-7443-9602-396dcff9fa5e
   - Result: captured exact line references for the `Instant::now()` changes
 - `nl -ba crates/lab/src/dispatch/upstream/pool.rs | sed -n '970,985p'`
   - Result: captured exact line reference for `entry.set_unhealthy_since_for(..., Some(Instant::now()))`
-- `nl -ba crates/lab/src/mcp/services/tautulli.rs`
+- `nl -ba crates/lab/src/mcp/services/retired-upstream.rs`
   - Result: local wrapper `dispatch` function still present at line 9
 - `nl -ba crates/lab/src/mcp/services/tailscale.rs`
   - Result: local wrapper `dispatch` function still present at line 9
 - `nl -ba crates/lab/src/registry.rs | sed -n '255,285p'`
-  - Result: registry dispatches `tautulli` and `tailscale` through `crate::dispatch::*::dispatch`
+  - Result: registry dispatches `retired-upstream` and `tailscale` through `crate::dispatch::*::dispatch`
 
 ## Behavior Changes (Before/After)
 
 - Before: `pool.rs` used `std::time::Instant::now` at the reported warning sites.
 - After: `pool.rs` uses `Instant::now()` at those sites.
-- Before: the warning report stated `dispatch` in the `tautulli` and `tailscale` MCP service modules was unused.
+- Before: the warning report stated `dispatch` in the `retired-upstream` and `tailscale` MCP service modules was unused.
 - After: the session explanation attributed those warnings to registry wiring, but no verification command was run to confirm whether the current file state clears the warnings.
 
 ## Risks and Rollback
 
 - Risk: the working tree was already heavily dirty at capture time, so the warning-cleanup edits were made in a non-isolated state.
 - Risk: no build or test verification was run in the visible session, so warning resolution is not confirmed by compiler output.
-- Rollback path: revert the session-specific edits in [crates/lab/src/dispatch/upstream/pool.rs](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs), [crates/lab/src/mcp/services/tautulli.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tautulli.rs), and [crates/lab/src/mcp/services/tailscale.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs) using the repository's normal git workflow.
+- Rollback path: revert the session-specific edits in [crates/lab/src/dispatch/upstream/pool.rs](/home/jmagar/workspace/lab/crates/lab/src/dispatch/upstream/pool.rs), [crates/lab/src/mcp/services/retired-upstream.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/retired-upstream.rs), and [crates/lab/src/mcp/services/tailscale.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs) using the repository's normal git workflow.
 
 ## Decisions Not Taken
 
@@ -335,13 +335,13 @@ CODEX_THREAD_ID=019db23c-d45b-7443-9602-396dcff9fa5e
 - A file named `./.lavra/memory/session-state.md` exists, but the environment did not identify it as the current session transcript.
 - No active plan file was observed under `.omc/plans/`; if planning state exists elsewhere, it was not exposed by the commands run here.
 - The visible session began with a UI badge-placement request, but no implementation activity for that request appears in the command history captured for this document.
-- The current contents of [crates/lab/src/mcp/services/tautulli.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tautulli.rs:9) and [crates/lab/src/mcp/services/tailscale.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs:9) still show wrapper `dispatch` functions; compiler confirmation was not run to determine whether the original dead-code warnings remain.
+- The current contents of [crates/lab/src/mcp/services/retired-upstream.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/retired-upstream.rs:9) and [crates/lab/src/mcp/services/tailscale.rs](/home/jmagar/workspace/lab/crates/lab/src/mcp/services/tailscale.rs:9) still show wrapper `dispatch` functions; compiler confirmation was not run to determine whether the original dead-code warnings remain.
 
 ## Next Steps
 
 Unfinished work from this session:
 
-- Confirm whether the `tautulli` and `tailscale` dead-code warnings still reproduce after the current edits.
+- Confirm whether the `retired-upstream` and `tailscale` dead-code warnings still reproduce after the current edits.
 - If they still reproduce, align the MCP service modules and registry wiring so those wrappers are either used or removed.
 - Decide whether to complete the original badge/chip placement request from the start of the session.
 

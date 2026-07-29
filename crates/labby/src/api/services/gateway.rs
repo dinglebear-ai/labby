@@ -440,7 +440,7 @@ mod tests {
                         "confirm": true,
                         "name": "fixture",
                         "upstream": "fixture",
-                        "service": "plex",
+                        "service": "gateway-alpha",
                         "url": "https://fixture.example.com/mcp",
                         "spec": {"name":"fixture","url":"https://fixture.example.com/mcp"}
                     }
@@ -526,7 +526,7 @@ mod tests {
                     "action": action,
                     "params": {
                         "confirm": true,
-                        "service": "plex",
+                        "service": "gateway-alpha",
                         "url": "https://fixture.example.com/mcp",
                         "name": "fixture-http",
                         "spec": {"name":"fixture-http","url":"https://fixture.example.com/mcp"}

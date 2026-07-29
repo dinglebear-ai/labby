@@ -19,14 +19,14 @@
 
 The Setup/Settings refactor in `lab-bg3e` already specs and plans the right onboarding UX:
 
-- Locked spec: [`docs/superpowers/specs/2026-04-25-setup-settings-design.md`](../superpowers/specs/2026-04-25-setup-settings-design.md) — 7-step wizard at `/setup`, settings rail at `/settings`, `setup.draft.set`/`setup.draft.commit` write path, schema-driven `ServiceForm` over `UiSchema`, `doctor.service_probe` Test buttons, `/dev/api/nodeinfo` for re-run pre-population.
+- Locked spec: [`docs/superpowers/specs/2026-04-25-setup-settings-design.md`](../superpowers/specs/2026-04-25-setup-settings-design.md) — 7-step wizard at `/setup`, settings rail at `/settings`, `setup.draft.set`/`setup.draft.commit` write path, schema-driven `ServiceForm` over `UiSchema`, `doctor.service_probe` Test buttons, `/dev/api/retired-dev-route` for re-run pre-population.
 - React plans: [`docs/superpowers/plans/2026-04-26-setup-wizard.md`](../superpowers/plans/2026-04-26-setup-wizard.md) (14 tasks), [`docs/superpowers/plans/2026-04-26-settings-page.md`](../superpowers/plans/2026-04-26-settings-page.md) (9 tasks).
 - HTML mockups: `~/.superpowers/brainstorm/content/setup.html`, `~/.superpowers/brainstorm/content/settings.html`.
 
 What that work does not cover:
 
 1. **Distribution and Claude Code integration** — how a homelab user installs the binary, how they end up with one MCP server per service in Claude Code, and how the web UI turns into actual `claude plugin install` calls.
-2. **A wizard mode for plugin users** — bg3e was implicitly designed for the operator who runs the full `lab` stack (web UI, HTTP API, OAuth, multi-node fleet, etc.). A user who installed `lab-plex` from the Claude Code marketplace doesn't care about Surfaces, Nodes, OAuth, or PreFlight; they want to enter Plex creds and have the MCP server start working. Showing them all of that pushes operator-grade complexity onto a plugin-grade use case.
+2. **A wizard mode for plugin users** — bg3e was implicitly designed for the operator who runs the full `lab` stack (web UI, HTTP API, OAuth, multi-node fleet, etc.). A user who installed `lab-example-upstream` from the Claude Code marketplace doesn't care about Surfaces, Nodes, OAuth, or PreFlight; they want to enter Example upstream creds and have the MCP server start working. Showing them all of that pushes operator-grade complexity onto a plugin-grade use case.
 
 This plan adds both, on top of bg3e. The wizard becomes one surface with two **modes** — `plugin` (default when invoked from a plugin slash command, hides operator surfaces) and `full` (default for standalone `labby setup`, shows everything). Plugin-mode users can promote to full at any time; full-mode users see nothing different from what bg3e already specs.
 
@@ -74,7 +74,7 @@ The first acceptance criterion below is to reopen the three premature closures a
 
 ### Wizard integration
 - [ ] Step 4 of the wizard (Services, per the locked spec) gains a per-service "Enable in Claude Code" toggle next to the existing field group. State for the toggle is sourced from `setup.installed_plugins`. Toggling on calls `setup.install_plugin` after the service's draft is committed; toggling off calls `setup.uninstall_plugin`. The wizard never exposes the package ID directly — it derives it from the service name + the configured org prefix.
-- [ ] Step 7 (Finalize) adds a one-line summary of plugin actions taken in this session ("Installed: plex@lab, radarr@lab. Uninstalled: none.") below the existing finalize summary.
+- [ ] Step 7 (Finalize) adds a one-line summary of plugin actions taken in this session ("Installed: example-upstream@lab, example-upstream@lab. Uninstalled: none.") below the existing finalize summary.
 - [ ] The settings rail (`/settings`) Services panel mirrors the toggle. State stays consistent across `/setup` and `/settings` because both read `setup.installed_plugins`.
 
 ### Distribution
@@ -292,8 +292,8 @@ CLI shims honor `-y` / `--no-confirm` / `--dry-run` per `crates/lab/src/cli/CLAU
   - Param parsing (missing required, scope enum out-of-range).
 - [x] Integration test using a `LABBY_CLAUDE_BIN`-overridable shim: a tiny shell script that emulates `claude plugin install/list/uninstall` with deterministic JSON output. Verifies happy path, exit-non-zero, missing-binary, and timeout.
 - [x] Integration test for the loopback-mount gate: spin up the API on `0.0.0.0:0`, assert install/uninstall/list routes return 404; spin up on `127.0.0.1:0`, assert they exist.
-- [x] Snapshot test for the marketplace generator: run against the in-process registry, golden-compare the generated `plugin.json` / `.mcp.json` / `README.md` for `lab-core` + `lab-radarr`. Refresh on `cargo insta accept`.
-- [x] Snapshot test for `lab help` env-aware filter: empty env, only operator commands appear; `RADARR_URL` + `RADARR_API_KEY` set, radarr appears.
+- [x] Snapshot test for the marketplace generator: run against the in-process registry, golden-compare the generated `plugin.json` / `.mcp.json` / `README.md` for `lab-core` + `lab-example-upstream`. Refresh on `cargo insta accept`.
+- [x] Snapshot test for `lab help` env-aware filter: empty env, only operator commands appear; `EXAMPLE_UPSTREAM_URL` + `EXAMPLE_UPSTREAM_API_KEY` set, example-upstream appears.
 - [x] React tests (Vitest, per the bg3e.4/.5 plans) for the new toggle: optimistic flip + rollback on error, disabled state when draft not yet saved, badge renders from `useInstalledPlugins()`.
 
 ### Test scenarios
@@ -322,7 +322,7 @@ CLI shims honor `-y` / `--no-confirm` / `--dry-run` per `crates/lab/src/cli/CLAU
 4. `labby marketplace generate` ergonomics. Should it default to writing into a sibling repo (e.g. `../lab-marketplace/`) when run from the workspace? Proposal: no — explicit `--out` only. CI ergonomics live in the release workflow.
 5. Whether the env-aware `lab help` filter should also be the default for the MCP catalog when no `--services` is passed. Proposal: yes — same filter, same env vars, same `LABBY_SHOW_ALL` escape hatch. Documented behavior change in `docs/CONVENTIONS.md`.
 6. SessionStart hook in the core plugin. The earlier draft had one; we explicitly removed it because hook-driven webserver spawning is brittle. Confirm we ship core with **no** SessionStart hook — `/setup-core` is the only entry point.
-7. Plugin-mode service filtering. Step 4 in plugin mode shows only services with installed plugins. What if the user has Plex creds in `~/.labby/.env` but never installed `lab-plex`? Proposal: still show the service in plugin mode if it's already configured, with the toggle off, so the user can choose to install the plugin or clear the leftover env. Hide it only if it's neither installed nor configured.
+7. Plugin-mode service filtering. Step 4 in plugin mode shows only services with installed plugins. What if the user has Example upstream creds in `~/.labby/.env` but never installed `lab-example-upstream`? Proposal: still show the service in plugin mode if it's already configured, with the toggle off, so the user can choose to install the plugin or clear the leftover env. Hide it only if it's neither installed nor configured.
 8. Mode for re-runs. If a user ran `/setup-core` (plugin mode) once, then later runs standalone `labby setup`, do they get plugin or full mode? Proposal: the CLI flag wins. `labby setup` with no flag picks up the persisted mode from `~/.labby/.setup-state.json`, defaulting to `full` if the state file says nothing. Users who want full from a plugin install always have `/setup-core-advanced`.
 9. Whether `setup.state.set_mode` should be available over stdio MCP at all. Proposal: yes — it's not destructive (no fs write outside `~/.labby/.setup-state.json`), and stdio MCP callers (i.e. Claude Code itself) may legitimately need to flip the wizard mode programmatically. Loopback gate stays only on the actual plugin lifecycle actions.
 
@@ -347,10 +347,10 @@ CLI shims honor `-y` / `--no-confirm` / `--dry-run` per `crates/lab/src/cli/CLAU
 - [`docs/superpowers/specs/2026-04-25-setup-settings-design.md`](../superpowers/specs/2026-04-25-setup-settings-design.md) — locked Setup + Settings spec. Read this first.
 - [`docs/superpowers/plans/2026-04-26-setup-wizard.md`](../superpowers/plans/2026-04-26-setup-wizard.md) — 14-task React plan for `/setup`.
 - [`docs/superpowers/plans/2026-04-26-settings-page.md`](../superpowers/plans/2026-04-26-settings-page.md) — 9-task React plan for `/settings`.
-- `~/.superpowers/brainstorm/content/setup.html`, `settings.html` — interactive Tier-1 mockups (Aurora-styled, pre-populated from `/dev/api/nodeinfo`).
+- `~/.superpowers/brainstorm/content/setup.html`, `settings.html` — interactive Tier-1 mockups (Aurora-styled, pre-populated from `/dev/api/retired-dev-route`).
 - `crates/lab-apis/src/core/plugin_ui.rs` — `UiSchema` type from bg3e.1, source of truth for service field metadata.
 - `crates/lab/src/dispatch/doctor/` — bg3e.2 doctor service, source of `service_probe` and `audit.full`.
-- `crates/lab/src/api/router.rs:565` — existing `/dev/api/nodeinfo` endpoint, consumed by the wizard for re-run pre-population.
+- `crates/lab/src/api/router.rs:565` — existing `/dev/api/retired-dev-route` endpoint, consumed by the wizard for re-run pre-population.
 - `crates/lab/src/cli/serve.rs:771` — existing `is_loopback_host` helper to reuse for the route gate.
 - `crates/lab/src/cli/serve.rs:784` — existing `filter_registry` pattern; the env-aware `lab help` filter follows it.
 - `docs/DISPATCH.md` — dispatch layer contract; this plan adds one new invariant (loopback-only mount for plugin lifecycle).

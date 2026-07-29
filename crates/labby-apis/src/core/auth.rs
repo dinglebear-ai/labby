@@ -11,9 +11,7 @@ use std::fmt;
 pub enum Auth {
     /// No authentication.
     None,
-    /// `<header>: <key>` style. Header name is configurable because Servarr
-    /// uses `X-Api-Key` while Tautulli passes the key as a query param and
-    /// Linkding uses `Authorization`.
+    /// `<header>: <key>` style. Header names are configurable per upstream.
     ApiKey {
         /// Header name (e.g. `"X-Api-Key"`).
         header: String,
@@ -30,14 +28,14 @@ pub enum Auth {
         /// Bearer token value.
         token: String,
     },
-    /// HTTP Basic auth (qBittorrent pre-session, etc.).
+    /// HTTP Basic auth.
     Basic {
         /// Username.
         username: String,
         /// Password.
         password: String,
     },
-    /// Cookie-based session (qBittorrent post-login).
+    /// Cookie-based session.
     Session {
         /// Cookie header value to attach to every request.
         cookie: String,

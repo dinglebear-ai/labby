@@ -1213,87 +1213,6 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
     v1
 }
 
-// GET /dev/api/nodeinfo — unauthenticated, read-only.
-// Returns config.toml values + ~/.labby/.env contents (secrets masked) so the
-// setup wizard can pre-populate all fields without requiring a bearer token.
-async fn dev_nodeinfo(State(_state): State<AppState>) -> axum::response::Response {
-    use axum::Json;
-
-    let local_host = std::env::var("HOSTNAME")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
-        .unwrap_or_else(|| "local".into());
-
-    // dotenvy already loaded ~/.labby/.env at startup, so everything is in std::env.
-    // The UI treats MASKED_SECRET as "value already set — leave blank to keep current value".
-    const MASKED_SECRET: &str = "***";
-    let secret_suffixes = [
-        // Deny-list for secret detection. Add new suffixes here when new secret
-        // naming conventions are introduced (e.g. LABBY_AUTH_SIGNING_KEY).
-        // NOTE: `_KEY` intentionally covers `_API_KEY` and future signing-key vars.
-        //       `_SECRET` covers `_CLIENT_SECRET` — the more-specific entry is omitted.
-        "_KEY", // covers _API_KEY, _SIGNING_KEY, _HMAC_KEY, etc.
-        "_TOKEN",
-        "_PASSWORD",
-        "_SECRET", // covers _CLIENT_SECRET
-    ];
-    let service_prefixes = [
-        "RADARR_",
-        "SONARR_",
-        "PROWLARR_",
-        "PLEX_",
-        "TAUTULLI_",
-        "OVERSEERR_",
-        "SABNZBD_",
-        "QBITTORRENT_",
-        "UNRAID_",
-        "UNIFI_",
-        "TAILSCALE_",
-        "ARCANE_",
-        "LINKDING_",
-        "MEMOS_",
-        "BYTESTASH_",
-        "GOTIFY_",
-        "APPRISE_",
-        "OPENAI_",
-        "QDRANT_",
-        "TEI_",
-        "LABBY_MCP_HTTP_",
-        "LABBY_LOG",
-        "LABBY_AUTH_",
-        "LABBY_PUBLIC_URL",
-        "LABBY_GOOGLE_",
-    ];
-    let mut env_values = serde_json::Map::new();
-    for (key, val) in std::env::vars() {
-        if val.is_empty() {
-            continue;
-        }
-        if !service_prefixes.iter().any(|p| key.starts_with(p)) {
-            continue;
-        }
-        let masked = secret_suffixes.iter().any(|s| key.ends_with(s));
-        let display = if masked {
-            MASKED_SECRET.to_string()
-        } else {
-            val
-        };
-        env_values.insert(key, serde_json::Value::String(display));
-    }
-
-    Json(serde_json::json!({
-        "local_host": local_host,
-        "env": env_values,
-    }))
-    .into_response()
-}
-
 async fn labby_discovery(State(state): State<AppState>) -> axum::response::Response {
     let api_base_url = state
         .auth_config
@@ -1528,12 +1447,10 @@ pub(crate) fn build_router_with_external_auth(
     // over the SPA. See docs/design/component-development.md §5 (two-tier
     // serving model) for the full rationale.
     //
-    // /dev/api/*                  → local development helper endpoints
     // /dev/mockup, /dev/mockup/*  → Tier 1 mockup file server: serves HTML from
     //                     ~/.superpowers/brainstorm/content/{name}.html directly.
     //                     Keep this out of `/dev` so real Next.js dev pages can render.
     let dev_routes = Router::new()
-        .route("/dev/api/nodeinfo", get(dev_nodeinfo))
         // Mockup page routes — MUST stay before the static fallback (docs/design/component-development.md §5)
         .route("/dev/mockup", get(dev_mockup))
         .route("/dev/mockup/", get(dev_mockup))
@@ -2216,12 +2133,27 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn dev_retired_dev_route_is_not_mounted() {
+        let app = build_router_with_bearer(AppState::new(), None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/dev/api/retired-dev-route")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     /// When a service is absent from the runtime registry (e.g. filtered out by
     /// `--services`), its `/v1/<service>` routes must NOT be mounted — even if
     /// the feature flag for that service is compiled in.
     ///
     /// This test uses an empty registry to simulate `labby serve --services <other>`
-    /// excluding `radarr`, then verifies that `POST /v1/radarr` returns 404 rather
+    /// excluding `gateway_alpha`, then verifies that `POST /v1/gateway_alpha` returns 404 rather
     /// than reaching the handler.
 
     #[tokio::test]
@@ -3460,7 +3392,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/media")
+                    .uri("/ops")
                     .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -3471,7 +3403,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/media\", scope=\"mcp:media\""
+            "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/ops\", scope=\"mcp:ops\""
         );
     }
 
@@ -3490,7 +3422,7 @@ mod tests {
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
         let scoped_router = Router::new().route(
-            "/media",
+            "/ops",
             post(|| async { Json(serde_json::json!({"scoped": true})) }),
         );
         let state = AppState::new()
@@ -3498,7 +3430,7 @@ mod tests {
             .with_gateway_manager(manager)
             .with_protected_mcp_router(scoped_router);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_token(&auth_state, "https://mcp.example.com/media", "mcp:media");
+        let token = issue_test_token(&auth_state, "https://mcp.example.com/ops", "mcp:ops");
         let app = build_router(
             state,
             Some("static-token".to_string()),
@@ -3511,7 +3443,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/media")
+                    .uri("/ops")
                     .header(header::HOST, "mcp.example.com")
                     .header("x-request-id", "protected-subset-test")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -3902,18 +3834,18 @@ mod tests {
     fn protected_gateway_subset_config() -> crate::config::LabConfig {
         crate::config::LabConfig {
             protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
-                name: "media".to_string(),
+                name: "ops".to_string(),
                 enabled: true,
                 public_host: "mcp.example.com".to_string(),
-                public_path: "/media".to_string(),
+                public_path: "/ops".to_string(),
                 upstream: None,
                 backend_url: String::new(),
                 backend_mcp_path: "/mcp".to_string(),
-                scopes: vec!["mcp:media".to_string()],
+                scopes: vec!["mcp:ops".to_string()],
                 health_path: None,
                 target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
                     crate::config::ProtectedGatewaySubsetTarget {
-                        upstreams: vec!["sonarr".to_string(), "radarr".to_string()],
+                        upstreams: vec!["gateway-alpha".to_string(), "hidden-upstream".to_string()],
                         services: vec!["gateway".to_string()],
                         expose_code_mode: true,
                     },

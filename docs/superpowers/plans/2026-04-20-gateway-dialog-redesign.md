@@ -98,17 +98,17 @@ const SERVICE_BRANDS: Record<string, string> = {
   linkding: '#7C5CBF',
   memos: '#3478F6',
   openai: '#10A37F',
-  overseerr: '#E5870A',
+  retired-upstream: '#E5870A',
   paperless: '#17BC6C',
-  plex: '#CC7B19',
-  prowlarr: '#F16529',
-  qbittorrent: '#2F99E0',
+  retired-upstream: '#CC7B19',
+  retired-upstream: '#F16529',
+  retired-upstream: '#2F99E0',
   qdrant: '#DC244C',
-  radarr: '#F0BC40',
-  sabnzbd: '#F4A623',
-  sonarr: '#35C5F4',
+  retired-upstream: '#F0BC40',
+  retired-upstream: '#F4A623',
+  retired-upstream: '#35C5F4',
   tailscale: '#1E5EFF',
-  tautulli: '#D9A21B',
+  retired-upstream: '#D9A21B',
   tei: '#FF9D00',
   unifi: '#0559C9',
   unraid: '#F45B00',
@@ -125,17 +125,17 @@ const SERVICE_LOGOS: Record<string, string | null> = {
   memos: null,
   tei: null,
   openai: siw('openai'),
-  overseerr: siw('overseerr'),
+  retired-upstream: siw('retired-upstream'),
   paperless: siw('paperlessngx'),
-  plex: siw('plex'),
-  prowlarr: siw('prowlarr'),
-  qbittorrent: siw('qbittorrent'),
+  retired-upstream: siw('retired-upstream'),
+  retired-upstream: siw('retired-upstream'),
+  retired-upstream: siw('retired-upstream'),
   qdrant: siw('qdrant'),
-  radarr: siw('radarr'),
-  sabnzbd: siw('sabnzbd'),
-  sonarr: siw('sonarr'),
+  retired-upstream: siw('retired-upstream'),
+  retired-upstream: siw('retired-upstream'),
+  retired-upstream: siw('retired-upstream'),
   tailscale: siw('tailscale'),
-  tautulli: siw('tautulli'),
+  retired-upstream: siw('retired-upstream'),
   unifi: siw('ubiquiti'),
   unraid: siw('unraid'),
 }
@@ -528,17 +528,17 @@ const SERVICE_ENV_PREFIXES: Record<string, string> = {
   LINKDING: 'linkding',
   MEMOS: 'memos',
   OPENAI: 'openai',
-  OVERSEERR: 'overseerr',
+  RETIRED_UPSTREAM: 'retired-upstream',
   PAPERLESS: 'paperless',
-  PLEX: 'plex',
-  PROWLARR: 'prowlarr',
-  QBITTORRENT: 'qbittorrent',
+  RETIRED_UPSTREAM: 'retired-upstream',
+  RETIRED_UPSTREAM: 'retired-upstream',
+  RETIRED_UPSTREAM: 'retired-upstream',
   QDRANT: 'qdrant',
-  RADARR: 'radarr',
-  SABNZBD: 'sabnzbd',
-  SONARR: 'sonarr',
+  RETIRED_UPSTREAM: 'retired-upstream',
+  RETIRED_UPSTREAM: 'retired-upstream',
+  RETIRED_UPSTREAM: 'retired-upstream',
   TAILSCALE: 'tailscale',
-  TAUTULLI: 'tautulli',
+  RETIRED_UPSTREAM: 'retired-upstream',
   TEI: 'tei',
   UNIFI: 'unifi',
   UNRAID: 'unraid',
@@ -626,7 +626,7 @@ Locate the closing `</div>` of the scrollable body (`<div className="flex-1 min-
     <div className="relative">
       <textarea
         className="w-full min-h-[180px] rounded-md border border-border bg-background px-3 py-2 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-        placeholder={'RADARR_URL=http://localhost:7878\nRADARR_API_KEY=abc123'}
+        placeholder={'RETIRED_UPSTREAM_URL=http://localhost:7878\nRETIRED_UPSTREAM_API_KEY=abc123'}
         value={envText}
         onChange={(e) => setEnvText(e.target.value)}
       />
@@ -1208,10 +1208,10 @@ cd apps/gateway-admin && npm run dev
 - Switch to Custom tab
 - Confirm ENV chip is visible
 - Click ENV — confirm drawer slides out from the right edge of the dialog, right corners of dialog flatten
-- Paste `RADARR_URL=http://localhost:7878\nRADARR_API_KEY=testkey` into ENV textarea
+- Paste `RETIRED_UPSTREAM_URL=http://localhost:7878\nRETIRED_UPSTREAM_API_KEY=testkey` into ENV textarea
 - Confirm "Valid · 1 service" badge appears
-- Confirm "radarr" pill appears
-- Click "Apply to form" — confirm Name field populates with "radarr", URL populates with `http://localhost:7878`, drawer closes
+- Confirm "retired-upstream" pill appears
+- Click "Apply to form" — confirm Name field populates with "retired-upstream", URL populates with `http://localhost:7878`, drawer closes
 - Click ENV chip again — confirm it closes (toggle behavior)
 
 - [ ] **Step 4: Verify Custom tab — JSON drawer**

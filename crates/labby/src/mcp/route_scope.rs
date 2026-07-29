@@ -104,21 +104,25 @@ mod tests {
     fn root_allows_everything() {
         let scope = McpRouteScope::Root;
         assert!(scope.allows_service("gateway"));
-        assert!(scope.allows_upstream("sonarr"));
+        assert!(scope.allows_upstream("gateway-alpha"));
         assert!(scope.exposes_code_mode());
         assert_eq!(scope.label(), "root");
     }
 
     #[test]
     fn protected_subset_allows_only_configured_names() {
-        let scope =
-            McpRouteScope::protected_subset("media", ["sonarr", "radarr"], ["gateway"], true);
+        let scope = McpRouteScope::protected_subset(
+            "ops",
+            ["gateway-alpha", "gateway-beta"],
+            ["gateway"],
+            true,
+        );
         assert!(scope.allows_service("gateway"));
         assert!(!scope.allows_service("logs"));
-        assert!(scope.allows_upstream("sonarr"));
-        assert!(!scope.allows_upstream("github"));
+        assert!(scope.allows_upstream("gateway-alpha"));
+        assert!(!scope.allows_upstream("hidden-upstream"));
         assert!(scope.exposes_code_mode());
-        assert_eq!(scope.label(), "protected:media");
+        assert_eq!(scope.label(), "protected:ops");
     }
 
     #[test]

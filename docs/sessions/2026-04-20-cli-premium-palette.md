@@ -66,7 +66,7 @@ Replaced the broken `{5 keys}` catalog output and 36-row flat doctor output in `
 ## Behavior Changes (Before/After)
 
 - **`lab help`** — was a table with `{5 keys}, {5 keys}, {5 keys}, +50` in the actions column; now a nested layout with service name (bold cyan), category (violet), action count (bold cyan) + "actions" (dim), and an indented action preview in teal with middle-dot separators and a `(+N more — `lab help <svc>`)` hint.
-- **`lab doctor`** — was 36 per-env-var rows (`env:RADARR_URL`, `env:RADARR_API_KEY`, ...); now one row per service with `env N/M` summary and a header summary (`N services · X healthy · Y degraded`).
+- **`lab doctor`** — was 36 per-env-var rows (`env:EXAMPLE_URL`, `env:EXAMPLE_API_KEY`, ...); now one row per service with `env N/M` summary and a header summary (`N services · X healthy · Y degraded`).
 - **Palette** — was two-tone (cyan + dim grey + small status glyphs); now five distinct hues (cyan `45`, violet `141`, teal `115`, grey `244`, slate `240`) plus green/amber/red status glyphs.
 - **Rule lines** — was heavy `━`; now thin `─`.
 

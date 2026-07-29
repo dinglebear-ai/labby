@@ -26,7 +26,7 @@
 
 The bead-covered 23 metadata services are:
 
-`radarr`, `sonarr`, `prowlarr`, `overseerr`, `tautulli`, `arcane`, `plex`, `sabnzbd`, `qbittorrent`, `unifi`, `qdrant`, `tei`, `tailscale`, `apprise`, `gotify`, `bytestash`, `linkding`, `memos`, `openai`, `paperless`, `unraid`, `extract`, `device_runtime`.
+`retired-upstream`, `retired-upstream`, `retired-upstream`, `retired-upstream`, `retired-upstream`, `arcane`, `retired-upstream`, `retired-upstream`, `retired-upstream`, `unifi`, `qdrant`, `tei`, `tailscale`, `apprise`, `gotify`, `bytestash`, `linkding`, `memos`, `openai`, `paperless`, `unraid`, `extract`, `device_runtime`.
 
 Current repo extras with `PluginMeta` are also checked for regressions where practical:
 
@@ -128,7 +128,7 @@ Run `cargo test -p lab-apis plugin_ui --all-features` and `cargo test -p lab aud
 
 - [ ] **Step 4: Run real audit command for representative services.**
 
-Run `cargo run -p lab --all-features -- audit onboarding radarr mcpregistry --json` and confirm the new metadata checks pass. If unrelated onboarding checks fail, record that separately and rely on the targeted metadata script for bead closure.
+Run `cargo run -p lab --all-features -- audit onboarding retired-upstream mcpregistry --json` and confirm the new metadata checks pass. If unrelated onboarding checks fail, record that separately and rely on the targeted metadata script for bead closure.
 
 - [ ] **Step 5: Run all-features build.**
 

@@ -63,8 +63,8 @@ Use a generated helper after `codemode.search()` confirms the exact helper path:
 
 ```json
 {
-  "code": "async () => {\n    const help = await codemode.rustarr.sonarr({ action: \"help\" });\n    return { ok: true, help_type: typeof help };\n  }",
-  "upstreams": ["rustarr"]
+  "code": "async () => {\n    const help = await codemode.axon.axon({ action: \"help\" });\n    return { ok: true, help_type: typeof help };\n  }",
+  "upstreams": ["axon"]
 }
 ```
 
@@ -72,8 +72,8 @@ Fan out independent reads without throwing away partial successes:
 
 ```json
 {
-  "code": "async () => {\n    const calls = await Promise.allSettled([\n      callTool(\"rustarr::sonarr\", { action: \"help\" }),\n      callTool(\"rustarr::radarr\", { action: \"help\" }),\n      callTool(\"rustarr::prowlarr\", { action: \"help\" })\n    ]);\n    return calls.map((r, index) => r.status === \"fulfilled\"\n      ? { index, ok: true, type: typeof r.value }\n      : { index, ok: false, error: JSON.parse(String(r.reason.message)) });\n  }",
-  "upstreams": ["rustarr"]
+  "code": "async () => {\n    const calls = await Promise.allSettled([\n      callTool(\"axon::axon\", { action: \"help\" }),\n      callTool(\"unraid::unraid\", { action: \"help\" }),\n      callTool(\"cortex::cortex\", { action: \"help\" })\n    ]);\n    return calls.map((r, index) => r.status === \"fulfilled\"\n      ? { index, ok: true, type: typeof r.value }\n      : { index, ok: false, error: JSON.parse(String(r.reason.message)) });\n  }",
+  "upstreams": ["axon", "unraid", "cortex"]
 }
 ```
 
@@ -148,7 +148,7 @@ The host validates params against the upstream input schema before dispatching.
 ## Action-Dispatched Upstreams
 
 Many upstreams expose a single action-dispatched tool instead of one tool per
-operation — `axon`, and the rmcp family (`unraid`, `unifi`, `sonarr`, `radarr`,
+operation — `axon`, and the rmcp family (`unraid`, `unifi`,
 `cortex`, ...). They all take an `action`, but the rest of the envelope is
 upstream-specific. Do not guess the envelope shape from memory.
 

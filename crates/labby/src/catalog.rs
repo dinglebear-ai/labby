@@ -28,7 +28,7 @@ pub struct ServiceCatalog {
     pub name: String,
     /// Short human description from `PluginMeta::description`.
     pub description: String,
-    /// Category slug (Media, Servarr, Notifications, etc.).
+    /// Category slug (Media, Upstream, Notifications, etc.).
     pub category: String,
     /// Implementation status: `"available"` or `"stub"`.
     ///
@@ -49,7 +49,7 @@ pub struct ServiceCatalog {
 /// `lab://catalog` resource read without issuing per-action `schema` calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionEntry {
-    /// Dotted action name (e.g., `movie.search`).
+    /// Dotted action name (e.g., `status.get`).
     pub name: String,
     /// Short description.
     pub description: String,

@@ -32,7 +32,7 @@ Reviewed the entire working-tree diff with 9 Haiku-backed review subagents parti
 
 ## Key Findings
 
-- `crates/lab/src/dispatch/acp/params.rs:8-36` — duplicated `helpers::require_str` semantics. Sibling services (`sabnzbd/params.rs:6`, `radarr/params.rs:1`, `unifi/params.rs:5`) re-export from `crate::dispatch::helpers`; ACP was the outlier. Fixed by delegating to shared helper while preserving ACP's empty-string-as-missing semantics on top.
+- `crates/lab/src/dispatch/acp/params.rs:8-36` — duplicated `helpers::require_str` semantics. Sibling services (`retired-upstream/params.rs:6`, `retired-upstream/params.rs:1`, `unifi/params.rs:5`) re-export from `crate::dispatch::helpers`; ACP was the outlier. Fixed by delegating to shared helper while preserving ACP's empty-string-as-missing semantics on top.
 - `crates/lab/src/acp/registry.rs` — 5 methods (lines 292, 363, 422, 477, 523 in original) repeated the same `sessions.read().await; get(id).cloned().ok_or_else(not_found)` block. Replaced with a single `get_session_arc(session_id)` helper.
 - `crates/lab/src/acp/runtime.rs:280-283` — `command_available()` shells out to `which`/`where` on every health-endpoint call. Added 10-second TTL cache (`cached_command_lookup`).
 - `crates/lab/src/dispatch/acp/dispatch.rs:172-207` — `session.cancel` and `session.close` repeated the same 9-line `confirm` bool extraction. Replaced with shared `require_confirm(&params, action)` helper.

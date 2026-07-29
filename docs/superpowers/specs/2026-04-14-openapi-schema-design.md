@@ -74,7 +74,7 @@ All share `message: string`.
 
 At startup, `build_action_schemas(catalog: &Catalog) -> Vec<(String, Schema)>` walks every service's `&[ActionSpec]` and produces named components:
 
-- Name: `{PascalService}{PascalAction}Params` — e.g. `RadarrMovieSearchParams`
+- Name: `{PascalService}{PascalAction}Params` — e.g. `Retired upstreamMovieSearchParams`
 - Shape: `object` with properties derived from `ParamSpec`:
   - `ty` → JSON Schema type using the same mapping the MCP layer uses
   - `required` → listed in `required[]` if true
@@ -106,8 +106,8 @@ Every handler gets `#[utoipa::path(...)]`. The pattern is identical for all serv
 ```rust
 #[utoipa::path(
     post,
-    path = "/v1/radarr",
-    tag = "radarr",
+    path = "/v1/retired-upstream",
+    tag = "retired-upstream",
     request_body = ActionRequest,
     responses(
         (status = 200, description = "Action result", body = serde_json::Value),

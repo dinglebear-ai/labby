@@ -9,7 +9,7 @@ test('gateway filters render compact desktop chips and clear state affordance', 
   const markup = renderToStaticMarkup(
     <GatewayFilters
       mode="gateways"
-      search="plex"
+      search="gateway_beta"
       gatewayFilters={{ status: ['configured'], source: ['lab'], transport: ['stdio'] }}
       toolFilters={{ search: '', gatewayIds: [], exposure: 'all', source: [], transport: [] }}
       gatewayOptions={[]}

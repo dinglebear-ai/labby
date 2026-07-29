@@ -81,7 +81,7 @@ Re-implemented the user's Cloudflare-parity gap fixes on the `bd-work/code-mode-
 
 ## Behavior Changes (Before/After)
 
-- **`code` MCP tool names** — Before: `codemode.radarr.movieSearch(...)`. After: `codemode.radarr.movie_search(...)`. Matches Cloudflare normalization so LLMs trained on their examples call the right helper.
+- **`code` MCP tool names** — Before: `codemode.retired-upstream.movieSearch(...)`. After: `codemode.retired-upstream.movie_search(...)`. Matches Cloudflare normalization so LLMs trained on their examples call the right helper.
 - **Code Mode default timeout** — Before: 5000 ms. After: 30000 ms. Heavy fan-out no longer times out at the default.
 - **Code Mode pure computation** — Before: rejected with `invalid_param: "Code Mode snippet must call callTool at least once"`. After: returns the function's result without complaint.
 - **Error kinds emitted from Code Mode** — Before: `code_mode_disabled`, `code_execution_failed`. After: `internal_error` / `server_error`. Agents switch-casing on `err.kind` against the canonical 14-kind set no longer hit the default branch.

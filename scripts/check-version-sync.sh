@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-version-sync.sh — verify every version-bearing file in the repo agrees.
 #
-# Canonical fleet copy. Derived from yarr's variant, with the hardcoded
+# Canonical fleet copy. Canonical fleet copy, with the hardcoded
 # packages/<name>/package.json generalized to a glob so one script works in
 # every repo. Exits non-zero when versions disagree.
 #

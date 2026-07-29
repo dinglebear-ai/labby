@@ -67,7 +67,7 @@ const disconnectedGateway = buildGateway({
   transport: 'http',
   source: 'custom',
   config: {
-    url: 'https://plex.example.com/mcp',
+    url: 'https://gateway_beta.example.com/mcp',
   },
   status: {
     healthy: false,

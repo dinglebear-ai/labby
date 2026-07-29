@@ -43,7 +43,7 @@ The live Code Mode proxy exposed 307 callable tools across 35 upstream namespace
 
 ## Passed But Not Used
 
-- `rustarr::rustarr` with `action: "help"`
+- `example-upstream::example-upstream` with `action: "help"`
 - `rustscale::tailscale` with `action: "help"`
 - `rustifi::unifi` with `action: "help"`
 - `unrust::unraid` with `action: "help"` and `action: "array"`

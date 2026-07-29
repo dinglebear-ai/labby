@@ -29,7 +29,7 @@ It does not mean:
 
 ## Service classification
 
-ACP chat is not an upstream SaaS SDK service in the same sense as Radarr or Unraid.
+ACP chat is not an upstream SaaS SDK service in the same sense as Retired upstream or Unraid.
 
 It is a product-local orchestration service that still must follow the same layering contract:
 

@@ -768,7 +768,7 @@ test('gatewayApi destructive mutations send confirm=true', async () => {
     if (payload.action === 'gateway.get') {
       return new Response(
         JSON.stringify({
-          config: { name: 'plex', proxy_resources: false },
+          config: { name: 'gateway_beta', proxy_resources: false },
           runtime: { tool_count: 1 },
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -786,7 +786,7 @@ test('gatewayApi destructive mutations send confirm=true', async () => {
       return new Response(
         JSON.stringify({
           config: {
-            name: 'plex',
+            name: 'gateway_beta',
             url: 'https://lab.example.com/mcp',
             proxy_resources: false,
           },
@@ -825,13 +825,13 @@ test('gatewayApi destructive mutations send confirm=true', async () => {
   }) as typeof fetch
 
   await gatewayApi.create({
-    name: 'plex',
+    name: 'gateway_beta',
     transport: 'http',
     config: { url: 'https://lab.example.com/mcp' },
   })
-  await gatewayApi.update('plex', { name: 'plex-updated' })
-  await gatewayApi.remove('plex')
-  await gatewayApi.reload('plex')
+  await gatewayApi.update('gateway_beta', { name: 'gateway_beta-updated' })
+  await gatewayApi.remove('gateway_beta')
+  await gatewayApi.reload('gateway_beta')
 
   const destructiveActions = actions.filter(({ action }) =>
     ['gateway.add', 'gateway.update', 'gateway.remove', 'gateway.reload'].includes(action),

@@ -626,7 +626,7 @@ mod tests {
         let home = temp.path().join("lab-home");
         let env = home.join(".env");
         fs::create_dir_all(&home).expect("lab home");
-        fs::write(&env, "RADARR_URL=http://localhost\n").expect("env file");
+        fs::write(&env, "APPRISE_URL=http://localhost\n").expect("env file");
 
         let report = run_for_paths(Mode::Repair, home, env).expect("repair report");
 

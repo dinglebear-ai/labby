@@ -58,7 +58,7 @@ export function PatternsSection() {
                 <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-aurora-text-muted" />
                 <Input
                   aria-label="Search gateways"
-                  defaultValue="plex"
+                  defaultValue="gateway_beta"
                   className={cn(AURORA_MESSAGE_SURFACE, 'pr-20 pl-9 text-aurora-text-primary placeholder:text-aurora-text-muted')}
                 />
                 <div className="absolute inset-y-0 right-1 flex items-center gap-1">

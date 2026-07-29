@@ -2085,8 +2085,8 @@ mod tests {
     #[test]
     fn services_allowlist_does_not_reenable_globally_disabled_upstreams() {
         let reg = filter_built_in_upstream_apis(build_default_registry(), false);
-        let error = filter_registry(reg, &["radarr".to_string()])
-            .expect_err("disabled radarr should be unknown to --services");
+        let error = filter_registry(reg, &["gateway-alpha".to_string()])
+            .expect_err("disabled gateway_alpha should be unknown to --services");
         assert!(error.to_string().contains("unknown service"));
     }
 
@@ -2522,18 +2522,18 @@ mod tests {
         );
         let config = LabConfig {
             protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
-                name: "media".to_string(),
+                name: "ops".to_string(),
                 enabled: true,
                 public_host: "mcp.example.com".to_string(),
-                public_path: "/media".to_string(),
+                public_path: "/ops".to_string(),
                 upstream: None,
                 backend_url: String::new(),
                 backend_mcp_path: "/mcp".to_string(),
-                scopes: vec!["mcp:media".to_string()],
+                scopes: vec!["mcp:ops".to_string()],
                 health_path: None,
                 target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
                     crate::config::ProtectedGatewaySubsetTarget {
-                        upstreams: vec!["sonarr".to_string()],
+                        upstreams: vec!["gateway-alpha".to_string()],
                         services: vec!["gateway".to_string()],
                         expose_code_mode: false,
                     },
@@ -2557,7 +2557,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/media")
+                    .uri("/ops")
                     .header("host", "mcp.example.com")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")

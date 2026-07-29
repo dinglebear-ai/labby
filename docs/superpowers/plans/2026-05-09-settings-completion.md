@@ -180,17 +180,17 @@ fn service_preferences_can_disable_upstream_apis() {
 pub fn is_built_in_upstream_api_service(service: &str) -> bool {
     matches!(
         service,
-        "radarr"
-            | "sonarr"
-            | "prowlarr"
-            | "plex"
-            | "tautulli"
-            | "overseerr"
-            | "jellyfin"
+        "retired-upstream"
+            | "retired-upstream"
+            | "retired-upstream"
+            | "retired-upstream"
+            | "retired-upstream"
+            | "retired-upstream"
+            | "retired-upstream"
             | "navidrome"
             | "immich"
-            | "sabnzbd"
-            | "qbittorrent"
+            | "retired-upstream"
+            | "retired-upstream"
             | "linkding"
             | "memos"
             | "bytestash"
@@ -296,7 +296,7 @@ let registry = crate::registry::filter_built_in_upstream_apis(
 let registry = filter_registry(registry, &args.services)?;
 ```
 
-This makes persistent disabled state win by default. `--services radarr` should fail as unknown when upstream APIs are disabled.
+This makes persistent disabled state win by default. `--services retired-upstream` should fail as unknown when upstream APIs are disabled.
 
 - [ ] Add a registry policy test:
 
@@ -307,7 +307,7 @@ fn upstream_api_filter_removes_upstreams_and_keeps_bootstrap() {
     let names: std::collections::BTreeSet<&str> =
         reg.services().iter().map(|service| service.name).collect();
 
-    for removed in ["radarr", "sonarr", "tailscale", "openai"] {
+    for removed in ["retired-upstream", "retired-upstream", "tailscale", "openai"] {
         assert!(!names.contains(removed), "{removed} should be disabled");
     }
 
@@ -323,8 +323,8 @@ fn upstream_api_filter_removes_upstreams_and_keeps_bootstrap() {
 #[test]
 fn services_allowlist_does_not_reenable_globally_disabled_upstreams() {
     let reg = crate::registry::filter_built_in_upstream_apis(build_default_registry(), false);
-    let error = super::filter_registry(reg, &["radarr".to_string()])
-        .expect_err("disabled radarr should be unknown to --services");
+    let error = super::filter_registry(reg, &["retired-upstream".to_string()])
+        .expect_err("disabled retired-upstream should be unknown to --services");
     assert!(error.to_string().contains("unknown service"));
 }
 ```
@@ -369,7 +369,7 @@ ActionSpec {
 {
   "services": {
     "built_in_upstream_apis_enabled": true,
-    "built_in_upstream_api_services": ["radarr", "sonarr", "openai"],
+    "built_in_upstream_api_services": ["retired-upstream", "retired-upstream", "openai"],
     "bootstrap_services": ["setup", "doctor", "extract", "gateway"]
   }
 }

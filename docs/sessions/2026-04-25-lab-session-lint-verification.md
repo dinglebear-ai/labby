@@ -107,7 +107,7 @@ git log --oneline -5
 fb9b5691 feat(setup): wire check-oauth.sh checks into PreFlight 1 + 2
 2f6d76c6 docs: setup+settings feature design spec + component-development doc update
 07ccb54c fix(dev): ensure dev_mockup routes survive router.rs refactors
-d10b05ec fix(dev/nodeinfo): read env from process (dotenvy already loaded .env at startup)
+d10b05ec fix(dev/retired-dev-route): read env from process (dotenvy already loaded .env at startup)
 
 git status --short
 
@@ -191,7 +191,7 @@ apps/gateway-admin/public/icon.svg
 crates/lab-apis/src/acp_registry/client.rs
 crates/lab-apis/src/acp_registry/types.rs
 crates/lab-apis/src/extract/client.rs
-crates/lab-apis/src/extract/parsers/radarr.rs
+crates/lab-apis/src/extract/parsers/retired-upstream.rs
 crates/lab-apis/src/extract/runtime.rs
 crates/lab-apis/src/extract/ssh_config.rs
 crates/lab-apis/src/extract/transport.rs
@@ -251,13 +251,13 @@ docs/superpowers/specs/2026-04-25-setup-settings-design.md
 docs/superpowers/specs/2026-04-25-setup-settings-design.md
 07ccb54c fix(dev): ensure dev_mockup routes survive router.rs refactors
 crates/lab/src/api/router.rs
-d10b05ec fix(dev/nodeinfo): read env from process (dotenvy already loaded .env at startup)
+d10b05ec fix(dev/retired-dev-route): read env from process (dotenvy already loaded .env at startup)
 crates/lab/src/api/router.rs
-991fcd1b feat(dev): extend nodeinfo to return .env values with secrets masked
+991fcd1b feat(dev): extend retired-dev-route to return .env values with secrets masked
 crates/lab/src/api/router.rs
 aea3bb59 fix(dev): restore dev_mockup handlers and page routes
 crates/lab/src/api/router.rs
-b1385289 fix(dev): restore /dev mockup routes + add /dev/api/nodeinfo
+b1385289 fix(dev): restore /dev mockup routes + add /dev/api/retired-dev-route
 crates/lab/src/api/router.rs
 265a701e feat(dev): add mockup file server at /dev and /dev/:name
 crates/lab/src/api.rs
@@ -332,7 +332,7 @@ crates/lab-apis/src/extract/CLAUDE.md
 crates/lab-apis/src/extract/client.rs
 crates/lab-apis/src/mcpregistry.rs
 crates/lab-apis/src/mcpregistry/types.rs
-crates/lab-apis/src/qbittorrent.rs
+crates/lab-apis/src/retired-upstream.rs
 crates/lab/Cargo.toml
 crates/lab/src/acp.rs
 crates/lab/src/acp/persistence.rs
@@ -424,8 +424,8 @@ crates/lab/src/dispatch/marketplace/update.rs
 crates/lab/src/dispatch/node.rs
 crates/lab/src/dispatch/node/send.rs
 crates/lab/src/dispatch/paperless.rs
-crates/lab/src/dispatch/plex.rs
-crates/lab/src/dispatch/radarr.rs
+crates/lab/src/dispatch/retired-upstream.rs
+crates/lab/src/dispatch/retired-upstream.rs
 crates/lab/src/dispatch/unifi.rs
 crates/lab/src/dispatch/upstream/pool.rs
 crates/lab/src/dispatch/upstream/transport/websocket.rs
@@ -450,15 +450,15 @@ crates/lab/src/mcp/services/marketplace.rs
 crates/lab/src/mcp/services/memos.rs
 crates/lab/src/mcp/services/nodes.rs
 crates/lab/src/mcp/services/openai.rs
-crates/lab/src/mcp/services/overseerr.rs
+crates/lab/src/mcp/services/retired-upstream.rs
 crates/lab/src/mcp/services/paperless.rs
-crates/lab/src/mcp/services/plex.rs
-crates/lab/src/mcp/services/prowlarr.rs
-crates/lab/src/mcp/services/qbittorrent.rs
+crates/lab/src/mcp/services/retired-upstream.rs
+crates/lab/src/mcp/services/retired-upstream.rs
+crates/lab/src/mcp/services/retired-upstream.rs
 crates/lab/src/mcp/services/qdrant.rs
-crates/lab/src/mcp/services/radarr.rs
-crates/lab/src/mcp/services/sabnzbd.rs
-crates/lab/src/mcp/services/sonarr.rs
+crates/lab/src/mcp/services/retired-upstream.rs
+crates/lab/src/mcp/services/retired-upstream.rs
+crates/lab/src/mcp/services/retired-upstream.rs
 crates/lab/src/mcp/services/tei.rs
 crates/lab/src/mcp/services/unifi.rs
 crates/lab/src/node/enrollment/store.rs
@@ -510,14 +510,14 @@ docs/coverage/linkding.md
 docs/coverage/mcpregistry.md
 docs/coverage/memos.md
 docs/coverage/paperless.md
-docs/coverage/plex.md
-docs/coverage/qbittorrent.md
+docs/coverage/retired-upstream.md
+docs/coverage/retired-upstream.md
 docs/coverage/qdrant.md
-docs/coverage/radarr.md
-docs/coverage/sabnzbd.md
-docs/coverage/sonarr.md
+docs/coverage/retired-upstream.md
+docs/coverage/retired-upstream.md
+docs/coverage/retired-upstream.md
 docs/coverage/tailscale.md
-docs/coverage/tautulli.md
+docs/coverage/retired-upstream.md
 docs/coverage/tei.md
 docs/coverage/unifi.md
 docs/coverage/unraid.md

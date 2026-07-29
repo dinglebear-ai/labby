@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 /// Build a success envelope.
 ///
 /// ```json
-/// { "ok": true, "service": "radarr", "action": "movie.list", "data": […] }
+/// { "ok": true, "service": "gateway-alpha", "action": "status.list", "data": […] }
 /// ```
 #[must_use]
 pub fn build_success(service: &str, action: &str, data: &Value) -> Value {
@@ -50,7 +50,7 @@ pub fn build_success(service: &str, action: &str, data: &Value) -> Value {
 /// Build an error envelope.
 ///
 /// ```json
-/// { "ok": false, "service": "radarr", "action": "movie.add",
+/// { "ok": false, "service": "gateway-alpha", "action": "status.update",
 ///   "error": { "kind": "missing_param", "message": "…" } }
 /// ```
 #[must_use]
@@ -276,20 +276,25 @@ mod tests {
 
     #[test]
     fn success_envelope_shape() {
-        let env = build_success("radarr", "movie.list", &json!([{"id": 1}]));
+        let env = build_success("gateway-alpha", "status.list", &json!([{"id": 1}]));
         assert_eq!(env["ok"], json!(true));
-        assert_eq!(env["service"], json!("radarr"));
-        assert_eq!(env["action"], json!("movie.list"));
+        assert_eq!(env["service"], json!("gateway-alpha"));
+        assert_eq!(env["action"], json!("status.list"));
         assert!(env["data"].is_array());
         assert!(env.get("error").is_none());
     }
 
     #[test]
     fn error_envelope_shape() {
-        let env = build_error("radarr", "movie.add", "missing_param", "missing `title`");
+        let env = build_error(
+            "gateway-alpha",
+            "status.update",
+            "missing_param",
+            "missing `title`",
+        );
         assert_eq!(env["ok"], json!(false));
-        assert_eq!(env["service"], json!("radarr"));
-        assert_eq!(env["action"], json!("movie.add"));
+        assert_eq!(env["service"], json!("gateway-alpha"));
+        assert_eq!(env["action"], json!("status.update"));
         assert_eq!(env["error"]["kind"], json!("missing_param"));
         assert!(env["error"]["message"].as_str().is_some());
         assert!(env.get("data").is_none());
@@ -298,11 +303,11 @@ mod tests {
     #[test]
     fn error_extra_merges_valid_list() {
         let env = build_error_extra(
-            "radarr",
+            "gateway-alpha",
             "bad.action",
             "unknown_action",
             "unknown action",
-            &json!({ "valid": ["movie.list"], "param": null, "hint": null }),
+            &json!({ "valid": ["status.list"], "param": null, "hint": null }),
         );
         assert_eq!(env["error"]["kind"], json!("unknown_action"));
         assert!(env["error"]["valid"].is_array());

@@ -10,7 +10,7 @@ use super::plugin_ui::UiSchema;
 /// Per-service compile-time metadata.
 #[derive(Debug, Clone, Copy)]
 pub struct PluginMeta {
-    /// Short module name, e.g. `"radarr"`. Matches feature flag and CLI subcommand.
+    /// Short module name, e.g. `"gateway"`. Matches feature flag and CLI subcommand.
     pub name: &'static str,
     /// Human-readable display name shown in TUI/help.
     pub display_name: &'static str,
@@ -34,7 +34,7 @@ pub struct PluginMeta {
 /// One declared environment variable for a plugin.
 #[derive(Debug, Clone, Copy)]
 pub struct EnvVar {
-    /// Env var name, e.g. `"RADARR_API_KEY"`.
+    /// Env var name, e.g. `"APPRISE_API_KEY"`.
     pub name: &'static str,
     /// Description shown in `labby install` prompts and `labby doctor` output.
     pub description: &'static str,
@@ -50,14 +50,6 @@ pub struct EnvVar {
 /// Logical category used by the TUI plugin manager and `lab help`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
-    /// Media servers (Plex, Tautulli).
-    Media,
-    /// Servarr stack (Radarr, Sonarr).
-    Servarr,
-    /// Indexer managers (Prowlarr).
-    Indexer,
-    /// Download clients (`SABnzbd`, `qBittorrent`).
-    Download,
     /// Note-taking and bookmarks (`Memos`, `Linkding`, `ByteStash`).
     Notes,
     /// Document management.
@@ -77,10 +69,6 @@ impl Category {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Media => "media",
-            Self::Servarr => "servarr",
-            Self::Indexer => "indexer",
-            Self::Download => "download",
             Self::Notes => "notes",
             Self::Documents => "documents",
             Self::Network => "network",

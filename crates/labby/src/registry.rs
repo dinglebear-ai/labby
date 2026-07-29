@@ -746,16 +746,16 @@ mod tests {
 
     const ACTIONS_ONE: &[ActionSpec] = &[
         ActionSpec {
-            name: "queue.list",
-            description: "List queue",
+            name: "health.list",
+            description: "List health checks",
             destructive: false,
             requires_admin: false,
             params: &[],
             returns: "object",
         },
         ActionSpec {
-            name: "movie.search",
-            description: "Search movies",
+            name: "status.get",
+            description: "Get status",
             destructive: false,
             requires_admin: false,
             params: &[],
@@ -765,16 +765,16 @@ mod tests {
 
     const ACTIONS_TWO: &[ActionSpec] = &[
         ActionSpec {
-            name: "movie.search",
-            description: "Search movies again",
+            name: "status.get",
+            description: "Get status again",
             destructive: false,
             requires_admin: false,
             params: &[],
             returns: "object",
         },
         ActionSpec {
-            name: "calendar.list",
-            description: "List calendar",
+            name: "metrics.list",
+            description: "List metrics",
             destructive: false,
             requires_admin: false,
             params: &[],
@@ -826,7 +826,7 @@ mod tests {
 
         assert_eq!(
             registry.action_names(),
-            &["calendar.list", "movie.search", "queue.list"]
+            &["health.list", "metrics.list", "status.get"]
         );
     }
 
@@ -863,8 +863,8 @@ mod tests {
         });
 
         assert_eq!(
-            registry.action_name_completions("movie."),
-            vec!["movie.search"]
+            registry.action_name_completions("status."),
+            vec!["status.get"]
         );
     }
 

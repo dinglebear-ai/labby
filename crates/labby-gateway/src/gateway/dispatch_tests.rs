@@ -259,9 +259,9 @@ async fn gateway_usage_metrics_rejects_route_hidden_explicit_upstream() {
         "gateway.usage.metrics",
         json!({"upstream": "github"}),
         GatewayEnrichmentScope {
-            route_visible_upstreams: Some(std::collections::BTreeSet::from(
-                ["rustarr".to_string()],
-            )),
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
         },
     )
     .await
@@ -292,9 +292,9 @@ async fn gateway_usage_calls_rejects_route_hidden_explicit_upstream() {
         "gateway.usage.calls",
         json!({"upstream": "github"}),
         GatewayEnrichmentScope {
-            route_visible_upstreams: Some(std::collections::BTreeSet::from(
-                ["rustarr".to_string()],
-            )),
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
         },
     )
     .await
@@ -314,7 +314,7 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
                 None,
             ),
             upstream_fixture(
-                "rustarr",
+                "gateway-alpha",
                 Some("https://example2.invalid/mcp".to_string()),
                 None,
             ),
@@ -339,8 +339,8 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
     usage_store
         .record_call(crate::usage::UpstreamCallRecord {
             ts_unix: 1_001,
-            upstream_name: "rustarr".to_string(),
-            tool_name: "movie_search".to_string(),
+            upstream_name: "gateway-alpha".to_string(),
+            tool_name: "status_get".to_string(),
             actor: "unattributed".to_string(),
             outcome: "ok".to_string(),
             elapsed_ms: 10,
@@ -764,7 +764,7 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
         name: name.to_string(),
         enabled: true,
         public_host: "mcp.example.com".to_string(),
-        public_path: "/media".to_string(),
+        public_path: "/ops".to_string(),
         upstream: None,
         backend_url: String::new(),
         backend_mcp_path: "/mcp".to_string(),
@@ -773,7 +773,7 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
         target: Some(
             labby_runtime::gateway_config::ProtectedMcpRouteTarget::GatewaySubset(
                 labby_runtime::gateway_config::ProtectedGatewaySubsetTarget {
-                    upstreams: vec!["sonarr".to_string()],
+                    upstreams: vec!["gateway-alpha".to_string()],
                     services: Vec::new(),
                     expose_code_mode: false,
                 },
@@ -826,7 +826,7 @@ async fn protected_gateway_subset_hot_crud_requires_restart() {
     let err = dispatch_with_manager(
         &manager,
         "gateway.protected_route.add",
-        json!({ "route": protected_gateway_subset_route_fixture("media") }),
+        json!({ "route": protected_gateway_subset_route_fixture("ops") }),
     )
     .await
     .expect_err("gateway_subset add must not pretend to hot-mount scoped service");
@@ -834,7 +834,7 @@ async fn protected_gateway_subset_hot_crud_requires_restart() {
 
     manager
         .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
-            protected_mcp_routes: vec![protected_gateway_subset_route_fixture("media")],
+            protected_mcp_routes: vec![protected_gateway_subset_route_fixture("ops")],
             ..labby_runtime::gateway_config::GatewayConfig::default()
         })
         .await;
@@ -843,8 +843,8 @@ async fn protected_gateway_subset_hot_crud_requires_restart() {
         &manager,
         "gateway.protected_route.update",
         json!({
-            "name": "media",
-            "route": protected_gateway_subset_route_fixture("media")
+            "name": "ops",
+            "route": protected_gateway_subset_route_fixture("ops")
         }),
     )
     .await
@@ -854,7 +854,7 @@ async fn protected_gateway_subset_hot_crud_requires_restart() {
     let err = dispatch_with_manager(
         &manager,
         "gateway.protected_route.remove",
-        json!({ "name": "media" }),
+        json!({ "name": "ops" }),
     )
     .await
     .expect_err("gateway_subset remove must not leave stale scoped service mounted");
@@ -993,7 +993,7 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
 // Re-fixtured post-gateway-pivot: backed by the kept `deploy` service and a real
 // `deploy.plan` action (the policy validator checks `allowed_actions` against the
 // service's compiled action catalog, so the action must actually exist for
-// `deploy`). The original `server.info` belonged to a removed plex/radarr service.
+// `deploy`). The original `server.info` belonged to a removed gateway_alpha/gateway_alpha service.
 #[tokio::test]
 async fn virtual_server_policy_validation_uses_service_name() {
     let manager = test_manager();
@@ -1028,7 +1028,7 @@ fn supported_services_lists_metadata_backed_lab_gateways() {
 }
 
 #[tokio::test]
-async fn supported_services_payload_includes_plex_when_feature_enabled() {
+async fn supported_services_payload_includes_gateway_alpha_when_feature_enabled() {
     let manager = test_manager();
     let value = dispatch_with_manager(&manager, "gateway.supported_services", json!({}))
         .await
@@ -1148,7 +1148,7 @@ async fn enabling_virtual_server_marks_existing_server_row_enabled() {
 }
 
 // CANNOT be re-fixtured without a production change (out of test-only scope): it
-// drives `gateway.service_config.set` with `PLEX_*` values, which only succeeds for
+// drives `gateway.service_config.set` with `GATEWAY_ALPHA_*` values, which only succeeds for
 // a `service_meta`-resolvable service that declares those env fields. Post-pivot the
 // only resolvable service is `deploy`, which declares zero env fields, so the set is
 // rejected before a service row can be created. Needs a service_meta service with
@@ -1224,7 +1224,7 @@ async fn disabling_virtual_server_keeps_server_row_visible_but_disabled() {
 }
 
 // CANNOT be re-fixtured without a production change (out of test-only scope):
-// `gateway.service_config.set` with `PLEX_*` requires a service_meta-resolvable
+// `gateway.service_config.set` with `GATEWAY_ALPHA_*` requires a service_meta-resolvable
 // service that declares those env fields. Only `deploy` resolves post-pivot and it
 // declares none, so the write is rejected. Needs a service_meta service with env
 // fields.
@@ -1265,7 +1265,7 @@ async fn setting_service_config_writes_canonical_env_backed_fields() {
 }
 
 // CANNOT be re-fixtured without a production change (out of test-only scope):
-// `gateway.service_config.set` with `PLEX_*` requires a service_meta-resolvable
+// `gateway.service_config.set` with `GATEWAY_ALPHA_*` requires a service_meta-resolvable
 // service that declares those env fields. Only `deploy` resolves post-pivot and it
 // declares none, so the write is rejected before the read-back can be exercised.
 // Needs a service_meta service with env fields.
@@ -1403,7 +1403,7 @@ async fn setting_virtual_server_mcp_policy_persists_allowed_actions() {
 }
 
 // Re-fixtured post-gateway-pivot: assert against the kept `deploy` service's real
-// `deploy.plan` action instead of the removed plex/radarr `server.info`.
+// `deploy.plan` action instead of the removed gateway_alpha/gateway_alpha `server.info`.
 #[tokio::test]
 async fn service_actions_returns_compiled_action_catalog() {
     let manager = test_manager();

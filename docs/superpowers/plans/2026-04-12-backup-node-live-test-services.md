@@ -4,7 +4,7 @@
 
 **Goal:** Build a reproducible live end-to-end test environment on SSH host `backup-node` that provisions disposable real service stacks from ZFS golden snapshots, runs catalog-driven CLI/MCP/API coverage, and records structured artifacts.
 
-**Architecture:** The implementation splits into four layers: declarative fixture definitions in-repo, a host-side orchestration contract executed over SSH on `backup-node`, a repo-side live runner that requests environments and executes test matrices, and catalog-driven case generation plus reporting. All 15 services are covered across 7 profiles (`servarr-core`, `media`, `download`, `notes`, `notifications`, `ai`, `all`). The first vertical slice targets `servarr-core` so the environment model, manifest contract, teardown, and one full-surface execution path are proven before broader onboarding — but all fixture definitions and host provisioning logic are built for the full 15-service set from the start.
+**Architecture:** The implementation splits into four layers: declarative fixture definitions in-repo, a host-side orchestration contract executed over SSH on `backup-node`, a repo-side live runner that requests environments and executes test matrices, and catalog-driven case generation plus reporting. All 15 services are covered across 7 profiles (`retired-upstream-core`, `media`, `download`, `notes`, `notifications`, `ai`, `all`). The first vertical slice targets `retired-upstream-core` so the environment model, manifest contract, teardown, and one full-surface execution path are proven before broader onboarding — but all fixture definitions and host provisioning logic are built for the full 15-service set from the start.
 
 **Tech Stack:** Rust 2024 (`lab` crate), `serde`/`serde_json`, `tokio`, `tracing`, existing CLI/MCP/API surfaces, `just`, SSH, Docker or Docker Compose on `backup-node`, ZFS snapshots/clones, shell helpers in `bin/` where appropriate.
 
@@ -33,17 +33,17 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 
 | Service | Image | Version | Dataset | Snapshot | [REDACTED: rotate credentials before restoring snapshot] | Container Port |
 |---------|-------|---------|---------|----------|----------------|---------------|
-| **Servarr** | | | | | | |
-| Radarr | `lscr.io/linuxserver/radarr:latest` | 6.1.1.10360 | `backup/lab/live/golden/radarr` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 7878 |
-| Sonarr | `lscr.io/linuxserver/sonarr:latest` | 4.0.17.2952 | `backup/lab/live/golden/sonarr` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8989 |
-| Prowlarr | `lscr.io/linuxserver/prowlarr:latest` | 2.3.5.5327 | `backup/lab/live/golden/prowlarr` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9696 |
+| **Retired upstream** | | | | | | |
+| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 6.1.1.10360 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 7878 |
+| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 4.0.17.2952 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8989 |
+| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 2.3.5.5327 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9696 |
 | **Media** | | | | | | |
-| Plex | `lscr.io/linuxserver/plex:latest` | 1.43.1.10611 | `backup/lab/live/golden/plex` | `@configured-v1` | Unclaimed (no auth). `/identity` works, library endpoints 401. | 32400 |
-| Tautulli | `ghcr.io/hotio/tautulli:testing` | 2.17.0 | `backup/lab/live/golden/tautulli` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8181 |
-| Overseerr | `ghcr.io/hotio/overseerr:release` | 1.34.0 | `backup/lab/live/golden/overseerr` | `@configured-v1` | Setup-pending (needs Plex account). `/api/v1/status` works. | 5055 |
+| Retired upstream | `lscr.io/linuxserver/retired-upstream:latest` | 1.43.1.10611 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | Unclaimed (no auth). `/identity` works, library endpoints 401. | 32400 |
+| Retired upstream | `ghcr.io/hotio/retired-upstream:testing` | 2.17.0 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8181 |
+| Retired upstream | `ghcr.io/hotio/retired-upstream:release` | 1.34.0 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | Setup-pending (needs Retired upstream account). `/api/v1/status` works. | 5055 |
 | **Download** | | | | | | |
-| SABnzbd | `ghcr.io/hotio/sabnzbd:latest` | 4.5.5 | `backup/lab/live/golden/sabnzbd` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
-| qBittorrent | `linuxserver/qbittorrent:latest` | 5.1.4 | `backup/lab/live/golden/qbittorrent` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
+| Retired upstream | `ghcr.io/hotio/retired-upstream:latest` | 4.5.5 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
+| retired-upstream | `linuxserver/retired-upstream:latest` | 5.1.4 | `backup/lab/live/golden/retired-upstream` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
 | **Notes/Docs** | | | | | | |
 | Memos | `ghcr.io/usememos/memos` | 0.24.0 | `backup/lab/live/golden/memos` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 5230 |
 | Linkding | `sissbruecker/linkding` | latest | `backup/lab/live/golden/linkding` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9090 |
@@ -62,8 +62,8 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 **Sidecar note:** Paperless requires a Redis container. The `bin/live-host` script must start `redis:7-alpine` alongside paperless and pass the Redis IP via `PAPERLESS_REDIS` env var.
 
 **Services with limited API in golden state:**
-- **Plex** — unclaimed, only `/identity` responds. Full API requires a Plex account claim.
-- **Overseerr** — setup-pending, redirects to `/setup`. Only `/api/v1/status` responds without Plex auth.
+- **Retired upstream** — unclaimed, only `/identity` responds. Full API requires a Retired upstream account claim.
+- **Retired upstream** — setup-pending, redirects to `/setup`. Only `/api/v1/status` responds without Retired upstream auth.
 - **Linkding** — token must be regenerated via `ApiToken` model after each clone start (not DRF `Token`).
 - **Memos** — access tokens are JWT-based, created via `/api/v1/users/1/access_tokens` with session cookie.
 
@@ -71,14 +71,14 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 
 | Service | Readiness URL | Expected | Volume Mount |
 |---------|--------------|----------|--------------|
-| Radarr | `/ping` | 200 | `/config` |
-| Sonarr | `/ping` | 200 | `/config` |
-| Prowlarr | `/ping` | 200 | `/config` |
-| Plex | `/identity` | 200 | `/config` |
-| Tautulli | `/status` | 200 | `/config` |
-| Overseerr | `/api/v1/status` | 200 | `/config` |
-| SABnzbd | `/sabnzbd/api?mode=version` | 200 | `/config` |
-| qBittorrent | `/api/v2/app/version` | 200 | `/config` |
+| Retired upstream | `/ping` | 200 | `/config` |
+| Retired upstream | `/ping` | 200 | `/config` |
+| Retired upstream | `/ping` | 200 | `/config` |
+| Retired upstream | `/identity` | 200 | `/config` |
+| Retired upstream | `/status` | 200 | `/config` |
+| Retired upstream | `/api/v1/status` | 200 | `/config` |
+| Retired upstream | `/retired-upstream/api?mode=version` | 200 | `/config` |
+| retired-upstream | `/api/v2/app/version` | 200 | `/config` |
 | Memos | `/healthz` | 200 | `/var/opt/memos` |
 | Linkding | `/health` | 200 | `/etc/linkding/data` |
 | Bytestash | `/` | 200 | `/data/snippets` |
@@ -92,16 +92,16 @@ Golden instances were stood up from fresh linuxserver images, verified via API, 
 ### Clone lifecycle — VERIFIED
 
 Full round-trip proven:
-1. `zfs clone backup/lab/live/golden/radarr@configured-v1 backup/lab/live/runs/test-001/radarr` — instant
-2. `docker run ... -v /mnt/backup/lab/live/runs/test-001/radarr:/config` — starts in <3s
+1. `zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/test-001/retired-upstream` — instant
+2. `docker run ... -v /mnt/backup/lab/live/runs/test-001/retired-upstream:/config` — starts in <3s
 3. API responds on first poll with same API key from golden snapshot
 4. `docker stop + rm` → `sync` → `zfs destroy` — clean, no leaks
 
 ### Plan corrections required
 
 1. **Pool name:** Original plan referenced `tank/lab/live/...` everywhere — corrected to `backup/lab/live/...`. The `tank` pool does not exist on backup-node.
-2. **Images:** Plan references `lscr.io/linuxserver/radarr:latest` generically. Actual images are `lscr.io/linuxserver/{radarr,sonarr,prowlarr}:latest` (hotio is what controller uses for radarr, but linuxserver is fine for golden instances).
-3. **Prowlarr config path:** Prowlarr's config.xml lives at `/config/config.xml` (not nested in `/config/prowlarr/` like the controller backup layout). The linuxserver image uses `/config` directly.
+2. **Images:** Plan references `lscr.io/linuxserver/retired-upstream:latest` generically. Actual images are `lscr.io/linuxserver/{retired-upstream,retired-upstream,retired-upstream}:latest` (hotio is what controller uses for retired-upstream, but linuxserver is fine for golden instances).
+3. **Retired upstream config path:** Retired upstream's config.xml lives at `/config/config.xml` (not nested in `/config/retired-upstream/` like the controller backup layout). The linuxserver image uses `/config` directly.
 4. **Auth:** Golden instances have `AuthenticationMethod=None` — API key auth works but no forms login. This is ideal for testing (no login flow to deal with).
 5. **`--internal` network is INCOMPATIBLE with `-p` port mapping.** Docker internal networks block host port binding entirely — containers get no `Ports` entries. **Fix:** Use a regular bridge network (`docker network create lab-live-$RUN_ID` without `--internal`). Loopback binding (`127.0.0.1:0:<port>`) already prevents LAN exposure. Tested and confirmed.
 6. **No `tank` pool** means `bin/live-host` ZFS paths must all use `backup/lab/live/...` prefix.
@@ -161,18 +161,18 @@ Full round-trip proven:
 > **Deferred to Task 10:** `live/catalog.rs`, `live/matrix.rs`, `tests/live_catalog.rs`, `tests/live_matrix.rs` — catalog-driven gap analysis and matrix classification belong after the runner is proven end-to-end. Adding them before Task 9 adds ~390 LOC with no milestone impact.
 - `tests/live_host_contract_test.sh`
   Opt-in live host contract smoke test against `backup-node`.
-- `tests/live_servarr_core_e2e_test.sh`
-  Opt-in full vertical-slice test for `servarr-core`.
+- `tests/live_retired-upstream_core_e2e_test.sh`
+  Opt-in full vertical-slice test for `retired-upstream-core`.
 - `bin/live-host`
   Host-side orchestration script invoked over SSH on `backup-node`.
 - `bin/live-cleanup`
   Host-side orphan cleanup script for stale runs on `backup-node`.
-- `fixtures/live/profiles/servarr-core.json`
-  First live profile definition — Radarr, Sonarr, Prowlarr.
+- `fixtures/live/profiles/retired-upstream-core.json`
+  First live profile definition — Retired upstream, Retired upstream, Retired upstream.
 - `fixtures/live/profiles/media.json`
-  Media stack profile — Plex, Tautulli, Overseerr.
+  Media stack profile — Retired upstream, Retired upstream, Retired upstream.
 - `fixtures/live/profiles/download.json`
-  Download stack profile — SABnzbd, qBittorrent.
+  Download stack profile — Retired upstream, retired-upstream.
 - `fixtures/live/profiles/notes.json`
   Notes/docs stack profile — Memos, Linkding, Bytestash, Paperless.
 - `fixtures/live/profiles/notifications.json`
@@ -181,22 +181,22 @@ Full round-trip proven:
   AI stack profile — Qdrant.
 - `fixtures/live/profiles/all.json`
   Aggregate profile — all 15 services.
-- `fixtures/live/services/radarr.json`
-  Fixture definition and live cases for Radarr.
-- `fixtures/live/services/sonarr.json`
-  Fixture definition and live cases for Sonarr.
-- `fixtures/live/services/prowlarr.json`
-  Fixture definition and live cases for Prowlarr.
-- `fixtures/live/services/plex.json`
-  Fixture definition and live cases for Plex (limited — unclaimed, only `/identity`).
-- `fixtures/live/services/tautulli.json`
-  Fixture definition and live cases for Tautulli.
-- `fixtures/live/services/overseerr.json`
-  Fixture definition and live cases for Overseerr (limited — setup-pending, only `/api/v1/status`).
-- `fixtures/live/services/sabnzbd.json`
-  Fixture definition and live cases for SABnzbd.
-- `fixtures/live/services/qbittorrent.json`
-  Fixture definition and live cases for qBittorrent.
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for Retired upstream.
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for Retired upstream.
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for Retired upstream.
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for Retired upstream (limited — unclaimed, only `/identity`).
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for Retired upstream.
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for Retired upstream (limited — setup-pending, only `/api/v1/status`).
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for Retired upstream.
+- `fixtures/live/services/retired-upstream.json`
+  Fixture definition and live cases for retired-upstream.
 - `fixtures/live/services/memos.json`
   Fixture definition and live cases for Memos.
 - `fixtures/live/services/linkding.json`
@@ -272,19 +272,19 @@ use lab::live::config::load_profile;
 use std::path::Path;
 
 #[test]
-fn loads_servarr_core_profile() {
+fn loads_retired-upstream_core_profile() {
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap().parent().unwrap()
         .join("fixtures/live/profiles");
-    let profile = load_profile(fixtures_dir.join("servarr-core.json")).unwrap();
-    assert_eq!(profile.name, "servarr-core");
-    assert!(profile.services.iter().any(|svc| svc == "radarr"));
+    let profile = load_profile(fixtures_dir.join("retired-upstream-core.json")).unwrap();
+    assert_eq!(profile.name, "retired-upstream-core");
+    assert!(profile.services.iter().any(|svc| svc == "retired-upstream"));
 }
 ```
 
 - [ ] **Step 2: Run the narrow test to verify it fails**
 
-Run: `cargo test -p lab --test live_config loads_servarr_core_profile -- --exact`
+Run: `cargo test -p lab --test live_config loads_retired-upstream_core_profile -- --exact`
 Expected: FAIL because `lab::live` or `load_profile` does not exist yet.
 
 - [ ] **Step 3: Add minimal module/type/config scaffolding**
@@ -345,7 +345,7 @@ pub fn load_profile(path: impl AsRef<std::path::Path>) -> anyhow::Result<crate::
 
 - [ ] **Step 5: Run the narrow test to verify it passes**
 
-Run: `cargo test -p lab --test live_config loads_servarr_core_profile -- --exact`
+Run: `cargo test -p lab --test live_config loads_retired-upstream_core_profile -- --exact`
 Expected: PASS.
 
 - [ ] **Step 6: Expand the parsing tests to cover invalid profiles**
@@ -371,21 +371,21 @@ git commit -m "feat: add live testing module skeleton"
 ## Task 2: Add Fixture Definitions and Validation
 
 **Files:**
-- Create: `fixtures/live/profiles/servarr-core.json`
+- Create: `fixtures/live/profiles/retired-upstream-core.json`
 - Create: `fixtures/live/profiles/media.json`
 - Create: `fixtures/live/profiles/download.json`
 - Create: `fixtures/live/profiles/notes.json`
 - Create: `fixtures/live/profiles/notifications.json`
 - Create: `fixtures/live/profiles/ai.json`
 - Create: `fixtures/live/profiles/all.json`
-- Create: `fixtures/live/services/radarr.json`
-- Create: `fixtures/live/services/sonarr.json`
-- Create: `fixtures/live/services/prowlarr.json`
-- Create: `fixtures/live/services/plex.json`
-- Create: `fixtures/live/services/tautulli.json`
-- Create: `fixtures/live/services/overseerr.json`
-- Create: `fixtures/live/services/sabnzbd.json`
-- Create: `fixtures/live/services/qbittorrent.json`
+- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/retired-upstream.json`
+- Create: `fixtures/live/services/retired-upstream.json`
 - Create: `fixtures/live/services/memos.json`
 - Create: `fixtures/live/services/linkding.json`
 - Create: `fixtures/live/services/bytestash.json`
@@ -407,20 +407,20 @@ use lab::live::config::load_service_fixture;
 use std::path::Path;
 
 #[test]
-fn validates_radarr_fixture_has_snapshot_and_cases() {
+fn validates_retired-upstream_fixture_has_snapshot_and_cases() {
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap().parent().unwrap()
         .join("fixtures/live/services");
-    let fixture = load_service_fixture(fixtures_dir.join("radarr.json")).unwrap();
-    assert_eq!(fixture.service, "radarr");
-    assert!(fixture.snapshot.dataset.contains("radarr"));
+    let fixture = load_service_fixture(fixtures_dir.join("retired-upstream.json")).unwrap();
+    assert_eq!(fixture.service, "retired-upstream");
+    assert!(fixture.snapshot.dataset.contains("retired-upstream"));
     assert!(!fixture.cases.is_empty());
 }
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p lab --test live_config validates_radarr_fixture_has_snapshot_and_cases -- --exact`
+Run: `cargo test -p lab --test live_config validates_retired-upstream_fixture_has_snapshot_and_cases -- --exact`
 Expected: FAIL because service fixture loading/types do not exist yet.
 
 - [ ] **Step 3: Add minimal fixture definition types**
@@ -431,10 +431,10 @@ Apply `#[serde(deny_unknown_fields)]` to all fixture types to surface typos at p
 
 ```json
 {
-  "service": "radarr",
-  "image": "lscr.io/linuxserver/radarr:latest",
+  "service": "retired-upstream",
+  "image": "lscr.io/linuxserver/retired-upstream:latest",
   "snapshot": {
-    "dataset": "backup/lab/live/golden/radarr",
+    "dataset": "backup/lab/live/golden/retired-upstream",
     "snapshot": "configured-v1"
   },
   "container_port": 7878,
@@ -490,14 +490,14 @@ Apply `#[serde(deny_unknown_fields)]` to all fixture types to surface typos at p
 
 | Service | `auth_type` | Special `env` | Sidecars | Notes |
 |---------|-------------|---------------|----------|-------|
-| Radarr | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
-| Sonarr | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
-| Prowlarr | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
-| Plex | `none` | PUID, PGID, TZ | — | Unclaimed; only `/identity` |
-| Tautulli | `api_key` | PUID, PGID, TZ | — | API key from config.ini |
-| Overseerr | `none` | PUID, PGID, TZ | — | Setup-pending; only `/api/v1/status` |
-| SABnzbd | `api_key` | PUID, PGID, TZ | — | API key from sabnzbd.ini; `inet_exposure=4` |
-| qBittorrent | `cookie` | PUID, PGID, TZ | — | Login via `/api/v2/auth/login`, cookie auth |
+| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
+| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
+| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.xml |
+| Retired upstream | `none` | PUID, PGID, TZ | — | Unclaimed; only `/identity` |
+| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from config.ini |
+| Retired upstream | `none` | PUID, PGID, TZ | — | Setup-pending; only `/api/v1/status` |
+| Retired upstream | `api_key` | PUID, PGID, TZ | — | API key from retired-upstream.ini; `inet_exposure=4` |
+| retired-upstream | `cookie` | PUID, PGID, TZ | — | Login via `/api/v2/auth/login`, cookie auth |
 | Memos | `jwt` | — | — | Bearer token via access_tokens API |
 | Linkding | `token` | `LD_SUPERUSER_NAME`, `LD_SUPERUSER_PASSWORD` | — | Token via `ApiToken` model (not DRF Token) |
 | Bytestash | `jwt` | `JWT_SECRET` | — | JWT auth, user/pass login |
@@ -552,9 +552,9 @@ set -euo pipefail
 
 # Use staged invocation (bin/live-host must be installed on backup-node first — see Task 3.5)
 manifest=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 \
-    -o ServerAliveCountMax=3 backup-node live-host up servarr-core test-run-123)
+    -o ServerAliveCountMax=3 backup-node live-host up retired-upstream-core test-run-123)
 echo "$manifest" | jq -e '.run_id == "test-run-123"'
-echo "$manifest" | jq -e '.services.radarr.url | startswith("http")'
+echo "$manifest" | jq -e '.services.retired-upstream.url | startswith("http")'
 ssh -o BatchMode=yes -o ConnectTimeout=10 backup-node live-host down test-run-123 >/dev/null
 ```
 
@@ -584,13 +584,13 @@ validate_id() {
 # bin/live-host does NOT read those files — it uses this static registry.
 # SYNC: profile membership must match fixtures/live/profiles/*.json
 declare -A PROFILE_SERVICES=(
-    [servarr-core]="radarr sonarr prowlarr"
-    [media]="plex tautulli overseerr"
-    [download]="sabnzbd qbittorrent"
+    [retired-upstream-core]="retired-upstream retired-upstream retired-upstream"
+    [media]="retired-upstream retired-upstream retired-upstream"
+    [download]="retired-upstream retired-upstream"
     [notes]="memos linkding bytestash paperless"
     [notifications]="gotify apprise"
     [ai]="qdrant"
-    [all]="radarr sonarr prowlarr plex tautulli overseerr sabnzbd qbittorrent memos linkding bytestash paperless gotify apprise qdrant"
+    [all]="retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream retired-upstream memos linkding bytestash paperless gotify apprise qdrant"
 )
 
 # Declare SERVICES as an array BEFORE any ZFS operation.
@@ -606,14 +606,14 @@ read -ra SERVICES <<< "${PROFILE_SERVICES[$PROFILE]}"
 
 # Service image registry — maps service names to Docker images.
 declare -A SERVICE_IMAGES=(
-    [radarr]="lscr.io/linuxserver/radarr:latest"
-    [sonarr]="lscr.io/linuxserver/sonarr:latest"
-    [prowlarr]="lscr.io/linuxserver/prowlarr:latest"
-    [plex]="lscr.io/linuxserver/plex:latest"
-    [tautulli]="ghcr.io/hotio/tautulli:testing"
-    [overseerr]="ghcr.io/hotio/overseerr:release"
-    [sabnzbd]="ghcr.io/hotio/sabnzbd:latest"
-    [qbittorrent]="linuxserver/qbittorrent:latest"
+    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
+    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
+    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
+    [retired-upstream]="lscr.io/linuxserver/retired-upstream:latest"
+    [retired-upstream]="ghcr.io/hotio/retired-upstream:testing"
+    [retired-upstream]="ghcr.io/hotio/retired-upstream:release"
+    [retired-upstream]="ghcr.io/hotio/retired-upstream:latest"
+    [retired-upstream]="linuxserver/retired-upstream:latest"
     [memos]="ghcr.io/usememos/memos"
     [linkding]="sissbruecker/linkding"
     [bytestash]="ghcr.io/jordan-dalby/bytestash:latest"
@@ -625,9 +625,9 @@ declare -A SERVICE_IMAGES=(
 
 # Service container port registry — maps service names to internal ports.
 declare -A SERVICE_PORTS=(
-    [radarr]=7878 [sonarr]=8989 [prowlarr]=9696
-    [plex]=32400 [tautulli]=8181 [overseerr]=5055
-    [sabnzbd]=8080 [qbittorrent]=8080
+    [retired-upstream]=7878 [retired-upstream]=8989 [retired-upstream]=9696
+    [retired-upstream]=32400 [retired-upstream]=8181 [retired-upstream]=5055
+    [retired-upstream]=8080 [retired-upstream]=8080
     [memos]=5230 [linkding]=9090 [bytestash]=5000 [paperless]=8000
     [gotify]=80 [apprise]=8000
     [qdrant]=6333
@@ -785,10 +785,10 @@ use lab::live::host::parse_manifest;
 
 #[test]
 fn parses_host_manifest_json() {
-    let json = r#"{"run_id":"abc","profile":"servarr-core","services":{"radarr":{"url":"http://127.0.0.1:7878"}}}"#;
+    let json = r#"{"run_id":"abc","profile":"retired-upstream-core","services":{"retired-upstream":{"url":"http://127.0.0.1:7878"}}}"#;
     let manifest = parse_manifest(json).unwrap();
     assert_eq!(manifest.run_id, "abc");
-    assert_eq!(manifest.profile, "servarr-core");
+    assert_eq!(manifest.profile, "retired-upstream-core");
 }
 ```
 
@@ -886,7 +886,7 @@ pub async fn wait_for_services(
 }
 ```
 
-This reduces worst-case `up` latency for servarr-core from 360s (3 × 120s sequential) to 120s (parallel max).
+This reduces worst-case `up` latency for retired-upstream-core from 360s (3 × 120s sequential) to 120s (parallel max).
 
 **`RunGuard` (`host/manifest.rs`) — required:**
 ```rust
@@ -918,7 +918,7 @@ Add a test that asserts the Rust `validation.rs` pattern and the bash `validate_
 #[test]
 fn valid_run_ids_match_both_validators() {
     // These must also pass the bash grep -qE in validate_id()
-    for id in ["abc", "run-123", "a", "servarr-core-20260412"] {
+    for id in ["abc", "run-123", "a", "retired-upstream-core-20260412"] {
         assert!(is_valid_live_id(id), "expected valid: {id}");
     }
     for id in ["", "-start", "UPPER", "has/slash", &"a".repeat(65)] {
@@ -963,7 +963,7 @@ use lab::cli::Cli;
 
 #[test]
 fn parses_live_up_command() {
-    let cli = Cli::try_parse_from(["lab", "live", "up", "servarr-core"]).unwrap();
+    let cli = Cli::try_parse_from(["lab", "live", "up", "retired-upstream-core"]).unwrap();
     assert!(matches!(cli.command, lab::cli::Command::Live(_)));
 }
 ```
@@ -1019,15 +1019,15 @@ git commit -m "feat: add live environment cli"
 
 **Files:**
 - Modify: `bin/live-host`
-- Modify: `fixtures/live/profiles/servarr-core.json`
-- Modify: `fixtures/live/services/radarr.json`
-- Modify: `fixtures/live/services/sonarr.json`
-- Modify: `fixtures/live/services/prowlarr.json`
-- Modify: `fixtures/live/services/plex.json`
-- Modify: `fixtures/live/services/tautulli.json`
-- Modify: `fixtures/live/services/overseerr.json`
-- Modify: `fixtures/live/services/sabnzbd.json`
-- Modify: `fixtures/live/services/qbittorrent.json`
+- Modify: `fixtures/live/profiles/retired-upstream-core.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
 - Modify: `fixtures/live/services/memos.json`
 - Modify: `fixtures/live/services/linkding.json`
 - Modify: `fixtures/live/services/bytestash.json`
@@ -1056,9 +1056,9 @@ Required operations:
 - derive dataset clone names from `run_id` (validated pattern from Task 3; the `SERVICES` static array must already be declared — see Task 3 security requirements)
 - Clone each service dataset individually using explicit paths — **never use `zfs destroy -r`** (recursive destroy risks siblings):
   ```bash
-  zfs clone backup/lab/live/golden/radarr@configured-v1 backup/lab/live/runs/$RUN_ID/radarr
-  zfs clone backup/lab/live/golden/sonarr@configured-v1 backup/lab/live/runs/$RUN_ID/sonarr
-  zfs clone backup/lab/live/golden/prowlarr@configured-v1 backup/lab/live/runs/$RUN_ID/prowlarr
+  zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/$RUN_ID/retired-upstream
+  zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/$RUN_ID/retired-upstream
+  zfs clone backup/lab/live/golden/retired-upstream@configured-v1 backup/lab/live/runs/$RUN_ID/retired-upstream
   ```
 - **Teardown order for `down <run_id>`:** Docker MUST stop before ZFS destroy. If Docker is still holding the filesystem mount, `zfs destroy` will fail:
   ```bash
@@ -1129,13 +1129,13 @@ Requirements:
           exit 1
       }
       # Store for manifest generation
-      eval "PORT_${svc^^}=$HOST_PORT"  # e.g., PORT_RADARR=32789
+      eval "PORT_${svc^^}=$HOST_PORT"  # e.g., PORT_RETIRED_UPSTREAM=32789
   done
   ```
 
 - **Qdrant exposes two ports** — 6333 (HTTP) and 6334 (gRPC). Bind both: `-p 127.0.0.1:0:6333 -p 127.0.0.1:0:6334`. Extract both for the manifest.
 - Emit the manifest (stdout) **immediately after all `docker run` calls complete** — do NOT wait for service readiness in bash. Readiness polling is the Rust client's responsibility (Task 4 `wait_for_services()`). This keeps the SSH subprocess short-lived.
-- ensure services cannot make external network calls: configure Radarr/Sonarr/Prowlarr to disable external updates/indexers in the golden snapshot config
+- ensure services cannot make external network calls: configure Retired upstream/Retired upstream/Retired upstream to disable external updates/indexers in the golden snapshot config
 
 - [ ] **Step 5: Emit a real manifest**
 
@@ -1147,27 +1147,27 @@ Manifest must include credentials under `secrets` (stripped by Rust before writi
   "run_id": "...",
   "profile": "all",
   "network": "lab-live-<run_id>",
-  "snapshot_versions": {"radarr": "configured-v1", "sonarr": "configured-v1", "...": "..."},
+  "snapshot_versions": {"retired-upstream": "configured-v1", "retired-upstream": "configured-v1", "...": "..."},
   "services": {
-    "radarr": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
-    "sonarr": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
-    "plex": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
+    "retired-upstream": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
+    "retired-upstream": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
+    "retired-upstream": {"url": "http://127.0.0.1:<port>", "port": "<port>"},
     "qdrant": {"url": "http://127.0.0.1:<port>", "port": "<port>", "grpc_port": "<grpc_port>"}
   },
   "secrets": {
-    "radarr": {"api_key": "<key>"},
-    "sonarr": {"api_key": "<key>"},
-    "prowlarr": {"api_key": "<key>"},
-    "tautulli": {"api_key": "<key>"},
-    "sabnzbd": {"api_key": "<key>"},
-    "qbittorrent": {"username": "admin", "password": "lab-test-golden"},
+    "retired-upstream": {"api_key": "<key>"},
+    "retired-upstream": {"api_key": "<key>"},
+    "retired-upstream": {"api_key": "<key>"},
+    "retired-upstream": {"api_key": "<key>"},
+    "retired-upstream": {"api_key": "<key>"},
+    "retired-upstream": {"username": "admin", "password": "lab-test-golden"},
     "memos": {"access_token": "<jwt>"},
     "linkding": {"token": "<token>"},
     "bytestash": {"username": "admin", "password": "lab-test-golden", "jwt_secret": "test-golden-secret-key-for-lab"},
     "paperless": {"token": "<token>"},
 - [REDACTED: rotate credentials before restoring snapshot]
-    "plex": {},
-    "overseerr": {},
+    "retired-upstream": {},
+    "retired-upstream": {},
     "apprise": {},
     "qdrant": {}
   }
@@ -1182,22 +1182,22 @@ The Rust caller in Task 4 parses the full manifest, holds `secrets` in memory on
 extract_secrets() {
     local svc="$1" run_id="$2"
     case "$svc" in
-        radarr|sonarr|prowlarr)
+        retired-upstream|retired-upstream|retired-upstream)
             # API key from config.xml
             API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=<ApiKey>)[^<]+' /config/config.xml)
             printf '"api_key":"%s"' "$API_KEY"
             ;;
-        tautulli)
+        retired-upstream)
             # API key from config.ini
             API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=api_key = )[^\s]+' /config/config.ini)
             printf '"api_key":"%s"' "$API_KEY"
             ;;
-        sabnzbd)
-            # API key from sabnzbd.ini
-            API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=api_key = )[^\s]+' /config/sabnzbd.ini)
+        retired-upstream)
+            # API key from retired-upstream.ini
+            API_KEY=$(docker exec "${svc}-${run_id}" grep -oP '(?<=api_key = )[^\s]+' /config/retired-upstream.ini)
             printf '"api_key":"%s"' "$API_KEY"
             ;;
-        qbittorrent)
+        retired-upstream)
             # Static credentials baked into golden snapshot
             printf '"username":"admin","password":"lab-test-golden"'
             ;;
@@ -1221,14 +1221,14 @@ extract_secrets() {
             # App token — baked into golden snapshot DB
 - [REDACTED: rotate credentials before restoring snapshot]
             ;;
-        plex|overseerr|apprise|qdrant)
+        retired-upstream|retired-upstream|apprise|qdrant)
             # No secrets needed
             ;;
     esac
 }
 ```
 
-**Note:** Services with DB-stored tokens (memos, linkding, paperless, gotify) have their tokens baked into the golden snapshot. Since clones are copy-on-write from the same snapshot, the same tokens work in every run. The `extract_secrets` function returns these known values. Only config-file-based credentials (servarr, tautulli, sabnzbd) need runtime extraction from the container filesystem.
+**Note:** Services with DB-stored tokens (memos, linkding, paperless, gotify) have their tokens baked into the golden snapshot. Since clones are copy-on-write from the same snapshot, the same tokens work in every run. The `extract_secrets` function returns these known values. Only config-file-based credentials (retired-upstream, retired-upstream, retired-upstream) need runtime extraction from the container filesystem.
 
 - [ ] **Step 6: Re-run the host contract test**
 
@@ -1237,10 +1237,10 @@ Expected: PASS against real `backup-node` provisioning.
 
 - [ ] **Step 7: Run contract tests for multiple profiles**
 
-Test at minimum `servarr-core` and one non-servarr profile (e.g., `notifications` — fast, no sidecars, no auth):
+Test at minimum `retired-upstream-core` and one non-retired-upstream profile (e.g., `notifications` — fast, no sidecars, no auth):
 
 ```bash
-bash tests/live_host_contract_test.sh servarr-core
+bash tests/live_host_contract_test.sh retired-upstream-core
 bash tests/live_host_contract_test.sh notifications
 ```
 
@@ -1266,11 +1266,11 @@ git commit -m "feat: provision all 15 live services on backup-node with profile-
 **Files:**
 - Create: `crates/lab/src/live/runner.rs`
 - Create: `crates/lab/src/live/report.rs`
-- Create: `tests/live_servarr_core_e2e_test.sh`
+- Create: `tests/live_retired-upstream_core_e2e_test.sh`
 - Modify: `crates/lab/src/cli/live.rs`
 - Modify: `Justfile`
 - Test: `crates/lab/tests/live_runner.rs`
-- Test: `tests/live_servarr_core_e2e_test.sh`
+- Test: `tests/live_retired-upstream_core_e2e_test.sh`
 
 - [ ] **Step 1: Write the failing report serialization test**
 
@@ -1305,10 +1305,10 @@ fn check_disk_space(dir: &std::path::Path) -> anyhow::Result<()> {
 }
 ```
 
-For `servarr-core`, execute at least:
-- one CLI case for Radarr
-- one MCP case for Radarr
-- one API case for Radarr
+For `retired-upstream-core`, execute at least:
+- one CLI case for Retired upstream
+- one MCP case for Retired upstream
+- one API case for Retired upstream
 - one expected failure case
 
 **Case execution is sequential** (no semaphore for this slice). Sequential execution produces non-interleaved logs and cleaner failure attribution. Add parallelism in Task 10 only if profiling shows it is needed.
@@ -1319,18 +1319,18 @@ For `servarr-core`, execute at least:
 #!/usr/bin/env bash
 set -euo pipefail
 
-run_json=$(cargo run --all-features -- live up servarr-core --json)
+run_json=$(cargo run --all-features -- live up retired-upstream-core --json)
 run_id=$(echo "$run_json" | jq -r '.run_id')
 trap 'cargo run --all-features -- live down "$run_id"' EXIT
 
-cargo run --all-features -- live test servarr-core
+cargo run --all-features -- live test retired-upstream-core
 test -f "artifacts/live/$run_id/results.json"
 jq -e '.cases | length > 0' "artifacts/live/$run_id/results.json"
 ```
 
 - [ ] **Step 5: Run the shell E2E test to verify it fails**
 
-Run: `bash tests/live_servarr_core_e2e_test.sh`
+Run: `bash tests/live_retired-upstream_core_e2e_test.sh`
 Expected: FAIL because `live test` and report writing are not implemented yet.
 
 - [ ] **Step 6: Implement result writing with incremental checkpoint**
@@ -1361,15 +1361,15 @@ Artifacts written to `artifacts/live/<run_id>/`:
 
 Run:
 - `cargo test -p lab --test live_runner`
-- `bash tests/live_servarr_core_e2e_test.sh`
+- `bash tests/live_retired-upstream_core_e2e_test.sh`
 
 Expected: PASS.
 
 - [ ] **Step 8: Commit the first end-to-end slice**
 
 ```bash
-git add crates/lab/src/live/runner.rs crates/lab/src/live/report.rs crates/lab/src/cli/live.rs Justfile crates/lab/tests/live_runner.rs tests/live_servarr_core_e2e_test.sh
-git commit -m "feat: add servarr-core live end-to-end runner"
+git add crates/lab/src/live/runner.rs crates/lab/src/live/report.rs crates/lab/src/cli/live.rs Justfile crates/lab/tests/live_runner.rs tests/live_retired-upstream_core_e2e_test.sh
+git commit -m "feat: add retired-upstream-core live end-to-end runner"
 ```
 
 ## Task 10: Add Catalog-Driven Gap Analysis and Full Matrix Execution
@@ -1380,11 +1380,11 @@ git commit -m "feat: add servarr-core live end-to-end runner"
 - Create: `crates/lab/src/live/matrix.rs` (owns both `enumerate_surface_items()` as a private function and the `MatrixRow` matching logic — no separate `catalog.rs` needed)
 - Modify: `crates/lab/src/live/runner.rs`
 - Modify: `crates/lab/src/live/types.rs`
-- Modify: `fixtures/live/services/radarr.json`
-- Modify: `fixtures/live/services/sonarr.json`
-- Modify: `fixtures/live/services/prowlarr.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
+- Modify: `fixtures/live/services/retired-upstream.json`
 - Test: `crates/lab/tests/live_matrix.rs` (replaces the previously planned `live_catalog.rs` — no separate catalog test file needed)
-- Test: `tests/live_servarr_core_e2e_test.sh`
+- Test: `tests/live_retired-upstream_core_e2e_test.sh`
 
 - [ ] **Step 1: Add the `CaseOutcome` enum to `types.rs`**
 
@@ -1408,7 +1408,7 @@ The report summary must show counts for all five buckets, not just pass/fail.
 
 - [ ] **Step 2: Implement catalog enumeration**
 
-Source MCP actions from `build_catalog()` — **not** from source file parsing. The `enumerate_surface_items()` function is private to `matrix.rs` (one caller, no reason for a separate module). The result is `("mcp", service_name, action_name)` tuples, derived by iterating the existing `Catalog` type. Source API surface the same way. Avoid dynamic CLI enumeration for Tier-2 stub services — hardcode the 3 servarr CLI surfaces for now.
+Source MCP actions from `build_catalog()` — **not** from source file parsing. The `enumerate_surface_items()` function is private to `matrix.rs` (one caller, no reason for a separate module). The result is `("mcp", service_name, action_name)` tuples, derived by iterating the existing `Catalog` type. Source API surface the same way. Avoid dynamic CLI enumeration for Tier-2 stub services — hardcode the 3 retired-upstream CLI surfaces for now.
 
 Take the catalog snapshot once at `lab live test` startup; pass the derived cases as plain data to the runner. Do not re-query the registry inside each case loop iteration.
 
@@ -1418,10 +1418,10 @@ Take the catalog snapshot once at `lab live test` startup; pass the derived case
 // crates/lab/tests/live_matrix.rs
 // (no separate live_catalog.rs — enumerate_surface_items is private to matrix.rs)
 #[test]
-fn enumerates_radarr_mcp_surface() {
+fn enumerates_retired-upstream_mcp_surface() {
     // call through the public matrix::build_matrix() API
     let items = lab::live::matrix::enumerate_for_test();  // expose test-only via #[cfg(test)]
-    assert!(items.iter().any(|it| it.surface == "mcp" && it.service == "radarr"));
+    assert!(items.iter().any(|it| it.surface == "mcp" && it.service == "retired-upstream"));
 }
 #[test]
 fn no_duplicate_surface_items() {
@@ -1442,7 +1442,7 @@ Rules:
 
 - [ ] **Step 5: Write and verify matrix tests**
 
-- [ ] **Step 6: Extend runner to use full catalog matrix for `servarr-core`**
+- [ ] **Step 6: Extend runner to use full catalog matrix for `retired-upstream-core`**
 
 Requirements:
 - enumerate all generated items for services in the profile
@@ -1450,7 +1450,7 @@ Requirements:
 - **sequential execution** — no semaphore for this task. Add concurrency only if profiling shows sequential is a bottleneck (natural threshold: >30s for a full profile run).
 - record all five outcome buckets without hiding any
 
-- [ ] **Step 7: Extend `tests/live_servarr_core_e2e_test.sh`**
+- [ ] **Step 7: Extend `tests/live_retired-upstream_core_e2e_test.sh`**
 
 Add assertions that:
 - result file contains multiple surfaces
@@ -1460,15 +1460,15 @@ Add assertions that:
 
 Run:
 - `cargo test -p lab --test live_matrix`
-- `bash tests/live_servarr_core_e2e_test.sh`
+- `bash tests/live_retired-upstream_core_e2e_test.sh`
 
 Expected: PASS.
 
 - [ ] **Step 9: Commit matrix execution**
 
 ```bash
-git add crates/lab/src/live/matrix.rs crates/lab/src/live/runner.rs crates/lab/src/live/types.rs fixtures/live/services/radarr.json fixtures/live/services/sonarr.json fixtures/live/services/prowlarr.json crates/lab/tests/live_matrix.rs tests/live_servarr_core_e2e_test.sh
-git commit -m "feat: catalog-driven gap analysis and full matrix execution for servarr-core"
+git add crates/lab/src/live/matrix.rs crates/lab/src/live/runner.rs crates/lab/src/live/types.rs fixtures/live/services/retired-upstream.json fixtures/live/services/retired-upstream.json fixtures/live/services/retired-upstream.json crates/lab/tests/live_matrix.rs tests/live_retired-upstream_core_e2e_test.sh
+git commit -m "feat: catalog-driven gap analysis and full matrix execution for retired-upstream-core"
 ```
 
 ## Task 11: Add Documentation and Repo-Level Integration
@@ -1520,7 +1520,7 @@ All targets must include SSH timeout options.
 - [ ] **Step 5: Run narrow doc-adjacent verification**
 
 Run:
-- `just live-test servarr-core`
+- `just live-test retired-upstream-core`
 - `rg -n "LIVE_TESTING|backup-node|artifacts/live" docs Justfile`
 - `git check-ignore artifacts/live/test-run-123/manifest.json`
 
@@ -1559,7 +1559,7 @@ Expected: PASS.
 
 Run:
 - `bash tests/live_host_contract_test.sh`
-- `bash tests/live_servarr_core_e2e_test.sh`
+- `bash tests/live_retired-upstream_core_e2e_test.sh`
 
 Expected: PASS against `backup-node`.
 
@@ -1601,7 +1601,7 @@ git commit -m “feat: add backup-node-backed live end-to-end test infrastructur
 - Never use `git add -A` — always stage specific paths to avoid committing artifacts/.
 - The first milestone is not “all services”; it is “one profile works end to end with teardown and artifacts.” Expand only after that is solid.
 - All 15 services have golden snapshots on backup-node — see the recon section for credentials and mount paths.
-- Services with limited API (Plex unclaimed, Overseerr setup-pending) should have minimal fixture cases that test what IS available.
+- Services with limited API (Retired upstream unclaimed, Retired upstream setup-pending) should have minimal fixture cases that test what IS available.
 - Paperless requires a Redis sidecar — `bin/live-host` must start redis before paperless and inject the IP via `PAPERLESS_REDIS` env var.
 - Volume mount paths vary by service — see the readiness endpoints table in the recon section. The `VMOUNT` case statement in `bin/live-host` is the single source of truth for mount paths.
 - The `PROFILE_SERVICES` associative array in `bin/live-host` is the single source of truth for which services belong to which profile. Keep it in sync with `fixtures/live/profiles/*.json`.

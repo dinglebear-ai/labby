@@ -490,27 +490,27 @@ mod tests {
 
     #[test]
     fn package_segment_validation_rejects_injection_shapes() {
-        assert!(validate_package_segment("plex").is_ok());
+        assert!(validate_package_segment("gateway-alpha").is_ok());
         assert!(validate_package_segment("uptime_kuma").is_ok());
         assert!(validate_package_segment("--config").is_err());
-        assert!(validate_package_segment("plex;rm").is_err());
-        assert!(validate_package_segment("../plex").is_err());
+        assert!(validate_package_segment("gateway_alpha;rm").is_err());
+        assert!(validate_package_segment("../gateway_alpha").is_err());
     }
 
     #[test]
     fn allowlist_is_exact_org_match() {
-        assert!(ensure_package_allowed("lab-plex@lab").is_ok());
-        assert!(ensure_package_allowed("lab-plex@labxyz").is_err());
+        assert!(ensure_package_allowed("lab-gateway_alpha@lab").is_ok());
+        assert!(ensure_package_allowed("lab-gateway_alpha@labxyz").is_err());
     }
 
     #[test]
     fn parses_claude_plugin_list_json() {
         let plugins = parse_installed_plugins(
-            r#"[{"id":"lab-plex@lab","scope":"user","version":"abc","enabled":true}]"#,
+            r#"[{"id":"lab-gateway_alpha@lab","scope":"user","version":"abc","enabled":true}]"#,
         )
         .unwrap();
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].id, "lab-plex@lab");
+        assert_eq!(plugins[0].id, "lab-gateway_alpha@lab");
         assert_eq!(plugins[0].version.as_deref(), Some("abc"));
     }
 

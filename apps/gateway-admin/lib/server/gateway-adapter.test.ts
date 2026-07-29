@@ -378,8 +378,8 @@ test('normalizeGateway preserves discovered tool descriptions when provided', ()
 
 test('normalizeServerView maps unified server rows into list-friendly gateway cards', () => {
   const gateway = normalizeServerView({
-    id: 'plex',
-    name: 'plex',
+    id: 'gateway_beta',
+    name: 'gateway_beta',
     source: 'in_process',
     configured: true,
     enabled: false,
@@ -387,11 +387,11 @@ test('normalizeServerView maps unified server rows into list-friendly gateway ca
     warnings: [],
     config_summary: {
       transport: 'in_process',
-      target: 'plex',
+      target: 'gateway_beta',
     },
   })
 
-  assert.equal(gateway.id, 'plex')
+  assert.equal(gateway.id, 'gateway_beta')
   assert.equal(gateway.transport, 'in_process')
   assert.equal(gateway.source, 'in_process')
   assert.equal(gateway.enabled, false)
@@ -404,8 +404,8 @@ test('normalizeServerView maps unified server rows into list-friendly gateway ca
 test('normalizeServerView can include compiled lab-service tools', () => {
   const gateway = normalizeServerView(
     {
-      id: 'plex',
-      name: 'plex',
+      id: 'gateway_beta',
+      name: 'gateway_beta',
       source: 'in_process',
       configured: true,
       enabled: true,
@@ -413,7 +413,7 @@ test('normalizeServerView can include compiled lab-service tools', () => {
       warnings: [],
       config_summary: {
         transport: 'in_process',
-        target: 'plex',
+        target: 'gateway_beta',
       },
     },
     {

@@ -16,14 +16,14 @@ Stage `.claude-plugin/` and `plugins/` and push straight to main with a version 
 
 ## Session Overview
 
-Pushed plugin restructure changes to main via a temp branch, merged the large `fix/auth` branch into main (resolving one conflict), bumped Cargo workspace version `0.5.1 → 0.6.0`, fixed a compile error (`tailscale`/`tautulli` missing from `mcp/services.rs`), cleaned up stale root-level directories (`commands/`, `monitors/`, `skills/`, `tools/gh-webhook/`), and restored `plugins/` after accidentally removing it.
+Pushed plugin restructure changes to main via a temp branch, merged the large `fix/auth` branch into main (resolving one conflict), bumped Cargo workspace version `0.5.1 → 0.6.0`, fixed a compile error (`tailscale`/`retired-upstream` missing from `mcp/services.rs`), cleaned up stale root-level directories (`commands/`, `monitors/`, `skills/`, `tools/gh-webhook/`), and restored `plugins/` after accidentally removing it.
 
 ## Sequence of Events
 
 1. Identified that `.claude-plugin/marketplace.json` changed `source` from GitHub object to `"./plugins"` and `plugins/` was newly untracked.
 2. Bumped plugin versions (`0.1.0 → 0.1.1` in marketplace.json, `0.5.1 → 0.5.2` in plugins/.claude-plugin/plugin.json).
 3. Created `temp/plugin-restructure` branch off main, applied only `.claude-plugin/` + `plugins/` changes, pushed to main, returned to `fix/auth`.
-4. Ran quick-push skill on `fix/auth` — detected compile errors (`tailscale`/`tautulli` not declared in `mcp/services.rs`).
+4. Ran quick-push skill on `fix/auth` — detected compile errors (`tailscale`/`retired-upstream` not declared in `mcp/services.rs`).
 5. Added missing module declarations, re-ran `cargo check --all-features` (passed).
 6. Bumped Cargo workspace version `0.5.1 → 0.6.0` (minor — new auth, MCP peers, upstream pool).
 7. Staged and committed all `fix/auth` changes, pushed to `origin/fix/auth`.
@@ -36,7 +36,7 @@ Pushed plugin restructure changes to main via a temp branch, merged the large `f
 
 ## Key Findings
 
-- `mcp/services.rs` was missing `#[cfg(feature = "tailscale")] pub mod tailscale;` and `#[cfg(feature = "tautulli")] pub mod tautulli;` — caused E0433 compile errors.
+- `mcp/services.rs` was missing `#[cfg(feature = "tailscale")] pub mod tailscale;` and `#[cfg(feature = "retired-upstream")] pub mod retired-upstream;` — caused E0433 compile errors.
 - `tools/gh-webhook/` was listed as deleted in the working tree but never committed as deleted — still tracked on main.
 - `commands/save-to-md.md` and `monitors/monitors.json` survived as tracked root-level files even after the plugin restructure moved them to `plugins/`.
 - Pushing `temp-branch:main` via refspec is clean for isolated changes but complicates the base for subsequent merges.
@@ -53,7 +53,7 @@ Pushed plugin restructure changes to main via a temp branch, merged the large `f
 |------|--------|
 | `Cargo.toml` | Workspace version `0.5.1 → 0.6.0` |
 | `Cargo.lock` | Updated by `cargo check` |
-| `crates/lab/src/mcp/services.rs` | Added `tailscale` and `tautulli` module declarations |
+| `crates/lab/src/mcp/services.rs` | Added `tailscale` and `retired-upstream` module declarations |
 | `.claude-plugin/marketplace.json` | `source` → `"./plugins"`, version `0.1.0 → 0.1.1` |
 | `plugins/.claude-plugin/plugin.json` | Version `0.5.1 → 0.5.2` |
 | `.gitignore` | Temporarily added `plugins/` (reverted); no net change |
@@ -98,7 +98,7 @@ git checkout main && git pull && git branch -D fix/auth && git push origin --del
 
 | Error | Root Cause | Resolution |
 |-------|-----------|------------|
-| E0433: could not find `tailscale` in `services` | `mcp/services.rs` missing module declaration | Added `#[cfg(feature = "tailscale")] pub mod tailscale;` and `tautulli` equivalent |
+| E0433: could not find `tailscale` in `services` | `mcp/services.rs` missing module declaration | Added `#[cfg(feature = "tailscale")] pub mod tailscale;` and `retired-upstream` equivalent |
 | `modify/delete` conflict on `.claude-plugin/plugin.json` | File deleted on main (moved to `plugins/`), still present in `fix/auth` HEAD | `git rm .claude-plugin/plugin.json` |
 | `plugins/` removed from repo | Mistakenly included in `git rm -r` cleanup | `git checkout 4ddac44 -- plugins/` to restore |
 

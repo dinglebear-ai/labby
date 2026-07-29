@@ -221,7 +221,7 @@ Add to the test module:
 ```rust
 #[test]
 fn parse_rejects_lab_action_id() {
-    let err = CodeModeToolId::parse("lab::radarr.movie.search")
+    let err = CodeModeToolId::parse("lab::retired-upstream.movie.search")
         .expect_err("lab:: ids should be rejected");
     match err {
         ToolError::Sdk { sdk_kind, .. } => {
@@ -302,7 +302,7 @@ Note: `lab::` returns `unknown_tool` (not `invalid_code_mode_id`) because that's
 ```rust
 #[test]
 fn parse_rejects_lab_action_id() {
-    let err = CodeModeToolId::parse("lab::radarr.movie.search")
+    let err = CodeModeToolId::parse("lab::retired-upstream.movie.search")
         .expect_err("lab:: ids should be rejected");
     match err {
         ToolError::Sdk { sdk_kind, message } => {
@@ -365,7 +365,7 @@ async fn schema_rejects_lab_action_id() {
     let broker = CodeModeBroker::new(&registry, None);
 
     let err = broker
-        .schema("lab::radarr.movie.search", CodeModeCaller::TrustedLocal, CodeModeSurface::Cli)
+        .schema("lab::retired-upstream.movie.search", CodeModeCaller::TrustedLocal, CodeModeSurface::Cli)
         .await
         .expect_err("schema should reject lab:: id");
 
@@ -626,7 +626,7 @@ async fn code_execute_callTool_lab_id_returns_unknown_tool() {
 
     let response = broker
         .execute(
-            r#"await callTool("lab::radarr.movie.search", {query:"Matrix"})"#,
+            r#"await callTool("lab::retired-upstream.movie.search", {query:"Matrix"})"#,
             CodeModeCaller::TrustedLocal,
             CodeModeSurface::Cli,
             crate::config::CodeModeConfig {
@@ -687,8 +687,8 @@ Add near the top of the file (below the existing module docs):
 ```rust
 const LAB_ACTION_UNKNOWN_TOOL_HINT: &str =
     "Code Mode handles upstream MCP tools only. For Lab actions, use the `tool_execute` MCP tool: \
-     name=<service> (e.g. \"radarr\"), arguments={action: \"<dotted.action>\", params: {...}}. \
-     Example: tool_execute(name=\"radarr\", arguments={action:\"movie.search\", params:{query:\"Matrix\"}}).";
+     name=<service> (e.g. \"retired-upstream\"), arguments={action: \"<dotted.action>\", params: {...}}. \
+     Example: tool_execute(name=\"retired-upstream\", arguments={action:\"movie.search\", params:{query:\"Matrix\"}}).";
 ```
 
 - [ ] **Step 3: Use the constant in all `lab::` rejection sites**
@@ -708,7 +708,7 @@ In `parse_rejects_lab_action_id` (and `schema_rejects_lab_action_id`, and `code_
 
 ```rust
 assert!(message.contains("tool_execute"));
-assert!(message.contains("\"radarr\""));
+assert!(message.contains("\"retired-upstream\""));
 ```
 
 - [ ] **Step 5: Run all rejection tests**
@@ -848,7 +848,7 @@ Expected: only `upstream::*` IDs. Zero `lab::*` IDs.
 
 Run:
 ```bash
-LAB_MCP_HTTP_TOKEN=$(...) mcporter call lab-prod.invoke name=code_schema arguments:='{"id":"lab::radarr.movie.search"}' 2>&1
+LAB_MCP_HTTP_TOKEN=$(...) mcporter call lab-prod.invoke name=code_schema arguments:='{"id":"lab::retired-upstream.movie.search"}' 2>&1
 ```
 
 Expected: structured `unknown_tool` envelope with the expanded hint mentioning `tool_execute`.

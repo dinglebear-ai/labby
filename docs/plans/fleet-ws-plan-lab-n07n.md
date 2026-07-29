@@ -691,7 +691,7 @@ allow = ["controller", "node-b", "workstation-wsl"]
 # Device A can invoke action X on device B
 source = "controller"
 target = "node-b"
-actions = ["radarr.queue.list", "sonarr.*"]
+actions = ["retired-upstream.queue.list", "retired-upstream.*"]
 
 [[fleet.peer_policy]]
 source = "workstation-wsl"
@@ -791,7 +791,7 @@ Add to the TOML schema:
 [[fleet.peer_policy]]
 source = "controller"
 target = "node-b"
-actions = ["radarr.*"]
+actions = ["retired-upstream.*"]
 allow_destructive = false  # default: false. Explicit opt-in required.
 ```
 
@@ -822,7 +822,7 @@ Deny-by-default for destructive actions regardless of action glob match.
 - Every peer.invoke audit entry MUST log: `source_device`, `target_device`, `action`, `destructive: bool`, `decision: allow|deny`, `reason`, `correlation_id` (for tracing join).
 
 ### Additional tests (append to Testing)
-- [ ] Confused-deputy: policy allows `(controller → node-b, radarr.*)` with `allow_destructive=false`; invoking `radarr.movie.delete` returns `denied` with `reason: destructive_not_permitted`.
+- [ ] Confused-deputy: policy allows `(controller → node-b, retired-upstream.*)` with `allow_destructive=false`; invoking `retired-upstream.movie.delete` returns `denied` with `reason: destructive_not_permitted`.
 - [ ] Hot-reload race: start a long-running `fleet/peer.invoke`; reload policy mid-flight; request completes under the snapshot it started with, subsequent requests see new policy.
 - [ ] Concurrent-map baseline regression: with the P1 DashMap swap already in place, concurrent 1000-device enrollment bench shows no deadlocks, no lost updates, and clippy remains clean.
 - [ ] Semaphore backpressure: spam 10k peer.invoke from one source; concurrent in-flight caps at 64; excess returns `rate_limited` kind, not 503.

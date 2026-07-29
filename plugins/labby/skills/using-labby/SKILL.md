@@ -118,8 +118,8 @@ Use a generated helper only after `codemode.search()` confirms the helper path:
 
 ```json
 {
-  "code": "async () => {\n    const help = await codemode.rustarr.sonarr({ action: \"help\" });\n    return { ok: true, help_type: typeof help };\n  }",
-  "upstreams": ["rustarr"]
+  "code": "async () => {\n    const help = await codemode.axon.axon({ action: \"help\" });\n    return { ok: true, help_type: typeof help };\n  }",
+  "upstreams": ["axon"]
 }
 ```
 
@@ -128,8 +128,8 @@ run:
 
 ```json
 {
-  "code": "async () => {\n    const calls = await Promise.allSettled([\n      callTool(\"rustarr::sonarr\", { action: \"help\" }),\n      callTool(\"rustarr::radarr\", { action: \"help\" }),\n      callTool(\"rustarr::prowlarr\", { action: \"help\" })\n    ]);\n    return calls.map((r, index) => r.status === \"fulfilled\"\n      ? { index, ok: true, type: typeof r.value }\n      : { index, ok: false, error: JSON.parse(String(r.reason.message)) });\n  }",
-  "upstreams": ["rustarr"]
+  "code": "async () => {\n    const calls = await Promise.allSettled([\n      callTool(\"axon::axon\", { action: \"help\" }),\n      callTool(\"unraid::unraid\", { action: \"help\" }),\n      callTool(\"cortex::cortex\", { action: \"help\" })\n    ]);\n    return calls.map((r, index) => r.status === \"fulfilled\"\n      ? { index, ok: true, type: typeof r.value }\n      : { index, ok: false, error: JSON.parse(String(r.reason.message)) });\n  }",
+  "upstreams": ["axon", "unraid", "cortex"]
 }
 ```
 
@@ -143,7 +143,7 @@ Call a Windows helper through the live-confirmed helper path:
 ```
 
 Many upstreams are action-dispatched — one tool taking an `action` plus
-action-specific fields (e.g. `axon`, and the rmcp family: `unraid`, `sonarr`,
+action-specific fields (e.g. `axon`, and the rmcp family: `unraid`, `unifi`,
 `cortex`, ...). The exact envelope is upstream-specific. Discover actions with
 `{ "action": "help" }`, `codemode.search()`, and `codemode.describe()` before
 calling. Guessing shapes rejects as `invalid_param` (`params must match exactly

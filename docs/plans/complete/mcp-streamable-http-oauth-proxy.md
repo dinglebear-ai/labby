@@ -575,7 +575,7 @@ An upstream that is down but still registered causes 30-second timeout hangs on 
 
 ### Conflict resolution
 
-If an upstream server name collides with a built-in lab service name (e.g., someone names their upstream "radarr"):
+If an upstream server name collides with a built-in lab service name (e.g., someone names their upstream "retired-upstream"):
 - Built-in lab services **permanently** take precedence
 - The upstream is rejected at startup with a clear warning
 - Built-in names are reserved — they cannot be overridden by upstream discovery regardless of timing

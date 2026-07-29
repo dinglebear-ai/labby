@@ -255,7 +255,7 @@ Loaded from `~/.labby/.env`. Product actions that mutate config or env files mus
 
 Every service entry-point file that participates in generated metadata declares a `pub const META: PluginMeta` with:
 
-- `category: Category` — one of 10 variants: `Media`, `Servarr`, `Indexer`, `Download`, `Notes`, `Documents`, `Network`, `Notifications`, `Ai`, `Bootstrap`.
+- `category: Category` — one of 6 variants: `Notes`, `Documents`, `Network`, `Notifications`, `Ai`, `Bootstrap`.
 - `required_env: &[EnvVar]` / `optional_env: &[EnvVar]` — each `EnvVar { name, description, example, secret }`. `secret: true` marks values to mask in logs, docs, and UI.
 - `default_port: Option<u16>` — used by generated docs and doctor/setup hints.
 

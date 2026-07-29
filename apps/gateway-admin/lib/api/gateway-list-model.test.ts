@@ -42,8 +42,8 @@ test('mergeGatewayListWithSupportedServices appends missing lab services as deac
   const existing = [
     makeGateway({ id: 'custom-1', name: 'custom-1' }),
     makeGateway({
-      id: 'plex',
-      name: 'plex',
+      id: 'gateway_beta',
+      name: 'gateway_beta',
       transport: 'in_process',
       source: 'in_process',
       enabled: true,
@@ -62,33 +62,33 @@ test('mergeGatewayListWithSupportedServices appends missing lab services as deac
 
   const supported: SupportedService[] = [
     {
-      key: 'plex',
-      display_name: 'Plex',
+      key: 'gateway_beta',
+      display_name: 'Gateway beta',
       category: 'Media',
-      description: 'Plex service',
+      description: 'Gateway beta service',
       required_env: [],
       optional_env: [],
     },
     {
-      key: 'radarr',
-      display_name: 'Radarr',
+      key: 'gateway_alpha',
+      display_name: 'Gateway alpha',
       category: 'Media',
-      description: 'Radarr service',
+      description: 'Gateway alpha service',
       required_env: [],
       optional_env: [],
     },
   ]
 
   const serviceConfigs = new Map<string, ServiceConfig>([
-    ['radarr', { service: 'radarr', configured: false, fields: [] }],
+    ['gateway_alpha', { service: 'gateway_alpha', configured: false, fields: [] }],
   ])
   const serviceActions = new Map<string, ServiceAction[]>([
-    ['radarr', [{ name: 'movie.search', description: 'Search', destructive: false }]],
+    ['gateway_alpha', [{ name: 'movie.search', description: 'Search', destructive: false }]],
   ])
 
   const merged = mergeGatewayListWithSupportedServices(existing, supported, serviceConfigs, serviceActions)
 
-  assert.deepEqual(merged.map((gateway) => gateway.id), ['custom-1', 'plex', 'radarr'])
+  assert.deepEqual(merged.map((gateway) => gateway.id), ['custom-1', 'gateway_beta', 'gateway_alpha'])
   assert.equal(merged[2]?.source, 'in_process')
   assert.equal(merged[2]?.enabled, false)
   assert.equal(merged[2]?.configured, false)
@@ -113,8 +113,8 @@ test('mergeGatewayListWithSupportedServices preserves existing disabled lab rows
   const existing = [
     makeGateway({ id: 'custom-1', name: 'custom-1' }),
     makeGateway({
-      id: 'radarr',
-      name: 'radarr',
+      id: 'gateway_alpha',
+      name: 'gateway_alpha',
       transport: 'in_process',
       source: 'in_process',
       enabled: false,
@@ -134,10 +134,10 @@ test('mergeGatewayListWithSupportedServices preserves existing disabled lab rows
 
   const supported: SupportedService[] = [
     {
-      key: 'radarr',
-      display_name: 'Radarr',
+      key: 'gateway_alpha',
+      display_name: 'Gateway alpha',
       category: 'Media',
-      description: 'Radarr service',
+      description: 'Gateway alpha service',
       required_env: [],
       optional_env: [],
     },
@@ -145,17 +145,17 @@ test('mergeGatewayListWithSupportedServices preserves existing disabled lab rows
 
   const merged = mergeGatewayListWithSupportedServices(existing, supported, new Map(), new Map())
 
-  assert.deepEqual(merged.map((gateway) => gateway.id), ['custom-1', 'radarr'])
+  assert.deepEqual(merged.map((gateway) => gateway.id), ['custom-1', 'gateway_alpha'])
   assert.equal(merged[1]?.enabled, false)
   assert.equal(merged[1]?.status.discovered_tool_count, 53)
 })
 
 test('synthesizeLabGateway does not fabricate created_at or updated_at', () => {
   const service: SupportedService = {
-    key: 'sonarr',
-    display_name: 'Sonarr',
+    key: 'hidden_upstream',
+    display_name: 'Hidden upstream',
     category: 'Media',
-    description: 'Sonarr service',
+    description: 'Hidden upstream service',
     required_env: [],
     optional_env: [],
   }

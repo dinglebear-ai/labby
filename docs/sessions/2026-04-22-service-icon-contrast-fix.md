@@ -34,7 +34,7 @@ Fixed icon contrast in the `ServiceIconBox` component of `gateway-form-dialog.ts
 
 ## Key Findings
 
-- `gateway-form-dialog.tsx:109` — original style `background: ${brand}CC; border: 1px solid ${brand}` caused brand-on-brand invisibility for dark services (UniFi `#0559C9`, Linkding `#7C5CBF`, Memos `#3478F6`, Gotify `#45AEE5`, qBittorrent `#2F99E0`).
+- `gateway-form-dialog.tsx:109` — original style `background: ${brand}CC; border: 1px solid ${brand}` caused brand-on-brand invisibility for dark services (UniFi `#0559C9`, Linkding `#7C5CBF`, Memos `#3478F6`, Gotify `#45AEE5`, retired-upstream `#2F99E0`).
 - Dev server was running on port **3002**, not 3000 — `ss -tlnp` confirmed this.
 - The selfhst/icons PNGs are full-color images designed for light/white backgrounds, not dark brand-colored backgrounds.
 - SVG fallbacks had `fill="white"` hardcoded — would have been invisible on white background without the inline replace.

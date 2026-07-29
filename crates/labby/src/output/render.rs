@@ -832,7 +832,7 @@ mod tests {
     fn health_rows_render_as_status_table() {
         let val = json!([
             {
-                "service": "radarr",
+                "service": "gateway-alpha",
                 "reachable": true,
                 "auth_ok": true,
                 "version": "5.17.2",
@@ -851,7 +851,7 @@ mod tests {
 
         let out = render(&val, human_format()).unwrap();
         assert!(out.contains("Service Health"));
-        assert!(out.contains("radarr"));
+        assert!(out.contains("gateway-alpha"));
         assert!(out.contains("unifi"));
         assert!(out.contains("✓") || out.contains("ok"));
         assert!(out.contains("✗") || out.contains('x'));
@@ -861,15 +861,15 @@ mod tests {
     fn doctor_report_renders_summary() {
         let val = json!({
             "findings": [
-                {"service": "radarr", "check": "env:RADARR_URL", "severity": "ok", "message": "RADARR_URL is set"},
-                {"service": "radarr", "check": "env:RADARR_API_KEY", "severity": "fail", "message": "RADARR_API_KEY is missing"}
+                {"service": "gateway-alpha", "check": "env:GATEWAY_ALPHA_URL", "severity": "ok", "message": "GATEWAY_ALPHA_URL is set"},
+                {"service": "gateway-alpha", "check": "env:GATEWAY_ALPHA_API_KEY", "severity": "fail", "message": "GATEWAY_ALPHA_API_KEY is missing"}
             ]
         });
 
         let out = render(&val, human_format()).unwrap();
         assert!(out.contains("Doctor Report"));
         // Service-grouped summary: per-service row, not per-check.
-        assert!(out.contains("radarr"));
+        assert!(out.contains("gateway-alpha"));
         assert!(out.contains("env"));
         assert!(out.contains("✓") || out.contains("ok"));
         assert!(out.contains("✗") || out.contains('x'));
@@ -883,16 +883,16 @@ mod tests {
         let val = serde_json::json!({
             "services": [
                 {
-                    "name": "radarr",
-                    "description": "Movie manager",
-                    "category": "servarr",
+                    "name": "gateway-alpha",
+                    "description": "Example gateway",
+                    "category": "upstream",
                     "status": "available",
                     "requires_http_subject": false,
                     "actions": [
-                        {"name": "movie.search", "description": "", "destructive": false, "params": [], "returns": ""},
-                        {"name": "movie.add", "description": "", "destructive": false, "params": [], "returns": ""},
-                        {"name": "queue.list", "description": "", "destructive": false, "params": [], "returns": ""},
-                        {"name": "queue.purge", "description": "", "destructive": true, "params": [], "returns": ""},
+                        {"name": "status.get", "description": "", "destructive": false, "params": [], "returns": ""},
+                        {"name": "status.update", "description": "", "destructive": false, "params": [], "returns": ""},
+                        {"name": "health.list", "description": "", "destructive": false, "params": [], "returns": ""},
+                        {"name": "health.reset", "description": "", "destructive": true, "params": [], "returns": ""},
                         {"name": "history.list", "description": "", "destructive": false, "params": [], "returns": ""},
                         {"name": "root.list", "description": "", "destructive": false, "params": [], "returns": ""},
                         {"name": "tag.list", "description": "", "destructive": false, "params": [], "returns": ""}
@@ -903,13 +903,13 @@ mod tests {
         let out = render(&val, human_format()).unwrap();
         let plain = strip_ansi_escapes::strip_str(&out);
         assert!(plain.contains("Lab"));
-        assert!(plain.contains("radarr"));
-        assert!(plain.contains("servarr"));
+        assert!(plain.contains("gateway-alpha"));
+        assert!(plain.contains("upstream"));
         assert!(plain.contains("7 actions"));
-        assert!(plain.contains("movie.search"));
+        assert!(plain.contains("status.get"));
         assert!(plain.contains("(+"));
         assert!(plain.contains("more"));
-        assert!(plain.contains("lab help radarr"));
+        assert!(plain.contains("lab help gateway-alpha"));
         // The old `{5 keys}` artifact must not appear.
         assert!(
             !plain.contains("{5 keys}"),
