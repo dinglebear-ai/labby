@@ -168,12 +168,43 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Install Playwright runtime libraries
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" = "0" ]; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libnspr4 \
+              libnss3
+          else
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libnspr4 \
+              libnss3
+          fi
       # The self-hosted runner image carries the matching Playwright browser.
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
-      # already cached, so verify the image contract without invoking it.
-      - name: Verify cached Playwright browser
+      # already cached, so verify the image contract with a real headless launch
+      # instead of invoking the unsupported installer.
+      - name: Verify cached Playwright browser launch
         run: |
-          node -e 'const fs = require("node:fs"); const { chromium } = require("playwright"); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) { console.error("Missing cached Playwright browser: " + executable); process.exit(1); } console.log("Using cached Playwright browser: " + executable);'
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const { chromium } = require("playwright");
+
+          (async () => {
+            const executable = chromium.executablePath();
+            if (!fs.existsSync(executable)) {
+              throw new Error(`Missing cached Playwright browser: ${executable}`);
+            }
+            const browser = await chromium.launch({ headless: true });
+            await browser.close();
+            console.log(`Verified cached Playwright browser launch: ${executable}`);
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
       - run: pnpm test:browser
 
   fmt:
