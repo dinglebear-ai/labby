@@ -80,7 +80,19 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
     },
 ];
 
-static DESTRUCTIVE_DISPATCH_COUNT: AtomicUsize = AtomicUsize::new(0);
+// One counter per test, never shared.
+//
+// These previously shared a single `DESTRUCTIVE_DISPATCH_COUNT`. Because
+// `cargo test` runs test fns on parallel threads inside one process, the two
+// destructive-dispatch tests raced on it: each does `store(0)` then asserts an
+// exact count, so either test's `store`/`fetch_add` could land inside the
+// other's window. All four interleavings were observed (`left 1 right 0`,
+// `left 2 right 1`, `left 0 right 1`, `left 2 right 1`), reproducing 21/25
+// runs under `--test-threads=2`. `DispatchFn` is a bare fn pointer and cannot
+// capture per-test state, so isolation comes from giving each test its own
+// static plus its own dispatch fn rather than from locking or serialization.
+static DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION: AtomicUsize = AtomicUsize::new(0);
+static DESTRUCTIVE_DISPATCH_COUNT_MRTR: AtomicUsize = AtomicUsize::new(0);
 
 const DESTRUCTIVE_ACTIONS: &[ActionSpec] = &[ActionSpec {
     name: "danger.delete",
@@ -98,12 +110,22 @@ fn noop_dispatch(
     Box::pin(async { Ok(Value::Null) })
 }
 
-fn destructive_counting_dispatch(
+fn destructive_counting_dispatch_no_elicitation(
     _action: String,
     _params: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
     Box::pin(async {
-        DESTRUCTIVE_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+        DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION.fetch_add(1, Ordering::SeqCst);
+        Ok(serde_json::json!({"ok": true}))
+    })
+}
+
+fn destructive_counting_dispatch_mrtr(
+    _action: String,
+    _params: Value,
+) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
+    Box::pin(async {
+        DESTRUCTIVE_DISPATCH_COUNT_MRTR.fetch_add(1, Ordering::SeqCst);
         Ok(serde_json::json!({"ok": true}))
     })
 }
@@ -131,7 +153,8 @@ fn completion_test_registry() -> ToolRegistry {
     registry
 }
 
-fn destructive_test_registry() -> ToolRegistry {
+/// Takes the dispatch fn so each destructive test owns its own counter.
+fn destructive_test_registry(dispatch: crate::registry::DispatchFn) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(RegisteredService {
         name: "danger",
@@ -140,7 +163,7 @@ fn destructive_test_registry() -> ToolRegistry {
         kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
         status: "available",
         actions: DESTRUCTIVE_ACTIONS,
-        dispatch: destructive_counting_dispatch,
+        dispatch,
     });
     registry
 }
@@ -706,9 +729,9 @@ async fn hidden_add_server_synthetic_tool_does_not_shadow_upstream_tool() {
 
 #[tokio::test]
 async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() {
-    DESTRUCTIVE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION.store(0, Ordering::SeqCst);
     let server = test_server(
-        destructive_test_registry(),
+        destructive_test_registry(destructive_counting_dispatch_no_elicitation),
         None,
         crate::mcp::route_scope::McpRouteScope::protected_subset(
             "danger-only",
@@ -742,7 +765,7 @@ async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() 
         result.content[0].as_text().expect("text").text.as_str()
     );
     assert_eq!(
-        DESTRUCTIVE_DISPATCH_COUNT.load(Ordering::SeqCst),
+        DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION.load(Ordering::SeqCst),
         1,
         "MCP clients without elicitation support must not hit a fake destructive gate"
     );
@@ -772,9 +795,9 @@ fn destructive_request_with_elicitation() -> CallToolRequestParams {
 
 #[tokio::test]
 async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
-    DESTRUCTIVE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    DESTRUCTIVE_DISPATCH_COUNT_MRTR.store(0, Ordering::SeqCst);
     let server = test_server(
-        destructive_test_registry(),
+        destructive_test_registry(destructive_counting_dispatch_mrtr),
         None,
         crate::mcp::route_scope::McpRouteScope::protected_subset(
             "danger-only",
@@ -801,7 +824,7 @@ async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
         panic!("destructive call must return input_required");
     };
     assert!(input_required.request_state.is_none());
-    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 0);
 
     let mut retry = destructive_request_with_elicitation();
     retry.input_responses = Some(BTreeMap::from([(
@@ -814,7 +837,7 @@ async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
         .await
         .expect("completed retry");
     assert!(matches!(second, CallToolResponse::Complete(_)));
-    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT.load(Ordering::SeqCst), 1);
+    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 1);
 }
 
 #[test]
