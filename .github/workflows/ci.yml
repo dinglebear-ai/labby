@@ -244,7 +244,7 @@ jobs:
       - run: cargo check --workspace --all-features --locked
 
   msrv:
-    name: MSRV 1.92
+    name: MSRV
     runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -259,8 +259,8 @@ jobs:
       - name: Install minimum supported Rust
         uses: ./.github/actions/setup-rust-kache
         with:
-          toolchain: "1.92.0"
-      - run: cargo +1.92.0 check --workspace --all-features --all-targets --locked
+          toolchain: "1.97.1"
+      - run: cargo +1.97.1 check --workspace --all-features --all-targets --locked
 
   codemode-runner-smoke:
     name: Code Mode runner smoke

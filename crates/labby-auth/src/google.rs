@@ -22,7 +22,7 @@ const GOOGLE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// lock. Token exchange / refresh keep the looser 30s bound because they
 /// can legitimately take longer.
 const GOOGLE_JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_secs(60 * 60);
+const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_hours(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizeUrlRequest {
@@ -804,7 +804,7 @@ mod tests {
             .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
         *provider.jwks_cache.write().await = Some(CachedGoogleJwks {
             jwks: wrong_test_jwks(),
-            expires_at: Instant::now() + Duration::from_secs(3600),
+            expires_at: Instant::now() + Duration::from_hours(1),
         });
 
         let exchange = provider.exchange_code("code", "verifier").await.unwrap();
