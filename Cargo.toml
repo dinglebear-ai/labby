@@ -9,8 +9,8 @@ rust-version = "1.92"
 keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
 description = "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI."
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/jmagar/labby#readme"
-repository = "https://github.com/jmagar/labby"
+homepage = "https://github.com/dinglebear-ai/labby#readme"
+repository = "https://github.com/dinglebear-ai/labby"
 authors = ["jmagar"]
 
 [workspace.dependencies]
