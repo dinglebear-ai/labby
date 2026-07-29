@@ -187,7 +187,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request as HttpRequest, StatusCode};
     use tower::util::ServiceExt;
-    use tracing_subscriber::layer::SubscriberExt;
 
     use axum::extract::connect_info::MockConnectInfo;
     use std::net::SocketAddr;
@@ -209,17 +208,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn auth_dispatch_logs_request_id_action_elapsed_and_failure_kind() {
         let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
-        let buf = crate::test_support::SharedBuf::default();
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new("labby_auth=info"))
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_writer(buf.clone())
-                    .with_ansi(false)
-                    .without_time(),
-            );
-        let _ = tracing::subscriber::set_global_default(subscriber);
+        let buf = crate::test_support::global_tracing_buffer();
 
         // Build a state with dynamic registration enabled so /register is mounted.
         let mut config = test_auth_config();

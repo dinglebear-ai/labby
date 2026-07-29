@@ -542,14 +542,10 @@ pub async fn callback(
         authorization_response_has_code = has_code,
         authorization_response_has_state = has_state,
         authorization_response_has_issuer = has_issuer,
-        "oauth callback authorization response prepared"
-    );
-    debug!(
-        auth_code_id = %auth_code_id,
         redirect_scheme = redirect_uri.scheme(),
         redirect_host = redirect_uri.host_str(),
         redirect_path = redirect_uri.path(),
-        "oauth callback redirecting client back to registered callback"
+        "oauth callback authorization response prepared"
     );
 
     Ok(Redirect::to(redirect_uri.as_str()).into_response())
@@ -2529,8 +2525,6 @@ pub mod tests {
         use axum::http::{Request, StatusCode, header};
         use serde_json::json;
         use tower::util::ServiceExt;
-        use tracing::instrument::WithSubscriber;
-        use tracing_subscriber::layer::SubscriberExt;
         use url::Url;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2783,22 +2777,10 @@ pub mod tests {
         }
 
         #[tokio::test(flavor = "current_thread")]
-        async fn oauth_client_callback_debug_logs_redact_redirect_query_values() {
+        async fn oauth_client_callback_logs_redact_redirect_query_values() {
             let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
-            let buf = crate::test_support::SharedBuf::default();
-            let subscriber = tracing_subscriber::registry()
-                .with(tracing_subscriber::EnvFilter::new("labby_auth=debug"))
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .json()
-                        .with_writer(buf.clone())
-                        .with_ansi(false)
-                        .without_time(),
-                );
-            let dispatch = tracing::Dispatch::new(subscriber);
-            let redirect = oauth_client_callback_location(false)
-                .with_subscriber(dispatch)
-                .await;
+            let buf = crate::test_support::global_tracing_buffer();
+            let redirect = oauth_client_callback_location(false).await;
             let params: std::collections::HashMap<_, _> =
                 redirect.query_pairs().into_owned().collect();
             let authorization_code = params.get("code").unwrap();
