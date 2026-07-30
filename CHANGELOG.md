@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 Historical entries use distinct `example*` pseudonyms where retired service
 identifiers were removed. Commit links remain the authoritative historical record.
 
+## [1.8.3](https://github.com/dinglebear-ai/labby/compare/v1.8.2...v1.8.3) (2026-07-30)
+
+
+### Fixed
+
+* align release Incus builder ([#288](https://github.com/dinglebear-ai/labby/issues/288)) ([e4fbb6e](https://github.com/dinglebear-ai/labby/commit/e4fbb6e12c7c9c9243f405dc0141f647d1d7d8d7))
+
 ## [1.8.2](https://github.com/dinglebear-ai/labby/compare/v1.8.1...v1.8.2) (2026-07-30)
 
 
