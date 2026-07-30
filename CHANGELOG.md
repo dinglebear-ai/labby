@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 Historical entries use distinct `example*` pseudonyms where retired service
 identifiers were removed. Commit links remain the authoritative historical record.
 
+## [1.8.1](https://github.com/dinglebear-ai/labby/compare/v1.8.0...v1.8.1) (2026-07-30)
+
+
+### Fixed
+
+* **auth:** stabilize OAuth observability tests ([a1bb3c4](https://github.com/dinglebear-ai/labby/commit/a1bb3c4dcd332863b9432ba5ba12f19c5f889951))
+* avoid top-level await in mock tests ([#285](https://github.com/dinglebear-ai/labby/issues/285)) ([977709c](https://github.com/dinglebear-ai/labby/commit/977709cf3f6bed17e13b55b4cb36e0c9cba29dac))
+* **ci:** install Node in release preflight so releases can publish ([5150968](https://github.com/dinglebear-ai/labby/commit/5150968cf0bb092c93b94b5336c7b2b26e88c980))
+* **ci:** install Playwright runtime libraries ([9324aa1](https://github.com/dinglebear-ai/labby/commit/9324aa1515812a63ccdf2247b21fab7982ae388d))
+* **ci:** remove retired soldr cache preset ([581da2d](https://github.com/dinglebear-ai/labby/commit/581da2dba123e1cc1116a8f02d1deb4b0a1e996b))
+* **ci:** use cached Playwright browser on Ubuntu 26.04 ([f3ba237](https://github.com/dinglebear-ai/labby/commit/f3ba2370979a83f2527a9601f9ff04ec1df23d77))
+* **oauth:** make Codex issuer compatibility explicit ([1368218](https://github.com/dinglebear-ai/labby/commit/1368218aa066e5b7e822d8d5dbe3a4ab7a42e4cc))
+
+
+### Changed
+
+* remove retired media stack residue ([#284](https://github.com/dinglebear-ai/labby/issues/284)) ([83a6a21](https://github.com/dinglebear-ai/labby/commit/83a6a21674a1894983f0c53ff551ff4c3e4951f2))
+
 ## [1.8.0](https://github.com/dinglebear-ai/labby/compare/v1.7.0...v1.8.0) (2026-07-29)
 
 
