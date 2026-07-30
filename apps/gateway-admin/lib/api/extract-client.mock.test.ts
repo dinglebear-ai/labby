@@ -3,9 +3,12 @@ import test from 'node:test'
 
 process.env.NEXT_PUBLIC_MOCK_DATA = 'true'
 
-const { extractApi } = await import('./extract-client.ts')
+async function loadExtractApi() {
+  return (await import('./extract-client.ts')).extractApi
+}
 
 test('mock extract report marks missing Apprise credentials consistently', async () => {
+  const extractApi = await loadExtractApi()
   const report = await extractApi.scan()
   const apprise = report.creds.find((credential) => credential.service === 'apprise')
 
