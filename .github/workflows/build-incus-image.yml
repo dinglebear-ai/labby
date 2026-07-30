@@ -1,238 +1,138 @@
 name: Build Incus image
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/actions/build-gateway-admin/action.yml
-      - .github/workflows/build-incus-image.yml
-      - apps/gateway-admin/**
-      - config/Dockerfile
-      - config/incus/**
-      - scripts/incus-bootstrap.sh
-      - crates/**
-      - scripts/ci/build-incus-image.sh
-      - scripts/ci/smoke-incus-image.sh
-      - Cargo.lock
-      - Cargo.toml
-  pull_request:
-    paths:
-      # PRs only run the expensive Incus image build when the image definition,
-      # bootstrap/smoke scripts, or this workflow changes. Main pushes stay
-      # broader so the rolling image still captures binary and web asset changes.
-      - .github/workflows/build-incus-image.yml
-      - config/incus/**
-      - scripts/incus-bootstrap.sh
-      - scripts/ci/build-incus-image.sh
-      - scripts/ci/smoke-incus-image.sh
+  release:
+    types: [published]
 
 concurrency:
-  group: incus-image-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: incus-image-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
-env:
-  CARGO_INCREMENTAL: "0"
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-  # Persistent per-runner zccache compile store for kache (replaces sccache).
-  DISTROBUILDER_VERSION: "3.3.1"
-  DISTROBUILDER_SHA256: "6c411af7178bb55ef649c708f4f38fc3c30e6ecce901c08d8a389448a900a73a"
-
 jobs:
   build-image:
-    name: Build and smoke Incus image
-    # GitHub-hosted on purpose. Do not move this to [self-hosted, unraid]
-    # without first proving the runner can sustain the debootstrap fetch while
-    # ci.yml is running.
-    #
-    # This job runs a ~200-package serial debootstrap fetch. The four
-    # tootie-ci-runner-* runners share one Unraid host with essentially the
-    # whole ci.yml matrix, and `concurrency` here only serializes this workflow
-    # against itself, never against CI. Under that contention the fetches
-    # stall rather than fail cleanly: in run 30329336992 an 81 KB .deb took
-    # 750 s (~109 B/s) and debconf-i18n/kbd exhausted wget's retry budget,
-    # surfacing as "E: Couldn't download packages". Which packages die is
-    # random, so a lucky re-run can pass and hide the problem.
-    #
-    # History: PR #266 moved this to ubuntu-latest and left guard comments.
-    # e47996e2 ("fix(mcp): address stateless review findings") reverted both
-    # jobs and deleted those comments as unrelated collateral; every run after
-    # it was red, the last green was 81c2452d on ubuntu-latest.
-    #
-    # PR #266's original reason (no snapd for the distrobuilder snap) is now
-    # obsolete — abf0ce23 builds distrobuilder from a SHA256-pinned Go release.
-    # The blocker today is purely network starvation, so self-hosted is not
-    # impossible, just currently unreliable. Tradeoff accepted: ubuntu-latest
-    # gives up the warm kache store for the release build in step 8.
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          persist-credentials: false
-
-      - uses: ./.github/actions/build-gateway-admin
-
-      - name: Install Rust and kache
-        uses: ./.github/actions/setup-rust-kache
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version: 1.26.5
-          cache: false
-
-      - name: Install validation and image dependencies
-        run: |
-          set -euo pipefail
-          distrobuilder_bin="$RUNNER_TEMP/labby-distrobuilder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/distrobuilder"
-          sudo apt-get update
-          sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-
-          distrobuilder_dir="$(mktemp -d)"
-          trap 'rm -rf "$distrobuilder_dir"' EXIT
-          distrobuilder_archive="$distrobuilder_dir/distrobuilder.tar.gz"
-          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
-            --retry 5 --retry-all-errors --retry-delay 2 \
-            --output "$distrobuilder_archive" \
-            "https://github.com/lxc/distrobuilder/releases/download/v${DISTROBUILDER_VERSION}/distrobuilder-${DISTROBUILDER_VERSION}.tar.gz"
-          printf '%s  %s\n' "$DISTROBUILDER_SHA256" "$distrobuilder_archive" \
-            | sha256sum --check --strict
-          tar -xzf "$distrobuilder_archive" -C "$distrobuilder_dir"
-          (
-            cd "$distrobuilder_dir/distrobuilder-${DISTROBUILDER_VERSION}"
-            go build -mod=vendor -trimpath \
-              -tags=containers_image_storage_stub,containers_image_docker_daemon_stub,containers_image_openpgp \
-              -o "$distrobuilder_dir/distrobuilder" ./distrobuilder
-          )
-          install -D -m 0755 "$distrobuilder_dir/distrobuilder" "$distrobuilder_bin"
-          "$distrobuilder_bin" --version
-          printf 'DISTROBUILDER_BIN=%s\n' "$distrobuilder_bin" >> "$GITHUB_ENV"
-
-          # Runner packages are bound to the reviewed host snapshot; record the
-          # resolved versions because cross-image apt pins are not stable.
-          dpkg-query -W debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-
-      - name: Validate image scripts and definition
-        run: |
-          set -euo pipefail
-          sh -n scripts/incus-bootstrap.sh
-          bash -n scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
-          shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
-          sudo "$DISTROBUILDER_BIN" validate config/incus/labby-image.yaml -o image.serial=ci
-
-      - name: Build Labby release binary
-        run: cargo build --workspace --all-features --locked --release --target x86_64-unknown-linux-gnu
-
-      - name: Package Linux binary
-        run: |
-          set -euo pipefail
-          mkdir -p target/incus-image-input
-          cp target/x86_64-unknown-linux-gnu/release/labby target/incus-image-input/labby
-          tar -C target/incus-image-input -czf target/incus-image-input/lab-x86_64-unknown-linux-gnu.tar.gz labby
-
-      - name: Build and export image
-        run: |
-          set -euo pipefail
-          image_serial="${GITHUB_REF_NAME:-ci}-${GITHUB_SHA::12}"
-          image_serial="${image_serial//[^A-Za-z0-9_.-]/-}"
-          scripts/ci/build-incus-image.sh \
-            "$image_serial" \
-            target/incus-image-input/lab-x86_64-unknown-linux-gnu.tar.gz \
-            dist
-
-      - name: Smoke test exported image
-        run: scripts/ci/smoke-incus-image.sh
-        env:
-          EXPORT_DIR: ${{ github.workspace }}/dist
-          IMAGE_ALIAS: labby-incus-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_CONTAINER_NAME: labby-incus-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_PROFILE_NAME: labby-gateway-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_EXPECT_ANDROID_SDK: "0"
-
-      - name: Upload Incus image artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: labby-incus-image
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
+    name: Build and smoke hosted x86_64 image
+    uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    with:
+      checkout-ref: ${{ github.event.release.tag_name }}
+      artifact-name: labby-incus-image
+      artifact-directory: dist
+      timeout-minutes: 120
+      setup-command: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
+        rustup toolchain install 1.97.1 --profile minimal --target x86_64-unknown-linux-gnu
+        rustup default 1.97.1
+        corepack enable
+        corepack prepare pnpm@9.15.9 --activate
+        distrobuilder_version=3.3.1
+        distrobuilder_sha256=6c411af7178bb55ef649c708f4f38fc3c30e6ecce901c08d8a389448a900a73a
+        distrobuilder_dir="$(mktemp -d)"
+        archive="$distrobuilder_dir/distrobuilder.tar.gz"
+        curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+          --retry 5 --retry-all-errors --retry-delay 2 \
+          --output "$archive" \
+          "https://github.com/lxc/distrobuilder/releases/download/v${distrobuilder_version}/distrobuilder-${distrobuilder_version}.tar.gz"
+        printf '%s  %s\n' "$distrobuilder_sha256" "$archive" |
+          sha256sum --check --strict
+        tar -xzf "$archive" -C "$distrobuilder_dir"
+        (
+          cd "$distrobuilder_dir/distrobuilder-${distrobuilder_version}"
+          go build -mod=vendor -trimpath \
+            -tags=containers_image_storage_stub,containers_image_docker_daemon_stub,containers_image_openpgp \
+            -o "$RUNNER_TEMP/distrobuilder" ./distrobuilder
+        )
+        chmod 0755 "$RUNNER_TEMP/distrobuilder"
+        echo "DISTROBUILDER_BIN=$RUNNER_TEMP/distrobuilder" >> "$GITHUB_ENV"
+      validate-command: |
+        set -euo pipefail
+        sh -n scripts/incus-bootstrap.sh
+        bash -n scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
+        shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
+        sudo "$DISTROBUILDER_BIN" validate config/incus/labby-image.yaml -o image.serial=ci
+      build-command: |
+        set -euo pipefail
+        (
+          cd apps/gateway-admin
+          pnpm install --frozen-lockfile
+          pnpm run test:install-script
+          pnpm run test:unit
+          pnpm exec tsc --noEmit
+          pnpm build
+        )
+        git diff --exit-code -- apps/gateway-admin/public/install.sh
+        cargo build --workspace --all-features --locked --release \
+          --target x86_64-unknown-linux-gnu
+        mkdir -p target/incus-image-input
+        cp target/x86_64-unknown-linux-gnu/release/labby \
+          target/incus-image-input/labby
+        tar -C target/incus-image-input -czf \
+          target/incus-image-input/lab-x86_64-unknown-linux-gnu.tar.gz labby
+        image_serial="${GITHUB_REF_NAME}-${GITHUB_SHA::12}"
+        image_serial="${image_serial//[^A-Za-z0-9_.-]/-}"
+        scripts/ci/build-incus-image.sh \
+          "$image_serial" \
+          target/incus-image-input/lab-x86_64-unknown-linux-gnu.tar.gz \
+          dist
+      smoke-command: |
+        EXPORT_DIR="$GITHUB_WORKSPACE/dist" \
+        IMAGE_ALIAS="labby-incus-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+        SMOKE_CONTAINER_NAME="labby-incus-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+        SMOKE_PROFILE_NAME="labby-gateway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+        SMOKE_EXPECT_ANDROID_SDK=0 \
+          scripts/ci/smoke-incus-image.sh
 
   publish-image:
-    name: Publish immutable Incus image and advance rolling alias
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build-image
-    # Consumes the artifact produced by the GitHub-hosted build job above; kept
-    # on the same runner class so the two stay consistent.
-    runs-on: ubuntu-latest
+    name: Publish verified image and advance rolling alias
+    needs: [build-image]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: labby-incus-image
           path: dist
-      - name: Publish verified immutable image, then move rolling alias
+
+      - name: Publish exact release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
           ROLLING_TAG: labby-incus-latest
         run: |
           set -euo pipefail
-          immutable_tag="labby-incus-${GITHUB_SHA::12}"
-          (cd dist && sha256sum --check --strict ./*.sha256)
-          release_notes="$(mktemp)"
-          cat >"$release_notes" <<EOF
-          Immutable Labby Incus image built from \`${GITHUB_SHA}\`.
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
-          - Repository: ${GITHUB_REPOSITORY}
-          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          - Source branch: ${GITHUB_REF_NAME}
-          EOF
-          if gh release view "$immutable_tag" >/dev/null 2>&1; then
-            echo "::error::immutable Incus release already exists: $immutable_tag"
-            exit 1
-          else
-            gh release create "$immutable_tag" dist/* --target "$GITHUB_SHA" \
-              --title "$immutable_tag" --notes-file "$release_notes" --latest=false
-          fi
           verify_dir="$(mktemp -d)"
-          gh release download "$immutable_tag" --dir "$verify_dir"
-          (cd "$verify_dir" && sha256sum --check --strict ./*.sha256)
+          gh release download "$RELEASE_TAG" --dir "$verify_dir"
+          (cd "$verify_dir" && sha256sum --check --strict SHA256SUMS)
 
           rolling_notes="$(mktemp)"
-          printf "Rolling pointer to immutable release \`%s\`.\n\nSource commit: \`%s\`\n" \
-            "$immutable_tag" "$GITHUB_SHA" > "$rolling_notes"
+          printf "Rolling pointer to \`%s\` from \`%s\`.\n" \
+            "$RELEASE_TAG" "$GITHUB_SHA" > "$rolling_notes"
           if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
             gh release upload "$ROLLING_TAG" "$verify_dir"/* --clobber
-            while IFS= read -r asset; do
-              [[ -z "$asset" || -f "$verify_dir/$asset" ]] || \
-                gh release delete-asset "$ROLLING_TAG" "$asset" --yes
-            done < <(gh release view "$ROLLING_TAG" --json assets --jq '.assets[].name')
-            gh release edit "$ROLLING_TAG" --title "labby-incus latest" \
-              --notes-file "$rolling_notes" --latest=false
+            gh release edit "$ROLLING_TAG" \
+              --title "labby-incus latest" \
+              --notes-file "$rolling_notes" \
+              --latest=false
           else
-            gh release create "$ROLLING_TAG" "$verify_dir"/* --target "$GITHUB_SHA" \
-              --title "labby-incus latest" --notes-file "$rolling_notes" --latest=false
+            gh release create "$ROLLING_TAG" "$verify_dir"/* \
+              --target "$GITHUB_SHA" \
+              --title "labby-incus latest" \
+              --notes-file "$rolling_notes" \
+              --latest=false
           fi
 
-          # Prove the rolling release now serves the exact immutable assets.
-          # The tag itself does not move until this remote checksum succeeds.
-          rolling_verify_dir="$(mktemp -d)"
-          gh release download "$ROLLING_TAG" --dir "$rolling_verify_dir"
-          (cd "$rolling_verify_dir" && sha256sum --check --strict ./*.sha256)
-
-          # The mutable alias advances only after immutable publication and
-          # both immutable and rolling remote checksum verification complete.
+          rolling_verify="$(mktemp -d)"
+          gh release download "$ROLLING_TAG" --dir "$rolling_verify"
+          (cd "$rolling_verify" && sha256sum --check --strict SHA256SUMS)
           git tag -f "$ROLLING_TAG" "$GITHUB_SHA"
-          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$ROLLING_TAG"
+          git push -f \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "$ROLLING_TAG"
