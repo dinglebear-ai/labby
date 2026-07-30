@@ -148,6 +148,10 @@ jobs:
 
       - name: Smoke packaged Code Mode runner (Unix)
         if: runner.os != 'Windows'
+        env:
+          # This is a one-shot CLI smoke. Do not leave a warm runner parked
+          # while the workflow shell waits for the packaged process to exit.
+          LABBY_CODE_MODE_POOL_SIZE: "0"
         run: |
           set -euo pipefail
           ./dist/${{ matrix.binary }} --json gateway code exec \
@@ -167,6 +171,11 @@ jobs:
       - name: Smoke packaged Code Mode runner (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          # Hosted Windows runners track descendant processes. A pooled Code
+          # Mode runner can therefore keep this one-shot smoke alive after the
+          # CLI has returned its result.
+          LABBY_CODE_MODE_POOL_SIZE: "0"
         run: |
           $ErrorActionPreference = "Stop"
           $output = & ".\dist\${{ matrix.binary }}" --json gateway code exec --code "async () => ({ ok: true, sum: 1 + 1 })"
