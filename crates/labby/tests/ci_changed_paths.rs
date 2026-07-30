@@ -357,6 +357,14 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(release.contains("if [[ -f /tmp/labby-new-version-image ]]"));
     assert!(release.contains("LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}"));
     assert!(release.contains("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"));
+    let npm_identity = release
+        .find("name: Validate npm publication identity")
+        .expect("release must authenticate to npm before publication");
+    let draft_release = release
+        .find("name: Prepare private draft release")
+        .expect("release must prepare a private draft");
+    assert!(release.contains("run: npm whoami >/dev/null"));
+    assert!(npm_identity < draft_release);
 }
 
 #[test]
