@@ -423,6 +423,7 @@ jobs:
         if: steps.npm-version.outputs.exists != 'true'
         env:
           LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public ./packages/labby-mcp
       - name: Install verified mcp-publisher
         run: |
