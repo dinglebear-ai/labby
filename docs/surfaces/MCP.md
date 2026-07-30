@@ -1,3 +1,9 @@
+---
+title: "MCP Surface"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # MCP Surface
 
 Labby exposes the supported gateway product through stdio and Streamable HTTP

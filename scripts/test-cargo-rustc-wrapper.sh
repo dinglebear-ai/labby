@@ -8,7 +8,7 @@ trap 'rm -rf "$tmp"' EXIT
 export HOME="$tmp/home"
 export LABBY_RUSTC_WRAPPER_LOCAL_BIN="$HOME/.local/bin/labby"
 export CARGO_BIN_ARTIFACT_DIR="$tmp/bin"
-export CARGO_BIN_ARTIFACT_WRAPPER_NO_SCCACHE=1
+export CARGO_BIN_ARTIFACT_WRAPPER_NO_CACHE=1
 mkdir -p "$HOME/.local/bin" "$CARGO_BIN_ARTIFACT_DIR" "$tmp/target/debug/deps"
 
 fake_rustc="$tmp/fake-rustc"

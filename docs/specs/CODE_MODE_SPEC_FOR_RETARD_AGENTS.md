@@ -1,3 +1,9 @@
+---
+title: "Code Mode - Implementation Specification"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Code Mode — Implementation Specification
 
 This specification describes the current Lab implementation. Older design notes that mention a single advertised `code` tool are historical and do not match the shipped surface.
@@ -54,7 +60,7 @@ Example:
 ```js
 async () => {
   const result = await callTool("github::search_issues", {
-    q: "repo:jmagar/lab gateway"
+    q: "repo:dinglebear-ai/labby gateway"
   });
   return result;
 }

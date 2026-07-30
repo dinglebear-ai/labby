@@ -1,3 +1,9 @@
+---
+title: "CLI Output Theme API Proposal"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # CLI Output Theme API Proposal
 
 **Status:** Active

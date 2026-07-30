@@ -1,3 +1,9 @@
+---
+title: "ADR 0005: Generate TypeScript Clients from REST OpenAPI"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0005: Generate TypeScript Clients from REST OpenAPI
 
 Date: 2026-05-26
@@ -15,7 +21,7 @@ Research confirmed that Lab already has `utoipa` available and that
 
 ## Decision
 
-Generate `@jmagar/lab-api-client` primarily from REST/admin OpenAPI documents.
+Generate `@dinglebear-ai/lab-api-client` primarily from REST/admin OpenAPI documents.
 
 Rust REST request and response DTOs should derive `serde` and
 `utoipa::ToSchema` where appropriate. Reserve `schemars::JsonSchema` for
@@ -30,7 +36,7 @@ Rust REST route DTOs
   -> product OpenAPI document
   -> openapi-typescript
   -> openapi-fetch or a thin typed wrapper
-  -> @jmagar/lab-api-client
+  -> @dinglebear-ai/lab-api-client
 ```
 
 An action-contract manifest may still be generated from `ActionSpec` for MCP

@@ -1,3 +1,9 @@
+---
+title: "ADR 0008: Execute Extraction with Isolated Lanes and Integration Ownership"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0008: Execute Extraction with Isolated Lanes and Integration Ownership
 
 Date: 2026-05-26

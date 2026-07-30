@@ -1,3 +1,9 @@
+---
+title: "ADR 0002: Split Shared Platform Crates from Product Runtime Crates"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0002: Split Shared Platform Crates from Product Runtime Crates
 
 Date: 2026-05-26

@@ -1,5 +1,8 @@
 ---
 name: cross-server-docs-brief
+title: "Cross-Server Docs Brief"
+created: "2026-07-30"
+updated: "2026-07-30"
 description: Build a compact docs brief from Context7, web search, GitHub, Axon, and time
 tags: [docs, research, cross-server]
 inputs:

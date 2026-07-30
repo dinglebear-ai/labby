@@ -1,3 +1,9 @@
+---
+title: "ADR 0004: Separate REST Admin APIs from MCP Action Dispatch"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0004: Separate REST Admin APIs from MCP Action Dispatch
 
 Date: 2026-05-26

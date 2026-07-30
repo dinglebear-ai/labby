@@ -1,3 +1,9 @@
+---
+title: "Service Onboarding"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Service Onboarding
 
 This is the end-to-end checklist for bringing a service online in `lab`.

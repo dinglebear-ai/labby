@@ -463,7 +463,7 @@ just test-integration
 
 - GitHub Actions, `.github/workflows/ci.yml`, gated behind a single `ci-gate` job.
 - Platforms: Linux x86_64 for the main jobs, plus dedicated `test-windows` and
-  `palette-windows` jobs. There is no aarch64 CI or release target.
+  `palette-windows` jobs. The supported release targets are x86_64 only.
 - Rust checks: `fmt`, `clippy` (`-D warnings`), `deny`, `check`, `msrv` (1.97.1),
   `test` / `test-fork`, `rust-coverage`.
 - Slice checks: `feature-slices` (`gateway`, `fs`) and `extracted-crate-slices`
@@ -476,8 +476,7 @@ just test-integration
   `vX.Y.Z` and triggers `release.yml`, which builds
   `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` archives with
   checksums, publishes the GitHub Release, and pushes the GHCR image.
-  aarch64 Linux was dropped because `rquickjs-sys` (Code Mode QuickJS) cannot
-  cross-compile for it and no fleet host is aarch64.
+  Other architectures are outside the fleet contract.
 
 ## Style
 

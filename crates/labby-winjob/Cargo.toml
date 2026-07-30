@@ -12,6 +12,9 @@ keywords = ["windows", "job-object", "process", "reaping", "ffi"]
 categories = ["os::windows-apis", "api-bindings"]
 publish = false
 
+[package.metadata.fleet]
+workspace-lints-exception = "unsafe-ffi"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",

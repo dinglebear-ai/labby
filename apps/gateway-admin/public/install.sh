@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install labby — the Lab homelab control plane binary.
 #
-#   curl -fsSL https://raw.githubusercontent.com/jmagar/labby/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh | sh
 #
 # Downloads the latest GitHub release archive for this platform, verifies its
 # SHA-256, and installs the binary to ~/.local/bin/labby. When explicitly
@@ -13,14 +13,14 @@
 #
 # Environment overrides:
 #   LABBY_INSTALL_DIR     install directory       (default: ~/.local/bin)
-#   LABBY_INSTALL_REPO    owner/repo to fetch     (default: jmagar/labby)
+#   LABBY_INSTALL_REPO    owner/repo to fetch     (default: dinglebear-ai/labby)
 #   LABBY_INSTALL_VERSION release tag, e.g. v0.22.2 (default: latest)
 #   LABBY_REQUIRE_CHECKSUM fail if the .sha256 asset is absent (default: 1)
 #   LABBY_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 0)
 
 set -eu
 
-REPO="${LABBY_INSTALL_REPO:-jmagar/labby}"
+REPO="${LABBY_INSTALL_REPO:-dinglebear-ai/labby}"
 INSTALL_DIR="${LABBY_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${LABBY_INSTALL_VERSION:-latest}"
 REQUIRE_CHECKSUM="${LABBY_REQUIRE_CHECKSUM:-1}"
@@ -50,12 +50,10 @@ target_triple() {
         Linux)
             case "$arch" in
                 x86_64) echo "x86_64-unknown-linux-gnu" ;;
-                # aarch64 has no prebuilt archive (rquickjs does not
-                # cross-compile); ARM falls through to the cargo fallback.
-                *) return 1 ;;
+                *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64" ;;
             esac
             ;;
-        *) return 1 ;;
+        *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64" ;;
     esac
 }
 
@@ -124,22 +122,6 @@ install_binary_atomic() {
 }
 
 install_from_release() {
-    # aarch64/arm64 ships no prebuilt release archive (rquickjs-sys does not
-    # cross-compile; no aarch64 fleet host). Skip the release-download path
-    # entirely so we don't attempt a URL that 404s, and go straight to the
-    # build-from-source fallback below.
-    arch="$(uname -m)"
-    case "$arch" in
-        aarch64 | arm64)
-            if [ "$ALLOW_SOURCE_FALLBACK" = "1" ]; then
-                say "no prebuilt release archive for $arch — using the build-from-source fallback"
-            else
-                say "no prebuilt release archive for $arch"
-            fi
-            return 1
-            ;;
-    esac
-
     triple="$(target_triple)" || return 1
     asset="lab-${triple}.tar.gz"
     if [ "$VERSION" = "latest" ]; then
@@ -199,7 +181,7 @@ Choose a supported prebuilt release or re-run with LABBY_ALLOW_SOURCE_FALLBACK=1
     else
         fail "could not install: no prebuilt release for $(uname -s)/$(uname -m) and no cargo toolchain found.
 Install a Rust toolchain (https://rustup.rs) and re-run, or build from a clone:
-  git clone https://github.com/${REPO} && cd lab && cargo install --path crates/labby --bin labby --all-features"
+  git clone https://github.com/${REPO} && cd labby && cargo install --path crates/labby --bin labby --all-features"
     fi
 
     if ! command -v labby >/dev/null 2>&1; then

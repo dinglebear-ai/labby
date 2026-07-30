@@ -1,16 +1,16 @@
 {
   "name": "labby-mcp",
   "version": "1.8.5",
-  "description": "Node launcher for Labby, a Rust MCP gateway with Code Mode, authentication, upstream discovery, protected routes, CLI, HTTP API, and operator web UI.",
+  "description": "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI.",
   "license": "MIT OR Apache-2.0",
-  "homepage": "https://github.com/jmagar/labby#readme",
+  "homepage": "https://github.com/dinglebear-ai/labby#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jmagar/labby.git",
+    "url": "git+https://github.com/dinglebear-ai/labby.git",
     "directory": "packages/labby-mcp"
   },
   "bugs": {
-    "url": "https://github.com/jmagar/labby/issues"
+    "url": "https://github.com/dinglebear-ai/labby/issues"
   },
   "mcpName": "ai.dinglebear/labby",
   "bin": {

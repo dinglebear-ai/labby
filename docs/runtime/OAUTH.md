@@ -1,3 +1,9 @@
+---
+title: "HTTP Auth Modes"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # HTTP Auth Modes
 
 Lab supports two HTTP auth modes:

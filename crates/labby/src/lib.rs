@@ -19,6 +19,8 @@
     )
 )]
 
+//! Core Labby runtime, command, API, gateway, setup, and operator surfaces.
+
 #[allow(unreachable_pub)]
 pub mod api;
 pub(crate) mod app_assets;

@@ -1,3 +1,9 @@
+---
+title: "Public OAuth Callback Relay Cutover"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Public OAuth Callback Relay Cutover
 
 This runbook moves `https://callback.tootie.tv/callback/{machine_id}[/{suffix}]`

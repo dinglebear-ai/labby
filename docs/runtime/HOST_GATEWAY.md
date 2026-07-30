@@ -1,3 +1,9 @@
+---
+title: "Labby Gateway Runtime"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Labby Gateway Runtime
 
 The recommended self-hosted Labby gateway deployment is the **amd64 Ubuntu 24.04

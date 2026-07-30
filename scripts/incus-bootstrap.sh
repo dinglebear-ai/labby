@@ -92,13 +92,6 @@ verify_container_substrate() {
     arch="$(incus exec "$NAME" -- uname -m | tr -d '\r')"
     case "$arch" in
         x86_64 | amd64) ;;
-        aarch64 | arm64)
-            if [ -n "$LOCAL_BINARY" ] || [ "$ALLOW_SOURCE_FALLBACK" -eq 1 ]; then
-                say "$NAME is $arch; continuing because --local-binary or --allow-source-fallback was provided"
-            else
-                fail "$NAME must be amd64/x86_64 for the release install path; found architecture: $arch. Use --local-binary or --allow-source-fallback for arm64."
-            fi
-            ;;
         *) fail "$NAME must be amd64/x86_64 for the supported Labby runtime; found architecture: $arch" ;;
     esac
 
@@ -577,7 +570,7 @@ else
     run incus file push scripts/install.sh "$NAME/tmp/labby-install.sh"
     run incus exec "$NAME" -- env \
         LABBY_INSTALL_DIR=/usr/local/bin \
-        LABBY_INSTALL_REPO=jmagar/labby \
+        LABBY_INSTALL_REPO=dinglebear-ai/labby \
         LABBY_INSTALL_VERSION="$VERSION" \
         LABBY_REQUIRE_CHECKSUM=1 \
         LABBY_ALLOW_SOURCE_FALLBACK="$fallback" \

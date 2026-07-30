@@ -12,7 +12,7 @@ use crate::registry::OpenApiRegistry;
 ///
 /// The SSRF pin + peer re-check are ALWAYS enforced here (the production path).
 /// Tests that need to reach a loopback mock use
-/// [`dispatch_openapi_call_no_ssrf`], keeping the SSRF branch out of this
+/// `dispatch_openapi_call_no_ssrf`, keeping the SSRF branch out of this
 /// shipping entry point.
 ///
 /// # Errors

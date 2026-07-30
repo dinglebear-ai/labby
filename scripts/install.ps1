@@ -20,13 +20,13 @@
     Release tag, e.g. v0.23.0. Default: latest (or $env:LABBY_INSTALL_VERSION).
 
 .EXAMPLE
-    irm https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.ps1 | iex
+    irm https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
     [string]$InstallDir = $(if ($env:LABBY_INSTALL_DIR) { $env:LABBY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'labby\bin' }),
     [string]$Version    = $(if ($env:LABBY_INSTALL_VERSION) { $env:LABBY_INSTALL_VERSION } else { 'latest' }),
-    [string]$Repo       = $(if ($env:LABBY_INSTALL_REPO) { $env:LABBY_INSTALL_REPO } else { 'jmagar/lab' })
+    [string]$Repo       = $(if ($env:LABBY_INSTALL_REPO) { $env:LABBY_INSTALL_REPO } else { 'dinglebear-ai/labby' })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,11 +36,10 @@ function Write-Info($msg) { Write-Host $msg -ForegroundColor Cyan }
 function Fail($msg) { Write-Error "install.ps1: $msg"; exit 1 }
 
 $arch = (Get-CimInstance Win32_Processor | Select-Object -First 1).Architecture
-# 9 = x64. ARM64 (12) has no prebuilt asset; fall through to cargo.
+if ($arch -ne 9) { Fail "unsupported Windows architecture $arch; supported: x86_64" }
 $asset = 'lab-x86_64-pc-windows-msvc.zip'
 
 function Install-FromRelease {
-    if ($arch -ne 9) { return $false }
     $base = if ($Version -eq 'latest') {
         "https://github.com/$Repo/releases/latest/download"
     } else {
@@ -102,7 +101,7 @@ if (-not (Install-FromRelease)) {
         Fail @"
 could not install: no prebuilt release for this Windows arch and no cargo toolchain found.
 Install a Rust toolchain (https://rustup.rs) and re-run, or build from a clone:
-  git clone https://github.com/$Repo; cd lab; cargo install --path crates/labby --bin labby --all-features
+  git clone https://github.com/$Repo; cd labby; cargo install --path crates/labby --bin labby --all-features
 "@
     }
 }

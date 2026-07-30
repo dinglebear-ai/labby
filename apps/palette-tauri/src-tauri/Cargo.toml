@@ -3,11 +3,33 @@ name = "labby-palette-tauri"
 version = "0.1.0"
 description = "Tauri command palette for the Labby gateway API"
 edition = "2024"
-rust-version = "1.94.0"
+rust-version = "1.97.1"
 license = "MIT"
 publish = false
 
 [workspace]
+
+[workspace.lints.rust]
+missing_crate_level_docs = "deny"
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+missing_safety_doc = "deny"
+mod_module_files = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+invalid_rust_codeblocks = "deny"
+invalid_html_tags = "deny"
+bare_urls = "warn"
+private_intra_doc_links = "warn"
+redundant_explicit_links = "warn"
+unescaped_backticks = "warn"
+
+[lints]
+workspace = true
 
 [lib]
 name = "labby_palette_tauri_lib"

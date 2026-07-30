@@ -1,3 +1,9 @@
+---
+title: "Transport Contract"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Transport Contract
 
 Labby supports three MCP transports over one execution layer: stdio, streamable

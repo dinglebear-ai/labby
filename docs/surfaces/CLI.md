@@ -1,3 +1,9 @@
+---
+title: "CLI Surface"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # CLI Surface
 
 The `labby` binary is the operator entrypoint for the supported gateway product.

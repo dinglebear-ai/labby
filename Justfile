@@ -375,7 +375,7 @@ smoke-setup:
 # Validate the Labby plugin setup lifecycle against a throw-away LABBY_HOME.
 validate-plugin:
     rm -rf /tmp/labby-plugin-validate
-    LABBY_HOME=/tmp/labby-plugin-validate cargo run --all-features -- setup plugin-hook --no-repair --json
+    LABBY_HOME=/tmp/labby-plugin-validate cargo run --bin labby --all-features -- setup plugin-hook --no-repair --json
 
 # Report the currently installed Labby host-service runtime.
 runtime-current:

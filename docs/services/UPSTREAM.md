@@ -1,3 +1,9 @@
+---
+title: "Upstream MCP Proxy"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Upstream MCP Proxy
 
 Lab can act as an MCP gateway, proxying tool calls and resource reads to upstream MCP servers. This lets a single `lab` instance aggregate tools from multiple MCP servers behind one authenticated endpoint.

@@ -1,3 +1,9 @@
+---
+title: "CI/CD"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # CI/CD
 
 Last updated: 2026-06-27
@@ -139,8 +145,8 @@ partially published release.
 ## Artifact Distribution
 
 - **Surface:** GitHub Releases
-- **Container surface:** GitHub Container Registry (`ghcr.io/jmagar/lab`)
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and Windows x86_64; aarch64 is not currently supported because the Code Mode native dependency does not cross-compile in the release workflow)
+- **Container surface:** GitHub Container Registry (`ghcr.io/dinglebear-ai/labby`)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and Windows x86_64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **Package registries:** the `labby-mcp` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
 

@@ -1,3 +1,9 @@
+---
+title: "ADR 0001: Extract Lab as Reusable Rust and TypeScript Packages"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0001: Extract Lab as Reusable Rust and TypeScript Packages
 
 Date: 2026-05-26

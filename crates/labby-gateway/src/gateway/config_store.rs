@@ -1,4 +1,4 @@
-//! Host-owned persistence and environment seam for [`GatewayManager`].
+//! Host-owned persistence and environment seam for `GatewayManager`.
 //!
 //! `lab-gateway` owns the gateway's in-memory [`GatewayConfig`] and all runtime
 //! behavior, but it must NOT own the host's full `LabConfig`, the `config.toml`

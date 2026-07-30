@@ -1,3 +1,9 @@
+---
+title: "Operations"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Operations
 
 This document covers operator-facing workflows, verification surfaces, CI, and release behavior.
@@ -201,7 +207,7 @@ behavior locally, use `just prod-run` (see below) — it starts the image with p
 | Surface | Image tag |
 |---------|-----------|
 | Dev | `labby:dev` (local build, `Dockerfile.fast`) |
-| Prod | `${LABBY_IMAGE:-ghcr.io/jmagar/lab:latest}` |
+| Prod | `${LABBY_IMAGE:-ghcr.io/dinglebear-ai/labby:latest}` |
 
 ### Testing prod parity locally
 

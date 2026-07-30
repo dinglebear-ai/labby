@@ -32,7 +32,7 @@ function releaseVersion(env = process.env) {
 }
 
 function releaseBaseUrl(env = process.env) {
-  const repo = env.LABBY_REPO || "jmagar/labby";
+  const repo = env.LABBY_REPO || "dinglebear-ai/labby";
   return env.LABBY_RELEASE_BASE_URL || `https://github.com/${repo}/releases/download`;
 }
 

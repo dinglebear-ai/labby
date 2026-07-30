@@ -21,7 +21,7 @@
 # Run this form by hand, against a tarball downloaded from the
 # already-published release you are pointing labbyVersion at, whenever you
 # deliberately bump it — e.g.:
-#   gh release download vX.Y.Z --repo jmagar/labby -p "lab-x86_64-unknown-linux-gnu.tar.gz"
+#   gh release download vX.Y.Z --repo dinglebear-ai/labby -p "lab-x86_64-unknown-linux-gnu.tar.gz"
 #   scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball lab-x86_64-unknown-linux-gnu.tar.gz --fix
 set -euo pipefail
 

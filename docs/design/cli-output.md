@@ -1,3 +1,9 @@
+---
+title: "Token-Efficient CLI Formatting"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Token-Efficient CLI Formatting
 
 ## Overview

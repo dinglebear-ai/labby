@@ -1,3 +1,9 @@
+---
+title: "Gateway Management"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Gateway Management
 
 `lab` exposes a first-class `gateway` management surface for the upstream MCP proxy defined in [UPSTREAM.md](./UPSTREAM.md).
@@ -141,7 +147,7 @@ HTTP/MCP gateway management actions:
 MCP `codemode` call shape:
 
 ```json
-{ "code": "async () => { const matches = await codemode.search(\"github issues\"); const docs = await codemode.describe(matches.results[0].path); return { docs, issues: await codemode.github.search_issues({ q: \"repo:jmagar/lab gateway\" }) }; }" }
+{ "code": "async () => { const matches = await codemode.search(\"github issues\"); const docs = await codemode.describe(matches.results[0].path); return { docs, issues: await codemode.github.search_issues({ q: \"repo:dinglebear-ai/labby gateway\" }) }; }" }
 ```
 
 Execution runs in a short-lived child process with an embedded JavaScript engine.

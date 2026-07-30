@@ -1,5 +1,8 @@
 ---
 name: axon-fanout
+title: "Axon Fanout"
+created: "2026-07-30"
+updated: "2026-07-30"
 description: Axon fan-out research workflows for briefs and smoke tests
 tags: [axon, research, docs]
 inputs:

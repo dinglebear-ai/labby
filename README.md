@@ -1,9 +1,6 @@
 # Labby
 
-`labby` is the Rust workspace behind **Labby**, a local-first MCP gateway and
-control plane for agent tooling and homelab operations. One binary, `labby`,
-exposes the same operator capabilities through a CLI, an MCP server (stdio,
-streamable HTTP, and Unix-domain socket), an HTTP API, and the Labby web UI.
+Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI.
 
 Canonical remote: `git@github.com:dinglebear-ai/labby.git`. The older
 `jmagar/lab` and `jmagar/labby` names resolve only through GitHub transfer
@@ -266,7 +263,7 @@ severity found.
 > historical designs are archived under
 > [docs/references/retired-labby](./docs/references/retired-labby/). Plugin
 > marketplace assets now live in the separate
-> [dendrite](https://github.com/jmagar/dendrite) repo.
+> [dendrite](https://github.com/dinglebear-ai/dendrite) repo.
 
 ### Drive The API
 

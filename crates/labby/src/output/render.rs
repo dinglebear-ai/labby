@@ -1,6 +1,6 @@
 //! Output formatting for CLI commands.
 //!
-//! All CLI handlers should call [`print`] with their data. It chooses
+//! All CLI handlers should call [`print()`] with their data. It chooses
 //! human-readable or JSON output and keeps the styling logic in one place.
 
 #![allow(clippy::print_stdout)]
@@ -25,7 +25,7 @@ pub fn print<T: Serialize>(value: &T, format: OutputFormat) -> Result<()> {
 
 /// Render a serializable value to a string in the requested format.
 ///
-/// Used by [`print`] and available for testing without stdout capture.
+/// Used by [`print()`] and available for testing without stdout capture.
 pub fn render<T: Serialize>(value: &T, format: OutputFormat) -> Result<String> {
     Ok(match format.kind() {
         OutputKind::Human => {

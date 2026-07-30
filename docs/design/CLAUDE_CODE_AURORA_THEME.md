@@ -1,3 +1,9 @@
+---
+title: "Aurora Theme for Claude Code"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Aurora Theme for Claude Code
 
 **Status:** Active

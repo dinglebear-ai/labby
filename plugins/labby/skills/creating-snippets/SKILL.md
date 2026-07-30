@@ -15,9 +15,9 @@ Use `using-labby` before authoring any snippet that calls upstream tools. Search
 
 Useful local references when the Lab checkout is present on the current host:
 
-- `/home/jmagar/workspace/lab/docs/snippets/README.md`
-- `/home/jmagar/workspace/lab/docs/snippets/*.md`
-- `/home/jmagar/workspace/lab/crates/lab/src/dispatch/snippets/`
+- `/home/jmagar/workspace/labby/docs/snippets/README.md`
+- `/home/jmagar/workspace/labby/docs/snippets/*.md`
+- `/home/jmagar/workspace/labby/crates/labby/src/dispatch/snippets/`
 
 If those paths are unavailable, treat the live gateway and `labby snippets --help` as the source of
 truth. Do not invent snippet actions, flags, tool ids, or schemas from memory.

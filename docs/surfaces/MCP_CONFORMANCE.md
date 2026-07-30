@@ -1,3 +1,9 @@
+---
+title: "MCP 2026-07-28 Conformance"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # MCP 2026-07-28 Conformance
 
 Labby targets the `2026-07-28` MCP protocol through
