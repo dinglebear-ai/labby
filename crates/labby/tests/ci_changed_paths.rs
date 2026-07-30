@@ -355,6 +355,7 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(release.contains("gh release upload \"$RELEASE_TAG\" \"${files[@]}\" --clobber"));
     assert!(release.contains("if [[ \"$DRAFT_CREATED\" == \"true\" ]]"));
     assert!(release.contains("if [[ -f /tmp/labby-new-version-image ]]"));
+    assert!(release.contains("LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}"));
 }
 
 #[test]

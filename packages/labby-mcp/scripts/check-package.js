@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
@@ -13,6 +14,7 @@ const packageJsonPath = path.join(packageRoot, "package.json");
 const packageJson = readJson(packageJsonPath);
 const releaseMode = process.argv.includes("--release");
 const skipReleaseAssets = process.argv.includes("--skip-release-assets");
+const releaseAssetDir = process.env.LABBY_RELEASE_ASSET_DIR;
 
 const failures = [];
 
@@ -59,9 +61,11 @@ function compareFiles(left, right) {
 }
 
 function run(command, args, options = {}) {
+  const env = { ...(options.env || process.env) };
+  delete env.npm_config_dry_run;
   const result = spawnSync(command, args, {
     cwd: options.cwd || packageRoot,
-    env: options.env || process.env,
+    env,
     encoding: "utf8",
     stdio: options.stdio || ["ignore", "pipe", "pipe"],
   });
@@ -386,6 +390,39 @@ function checksumManifestUrl(assetUrl) {
   return assetUrl.replace(/\/[^/]+$/, "/SHA256SUMS");
 }
 
+function checksumEntries(text) {
+  return text
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => {
+      const parts = line.trim().split(/\s+/);
+      return {
+        hash: parts[0] && parts[0].toLowerCase(),
+        name: parts.slice(1).join(" ").replace(/^\*/, ""),
+      };
+    });
+}
+
+function localChecksumMatches(assetPath, asset) {
+  const digest = crypto.createHash("sha256").update(fs.readFileSync(assetPath)).digest("hex");
+  const checksumFiles = [
+    `${assetPath}.sha256`,
+    path.join(path.dirname(assetPath), "SHA256SUMS"),
+  ];
+
+  return checksumFiles.some((checksumFile) => {
+    if (!fs.existsSync(checksumFile)) {
+      return false;
+    }
+    return checksumEntries(fs.readFileSync(checksumFile, "utf8")).some(
+      (entry) =>
+        /^[a-f0-9]{64}$/.test(entry.hash) &&
+        path.basename(entry.name) === asset &&
+        entry.hash === digest,
+    );
+  });
+}
+
 async function hasChecksumFor(url, asset) {
   const sidecarStatus = await requestHead(`${url}.sha256`);
   if (sidecarStatus >= 200 && sidecarStatus < 300) {
@@ -417,6 +454,23 @@ async function checkReleaseAssets() {
 
   const platform = require(platformPath);
   if (typeof platform.downloadUrl !== "function" || typeof platform.targetFor !== "function") {
+    return;
+  }
+
+  if (releaseAssetDir) {
+    for (const { osName, arch, target } of supportedTargets(platform)) {
+      const assetPath = path.join(releaseAssetDir, target.asset);
+      assert(
+        fs.existsSync(assetPath),
+        `local release asset missing for ${osName}/${arch}: ${assetPath}`,
+      );
+      if (fs.existsSync(assetPath)) {
+        assert(
+          localChecksumMatches(assetPath, target.asset),
+          `local release checksum missing or invalid for ${osName}/${arch}: ${target.asset}`,
+        );
+      }
+    }
     return;
   }
 
@@ -455,7 +509,14 @@ async function main() {
   process.stdout.write(`package-check: ${packageJson.name} ok\n`);
 }
 
-main().catch((error) => {
-  process.stderr.write(`package-check: ${error.message}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`package-check: ${error.stack || error.message}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  checksumEntries,
+  localChecksumMatches,
+};
