@@ -1782,6 +1782,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
 
     fn large_resource_server(service_count: usize) -> LabMcpServer {
         let mut registry = crate::registry::ToolRegistry::new();
+        // Keep pagination offsets independent of process-wide Code Mode state.
         let code_mode_app_state = crate::mcp::catalog::CodeModeAppState::default();
         code_mode_app_state.set_enabled(false);
         static ACTIONS: &[labby_primitives::action::ActionSpec] =
