@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 Historical entries use distinct `example*` pseudonyms where retired service
 identifiers were removed. Commit links remain the authoritative historical record.
 
+## [1.8.4](https://github.com/dinglebear-ai/labby/compare/v1.8.3...v1.8.4) (2026-07-30)
+
+
+### Fixed
+
+* validate draft release assets locally ([#290](https://github.com/dinglebear-ai/labby/issues/290)) ([4b6d80a](https://github.com/dinglebear-ai/labby/commit/4b6d80ab5f961d4ede1db07e6b0ad1823d31d03f))
+
 ## [1.8.3](https://github.com/dinglebear-ai/labby/compare/v1.8.2...v1.8.3) (2026-07-30)
 
 
