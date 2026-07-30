@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 Historical entries use distinct `example*` pseudonyms where retired service
 identifiers were removed. Commit links remain the authoritative historical record.
 
+## [1.8.5](https://github.com/dinglebear-ai/labby/compare/v1.8.4...v1.8.5) (2026-07-30)
+
+
+### Fixed
+
+* authenticate npm release publication ([#294](https://github.com/dinglebear-ai/labby/issues/294)) ([86de7d7](https://github.com/dinglebear-ai/labby/commit/86de7d781c5c8ee74e48a4b77c63574a6b87decc))
+* isolate resource pagination fixture ([#292](https://github.com/dinglebear-ai/labby/issues/292)) ([0f5f45f](https://github.com/dinglebear-ai/labby/commit/0f5f45ff90020b3133fa8f6fd697234d6d237dab))
+
 ## [1.8.4](https://github.com/dinglebear-ai/labby/compare/v1.8.3...v1.8.4) (2026-07-30)
 
 
