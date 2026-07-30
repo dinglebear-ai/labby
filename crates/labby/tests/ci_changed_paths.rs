@@ -333,7 +333,17 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(release.contains("sha256sum --check --strict"));
     assert!(release.contains("cosign verify-blob"));
     assert!(release.contains("${archive}.sigstore.json"));
-    assert!(release.contains("distrobuilder --classic --revision 2114"));
+    assert!(release.contains("DISTROBUILDER_VERSION: \"3.3.1\""));
+    assert!(release.contains(
+        "DISTROBUILDER_SHA256: \"6c411af7178bb55ef649c708f4f38fc3c30e6ecce901c08d8a389448a900a73a\""
+    ));
+    assert!(release.contains(
+        "https://github.com/lxc/distrobuilder/releases/download/v${DISTROBUILDER_VERSION}/distrobuilder-${DISTROBUILDER_VERSION}.tar.gz"
+    ));
+    assert!(release.contains("printf '%s  %s\\n' \"$DISTROBUILDER_SHA256\""));
+    assert!(release.contains("go build -mod=vendor -trimpath"));
+    assert!(release.contains("DISTROBUILDER_BIN=%s"));
+    assert!(!release.contains("snap install distrobuilder"));
 
     let config = fs::read_to_string(repo_root().join("release-please-config.json"))
         .expect("read release-please config");
