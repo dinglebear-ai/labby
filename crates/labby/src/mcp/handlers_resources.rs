@@ -1782,6 +1782,9 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
 
     fn large_resource_server(service_count: usize) -> LabMcpServer {
         let mut registry = crate::registry::ToolRegistry::new();
+        // Keep pagination offsets independent of process-wide Code Mode state.
+        let code_mode_app_state = crate::mcp::catalog::CodeModeAppState::default();
+        code_mode_app_state.set_enabled(false);
         static ACTIONS: &[labby_primitives::action::ActionSpec] =
             &[labby_primitives::action::ActionSpec {
                 name: "thing.list",
@@ -1807,7 +1810,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             registry: Arc::new(registry),
             gateway_manager: None,
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            code_mode_app_state: Default::default(),
+            code_mode_app_state,
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
