@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 Historical entries use distinct `example*` pseudonyms where retired service
 identifiers were removed. Commit links remain the authoritative historical record.
 
+## [1.8.2](https://github.com/dinglebear-ai/labby/compare/v1.8.1...v1.8.2) (2026-07-30)
+
+
+### Fixed
+
+* reap one-shot release smoke runners ([#286](https://github.com/dinglebear-ai/labby/issues/286)) ([7e75085](https://github.com/dinglebear-ai/labby/commit/7e75085aa0a06ea0c37e29a1f2286d0f3314e9ff))
+
 ## [1.8.1](https://github.com/dinglebear-ai/labby/compare/v1.8.0...v1.8.1) (2026-07-30)
 
 
