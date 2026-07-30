@@ -1,3 +1,9 @@
+---
+title: "Code Mode"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Code Mode
 
 Code Mode is the JavaScript execution surface behind the MCP `codemode` tool. It

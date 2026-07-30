@@ -1,8 +1,14 @@
+---
+title: "Plugin Coverage"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Plugin Coverage
 
 The plugins checked into this repo with their registered components. Each lives at `plugins/<name>/` and declares itself via `.claude-plugin/plugin.json`.
 
-Only `labby` (coupled to the `labby` binary) and `scripts` (shared tooling) are bundled here. The other Lab/Labby plugins moved to the dedicated marketplace repo, [dendrite](https://github.com/jmagar/dendrite); see that repo for their coverage.
+Only `labby` (coupled to the `labby` binary) and `scripts` (shared tooling) are bundled here. The other Lab/Labby plugins moved to the dedicated marketplace repo, [dendrite](https://github.com/dinglebear-ai/dendrite); see that repo for their coverage.
 
 **Categories:** agents · bin · commands · hooks · monitors · output-styles · scripts · skills · themes · .mcp.json · .lsp.json · settings.json
 

@@ -1,3 +1,9 @@
+---
+title: "Incus Gateway Deployment"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Incus Gateway Deployment
 
 Incus is the recommended self-hosted Labby gateway deployment. Bare metal is the
@@ -10,10 +16,7 @@ a persistent system environment with normal package installation, systemd, SSH,
 user caches, and runtime-managed tools. Incus gives Labby that shape while still
 keeping the gateway inside a container boundary.
 
-The supported Incus substrate is currently:
-
-- amd64 / x86_64 for the normal release install path
-- arm64 / aarch64 only with `--local-binary` or `--allow-source-fallback`
+The supported Incus substrate is amd64 / x86_64.
 - Ubuntu 24.04 (`images:ubuntu/24.04`)
 - Incus system container
 - `config/incus/labby-gateway-profile.yaml` applied as the `labby-gateway`
@@ -32,7 +35,7 @@ local binary, but they should not expect the same prebuilt cold-start path.
 Use Incus for normal self-hosting:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jmagar/labby/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh | sh
 labby setup
 ```
 
@@ -77,7 +80,7 @@ with `--storage-source`, or the legacy ZFS dataset source with
 Install Labby, then run the host-side Incus bootstrap:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jmagar/labby/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh | sh
 labby setup
 ```
 
@@ -126,7 +129,7 @@ preserve that container with Incus snapshots/backups.
 The web app also serves the installer at `https://labby.dinglebear.ai/install.sh`
 for convenience. The canonical pipe-to-shell source remains the GitHub-hosted
 script at
-`https://raw.githubusercontent.com/jmagar/labby/main/scripts/install.sh`.
+`https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh`.
 
 For PR validation before a release exists, push a local binary instead:
 
@@ -198,9 +201,7 @@ common secret environment variables before invoking distrobuilder, and the CI
 smoke test fails if the exported image contains Labby env files, Tailscale
 state/authkey files, or common secret env vars.
 
-Release archives are currently published for amd64 Linux. On arm64 hosts, use
-`--local-binary` with a locally built `labby` binary, or opt into the slower
-source build fallback with `--allow-source-fallback` / `LABBY_ALLOW_SOURCE_FALLBACK=1`.
+Release archives are published for the supported amd64 Linux substrate.
 
 ## Golden Snapshots
 

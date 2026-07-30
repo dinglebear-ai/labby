@@ -1,3 +1,9 @@
+---
+title: "GitHub Actions Self-Hosted Runner Setup"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # GitHub Actions Self-Hosted Runner Setup
 
 Last updated: 2026-06-27
@@ -57,11 +63,11 @@ services:
     restart: unless-stopped
     working_dir: /home/runner
     environment:
-      - RUNNER_REPO=jmagar/lab
+      - RUNNER_REPO=dinglebear-ai/labby
       - RUNNER_NAME=linux-ci-runner
       - RUNNER_LABELS=linux-lab,self-hosted,linux,x64
       - RUNNER_WORKDIR=/home/runner/_work
-      - RUNNER_URL=https://github.com/jmagar/lab
+      - RUNNER_URL=https://github.com/dinglebear-ai/labby
       - RUNNER_USE_JIT=1
       - TMPDIR=/tmp
       - TMP=/tmp

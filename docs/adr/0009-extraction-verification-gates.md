@@ -1,3 +1,9 @@
+---
+title: "ADR 0009: Require Boundary and Generated-Client Verification"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0009: Require Boundary and Generated-Client Verification
 
 Date: 2026-05-26
@@ -33,7 +39,7 @@ Boundary checks should be added as soon as practical:
 - product crates do not import sibling product crates,
 - frontend packages respect allowed dependency direction,
 - Aurora does not import Lab web code,
-- `lab-api-client` does not import React or `@jmagar/lab-web`.
+- `lab-api-client` does not import React or `@dinglebear-ai/lab-web`.
 
 Standalone binaries must build and expose `--help`; product smoke tests are
 added as their runtime builders mature.

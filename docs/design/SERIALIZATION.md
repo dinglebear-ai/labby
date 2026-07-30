@@ -1,3 +1,9 @@
+---
+title: "Serialization"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Serialization
 
 This document is the canonical serialization contract for `lab`.

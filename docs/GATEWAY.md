@@ -1,3 +1,9 @@
+---
+title: "Gateway"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Gateway
 
 The gateway manages upstream MCP server connections.

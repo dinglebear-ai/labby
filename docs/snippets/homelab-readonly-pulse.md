@@ -1,5 +1,8 @@
 ---
 name: homelab-readonly-pulse
+title: "Homelab Read-Only Pulse"
+created: "2026-07-30"
+updated: "2026-07-30"
 description: Read-only homelab pulse across time, containers, Cortex, Gotify, and Synapse
 tags: [homelab, readonly, ops]
 inputs:

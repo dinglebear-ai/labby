@@ -1,3 +1,9 @@
+---
+title: "Conventions"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Conventions
 
 These are locked implementation rules. They are not optional style suggestions.

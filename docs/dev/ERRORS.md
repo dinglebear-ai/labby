@@ -1,3 +1,9 @@
+---
+title: "Error Contract"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Error Contract
 
 `labby_runtime::error::ToolError` is the canonical surface-neutral error type.

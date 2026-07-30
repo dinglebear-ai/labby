@@ -1,3 +1,9 @@
+---
+title: "Service Layer Migration"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Service Layer Migration
 
 The original service-layer migration plan targeted first-party upstream

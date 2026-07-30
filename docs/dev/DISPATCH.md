@@ -1,3 +1,9 @@
+---
+title: "Dispatch"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Dispatch
 
 This document is the canonical dispatch-layer contract for `lab`.

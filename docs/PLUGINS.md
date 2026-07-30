@@ -1,10 +1,16 @@
+---
+title: "Lab Plugins"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Lab Plugins
 
 The checked-in `plugins/labby` tree ships **no binary**. Hosts install `labby`
 explicitly and the binary owns the setup flow from there:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh | sh
 labby setup
 ```
 
@@ -27,7 +33,7 @@ auto-repaired at session start.
 ## Marketplace distribution
 
 Lab no longer generates or publishes its own plugin marketplace. The marketplace
-moved to a dedicated repo, [dendrite](https://github.com/jmagar/dendrite), so it
+moved to a dedicated repo, [dendrite](https://github.com/dinglebear-ai/dendrite), so it
 is decoupled from this Rust workspace. Dendrite catalogs `plugins/labby` (via a
 `git-subdir` source pointing at this repo) alongside the other Lab/Labby plugins
 and third-party entries.

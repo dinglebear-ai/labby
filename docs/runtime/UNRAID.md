@@ -1,3 +1,9 @@
+---
+title: "Unraid Plugin"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Unraid Plugin
 
 `unraid/` packages labby as a classic Unraid webGUI plugin (`.plg`) — a
@@ -11,7 +17,7 @@ mutually exclusive.
 ## Why native instead of Docker
 
 Unraid has first-class Docker support, and the released image
-(`ghcr.io/jmagar/lab`) already runs there. The `.plg` path exists because
+(`ghcr.io/dinglebear-ai/labby`) already runs there. The `.plg` path exists because
 "installable as an Unraid plugin" specifically means the classic
 `.plg`/Plugins-tab mechanism, and because labby is a single, dynamically
 linked (glibc) binary with no bundled shared libraries and its own embedded
@@ -107,7 +113,7 @@ instead of silently reusing stale runtime bytes.
 
 Known release gap: the `labby-incus-x86_64-unknown-linux-gnu.tar.xz` release
 asset has not published successfully since `v1.2.0` (`gh release view v1.3.0
---repo jmagar/labby --json assets` shows only the plain binary archives and
+--repo dinglebear-ai/labby --json assets` shows only the plain binary archives and
 `SHA256SUMS`). Confirm the latest tag before assuming a newer
 `INCUS_IMAGE_VERSION` will work, and bump both `INCUS_IMAGE_VERSION` and
 `INCUS_IMAGE_SHA256` together once the release-asset CI gap is fixed.
@@ -294,7 +300,7 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
   from the already-published release you're pointing `labbyVersion` at,
   whenever you deliberately bump it:
   ```
-  gh release download vX.Y.Z --repo jmagar/labby -p "lab-x86_64-unknown-linux-gnu.tar.gz"
+  gh release download vX.Y.Z --repo dinglebear-ai/labby -p "lab-x86_64-unknown-linux-gnu.tar.gz"
   scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball lab-x86_64-unknown-linux-gnu.tar.gz --fix
   ```
 - The `unraid-plugin-check` CI job does not auto-commit a fix; a mismatch

@@ -1,16 +1,19 @@
 ---
 name: repo-status-gh-pulse
+title: "Repository Status GitHub Pulse"
+created: "2026-07-30"
+updated: "2026-07-30"
 description: Read-only GitHub PR and CI pulse for repository status checks
 tags: [repo, github, ci, readonly]
 inputs:
   owner:
     type: string
-    default: jmagar
+    default: dinglebear-ai
     required: false
     description: GitHub repository owner
   repo:
     type: string
-    default: lab
+    default: labby
     required: false
     description: GitHub repository name
   branch:

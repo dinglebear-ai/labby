@@ -20,7 +20,7 @@ impl UpstreamPool {
 
     /// Record a failure for a specific upstream capability, potentially marking it unhealthy.
     ///
-    /// After [`CIRCUIT_BREAKER_THRESHOLD`] consecutive failures, the upstream
+    /// After `CIRCUIT_BREAKER_THRESHOLD` consecutive failures, the upstream
     /// is excluded from the matching capability listing until a successful re-probe.
     pub async fn record_failure_for(
         &self,

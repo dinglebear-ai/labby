@@ -1,3 +1,9 @@
+---
+title: "Code Mode - Agent Contract"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Code Mode — Agent Contract
 
 This document describes the current Lab gateway Code Mode surface exposed to MCP agents.
@@ -28,7 +34,7 @@ Call `codemode` and use in-sandbox discovery before making upstream calls:
 
 ```json
 {
-  "code": "async () => callTool('github::search_issues', { \"q\": \"repo:jmagar/lab gateway\" })",
+  "code": "async () => callTool('github::search_issues', { \"q\": \"repo:dinglebear-ai/labby gateway\" })",
   "upstreams": ["github"],
   "tools": ["github::search_issues"]
 }

@@ -1,3 +1,9 @@
+---
+title: "RMCP"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # RMCP
 
 This document defines the integration contract between `lab` and the official Rust Model Context Protocol SDK, `rmcp`.

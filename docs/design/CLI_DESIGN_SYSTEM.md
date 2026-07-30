@@ -1,3 +1,9 @@
+---
+title: "CLI Design System Contract"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # CLI Design System Contract
 
 **Status:** Active

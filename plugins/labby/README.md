@@ -24,7 +24,7 @@ labby setup
 
 The script downloads the latest GitHub release for this platform
 (sha256-verified) into `~/.local/bin/labby`, falling back to
-`cargo install --git https://github.com/jmagar/labby --bin labby --all-features`
+`cargo install --git https://github.com/dinglebear-ai/labby --bin labby --all-features`
 when no release asset exists. Everything after install — config, credentials,
 connectivity checks, repair — is owned by `labby setup`.
 The web app also serves the same script at `https://labby.tootie.tv/install.sh`

@@ -1,3 +1,5 @@
+//! Authentication, authorization, OAuth, session, and token support for Labby services.
+
 pub mod at_rest;
 #[cfg(feature = "http-axum")]
 pub mod auth_context;

@@ -1,3 +1,9 @@
+---
+title: "Upstream Pool"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Upstream Pool
 
 The upstream pool (`crates/lab/src/dispatch/upstream/pool/`) manages live connections

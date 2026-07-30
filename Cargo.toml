@@ -141,6 +141,8 @@ insta = { version = "1", features = ["json", "yaml"] }
 # TODO(docs-pass): re-enable once every service has real types + docstrings.
 # Tracked in docs/superpowers/plans/ (follow-up after all 21 services land).
 missing_docs = "allow"
+missing_crate_level_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"
 unsafe_code = "forbid"
 unreachable_pub = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
@@ -164,6 +166,7 @@ dbg_macro = "warn"
 print_stderr = "allow"
 mod_module_files = "deny"                    # forbid mod.rs — enforce foo.rs sibling to foo/ style
 disallowed_macros = "deny"                   # see /clippy.toml — bans `#[async_trait]` in our code
+missing_safety_doc = "deny"
 
 # allow some pedantic noise
 module_name_repetitions = "allow"
@@ -254,6 +257,16 @@ needless_pass_by_ref_mut = "allow"
 struct_field_names = "allow"
 large_futures = "allow"
 redundant_pub_crate = "allow"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+invalid_rust_codeblocks = "deny"
+invalid_html_tags = "deny"
+bare_urls = "warn"
+private_intra_doc_links = "warn"
+redundant_explicit_links = "warn"
+unescaped_backticks = "warn"
 
 [profile.release]
 lto = "thin"

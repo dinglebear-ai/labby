@@ -6,7 +6,7 @@
 //! 1. Backup is part of merge: `.env` → `.env.bak.<unix-seconds>` before any
 //!    write. Backup retention pruned to the last 10 entries.
 //! 2. Atomic write via [`tempfile::NamedTempFile::new_in`] (same directory) +
-//!    [`File::sync_all`] + [`tempfile::NamedTempFile::persist`].
+//!    [`std::fs::File::sync_all`] + [`tempfile::NamedTempFile::persist`].
 //! 3. Existing key order is preserved.
 //! 4. Comments (`#`) and blank lines pass through unchanged.
 //! 5. Dedupe by key — one entry per key in the output.

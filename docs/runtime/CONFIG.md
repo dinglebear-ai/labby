@@ -1,3 +1,9 @@
+---
+title: "Runtime Configuration"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Runtime Configuration
 
 Labby separates non-secret preferences from secrets and endpoint credentials.

@@ -1,3 +1,9 @@
+---
+title: "TUI"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # TUI
 
 The Ratatui plugin-manager surface is not part of the current `labby` CLI or

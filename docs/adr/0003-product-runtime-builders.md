@@ -1,3 +1,9 @@
+---
+title: "ADR 0003: Compose Products Through Runtime Builders"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0003: Compose Products Through Runtime Builders
 
 Date: 2026-05-26

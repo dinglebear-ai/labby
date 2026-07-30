@@ -1,3 +1,9 @@
+---
+title: "Service Model"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Service Model
 
 Labby registers a small product catalog over one shared dispatch contract. The

@@ -1,3 +1,9 @@
+---
+title: "Contract: Gateway Schema Resources"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Contract: Gateway Schema Resources
 
 Status: draft

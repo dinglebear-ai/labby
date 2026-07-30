@@ -1,3 +1,9 @@
+---
+title: "Environment Variables"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Environment Variables
 
 This document lists the `lab` environment variables that matter for transport

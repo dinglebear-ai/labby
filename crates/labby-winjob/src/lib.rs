@@ -61,7 +61,7 @@
 //! (`!Send + !Sync`), which would poison the `Send`/`Sync` bounds of any struct
 //! that stores it (and break `lab`'s axum router). `isize` is
 //! `Copy + Send + Sync`; we cast back to `HANDLE` only at the `CloseHandle`
-//! boundary inside [`close_job`].
+//! boundary inside `close_job`.
 //!
 //! On non-Windows targets this crate compiles to an empty library (`lab` only
 //! depends on it under `cfg(windows)`).

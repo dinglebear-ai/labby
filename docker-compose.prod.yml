@@ -10,7 +10,7 @@ name: lab
 services:
   labby-master:
     container_name: labby
-    image: ${LABBY_IMAGE:-ghcr.io/jmagar/lab:latest}
+    image: ${LABBY_IMAGE:-ghcr.io/dinglebear-ai/labby:latest}
     restart: unless-stopped
     # Run Docker's tiny init as PID 1 so provider grandchildren orphaned by
     # launch wrappers such as npx are reaped after Lab terminates the process group.

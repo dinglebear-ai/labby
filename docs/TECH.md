@@ -1,3 +1,9 @@
+---
+title: "Technology"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Technology
 
 This document captures the locked stack and tooling choices for `lab`.
@@ -7,7 +13,7 @@ This document captures the locked stack and tooling choices for `lab`.
 - Rust 2024 edition
 - single workspace version
 - dual MIT / Apache-2.0 license
-- targets: Linux x86_64, Linux aarch64
+- targets: Linux x86_64 and Windows x86_64
 - workspace resolver 3
 
 ## Core Runtime

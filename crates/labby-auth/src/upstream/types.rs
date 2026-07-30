@@ -68,7 +68,8 @@ impl OauthError {
     }
 }
 
-/// Return value of [`manager::UpstreamOauthManager::begin_authorization`].
+/// Return value of
+/// [`UpstreamOauthManager::begin_authorization`](super::manager::UpstreamOauthManager::begin_authorization).
 #[derive(Debug, Serialize)]
 pub struct BeginAuthorization {
     /// URL the operator's browser must navigate to.

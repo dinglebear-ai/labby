@@ -1,3 +1,9 @@
+---
+title: "Reverse Proxy Deployment"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Reverse Proxy Deployment
 
 Lab can serve the web UI, OAuth server, native `/mcp`, and Gateway-managed

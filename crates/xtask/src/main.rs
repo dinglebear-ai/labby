@@ -1,3 +1,5 @@
+//! Repository maintenance tasks that are intentionally kept out of the runtime binary.
+
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

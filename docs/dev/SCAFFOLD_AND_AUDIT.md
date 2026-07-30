@@ -1,3 +1,9 @@
+---
+title: "Scaffold And Audit"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # Scaffold And Audit
 
 `labby scaffold service` and `labby audit onboarding` are a deferred guardrail

@@ -1,3 +1,9 @@
+---
+title: "ADR 0007: Use Semver with Workspace-First Extraction and Git Tags"
+created: "2026-07-30"
+updated: "2026-07-30"
+---
+
 # ADR 0007: Use Semver with Workspace-First Extraction and Git Tags
 
 Date: 2026-05-26

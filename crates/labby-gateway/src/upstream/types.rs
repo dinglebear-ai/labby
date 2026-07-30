@@ -266,7 +266,7 @@ impl UpstreamHealth {
     /// Whether this upstream should be included in tool listings.
     ///
     /// An upstream remains routable until its consecutive failures reach
-    /// [`CIRCUIT_BREAKER_THRESHOLD`]. This is the inverse of [`is_open`].
+    /// `CIRCUIT_BREAKER_THRESHOLD`. This is the inverse of `is_open`.
     #[must_use]
     pub const fn is_routable(self) -> bool {
         !self.is_open()

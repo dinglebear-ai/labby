@@ -1,13 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "labby",
-  "description": "Skills and MCP configuration for the Lab homelab control plane.",
+  "description": "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI.",
   "author": {
     "name": "Jacob Magar",
     "email": "jmagar@users.noreply.github.com"
   },
-  "repository": "https://github.com/jmagar/labby",
-  "homepage": "https://github.com/jmagar/labby",
+  "repository": "https://github.com/dinglebear-ai/labby",
+  "homepage": "https://github.com/dinglebear-ai/labby",
   "license": "MIT",
   "keywords": [
     "lab",

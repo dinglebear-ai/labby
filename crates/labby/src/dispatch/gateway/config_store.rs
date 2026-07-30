@@ -5,7 +5,7 @@
 //! path (with its foreign-key-preservation invariant), or the `.env` credential
 //! helpers — those are shared with non-gateway Labby code and stay here.
 //!
-//! [`LabConfigStore`] is injected into [`GatewayManager`] at construction. It
+//! [`LabConfigStore`] is injected into `GatewayManager` at construction. It
 //! holds the live `Arc<RwLock<LabConfig>>`, writes the gateway-owned sections
 //! back into it on `persist`, and renders the full `LabConfig` through the
 //! verbatim `toml_edit` merge path (`write_gateway_config`) that preserves

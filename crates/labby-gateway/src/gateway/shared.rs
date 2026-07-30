@@ -6,7 +6,7 @@ pub const SHARED_GATEWAY_OAUTH_SUBJECT: &str = "gateway";
 ///
 /// Encapsulates the `owner`/`origin`/`raw` construction that was previously
 /// inlined in `api/services/gateway.rs` (Q-L5 fix). The MCP surface calls the
-/// same constructor via [`UpstreamRuntimeOwner::for_mcp_request`].
+/// same constructor via `UpstreamRuntimeOwner::for_mcp_request`.
 ///
 /// JSON shape produced (matches the inline shape that was here before):
 /// ```json

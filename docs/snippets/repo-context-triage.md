@@ -1,21 +1,24 @@
 ---
 name: repo-context-triage
+title: "Repository Context Triage"
+created: "2026-07-30"
+updated: "2026-07-30"
 description: Quick repository context pass using filesystem, Lumen, Octocode, GitHub, and time
 tags: [repo, triage, research]
 inputs:
   repo_path:
     type: string
-    default: /home/jmagar/workspace/lab
+    default: /home/jmagar/workspace/labby
     required: false
     description: Local repository path
   owner:
     type: string
-    default: jmagar
+    default: dinglebear-ai
     required: false
     description: GitHub owner
   repo:
     type: string
-    default: lab
+    default: labby
     required: false
     description: GitHub repository
   topic:

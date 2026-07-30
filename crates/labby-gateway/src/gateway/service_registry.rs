@@ -1,4 +1,4 @@
-//! Service-registry seam for [`GatewayManager`].
+//! Service-registry seam for `GatewayManager`.
 //!
 //! The manager needs three things from Labby's `ToolRegistry`: the set of
 //! registered service names, each service's actions (name/description/
