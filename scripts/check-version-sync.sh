@@ -49,6 +49,17 @@ add_json_version "mcpb/manifest.json"
 # distribution.npm ("<name>@<version>"). Check them all — a partial check is
 # what let one repo sit seven releases out of sync while reporting OK.
 if [ -f "server.json" ]; then
+  python3 - <<'PY'
+import json
+
+document = json.load(open("server.json"))
+description = document.get("description", "")
+if len(description) > 100:
+    raise SystemExit(
+        f"[version-sync] FAIL — server.json description is {len(description)} characters; "
+        "the MCP Registry limit is 100"
+    )
+PY
   while IFS= read -r line; do
     [ -n "$line" ] && versions+=("$line")
   done < <(python3 - <<'PY'

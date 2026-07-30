@@ -2,11 +2,11 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "ai.dinglebear/labby",
   "title": "Labby",
-  "description": "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI.",
+  "description": "Rust MCP gateway with Code Mode, authentication, setup, logs, CLI, HTTP API, and operator web UI.",
   "version": "1.8.5",
-  "websiteUrl": "https://github.com/dinglebear-ai/labby",
+  "websiteUrl": "https://github.com/jmagar/labby",
   "repository": {
-    "url": "https://github.com/dinglebear-ai/labby",
+    "url": "https://github.com/jmagar/labby",
     "source": "github",
     "id": "1204404948"
   },
@@ -53,8 +53,8 @@
           "format": "string",
           "isRequired": false,
           "isSecret": false,
-          "default": "dinglebear-ai/labby",
-          "placeholder": "dinglebear-ai/labby"
+          "default": "jmagar/labby",
+          "placeholder": "jmagar/labby"
         },
         {
           "name": "LABBY_LOG",
@@ -80,7 +80,7 @@
       },
       "buildInfo": {
         "version": "1.8.5",
-        "repository": "https://github.com/dinglebear-ai/labby"
+        "repository": "https://github.com/jmagar/labby"
       }
     }
   }
