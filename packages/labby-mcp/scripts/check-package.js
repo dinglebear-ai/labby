@@ -12,6 +12,7 @@ const packageRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const packageJsonPath = path.join(packageRoot, "package.json");
 const packageJson = readJson(packageJsonPath);
+const expectedPackageName = "@dinglebear/labby-mcp";
 const releaseMode = process.argv.includes("--release");
 const skipReleaseAssets = process.argv.includes("--skip-release-assets");
 const releaseAssetDir = process.env.LABBY_RELEASE_ASSET_DIR;
@@ -117,6 +118,10 @@ function checkMetadata() {
   const serverWebsite = normalizeHomepage(serverJson.websiteUrl);
 
   assert(packageJson.name, "package.json must include name");
+  assert(
+    packageJson.name === expectedPackageName,
+    `package.json name must be the dinglebear organization package ${expectedPackageName}`,
+  );
   assert(packageJson.version, "package.json must include version");
   assert(packageJson.description, "package.json must include description");
   assert(packageJson.license, "package.json must include license");
@@ -125,6 +130,7 @@ function checkMetadata() {
   assert(packageJson.repository && packageJson.repository.type === "git", "package.json repository.type must be git");
   assert(packageJson.repository && packageJson.repository.directory, "package.json repository.directory must point at this package");
   assert(packageJson.repository && packageJson.repository.directory === path.relative(repoRoot, packageRoot), "package.json repository.directory must match package path");
+  assert(packageJson.publishConfig && packageJson.publishConfig.access === "public", "scoped npm package must publish with public access");
   assert(packageJson.bugs && packageJson.bugs.url, "package.json must include bugs.url");
   assert(packageJson.mcpName === serverJson.name, "package.json mcpName must match server.json name");
   assert(repoUrl === serverRepoUrl, `package repository ${repoUrl} must match server.json repository ${serverRepoUrl}`);
@@ -487,7 +493,8 @@ async function main() {
   checkMetadata();
   assertRuntimeScriptsDoNotEscapePackage();
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `${packageJson.name}-package-check-`));
+  const packageTempLabel = packageJson.name.replace(/[^A-Za-z0-9._-]/g, "-");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `${packageTempLabel}-package-check-`));
   try {
     const tarball = packTarball(tempDir);
     checkPacklist(tarball);

@@ -977,7 +977,7 @@ _(Incus container name)_:
 
 _(Incus image version)_:
 : <input type="text" name="INCUS_IMAGE_VERSION" value="<?= htmlspecialchars($cfg['INCUS_IMAGE_VERSION'], ENT_QUOTES) ?>" size="10" pattern="[0-9]+\.[0-9]+\.[0-9]+" title="A plain X.Y.Z release version">
-<blockquote class="inline_help">_(A labby release tag that actually published labby-incus-x86_64-unknown-linux-gnu.tar.xz — check https://github.com/jmagar/labby/releases if this version 404s on Apply.)_</blockquote>
+<blockquote class="inline_help">_(A labby release tag that actually published labby-incus-x86_64-unknown-linux-gnu.tar.xz — check https://github.com/dinglebear-ai/labby/releases if this version 404s on Apply.)_</blockquote>
 
 _(Incus image SHA256)_:
 : <input type="text" name="INCUS_IMAGE_SHA256" value="<?= htmlspecialchars($cfg['INCUS_IMAGE_SHA256'], ENT_QUOTES) ?>" size="64" pattern="([a-f0-9]{64})?" title="A lowercase 64-character SHA256 digest, or empty">

@@ -29,7 +29,7 @@ pub const META: PluginMeta = PluginMeta {
     display_name: "Doctor",
     description: "Comprehensive health audit: env vars, system, gateway, and OAuth relay checks",
     category: Category::Bootstrap,
-    docs_url: "https://github.com/jmagar/lab",
+    docs_url: "https://github.com/dinglebear-ai/labby",
     required_env: &[],
     optional_env: &[],
     default_port: None,

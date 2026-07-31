@@ -41,7 +41,7 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "54ab819145fa4b327f2a763f718da04a">
-  <!ENTITY pageMD5      "198bae46ed722f8880fedec89c9bd6a8">
+  <!ENTITY pageMD5      "3722c442a16c7d0321b61155b2877db6">
   <!ENTITY dashboardMD5 "1dffc3d2eb9578072527927ef03c0e18">
   <!ENTITY dashboardStatusMD5 "cc67612bc2e68d36dbfa991ffdbca8f9">
   <!ENTITY rcMD5        "6aabfdaf80dbcaadf72a6d47d85916e6">
@@ -50,7 +50,7 @@
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
   <!ENTITY incusEnvMD5     "bae86ad48f8f091e0708469f75b45aeb">
-  <!ENTITY incusInitMD5    "f20df050b79c62ebef0c0c893457755d">
+  <!ENTITY incusInitMD5    "ddc5f14d5ca161f3e70946ccd238a436">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
