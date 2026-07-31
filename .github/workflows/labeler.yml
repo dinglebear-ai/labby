@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   label:
-    uses: dinglebear-ai/workflows/.github/workflows/repository-labeler.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+    uses: dinglebear-ai/workflows/.github/workflows/repository-labeler.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
     with:
       configuration-path: .github/labeler.yml
       sync-labels: true

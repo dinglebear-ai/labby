@@ -26,16 +26,16 @@ env:
 jobs:
   fleet-policy:
     name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
     with:
       release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
 
   fleet-contract:
     name: Fleet repository contract
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
     with:
       profile: rust
-      implementation-ref: eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+      implementation-ref: 98e40816bfab64ed9fcce82236e9ecb0c0055d7d
 
   changes:
     name: changes
