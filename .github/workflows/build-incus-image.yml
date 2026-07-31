@@ -14,11 +14,13 @@ permissions:
 jobs:
   build-image:
     name: Build and smoke hosted x86_64 image
-    uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+    uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
     with:
       checkout-ref: ${{ github.event.release.tag_name }}
       artifact-name: labby-incus-image
       artifact-directory: dist
+      enable-kache: true
+      kache-manifest-key: labby-incus-release
       timeout-minutes: 120
       setup-command: |
         set -euo pipefail
@@ -84,6 +86,9 @@ jobs:
         SMOKE_PROFILE_NAME="labby-gateway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
         SMOKE_EXPECT_ANDROID_SDK=0 \
           scripts/ci/smoke-incus-image.sh
+    secrets:
+      KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
+      KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
 
   publish-image:
     name: Publish verified image and advance rolling alias
