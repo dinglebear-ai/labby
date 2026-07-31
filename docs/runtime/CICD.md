@@ -147,7 +147,7 @@ partially published release.
 - **Container surface:** GitHub Container Registry (`ghcr.io/dinglebear-ai/labby`)
 - **Artifacts per release:** one binary archive per supported target (Linux x86_64 and Windows x86_64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
-- **Package registries:** the `labby-mcp` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
+- **Package registries:** the `@dinglebear/labby-mcp` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
 
 ## MCP Registry DNS Key Rotation
 

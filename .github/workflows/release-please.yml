@@ -126,24 +126,24 @@ jobs:
 
           package_path = "packages/labby-mcp/package.json"
           with open(package_path) as fh:
-              package = json.load(fh)
-          package["version"] = new_version
+              npm_manifest = json.load(fh)
+          npm_manifest["version"] = new_version
           with open(package_path, "w") as fh:
-              json.dump(package, fh, indent=2)
+              json.dump(npm_manifest, fh, indent=2)
               fh.write("\n")
 
           server_path = "server.json"
           with open(server_path) as fh:
               server = json.load(fh)
           server["version"] = new_version
-          for package in server.get("packages", []):
-              package["version"] = new_version
-              if package.get("registryType") == "oci":
-                  package["identifier"] = f"ghcr.io/jmagar/labby:v{new_version}"
+          for server_package in server.get("packages", []):
+              server_package["version"] = new_version
+              if server_package.get("registryType") == "oci":
+                  server_package["identifier"] = f"ghcr.io/dinglebear-ai/labby:v{new_version}"
           publisher = server.get("_meta", {}).get("io.modelcontextprotocol.registry/publisher-provided", {})
           distribution = publisher.get("distribution")
           if isinstance(distribution, dict):
-              distribution["npm"] = f"labby-mcp@{new_version}"
+              distribution["npm"] = f"{npm_manifest['name']}@{new_version}"
           build_info = publisher.get("buildInfo")
           if isinstance(build_info, dict):
               build_info["version"] = new_version

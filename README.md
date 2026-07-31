@@ -2,9 +2,7 @@
 
 Rust MCP gateway with Code Mode, authentication, setup, logs, CLI, HTTP API, and operator web UI.
 
-Canonical remote: `git@github.com:dinglebear-ai/labby.git`. The older
-`jmagar/lab` and `jmagar/labby` names resolve only through GitHub transfer
-redirects.
+Canonical remote: `git@github.com:dinglebear-ai/labby.git`.
 
 The root README is the public entrypoint. The topic docs in
 [docs/](./docs/README.md) own the detailed contracts; when this file and a topic
@@ -69,7 +67,7 @@ labby serve --host 127.0.0.1 --port 8765
 MCP clients that prefer npm launchers can run Labby through the Node wrapper:
 
 ```bash
-npx -y labby-mcp mcp
+npx -y @dinglebear/labby-mcp mcp
 ```
 
 Windows PowerShell:
@@ -412,7 +410,7 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
 | [crates/xtask](./crates/xtask) | Repo automation tasks; not published. |
 | [apps/gateway-admin](./apps/gateway-admin/README.md) | Labby web UI, statically exported and served by `labby serve`. |
-| [packages/labby-mcp](./packages/labby-mcp) | npm launcher wrapper behind `npx -y labby-mcp mcp`. |
+| [packages/labby-mcp](./packages/labby-mcp) | npm launcher wrapper behind `npx -y @dinglebear/labby-mcp mcp`. |
 | [plugins](./plugins) | Claude/Codex plugin assets and skills. |
 | [docs](./docs/README.md) | Topic documentation and generated inventories. |
 

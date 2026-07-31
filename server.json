@@ -24,7 +24,7 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "labby-mcp",
+      "identifier": "@dinglebear/labby-mcp",
       "version": "1.8.5",
       "runtimeHint": "npx",
       "packageArguments": [
@@ -76,7 +76,7 @@
       "namespace": "ai.dinglebear",
       "dnsDomain": "dinglebear.ai",
       "distribution": {
-        "npm": "labby-mcp@1.8.5"
+        "npm": "@dinglebear/labby-mcp@1.8.5"
       },
       "buildInfo": {
         "version": "1.8.5",

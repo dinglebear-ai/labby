@@ -12,6 +12,7 @@ const packageRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const packageJsonPath = path.join(packageRoot, "package.json");
 const packageJson = readJson(packageJsonPath);
+const expectedPackageName = "@dinglebear/labby-mcp";
 const releaseMode = process.argv.includes("--release");
 const skipReleaseAssets = process.argv.includes("--skip-release-assets");
 const releaseAssetDir = process.env.LABBY_RELEASE_ASSET_DIR;
@@ -117,6 +118,10 @@ function checkMetadata() {
   const serverWebsite = normalizeHomepage(serverJson.websiteUrl);
 
   assert(packageJson.name, "package.json must include name");
+  assert(
+    packageJson.name === expectedPackageName,
+    `package.json name must be the dinglebear organization package ${expectedPackageName}`,
+  );
   assert(packageJson.version, "package.json must include version");
   assert(packageJson.description, "package.json must include description");
   assert(packageJson.license, "package.json must include license");
@@ -487,7 +492,8 @@ async function main() {
   checkMetadata();
   assertRuntimeScriptsDoNotEscapePackage();
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `${packageJson.name}-package-check-`));
+  const packageTempLabel = packageJson.name.replace(/[^A-Za-z0-9._-]/g, "-");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `${packageTempLabel}-package-check-`));
   try {
     const tarball = packTarball(tempDir);
     checkPacklist(tarball);

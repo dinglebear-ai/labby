@@ -78,7 +78,7 @@ pub const META: PluginMeta = PluginMeta {
     display_name: "Server Logs",
     description: "View and filter Labby's own rolling server process logs",
     category: Category::Bootstrap,
-    docs_url: "https://github.com/jmagar/lab",
+    docs_url: "https://github.com/dinglebear-ai/labby",
     required_env: &[],
     optional_env: &[],
     default_port: None,

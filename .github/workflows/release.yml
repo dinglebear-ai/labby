@@ -335,8 +335,9 @@ jobs:
       - name: Check whether npm version already exists
         id: npm-version
         run: |
+          package_name="$(node -p "require('./packages/labby-mcp/package.json').name")"
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
-          if npm view "labby-mcp@$version" version >/dev/null 2>&1; then
+          if npm view "$package_name@$version" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
