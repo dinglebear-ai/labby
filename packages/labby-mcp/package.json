@@ -13,6 +13,9 @@
     "url": "https://github.com/dinglebear-ai/labby/issues"
   },
   "mcpName": "ai.dinglebear/labby",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "labby-mcp": "bin/labby.js",
     "labby": "bin/labby.js"

@@ -130,6 +130,7 @@ function checkMetadata() {
   assert(packageJson.repository && packageJson.repository.type === "git", "package.json repository.type must be git");
   assert(packageJson.repository && packageJson.repository.directory, "package.json repository.directory must point at this package");
   assert(packageJson.repository && packageJson.repository.directory === path.relative(repoRoot, packageRoot), "package.json repository.directory must match package path");
+  assert(packageJson.publishConfig && packageJson.publishConfig.access === "public", "scoped npm package must publish with public access");
   assert(packageJson.bugs && packageJson.bugs.url, "package.json must include bugs.url");
   assert(packageJson.mcpName === serverJson.name, "package.json mcpName must match server.json name");
   assert(repoUrl === serverRepoUrl, `package repository ${repoUrl} must match server.json repository ${serverRepoUrl}`);
