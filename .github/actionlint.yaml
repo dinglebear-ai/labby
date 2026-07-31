@@ -1,8 +1,6 @@
-# Custom labels for self-hosted runners so actionlint's runner-label check
-# recognizes them. linux-ci-runner carries linux-lab, and windows-ci carries
-# windows-lab.
+# Custom runner-farm pool labels.
 self-hosted-runner:
   labels:
-    - unraid
-    - linux-lab
-    - windows-lab
+    - ci-pool-rust
+    - ci-pool-typescript
+    - ci-pool-ops

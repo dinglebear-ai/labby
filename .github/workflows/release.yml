@@ -1,10 +1,8 @@
 name: Release
 
 on:
-  workflow_dispatch:
-  push:
-    tags:
-      - 'v*.*.*'
+  release:
+    types: [published]
 
 concurrency:
   group: release-${{ github.ref }}
@@ -17,6 +15,8 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
+  KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
   # .cargo/config.toml sets rustc-wrapper = "scripts/cargo-rustc-wrapper" for
   # local dev. The wrapper is a shell script: Windows runners cannot exec it
   # (os error 193), so clear
@@ -24,26 +24,19 @@ env:
   # jobs (mirrors ci.yml).
   RUSTC_WRAPPER: ""
   CARGO_BUILD_RUSTC_WRAPPER: ""
-  DISTROBUILDER_VERSION: "3.3.1"
-  DISTROBUILDER_SHA256: "6c411af7178bb55ef649c708f4f38fc3c30e6ecce901c08d8a389448a900a73a"
-
 jobs:
   preflight:
     name: Release preflight
-    runs-on: [self-hosted, unraid]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           fetch-depth: 0
           persist-credentials: false
-      # The validation step below shells out to `node` and `npm` (version
-      # lockstep against packages/labby-mcp, plus its test/check/pack smoke).
-      # The self-hosted runners carry neither, so without this the step dies
-      # with `npm: command not found` and exit 127 -- which is why every
-      # release tag since v1.3.1 either failed or was cancelled at preflight,
-      # skipping the build, publish, container, and Incus jobs behind it.
-      # Mirrors the npm-launcher job in ci.yml, which runs the same commands on
-      # the same runner class and works because it sets Node up first.
+      # The validation below shells out to Node and npm for version lockstep
+      # plus launcher test/check/pack smoke, so install Node explicitly on the
+      # hosted release runner.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "lts/*"
@@ -74,7 +67,8 @@ jobs:
 
   frontend-assets:
     name: Frontend assets
-    runs-on: [self-hosted, unraid]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: preflight
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -92,13 +86,14 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 90
     needs: frontend-assets
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: '["self-hosted", "unraid"]'
+            runner: '"ubuntu-24.04"'
             use-cross: false
             binary: labby
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
@@ -196,7 +191,8 @@ jobs:
   container:
     name: Build and smoke container image
     needs: frontend-assets
-    runs-on: [self-hosted, unraid]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -211,6 +207,7 @@ jobs:
         with:
           context: .
           file: config/Dockerfile
+          platforms: linux/amd64
           push: false
           outputs: type=docker,dest=/tmp/lab-container-image.tar
           tags: lab:release-candidate
@@ -222,6 +219,14 @@ jobs:
           docker run --rm lab:release-candidate --json gateway code exec \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
+      - name: Scan tested container candidate
+        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8
+        with:
+          image-ref: lab:release-candidate
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
       - name: Upload tested container candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -230,84 +235,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  incus-image:
-    name: Incus image
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: lab-x86_64-unknown-linux-gnu
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version: 1.26.5
-          cache: false
-      - name: Install distrobuilder
-        run: |
-          set -euo pipefail
-          distrobuilder_bin="$RUNNER_TEMP/labby-distrobuilder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/distrobuilder"
-          sudo apt-get update
-          sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-
-          distrobuilder_dir="$(mktemp -d)"
-          trap 'rm -rf "$distrobuilder_dir"' EXIT
-          distrobuilder_archive="$distrobuilder_dir/distrobuilder.tar.gz"
-          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
-            --retry 5 --retry-all-errors --retry-delay 2 \
-            --output "$distrobuilder_archive" \
-            "https://github.com/lxc/distrobuilder/releases/download/v${DISTROBUILDER_VERSION}/distrobuilder-${DISTROBUILDER_VERSION}.tar.gz"
-          printf '%s  %s\n' "$DISTROBUILDER_SHA256" "$distrobuilder_archive" \
-            | sha256sum --check --strict
-          tar -xzf "$distrobuilder_archive" -C "$distrobuilder_dir"
-          (
-            cd "$distrobuilder_dir/distrobuilder-${DISTROBUILDER_VERSION}"
-            go build -mod=vendor -trimpath \
-              -tags=containers_image_storage_stub,containers_image_docker_daemon_stub,containers_image_openpgp \
-              -o "$distrobuilder_dir/distrobuilder" ./distrobuilder
-          )
-          install -D -m 0755 "$distrobuilder_dir/distrobuilder" "$distrobuilder_bin"
-          "$distrobuilder_bin" --version
-          printf 'DISTROBUILDER_BIN=%s\n' "$distrobuilder_bin" >> "$GITHUB_ENV"
-
-          dpkg-query -W debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-          sudo incus admin init --minimal || true
-      - name: Validate Incus image scripts and definition
-        run: |
-          set -euo pipefail
-          sh -n scripts/incus-bootstrap.sh
-          bash -n scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
-          shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
-          sudo "$DISTROBUILDER_BIN" validate config/incus/labby-image.yaml -o image.serial=ci
-      - name: Build Incus image
-        env:
-          RELEASE_REF_NAME: ${{ github.ref_name }}
-        run: scripts/ci/build-incus-image.sh "$RELEASE_REF_NAME" lab-x86_64-unknown-linux-gnu.tar.gz
-      - name: Smoke test Incus image
-        run: scripts/ci/smoke-incus-image.sh
-        env:
-          IMAGE_ALIAS: labby-incus-release-smoke
-          SMOKE_CONTAINER_NAME: labby-incus-release-smoke
-          SMOKE_BOOTSTRAP_CONTAINER_NAME: labby-incus-release-bootstrap-smoke
-          SMOKE_PROFILE_NAME: labby-gateway-release-smoke
-          SMOKE_BOOTSTRAP_PROFILE_NAME: labby-gateway-release-bootstrap-smoke
-      - name: Upload Incus image artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: lab-incus-image
-          path: |
-            target/incus-image-dist/labby-incus-*.tar.xz
-            target/incus-image-dist/labby-incus-*.tar.xz.sha256
-          if-no-files-found: error
-
   release:
     name: Publish validated release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, container, incus-image]
-    runs-on: [self-hosted, unraid]
+    needs: [build, container]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     permissions:
       contents: write
       packages: write
@@ -341,8 +273,7 @@ jobs:
           output-file: labby.spdx.json
           upload-artifact: false
           upload-release-assets: false
-      - name: Prepare private draft release
-        id: draft-release
+      - name: Upload assets to the published release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -353,29 +284,20 @@ jobs:
             lab-*.tar.gz.sha256
             lab-*.zip
             lab-*.zip.sha256
-            labby-incus-*.tar.xz
-            labby-incus-*.tar.xz.sha256
             labby.spdx.json
           )
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
-            if [[ "$is_draft" != "true" ]]; then
-              echo "::error::release $RELEASE_TAG is already published; refusing to mutate it"
-              exit 1
-            fi
-            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
-            echo "created=false" >> "$GITHUB_OUTPUT"
-          else
-            gh release create "$RELEASE_TAG" "${files[@]}" --draft --generate-notes
-            echo "created=true" >> "$GITHUB_OUTPUT"
+          is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+          if [[ "$is_draft" == "true" ]]; then
+            echo "::error::heavy release work must start from release.published"
+            exit 1
           fi
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
           subject-path: |
             lab-*.tar.gz
             lab-*.zip
-            labby-incus-*.tar.xz
             labby.spdx.json
       - name: Install Cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
@@ -478,20 +400,12 @@ jobs:
           test -n "$MCP_PRIVATE_KEY"
           ./mcp-publisher login dns --domain dinglebear.ai --private-key "$MCP_PRIVATE_KEY"
           ./mcp-publisher publish server.json
-      - name: Publish GitHub release last
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
       - name: Roll back partial publication
         if: failure()
         env:
-          DRAFT_CREATED: ${{ steps.draft-release.outputs.created }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [[ "$DRAFT_CREATED" == "true" ]]; then
-            gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
-          fi
           if [[ -f /tmp/labby-new-version-image ]]; then
             package="${GITHUB_REPOSITORY#*/}"
             version_id="$(gh api --paginate "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions" \
