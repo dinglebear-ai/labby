@@ -18,7 +18,7 @@ class WindowsCiPolicyTests(unittest.TestCase):
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
 
     def test_workspace_windows_job_is_hosted_cached_and_bounded(self) -> None:
-        block = job_block(self.workflow, "test-windows", "release-smoke")
+        block = job_block(self.workflow, "test-windows", "release-contract")
         self.assertIn("runs-on: windows-latest", block)
         self.assertNotIn("self-hosted", block)
         self.assertIn("timeout-minutes: 60", block)

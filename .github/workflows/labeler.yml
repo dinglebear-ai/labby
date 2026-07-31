@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   label:
-    runs-on: [self-hosted, unraid]
-    steps:
-      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7
+    uses: dinglebear-ai/workflows/.github/workflows/repository-labeler.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+    with:
+      configuration-path: .github/labeler.yml
+      sync-labels: true

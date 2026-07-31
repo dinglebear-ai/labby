@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # CI/CD
 
-Last updated: 2026-06-27
+Last updated: 2026-07-30
 
 This document is the authoritative contract for CI, release, and artifact delivery in `lab`. All pipeline implementations must conform to this spec.
 
@@ -46,13 +46,13 @@ jobs when their changed-path category is enabled:
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
 | Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | LCOV trend artifact with project and critical auth/gateway/dispatch/config floors |
-| Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the self-hosted `linux-ci` runner for trusted events |
-| Tests (Linux fork PR fallback) | `rust_test` | same nextest run on `ubuntu-latest` for fork PRs |
+| Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
+| Tests (Linux fork PR fallback) | `rust_test` | same nextest run on the Rust runner-farm pool without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | pinned rmcp `3.0.0-beta.2` dated `2026-07-28` server/client suites plus separately scored extension suites |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
-| Release smoke | `release` | `cargo build --workspace --all-features --release`; Windows release smoke still skips PRs via the matrix |
-| Container smoke | `docker` | Docker build using `config/Dockerfile` |
+| Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
+| Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer.
 
@@ -77,25 +77,25 @@ land the required code/tests and the baseline update together.
 ## CI Platform
 
 - **Provider:** GitHub Actions
-- **Manual runs:** `CI` and `Release` both support `workflow_dispatch`
+- **Manual runs:** `CI` supports `workflow_dispatch`
 - **Scheduled runs:** `CI` runs weekly on Monday at 09:23 UTC to keep
   dependency/advisory visibility fresh even when no PR is active
 - **Job split:**
   - `changes` classifies paths first and exports category booleans
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
-  - Heavy jobs run only when their category is enabled; `ci-gate` is the stable required check for branch protection
+  - Required fast jobs run only when their category is enabled; `ci-gate` is the stable required check for branch protection
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; they report portability regressions without blocking `ci-gate`
-  - Release builds on `vX.Y.Z` tags only
-  - Container image publishing and GitHub Release publishing after successful tag builds
+  - Heavy release work starts only from a published stable GitHub release
+  - Release Linux jobs use GitHub-hosted x86_64 runners; native Windows artifacts use GitHub-hosted Windows
 
-## Linux Self-hosted Runner
+## Linux runner farm
 
-The Linux full test job runs on a self-hosted runner with labels `self-hosted`
-and `linux-ci` for trusted events.
-
-- Fork PRs are still validated on `ubuntu-latest` via `test-fork`.
-- Runner setup and containerized registration are documented in
-  [Actions runner setup](./ACTIONS_RUNNER.md).
+All fast Linux jobs run on the self-hosted farm. Rust jobs select
+`ci-pool-rust`, Node and browser jobs select `ci-pool-typescript`, and
+policy/metadata jobs select `ci-pool-ops`. Rust jobs use the repository
+`setup-rust-kache` composite, which connects trusted jobs to the shared MinIO
+cache and runs bare Cargo when credentials are unavailable. Runner setup is
+documented in [Actions runner setup](./ACTIONS_RUNNER.md).
 
 ## Build Matrix
 
@@ -123,19 +123,18 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 ## Release Process
 
 1. Release Please prepares the version/changelog PR.
-2. Merging that PR creates the stable `vX.Y.Z` tag plus a private draft GitHub release and triggers release CI. Explicit tag creation is required because GitHub otherwise defers tags for draft releases.
-3. Preflight requires strict stable SemVer, ancestry from `origin/main`, and exact Cargo/npm/MCP/release-manifest version lockstep.
-4. Binary, Incus, and container candidates are built and smoke-tested as private workflow artifacts.
-5. The final gated job verifies checksums, emits an SPDX SBOM and GitHub provenance attestations, then publishes the exact tested image by digest and signs it keylessly with Cosign.
-6. The immutable image tag and compatibility `latest` tag advance together; failure deletes the new version and restores the previous `latest` digest.
-7. The final job reuses the Release Please draft (or creates one for a manually pushed valid tag), uploads the verified assets, and makes it public last. Rollback deletes only releases and image versions created by that run; a pre-existing published release is never mutated.
+2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
+3. Publishing the stable release triggers all heavy release workflows.
+4. Preflight requires strict stable SemVer, ancestry from `origin/main`, and exact Cargo/npm/MCP/release-manifest version lockstep.
+5. Binary, Incus, and container candidates are built and smoke-tested on GitHub-hosted x86_64 runners.
+6. The final gated job verifies checksums, emits an SPDX SBOM and GitHub provenance attestations, uploads assets to the published release, then publishes the exact tested image by digest and signs it keylessly with Cosign.
+7. The immutable image tag and compatibility `latest` tag advance together; failure deletes a newly-created image version and restores the previous `latest` digest. The published GitHub release itself is never deleted by automation.
 
 The npm and MCP registries do not support deleting an already-published
 version. If publication reaches one registry and then fails, rerun the same tag
 after correcting the failure: the release job checks each registry first,
 skips the version that already exists, republishes only the missing surface,
-and makes the draft GitHub release public only after both registry versions are
-present. Never create a replacement tag or bump the version to recover a
+and leaves the already-published GitHub release in place. Never create a replacement tag or bump the version to recover a
 partially published release.
 
 **Tag format:** `vX.Y.Z` — no other formats are accepted.

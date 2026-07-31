@@ -15,7 +15,8 @@ concurrency:
 
 jobs:
   inspect:
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:

@@ -20,12 +20,27 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # Persistent per-runner zccache compile store for kache.
+  KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
+  KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
 
 jobs:
+  fleet-policy:
+    name: Fleet workflow policy
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+    with:
+      release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
+
+  fleet-contract:
+    name: Fleet repository contract
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+    with:
+      profile: rust
+      implementation-ref: eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
+
   changes:
     name: changes
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 10
     outputs:
       all: ${{ steps.classify.outputs.all }}
       docs: ${{ steps.classify.outputs.docs }}
@@ -89,7 +104,8 @@ jobs:
 
   unraid-plugin-check:
     name: Unraid plugin checksums
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -103,7 +119,8 @@ jobs:
 
   actionlint:
     name: Actionlint
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.workflow == 'true' }}
     steps:
@@ -124,7 +141,8 @@ jobs:
 
   frontend-assets:
     name: Frontend assets
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-typescript]
+    timeout-minutes: 20
     needs: changes
     if: >-
       ${{
@@ -149,7 +167,8 @@ jobs:
 
   gateway-admin-browser:
     name: Gateway Admin browser tests
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-typescript]
+    timeout-minutes: 20
     needs: changes
     if: ${{ needs.changes.outputs.web == 'true' }}
     defaults:
@@ -209,7 +228,8 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -232,7 +252,8 @@ jobs:
 
   deny:
     name: Cargo Deny
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 20
     needs: changes
     if: ${{ needs.changes.outputs.security == 'true' }}
     env:
@@ -266,7 +287,8 @@ jobs:
 
   check:
     name: Check
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -283,7 +305,8 @@ jobs:
 
   msrv:
     name: MSRV
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -302,7 +325,8 @@ jobs:
 
   codemode-runner-smoke:
     name: Code Mode runner smoke
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -324,7 +348,8 @@ jobs:
 
   npm-launcher:
     name: npm launcher
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-typescript]
+    timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.npm == 'true' }}
     steps:
@@ -343,7 +368,8 @@ jobs:
 
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     # CLAUDE.md's intent is that each standalone product slice compiles on its
@@ -392,7 +418,8 @@ jobs:
 
   extracted-crate-slices:
     name: Extracted crate slice (${{ matrix.name }})
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     env:
@@ -429,7 +456,8 @@ jobs:
 
   docs-check:
     name: Generated docs
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.docs_check == 'true' }}
     steps:
@@ -449,7 +477,8 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -468,7 +497,8 @@ jobs:
 
   mcp-regressions:
     name: MCP focused regressions
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -504,7 +534,7 @@ jobs:
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
     timeout-minutes: 20
     needs: changes
     if: >-
@@ -535,9 +565,10 @@ jobs:
 
   test:
     name: Test
-    # The Linux runner is persistent, so kache's zccache compile
-    # this workflow) — no GitHub-cache save/restore layer needed.
-    runs-on: [self-hosted, unraid]
+    # The Rust pool connects Kache to the fleet MinIO cache; no GitHub cache
+    # save/restore layer is needed.
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 60
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
       (
@@ -573,7 +604,8 @@ jobs:
 
   test-fork:
     name: Test
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 60
     needs: [changes, frontend-assets]
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -803,107 +835,45 @@ jobs:
 
           Enforce-HardCap $targetDir $targetMaxBytes "Persistent Cargo target dir"
 
-  release-smoke:
-    name: Release smoke (${{ matrix.name }})
-    runs-on: ${{ fromJSON(matrix.runner) }}
-    needs: [changes, frontend-assets]
+  release-contract:
+    name: Release metadata contract
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 10
+    needs: changes
     if: ${{ needs.changes.outputs.release == 'true' }}
-    # The release artifact workflow covers Windows on a hosted runner. This
-    # smoke job exercises only the Linux release artifact on Soldr.
-    env:
-      RUSTC_WRAPPER: ""
-      CARGO_BUILD_RUSTC_WRAPPER: ""
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux
-            runner: '["self-hosted", "unraid"]'
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
-      - name: Install Rust and kache
-        if: runner.os != 'Windows'
-        uses: ./.github/actions/setup-rust-kache
-      - run: cargo build --workspace --all-features --locked --release
-      - name: Verify release binary
-        if: runner.os != 'Windows'
+      - name: Validate release metadata
         run: |
-          set -euo pipefail
-          test -x target/release/labby
-          target/release/labby --help >/dev/null
-      - name: Verify release binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (!(Test-Path target/release/labby.exe)) {
-            throw "target/release/labby.exe was not built"
-          }
-          target/release/labby.exe --help | Out-Null
+          bash scripts/check-version-sync.sh
+          bash scripts/check-rust-toolchain-sync.sh
 
-  container:
-    name: Container build + smoke
-    runs-on: [self-hosted, unraid]
-    needs: [changes, frontend-assets]
+  container-contract:
+    name: Container source contract
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 10
+    needs: changes
     if: ${{ needs.changes.outputs.docker == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
-        with:
-          context: .
-          file: config/Dockerfile
-          push: false
-          tags: lab:ci
-          load: true
-
-      - name: Run container and verify /health
+      - name: Validate container source inputs
         run: |
           set -euo pipefail
-          docker run -d --name lab-ci-smoke \
-            -p 18765:8765 \
-            -e LABBY_MCP_HTTP_HOST=0.0.0.0 \
-            -e LABBY_MCP_HTTP_PORT=8765 \
-            -e LABBY_MCP_HTTP_TOKEN=ci-smoke-token \
-            lab:ci
-          echo "Container started — polling http://localhost:18765/health (60s timeout)..."
-          deadline=$(( $(date +%s) + 60 ))
-          until curl -sf http://localhost:18765/health >/dev/null 2>&1; do
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "TIMEOUT: /health did not return 200 within 60s" >&2
-              exit 1
-            fi
-            sleep 3
-          done
-          echo "/health OK"
-          # Operator-managed stdio upstreams and setup workflows may invoke git.
-          docker exec lab-ci-smoke git --version
-          echo "git present OK"
-
-      - name: Dump container logs
-        if: always()
-        run: docker logs lab-ci-smoke 2>&1 || true
-
-      - name: Stop and remove container
-        if: always()
-        run: |
-          docker stop  lab-ci-smoke 2>/dev/null || true
-          docker rm -f lab-ci-smoke 2>/dev/null || true
+          test -f config/Dockerfile
+          test -f .dockerignore
+          test -f apps/gateway-admin/package.json
+          grep -Fq 'FROM rust:' config/Dockerfile
+          grep -Fq 'COPY apps/gateway-admin/out' config/Dockerfile
+          grep -Fq 'HEALTHCHECK' config/Dockerfile
 
   palette-web:
     name: Palette renderer
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-typescript]
+    timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
     defaults:
@@ -934,7 +904,8 @@ jobs:
 
   palette-rust:
     name: Palette Tauri (Linux)
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
     steps:
@@ -987,7 +958,8 @@ jobs:
 
   rust-coverage:
     name: Rust coverage
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-rust]
+    timeout-minutes: 60
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -1031,9 +1003,12 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    runs-on: [self-hosted, unraid]
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 10
     if: always()
     needs:
+      - fleet-policy
+      - fleet-contract
       - changes
       - unraid-plugin-check
       - actionlint
@@ -1053,8 +1028,8 @@ jobs:
       - codemode-runner-smoke
       - mcp-regressions
       - mcp-conformance
-      - release-smoke
-      - container
+      - release-contract
+      - container-contract
       - palette-web
       - palette-rust
       - rust-coverage
@@ -1070,6 +1045,8 @@ jobs:
               *) echo "::error::$name concluded $result" >&2; exit 1 ;;
             esac
           }
+          require_success_or_skipped fleet-policy "${{ needs.fleet-policy.result }}"
+          require_success_or_skipped fleet-contract "${{ needs.fleet-contract.result }}"
           require_success_or_skipped changes "${{ needs.changes.result }}"
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
@@ -1089,8 +1066,8 @@ jobs:
           require_success_or_skipped codemode-runner-smoke "${{ needs.codemode-runner-smoke.result }}"
           require_success_or_skipped mcp-regressions "${{ needs.mcp-regressions.result }}"
           require_success_or_skipped mcp-conformance "${{ needs.mcp-conformance.result }}"
-          require_success_or_skipped release-smoke "${{ needs.release-smoke.result }}"
-          require_success_or_skipped container "${{ needs.container.result }}"
+          require_success_or_skipped release-contract "${{ needs.release-contract.result }}"
+          require_success_or_skipped container-contract "${{ needs.container-contract.result }}"
           require_success_or_skipped palette-web "${{ needs.palette-web.result }}"
           require_success_or_skipped palette-rust "${{ needs.palette-rust.result }}"
           require_success_or_skipped rust-coverage "${{ needs.rust-coverage.result }}"

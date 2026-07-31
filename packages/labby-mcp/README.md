@@ -1,6 +1,6 @@
 # Labby
 
-Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI.
+Rust MCP gateway with Code Mode, authentication, setup, logs, CLI, HTTP API, and operator web UI.
 
 Canonical remote: `git@github.com:dinglebear-ai/labby.git`. The older
 `jmagar/lab` and `jmagar/labby` names resolve only through GitHub transfer
@@ -489,16 +489,12 @@ provider tools. It does not install ACP adapters or mount ACP-specific state.
 
 ### Releases
 
-Release prep is version/changelog first, then tag:
-
-1. Bump the workspace version in [Cargo.toml](./Cargo.toml).
-2. Update `CHANGELOG.md` when present.
-3. Regenerate docs and web assets when relevant.
-4. Push a `vX.Y.Z` tag.
-
-The release workflow builds Linux and Windows archives with checksums, publishes
-the GitHub Release and GHCR images, packages the npm launcher, and publishes
-Labby's `server.json` metadata to the official MCP Registry.
+Release Please maintains the version/changelog pull request and creates the
+stable tag plus draft GitHub release when that pull request merges. Publishing
+the release triggers the heavy GitHub-hosted x86_64 workflows. They build Linux
+and Windows archives with checksums, build and scan the GHCR image, build and
+smoke the Incus image, publish the npm launcher, and publish Labby's
+`server.json` metadata to the official MCP Registry.
 
 ### Plugin Setup
 

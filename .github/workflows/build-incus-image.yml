@@ -14,7 +14,7 @@ permissions:
 jobs:
   build-image:
     name: Build and smoke hosted x86_64 image
-    uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@eb5f36cf517ffc949aca1c81e2ccbc71b5a85267
     with:
       checkout-ref: ${{ github.event.release.tag_name }}
       artifact-name: labby-incus-image
@@ -89,6 +89,7 @@ jobs:
     name: Publish verified image and advance rolling alias
     needs: [build-image]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:

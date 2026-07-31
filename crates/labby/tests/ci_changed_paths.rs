@@ -333,17 +333,14 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(release.contains("sha256sum --check --strict"));
     assert!(release.contains("cosign verify-blob"));
     assert!(release.contains("${archive}.sigstore.json"));
-    assert!(release.contains("DISTROBUILDER_VERSION: \"3.3.1\""));
-    assert!(release.contains(
-        "DISTROBUILDER_SHA256: \"6c411af7178bb55ef649c708f4f38fc3c30e6ecce901c08d8a389448a900a73a\""
+    let incus = fs::read_to_string(repo_root().join(".github/workflows/build-incus-image.yml"))
+        .expect("read hosted Incus workflow");
+    assert!(incus.contains("distrobuilder_version=3.3.1"));
+    assert!(incus.contains(
+        "distrobuilder_sha256=6c411af7178bb55ef649c708f4f38fc3c30e6ecce901c08d8a389448a900a73a"
     ));
-    assert!(release.contains(
-        "https://github.com/lxc/distrobuilder/releases/download/v${DISTROBUILDER_VERSION}/distrobuilder-${DISTROBUILDER_VERSION}.tar.gz"
-    ));
-    assert!(release.contains("printf '%s  %s\\n' \"$DISTROBUILDER_SHA256\""));
-    assert!(release.contains("go build -mod=vendor -trimpath"));
-    assert!(release.contains("DISTROBUILDER_BIN=%s"));
-    assert!(!release.contains("snap install distrobuilder"));
+    assert!(incus.contains("go build -mod=vendor -trimpath"));
+    assert!(!incus.contains("snap install distrobuilder"));
 
     let config = fs::read_to_string(repo_root().join("release-please-config.json"))
         .expect("read release-please config");
@@ -351,20 +348,21 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(config.contains("\"draft\": true"));
     assert!(config.contains("\"force-tag-creation\": true"));
 
+    assert!(release.contains("release:\n    types: [published]"));
     assert!(release.contains("--json isDraft --jq .isDraft"));
     assert!(release.contains("gh release upload \"$RELEASE_TAG\" \"${files[@]}\" --clobber"));
-    assert!(release.contains("if [[ \"$DRAFT_CREATED\" == \"true\" ]]"));
+    assert!(!release.contains("gh release edit \"${GITHUB_REF_NAME}\" --draft=false"));
     assert!(release.contains("if [[ -f /tmp/labby-new-version-image ]]"));
     assert!(release.contains("LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}"));
     assert!(release.contains("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"));
     let npm_identity = release
         .find("name: Validate npm publication identity")
         .expect("release must authenticate to npm before publication");
-    let draft_release = release
-        .find("name: Prepare private draft release")
-        .expect("release must prepare a private draft");
+    let artifact_upload = release
+        .find("name: Upload assets to the published release")
+        .expect("release must upload assets to the published release");
     assert!(release.contains("run: npm whoami >/dev/null"));
-    assert!(npm_identity < draft_release);
+    assert!(npm_identity < artifact_upload);
 }
 
 #[test]
@@ -375,7 +373,7 @@ fn rolling_incus_release_promotes_verified_immutable_assets_before_tag() {
         .find("gh release upload \"$ROLLING_TAG\" \"$verify_dir\"/* --clobber")
         .expect("rolling release must receive immutable release assets");
     let rolling_verify = workflow
-        .find("cd \"$rolling_verify_dir\" && sha256sum --check --strict")
+        .find("cd \"$rolling_verify\" && sha256sum --check --strict")
         .expect("rolling assets must be downloaded and checksum-verified");
     let advance = workflow
         .find("git push -f")
