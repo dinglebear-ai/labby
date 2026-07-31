@@ -348,7 +348,11 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(config.contains("\"draft\": true"));
     assert!(config.contains("\"force-tag-creation\": true"));
 
-    assert!(release.contains("release:\n    types: [published]"));
+    assert!(
+        release.lines().collect::<Vec<_>>().windows(2).any(|lines| {
+            lines[0].trim() == "release:" && lines[1].trim() == "types: [published]"
+        })
+    );
     assert!(release.contains("--json isDraft --jq .isDraft"));
     assert!(release.contains("gh release upload \"$RELEASE_TAG\" \"${files[@]}\" --clobber"));
     assert!(!release.contains("gh release edit \"${GITHUB_REF_NAME}\" --draft=false"));
