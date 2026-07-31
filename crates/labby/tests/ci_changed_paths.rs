@@ -258,14 +258,17 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         .expect("Gateway Admin browser job");
     assert!(browser_job.contains("pnpm test:browser"));
     assert!(browser_job.contains("Install Playwright runtime libraries"));
-    assert!(browser_job.contains("libnspr4"));
-    assert!(browser_job.contains("libnss3"));
+    assert!(
+        browser_job.contains("PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64"),
+        "Ubuntu 26.04 runners must select Playwright's supported dependency manifest"
+    );
+    assert!(browser_job.contains("pnpm exec playwright install-deps chromium"));
     assert!(browser_job.contains("Verify cached Playwright browser launch"));
     assert!(browser_job.contains("chromium.executablePath()"));
     assert!(browser_job.contains("fs.existsSync(executable)"));
     assert!(browser_job.contains("chromium.launch({ headless: true })"));
     assert!(
-        !browser_job.contains("playwright install"),
+        !browser_job.contains("pnpm exec playwright install chromium"),
         "Ubuntu 26.04 runners must use the image-provided Playwright browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));

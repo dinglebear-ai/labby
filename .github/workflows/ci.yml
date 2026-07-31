@@ -188,19 +188,13 @@ jobs:
           cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Install Playwright runtime libraries
-        run: |
-          set -euo pipefail
-          if [ "$(id -u)" = "0" ]; then
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              libnspr4 \
-              libnss3
-          else
-            sudo apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              libnspr4 \
-              libnss3
-          fi
+        # Playwright does not identify Ubuntu 26.04 yet, so select its current
+        # Ubuntu fallback explicitly for dependency resolution only. This
+        # installs the complete Chromium runtime set without downloading or
+        # replacing the browser cached in the runner image.
+        env:
+          PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64
+        run: pnpm exec playwright install-deps chromium
       # The self-hosted runner image carries the matching Playwright browser.
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
       # already cached, so verify the image contract with a real headless launch
