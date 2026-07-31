@@ -508,6 +508,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_code_mode_mcp_ui_update_persists_via_api() {
+        let (manager, path) = test_manager_with_path();
+        manager
+            .seed_config_unchecked_for_tests(LabConfig::default().to_gateway_config())
+            .await;
+        assert!(manager.code_mode_app_state().is_enabled());
+
+        let response = post_gateway_as_admin(
+            Arc::clone(&manager),
+            json!({
+                "action": "gateway.code_mode.set",
+                "params": {"mcp_ui_enabled": false}
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["mcp_ui_enabled"], false);
+        assert!(!manager.code_mode_app_state().is_enabled());
+        assert!(!manager.code_mode_config().await.mcp_ui_enabled);
+
+        let persisted = load_gateway_config(&path).expect("load persisted gateway config");
+        assert!(!persisted.code_mode.mcp_ui_enabled);
+
+        let restarted = Arc::new(test_gateway_manager(path, GatewayRuntimeHandle::default()));
+        restarted
+            .seed_config_unchecked_for_tests(persisted.to_gateway_config())
+            .await;
+        assert!(!restarted.code_mode_app_state().is_enabled());
+        assert!(!restarted.code_mode_config().await.mcp_ui_enabled);
+    }
+
+    #[tokio::test]
     async fn gateway_sensitive_actions_require_admin_when_authenticated() {
         let app = gateway_routes_with_auth_context(test_manager(), read_only_auth_context());
 

@@ -12,8 +12,11 @@ use crate::gateway::config::{
 use crate::gateway::config_mutation::read_env_values;
 use crate::gateway::params::{GatewayEnrichmentScope, GatewayUpdatePatch};
 use crate::gateway::projection::*;
-use crate::gateway::types::{GatewayRuntimeView, GatewayView, ServiceConfigView};
+use crate::gateway::types::{
+    GatewayCatalogDiff, GatewayRuntimeView, GatewayView, ServiceConfigView,
+};
 use crate::upstream::types::UpstreamRuntimeOwner;
+use labby_runtime::catalog_notify::SOURCE_GATEWAY_RELOAD_FULL;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
 
@@ -439,9 +442,21 @@ impl GatewayManager {
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();
         let old_enabled = cfg.code_mode.enabled;
+        let old_mcp_ui_enabled = cfg.code_mode.mcp_ui_enabled;
         cfg.code_mode = next.clone();
         self.persist_config(cfg).await?;
+        self.code_mode_app_state.set_enabled(next.mcp_ui_enabled);
         self.reload_with_origin_unlocked(origin, owner).await?;
+        if old_mcp_ui_enabled != next.mcp_ui_enabled {
+            self.notify_catalog_changes(
+                &GatewayCatalogDiff {
+                    tools_changed: true,
+                    resources_changed: true,
+                    prompts_changed: false,
+                },
+                SOURCE_GATEWAY_RELOAD_FULL,
+            );
+        }
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -449,6 +464,8 @@ impl GatewayManager {
             mode = "code_mode",
             enabled = next.enabled,
             previous = old_enabled,
+            mcp_ui_enabled = next.mcp_ui_enabled,
+            previous_mcp_ui_enabled = old_mcp_ui_enabled,
             timeout_ms = next.timeout_ms,
             max_response_bytes = next.max_response_bytes,
             max_response_tokens = next.max_response_tokens,

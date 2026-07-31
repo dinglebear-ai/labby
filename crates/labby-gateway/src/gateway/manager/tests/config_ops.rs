@@ -278,6 +278,37 @@ async fn concurrent_root_and_virtual_server_mutations_both_persist() {
     assert!(gateway_alpha.surfaces.mcp);
 }
 
+#[tokio::test]
+async fn code_mode_mcp_ui_setting_persists_and_seeds_live_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .await;
+
+    let updated = manager
+        .set_code_mode_config(
+            CodeModeConfig {
+                mcp_ui_enabled: false,
+                ..CodeModeConfig::default()
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("persist Code Mode MCP UI setting");
+
+    assert!(!updated.mcp_ui_enabled);
+    assert!(!manager.code_mode_app_state().is_enabled());
+    let persisted = load_gateway_config(&path).expect("load persisted config");
+    assert!(!persisted.code_mode.mcp_ui_enabled);
+
+    let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    restarted.seed_config_unchecked_for_tests(persisted).await;
+    assert!(!restarted.code_mode_app_state().is_enabled());
+}
+
 // Store-seam env persistence guard (rewritten in the gateway extraction).
 //
 // The host-owned service-client cache + `refresh_count()` instrumentation moved

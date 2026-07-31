@@ -29,6 +29,7 @@ use tokio::time::Instant;
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_auth::upstream::encryption::EncryptionKey;
 use labby_auth::upstream::manager::UpstreamOauthManager;
+use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
 
@@ -84,6 +85,7 @@ pub struct GatewayManager {
     pub(super) runtime: GatewayRuntimeHandle,
     pub(super) config: Arc<RwLock<GatewayConfig>>,
     pub(super) config_mutation: Arc<Mutex<()>>,
+    pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,
     pub(super) oauth_client_cache: Option<OauthClientCache>,

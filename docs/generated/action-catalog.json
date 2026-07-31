@@ -398,7 +398,7 @@
   {
     "service": "gateway",
     "action": "gateway.code_mode.set",
-    "description": "Configure gateway code execution limits",
+    "description": "Configure gateway Code Mode exposure and execution limits",
     "destructive": true,
     "requires_admin": true,
     "required_scopes": [
@@ -410,6 +410,12 @@
         "ty": "boolean",
         "required": false,
         "description": "Whether the gateway advertises the Code Mode codemode surface"
+      },
+      {
+        "name": "mcp_ui_enabled",
+        "ty": "boolean",
+        "required": false,
+        "description": "Whether the gateway advertises codemode_ui and its MCP App resources"
       },
       {
         "name": "trace_params",

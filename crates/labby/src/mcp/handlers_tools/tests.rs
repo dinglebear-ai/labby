@@ -1120,10 +1120,11 @@ async fn mcp_app_enable_is_idempotent_for_admin_scope() {
 
 #[tokio::test]
 async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
-    let shared_state = crate::mcp::catalog::CodeModeAppState::default();
+    let manager = code_mode_manager(true).await;
+    let shared_state = manager.code_mode_app_state();
     let mut server = test_server(
         completion_test_registry(),
-        Some(code_mode_manager(true).await),
+        Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
@@ -1173,6 +1174,7 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
     assert!(!running.service().code_mode_app_state.is_enabled());
     assert!(!sibling_session.code_mode_app_state.is_enabled());
     assert!(independent_gateway.code_mode_app_state.is_enabled());
+    assert!(!manager.code_mode_config().await.mcp_ui_enabled);
 
     let tools = running
         .service()
@@ -1248,6 +1250,7 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
     assert_eq!(structured["changed"], true);
     assert!(running.service().code_mode_app_state.is_enabled());
     assert!(sibling_session.code_mode_app_state.is_enabled());
+    assert!(manager.code_mode_config().await.mcp_ui_enabled);
 
     let tools = running
         .service()

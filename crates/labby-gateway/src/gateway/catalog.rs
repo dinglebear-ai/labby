@@ -47,7 +47,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.code_mode.set",
-        description: "Configure gateway code execution limits",
+        description: "Configure gateway Code Mode exposure and execution limits",
         destructive: true,
         requires_admin: true,
         returns: "CodeModeConfig",
@@ -57,6 +57,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "boolean",
                 required: false,
                 description: "Whether the gateway advertises the Code Mode codemode surface",
+            },
+            ParamSpec {
+                name: "mcp_ui_enabled",
+                ty: "boolean",
+                required: false,
+                description: "Whether the gateway advertises codemode_ui and its MCP App resources",
             },
             ParamSpec {
                 name: "trace_params",
@@ -1058,6 +1064,7 @@ mod tests {
         let params: Vec<&str> = set.params.iter().map(|param| param.name).collect();
         for param in [
             "enabled",
+            "mcp_ui_enabled",
             "trace_params",
             "result_shape_policy",
             "timeout_ms",

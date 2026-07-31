@@ -131,6 +131,7 @@
 # These are product knobs, not secrets/URLs/runtime-discovery values, so keep
 # them here rather than in .env.
 # enabled = false                         # default: false; advertises `codemode`
+# mcp_ui_enabled = true                   # default: true; advertises `codemode_ui` and its app resources
 # trace_params = true                     # default: true; stores only redacted/capped call params in traces/history
 # `codemode` runs a JS async arrow function in the Javy/QuickJS sandbox with
 # in-sandbox discovery (`codemode.search()` / `codemode.describe()`), raw

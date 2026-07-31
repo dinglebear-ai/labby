@@ -493,6 +493,7 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
         "gateway.code_mode.set",
         json!({
             "enabled": true,
+            "mcp_ui_enabled": false,
             "trace_params": false,
             "result_shape_policy": "truncate",
             "timeout_ms": 5000,
@@ -507,6 +508,7 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
     .expect("code mode config should update");
 
     assert_eq!(value["enabled"], true);
+    assert_eq!(value["mcp_ui_enabled"], false);
     assert_eq!(value["trace_params"], false);
     assert_eq!(value["result_shape_policy"], "truncate");
     assert_eq!(value["timeout_ms"], 5000);
