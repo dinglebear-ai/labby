@@ -6,6 +6,11 @@
 
 **Research report:** `docs/reports/2026-07-31-stdio-mcp-proxy-research.md`
 
+**Implemented operator guide:** `docs/guides/STDIO_MCP_PROXY.md`
+
+**Stable spec and contract:** `docs/specs/stdio-mcp-proxy.md` and
+`docs/contracts/stdio-mcp-proxy.md`
+
 **Base commit used for this plan:** `eff39c79d97c907f6c9956f4711ecab5cd8df62f`
 
 ## Release contract
@@ -117,8 +122,9 @@ Add a top-level `[proxy]` table:
 exposure = "tailscale"
 auth = "tailnet"
 path = "/mcp"
-external_port = "random"
-port_range = { start = 49152, end = 65535 }
+port = "random"
+port_range_start = 49152
+port_range_end = 65535
 bearer_token_env = "LABBY_PROXY_BEARER_TOKEN"
 oauth_scopes = ["mcp:read", "mcp:write"]
 inherit_env = []
@@ -129,7 +135,7 @@ A fixed external port is represented by an integer:
 
 ```toml
 [proxy]
-external_port = 52177
+port = 52177
 ```
 
 Recommended model:
@@ -140,8 +146,9 @@ pub struct ProxyPreferences {
     pub exposure: ProxyExposure,
     pub auth: ProxyAuthMode,
     pub path: String,
-    pub external_port: ProxyPortPreference,
-    pub port_range: ProxyPortRange,
+    pub port: ProxyPortPreference,
+    pub port_range_start: u16,
+    pub port_range_end: u16,
     pub bearer_token_env: String,
     pub oauth_scopes: Vec<String>,
     pub inherit_env: Vec<String>,
@@ -820,6 +827,14 @@ Checks:
 **Acceptance:** setup is idempotent; a second run makes no change; generated secret permissions are restrictive.
 
 ### Task 13: Documentation and generated CLI inventory
+
+**Completed 2026-08-01.** The operator guide, README quickstart, runtime config,
+OAuth, transport, architecture, spec, contract, research outcome, release
+notes, and code-owned generated inventories now describe the implemented
+surface. Generator drift tests pin top-level `labby proxy`, `setup proxy`,
+zero-route and routed `doctor proxy`, all `[proxy]` keys and environment
+controls, the CLI-only proxy service entry, generic gateway API/OpenAPI, and
+all three OAuth lease actions.
 
 Update:
 

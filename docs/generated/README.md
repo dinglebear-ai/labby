@@ -21,6 +21,7 @@ just docs-check
 | `service-catalog.md/json` | `labby docs generate` |
 | `action-catalog.md/json` | `labby docs generate` |
 | `env-reference.md/json` | `labby docs generate` |
+| `proxy-config-reference.md/json` | `labby docs generate` |
 | `api-routes.md/json` | `labby docs generate` |
 | `openapi.json` | `labby docs generate` |
 | `feature-matrix.md/json` | `labby docs generate` |

@@ -14,6 +14,8 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md) for the human-readable CLI output language and shared color policy.
 - Use [design/component-development.md](./design/component-development.md) and [design/design-system-contract.md](./design/design-system-contract.md) when building or revising Labby web UI components.
 - Use [CONFIG.md](./runtime/CONFIG.md), [INCUS.md](./runtime/INCUS.md), [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md), and [OPERATIONS.md](./OPERATIONS.md) for setup, recommended Incus deployment, gateway runtime choices, and operator workflows.
+- Use [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) to expose one
+  stdio MCP server directly over loopback or an owned Tailscale Serve port.
 - Refer to [OAUTH.md](./runtime/OAUTH.md) for bearer vs OAuth mode selection, Google-backed authorization flow, lab-issued JWT behavior, and callback-forwarding constraints.
 - Use [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
 - Use [GATEWAY.md](./services/GATEWAY.md) when managing upstream MCP gateways over CLI, MCP, `/v1/gateway`, or Gateway-managed OAuth protected MCP routes.
@@ -66,16 +68,17 @@ The docs are split by topic so contributors do not have to recover architecture,
 ### If You Are Operating the Project
 
 1. [CONFIG.md](./runtime/CONFIG.md)
-2. [INCUS.md](./runtime/INCUS.md)
-3. [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md)
-4. [TRANSPORT.md](./surfaces/TRANSPORT.md)
-5. [OAUTH.md](./runtime/OAUTH.md) (if deploying with OAuth)
-6. [GATEWAY.md](./services/GATEWAY.md) (if managing upstream MCP gateways)
-7. [UPSTREAM.md](./services/UPSTREAM.md) (if proxying upstream MCP servers)
-8. [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) (when operating the public OAuth relay)
-9. [REVERSE_PROXY.md](./runtime/REVERSE_PROXY.md)
-10. [OPERATIONS.md](./OPERATIONS.md)
-11. [CLI.md](./surfaces/CLI.md)
+2. [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) (if directly exposing a stdio server)
+3. [INCUS.md](./runtime/INCUS.md)
+4. [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md)
+5. [TRANSPORT.md](./surfaces/TRANSPORT.md)
+6. [OAUTH.md](./runtime/OAUTH.md) (if deploying with OAuth)
+7. [GATEWAY.md](./services/GATEWAY.md) (if managing upstream MCP gateways)
+8. [UPSTREAM.md](./services/UPSTREAM.md) (if proxying upstream MCP servers)
+9. [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) (when operating the public OAuth relay)
+10. [REVERSE_PROXY.md](./runtime/REVERSE_PROXY.md)
+11. [OPERATIONS.md](./OPERATIONS.md)
+12. [CLI.md](./surfaces/CLI.md)
 
 ## Topic Map
 
@@ -103,6 +106,9 @@ The docs are split by topic so contributors do not have to recover architecture,
   Upstream MCP proxy gateway: config, discovery, tool collision handling, circuit breaker, resource proxying.
 - [TRANSPORT.md](./surfaces/TRANSPORT.md)
   Stdio and streamable HTTP transport: middleware stack, stateless discovery, subscriptions, DNS rebinding protection, CORS.
+- [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md)
+  Direct stdio-to-Streamable-HTTP proxy quickstart, configuration, auth,
+  Tailscale ownership, security, cleanup, and troubleshooting.
 - `apps/gateway-admin/README.md`
   Labby admin UI: local frontend workflow, static export, and same-origin deployment model.
 - [design/component-development.md](./design/component-development.md)

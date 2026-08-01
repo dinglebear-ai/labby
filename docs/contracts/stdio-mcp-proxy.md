@@ -1,14 +1,14 @@
 ---
 title: "Contract: Stdio MCP Proxy"
 created: "2026-07-31"
-updated: "2026-07-31"
+updated: "2026-08-01"
 ---
 
 # Contract: Stdio MCP Proxy
 
-Status: implementation
+Status: implemented
 Surfaces: CLI, Streamable HTTP, internal HTTP API
-Related: [spec](../specs/stdio-mcp-proxy.md), `docs/dev/ERRORS.md`, `docs/design/SERIALIZATION.md`
+Related: [guide](../guides/STDIO_MCP_PROXY.md), [spec](../specs/stdio-mcp-proxy.md), [research](../reports/2026-07-31-stdio-mcp-proxy-research.md), [implementation plan](../superpowers/plans/2026-07-31-stdio-mcp-proxy-implementation.md), `docs/dev/ERRORS.md`, `docs/design/SERIALIZATION.md`
 
 This contract pins the stable CLI grammar, configuration vocabulary, output shape, HTTP discovery behavior, auth challenges, and internal OAuth lease API for `labby proxy`.
 
@@ -134,13 +134,21 @@ A token with insufficient scope returns HTTP 403 and an `insufficient_scope` cha
 
 Missing or invalid static bearer credentials return HTTP 401. Static token comparison is constant-time. The bearer challenge may advertise the MCP resource URL but does not expose the configured token source.
 
-## Internal resource lease API
+## Internal resource lease actions
 
-These routes are under existing authenticated `/v1/*` middleware and require `lab:admin`:
+Lease operations use the existing authenticated generic gateway route:
+
+```http
+POST /v1/gateway
+```
+
+The request envelope is `{ "action": "...", "params": { ... } }`. The route
+and each action require `lab:admin`; there are no dedicated
+`/v1/internal/proxy-resource-leases` routes.
 
 ### Create
 
-`POST /v1/internal/proxy-resource-leases`
+`gateway.oauth.resource_lease.create`
 
 Request:
 
@@ -148,35 +156,45 @@ Request:
 {
   "resource": "https://node.example.ts.net:53147/mcp",
   "scopes": ["mcp:read", "mcp:write"],
-  "ttl_secs": 120
+  "ttl_secs": 120,
+  "owner": "bounded-redacted-owner-label"
 }
 ```
 
-Response: HTTP 201 with a `ResourceLease` document.
+Response: HTTP 200 with a `ResourceLease` result.
 
 ### Renew
 
-`PUT /v1/internal/proxy-resource-leases/<uuid>`
+`gateway.oauth.resource_lease.renew`
 
 Request:
 
 ```json
-{ "ttl_secs": 120 }
+{ "id": "opaque-lease-id", "ttl_secs": 120 }
 ```
 
-Response: HTTP 200 with the renewed lease. Unknown or expired lease returns 404.
+Response: HTTP 200 with the renewed lease. Unknown or expired IDs return the
+gateway's structured `invalid_param` error.
 
 ### Release
 
-`DELETE /v1/internal/proxy-resource-leases/<uuid>`
+`gateway.oauth.resource_lease.release`
 
-Response: HTTP 204. Releasing an unknown lease is idempotent and also returns 204.
+Request:
+
+```json
+{ "id": "opaque-lease-id" }
+```
+
+Response: HTTP 200 with `ResourceLeaseReleaseView`. Releasing an unknown or
+expired ID returns `invalid_param`; the proxy guard itself avoids a second
+release after a successful release.
 
 ### Lease document
 
 ```json
 {
-  "id": "uuid",
+  "id": "opaque-lease-id",
   "resource": "https://node.example.ts.net:53147/mcp",
   "scopes": ["mcp:read", "mcp:write"],
   "expires_at_unix": 1785555600
@@ -185,31 +203,40 @@ Response: HTTP 204. Releasing an unknown lease is idempotent and also returns 20
 
 Resource URLs must be absolute HTTPS URLs without credentials, query, or fragment. The current daemon lease action does not accept loopback HTTP resources, so `labby proxy --local --auth oauth` fails clearly until an explicit local-development lease policy is added; it never downgrades auth.
 
+The proxy creates a 120-second lease, renews it every 40 seconds plus bounded
+jitter, and releases it on normal shutdown. The daemon prunes expired leases
+every 30 seconds, which is the forced-termination recovery path. The lease ID
+must be treated as secret diagnostic material and never appears in readiness
+output or logs.
+
 ## Tailscale ownership
 
 Labby records the external port and exact loopback target it requested. Cleanup may issue an `off` command only if the current mapping still matches that ownership record. It must not call `tailscale serve reset`.
 
-## Error kinds
+The exact owned command is
+`tailscale serve --yes --https=<port> http://127.0.0.1:<local-port>`. Startup
+and runtime status checks require that exact backend. Ctrl+C performs normal
+cleanup; after an uncatchable crash, an operator may use exact-port `off` only
+after verifying ownership in `tailscale serve status --json`.
 
-Stable proxy-specific error kinds used in JSON or API envelopes:
+## Setup and doctor
 
-| Kind | Meaning |
-|---|---|
-| `proxy_invalid_config` | Proxy preference validation failed. |
-| `proxy_command_not_found` | Program or inferred runtime could not be resolved. |
-| `proxy_child_start_failed` | Child spawn or MCP lifecycle failed. |
-| `proxy_auth_unavailable` | Selected auth policy cannot be established. |
-| `proxy_oauth_lease_failed` | Lease create or renewal failed. |
-| `proxy_tailscale_unavailable` | Tailscale is missing, disconnected, or unsupported. |
-| `proxy_port_unavailable` | Fixed port is occupied or random attempts were exhausted. |
-| `proxy_mapping_conflict` | Mapping changed and ownership-safe cleanup refused. |
-| `proxy_runtime_failed` | A supervised component exited unexpectedly. |
+`labby setup proxy` owns comment-preserving preference writes and secret-safe
+`.env` storage. On Unix the Labby home and secret file are mode `0700` and
+`0600`. `labby doctor proxy` with no route parameters runs local proxy
+preflight. Supplying app/MCP URLs and a route retains the routed public
+reverse-proxy doctor contract.
 
-Messages may improve; kinds are stable.
+Proxy startup and supervisor failures are CLI failures with contextual stderr;
+the current CLI does not claim a complete stable proxy-specific JSON error-kind
+vocabulary. Gateway lease calls retain the shared structured action error
+contract, including `proxy_auth_unavailable` when issuer or lease support is
+missing.
 
 ## Compatibility
 
 - The public endpoint supports the modern stateless revision targeted by the pinned RMCP SDK.
 - Legacy stdio children are adapted internally.
 - The CLI may gain new options without breaking this contract.
-- Removing or renaming the listed options, JSON fields, config keys, API routes, auth modes, or error kinds is breaking.
+- Removing or renaming the listed options, JSON fields, config keys, gateway
+  lease actions, or auth modes is breaking.

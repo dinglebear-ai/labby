@@ -1,15 +1,15 @@
 ---
 title: "Spec: Stdio MCP Proxy"
 created: "2026-07-31"
-updated: "2026-07-31"
+updated: "2026-08-01"
 ---
 
 # Spec: Stdio MCP Proxy
 
-Status: implementation
+Status: implemented
 Owner: Labby runtime
 Surfaces: CLI, Streamable HTTP, OAuth, Tailscale Serve
-Related: [contract](../contracts/stdio-mcp-proxy.md), [research](../reports/2026-07-31-stdio-mcp-proxy-research.md), [implementation plan](../superpowers/plans/2026-07-31-stdio-mcp-proxy-implementation.md)
+Related: [operator guide](../guides/STDIO_MCP_PROXY.md), [contract](../contracts/stdio-mcp-proxy.md), [research](../reports/2026-07-31-stdio-mcp-proxy-research.md), [implementation plan](../superpowers/plans/2026-07-31-stdio-mcp-proxy-implementation.md)
 
 ## Problem
 
@@ -69,6 +69,11 @@ labby proxy --local --auth none /path/to/dist.js
 ```
 
 Labby options must appear before the first child token. All remaining tokens belong to the child. An explicit `--` remains accepted but is not required.
+
+`labby setup proxy` persists the table below and securely creates or stores a
+bearer secret. `labby doctor proxy` with no routed-check arguments validates
+the saved preferences and local dependencies; routed reverse-proxy doctor
+arguments retain their existing behavior.
 
 ## Configuration model
 
@@ -304,6 +309,11 @@ No application bearer challenge is added. Reachability is controlled by Tailscal
   `/.well-known/oauth-protected-resource`; the challenge points to that exact
   root document rather than a path beneath `/mcp`.
 - Failure to create or renew a lease terminates OAuth startup or the running proxy; there is no downgrade.
+- Lease create, renew, and release are admin-authenticated gateway actions over
+  `POST /v1/gateway`, not dedicated lease routes.
+- The 120-second lease renews every 40 seconds plus bounded jitter. Normal
+  shutdown releases it; forced termination recovers through TTL expiry and the
+  daemon's 30-second prune loop.
 
 ## Tailscale exposure
 
@@ -329,7 +339,10 @@ Startup order:
 8. Verify unauthenticated and authenticated readiness.
 9. Print the endpoint.
 
-Shutdown is idempotent and runs on Ctrl+C, SIGTERM, child exit, HTTP failure, Tailscale exit, or OAuth renewal failure.
+Shutdown is idempotent and runs on Ctrl+C, child exit, HTTP failure, Tailscale
+exit, or OAuth renewal failure. An uncatchable crash cannot run async cleanup;
+OAuth recovers by TTL and any surviving Serve mapping requires exact-port,
+ownership-verified recovery rather than `serve reset`.
 
 ## Observability
 

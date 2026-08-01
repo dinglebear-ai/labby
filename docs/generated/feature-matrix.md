@@ -13,6 +13,7 @@ Feature invariant status: clean.
 | labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`web-ui` |
 | labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
+| labby | `proxy-testkit` | IntentionalException | false | false | - |  |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all |  |

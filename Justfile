@@ -15,11 +15,11 @@ test:
 
 # Regenerate code-owned documentation inventories
 docs-generate:
-    cargo run --package labby --all-features -- docs generate
+    cargo run --package labby --bin labby --all-features -- docs generate
 
 # Verify generated documentation inventories are fresh
 docs-check:
-    cargo run --package labby --all-features -- docs check
+    cargo run --package labby --bin labby --all-features -- docs check
 
 # Run integration tests (requires running services)
 test-integration:
