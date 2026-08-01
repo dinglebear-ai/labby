@@ -3,6 +3,11 @@ use tokio::sync::mpsc;
 
 use labby_runtime::gateway_config::ImportSource;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceLeaseReleaseView {
+    pub released: bool,
+}
+
 /// Surface-neutral notification handle for catalog changes.
 ///
 /// The dispatch layer calls this after gateway reload/add/remove to inform

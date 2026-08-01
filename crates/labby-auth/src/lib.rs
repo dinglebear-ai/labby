@@ -17,6 +17,7 @@ pub mod metadata;
 pub mod middleware;
 #[cfg(feature = "http-axum")]
 mod remote;
+pub mod resource_registry;
 #[cfg(feature = "http-axum")]
 pub mod routes;
 #[cfg(feature = "http-axum")]
@@ -33,7 +34,9 @@ pub mod util;
 #[cfg(feature = "http-axum")]
 pub use auth_context::{AuthContext, auth_context, www_authenticate_value};
 #[cfg(feature = "http-axum")]
-pub use middleware::{ActorKeyDeriver, AuthLayer, AuthService, parse_bearer_token, tokens_equal};
+pub use middleware::{
+    ActorKeyDeriver, AuthLayer, AuthService, RequiredScopes, parse_bearer_token, tokens_equal,
+};
 
 #[cfg(test)]
 pub mod test_support;

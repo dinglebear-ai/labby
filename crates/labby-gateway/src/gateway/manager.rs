@@ -92,6 +92,7 @@ pub struct GatewayManager {
     pub(super) oauth_sqlite: Option<labby_auth::sqlite::SqliteStore>,
     pub(super) oauth_key: Option<EncryptionKey>,
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
+    pub(super) resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
     /// Durable append-only journal for `codemode.step` boundaries. `None`
     /// disables journaling (pure no-op path). Owned as an `Arc` so every `Clone`
