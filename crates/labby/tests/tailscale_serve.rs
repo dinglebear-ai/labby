@@ -2,8 +2,8 @@
 
 use labby::proxy::config::ProxyPortPreference;
 use labby::proxy::tailscale::{
-    ServeStatus, TailscaleServe, TailscaleServeOptions, TailscaleStatus, build_public_url,
-    select_port_from_candidates,
+    ServeStatus, TailscaleClaimError, TailscaleServe, TailscaleServeOptions, TailscaleServePlan,
+    TailscaleStatus, build_public_url, select_port_from_candidates,
 };
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -141,8 +141,10 @@ exit 2
 "#,
             root = root.display()
         );
-        fs::write(&executable, script).unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let staged_executable = root.join("tailscale.staged");
+        fs::write(&staged_executable, script).unwrap();
+        fs::set_permissions(&staged_executable, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::rename(&staged_executable, &executable).unwrap();
         Self {
             _temp: temp,
             executable,
@@ -218,6 +220,46 @@ async fn foreground_serve_is_ready_only_after_exact_mapping_and_cleans_normally(
         status.backend_for("dookie.example.ts.net", 443),
         Some("http://127.0.0.1:8765")
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn plan_exposes_exact_url_before_foreground_claim() {
+    let fake = FakeTailscale::new();
+    let options = fake.options(vec![54_000]);
+    let plan = TailscaleServePlan::prepare(options).await.unwrap();
+
+    assert_eq!(plan.external_port(), 54_000);
+    assert_eq!(
+        plan.public_url().as_str(),
+        "https://dookie.example.ts.net:54000/mcp"
+    );
+    assert!(
+        mapping(&fake.root).is_none(),
+        "planning must not claim Serve"
+    );
+
+    let serve = plan.claim().await.unwrap();
+    assert_eq!(
+        mapping(&fake.root).as_deref(),
+        Some("54000|http://127.0.0.1:38417\n")
+    );
+    serve.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn planned_claim_reports_a_real_collision_as_typed_error() {
+    let fake = FakeTailscale::new();
+    fs::write(fake.root.join("collision_ports"), "54000\n").unwrap();
+    let plan = TailscaleServePlan::prepare(fake.options(vec![54_000]))
+        .await
+        .unwrap();
+    assert!(matches!(
+        plan.claim_typed().await.unwrap_err(),
+        TailscaleClaimError::Collision(_)
+    ));
+    assert!(mapping(&fake.root).is_none());
 }
 
 #[cfg(unix)]

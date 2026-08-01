@@ -119,6 +119,45 @@ fn expiry_renewal_release_and_random_ids_are_enforced() {
 }
 
 #[test]
+fn forced_process_style_drop_relies_on_expiry_and_restart_can_reregister_resource() {
+    let registry = ResourceRegistry::new();
+    let abandoned = registry
+        .create_resource_lease_at(
+            "https://proxy.example:53147/mcp",
+            ["mcp:read"],
+            Duration::from_secs(10),
+            "process-before-restart",
+            unix_time(1_000),
+        )
+        .unwrap();
+    assert!(
+        registry
+            .effective_resource_scopes_at(&abandoned.resource, unix_time(1_009))
+            .is_some()
+    );
+    assert!(
+        registry
+            .effective_resource_scopes_at(&abandoned.resource, unix_time(1_010))
+            .is_none()
+    );
+
+    let restarted = registry
+        .create_resource_lease_at(
+            "https://proxy.example:53147/mcp",
+            ["mcp:read", "mcp:write"],
+            Duration::from_secs(20),
+            "process-after-restart",
+            unix_time(1_011),
+        )
+        .unwrap();
+    assert_ne!(abandoned.id, restarted.id);
+    assert_eq!(
+        registry.effective_resource_scopes_at(&restarted.resource, unix_time(1_012)),
+        Some(vec!["mcp:read".to_string(), "mcp:write".to_string()])
+    );
+}
+
+#[test]
 fn invalid_resource_scope_ttl_and_owner_are_rejected() {
     let registry = ResourceRegistry::new();
     let cases = [
