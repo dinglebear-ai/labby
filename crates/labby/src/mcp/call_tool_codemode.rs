@@ -17,7 +17,7 @@ use labby_codemode::{MAX_SOURCE_BYTES, SERVICE as CODE_MODE_SERVICE};
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Meta};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject, MetaObject};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -678,7 +678,7 @@ fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabil
 fn call_result_with_structured(
     text: String,
     structured: Value,
-    ui_meta: Option<Meta>,
+    ui_meta: Option<MetaObject>,
 ) -> CallToolResult {
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     result.structured_content = Some(structured);

@@ -597,7 +597,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use rmcp::model::Meta;
+    use rmcp::model::MetaObject;
 
     use super::super::super::types::ToolExposurePolicy;
     use super::super::entries::healthy_in_process_entry;
@@ -629,7 +629,7 @@ mod tests {
             .get_mut("open_quick_shell")
             .expect("UI tool")
             .tool
-            .meta = Some(Meta(serde_json::Map::from_iter([
+            .meta = Some(MetaObject(serde_json::Map::from_iter([
             (
                 "ui".to_string(),
                 serde_json::json!({
@@ -643,7 +643,7 @@ mod tests {
             .get_mut("standard_app_callback")
             .expect("standard app callback")
             .tool
-            .meta = Some(Meta(serde_json::Map::from_iter([(
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({ "visibility": ["app"] }),
         )])));
@@ -651,7 +651,7 @@ mod tests {
             .get_mut("openai_public_callback")
             .expect("OpenAI public callback")
             .tool
-            .meta = Some(Meta(serde_json::Map::from_iter([(
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
             "openai/widgetAccessible".to_string(),
             serde_json::json!(true),
         )])));
@@ -659,7 +659,7 @@ mod tests {
             .get_mut("openai_private_callback")
             .expect("OpenAI private callback")
             .tool
-            .meta = Some(Meta(serde_json::Map::from_iter([
+            .meta = Some(MetaObject(serde_json::Map::from_iter([
             (
                 "openai/widgetAccessible".to_string(),
                 serde_json::json!(true),
@@ -748,7 +748,7 @@ mod tests {
         let apps_name: Arc<str> = Arc::from("apps");
         let mut apps_tools =
             test_upstream_tools(&apps_name, &["youtube_search_ui", "youtube_probe"]);
-        let ui_meta = Meta(serde_json::Map::from_iter([(
+        let ui_meta = MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({ "resourceUri": "ui://apps/youtube-search.html" }),
         )]));
@@ -800,7 +800,7 @@ mod tests {
             let name: Arc<str> = Arc::from(upstream);
             let mut tools = test_upstream_tools(&name, &["search_ui", "youtube_probe"]);
             tools.get_mut("search_ui").expect("ui tool").tool.meta =
-                Some(Meta(serde_json::Map::from_iter([(
+                Some(MetaObject(serde_json::Map::from_iter([(
                     "ui".to_string(),
                     serde_json::json!({ "resourceUri": format!("ui://{upstream}/s.html") }),
                 )])));
@@ -877,7 +877,7 @@ mod tests {
             .get_mut("youtube_search_ui")
             .expect("ui tool")
             .tool
-            .meta = Some(Meta(serde_json::Map::from_iter([(
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({ "resourceUri": "ui://apps/youtube-search.html" }),
         )])));
@@ -1004,7 +1004,7 @@ mod tests {
             .get_mut("youtube_search_ui")
             .expect("ui tool")
             .tool
-            .meta = Some(Meta(serde_json::Map::from_iter([(
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({ "resourceUri": "ui://apps/youtube-search.html" }),
         )])));

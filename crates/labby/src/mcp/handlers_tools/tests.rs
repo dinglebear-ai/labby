@@ -30,7 +30,7 @@ use labby_primitives::action::ActionSpec;
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ClientCapabilities, ElicitationCapability,
-    FormElicitationCapability, Implementation, Meta, PaginatedRequestParams, ProtocolVersion,
+    FormElicitationCapability, Implementation, MetaObject, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, RequestMetaObject, Tool,
 };
 use serde_json::Value;
@@ -385,7 +385,7 @@ fn fixture_upstream_tool(
         Arc::new(serde_json::Map::new()),
     );
     if let Some(resource_uri) = ui_resource {
-        tool.meta = Some(Meta(serde_json::Map::from_iter([(
+        tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({ "resourceUri": resource_uri }),
         )])));
@@ -2166,12 +2166,12 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
 async fn advertised_app_visible_callbacks_are_directly_callable_with_read_scope() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut standard = fixture_upstream_tool(&upstream_name, "standard_app_callback", None);
-    standard.tool.meta = Some(Meta(serde_json::Map::from_iter([(
+    standard.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
         "ui".to_string(),
         serde_json::json!({ "visibility": ["app"] }),
     )])));
     let mut openai = fixture_upstream_tool(&upstream_name, "openai_app_callback", None);
-    openai.tool.meta = Some(Meta(serde_json::Map::from_iter([(
+    openai.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
         "openai/widgetAccessible".to_string(),
         Value::Bool(true),
     )])));

@@ -369,7 +369,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use rmcp::model::Meta;
+    use rmcp::model::MetaObject;
     use rmcp::{RoleClient, ServiceExt};
 
     use super::super::testsupport::*;
@@ -578,7 +578,7 @@ mod tests {
             .await
             .insert("alpha".to_string(), connection);
         let mut ui_tool = test_tool("quick_shell_ui");
-        ui_tool.meta = Some(Meta(serde_json::Map::from_iter([(
+        ui_tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({ "resourceUri": "ui://quick-shell/component.html" }),
         )])));

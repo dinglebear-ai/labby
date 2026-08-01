@@ -619,7 +619,8 @@ mod tests {
         use std::collections::HashMap;
 
         use rmcp::model::{
-            ErrorData, Meta, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+            ErrorData, MetaObject, ReadResourceResult, ResourceContents, ServerCapabilities,
+            ServerInfo,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -668,7 +669,7 @@ mod tests {
         let pool = Arc::new(UpstreamPool::new());
         let upstream_name_arc: Arc<str> = Arc::from(UPSTREAM_NAME);
         let mut tool = test_upstream_tool(&upstream_name_arc, "youtube_search");
-        tool.tool.meta = Some(Meta(serde_json::Map::from_iter([(
+        tool.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({ "resourceUri": WIDGET_URI }),
         )])));
