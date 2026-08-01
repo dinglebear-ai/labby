@@ -31,9 +31,9 @@ details there and keep this file focused on rules for editing `.github/`.
 
 | Surface | Runner |
 |---|---|
-| Rust compile, test, coverage, security | `[self-hosted, ci-pool-rust]` |
-| Node, pnpm, browser, frontend | `[self-hosted, ci-pool-typescript]` |
-| policy, labels, drift, metadata, aggregate gates | `[self-hosted, ci-pool-ops]` |
+| Rust compile, test, coverage, security | `ci-pool-rust` |
+| Node, pnpm, browser, frontend | `ci-pool-typescript` |
+| policy, labels, drift, metadata, aggregate gates | `ci-pool-ops` |
 | native Windows advisory checks | `windows-latest` |
 | release and publication jobs | pinned GitHub-hosted x86_64 image |
 
