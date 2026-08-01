@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   stale:
-    runs-on: [self-hosted, ci-pool-ops]
+    runs-on: ci-pool-ops
     timeout-minutes: 10
     steps:
       - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10
