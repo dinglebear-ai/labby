@@ -29,14 +29,20 @@ fn forwardable_capabilities_are_derived_from_current_request_metadata() {
         forwardable_client_capabilities(Some(&meta)),
         Some(capabilities)
     );
-    assert_eq!(forwardable_client_capabilities(None), None);
+    assert_eq!(
+        forwardable_client_capabilities(None),
+        Some(rmcp::model::ClientCapabilities::default())
+    );
 
     let empty = rmcp::model::RequestMetaObject::with_client_context(
         rmcp::model::ProtocolVersion::V_2026_07_28,
         rmcp::model::Implementation::new("test-client", "1.0.0"),
         rmcp::model::ClientCapabilities::default(),
     );
-    assert_eq!(forwardable_client_capabilities(Some(&empty)), None);
+    assert_eq!(
+        forwardable_client_capabilities(Some(&empty)),
+        Some(rmcp::model::ClientCapabilities::default())
+    );
 }
 
 fn noop_dispatch(

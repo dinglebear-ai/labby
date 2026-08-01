@@ -48,13 +48,13 @@ use std::time::Instant;
 
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
-    ClientCapabilities, ClientInfo, ClientRequest, GetPromptRequest, GetPromptRequestParams,
-    GetPromptResponse, LoggingMessageNotificationParam, ProgressNotificationParam, ProgressToken,
-    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
-    ResourceUpdatedNotificationParam, ServerNotification, ServerResult, TaskStatusNotification,
-    TaskStatusNotificationParams,
+    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
+    GetPromptRequestParams, GetPromptResponse, LoggingMessageNotificationParam,
+    ProgressNotificationParam, ProgressToken, ReadResourceRequest, ReadResourceRequestParams,
+    ReadResourceResponse, RequestId, RequestMetaObject, ResourceUpdatedNotificationParam,
+    ServerNotification, ServerResult, TaskStatusNotification, TaskStatusNotificationParams,
 };
-use rmcp::service::{NotificationContext, Peer, PeerRequestOptions};
+use rmcp::service::{NotificationContext, Peer, PeerRequestOptions, ServiceError};
 use rmcp::{ClientHandler, RoleClient, RoleServer};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -75,20 +75,116 @@ use super::logging::{
 use super::notifications::UpstreamNotificationEvent;
 use super::{UpstreamConnection, UpstreamPool};
 
+const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[derive(Clone)]
+struct RelayRequestRoute {
+    downstream_request_id: RequestId,
+    upstream_progress_token: ProgressToken,
+    downstream_progress_token: Option<ProgressToken>,
+}
+
+#[derive(Default)]
+pub(super) struct RelayRouteState {
+    requests: RwLock<HashMap<RequestId, RelayRequestRoute>>,
+    progress: RwLock<HashMap<ProgressToken, ProgressToken>>,
+    tasks: RwLock<HashMap<String, String>>,
+}
+
+impl RelayRouteState {
+    async fn register_request(
+        &self,
+        upstream_request_id: RequestId,
+        downstream_request_id: RequestId,
+        upstream_progress_token: ProgressToken,
+        downstream_progress_token: Option<ProgressToken>,
+    ) {
+        if let Some(downstream_progress_token) = downstream_progress_token.clone() {
+            self.progress
+                .write()
+                .await
+                .insert(upstream_progress_token.clone(), downstream_progress_token);
+        }
+        self.requests.write().await.insert(
+            upstream_request_id,
+            RelayRequestRoute {
+                downstream_request_id,
+                upstream_progress_token,
+                downstream_progress_token,
+            },
+        );
+    }
+
+    async fn unregister_request(&self, upstream_request_id: &RequestId) {
+        if let Some(route) = self.requests.write().await.remove(upstream_request_id)
+            && route.downstream_progress_token.is_some()
+        {
+            self.progress
+                .write()
+                .await
+                .remove(&route.upstream_progress_token);
+        }
+    }
+
+    fn schedule_unregister_request(self: &Arc<Self>, upstream_request_id: RequestId) {
+        let routes = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(RELAY_ROUTE_CLEANUP_GRACE).await;
+            routes.unregister_request(&upstream_request_id).await;
+        });
+    }
+
+    async fn downstream_request_id(&self, upstream_request_id: &RequestId) -> Option<RequestId> {
+        self.requests
+            .read()
+            .await
+            .get(upstream_request_id)
+            .map(|route| route.downstream_request_id.clone())
+    }
+
+    async fn downstream_progress_token(
+        &self,
+        upstream_progress_token: &ProgressToken,
+    ) -> Option<ProgressToken> {
+        self.progress
+            .read()
+            .await
+            .get(upstream_progress_token)
+            .cloned()
+    }
+
+    pub(super) async fn register_task_id(&self, native_task_id: &str, gateway_task_id: &str) {
+        self.tasks
+            .write()
+            .await
+            .insert(native_task_id.to_string(), gateway_task_id.to_string());
+    }
+
+    async fn gateway_task_id(&self, native_task_id: &str) -> Option<String> {
+        self.tasks.read().await.get(native_task_id).cloned()
+    }
+}
+
 /// A client handler that mirrors the downstream agent's MRTR input
 /// capabilities to one upstream connection.
 ///
 /// Construct one per dedicated upstream connection with [`RelayClientHandler::new`].
 #[derive(Clone)]
 pub(crate) struct RelayClientHandler {
-    /// The downstream agent connection to forward requests to.
-    _downstream: Peer<RoleServer>,
-    /// Name of the upstream this handler is attached to (reserved for forwarding logs).
-    _upstream_name: Arc<str>,
+    /// The downstream agent connection to forward request-scoped notifications to.
+    downstream: Peer<RoleServer>,
+    /// Name of the upstream this handler is attached to.
+    upstream_name: Arc<str>,
     /// Exact client capabilities declared on the downstream request that
     /// opened this relay connection. The 2026 protocol forbids inferring these
     /// from a prior request or discovery exchange.
     capabilities: ClientCapabilities,
+    /// Per-connection translation table for request, progress, and task IDs.
+    routes: Arc<RelayRouteState>,
+    /// Shared pool event bus for subscription-routed catalog/resource changes.
+    notification_tx: tokio::sync::broadcast::Sender<UpstreamNotificationEvent>,
+    /// Subject-scoped OAuth relays must not publish user-specific events globally.
+    publish_catalog_events: bool,
 }
 
 impl RelayClientHandler {
@@ -97,10 +193,32 @@ impl RelayClientHandler {
         upstream_name: Arc<str>,
         capabilities: ClientCapabilities,
     ) -> Self {
-        Self {
-            _downstream: downstream,
-            _upstream_name: upstream_name,
+        let (notification_tx, _receiver) = tokio::sync::broadcast::channel(1);
+        Self::new_with_routes(
+            downstream,
+            upstream_name,
             capabilities,
+            Arc::new(RelayRouteState::default()),
+            notification_tx,
+            false,
+        )
+    }
+
+    pub(super) fn new_with_routes(
+        downstream: Peer<RoleServer>,
+        upstream_name: Arc<str>,
+        capabilities: ClientCapabilities,
+        routes: Arc<RelayRouteState>,
+        notification_tx: tokio::sync::broadcast::Sender<UpstreamNotificationEvent>,
+        publish_catalog_events: bool,
+    ) -> Self {
+        Self {
+            downstream,
+            upstream_name,
+            capabilities,
+            routes,
+            notification_tx,
+            publish_catalog_events,
         }
     }
 }
@@ -114,6 +232,189 @@ impl ClientHandler for RelayClientHandler {
         info.capabilities = self.capabilities.clone();
         info
     }
+
+    async fn on_cancelled(
+        &self,
+        mut params: CancelledNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let Some(upstream_request_id) = params.request_id.clone() else {
+            return;
+        };
+        let Some(downstream_request_id) = self
+            .routes
+            .downstream_request_id(&upstream_request_id)
+            .await
+        else {
+            return;
+        };
+        params.request_id = Some(downstream_request_id);
+        drop(self.downstream.notify_cancelled(params).await);
+        self.routes.unregister_request(&upstream_request_id).await;
+    }
+
+    async fn on_progress(
+        &self,
+        mut params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let Some(downstream_token) = self
+            .routes
+            .downstream_progress_token(&params.progress_token)
+            .await
+        else {
+            return;
+        };
+        params.progress_token = downstream_token;
+        drop(self.downstream.notify_progress(params).await);
+    }
+
+    #[allow(deprecated)]
+    async fn on_logging_message(
+        &self,
+        params: LoggingMessageNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        drop(self.downstream.notify_logging_message(params).await);
+    }
+
+    async fn on_resource_updated(
+        &self,
+        params: ResourceUpdatedNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if self.publish_catalog_events {
+            let uri = UpstreamPool::gateway_resource_uri(&self.upstream_name, &params.uri);
+            drop(
+                self.notification_tx
+                    .send(UpstreamNotificationEvent::ResourceUpdated {
+                        upstream: self.upstream_name.to_string(),
+                        uri,
+                    }),
+            );
+        }
+    }
+
+    async fn on_resource_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        if self.publish_catalog_events {
+            drop(
+                self.notification_tx
+                    .send(UpstreamNotificationEvent::ResourceListChanged {
+                        upstream: self.upstream_name.to_string(),
+                    }),
+            );
+        }
+    }
+
+    async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        if self.publish_catalog_events {
+            drop(
+                self.notification_tx
+                    .send(UpstreamNotificationEvent::ToolListChanged {
+                        upstream: self.upstream_name.to_string(),
+                    }),
+            );
+        }
+    }
+
+    async fn on_prompt_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        if self.publish_catalog_events {
+            drop(
+                self.notification_tx
+                    .send(UpstreamNotificationEvent::PromptListChanged {
+                        upstream: self.upstream_name.to_string(),
+                    }),
+            );
+        }
+    }
+
+    async fn on_task_status(
+        &self,
+        mut params: TaskStatusNotificationParams,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let native_task_id = params.task.task.task_id.clone();
+        let Some(gateway_task_id) = self.routes.gateway_task_id(&native_task_id).await else {
+            tracing::debug!(
+                upstream = %self.upstream_name,
+                native_task_id,
+                "ignoring task notification before gateway task registration"
+            );
+            return;
+        };
+        params.task.task.task_id = gateway_task_id;
+        drop(
+            self.downstream
+                .send_notification(ServerNotification::TaskStatusNotification(
+                    TaskStatusNotification::new(params),
+                ))
+                .await,
+        );
+    }
+
+    async fn on_custom_notification(
+        &self,
+        notification: CustomNotification,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        drop(
+            self.downstream
+                .send_notification(ServerNotification::CustomNotification(notification))
+                .await,
+        );
+    }
+}
+
+async fn send_relay_request(
+    peer: &Peer<RoleClient>,
+    routes: &Arc<RelayRouteState>,
+    request: ClientRequest,
+    request_meta: Option<RequestMetaObject>,
+    downstream_request_id: RequestId,
+    downstream_cancel: CancellationToken,
+    timeout: std::time::Duration,
+) -> Result<ServerResult, ServiceError> {
+    let downstream_progress_token = request_meta
+        .as_ref()
+        .and_then(RequestMetaObject::get_progress_token);
+    let options = request_meta
+        .map(|meta| PeerRequestOptions::no_options().with_meta(meta))
+        .unwrap_or_else(PeerRequestOptions::no_options);
+    let mut handle = peer.send_cancellable_request(request, options).await?;
+    let upstream_request_id = handle.id.clone();
+    routes
+        .register_request(
+            upstream_request_id.clone(),
+            downstream_request_id,
+            handle.progress_token.clone(),
+            downstream_progress_token,
+        )
+        .await;
+
+    let result = tokio::select! {
+        response = &mut handle.rx => {
+            response.map_err(|_| ServiceError::TransportClosed)?
+        }
+        () = downstream_cancel.cancelled() => {
+            routes.unregister_request(&upstream_request_id).await;
+            handle
+                .cancel(Some("downstream request cancelled".to_string()))
+                .await?;
+            return Err(ServiceError::Cancelled {
+                reason: Some("downstream request cancelled".to_string()),
+            });
+        }
+        () = tokio::time::sleep(timeout) => {
+            routes.unregister_request(&upstream_request_id).await;
+            handle
+                .cancel(Some("relayed request timeout".to_string()))
+                .await?;
+            return Err(ServiceError::Timeout { timeout });
+        }
+    };
+
+    routes.schedule_unregister_request(upstream_request_id);
+    result
 }
 
 pub(super) fn capability_fingerprint(capabilities: &ClientCapabilities) -> String {
@@ -137,6 +438,8 @@ pub(super) struct RelayCachedConnection {
     pub(super) peer: Peer<RoleClient>,
     /// Capability snapshot used to initialize this connection.
     pub(super) capability_fingerprint: String,
+    /// Request/progress/task identifier translations owned by this connection.
+    pub(super) routes: Arc<RelayRouteState>,
     /// Wall-clock instant when this entry was last used.
     pub(super) last_used: Instant,
 }
@@ -198,6 +501,8 @@ impl UpstreamPool {
         subject: Option<&str>,
         params: CallToolRequestParams,
         downstream: Peer<RoleServer>,
+        downstream_request_id: RequestId,
+        downstream_cancel: CancellationToken,
         session_id: u64,
         capabilities: ClientCapabilities,
         caller_subject: Option<&str>,
@@ -205,7 +510,8 @@ impl UpstreamPool {
         let started = Instant::now();
         let tool_name = params.name.to_string();
         let relay_key = (config.name.clone(), session_id, subject.map(str::to_owned));
-        let peer = self
+        let request_meta = params.meta.clone();
+        let (peer, routes) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
 
@@ -226,8 +532,26 @@ impl UpstreamPool {
         // 30s `request_timeout` the pooled path uses — otherwise a confirmation
         // dialog left open for a minute would abort the whole upstream call.
         let timeout = self.relay_timeout;
-        match tokio::time::timeout(timeout, peer.call_tool_once(params)).await {
-            Ok(Ok(result)) => {
+        let response = send_relay_request(
+            &peer,
+            &routes,
+            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            request_meta,
+            downstream_request_id,
+            downstream_cancel,
+            timeout,
+        )
+        .await;
+        match response {
+            Ok(result) => {
+                let result = match result {
+                    ServerResult::CallToolResult(result) => CallToolResponse::Complete(result),
+                    ServerResult::InputRequiredResult(result) => {
+                        CallToolResponse::InputRequired(result)
+                    }
+                    ServerResult::CreateTaskResult(result) => CallToolResponse::Task(result),
+                    _ => return Some(Err(ServiceError::UnexpectedResponse.to_string())),
+                };
                 let response_size = estimate_call_tool_response_size(&result);
                 let max_bytes = max_response_bytes();
                 if response_size > max_bytes {
@@ -261,9 +585,23 @@ impl UpstreamPool {
                     .await;
                 Some(Ok(result))
             }
-            Ok(Err(error)) => {
-                // A failed call may mean the cached connection went bad; drop it
-                // so the next call reconnects rather than reusing a dead peer.
+            Err(error @ ServiceError::Cancelled { .. }) => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    Some(&error),
+                    None,
+                    None,
+                );
+                Some(Err(error.to_string()))
+            }
+            Err(error) => {
+                let kind = if matches!(error, ServiceError::Timeout { .. }) {
+                    "timeout"
+                } else {
+                    "upstream_error"
+                };
                 let message = format!("relayed upstream call failed: {error}");
                 self.record_failure_for(&config.name, UpstreamCapability::Tools, message.clone())
                     .await;
@@ -272,27 +610,8 @@ impl UpstreamPool {
                 log_upstream_request_error(
                     event,
                     started.elapsed().as_millis(),
-                    "upstream_error",
+                    kind,
                     Some(&error),
-                    None,
-                    None,
-                );
-                Some(Err(message))
-            }
-            Err(_) => {
-                let message = format!(
-                    "relayed upstream call timed out after {}ms",
-                    timeout.as_millis()
-                );
-                self.record_failure_for(&config.name, UpstreamCapability::Tools, message.clone())
-                    .await;
-                self.evict_relay_connection(&config.name, session_id, subject)
-                    .await;
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "timeout",
-                    None,
                     None,
                     None,
                 );
@@ -309,13 +628,16 @@ impl UpstreamPool {
         subject: Option<&str>,
         mut params: GetPromptRequestParams,
         downstream: Peer<RoleServer>,
+        downstream_request_id: RequestId,
+        downstream_cancel: CancellationToken,
         session_id: u64,
         capabilities: ClientCapabilities,
     ) -> Option<Result<GetPromptResponse, String>> {
         let started = Instant::now();
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
         let prompt_name = params.name.to_string();
-        let peer = self
+        let request_meta = params.meta.clone();
+        let (peer, routes) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, subject.is_some())
@@ -323,14 +645,47 @@ impl UpstreamPool {
         log_upstream_request_start(event);
 
         let timeout = self.relay_timeout;
-        match tokio::time::timeout(timeout, peer.get_prompt_once(params)).await {
-            Ok(Ok(result)) => {
+        let response = send_relay_request(
+            &peer,
+            &routes,
+            ClientRequest::GetPromptRequest(GetPromptRequest::new(params)),
+            request_meta,
+            downstream_request_id,
+            downstream_cancel,
+            timeout,
+        )
+        .await;
+        match response {
+            Ok(result) => {
+                let result = match result {
+                    ServerResult::GetPromptResult(result) => GetPromptResponse::Complete(result),
+                    ServerResult::InputRequiredResult(result) => {
+                        GetPromptResponse::InputRequired(result)
+                    }
+                    _ => return Some(Err(ServiceError::UnexpectedResponse.to_string())),
+                };
                 self.record_success_for(&config.name, UpstreamCapability::Prompts)
                     .await;
                 log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
                 Some(Ok(result))
             }
-            Ok(Err(error)) => {
+            Err(error @ ServiceError::Cancelled { .. }) => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    Some(&error),
+                    None,
+                    None,
+                );
+                Some(Err(error.to_string()))
+            }
+            Err(error) => {
+                let kind = if matches!(error, ServiceError::Timeout { .. }) {
+                    "timeout"
+                } else {
+                    "upstream_error"
+                };
                 let message = format!("relayed upstream prompt get failed: {error}");
                 self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone())
                     .await;
@@ -339,27 +694,8 @@ impl UpstreamPool {
                 log_upstream_request_error(
                     event,
                     started.elapsed().as_millis(),
-                    "upstream_error",
+                    kind,
                     Some(&error),
-                    None,
-                    None,
-                );
-                Some(Err(message))
-            }
-            Err(_) => {
-                let message = format!(
-                    "relayed upstream prompt get timed out after {}ms",
-                    timeout.as_millis()
-                );
-                self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone())
-                    .await;
-                self.evict_relay_connection(&config.name, session_id, subject)
-                    .await;
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "timeout",
-                    None,
                     None,
                     None,
                 );
@@ -376,6 +712,8 @@ impl UpstreamPool {
         subject: Option<&str>,
         mut params: ReadResourceRequestParams,
         downstream: Peer<RoleServer>,
+        downstream_request_id: RequestId,
+        downstream_cancel: CancellationToken,
         session_id: u64,
         capabilities: ClientCapabilities,
     ) -> Option<Result<ReadResourceResponse, String>> {
@@ -392,7 +730,8 @@ impl UpstreamPool {
             }
         };
         params.uri = original_uri;
-        let peer = self
+        let request_meta = params.meta.clone();
+        let (peer, routes) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
         let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
@@ -401,8 +740,27 @@ impl UpstreamPool {
         log_upstream_request_start(event);
 
         let timeout = self.relay_timeout;
-        match tokio::time::timeout(timeout, peer.read_resource_once(params)).await {
-            Ok(Ok(result)) => {
+        let response = send_relay_request(
+            &peer,
+            &routes,
+            ClientRequest::ReadResourceRequest(ReadResourceRequest::new(params)),
+            request_meta,
+            downstream_request_id,
+            downstream_cancel,
+            timeout,
+        )
+        .await;
+        match response {
+            Ok(result) => {
+                let result = match result {
+                    ServerResult::ReadResourceResult(result) => {
+                        ReadResourceResponse::Complete(result)
+                    }
+                    ServerResult::InputRequiredResult(result) => {
+                        ReadResourceResponse::InputRequired(result)
+                    }
+                    _ => return Some(Err(ServiceError::UnexpectedResponse.to_string())),
+                };
                 let response_size = match &result {
                     ReadResourceResponse::Complete(complete) => {
                         estimate_resource_response_size(complete)
@@ -449,7 +807,23 @@ impl UpstreamPool {
                 );
                 Some(Ok(result))
             }
-            Ok(Err(error)) => {
+            Err(error @ ServiceError::Cancelled { .. }) => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    Some(&error),
+                    None,
+                    None,
+                );
+                Some(Err(error.to_string()))
+            }
+            Err(error) => {
+                let kind = if matches!(error, ServiceError::Timeout { .. }) {
+                    "timeout"
+                } else {
+                    "upstream_error"
+                };
                 let message = format!("relayed upstream resource read failed: {error}");
                 self.record_failure_for(
                     &config.name,
@@ -462,31 +836,8 @@ impl UpstreamPool {
                 log_upstream_request_error(
                     event,
                     started.elapsed().as_millis(),
-                    "upstream_error",
+                    kind,
                     Some(&error),
-                    None,
-                    None,
-                );
-                Some(Err(message))
-            }
-            Err(_) => {
-                let message = format!(
-                    "relayed upstream resource read timed out after {}ms",
-                    timeout.as_millis()
-                );
-                self.record_failure_for(
-                    &config.name,
-                    UpstreamCapability::Resources,
-                    message.clone(),
-                )
-                .await;
-                self.evict_relay_connection(&config.name, session_id, subject)
-                    .await;
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "timeout",
-                    None,
                     None,
                     None,
                 );
@@ -506,7 +857,7 @@ impl UpstreamPool {
         downstream: Peer<RoleServer>,
         session_id: u64,
         capabilities: ClientCapabilities,
-    ) -> Option<Peer<RoleClient>> {
+    ) -> Option<(Peer<RoleClient>, Arc<RelayRouteState>)> {
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
@@ -524,7 +875,7 @@ impl UpstreamPool {
                     && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
-                    return Some(entry.peer.clone());
+                    return Some((entry.peer.clone(), Arc::clone(&entry.routes)));
                 }
                 cache.remove(&key);
             }
@@ -552,14 +903,22 @@ impl UpstreamPool {
                     && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
-                    return Some(entry.peer.clone());
+                    return Some((entry.peer.clone(), Arc::clone(&entry.routes)));
                 }
                 cache.remove(&key);
             }
         }
 
         let upstream_name: Arc<str> = Arc::from(config.name.as_str());
-        let handler = RelayClientHandler::new(downstream, Arc::clone(&upstream_name), capabilities);
+        let routes = Arc::new(RelayRouteState::default());
+        let handler = RelayClientHandler::new_with_routes(
+            downstream,
+            Arc::clone(&upstream_name),
+            capabilities,
+            Arc::clone(&routes),
+            self.notification_tx.clone(),
+            subject.is_none(),
+        );
         let (conn, _tools) = match connect_upstream_with_handler(
             config,
             subject,
@@ -596,6 +955,7 @@ impl UpstreamPool {
                     _connection: conn,
                     peer: peer.clone(),
                     capability_fingerprint: requested_capability_fingerprint,
+                    routes: Arc::clone(&routes),
                     last_used: Instant::now(),
                 },
             );
@@ -605,7 +965,7 @@ impl UpstreamPool {
             evicted_conn.shutdown(&name, "relay.cache.lru_evict").await;
         }
 
-        Some(peer)
+        Some((peer, routes))
     }
 
     /// Evict and shut down the cached relay connection for one
@@ -703,14 +1063,17 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock,
-        ElicitRequest, ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams,
-        GetPromptResponse, InputRequest, InputRequests, InputRequiredResult,
-        PaginatedRequestParams, PrimitiveSchemaDefinition, ProtocolVersion,
-        ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotificationParam,
+        ClientCapabilities, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
+        ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams,
+        GetPromptResponse, Implementation, InputRequest, InputRequests, InputRequiredResult,
+        MetaObject, PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam,
+        ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+        ServerInfo, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
+        TaskStatusNotificationParams,
     };
     use rmcp::service::ClientLifecycleMode;
-    use rmcp::service::{RequestContext, RunningService};
+    use rmcp::service::{NotificationContext, RequestContext, RunningService};
     use rmcp::{ClientHandler, ClientServiceExt, RoleServer, ServerHandler, ServiceExt};
 
     use std::time::Instant;
@@ -722,6 +1085,50 @@ mod tests {
 
     fn relay_test_capabilities() -> ClientCapabilities {
         ClientCapabilities::builder().enable_elicitation().build()
+    }
+
+    #[tokio::test]
+    async fn relay_route_state_translates_request_progress_and_task_ids() {
+        let routes = RelayRouteState::default();
+        let upstream_request = RequestId::String("upstream-request".into());
+        let downstream_request = RequestId::String("downstream-request".into());
+        let upstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
+            "upstream-progress".into(),
+        ));
+        let downstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
+            "downstream-progress".into(),
+        ));
+
+        routes
+            .register_request(
+                upstream_request.clone(),
+                downstream_request.clone(),
+                upstream_progress.clone(),
+                Some(downstream_progress.clone()),
+            )
+            .await;
+
+        assert_eq!(
+            routes.downstream_request_id(&upstream_request).await,
+            Some(downstream_request)
+        );
+        assert_eq!(
+            routes.downstream_progress_token(&upstream_progress).await,
+            Some(downstream_progress)
+        );
+
+        routes.register_task_id("native-task", "gateway-task").await;
+        assert_eq!(
+            routes.gateway_task_id("native-task").await.as_deref(),
+            Some("gateway-task")
+        );
+
+        routes.unregister_request(&upstream_request).await;
+        assert_eq!(routes.downstream_request_id(&upstream_request).await, None);
+        assert_eq!(
+            routes.downstream_progress_token(&upstream_progress).await,
+            None
+        );
     }
 
     /// A downstream client that advertises form elicitation for MRTR.
@@ -747,6 +1154,145 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct RecordingAgent {
+        progress: Arc<tokio::sync::Mutex<Vec<ProgressNotificationParam>>>,
+        cancellations: Arc<tokio::sync::Mutex<Vec<CancelledNotificationParam>>>,
+        task_ids: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ClientHandler for RecordingAgent {
+        fn get_info(&self) -> ClientInfo {
+            let mut info = ClientInfo::default();
+            info.capabilities = ClientCapabilities::builder()
+                .enable_elicitation()
+                .enable_tasks()
+                .build();
+            info
+        }
+
+        async fn on_progress(
+            &self,
+            params: ProgressNotificationParam,
+            _context: NotificationContext<RoleClient>,
+        ) {
+            self.progress.lock().await.push(params);
+        }
+
+        async fn on_cancelled(
+            &self,
+            params: CancelledNotificationParam,
+            _context: NotificationContext<RoleClient>,
+        ) {
+            self.cancellations.lock().await.push(params);
+        }
+
+        async fn on_task_status(
+            &self,
+            params: TaskStatusNotificationParams,
+            _context: NotificationContext<RoleClient>,
+        ) {
+            self.task_ids
+                .lock()
+                .await
+                .push(params.task.task.task_id.clone());
+        }
+    }
+
+    async fn cached_relay_pool<S, C>(
+        upstream: S,
+        agent: C,
+        capabilities: ClientCapabilities,
+    ) -> (
+        UpstreamPool,
+        UpstreamConfig,
+        RunningService<RoleServer, TrivialServer>,
+    )
+    where
+        S: ServerHandler,
+        C: ClientHandler,
+    {
+        let pool = UpstreamPool::new();
+        let config = super::super::testsupport::test_upstream_config();
+
+        let (gateway_transport, agent_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        tokio::spawn(async move {
+            let running = agent
+                .serve_with_lifecycle(
+                    agent_transport,
+                    ClientLifecycleMode::Discover {
+                        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                    },
+                )
+                .await
+                .expect("recording agent connects");
+            running.waiting().await.expect("recording agent runs");
+        });
+        let downstream_server = TrivialServer
+            .serve(gateway_transport)
+            .await
+            .expect("downstream server connects");
+        let downstream = downstream_server.peer().clone();
+
+        let (upstream_transport, relay_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let upstream_task = tokio::spawn(async move {
+            let running = upstream
+                .serve(upstream_transport)
+                .await
+                .expect("test upstream connects");
+            running.waiting().await.expect("test upstream runs");
+        });
+        let routes = Arc::new(RelayRouteState::default());
+        let handler = RelayClientHandler::new_with_routes(
+            downstream,
+            Arc::from(config.name.as_str()),
+            capabilities.clone(),
+            Arc::clone(&routes),
+            pool.notification_tx.clone(),
+            true,
+        );
+        let client_service = handler
+            .serve_with_lifecycle(
+                relay_transport,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await
+            .expect("relay client connects");
+        let peer = client_service.peer().clone();
+        pool.relay_connections.write().await.insert(
+            (config.name.clone(), 1, None),
+            RelayCachedConnection {
+                _connection: UpstreamConnection::new(
+                    client_service,
+                    Some(upstream_task),
+                    peer.clone(),
+                    UpstreamRuntimeMetadata::default(),
+                ),
+                peer,
+                capability_fingerprint: capability_fingerprint(&capabilities),
+                routes,
+                last_used: Instant::now(),
+            },
+        );
+
+        (pool, config, downstream_server)
+    }
+
+    async fn wait_for_recorded_count<T>(values: &tokio::sync::Mutex<Vec<T>>, expected: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if values.lock().await.len() >= expected {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("notification should be relayed");
+    }
+
     fn elicitation_input_required() -> InputRequiredResult {
         let schema = ElicitationSchema::builder()
             .required_property(
@@ -765,6 +1311,249 @@ mod tests {
             InputRequest::Elicitation(ElicitRequest::new(params)),
         )]);
         InputRequiredResult::from_input_requests(requests)
+    }
+
+    #[derive(Clone)]
+    struct ProgressCancelUpstream;
+
+    impl ServerHandler for ProgressCancelUpstream {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn call_tool(
+            &self,
+            _request: CallToolRequestParams,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            let progress_token = context
+                .meta
+                .get_progress_token()
+                .expect("relay request carries an upstream progress token");
+            context
+                .peer
+                .notify_progress(
+                    ProgressNotificationParam::new(progress_token, 0.5).with_message("halfway"),
+                )
+                .await
+                .expect("upstream sends progress");
+            context
+                .peer
+                .notify_cancelled(CancelledNotificationParam::new(
+                    Some(context.id.clone()),
+                    Some("upstream cancelled".to_string()),
+                ))
+                .await
+                .expect("upstream sends cancellation");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Ok(CallToolResult::success(Vec::new()).into())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CancellationAwareUpstream {
+        started: Arc<std::sync::atomic::AtomicBool>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl ServerHandler for CancellationAwareUpstream {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn call_tool(
+            &self,
+            _request: CallToolRequestParams,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            self.started
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            context.ct.cancelled().await;
+            self.cancelled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Err(ErrorData::internal_error("cancelled by downstream", None))
+        }
+    }
+
+    #[derive(Clone)]
+    struct TaskNotificationUpstream;
+
+    impl ServerHandler for TaskNotificationUpstream {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(
+                ServerCapabilities::builder()
+                    .enable_tools()
+                    .enable_tasks()
+                    .build(),
+            )
+        }
+
+        async fn call_tool(
+            &self,
+            _request: CallToolRequestParams,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            const NATIVE_TASK_ID: &str = "native-notification-task";
+            let peer = context.peer.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let task = DetailedTask::new(
+                    Task::new(
+                        NATIVE_TASK_ID,
+                        TaskStatus::Working,
+                        "2026-08-01T00:00:00Z",
+                        "2026-08-01T00:00:01Z",
+                    ),
+                    TaskPayload::Working,
+                );
+                drop(
+                    peer.send_notification(ServerNotification::TaskStatusNotification(
+                        TaskStatusNotification::new(TaskStatusNotificationParams::new(task)),
+                    ))
+                    .await,
+                );
+            });
+            Ok(CreateTaskResult::new(Task::new(
+                NATIVE_TASK_ID,
+                TaskStatus::Working,
+                "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+            ))
+            .into())
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_translates_progress_and_cancelled_notification_ids() {
+        let agent = RecordingAgent::default();
+        let capabilities = agent.get_info().capabilities;
+        let (pool, config, downstream_server) =
+            cached_relay_pool(ProgressCancelUpstream, agent.clone(), capabilities.clone()).await;
+        let downstream_request_id = RequestId::String("downstream-request".into());
+        let downstream_progress_token = ProgressToken(rmcp::model::NumberOrString::String(
+            "downstream-progress".into(),
+        ));
+        let mut meta = RequestMetaObject::with_client_context(
+            ProtocolVersion::V_2026_07_28,
+            Implementation::new("recording-agent", "1.0.0"),
+            capabilities.clone(),
+        );
+        meta.set_progress_token(downstream_progress_token.clone());
+        let mut request = CallToolRequestParams::new("notify");
+        request.meta = Some(meta);
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                request,
+                downstream_server.peer().clone(),
+                downstream_request_id.clone(),
+                CancellationToken::new(),
+                1,
+                capabilities,
+                None,
+            )
+            .await
+            .expect("cached relay exists");
+        assert!(
+            matches!(result, Err(ref message) if message.contains("upstream cancelled")),
+            "upstream cancellation should terminate the relayed request: {result:?}"
+        );
+
+        wait_for_recorded_count(&agent.progress, 1).await;
+        wait_for_recorded_count(&agent.cancellations, 1).await;
+        assert_eq!(
+            agent.progress.lock().await[0].progress_token,
+            downstream_progress_token
+        );
+        assert_eq!(
+            agent.cancellations.lock().await[0].request_id,
+            Some(downstream_request_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn downstream_cancellation_cancels_the_upstream_request() {
+        let upstream = CancellationAwareUpstream::default();
+        let capabilities = relay_test_capabilities();
+        let (pool, config, downstream_server) =
+            cached_relay_pool(upstream.clone(), CapableAgent, capabilities.clone()).await;
+        let cancellation = CancellationToken::new();
+        let pool_for_call = pool.clone();
+        let config_for_call = config.clone();
+        let downstream = downstream_server.peer().clone();
+        let cancellation_for_call = cancellation.clone();
+        let call = tokio::spawn(async move {
+            pool_for_call
+                .call_tool_relayed(
+                    &config_for_call,
+                    None,
+                    CallToolRequestParams::new("wait"),
+                    downstream,
+                    RequestId::String("downstream-cancel".into()),
+                    cancellation_for_call,
+                    1,
+                    capabilities,
+                    None,
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !upstream.started.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("upstream request should start");
+        cancellation.cancel();
+        let result = call.await.expect("relay task joins").expect("relay exists");
+        assert!(
+            matches!(result, Err(ref message) if message.contains("downstream request cancelled"))
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !upstream.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("upstream request context should be cancelled");
+    }
+
+    #[tokio::test]
+    async fn task_status_notifications_use_the_gateway_task_id() {
+        let agent = RecordingAgent::default();
+        let capabilities = agent.get_info().capabilities;
+        let (pool, config, downstream_server) = cached_relay_pool(
+            TaskNotificationUpstream,
+            agent.clone(),
+            capabilities.clone(),
+        )
+        .await;
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("task"),
+                downstream_server.peer().clone(),
+                RequestId::String("downstream-task".into()),
+                CancellationToken::new(),
+                1,
+                capabilities,
+                None,
+            )
+            .await
+            .expect("cached relay exists")
+            .expect("task call succeeds");
+        let CallToolResponse::Task(created) = result else {
+            panic!("expected gateway task handle");
+        };
+        let gateway_task_id = created.task.task_id;
+        assert_ne!(gateway_task_id, "native-notification-task");
+
+        wait_for_recorded_count(&agent.task_ids, 1).await;
+        assert_eq!(agent.task_ids.lock().await[0], gateway_task_id);
     }
 
     /// A mock upstream server whose interactive primitives return MRTR input requests.
@@ -901,6 +1690,8 @@ mod tests {
                 None,
                 GetPromptRequestParams::new(format!("{}/confirm", config.name)),
                 downstream.clone(),
+                RequestId::Number(1),
+                CancellationToken::new(),
                 session_id,
                 capabilities.clone(),
             )
@@ -918,6 +1709,8 @@ mod tests {
                     config.name
                 )),
                 downstream,
+                RequestId::Number(2),
+                CancellationToken::new(),
                 session_id,
                 capabilities,
             )
@@ -957,6 +1750,8 @@ mod tests {
                 None,
                 CallToolRequestParams::new("anything"),
                 downstream,
+                RequestId::Number(1),
+                CancellationToken::new(),
                 1,
                 relay_test_capabilities(),
                 None,
@@ -999,16 +1794,24 @@ mod tests {
                 running.waiting().await.ok();
             }
         });
-        let service =
-            RelayClientHandler::new(downstream, Arc::from("up"), relay_test_capabilities())
-                .serve_with_lifecycle(
-                    gw_client_transport,
-                    ClientLifecycleMode::Discover {
-                        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-                    },
-                )
-                .await
-                .expect("relay client connects");
+        let routes = Arc::new(RelayRouteState::default());
+        let (notification_tx, _receiver) = tokio::sync::broadcast::channel(1);
+        let service = RelayClientHandler::new_with_routes(
+            downstream,
+            Arc::from("up"),
+            relay_test_capabilities(),
+            Arc::clone(&routes),
+            notification_tx,
+            false,
+        )
+        .serve_with_lifecycle(
+            gw_client_transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+        .expect("relay client connects");
         let peer = service.peer().clone();
         let conn = UpstreamConnection {
             _client_service: service,
@@ -1021,6 +1824,7 @@ mod tests {
                 _connection: conn,
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
+                routes,
                 last_used,
             },
             gw_server,
@@ -1253,6 +2057,7 @@ mod tests {
                 _connection: conn,
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
+                routes: Arc::new(RelayRouteState::default()),
                 last_used: Instant::now(),
             },
         );
@@ -1263,6 +2068,8 @@ mod tests {
                 None,
                 CallToolRequestParams::new("echo"),
                 downstream,
+                RequestId::Number(1),
+                CancellationToken::new(),
                 1,
                 relay_test_capabilities(),
                 None,
@@ -1380,6 +2187,7 @@ mod tests {
                 _connection: conn,
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
+                routes: Arc::new(RelayRouteState::default()),
                 last_used: Instant::now(),
             },
         );
@@ -1390,6 +2198,8 @@ mod tests {
                 None,
                 CallToolRequestParams::new("big"),
                 downstream,
+                RequestId::Number(1),
+                CancellationToken::new(),
                 1,
                 relay_test_capabilities(),
                 None,

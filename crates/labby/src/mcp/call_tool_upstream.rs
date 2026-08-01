@@ -216,6 +216,8 @@ impl LabMcpServer {
                         None,
                         upstream_params,
                         context.peer.clone(),
+                        context.id.clone(),
+                        context.ct.clone(),
                         self.relay_session_id,
                         capabilities,
                         self.request_subject(context),
@@ -482,6 +484,8 @@ impl LabMcpServer {
                             Some(oauth_subject.as_ref()),
                             upstream_params,
                             context.peer.clone(),
+                            context.id.clone(),
+                            context.ct.clone(),
                             self.relay_session_id,
                             capabilities,
                             self.request_subject(context),
@@ -707,7 +711,10 @@ mod tests {
         assert!(capabilities.elicitation.is_some());
 
         let no_capabilities = CallToolRequestParams::new("echo");
-        assert!(relay_capabilities_for_request(&no_capabilities).is_none());
+        assert_eq!(
+            relay_capabilities_for_request(&no_capabilities),
+            Some(ClientCapabilities::default())
+        );
     }
 
     #[test]

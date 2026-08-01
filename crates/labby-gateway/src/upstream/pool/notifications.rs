@@ -45,7 +45,7 @@ impl UpstreamPool {
         self.subscribable_resource_uris.load_full()
     }
 
-    fn gateway_resource_uri(upstream: &str, native_uri: &str) -> String {
+    pub(super) fn gateway_resource_uri(upstream: &str, native_uri: &str) -> String {
         if native_uri.starts_with("ui://") {
             native_uri.to_string()
         } else {

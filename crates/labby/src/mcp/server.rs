@@ -26,7 +26,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use crate::dispatch::gateway::manager::GatewayManager;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::subject_from_extensions;
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::provenance;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -335,7 +335,9 @@ impl ServerHandler for LabMcpServer {
         request: CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, ErrorData> {
-        self.complete_impl(request, context).await
+        Ok(provenance::stamp_complete_result(
+            self.complete_impl(request, context).await?,
+        ))
     }
 
     async fn list_prompts(
@@ -343,7 +345,9 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
-        self.list_prompts_impl(request, context).await
+        Ok(provenance::stamp_list_prompts_result(
+            self.list_prompts_impl(request, context).await?,
+        ))
     }
 
     async fn get_prompt(
@@ -351,7 +355,9 @@ impl ServerHandler for LabMcpServer {
         request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, ErrorData> {
-        self.get_prompt_impl(request, context).await
+        Ok(provenance::stamp_get_prompt_response(
+            self.get_prompt_impl(request, context).await?,
+        ))
     }
 
     async fn list_resources(
@@ -359,7 +365,9 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        self.list_resources_impl(request, context).await
+        Ok(provenance::stamp_list_resources_result(
+            self.list_resources_impl(request, context).await?,
+        ))
     }
 
     async fn list_resource_templates(
@@ -367,7 +375,9 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        self.list_resource_templates_impl(request, context).await
+        Ok(provenance::stamp_list_resource_templates_result(
+            self.list_resource_templates_impl(request, context).await?,
+        ))
     }
 
     async fn read_resource(
@@ -375,13 +385,14 @@ impl ServerHandler for LabMcpServer {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        match self.read_resource_impl(request, context).await? {
-            ReadResourceResponse::Complete(result) => Ok(result
+        let response = match self.read_resource_impl(request, context).await? {
+            ReadResourceResponse::Complete(result) => result
                 .with_ttl_ms(0)
                 .with_cache_scope(CacheScope::Private)
-                .into()),
-            incomplete => Ok(incomplete),
-        }
+                .into(),
+            incomplete => incomplete,
+        };
+        Ok(provenance::stamp_read_resource_response(response))
     }
 
     async fn list_tools(
@@ -389,7 +400,9 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        self.list_tools_impl(request, context).await
+        Ok(provenance::stamp_list_tools_result(
+            self.list_tools_impl(request, context).await?,
+        ))
     }
 
     async fn call_tool(
@@ -397,7 +410,9 @@ impl ServerHandler for LabMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.call_tool_response_impl(request, context).await
+        Ok(provenance::stamp_call_tool_response(
+            self.call_tool_response_impl(request, context).await?,
+        ))
     }
 
     async fn get_task(
@@ -407,7 +422,7 @@ impl ServerHandler for LabMcpServer {
     ) -> Result<GetTaskResult, ErrorData> {
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
-            return pool
+            let result = pool
                 .get_task_routed(request, self.request_subject(&context))
                 .await
                 .map_err(|message| {
@@ -416,7 +431,8 @@ impl ServerHandler for LabMcpServer {
                     } else {
                         ErrorData::internal_error(message, None)
                     }
-                });
+                })?;
+            return Ok(provenance::stamp_get_task_result(result));
         }
         Err(ErrorData::invalid_params("task not found", None))
     }

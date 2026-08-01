@@ -100,16 +100,19 @@ impl LabMcpServer {
     }
 }
 
+/// Return the capability snapshot for the current request.
+///
+/// Even an empty capability object requires a relay connection: progress and
+/// cancellation are request-scoped protocol behavior, not optional client
+/// capabilities. Legacy requests without modern metadata are represented by an
+/// honest empty capability set rather than falling back to connection history.
 pub(crate) fn forwardable_client_capabilities(
     meta: Option<&rmcp::model::RequestMetaObject>,
 ) -> Option<rmcp::model::ClientCapabilities> {
-    let capabilities = meta?.client_capabilities()?;
-    let has_forwardable_capability = capabilities.experimental.is_some()
-        || capabilities.extensions.is_some()
-        || capabilities.roots.is_some()
-        || capabilities.sampling.is_some()
-        || capabilities.elicitation.is_some();
-    has_forwardable_capability.then_some(capabilities)
+    Some(
+        meta.and_then(rmcp::model::RequestMetaObject::client_capabilities)
+            .unwrap_or_default(),
+    )
 }
 
 pub(crate) fn subject_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {

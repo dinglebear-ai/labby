@@ -302,6 +302,8 @@ impl LabMcpServer {
                         None,
                         request,
                         context.peer.clone(),
+                        context.id.clone(),
+                        context.ct.clone(),
                         self.relay_session_id,
                         capabilities,
                     )
@@ -426,6 +428,8 @@ impl LabMcpServer {
                         Some(oauth_subject.as_ref()),
                         request,
                         context.peer.clone(),
+                        context.id.clone(),
+                        context.ct.clone(),
                         self.relay_session_id,
                         capabilities,
                     )

@@ -75,6 +75,10 @@ impl UpstreamPool {
 
         let gateway_task_id = mint_task_handle();
         created.task.task_id = gateway_task_id.clone();
+        connection
+            .routes
+            .register_task_id(&native_task_id, &gateway_task_id)
+            .await;
         let mut routes = self.task_routes.write().await;
         prune_task_routes(&mut routes);
         routes.insert(
@@ -190,7 +194,9 @@ mod tests {
     use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
     use tokio::sync::Mutex;
 
-    use super::super::relay::{RelayCachedConnection, RelayClientHandler, capability_fingerprint};
+    use super::super::relay::{
+        RelayCachedConnection, RelayClientHandler, RelayRouteState, capability_fingerprint,
+    };
     use super::super::{UpstreamConnection, UpstreamPool};
 
     const NATIVE_TASK_ID: &str = "native-task-1";
@@ -298,8 +304,16 @@ mod tests {
                 .expect("task server starts");
             running.waiting().await.expect("task server runs");
         });
-        let handler =
-            RelayClientHandler::new(downstream, Arc::from("task-upstream"), capabilities.clone());
+        let routes = Arc::new(RelayRouteState::default());
+        let (notification_tx, _receiver) = tokio::sync::broadcast::channel(1);
+        let handler = RelayClientHandler::new_with_routes(
+            downstream,
+            Arc::from("task-upstream"),
+            capabilities.clone(),
+            Arc::clone(&routes),
+            notification_tx,
+            false,
+        );
         let client_service = handler
             .serve_with_lifecycle(
                 client_transport,
@@ -319,6 +333,7 @@ mod tests {
             ),
             peer,
             capability_fingerprint: capability_fingerprint(&capabilities),
+            routes,
             last_used: Instant::now(),
         };
 
