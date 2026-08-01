@@ -63,7 +63,7 @@ concurrency:
 jobs:
   release-please:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: [self-hosted, ci-pool-ops]
+    runs-on: ci-pool-ops
     timeout-minutes: 10
     permissions:
       contents: write       # required to create release commits and tags
@@ -87,7 +87,7 @@ jobs:
     name: Sync release metadata to release PR version
     needs: release-please
     if: ${{ needs.release-please.outputs.prs_created == 'true' }}
-    runs-on: [self-hosted, ci-pool-rust]
+    runs-on: ci-pool-rust
     timeout-minutes: 30
     permissions:
       contents: write
