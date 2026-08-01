@@ -124,7 +124,7 @@ labby/
 │           ├── config.rs             # ~/.labby/.env + config.toml loading (CWD → ~/.labby/ → ~/.config/labby/)
 │           └── output.rs             # table/json formatting
 ├── apps/gateway-admin/               # Next.js Labby web UI, statically exported
-├── packages/labby-mcp/               # npm launcher wrapper (`npx -y @dinglebear/labby-mcp mcp`)
+├── packages/labby-mcp/               # npm launcher wrapper (`npx -y @dinglebear/labby mcp`)
 ├── plugins/                          # Claude/Codex plugin assets (labby, vibin, testing, …)
 ├── scripts/                          # install.sh/install.ps1, incus-bootstrap.sh, CI helpers
 ├── openwiki/                         # generated repository wiki
