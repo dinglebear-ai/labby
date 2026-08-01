@@ -42,11 +42,11 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelledNotificationParam,
     ClientInfo, ClientNotification, ClientRequest, CompleteRequestParams, CompleteResult,
     CustomNotification, CustomRequest, CustomResult, DiscoverResult, GetPromptRequestParams,
-    GetPromptResponse, GetTaskParams, GetTaskResult, InitializeRequestParams, InitializeResult,
-    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerInfo, ServerNotification, ServerResult, SubscriptionFilter,
-    UpdateTaskParams,
+    GetPromptResponse, GetTaskParams, GetTaskResult, Implementation, InitializeRequestParams,
+    InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ServerInfo, ServerNotification, ServerResult,
+    SubscriptionFilter, UpdateTaskParams,
 };
 use rmcp::service::{
     NotificationContext, Peer, RequestContext, RunningService, ServiceError, SubscriptionContext,
@@ -231,8 +231,21 @@ impl ServerHandler for BridgeServerHandler {
     fn get_info(&self) -> ServerInfo {
         self.peer
             .peer_info()
-            .map(|info| (*info).clone())
-            .unwrap_or_default()
+            .map(|info| {
+                let mut server_info = ServerInfo::new(info.capabilities.clone())
+                    .with_protocol_version(info.protocol_version.clone())
+                    .with_server_info(
+                        info.server_info
+                            .clone()
+                            .unwrap_or_else(Implementation::from_build_env),
+                    );
+                if let Some(instructions) = info.instructions.clone() {
+                    server_info = server_info.with_instructions(instructions);
+                }
+                server_info.meta = info.meta.clone();
+                server_info
+            })
+            .unwrap_or_else(|| ServerInfo::new(Default::default()))
     }
 
     async fn list_tools(
