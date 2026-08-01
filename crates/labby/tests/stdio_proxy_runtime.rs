@@ -51,18 +51,28 @@ async fn connect(
     url: &url::Url,
     token: Option<&str>,
 ) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    ensure_tls_provider();
-    let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str().to_string());
-    config.auth_header = token.map(str::to_string);
-    let worker = StreamableHttpClientWorker::new(reqwest::Client::new(), config);
-    ().serve_with_lifecycle(
-        worker,
+    connect_with_lifecycle(
+        url,
+        token,
         ClientLifecycleMode::Discover {
             preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
         },
     )
     .await
-    .expect("HTTP MCP client connects")
+}
+
+async fn connect_with_lifecycle(
+    url: &url::Url,
+    token: Option<&str>,
+    lifecycle: ClientLifecycleMode,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    ensure_tls_provider();
+    let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str().to_string());
+    config.auth_header = token.map(str::to_string);
+    let worker = StreamableHttpClientWorker::new(reqwest::Client::new(), config);
+    ().serve_with_lifecycle(worker, lifecycle)
+        .await
+        .expect("HTTP MCP client connects")
 }
 
 #[tokio::test]
@@ -90,6 +100,72 @@ async fn local_proxy_forwards_tools_list_after_child_discovery_and_bind() {
     let tools = service.peer().list_all_tools().await.unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name.as_ref(), "fixture.echo");
+    let resources = service.peer().list_all_resources().await.unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].uri, "fixture://status");
+    let resource = service
+        .peer()
+        .read_resource(rmcp::model::ReadResourceRequestParams::new(
+            "fixture://status",
+        ))
+        .await
+        .unwrap();
+    match &resource.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+            assert_eq!(text, "fixture-ready");
+        }
+        other => panic!("expected text resource contents, got {other:?}"),
+    }
+    let prompts = service.peer().list_all_prompts().await.unwrap();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].name, "fixture.prompt");
+    let prompt = service
+        .peer()
+        .get_prompt(rmcp::model::GetPromptRequestParams::new("fixture.prompt"))
+        .await
+        .unwrap();
+    assert_eq!(
+        prompt.messages[0].content.as_text().unwrap().text,
+        "fixture prompt result"
+    );
+
+    for lifecycle in [
+        ClientLifecycleMode::Initialize,
+        ClientLifecycleMode::Auto {
+            preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+            legacy_version: Some(rmcp::model::ProtocolVersion::V_2025_11_25),
+        },
+    ] {
+        let lifecycle_service = connect_with_lifecycle(proxy.url(), None, lifecycle).await;
+        assert_eq!(
+            lifecycle_service
+                .peer()
+                .list_all_tools()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            lifecycle_service
+                .peer()
+                .list_all_resources()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            lifecycle_service
+                .peer()
+                .list_all_prompts()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        lifecycle_service.cancel().await.unwrap();
+    }
 
     let sse_response = reqwest::Client::new()
         .post(proxy.url().clone())
@@ -155,6 +231,7 @@ async fn local_proxy_forwards_tools_list_after_child_discovery_and_bind() {
             .as_str()
             .is_some_and(|path| !path.is_empty())
     );
+    assert_eq!(context["scrub_canary"], serde_json::Value::Null);
     #[cfg(unix)]
     assert_eq!(context["saw_non_utf8_argument"], true);
 
