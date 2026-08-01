@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 
 use crate::config::LabConfig;
@@ -116,6 +116,33 @@ fn parse_explicit_env(values: &[String]) -> Result<Vec<(OsString, OsString)>> {
         .collect()
 }
 
+#[cfg(feature = "gateway")]
+fn local_runtime_preferences(
+    preferences: &crate::proxy::config::ProxyPreferences,
+) -> Result<crate::proxy::config::ProxyPreferences> {
+    use crate::proxy::config::{
+        ProxyAuthMode, ProxyExposure, ProxyPortPreference, ProxyPreferences,
+    };
+
+    if preferences.auth == ProxyAuthMode::Oauth {
+        anyhow::bail!("proxy OAuth auth is unsupported in the Tailscale publication slice");
+    }
+    let auth = match (preferences.exposure, preferences.auth) {
+        (ProxyExposure::Tailscale, ProxyAuthMode::Tailnet) => ProxyAuthMode::None,
+        (_, auth @ (ProxyAuthMode::None | ProxyAuthMode::Bearer)) => auth,
+        (ProxyExposure::Local, ProxyAuthMode::Tailnet) => {
+            anyhow::bail!("tailnet auth requires Tailscale exposure")
+        }
+        (_, ProxyAuthMode::Oauth) => unreachable!("OAuth rejected above"),
+    };
+    Ok(ProxyPreferences {
+        exposure: ProxyExposure::Local,
+        auth,
+        port: ProxyPortPreference::default(),
+        ..preferences.clone()
+    })
+}
+
 /// Run the stdio MCP proxy command in the foreground.
 #[cfg(feature = "gateway")]
 pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> Result<ExitCode> {
@@ -132,6 +159,7 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         .validate()
         .map_err(|error| anyhow::anyhow!("proxy preferences validation failed: {error}"))?;
 
+    let local_preferences = local_runtime_preferences(&prefs)?;
     let bearer_token = if matches!(prefs.auth, crate::proxy::config::ProxyAuthMode::Bearer) {
         Some(
             args.read_bearer_token()
@@ -177,62 +205,133 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
     let proxy =
         crate::proxy::runtime::LocalProxy::start(crate::proxy::runtime::LocalProxyOptions {
             command,
-            preferences: prefs,
+            preferences: local_preferences,
             bearer_token,
             explicit_env: parse_explicit_env(&args.env)?,
             inherit_env,
         })
         .await
         .map_err(|error| anyhow::anyhow!("proxy startup failed: {error}"))?;
-    let info = proxy.info();
+    let info = proxy.info().clone();
+    let mut tailscale = if prefs.exposure == crate::proxy::config::ProxyExposure::Tailscale {
+        let mut options = crate::proxy::tailscale::TailscaleServeOptions::for_proxy(
+            info.local_addr,
+            prefs.path.clone(),
+            prefs.port,
+            prefs.port_range_start,
+            prefs.port_range_end,
+        );
+        if let Some(executable) = std::env::var_os("LABBY_TAILSCALE_BIN") {
+            options.executable = executable.into();
+        }
+        match crate::proxy::tailscale::TailscaleServe::start(options).await {
+            Ok(serve) => Some(serve),
+            Err(error) => {
+                let shutdown = proxy.shutdown().await;
+                if let Err(shutdown) = shutdown {
+                    return Err(error).context(format!(
+                        "LocalProxy cleanup also failed after Tailscale startup failure: {shutdown:#}"
+                    ));
+                }
+                return Err(error).context("Tailscale Serve publication failed");
+            }
+        }
+    } else {
+        None
+    };
+    let public_url = tailscale
+        .as_ref()
+        .map_or_else(|| info.url.clone(), |serve| serve.public_url().clone());
+    let external_port = tailscale.as_ref().map_or(
+        info.local_addr.port(),
+        crate::proxy::tailscale::TailscaleServe::external_port,
+    );
+    let exposure = if tailscale.is_some() {
+        "tailscale"
+    } else {
+        "local"
+    };
+    let auth = match prefs.auth {
+        crate::proxy::config::ProxyAuthMode::Tailnet => "tailnet",
+        crate::proxy::config::ProxyAuthMode::Bearer => "bearer",
+        crate::proxy::config::ProxyAuthMode::Oauth => "oauth",
+        crate::proxy::config::ProxyAuthMode::None => "none",
+    };
 
-    if format.is_json() {
+    let ready_output = if format.is_json() {
         print(
             &ProxyReadyOutput {
-                url: info.url.to_string(),
-                exposure: "local",
-                auth: if info.auth == crate::proxy::config::ProxyAuthMode::Bearer {
-                    "bearer"
-                } else {
-                    "none"
-                },
-                external_port: info.local_addr.port(),
+                url: public_url.to_string(),
+                exposure,
+                auth,
+                external_port,
                 local_addr: info.local_addr.to_string(),
                 command: command_json,
                 child_pid: info.child_pid,
                 protocol_version: info.protocol_version.to_string(),
             },
             format,
-        )?;
+        )
     } else {
         #[allow(clippy::print_stdout)]
         {
             println!("MCP proxy ready");
             println!();
             println!("  Server   {}", info.command);
-            println!("  URL      {}", info.url);
-            println!("  Exposure Local");
+            println!("  URL      {public_url}");
+            println!(
+                "  Exposure {}",
+                if tailscale.is_some() {
+                    "Tailscale Serve"
+                } else {
+                    "Local"
+                }
+            );
             println!(
                 "  Auth     {}",
-                if info.auth == crate::proxy::config::ProxyAuthMode::Bearer {
-                    "Bearer token"
-                } else {
-                    "None"
+                match prefs.auth {
+                    crate::proxy::config::ProxyAuthMode::Tailnet => "Tailnet",
+                    crate::proxy::config::ProxyAuthMode::Bearer => "Bearer token",
+                    crate::proxy::config::ProxyAuthMode::Oauth => "OAuth",
+                    crate::proxy::config::ProxyAuthMode::None => "None",
                 }
             );
             println!();
             println!("Press Ctrl+C to stop.");
         }
+        Ok(())
+    };
+    if let Err(output_error) = ready_output {
+        let tailscale_shutdown = match tailscale.take() {
+            Some(serve) => serve.shutdown().await,
+            None => Ok(()),
+        };
+        let proxy_shutdown = proxy.shutdown().await;
+        tailscale_shutdown
+            .context("Tailscale Serve shutdown failed after readiness output error")?;
+        proxy_shutdown.context("LocalProxy shutdown failed after readiness output error")?;
+        return Err(output_error);
     }
 
-    let failure = tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal?;
-            None
+    let failure = if let Some(serve) = tailscale.as_mut() {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => Some(signal.map_err(anyhow::Error::from)),
+            result = proxy.wait_for_failure() => Some(result),
+            result = serve.wait_for_failure() => Some(result),
         }
-        result = proxy.wait_for_failure() => Some(result),
+    } else {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => Some(signal.map_err(anyhow::Error::from)),
+            result = proxy.wait_for_failure() => Some(result),
+        }
     };
-    proxy.shutdown().await?;
+    let tailscale_shutdown = match tailscale {
+        Some(serve) => serve.shutdown().await,
+        None => Ok(()),
+    };
+    let proxy_shutdown = proxy.shutdown().await;
+    tailscale_shutdown.context("Tailscale Serve shutdown failed")?;
+    proxy_shutdown.context("LocalProxy shutdown failed")?;
     if let Some(result) = failure {
         result?;
     }
@@ -358,5 +457,40 @@ mod tests {
             "/path/to/dist.js",
         ]);
         assert_eq!(args.inherit_env, vec!["PATH", "HOME"]);
+    }
+
+    #[test]
+    fn tailscale_tailnet_uses_ephemeral_loopback_without_application_auth() {
+        let prefs = crate::proxy::config::ProxyPreferences {
+            port: crate::proxy::config::ProxyPortPreference::Fixed(52_177),
+            ..Default::default()
+        };
+        let local = local_runtime_preferences(&prefs).unwrap();
+        assert_eq!(local.exposure, crate::proxy::config::ProxyExposure::Local);
+        assert_eq!(local.auth, crate::proxy::config::ProxyAuthMode::None);
+        assert_eq!(local.port.fixed(), None);
+    }
+
+    #[test]
+    fn tailscale_bearer_stays_bearer_on_loopback() {
+        let prefs = crate::proxy::config::ProxyPreferences {
+            auth: crate::proxy::config::ProxyAuthMode::Bearer,
+            ..Default::default()
+        };
+        assert_eq!(
+            local_runtime_preferences(&prefs).unwrap().auth,
+            crate::proxy::config::ProxyAuthMode::Bearer
+        );
+    }
+
+    #[test]
+    fn oauth_is_an_explicitly_unsupported_proxy_slice() {
+        let prefs = crate::proxy::config::ProxyPreferences {
+            auth: crate::proxy::config::ProxyAuthMode::Oauth,
+            ..Default::default()
+        };
+        let error = local_runtime_preferences(&prefs).unwrap_err();
+        assert!(error.to_string().contains("OAuth"));
+        assert!(error.to_string().contains("unsupported"));
     }
 }

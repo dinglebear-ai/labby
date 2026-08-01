@@ -316,3 +316,101 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
         .unwrap();
     assert!(status.success(), "CLI exited with {status}");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn zero_flag_cli_publishes_verified_tailscale_url_with_fake_cli() {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+
+    let temp = tempfile::tempdir().unwrap();
+    let pid_file = temp.path().join("tailscale-child.pid");
+    let mapping = temp.path().join("mapping");
+    let calls = temp.path().join("tailscale-calls");
+    let fake_tailscale = temp.path().join("tailscale");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -u
+mapping='{mapping}'
+calls='{calls}'
+printf '%s\n' "$*" >> "$calls"
+if [[ "${{1:-}} ${{2:-}}" == "status --json" ]]; then
+  printf '%s\n' '{{"BackendState":"Running","Self":{{"Online":true,"DNSName":"proxy-test.example.ts.net."}}}}'
+  exit 0
+fi
+if [[ "${{1:-}}" == "version" ]]; then printf '%s\n' '1.98.10'; exit 0; fi
+if [[ "${{1:-}} ${{2:-}} ${{3:-}}" == "serve status --json" ]]; then
+  if [[ -f "$mapping" ]]; then
+    IFS='|' read -r port backend < "$mapping"
+    printf '{{"TCP":{{}},"Web":{{"proxy-test.example.ts.net:%s":{{"Handlers":{{"/":{{"Proxy":"%s"}}}}}}}}}}\n' "$port" "$backend"
+  else
+    printf '%s\n' '{{"TCP":{{}},"Web":{{}}}}'
+  fi
+  exit 0
+fi
+if [[ "${{1:-}}" == "serve" ]]; then
+  port="${{3#--https=}}"; backend="${{4:-}}"
+  if [[ "$backend" == "off" ]]; then rm -f "$mapping"; exit 0; fi
+  printf '%s|%s\n' "$port" "$backend" > "$mapping"
+  trap 'rm -f "$mapping"; exit 0' TERM INT
+  while :; do sleep 0.05; done
+fi
+exit 2
+"#,
+        mapping = mapping.display(),
+        calls = calls.display(),
+    );
+    std::fs::write(&fake_tailscale, script).unwrap();
+    std::fs::set_permissions(&fake_tailscale, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(temp.path().join("config.toml"), "[proxy]\nport = 54000\n").unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["--json", "proxy"])
+        .arg(env!("CARGO_BIN_EXE_stdio-mcp-fixture"))
+        .arg("--pid-file")
+        .arg(&pid_file)
+        .env("LABBY_HOME", temp.path())
+        .env("LABBY_TAILSCALE_BIN", &fake_tailscale)
+        .current_dir(temp.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let line = tokio::time::timeout(
+        Duration::from_secs(10),
+        BufReader::new(child.stdout.take().unwrap())
+            .lines()
+            .next_line(),
+    )
+    .await
+    .expect("CLI readiness output timed out")
+    .unwrap()
+    .expect("CLI exited before readiness");
+    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(ready["url"], "https://proxy-test.example.ts.net:54000/mcp");
+    assert_eq!(ready["exposure"], "tailscale");
+    assert_eq!(ready["auth"], "tailnet");
+    assert_eq!(ready["external_port"], 54_000);
+    let local_url = url::Url::parse(&format!(
+        "http://{}/mcp",
+        ready["local_addr"].as_str().unwrap()
+    ))
+    .unwrap();
+    let service = connect(&local_url, None).await;
+    assert_eq!(service.peer().list_all_tools().await.unwrap().len(), 1);
+
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id().unwrap()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("CLI did not stop after Ctrl+C")
+        .unwrap();
+    assert!(status.success(), "CLI exited with {status}");
+    assert!(!mapping.exists());
+    let calls = std::fs::read_to_string(calls).unwrap();
+    assert!(!calls.contains("reset"));
+}
