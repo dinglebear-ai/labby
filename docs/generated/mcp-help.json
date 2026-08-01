@@ -1060,6 +1060,84 @@
           "returns": "GatewayServerSchema"
         },
         {
+          "name": "gateway.oauth.resource_lease.create",
+          "description": "Create an in-memory OAuth protected-resource lease",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "resource",
+              "ty": "string",
+              "required": true,
+              "description": "Exact absolute HTTPS OAuth resource audience"
+            },
+            {
+              "name": "scopes",
+              "ty": "string[]",
+              "required": true,
+              "description": "Scopes accepted for the resource"
+            },
+            {
+              "name": "ttl_secs",
+              "ty": "integer",
+              "required": true,
+              "description": "Lease lifetime in seconds (1 through 86400)"
+            },
+            {
+              "name": "owner",
+              "ty": "string",
+              "required": true,
+              "description": "Bounded diagnostic owner label"
+            }
+          ],
+          "returns": "ResourceLease"
+        },
+        {
+          "name": "gateway.oauth.resource_lease.renew",
+          "description": "Renew an active in-memory OAuth protected-resource lease",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque resource lease identifier"
+            },
+            {
+              "name": "ttl_secs",
+              "ty": "integer",
+              "required": true,
+              "description": "Replacement lease lifetime in seconds"
+            }
+          ],
+          "returns": "ResourceLease"
+        },
+        {
+          "name": "gateway.oauth.resource_lease.release",
+          "description": "Release an active in-memory OAuth protected-resource lease",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque resource lease identifier"
+            }
+          ],
+          "returns": "ResourceLeaseReleaseView"
+        },
+        {
           "name": "gateway.oauth.probe",
           "description": "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. Rejects userinfo, query strings, and fragments. Registers a transient OAuth manager keyed by URL host, port, and path; it is persisted only after a successful callback updates gateway config.",
           "destructive": false,
@@ -1345,6 +1423,15 @@
         {
           "name": "auth.check",
           "description": "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "DoctorReport"
+        },
+        {
+          "name": "proxy.preflight",
+          "description": "Validate persisted stdio-proxy configuration and read-only local dependencies",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -1717,6 +1804,36 @@
           ],
           "params": [],
           "returns": "SetupReport"
+        },
+        {
+          "name": "proxy.configure",
+          "description": "Persist local stdio-proxy defaults and securely store a bearer secret when required",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "preferences",
+              "ty": "ProxyPreferences",
+              "required": true,
+              "description": "Validated non-secret proxy preferences to persist in config.toml"
+            },
+            {
+              "name": "bearer_token",
+              "ty": "string",
+              "required": false,
+              "description": "Write-only bearer token read from stdin; never returned or logged"
+            },
+            {
+              "name": "dry_run",
+              "ty": "boolean",
+              "required": false,
+              "description": "Preview whether config or secret files would change without mutation"
+            }
+          ],
+          "returns": "ProxySetupOutcome"
         },
         {
           "name": "plugins.installed",

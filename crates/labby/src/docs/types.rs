@@ -4,11 +4,24 @@ use serde::Serialize;
 pub struct DocsProjection {
     pub mcp_help: crate::catalog::Catalog,
     pub service_catalog: Vec<ServiceDoc>,
+    pub proxy_config_reference: Vec<ConfigDoc>,
     pub env_reference: Vec<EnvDoc>,
     pub action_catalog: Vec<ActionDoc>,
     pub feature_matrix: FeatureMatrix,
     pub api_routes: Vec<RouteDoc>,
     pub openapi_json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigDoc {
+    pub section: String,
+    pub key: String,
+    pub toml_path: String,
+    pub ty: String,
+    pub default: String,
+    pub secret: bool,
+    pub env_override: Option<String>,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

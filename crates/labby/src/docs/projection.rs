@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use super::routes::{build_route_docs, service_has_action_api_route};
 use super::types::{
-    DocsProjection, EnvDoc, FeatureClass, FeatureDoc, FeatureMatrix, FeatureMismatch, ServiceDoc,
-    ServiceExposure, SurfaceAvailability,
+    ConfigDoc, DocsProjection, EnvDoc, FeatureClass, FeatureDoc, FeatureMatrix, FeatureMismatch,
+    ServiceDoc, ServiceExposure, SurfaceAvailability,
 };
 use crate::catalog::build_catalog;
 use crate::registry::{RegisteredService, build_docs_registry};
@@ -35,6 +35,7 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
     let services = registry.services();
     let feature_matrix = build_feature_matrix(repo_root)?;
     let service_catalog = build_service_catalog(services, &feature_matrix, repo_root);
+    let proxy_config_reference = build_proxy_config_reference();
     let env_reference = build_env_reference(&service_catalog);
     let action_catalog = super::action_catalog::build_action_catalog(services);
     let api_route_services = service_catalog
@@ -51,6 +52,7 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
     Ok(DocsProjection {
         mcp_help,
         service_catalog,
+        proxy_config_reference,
         env_reference,
         action_catalog,
         feature_matrix,
@@ -88,6 +90,32 @@ fn build_service_catalog(
             upstream_doc: doc_exists(repo_root, &format!("docs/upstream-api/{}.md", meta.name)),
             supports_multi_instance: meta.supports_multi_instance,
             metadata_source: "PluginMeta only".to_string(),
+        });
+    }
+
+    if !docs.iter().any(|service| service.name == "proxy") {
+        docs.push(ServiceDoc {
+            name: "proxy".to_string(),
+            display_name: "Stdio MCP Proxy".to_string(),
+            description:
+                "Expose one explicitly selected stdio MCP server as faithful Streamable HTTP"
+                    .to_string(),
+            category: "bootstrap".to_string(),
+            status: "available".to_string(),
+            feature: Some("gateway".to_string()),
+            exposure: ServiceExposure::FeatureGated,
+            surfaces: SurfaceAvailability {
+                cli: true,
+                mcp: false,
+                api: false,
+                web_ui: false,
+            },
+            default_port: None,
+            docs_url: Some("docs/guides/STDIO_MCP_PROXY.md".to_string()),
+            coverage_doc: None,
+            upstream_doc: None,
+            supports_multi_instance: false,
+            metadata_source: "CLI runtime + ProxyPreferences".to_string(),
         });
     }
 
@@ -161,10 +189,140 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
             meta.default_port,
         ));
     }
+    vars.extend([
+        EnvDoc {
+            service: "proxy".to_string(),
+            env_var: "LABBY_PROXY_BEARER_TOKEN".to_string(),
+            required: false,
+            secret: true,
+            description: "Default static bearer secret; the key name may be changed with proxy.bearer_token_env"
+                .to_string(),
+            example: "<labby_proxy_bearer_token>".to_string(),
+            default_port: None,
+        },
+        EnvDoc {
+            service: "proxy".to_string(),
+            env_var: "LABBY_TAILSCALE_BIN".to_string(),
+            required: false,
+            secret: false,
+            description: "Override the Tailscale CLI executable used by proxy publication and preflight"
+                .to_string(),
+            example: "tailscale".to_string(),
+            default_port: None,
+        },
+        EnvDoc {
+            service: "proxy".to_string(),
+            env_var: "LABBY_GW_UPSTREAM_STDERR".to_string(),
+            required: false,
+            secret: false,
+            description: "Set forwarding level for the proxied stdio child's redacted stderr; default debug"
+                .to_string(),
+            example: "debug".to_string(),
+            default_port: None,
+        },
+        EnvDoc {
+            service: "proxy".to_string(),
+            env_var: "LABBY_PROXY_TEST_RENEW_MS".to_string(),
+            required: false,
+            secret: false,
+            description: "Test-only OAuth lease renewal override, compiled only with proxy-testkit"
+                .to_string(),
+            example: "100".to_string(),
+            default_port: None,
+        },
+    ]);
     vars.sort_by(|a, b| {
         (a.service.as_str(), a.env_var.as_str()).cmp(&(b.service.as_str(), b.env_var.as_str()))
     });
     vars
+}
+
+fn build_proxy_config_reference() -> Vec<ConfigDoc> {
+    let entries = [
+        (
+            "exposure",
+            "tailscale|local",
+            "tailscale",
+            None,
+            "Publication controller",
+        ),
+        (
+            "auth",
+            "tailnet|bearer|oauth|none",
+            "tailnet",
+            None,
+            "Authentication policy",
+        ),
+        (
+            "path",
+            "absolute non-root path",
+            "/mcp",
+            None,
+            "Public MCP endpoint path",
+        ),
+        (
+            "port",
+            "random|u16",
+            "random",
+            None,
+            "External Tailscale HTTPS port selection",
+        ),
+        (
+            "port_range_start",
+            "u16",
+            "49152",
+            None,
+            "First random external-port candidate",
+        ),
+        (
+            "port_range_end",
+            "u16",
+            "65535",
+            None,
+            "Last random external-port candidate",
+        ),
+        (
+            "bearer_token_env",
+            "environment variable name",
+            "LABBY_PROXY_BEARER_TOKEN",
+            Some("LABBY_PROXY_BEARER_TOKEN"),
+            "Environment key containing the static bearer secret",
+        ),
+        (
+            "oauth_scopes",
+            "string[]",
+            "[mcp:read, mcp:write]",
+            None,
+            "Scopes required by the exact OAuth resource lease",
+        ),
+        (
+            "inherit_env",
+            "environment variable name[]",
+            "[]",
+            None,
+            "Additional ambient variables inherited by the scrubbed child",
+        ),
+        (
+            "shutdown_grace_ms",
+            "u64 (1..=60000)",
+            "3000",
+            None,
+            "Grace period preference for supervised shutdown",
+        ),
+    ];
+    entries
+        .into_iter()
+        .map(|(key, ty, default, env_override, description)| ConfigDoc {
+            section: "proxy".to_string(),
+            key: key.to_string(),
+            toml_path: format!("proxy.{key}"),
+            ty: ty.to_string(),
+            default: default.to_string(),
+            secret: false,
+            env_override: env_override.map(str::to_string),
+            description: description.to_string(),
+        })
+        .collect()
 }
 
 fn env_docs(
@@ -713,5 +871,88 @@ mod tests {
             .map(|action| (action.service.as_str(), action.action.as_str()))
             .collect::<BTreeSet<_>>();
         assert_eq!(help_actions, projected_mcp_actions);
+    }
+
+    #[test]
+    fn proxy_projection_covers_cli_config_env_actions_and_service_inventory() {
+        let projection = build_docs_projection(&workspace_root().unwrap()).unwrap();
+        let service = projection
+            .service_catalog
+            .iter()
+            .find(|service| service.name == "proxy")
+            .expect("proxy service inventory");
+        assert!(service.surfaces.cli);
+        assert!(!service.surfaces.mcp);
+        assert!(!service.surfaces.api);
+
+        let config_keys = projection
+            .proxy_config_reference
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            config_keys,
+            BTreeSet::from([
+                "auth",
+                "bearer_token_env",
+                "exposure",
+                "inherit_env",
+                "oauth_scopes",
+                "path",
+                "port",
+                "port_range_end",
+                "port_range_start",
+                "shutdown_grace_ms",
+            ])
+        );
+        assert!(projection.env_reference.iter().any(|entry| {
+            entry.service == "proxy" && entry.env_var == "LABBY_PROXY_BEARER_TOKEN" && entry.secret
+        }));
+
+        for (service, action) in [
+            ("setup", "proxy.configure"),
+            ("doctor", "proxy.preflight"),
+            ("gateway", "gateway.oauth.resource_lease.create"),
+            ("gateway", "gateway.oauth.resource_lease.renew"),
+            ("gateway", "gateway.oauth.resource_lease.release"),
+        ] {
+            assert!(
+                projection
+                    .action_catalog
+                    .iter()
+                    .any(|entry| entry.service == service && entry.action == action),
+                "missing generated action {service}:{action}"
+            );
+        }
+
+        let help = super::super::render::cli_help();
+        for heading in [
+            "## `labby proxy`",
+            "## `labby setup proxy`",
+            "## `labby doctor proxy`",
+        ] {
+            assert!(
+                help.contains(heading),
+                "missing generated CLI heading {heading}"
+            );
+        }
+
+        assert!(
+            projection
+                .api_routes
+                .iter()
+                .any(|route| route.method == "POST" && route.path == "/v1/gateway")
+        );
+        #[cfg(feature = "api-docs")]
+        for action in [
+            "gateway.oauth.resource_lease.create",
+            "gateway.oauth.resource_lease.renew",
+            "gateway.oauth.resource_lease.release",
+        ] {
+            assert!(
+                projection.openapi_json.contains(action),
+                "OpenAPI omits {action}"
+            );
+        }
     }
 }

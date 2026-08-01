@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::catalog::ParamEntry;
 
 use super::types::{
-    ActionDoc, EnvDoc, FeatureDoc, FeatureMatrix, ParamDoc, RouteDoc, ServiceDoc,
+    ActionDoc, ConfigDoc, EnvDoc, FeatureDoc, FeatureMatrix, ParamDoc, RouteDoc, ServiceDoc,
     SurfaceAvailability,
 };
 
@@ -85,6 +85,29 @@ pub fn env_reference(vars: &[EnvDoc]) -> String {
             var.secret,
             code(&var.example),
             cell(&var.description)
+        )
+        .ok();
+    }
+    out
+}
+
+pub fn proxy_config_reference(entries: &[ConfigDoc]) -> String {
+    let mut out = header("proxy-config-reference", "labby docs generate");
+    out.push_str(
+        "Values are non-secret unless marked otherwise. Literal bearer tokens belong in the environment file, never TOML.\n\n",
+    );
+    out.push_str("| TOML path | Type | Default | Secret | Environment override | Description |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+    for entry in entries {
+        writeln!(
+            out,
+            "| {} | {} | {} | {} | {} | {} |",
+            code(&entry.toml_path),
+            code(&entry.ty),
+            code(&entry.default),
+            entry.secret,
+            cell(&opt(entry.env_override.as_deref())),
+            cell(&entry.description),
         )
         .ok();
     }
@@ -177,6 +200,7 @@ pub fn generated_readme() -> String {
         "service-catalog.md/json",
         "action-catalog.md/json",
         "env-reference.md/json",
+        "proxy-config-reference.md/json",
         "api-routes.md/json",
         "openapi.json",
         "feature-matrix.md/json",

@@ -1,1 +1,38 @@
-[]
+[
+  {
+    "service": "proxy",
+    "env_var": "LABBY_GW_UPSTREAM_STDERR",
+    "required": false,
+    "secret": false,
+    "description": "Set forwarding level for the proxied stdio child's redacted stderr; default debug",
+    "example": "debug",
+    "default_port": null
+  },
+  {
+    "service": "proxy",
+    "env_var": "LABBY_PROXY_BEARER_TOKEN",
+    "required": false,
+    "secret": true,
+    "description": "Default static bearer secret; the key name may be changed with proxy.bearer_token_env",
+    "example": "<labby_proxy_bearer_token>",
+    "default_port": null
+  },
+  {
+    "service": "proxy",
+    "env_var": "LABBY_PROXY_TEST_RENEW_MS",
+    "required": false,
+    "secret": false,
+    "description": "Test-only OAuth lease renewal override, compiled only with proxy-testkit",
+    "example": "100",
+    "default_port": null
+  },
+  {
+    "service": "proxy",
+    "env_var": "LABBY_TAILSCALE_BIN",
+    "required": false,
+    "secret": false,
+    "description": "Override the Tailscale CLI executable used by proxy publication and preflight",
+    "example": "tailscale",
+    "default_port": null
+  }
+]

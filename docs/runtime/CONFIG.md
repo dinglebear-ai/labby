@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-01"
 ---
 
 # Runtime Configuration
@@ -23,11 +23,18 @@ Runtime precedence is:
 3. `config.toml`
 4. Built-in defaults
 
+Existing process values win over dotenv files. Labby then loads
+`$LABBY_HOME/.env` (normally `~/.labby/.env`) and finally a current-directory
+`.env` for names that remain unset. Proxy CLI overrides are applied after the
+TOML model loads.
+
 Keep secrets, tokens, passwords, OAuth client secrets, and upstream credential
 values in `~/.labby/.env`. Keep product preferences in TOML. The annotated
 example in [../../config/config.example.toml](../../config/config.example.toml)
 is the canonical hand-written configuration sample. Generated environment
 metadata lives in [../generated/env-reference.md](../generated/env-reference.md).
+The code-owned proxy key inventory lives in
+[../generated/proxy-config-reference.md](../generated/proxy-config-reference.md).
 
 ## Supported Sections
 
@@ -36,6 +43,9 @@ metadata lives in [../generated/env-reference.md](../generated/env-reference.md)
 - `[mcp]`: default transport (`stdio`, `http`, or `unix_socket`), HTTP/TCP bind
   host/port, Unix-socket path/mode/ownership and optional Linux peer-credential
   allowlists, and allowed hosts.
+- `[proxy]`: foreground direct stdio-proxy exposure, auth, endpoint path,
+  external port selection, bearer secret key name, OAuth scopes, explicit
+  child-environment inheritance, and shutdown preference.
 - `[api]`: CORS preferences.
 - `[web]`: exported asset location and development-only auth bypass.
 - `[workspace]`: root for the optional filesystem browser. Default:
@@ -68,6 +78,20 @@ credentials stay in `bearer_token_env` or `[upstream.oauth]`.
 
 Use `labby gateway add`, `update`, `remove`, `reload`, and related
 commands rather than editing active gateway state concurrently by hand.
+
+## Direct Stdio Proxy
+
+`labby setup proxy` writes all ten non-secret `[proxy]` keys to
+`$LABBY_HOME/config.toml`. Bearer material is stored separately in
+`$LABBY_HOME/.env` under the configured `proxy.bearer_token_env` key. The
+default key is `LABBY_PROXY_BEARER_TOKEN`; it is separate from the daemon
+administrator token.
+
+There are no implicit `LABBY_PROXY_EXPOSURE`, `LABBY_PROXY_AUTH`, path, port,
+range, scopes, inheritance, or shutdown environment aliases. Those preferences
+come from one-run CLI options where offered, then TOML, then defaults. Proxy
+environment controls and the complete table are documented in the
+[stdio MCP proxy guide](../guides/STDIO_MCP_PROXY.md).
 
 ## Authentication
 
