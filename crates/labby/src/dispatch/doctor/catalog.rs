@@ -47,6 +47,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
+        name: "proxy.preflight",
+        description: "Validate persisted stdio-proxy configuration and read-only local dependencies",
+        destructive: false,
+        requires_admin: false,
+        returns: "DoctorReport",
+        params: &[],
+    },
+    ActionSpec {
         name: "proxy.check",
         description: "Check public Lab and protected MCP proxy endpoints from caller-visible URLs. \
                        Probes: app health, protected-resource metadata, OAuth bearer challenge, \

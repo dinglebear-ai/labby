@@ -11,6 +11,7 @@ use crate::dispatch::helpers::{action_schema, help_payload, to_json};
 use super::catalog::ACTIONS;
 use super::gateway;
 use super::params::{parse_proxy_check, parse_relay_check};
+use super::preflight;
 use super::proxy;
 use super::service;
 use super::system;
@@ -48,6 +49,9 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
         "proxy.check" => {
             let p = parse_proxy_check(&params)?;
             return to_json(proxy::check_proxy(p).await?);
+        }
+        "proxy.preflight" => {
+            return to_json(preflight::check_proxy_preflight().await);
         }
         // "oauth.relay.check" intentionally has no early-return arm here:
         // it falls through to `dispatch_with_clients_and_relay` below (which
@@ -123,6 +127,7 @@ pub async fn dispatch_with_clients_and_relay(
             let p = parse_proxy_check(&params)?;
             to_json(proxy::check_proxy(p).await?)
         }
+        "proxy.preflight" => to_json(preflight::check_proxy_preflight().await),
         "oauth.relay.check" => {
             let p = parse_relay_check(&params)?;
             to_json(super::relay::check_public_relay(public_relay.clone(), p.probe_targets).await)

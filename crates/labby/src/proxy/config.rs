@@ -5,7 +5,7 @@ pub const DEFAULT_PROXY_PORT_RANGE_END: u16 = 65_535;
 pub const DEFAULT_PROXY_SHUTDOWN_GRACE_MS: u64 = 3_000;
 pub const DEFAULT_PROXY_BEARER_TOKEN_ENV: &str = "LABBY_PROXY_BEARER_TOKEN";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyExposure {
     #[default]
