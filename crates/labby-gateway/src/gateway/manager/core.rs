@@ -45,6 +45,7 @@ pub struct GatewayManagerConfig {
     pub in_process_connector: Option<InProcessConnector>,
     /// Optional upstream OAuth runtime.  `None` when OAuth is not configured.
     pub oauth: Option<GatewayOauthConfig>,
+    pub resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     /// Optional call-usage recorder, shared with every `UpstreamPool` the
     /// manager builds. `None` disables telemetry capture.
     pub usage_store: Option<Arc<crate::usage::UsageStore>>,
@@ -79,6 +80,9 @@ impl GatewayManager {
                 .with_upstream_oauth_managers(oauth.managers)
                 .with_oauth_client_cache(oauth.cache)
                 .with_oauth_resources(oauth.sqlite, oauth.key, oauth.redirect_uri);
+        }
+        if let Some(registry) = cfg.resource_registry {
+            manager = manager.with_resource_registry(registry);
         }
         if let Some(store) = cfg.usage_store {
             manager = manager.with_usage_store(store);
@@ -130,6 +134,7 @@ impl GatewayManager {
             oauth_sqlite: None,
             oauth_key: None,
             oauth_redirect_uri: None,
+            resource_registry: None,
             usage_store: None,
             step_journal: None,
             step_buffers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -258,6 +263,20 @@ impl GatewayManager {
     pub fn with_oauth_client_cache(mut self, cache: OauthClientCache) -> Self {
         self.oauth_client_cache = Some(cache);
         self
+    }
+
+    #[must_use]
+    pub fn with_resource_registry(
+        mut self,
+        registry: labby_auth::resource_registry::ResourceRegistry,
+    ) -> Self {
+        self.resource_registry = Some(registry);
+        self
+    }
+
+    #[must_use]
+    pub fn resource_registry(&self) -> Option<labby_auth::resource_registry::ResourceRegistry> {
+        self.resource_registry.clone()
     }
 
     #[must_use]

@@ -50,6 +50,9 @@ fn gateway_actions_include_management_surface() {
     assert!(names.contains(&"gateway.oauth.start"));
     assert!(names.contains(&"gateway.oauth.status"));
     assert!(names.contains(&"gateway.oauth.clear"));
+    assert!(names.contains(&"gateway.oauth.resource_lease.create"));
+    assert!(names.contains(&"gateway.oauth.resource_lease.renew"));
+    assert!(names.contains(&"gateway.oauth.resource_lease.release"));
     assert!(names.contains(&"gateway.mcp.enable"));
     assert!(names.contains(&"gateway.mcp.disable"));
     assert!(names.contains(&"gateway.mcp.cleanup"));
@@ -68,6 +71,7 @@ fn gateway_actions_include_management_surface() {
                 | "gateway.import_tombstones.restore"
                 | "gateway.remove"
                 | "gateway.mcp.cleanup"
+                | "gateway.oauth.resource_lease.release"
         ) {
             continue;
         }
@@ -77,6 +81,115 @@ fn gateway_actions_include_management_surface() {
             spec.name
         );
     }
+}
+
+#[test]
+fn resource_lease_actions_require_admin_scope() {
+    for name in [
+        "gateway.oauth.resource_lease.create",
+        "gateway.oauth.resource_lease.renew",
+        "gateway.oauth.resource_lease.release",
+    ] {
+        let spec = ACTIONS.iter().find(|spec| spec.name == name).unwrap();
+        assert!(spec.requires_admin, "{name} must require lab:admin");
+    }
+}
+
+#[tokio::test]
+async fn resource_lease_actions_dispatch_typed_round_trip() {
+    let registry = labby_auth::resource_registry::ResourceRegistry::new();
+    let manager = test_manager().with_resource_registry(registry.clone());
+    let created = dispatch_with_manager(
+        &manager,
+        "gateway.oauth.resource_lease.create",
+        json!({
+            "resource": "https://proxy.example:53147/mcp",
+            "scopes": ["mcp:read", "mcp:write"],
+            "ttl_secs": 120,
+            "owner": "live-gateway-test"
+        }),
+    )
+    .await
+    .unwrap();
+    let lease: labby_auth::resource_registry::ResourceLease =
+        serde_json::from_value(created).unwrap();
+    assert_eq!(lease.resource, "https://proxy.example:53147/mcp");
+    assert_eq!(lease.scopes, vec!["mcp:read", "mcp:write"]);
+
+    let renewed = dispatch_with_manager(
+        &manager,
+        "gateway.oauth.resource_lease.renew",
+        json!({"id": lease.id, "ttl_secs": 240}),
+    )
+    .await
+    .unwrap();
+    let renewed: labby_auth::resource_registry::ResourceLease =
+        serde_json::from_value(renewed).unwrap();
+    assert!(renewed.expires_at_unix > lease.expires_at_unix);
+
+    let released = dispatch_with_manager(
+        &manager,
+        "gateway.oauth.resource_lease.release",
+        json!({"id": renewed.id}),
+    )
+    .await
+    .unwrap();
+    let released: super::super::types::ResourceLeaseReleaseView =
+        serde_json::from_value(released).unwrap();
+    assert!(released.released);
+    assert_eq!(registry.lease_count(), 0);
+}
+
+#[tokio::test]
+async fn resource_lease_unknown_and_released_ids_fail_clearly() {
+    let manager = test_manager()
+        .with_resource_registry(labby_auth::resource_registry::ResourceRegistry::new());
+    for action in [
+        "gateway.oauth.resource_lease.renew",
+        "gateway.oauth.resource_lease.release",
+    ] {
+        let error = dispatch_with_manager(
+            &manager,
+            action,
+            json!({"id": "unknown-opaque-id", "ttl_secs": 60}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "not_found");
+    }
+}
+
+#[test]
+fn manager_clones_share_registry_and_restart_does_not_restore_leases() {
+    let registry = labby_auth::resource_registry::ResourceRegistry::new();
+    let manager = test_manager().with_resource_registry(registry.clone());
+    let clone = manager.clone();
+    manager
+        .resource_registry()
+        .unwrap()
+        .create_resource_lease(
+            "https://proxy.example:53147/mcp",
+            ["mcp:read"],
+            std::time::Duration::from_mins(1),
+            "restart-test",
+        )
+        .unwrap();
+    assert_eq!(clone.resource_registry().unwrap().lease_count(), 1);
+
+    let restarted = test_manager()
+        .with_resource_registry(labby_auth::resource_registry::ResourceRegistry::new());
+    assert_eq!(restarted.resource_registry().unwrap().lease_count(), 0);
+    restarted
+        .resource_registry()
+        .unwrap()
+        .create_resource_lease(
+            "https://proxy.example:53147/mcp",
+            ["mcp:read"],
+            std::time::Duration::from_mins(1),
+            "restart-test",
+        )
+        .unwrap();
+    assert_eq!(restarted.resource_registry().unwrap().lease_count(), 1);
 }
 
 #[test]

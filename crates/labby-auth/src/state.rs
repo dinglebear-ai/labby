@@ -1,7 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -16,6 +14,7 @@ use crate::config::{AuthConfig, AuthMode};
 use crate::error::AuthError;
 use crate::google::GoogleProvider;
 use crate::jwt::SigningKeys;
+use crate::resource_registry::ResourceRegistry;
 use crate::sqlite::SqliteStore;
 #[cfg(feature = "http-axum")]
 use crate::types::RegisteredClient;
@@ -181,7 +180,7 @@ pub struct AuthState {
     pub store: SqliteStore,
     pub signing_keys: Arc<SigningKeys>,
     pub google: Arc<GoogleProvider>,
-    allowed_resource_scopes: Arc<RwLock<BTreeMap<String, BTreeSet<String>>>>,
+    resource_registry: ResourceRegistry,
     authorize_limiter: PerIpRateLimiter,
     register_limiter: PerIpRateLimiter,
     token_limiter: PerIpRateLimiter,
@@ -201,6 +200,13 @@ pub struct AuthState {
 
 impl AuthState {
     pub async fn new(config: AuthConfig) -> Result<Self, AuthError> {
+        Self::new_with_resource_registry(config, ResourceRegistry::new()).await
+    }
+
+    pub async fn new_with_resource_registry(
+        config: AuthConfig,
+        resource_registry: ResourceRegistry,
+    ) -> Result<Self, AuthError> {
         if !matches!(config.mode, AuthMode::OAuth) {
             return Err(AuthError::Config(format!(
                 "AuthState requires {prefix}_AUTH_MODE=oauth",
@@ -245,7 +251,7 @@ impl AuthState {
             store,
             signing_keys: Arc::new(signing_keys),
             google: Arc::new(google),
-            allowed_resource_scopes: Arc::new(RwLock::new(BTreeMap::new())),
+            resource_registry,
             authorize_limiter,
             register_limiter,
             token_limiter,
@@ -278,42 +284,32 @@ impl AuthState {
         &self,
         resources: impl IntoIterator<Item = (String, Vec<String>)>,
     ) {
-        let mut allowed = self
-            .allowed_resource_scopes
-            .write()
-            .expect("allowed resource scope lock");
-        allowed.clear();
-        for (resource, scopes) in resources {
-            let resource = resource.trim().trim_end_matches('/').to_string();
-            if resource.is_empty() {
-                continue;
-            }
-            let scopes = scopes
-                .into_iter()
-                .map(|scope| scope.trim().to_string())
-                .filter(|scope| !scope.is_empty())
-                .collect::<BTreeSet<_>>();
-            allowed.insert(resource, scopes);
+        if let Err(error) = self.replace_configured_resource_scopes(resources) {
+            debug!(%error, "ignored invalid configured OAuth protected resource scopes");
         }
-        debug!(
-            resource_count = allowed.len(),
-            "oauth allowed protected resource scopes refreshed"
-        );
+    }
+
+    pub fn replace_configured_resource_scopes(
+        &self,
+        resources: impl IntoIterator<Item = (String, Vec<String>)>,
+    ) -> Result<(), crate::resource_registry::ResourceRegistryError> {
+        self.resource_registry
+            .replace_configured_resource_scopes(resources)
+    }
+
+    #[must_use]
+    pub fn resource_registry(&self) -> ResourceRegistry {
+        self.resource_registry.clone()
     }
 
     pub fn is_allowed_resource_url(&self, resource: &str) -> bool {
-        self.allowed_resource_scopes
-            .read()
-            .expect("allowed resource scope lock")
-            .contains_key(resource.trim().trim_end_matches('/'))
+        self.resource_registry
+            .effective_resource_scopes(resource)
+            .is_some()
     }
 
     pub fn allowed_resource_scopes(&self, resource: &str) -> Option<Vec<String>> {
-        self.allowed_resource_scopes
-            .read()
-            .expect("allowed resource scope lock")
-            .get(resource.trim().trim_end_matches('/'))
-            .map(|scopes| scopes.iter().cloned().collect())
+        self.resource_registry.effective_resource_scopes(resource)
     }
 
     /// Rate-limit guard for `/authorize` and `/browser_login` endpoints.
@@ -417,7 +413,7 @@ impl AuthState {
             store,
             signing_keys: Arc::new(signing_keys),
             google: Arc::new(google),
-            allowed_resource_scopes: Arc::new(RwLock::new(BTreeMap::new())),
+            resource_registry: ResourceRegistry::new(),
             authorize_limiter,
             register_limiter,
             token_limiter,
@@ -458,6 +454,23 @@ mod tests {
     use super::*;
     use crate::config::GoogleConfig;
     use crate::util::now_unix;
+
+    #[tokio::test]
+    async fn cloned_auth_states_share_resource_registry() {
+        let state = resolve_state("admin@example.com").await;
+        let clone = state.clone();
+        state
+            .resource_registry()
+            .create_resource_lease(
+                "https://proxy.example:53147/mcp",
+                ["mcp:read"],
+                Duration::from_mins(1),
+                "clone-test",
+            )
+            .unwrap();
+
+        assert_eq!(clone.resource_registry().lease_count(), 1);
+    }
 
     #[tokio::test]
     async fn per_ip_rate_limiter_evicts_idle_and_lru_buckets_under_address_churn() {

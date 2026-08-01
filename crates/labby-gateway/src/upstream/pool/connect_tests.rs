@@ -268,15 +268,7 @@ impl Respond for DiscoveryMetadataResponder {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {
-                        "resultType": "complete",
-                        "supportedVersions": [
-                            "2026-07-28",
-                            "2025-11-25",
-                            "2025-06-18"
-                        ],
-                        "capabilities": {"tools": {}},
-                        "ttlMs": 0,
-                        "cacheScope": "private",
+                        "tools": [],
                         "_meta": {
                             "io.modelcontextprotocol/serverInfo": {
                                 "name": "metadata-discovery-test",
