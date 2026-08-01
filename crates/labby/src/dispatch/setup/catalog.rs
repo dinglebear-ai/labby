@@ -28,7 +28,7 @@ pub const PLUGIN_LIFECYCLE_ACTIONS: &[&str] = &[
 /// Setup actions that may only run from a trusted local transport. These
 /// either mint first-run credentials or initiate an outbound connectivity
 /// probe from the host, so an admin bearer alone is not sufficient.
-pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "plugin_connectivity"];
+pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "plugin_connectivity", "proxy.configure"];
 
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
@@ -266,6 +266,33 @@ pub const ACTIONS: &[ActionSpec] = &[
         requires_admin: true,
         returns: "SetupReport",
         params: &[],
+    },
+    ActionSpec {
+        name: "proxy.configure",
+        description: "Persist local stdio-proxy defaults and securely store a bearer secret when required",
+        destructive: true,
+        requires_admin: true,
+        returns: "ProxySetupOutcome",
+        params: &[
+            ParamSpec {
+                name: "preferences",
+                ty: "ProxyPreferences",
+                required: true,
+                description: "Validated non-secret proxy preferences to persist in config.toml",
+            },
+            ParamSpec {
+                name: "bearer_token",
+                ty: "string",
+                required: false,
+                description: "Write-only bearer token read from stdin; never returned or logged",
+            },
+            ParamSpec {
+                name: "dry_run",
+                ty: "boolean",
+                required: false,
+                description: "Preview whether config or secret files would change without mutation",
+            },
+        ],
     },
     // -- Plugin-lifecycle actions ------------------------------------------
     //

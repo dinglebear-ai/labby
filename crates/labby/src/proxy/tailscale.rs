@@ -59,6 +59,21 @@ impl TailscaleStatus {
             dns_name: self.self_node.dns_name.clone(),
         })
     }
+
+    #[must_use]
+    pub fn backend_running(&self) -> bool {
+        self.backend_state == "Running"
+    }
+
+    #[must_use]
+    pub fn online(&self) -> bool {
+        self.self_node.online
+    }
+
+    #[must_use]
+    pub fn dns_name(&self) -> &str {
+        &self.self_node.dns_name
+    }
 }
 
 /// Relevant fields from `tailscale serve status --json`.
@@ -557,7 +572,7 @@ async fn join_output(task: Option<JoinHandle<std::io::Result<Vec<u8>>>>) -> Vec<
     }
 }
 
-async fn run_checked<I, S>(executable: &PathBuf, args: I) -> Result<String>
+pub(crate) async fn run_checked<I, S>(executable: &PathBuf, args: I) -> Result<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,

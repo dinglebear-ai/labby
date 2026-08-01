@@ -17,6 +17,7 @@ pub(crate) mod incus;
 mod params;
 mod plugin_hook;
 pub(crate) mod provision;
+pub(crate) mod proxy;
 mod secret_mask;
 mod settings;
 mod state;

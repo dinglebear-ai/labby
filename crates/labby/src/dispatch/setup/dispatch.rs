@@ -39,6 +39,7 @@ const REDACTED_LOG_ACTIONS: &[&str] = &[
     "settings.update",
     "settings.env.update",
     "settings.config.update",
+    "proxy.configure",
 ];
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
@@ -116,6 +117,17 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
         "plugin_connectivity" => plugin_connectivity_action(params).await,
         "check" => run_blocking_setup("check", setup_check_action).await,
         "repair" => run_blocking_setup("repair", setup_repair_action).await,
+        "proxy.configure" => {
+            let request = serde_json::from_value::<super::proxy::ProxySetupRequest>(params.clone())
+                .map_err(|error| ToolError::InvalidParam {
+                    message: format!("invalid proxy setup request: {error}"),
+                    param: "preferences".to_string(),
+                })?;
+            run_blocking_setup("proxy.configure", move || {
+                to_json(super::proxy::configure(request)?)
+            })
+            .await
+        }
         // Plugin-lifecycle actions. The dotted `<resource>.<verb>` forms are
         // the canonical names; the snake_case arms beside them are deprecated
         // aliases retained for backward compatibility. Every name routed here
