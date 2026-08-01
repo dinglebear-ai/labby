@@ -1,15 +1,18 @@
-# Known failures for experimental extension scenarios in
-# @modelcontextprotocol/conformance 0.2.0-alpha.9.
+# Known failures for optional extension scenarios in
+# @modelcontextprotocol/conformance 0.2.0-alpha.10.
 #
 # Extensions are excluded from the 2026-07-28 dated-protocol score. CI runs
 # them separately with this strict baseline:
 # - an unlisted failure fails the build
 # - a listed scenario that starts passing fails as a stale entry
 #
-# Review the available extension scenarios whenever the conformance package is
-# bumped. The rmcp 3.0.0-beta.2 Tasks server scenarios all pass.
+# RMCP 3.1.0 passes every dated server and client scenario plus the supported
+# client-credentials extensions. The entries below are optional authorization
+# extensions that the pinned RMCP conformance client does not implement.
 server: []
 
 client:
-  # Informational OAuth extension not implemented by rmcp beta.2.
   - auth/enterprise-managed-authorization
+  - auth/dpop
+  - auth/dpop-nonce
+  - auth/wif-jwt-bearer
