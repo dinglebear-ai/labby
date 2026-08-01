@@ -108,8 +108,7 @@ The endpoint preserves child MCP results and errors. Labby-generated failures us
 For OAuth mode, the proxy serves:
 
 ```text
-GET /.well-known/oauth-protected-resource<mcp-path>
-GET <mcp-path>/.well-known/oauth-protected-resource
+GET /.well-known/oauth-protected-resource
 ```
 
 The response shape is:
@@ -126,7 +125,7 @@ The response shape is:
 An unauthenticated request returns HTTP 401 with:
 
 ```text
-WWW-Authenticate: Bearer resource_metadata="https://node.example.ts.net:53147/.well-known/oauth-protected-resource/mcp", scope="mcp:read mcp:write"
+WWW-Authenticate: Bearer resource_metadata="https://node.example.ts.net:53147/.well-known/oauth-protected-resource", scope="mcp:read mcp:write"
 ```
 
 A token with insufficient scope returns HTTP 403 and an `insufficient_scope` challenge. Issuer and audience mismatches return 401.
@@ -184,7 +183,7 @@ Response: HTTP 204. Releasing an unknown lease is idempotent and also returns 20
 }
 ```
 
-Resource URLs must be absolute HTTPS URLs without credentials, query, or fragment. Loopback HTTP resources are allowed only for explicitly local development mode and are never accepted by the public daemon route.
+Resource URLs must be absolute HTTPS URLs without credentials, query, or fragment. The current daemon lease action does not accept loopback HTTP resources, so `labby proxy --local --auth oauth` fails clearly until an explicit local-development lease policy is added; it never downgrades auth.
 
 ## Tailscale ownership
 

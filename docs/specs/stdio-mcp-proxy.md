@@ -300,6 +300,9 @@ No application bearer challenge is added. Reachability is controlled by Tailscal
 - The proxy renews the lease while alive and releases it during normal shutdown.
 - Expired leases are ignored and pruned.
 - The proxy serves RFC 9728 Protected Resource Metadata and a matching `WWW-Authenticate` challenge.
+- Metadata is served unauthenticated at the proxy origin root,
+  `/.well-known/oauth-protected-resource`; the challenge points to that exact
+  root document rather than a path beneath `/mcp`.
 - Failure to create or renew a lease terminates OAuth startup or the running proxy; there is no downgrade.
 
 ## Tailscale exposure

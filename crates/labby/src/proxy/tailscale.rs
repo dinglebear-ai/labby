@@ -200,6 +200,103 @@ pub struct TailscaleServe {
     readiness_timeout: Duration,
 }
 
+#[derive(Debug)]
+pub struct TailscaleServePlan {
+    options: TailscaleServeOptions,
+    dns_name: String,
+    external_port: u16,
+    backend: String,
+    public_url: url::Url,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TailscaleClaimError {
+    #[error("Tailscale Serve port collision: {0:#}")]
+    Collision(anyhow::Error),
+    #[error("Tailscale Serve claim failed: {0:#}")]
+    Failed(anyhow::Error),
+}
+
+impl TailscaleServePlan {
+    pub async fn prepare(options: TailscaleServeOptions) -> Result<Self> {
+        if options.max_attempts == 0 {
+            bail!("Tailscale Serve port selection requires at least one attempt");
+        }
+        let version = run_checked(&options.executable, ["version"]).await?;
+        if version.trim().is_empty() {
+            bail!("Tailscale CLI returned an empty version");
+        }
+        let status_output = run_checked(&options.executable, ["status", "--json"]).await?;
+        let identity = TailscaleStatus::parse(&status_output)?.require_online()?;
+        let dns_name = identity
+            .dns_name
+            .strip_suffix('.')
+            .unwrap_or(&identity.dns_name)
+            .to_string();
+        let serve_output = run_checked(&options.executable, ["serve", "status", "--json"]).await?;
+        let initial_status = ServeStatus::parse(&serve_output)?;
+        let candidates = if let Some(port) = options.port.fixed() {
+            vec![port]
+        } else if options.candidate_ports.is_empty() {
+            random_candidates(
+                options.port_range_start,
+                options.port_range_end,
+                options.max_attempts,
+            )?
+        } else {
+            options.candidate_ports.clone()
+        };
+        let external_port = select_port_from_candidates(
+            options.port,
+            options.port_range_start,
+            options.port_range_end,
+            &initial_status,
+            candidates,
+            options.max_attempts,
+        )?;
+        let backend = format!("http://127.0.0.1:{}", options.local_addr.port());
+        let public_url = build_public_url(&dns_name, external_port, &options.path)?;
+        Ok(Self {
+            options,
+            dns_name,
+            external_port,
+            backend,
+            public_url,
+        })
+    }
+
+    #[must_use]
+    pub const fn external_port(&self) -> u16 {
+        self.external_port
+    }
+
+    #[must_use]
+    pub fn public_url(&self) -> &url::Url {
+        &self.public_url
+    }
+
+    pub async fn claim(self) -> Result<TailscaleServe> {
+        self.claim_typed().await.map_err(anyhow::Error::from)
+    }
+
+    pub async fn claim_typed(self) -> std::result::Result<TailscaleServe, TailscaleClaimError> {
+        let result = TailscaleServe::claim(
+            &self.options,
+            self.dns_name,
+            self.external_port,
+            self.backend,
+        )
+        .await;
+        result.map_err(|error| {
+            if is_collision_error(&error.to_string()) {
+                TailscaleClaimError::Collision(error)
+            } else {
+                TailscaleClaimError::Failed(error)
+            }
+        })
+    }
+}
+
 impl TailscaleServe {
     pub async fn start(options: TailscaleServeOptions) -> Result<Self> {
         if options.max_attempts == 0 {
