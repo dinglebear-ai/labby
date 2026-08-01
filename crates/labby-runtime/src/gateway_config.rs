@@ -1026,6 +1026,8 @@ pub enum ConfigError {
     InvalidUpstreamRelayTimeout { value: u64 },
     #[error("gateway mcp.catalog_notification_timeout_ms={value} is invalid — expected 1..=60000")]
     InvalidCatalogNotificationTimeout { value: u64 },
+    #[error("invalid proxy configuration: {reason}")]
+    InvalidProxyConfig { reason: String },
     #[error("protected MCP route '{name}' has invalid {field}: {value}")]
     InvalidProtectedRoute {
         name: String,
