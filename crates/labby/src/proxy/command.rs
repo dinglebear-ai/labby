@@ -32,7 +32,7 @@ pub fn resolve_proxy_command(
         });
     } else {
         let program =
-            resolve_on_path(target, path_env).ok_or_else(|| ProxyCommandError::NotFound {
+            executable_on_path(target, path_env).ok_or_else(|| ProxyCommandError::NotFound {
                 target: target.to_string_lossy().into_owned(),
             })?;
         (program.into_os_string(), Vec::new())
@@ -56,7 +56,7 @@ fn resolve_file_target(
         return Ok((path.as_os_str().to_os_string(), Vec::new()));
     }
     if let Some((interpreter, optional_arg)) = parse_shebang(path)? {
-        let program = resolve_on_path(OsStr::new(&interpreter), path_env).ok_or_else(|| {
+        let program = executable_on_path(OsStr::new(&interpreter), path_env).ok_or_else(|| {
             ProxyCommandError::RuntimeNotFound {
                 target: original.to_string_lossy().into_owned(),
                 runtime: interpreter.clone(),
@@ -85,7 +85,7 @@ fn resolve_file_target(
             target: original.to_string_lossy().into_owned(),
         });
     };
-    let program = resolve_on_path(OsStr::new(runtime), path_env).ok_or_else(|| {
+    let program = executable_on_path(OsStr::new(runtime), path_env).ok_or_else(|| {
         ProxyCommandError::RuntimeNotFound {
             target: original.to_string_lossy().into_owned(),
             runtime: runtime.to_string(),
@@ -149,7 +149,7 @@ fn parse_shebang(path: &Path) -> Result<Option<(String, Option<String>)>, ProxyC
     )))
 }
 
-fn resolve_on_path(program: &OsStr, path_env: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn executable_on_path(program: &OsStr, path_env: Option<&OsStr>) -> Option<PathBuf> {
     let path_env = path_env?;
     std::env::split_paths(path_env)
         .map(|dir| dir.join(program))

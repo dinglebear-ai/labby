@@ -122,6 +122,8 @@ pub enum SetupCommand {
     Check,
     /// Repair missing local setup prerequisites without contacting external services.
     Repair,
+    /// Configure defaults for the ephemeral stdio MCP proxy.
+    Proxy(SetupProxyArgs),
     /// Validate or apply local Incus backup policy.
     #[command(alias = "incus-backup")]
     Incusbackup(IncusBackupArgs),
@@ -229,6 +231,49 @@ pub struct PluginMutationArgs {
     #[arg(short = 'y', long, alias = "no-confirm")]
     pub yes: bool,
     /// Print what would be dispatched without executing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SetupProxyArgs {
+    /// Exposure mode to persist.
+    #[arg(long, value_enum)]
+    pub exposure: Option<crate::proxy::config::ProxyExposure>,
+    /// Authentication mode to persist.
+    #[arg(long, value_enum)]
+    pub auth: Option<crate::proxy::config::ProxyAuthMode>,
+    /// MCP HTTP path to persist.
+    #[arg(long)]
+    pub path: Option<String>,
+    /// External Tailscale port, or `random`.
+    #[arg(long)]
+    pub port: Option<String>,
+    /// First candidate in the random external-port range.
+    #[arg(long)]
+    pub port_range_start: Option<u16>,
+    /// Last candidate in the random external-port range.
+    #[arg(long)]
+    pub port_range_end: Option<u16>,
+    /// Environment key used for the proxy bearer secret.
+    #[arg(long)]
+    pub bearer_token_env: Option<String>,
+    /// OAuth scope to require; repeatable and replaces the configured list.
+    #[arg(long = "oauth-scope")]
+    pub oauth_scopes: Vec<String>,
+    /// Ambient environment variable inherited by child servers; repeatable.
+    #[arg(long = "inherit-env")]
+    pub inherit_env: Vec<String>,
+    /// Grace period before forced child shutdown.
+    #[arg(long)]
+    pub shutdown_grace_ms: Option<u64>,
+    /// Read a bearer secret from stdin without echoing or persisting it in TOML.
+    #[arg(long)]
+    pub bearer_token_stdin: bool,
+    /// Accept existing values and built-in defaults without prompting.
+    #[arg(short = 'y', long, alias = "no-confirm")]
+    pub yes: bool,
+    /// Preview exact file changes without mutating config or secret files.
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -616,6 +661,9 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
             let value = crate::dispatch::setup::dispatch("repair", json!({})).await?;
             print(&value, format)?;
         }
+        SetupCommand::Proxy(args) => {
+            run_setup_proxy(args, format).await?;
+        }
         SetupCommand::Incusbackup(args) => {
             run_incus_backup_command(args, format).await?;
         }
@@ -634,6 +682,191 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn run_setup_proxy(args: SetupProxyArgs, format: OutputFormat) -> Result<()> {
+    if !args.yes && !args.dry_run && !io::stdin().is_terminal() {
+        anyhow::bail!("setup proxy requires --yes when stdin is not a TTY");
+    }
+
+    let home = crate::dispatch::helpers::lab_home();
+    let config_path = home.join("config.toml");
+    let mut preferences = crate::config::load_toml(&[config_path])?.proxy;
+    apply_proxy_setup_overrides(&mut preferences, &args)?;
+    if !args.yes && !args.dry_run {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        let mut output = io::stderr().lock();
+        preferences = prompt_proxy_preferences(preferences, &mut input, &mut output)?;
+    }
+
+    let bearer_token = if args.bearer_token_stdin {
+        let mut token = String::new();
+        io::stdin().read_line(&mut token)?;
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            anyhow::bail!("--bearer-token-stdin received an empty token");
+        }
+        Some(token)
+    } else {
+        None
+    };
+    let params = json!({
+        "preferences": preferences,
+        "bearer_token": bearer_token,
+        "dry_run": args.dry_run,
+    });
+    let value = crate::dispatch::setup::dispatch("proxy.configure", params).await?;
+    print(&value, format)?;
+    Ok(())
+}
+
+fn apply_proxy_setup_overrides(
+    preferences: &mut crate::proxy::config::ProxyPreferences,
+    args: &SetupProxyArgs,
+) -> Result<()> {
+    if let Some(exposure) = args.exposure {
+        preferences.exposure = exposure;
+    }
+    if let Some(auth) = args.auth {
+        preferences.auth = auth;
+    }
+    if args.bearer_token_stdin {
+        preferences.auth = crate::proxy::config::ProxyAuthMode::Bearer;
+    }
+    if let Some(path) = &args.path {
+        preferences.path.clone_from(path);
+    }
+    if let Some(port) = &args.port {
+        preferences.port = parse_proxy_setup_port(port)?;
+    }
+    if let Some(start) = args.port_range_start {
+        preferences.port_range_start = start;
+    }
+    if let Some(end) = args.port_range_end {
+        preferences.port_range_end = end;
+    }
+    if let Some(key) = &args.bearer_token_env {
+        preferences.bearer_token_env.clone_from(key);
+    }
+    if !args.oauth_scopes.is_empty() {
+        preferences.oauth_scopes.clone_from(&args.oauth_scopes);
+    }
+    if !args.inherit_env.is_empty() {
+        preferences.inherit_env.clone_from(&args.inherit_env);
+    }
+    if let Some(grace) = args.shutdown_grace_ms {
+        preferences.shutdown_grace_ms = grace;
+    }
+    preferences.validate().map_err(anyhow::Error::from)
+}
+
+fn parse_proxy_setup_port(value: &str) -> Result<crate::proxy::config::ProxyPortPreference> {
+    if value.eq_ignore_ascii_case("random") {
+        return Ok(crate::proxy::config::ProxyPortPreference::default());
+    }
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("--port must be `random` or an integer from 1 to 65535"))?;
+    if port == 0 {
+        anyhow::bail!("--port must not be zero");
+    }
+    Ok(crate::proxy::config::ProxyPortPreference::Fixed(port))
+}
+
+fn prompt_proxy_preferences(
+    mut preferences: crate::proxy::config::ProxyPreferences,
+    input: &mut impl io::BufRead,
+    output: &mut impl Write,
+) -> Result<crate::proxy::config::ProxyPreferences> {
+    use crate::proxy::config::{ProxyAuthMode, ProxyExposure};
+
+    let exposure = prompt_value(
+        input,
+        output,
+        "Exposure (tailscale/local)",
+        match preferences.exposure {
+            ProxyExposure::Tailscale => "tailscale",
+            ProxyExposure::Local => "local",
+        },
+    )?;
+    preferences.exposure = match exposure.to_ascii_lowercase().as_str() {
+        "tailscale" => ProxyExposure::Tailscale,
+        "local" => ProxyExposure::Local,
+        _ => anyhow::bail!("exposure must be `tailscale` or `local`"),
+    };
+    let auth = prompt_value(
+        input,
+        output,
+        "Auth (tailnet/bearer/oauth/none)",
+        match preferences.auth {
+            ProxyAuthMode::Tailnet => "tailnet",
+            ProxyAuthMode::Bearer => "bearer",
+            ProxyAuthMode::Oauth => "oauth",
+            ProxyAuthMode::None => "none",
+        },
+    )?;
+    preferences.auth = match auth.to_ascii_lowercase().as_str() {
+        "tailnet" => ProxyAuthMode::Tailnet,
+        "bearer" => ProxyAuthMode::Bearer,
+        "oauth" => ProxyAuthMode::Oauth,
+        "none" => ProxyAuthMode::None,
+        _ => anyhow::bail!("auth must be `tailnet`, `bearer`, `oauth`, or `none`"),
+    };
+    preferences.path = prompt_value(input, output, "MCP path", &preferences.path)?;
+    let default_port = preferences
+        .port
+        .fixed()
+        .map_or_else(|| "random".to_string(), |port| port.to_string());
+    preferences.port = parse_proxy_setup_port(&prompt_value(
+        input,
+        output,
+        "External port",
+        &default_port,
+    )?)?;
+    if preferences.port.fixed().is_none() {
+        preferences.port_range_start = prompt_value(
+            input,
+            output,
+            "Random port range start",
+            &preferences.port_range_start.to_string(),
+        )?
+        .parse()?;
+        preferences.port_range_end = prompt_value(
+            input,
+            output,
+            "Random port range end",
+            &preferences.port_range_end.to_string(),
+        )?
+        .parse()?;
+    }
+    preferences.validate().map_err(anyhow::Error::from)?;
+    writeln!(
+        output,
+        "Proxy defaults selected; secrets will not be displayed."
+    )?;
+    Ok(preferences)
+}
+
+fn prompt_value(
+    input: &mut impl io::BufRead,
+    output: &mut impl Write,
+    label: &str,
+    default: &str,
+) -> Result<String> {
+    write!(output, "{label} [{default}]: ")?;
+    output.flush()?;
+    let mut answer = String::new();
+    let read = input.read_line(&mut answer)?;
+    if read == 0 {
+        anyhow::bail!("setup proxy input ended before configuration was complete");
+    }
+    let answer = answer.trim();
+    Ok(if answer.is_empty() {
+        default.to_string()
+    } else {
+        answer.to_string()
+    })
 }
 
 async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Result<()> {
@@ -1093,6 +1326,22 @@ async fn run_plugin_mutation(
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn interactive_proxy_setup_preserves_case_sensitive_path() {
+        let mut input = io::Cursor::new("local\nnone\n/McpServer\nrandom\n50000\n51000\n");
+        let mut output = Vec::new();
+        let preferences = prompt_proxy_preferences(
+            crate::proxy::config::ProxyPreferences::default(),
+            &mut input,
+            &mut output,
+        )
+        .expect("interactive proxy preferences");
+
+        assert_eq!(preferences.path, "/McpServer");
+        assert_eq!(preferences.port_range_start, 50_000);
+        assert_eq!(preferences.port_range_end, 51_000);
+    }
 
     #[tokio::test]
     async fn no_setup_flag_exits_cleanly() {

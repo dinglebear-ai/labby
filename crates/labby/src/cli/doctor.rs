@@ -47,7 +47,7 @@ pub struct DoctorProxyArgs {
     pub mcp_url: Option<String>,
     /// Protected MCP public route path, e.g. /telemetry
     #[arg(long)]
-    pub route: String,
+    pub route: Option<String>,
     /// Optional private backend origin for backend-leak probe, e.g. http://mcp-backend:3100
     #[arg(long)]
     pub backend_url: Option<String>,
@@ -212,6 +212,25 @@ async fn load_optional_public_relay_manager()
 }
 
 async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCode> {
+    let Some(route) = args.route else {
+        let value = crate::dispatch::doctor::dispatch("proxy.preflight", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let report: Report = serde_json::from_value(value)?;
+
+        if format.is_json() {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            return Ok(exit_code(&report));
+        }
+
+        let theme = CliTheme::from_context(format.render_context());
+        print_section(theme, "Stdio proxy preflight");
+        for finding in &report.findings {
+            print_finding_indented(theme, finding);
+        }
+        println!();
+        return Ok(exit_code(&report));
+    };
     let app_url = args
         .app_url
         .or_else(|| {
@@ -231,7 +250,7 @@ async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCo
     let mut params = serde_json::json!({
         "app_url": app_url,
         "mcp_url": mcp_url,
-        "route": args.route,
+        "route": route,
     });
     if let Some(backend_url) = &args.backend_url {
         params["backend_url"] = serde_json::Value::String(backend_url.clone());
