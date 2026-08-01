@@ -2,11 +2,15 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use labby::proxy::command::ProxyCommand;
 use labby::proxy::config::{ProxyAuthMode, ProxyExposure, ProxyPortPreference, ProxyPreferences};
-use labby::proxy::runtime::{LocalProxy, LocalProxyOptions};
+use labby::proxy::runtime::{LocalProxy, LocalProxyAuthPolicy, LocalProxyOptions};
+use labby_auth::config::{AuthConfig, AuthMode};
+use labby_auth::jwt::AccessClaims;
+use labby_auth::state::AuthState;
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
@@ -177,6 +181,259 @@ async fn local_proxy_forwards_tools_list_after_child_discovery_and_bind() {
 }
 
 #[tokio::test]
+async fn prepared_listener_accepts_no_http_requests_before_router_start() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let temp = tempfile::tempdir().unwrap();
+    let pid_file = temp.path().join("prepared-child.pid");
+    let prepared = LocalProxy::prepare(LocalProxyOptions {
+        command: fixture_command(temp.path().to_path_buf(), &pid_file),
+        preferences: local_preferences(ProxyAuthMode::None),
+        bearer_token: None,
+        explicit_env: Vec::new(),
+        inherit_env: vec![OsString::from("PATH")],
+    })
+    .await
+    .expect("child discovery and loopback bind complete");
+
+    let mut stream = tokio::net::TcpStream::connect(prepared.local_addr())
+        .await
+        .expect("kernel listener is bound");
+    stream
+        .write_all(b"GET /custom-mcp HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut byte = [0_u8; 1];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), stream.read(&mut byte))
+            .await
+            .is_err(),
+        "prepared listener must not accept or answer HTTP before auth is finalized"
+    );
+    drop(stream);
+
+    let proxy = prepared
+        .start(LocalProxyAuthPolicy::None)
+        .expect("router starts from the already-bound listener");
+    let service = connect(proxy.url(), None).await;
+    assert_eq!(service.peer().list_all_tools().await.unwrap().len(), 1);
+    proxy.shutdown().await.unwrap();
+}
+
+async fn oauth_state(temp: &tempfile::TempDir) -> Arc<AuthState> {
+    let config = AuthConfig {
+        mode: AuthMode::OAuth,
+        public_url: Some(url::Url::parse("https://issuer.example.com").unwrap()),
+        sqlite_path: temp.path().join("auth.db"),
+        key_path: temp.path().join("auth-jwt.pem"),
+        scopes_supported: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+        disable_static_token_with_oauth: true,
+        ..AuthConfig::default()
+    };
+    Arc::new(AuthState::new(config).await.unwrap())
+}
+
+fn oauth_claims(resource: &str, issuer: &str, scope: &str) -> AccessClaims {
+    let now = usize::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    AccessClaims {
+        iss: issuer.to_string(),
+        sub: "subject-must-not-be-logged".to_string(),
+        aud: resource.to_string(),
+        exp: now + 300,
+        nbf: None,
+        iat: now,
+        jti: "jwt-id-must-not-be-logged".to_string(),
+        scope: scope.to_string(),
+        azp: "proxy-test".to_string(),
+    }
+}
+
+async fn oauth_request(
+    proxy: &LocalProxy,
+    resource: &url::Url,
+    token: Option<&str>,
+) -> reqwest::Response {
+    let mut request = reqwest::Client::new()
+        .post(proxy.url().clone())
+        .header(reqwest::header::HOST, resource.authority())
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "tools/list")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {"name":"oauth-test","version":"1"},
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        }));
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    request.send().await.unwrap()
+}
+
+#[tokio::test]
+async fn oauth_proxy_serves_exact_root_metadata_and_enforces_token_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = oauth_state(&temp).await;
+    let resource = url::Url::parse("https://node.example.ts.net:53147/custom-mcp").unwrap();
+    let issuer = url::Url::parse("https://issuer.example.com").unwrap();
+    let stable_issuer = issuer.as_str().trim_end_matches('/');
+    let prepared = LocalProxy::prepare(LocalProxyOptions {
+        command: fixture_command(
+            temp.path().to_path_buf(),
+            &temp.path().join("oauth-child.pid"),
+        ),
+        preferences: local_preferences(ProxyAuthMode::Oauth),
+        bearer_token: None,
+        explicit_env: Vec::new(),
+        inherit_env: vec![OsString::from("PATH")],
+    })
+    .await
+    .unwrap();
+    let proxy = prepared
+        .start(LocalProxyAuthPolicy::Oauth {
+            auth_state: Arc::clone(&state),
+            resource: resource.clone(),
+            issuer: issuer.clone(),
+            required_scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+        })
+        .unwrap();
+
+    let metadata_url = proxy
+        .url()
+        .join("/.well-known/oauth-protected-resource")
+        .unwrap();
+    let metadata: serde_json::Value = reqwest::Client::new()
+        .get(metadata_url)
+        .header(reqwest::header::HOST, resource.authority())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        metadata,
+        serde_json::json!({
+            "resource": "https://node.example.ts.net:53147/custom-mcp",
+            "authorization_servers": ["https://issuer.example.com"],
+            "scopes_supported": ["mcp:read", "mcp:write"],
+            "bearer_methods_supported": ["header"]
+        })
+    );
+
+    let missing = oauth_request(&proxy, &resource, None).await;
+    assert_eq!(missing.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        missing.headers()[reqwest::header::WWW_AUTHENTICATE],
+        "Bearer resource_metadata=\"https://node.example.ts.net:53147/.well-known/oauth-protected-resource\", scope=\"mcp:read mcp:write\""
+    );
+
+    let accepted = state
+        .signing_keys
+        .issue_access_token(&oauth_claims(
+            resource.as_str(),
+            stable_issuer,
+            "mcp:read mcp:write",
+        ))
+        .unwrap();
+    assert_eq!(
+        oauth_request(&proxy, &resource, Some(&accepted))
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+
+    let now = usize::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let mut cases = vec![
+        (
+            "wrong port",
+            oauth_claims(
+                "https://node.example.ts.net:53148/custom-mcp",
+                stable_issuer,
+                "mcp:read mcp:write",
+            ),
+            reqwest::StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "wrong path",
+            oauth_claims(
+                "https://node.example.ts.net:53147/other",
+                stable_issuer,
+                "mcp:read mcp:write",
+            ),
+            reqwest::StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "wrong issuer",
+            oauth_claims(
+                resource.as_str(),
+                "https://other-issuer.example.com",
+                "mcp:read mcp:write",
+            ),
+            reqwest::StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "wrong scope",
+            oauth_claims(resource.as_str(), stable_issuer, "mcp:read"),
+            reqwest::StatusCode::FORBIDDEN,
+        ),
+        (
+            "expired",
+            {
+                let mut c = oauth_claims(resource.as_str(), stable_issuer, "mcp:read mcp:write");
+                c.exp = now - 300;
+                c
+            },
+            reqwest::StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "not before",
+            {
+                let mut c = oauth_claims(resource.as_str(), stable_issuer, "mcp:read mcp:write");
+                c.nbf = Some(now + 300);
+                c
+            },
+            reqwest::StatusCode::UNAUTHORIZED,
+        ),
+    ];
+    for (name, claims, expected) in cases.drain(..) {
+        let token = state.signing_keys.issue_access_token(&claims).unwrap();
+        assert_eq!(
+            oauth_request(&proxy, &resource, Some(&token))
+                .await
+                .status(),
+            expected,
+            "{name}"
+        );
+    }
+
+    proxy.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn local_proxy_honors_a_fixed_port() {
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let fixed_port = reservation.local_addr().unwrap().port();
@@ -315,6 +572,284 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
         .expect("CLI did not stop after Ctrl+C")
         .unwrap();
     assert!(status.success(), "CLI exited with {status}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
+    use tokio::process::Command;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    #[derive(Clone)]
+    struct LeaseResponder;
+    impl Respond for LeaseResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            match body["action"].as_str().unwrap() {
+                "gateway.oauth.resource_lease.create" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "id": "lease-id-must-not-appear",
+                        "resource": body["params"]["resource"],
+                        "scopes": body["params"]["scopes"],
+                        "expires_at_unix": 4_000_000_000_u64
+                    }))
+                }
+                "gateway.oauth.resource_lease.release" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"released": true}))
+                }
+                other => ResponseTemplate::new(500).set_body_string(other.to_string()),
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let key_path = temp.path().join("auth-jwt.pem");
+    let keys = labby_auth::jwt::SigningKeys::load_or_create(&key_path).unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/labby.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "paletteCatalogUrl": format!("{}/catalog", server.uri()),
+            "paletteExecuteUrl": format!("{}/execute", server.uri())
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/gateway/actions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {"name":"gateway.oauth.resource_lease.create"},
+            {"name":"gateway.oauth.resource_lease.renew"},
+            {"name":"gateway.oauth.resource_lease.release"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": server.uri(),
+            "jwks_uri": format!("{}/jwks", server.uri())
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(keys.jwks()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/gateway"))
+        .respond_with(LeaseResponder)
+        .mount(&server)
+        .await;
+
+    let pid_file = temp.path().join("oauth-cli-child.pid");
+    let child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["--json", "proxy", "--local", "--auth", "oauth"])
+        .arg(env!("CARGO_BIN_EXE_stdio-mcp-fixture"))
+        .arg("--pid-file")
+        .arg(&pid_file)
+        .env("LABBY_HOME", temp.path())
+        .env("LABBY_PUBLIC_URL", server.uri())
+        .env("LABBY_AUTH_MODE", "oauth")
+        .env("LABBY_AUTH_SQLITE_PATH", temp.path().join("auth.db"))
+        .env("LABBY_AUTH_KEY_PATH", &key_path)
+        .env("LABBY_AUTH_ADMIN_EMAIL", "admin@example.com")
+        .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
+        .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        .await
+        .expect("local OAuth rejection did not stop promptly")
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("local OAuth exposure is not enabled"));
+    assert!(!stderr.contains("lease-id-must-not-appear"));
+    assert!(!stderr.contains("subject-must-not-be-logged"));
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(!requests.iter().any(|request| {
+        serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()
+            .is_some_and(|body| body["action"] == "gateway.oauth.resource_lease.create")
+    }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_tailscale_oauth_collision_releases_old_lease_then_renewal_failure_cleans_all() {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    #[derive(Clone)]
+    struct LeaseResponder;
+    impl Respond for LeaseResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            match body["action"].as_str().unwrap() {
+                "gateway.oauth.resource_lease.create" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "id": format!("lease-for-{}", body["params"]["resource"].as_str().unwrap()),
+                        "resource": body["params"]["resource"],
+                        "scopes": body["params"]["scopes"],
+                        "expires_at_unix": 4_000_000_000_u64
+                    }))
+                }
+                "gateway.oauth.resource_lease.release" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"released": true}))
+                }
+                other => ResponseTemplate::new(500).set_body_string(other.to_string()),
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let tailscale = root.join("tailscale");
+    std::fs::write(
+        &tailscale,
+        format!(
+            r#"#!/usr/bin/env bash
+set -u
+root='{root}'
+mapping="$root/mapping"
+if [[ "${{1:-}}" == "version" ]]; then echo 1.98.10; exit 0; fi
+if [[ "${{1:-}} ${{2:-}}" == "status --json" ]]; then
+  echo '{{"BackendState":"Running","Self":{{"Online":true,"DNSName":"node.example.ts.net."}}}}'; exit 0
+fi
+if [[ "${{1:-}} ${{2:-}} ${{3:-}}" == "serve status --json" ]]; then
+  if [[ -f "$mapping" ]]; then IFS='|' read -r port backend < "$mapping"; printf '{{"Web":{{"node.example.ts.net:%s":{{"Handlers":{{"/":{{"Proxy":"%s"}}}}}}}}}}\n' "$port" "$backend"; else echo '{{}}'; fi
+  exit 0
+fi
+if [[ "${{1:-}}" == "serve" ]]; then
+  port="${{3#--https=}}"
+  if [[ "${{4:-}}" == "off" ]]; then rm -f "$mapping"; exit 0; fi
+  count=0; [[ -f "$root/claims" ]] && count=$(<"$root/claims"); count=$((count+1)); echo "$count" > "$root/claims"
+  if [[ "$count" == 1 ]]; then echo 'port already configured' >&2; exit 1; fi
+  printf '%s|%s\n' "$port" "${{4:-}}" > "$mapping"
+  trap 'rm -f "$mapping"; exit 0' TERM INT
+  while :; do sleep 0.02; done
+fi
+exit 2
+"#,
+            root = root.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&tailscale, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let key_path = root.join("auth-jwt.pem");
+    let keys = labby_auth::jwt::SigningKeys::load_or_create(&key_path).unwrap();
+    let server = MockServer::start().await;
+    for endpoint in ["/health", "/.well-known/labby.json"] {
+        let body = if endpoint == "/health" {
+            serde_json::json!({"status":"ok"})
+        } else {
+            serde_json::json!({"paletteCatalogUrl":"catalog","paletteExecuteUrl":"execute"})
+        };
+        Mock::given(method("GET"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET")).and(path("/v1/gateway/actions")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+        {"name":"gateway.oauth.resource_lease.create"},{"name":"gateway.oauth.resource_lease.renew"},{"name":"gateway.oauth.resource_lease.release"}
+    ]))).mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"issuer":server.uri(),"jwks_uri":format!("{}/jwks",server.uri())}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(keys.jwks()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/gateway"))
+        .respond_with(LeaseResponder)
+        .mount(&server)
+        .await;
+
+    let child_pid_file = root.join("renewal-child.pid");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["--json", "proxy", "--auth", "oauth"])
+        .arg(env!("CARGO_BIN_EXE_stdio-mcp-fixture"))
+        .arg("--pid-file")
+        .arg(&child_pid_file)
+        .env("LABBY_HOME", root)
+        .env("LABBY_PUBLIC_URL", server.uri())
+        .env("LABBY_AUTH_MODE", "oauth")
+        .env("LABBY_AUTH_SQLITE_PATH", root.join("auth.db"))
+        .env("LABBY_AUTH_KEY_PATH", &key_path)
+        .env("LABBY_AUTH_ADMIN_EMAIL", "admin@example.com")
+        .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
+        .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret")
+        .env("LABBY_TAILSCALE_BIN", &tailscale)
+        .env("LABBY_PROXY_TEST_RENEW_MS", "100")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let line = tokio::time::timeout(
+        Duration::from_secs(10),
+        BufReader::new(stdout).lines().next_line(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .expect("ready output");
+    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(ready["auth"], "oauth");
+    assert_eq!(ready["exposure"], "tailscale");
+    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        .await
+        .expect("renewal failure did not terminate proxy")
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("renewal failed"));
+
+    let requests = server.received_requests().await.unwrap();
+    let actions = requests
+        .iter()
+        .filter_map(|request| serde_json::from_slice::<serde_json::Value>(&request.body).ok())
+        .filter(|body| body.get("action").is_some())
+        .collect::<Vec<_>>();
+    let created = actions
+        .iter()
+        .filter(|body| body["action"] == "gateway.oauth.resource_lease.create")
+        .map(|body| body["params"]["resource"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let released = actions
+        .iter()
+        .filter(|body| body["action"] == "gateway.oauth.resource_lease.release")
+        .count();
+    assert_eq!(created.len(), 2);
+    assert_ne!(created[0], created[1]);
+    assert_eq!(released, 2);
+    assert!(!root.join("mapping").exists());
+    let child_pid: i32 = std::fs::read_to_string(child_pid_file)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(nix::sys::signal::kill(nix::unistd::Pid::from_raw(child_pid), None).is_err());
 }
 
 #[cfg(unix)]

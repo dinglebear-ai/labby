@@ -36,6 +36,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 // the reachability probe gets an explicit short timeout below.
 
 /// A reachable, already-running `labby serve` daemon.
+#[derive(Clone)]
 pub struct LiveGateway {
     base_url: String,
     token: Option<String>,
@@ -182,6 +183,91 @@ fn actions_include_gateway_reload(actions: &Value) -> bool {
 }
 
 impl LiveGateway {
+    pub async fn verify_resource_lease_actions(&self) -> Result<(), ToolError> {
+        const REQUIRED: [&str; 3] = [
+            "gateway.oauth.resource_lease.create",
+            "gateway.oauth.resource_lease.renew",
+            "gateway.oauth.resource_lease.release",
+        ];
+        for action in REQUIRED {
+            if !self.supports_action(action).await? {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "proxy_auth_unavailable".to_string(),
+                    message: format!(
+                        "live Labby daemon does not support required action `{action}`"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn verify_oauth_issuer(
+        &self,
+        issuer: &url::Url,
+    ) -> Result<labby_auth::jwt::JwksDocument, ToolError> {
+        let stable_issuer = issuer.as_str().trim_end_matches('/');
+        let metadata_url = format!("{stable_issuer}/.well-known/oauth-authorization-server");
+        let response = self
+            .client
+            .get(&metadata_url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|error| ToolError::Sdk {
+                sdk_kind: "proxy_auth_unavailable".to_string(),
+                message: format!("OAuth authorization-server metadata is unreachable: {error}"),
+            })?;
+        if !response.status().is_success() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "proxy_auth_unavailable".to_string(),
+                message: format!(
+                    "OAuth authorization-server metadata returned HTTP {}",
+                    response.status()
+                ),
+            });
+        }
+        let metadata: Value = response.json().await.map_err(|error| ToolError::Sdk {
+            sdk_kind: "proxy_auth_unavailable".to_string(),
+            message: format!("OAuth authorization-server metadata is invalid: {error}"),
+        })?;
+        if metadata.get("issuer").and_then(Value::as_str) != Some(stable_issuer) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "proxy_auth_unavailable".to_string(),
+                message:
+                    "OAuth metadata issuer does not exactly match the configured stable issuer"
+                        .to_string(),
+            });
+        }
+        let jwks_uri = metadata
+            .get("jwks_uri")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "proxy_auth_unavailable".to_string(),
+                message: "OAuth metadata does not advertise a JWKS URI".to_string(),
+            })?;
+        let response = self
+            .client
+            .get(jwks_uri)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|error| ToolError::Sdk {
+                sdk_kind: "proxy_auth_unavailable".to_string(),
+                message: format!("OAuth JWKS is unreachable: {error}"),
+            })?;
+        if !response.status().is_success() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "proxy_auth_unavailable".to_string(),
+                message: format!("OAuth JWKS returned HTTP {}", response.status()),
+            });
+        }
+        response.json().await.map_err(|error| ToolError::Sdk {
+            sdk_kind: "proxy_auth_unavailable".to_string(),
+            message: format!("OAuth JWKS is invalid: {error}"),
+        })
+    }
+
     pub async fn supports_action(&self, action: &str) -> Result<bool, ToolError> {
         let mut request = self
             .client
@@ -733,5 +819,175 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn oauth_proxy_prerequisites_require_all_lease_actions() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"name": "gateway.oauth.resource_lease.create"},
+                {"name": "gateway.oauth.resource_lease.renew"}
+            ])))
+            .mount(&server)
+            .await;
+        let error = test_gateway(server.uri(), None)
+            .verify_resource_lease_actions()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("release"));
+    }
+
+    #[tokio::test]
+    async fn oauth_proxy_prerequisites_verify_exact_issuer_metadata_and_jwks() {
+        let server = MockServer::start().await;
+        let issuer = server.uri();
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "jwks_uri": format!("{}/jwks", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys": []})))
+            .mount(&server)
+            .await;
+
+        let jwks = test_gateway(server.uri(), None)
+            .verify_oauth_issuer(&url::Url::parse(&server.uri()).unwrap())
+            .await
+            .unwrap();
+        assert!(jwks.keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oauth_proxy_prerequisites_reject_unreachable_metadata() {
+        let server = MockServer::start().await;
+        let error = test_gateway(server.uri(), None)
+            .verify_oauth_issuer(&url::Url::parse(&server.uri()).unwrap())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("metadata"));
+    }
+
+    #[tokio::test]
+    async fn oauth_lease_guard_renews_and_releases_without_exposing_id() {
+        use crate::proxy::oauth::{OAuthLeaseGuard, OAuthLeaseTiming};
+
+        let server = MockServer::start().await;
+        let lease = json!({
+            "id": "lease-secret-id",
+            "resource": "https://proxy.example:53147/mcp",
+            "scopes": ["mcp:read"],
+            "expires_at_unix": 4_000_000_000_u64
+        });
+        for (action, response) in [
+            ("gateway.oauth.resource_lease.create", lease.clone()),
+            ("gateway.oauth.resource_lease.renew", lease.clone()),
+            (
+                "gateway.oauth.resource_lease.release",
+                json!({"released": true}),
+            ),
+        ] {
+            Mock::given(method("POST"))
+                .and(path("/v1/gateway"))
+                .and(wiremock::matchers::body_partial_json(
+                    json!({"action": action}),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .mount(&server)
+                .await;
+        }
+        let mut guard = OAuthLeaseGuard::create(
+            test_gateway(server.uri(), None),
+            "https://proxy.example:53147/mcp",
+            vec!["mcp:read".to_string()],
+            "owner-fingerprint",
+            OAuthLeaseTiming {
+                ttl: Duration::from_millis(90),
+                renew_interval: Duration::from_millis(20),
+                jitter_max: Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!format!("{guard:?}").contains("lease-secret-id"));
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        guard.release().await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let bodies = requests
+            .iter()
+            .filter_map(|request| serde_json::from_slice::<Value>(&request.body).ok())
+            .collect::<Vec<_>>();
+        assert!(
+            bodies
+                .iter()
+                .any(|body| body["action"] == "gateway.oauth.resource_lease.renew")
+        );
+        assert!(
+            bodies
+                .iter()
+                .any(|body| body["action"] == "gateway.oauth.resource_lease.release")
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_lease_guard_propagates_renewal_failure_and_still_releases() {
+        use crate::proxy::oauth::{OAuthLeaseGuard, OAuthLeaseTiming};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "action": "gateway.oauth.resource_lease.create"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "lease-secret-id",
+                "resource": "https://proxy.example:53147/mcp",
+                "scopes": ["mcp:read"],
+                "expires_at_unix": 4_000_000_000_u64
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "action": "gateway.oauth.resource_lease.renew"
+            })))
+            .respond_with(ResponseTemplate::new(503).set_body_json(json!({
+                "kind": "daemon_unavailable", "message": "renew failed"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "action": "gateway.oauth.resource_lease.release"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"released": true})))
+            .mount(&server)
+            .await;
+
+        let mut guard = OAuthLeaseGuard::create(
+            test_gateway(server.uri(), None),
+            "https://proxy.example:53147/mcp",
+            vec!["mcp:read".to_string()],
+            "owner-fingerprint",
+            OAuthLeaseTiming {
+                ttl: Duration::from_millis(90),
+                renew_interval: Duration::from_millis(10),
+                jitter_max: Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+        let error = guard.wait_for_failure().await.unwrap_err();
+        assert!(error.to_string().contains("renewal failed"));
+        guard.release().await.unwrap();
     }
 }

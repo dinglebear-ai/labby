@@ -1307,12 +1307,19 @@ pub(crate) fn build_router_with_external_auth(
     let v1_router = Router::new().nest("/v1", v1);
     let resource_url: Option<Arc<str>> = auth_state
         .as_ref()
-        .and_then(|state| state.config.public_url.as_ref().map(url::Url::as_str))
+        .map(|state| labby_auth::metadata::canonical_resource_url(state.as_ref()))
         .or_else(|| {
-            state
-                .auth_config
-                .as_ref()
-                .and_then(|cfg| cfg.public_url.as_ref().map(url::Url::as_str))
+            state.auth_config.as_ref().and_then(|cfg| {
+                cfg.public_url.as_ref().map(|url| {
+                    let base = url.as_str().trim_end_matches('/');
+                    let path = cfg.resource_path.trim_start_matches('/');
+                    if path.is_empty() {
+                        base.to_string()
+                    } else {
+                        format!("{base}/{path}")
+                    }
+                })
+            })
         })
         .map(Arc::from);
     let layer_deriver = state.actor_key_deriver.clone().map(lab_auth_deriver);
@@ -3780,6 +3787,7 @@ mod tests {
                 sub: "google-user".to_string(),
                 aud: audience.to_string(),
                 exp: now + 3600,
+                nbf: None,
                 iat: now,
                 jti: "test-jti".to_string(),
                 scope: scope.to_string(),
