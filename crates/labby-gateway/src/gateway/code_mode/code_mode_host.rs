@@ -686,7 +686,7 @@ mod tests {
     use super::*;
     use crate::gateway::runtime::GatewayRuntimeHandle;
     use labby_codemode::ExecCtx;
-    use rmcp::model::Meta;
+    use rmcp::model::MetaObject;
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
     /// tempdir is intentionally leaked so the DB file outlives the store's open
@@ -737,7 +737,7 @@ mod tests {
             "Open quick shell",
             Arc::new(Map::new()),
         );
-        tool.meta = Some(Meta(Map::from_iter([(
+        tool.meta = Some(MetaObject(Map::from_iter([(
             "ui".to_string(),
             serde_json::json!({
                 "resourceUri": "ui://quick-shell/component.html",

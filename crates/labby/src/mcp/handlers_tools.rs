@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use rmcp::model::{ListToolsResult, PaginatedRequestParams, Tool};
 use rmcp::service::RequestContext;
 use serde_json::Value;
@@ -478,7 +478,7 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
 
 #[cfg(feature = "gateway")]
 /// Build MCP Apps metadata for the explicit Code Mode UI tool.
-pub(crate) fn code_mode_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn code_mode_tool_meta(tool_name: &str) -> MetaObject {
     let resource_uri = code_mode_app_resource_uri_for_tool(tool_name)
         .expect("Code Mode tools must have an associated UI resource");
     // Anthropic / MCP Apps (SEP-1724) binding: hosts read `_meta.ui.resourceUri`.
@@ -494,7 +494,7 @@ pub(crate) fn code_mode_tool_meta(tool_name: &str) -> Meta {
 }
 
 /// Build MCP Apps metadata for the Server Logs tool.
-pub(crate) fn server_logs_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn server_logs_tool_meta(tool_name: &str) -> MetaObject {
     let resource_uri = server_logs_app_resource_uri_for_tool(tool_name)
         .expect("server log tools must have an associated UI resource");
     owned_app_tool_meta(
@@ -505,7 +505,7 @@ pub(crate) fn server_logs_tool_meta(tool_name: &str) -> Meta {
 
 #[cfg(feature = "gateway")]
 /// Build MCP Apps metadata for the synthetic Add Server tool.
-pub(crate) fn add_server_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn add_server_tool_meta(tool_name: &str) -> MetaObject {
     let resource_uri = add_server_app_resource_uri_for_tool(tool_name)
         .expect("Add Server tool must have an associated UI resource");
     owned_app_tool_meta(
@@ -516,7 +516,7 @@ pub(crate) fn add_server_tool_meta(tool_name: &str) -> Meta {
 
 #[cfg(feature = "gateway")]
 /// Build MCP Apps metadata for the synthetic Gateway Status tool.
-pub(crate) fn gateway_status_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn gateway_status_tool_meta(tool_name: &str) -> MetaObject {
     let resource_uri = gateway_status_app_resource_uri_for_tool(tool_name)
         .expect("Gateway Status tool must have an associated UI resource");
     owned_app_tool_meta(
@@ -526,7 +526,7 @@ pub(crate) fn gateway_status_tool_meta(tool_name: &str) -> Meta {
 }
 
 /// Bind one tool to its MCP Apps and optional OpenAI skybridge resources.
-fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> Meta {
+fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> MetaObject {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "ui".to_string(),
@@ -538,7 +538,7 @@ fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> M
             serde_json::json!(skybridge_uri),
         );
     }
-    Meta(meta)
+    MetaObject(meta)
 }
 
 #[cfg(feature = "gateway")]

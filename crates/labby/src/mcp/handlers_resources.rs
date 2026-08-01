@@ -16,7 +16,7 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    ListResourcesResult, Meta, PaginatedRequestParams, ReadResourceRequestParams,
+    ListResourcesResult, MetaObject, PaginatedRequestParams, ReadResourceRequestParams,
     ReadResourceResult, Resource, ResourceContents,
 };
 use rmcp::service::RequestContext;
@@ -1396,18 +1396,18 @@ pub(crate) fn gateway_status_app_skybridge_uri_for_tool(tool_name: &str) -> Opti
 }
 
 #[cfg(test)]
-pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
+pub(crate) fn code_mode_app_resource_meta(uri: &str) -> MetaObject {
     app_resource_meta(uri, CODE_MODE_APP_RESOURCE_DESCRIPTORS)
 }
 
 #[cfg(test)]
-fn app_resource_meta(uri: &str, descriptors: &[AppResourceDescriptor]) -> Meta {
+fn app_resource_meta(uri: &str, descriptors: &[AppResourceDescriptor]) -> MetaObject {
     let descriptor = app_descriptor_for_uri(descriptors, uri)
         .unwrap_or_else(|| panic!("app resource meta lookup called with un-tabled URI: {uri}"));
     app_resource_meta_for_descriptor(uri, descriptor)
 }
 
-fn app_resource_meta_for_descriptor(uri: &str, descriptor: &AppResourceDescriptor) -> Meta {
+fn app_resource_meta_for_descriptor(uri: &str, descriptor: &AppResourceDescriptor) -> MetaObject {
     build_app_resource_meta(
         uri,
         descriptor.runtime,
@@ -1419,7 +1419,7 @@ fn build_app_resource_meta(
     uri: &str,
     runtime: CodeModeRuntime,
     skybridge_widget_description: Option<&'static str>,
-) -> Meta {
+) -> MetaObject {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "ui".to_string(),
@@ -1439,7 +1439,7 @@ fn build_app_resource_meta(
     {
         meta.insert("openai/widgetDescription".to_string(), json!(description));
     }
-    Meta(meta)
+    MetaObject(meta)
 }
 
 #[cfg(all(test, feature = "gateway"))]
@@ -1676,7 +1676,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
                         "Quick shell UI",
                         Arc::new(serde_json::Map::new()),
                     );
-                    tool.meta = Some(Meta(serde_json::Map::from_iter([(
+                    tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
                         "ui".to_string(),
                         json!({ "resourceUri": UPSTREAM_UI_URI }),
                     )])));
