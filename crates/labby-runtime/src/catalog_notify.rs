@@ -23,6 +23,10 @@ pub const SOURCE_GATEWAY_RELOAD_SELECTIVE: &str = "gateway.reload.selective";
 /// Gateway reconcile that rebuilt the upstream pool.
 pub const SOURCE_GATEWAY_RELOAD_FULL: &str = "gateway.reload.full";
 
+/// `gateway.code_mode.set` changed the visible Code Mode contract without an
+/// upstream-pool reconcile, such as toggling the explicit MCP App UI.
+pub const SOURCE_GATEWAY_CODE_MODE_SET: &str = "gateway.code_mode.set";
+
 /// `gateway.enrich.hint.apply` writing a `code_mode_hint`, which is rendered
 /// into the visible `codemode` tool description.
 pub const SOURCE_GATEWAY_ENRICH_HINT: &str = "gateway.enrich.hint_apply";
@@ -31,6 +35,9 @@ pub const SOURCE_GATEWAY_ENRICH_HINT: &str = "gateway.enrich.hint_apply";
 /// the caller's turn is still open, so this is the source most likely to
 /// invalidate a client binding mid-turn.
 pub const SOURCE_MCP_CALL_CODEMODE: &str = "mcp.call.codemode";
+
+/// Catalog delta produced by the text-only `mcp_app` control tool.
+pub const SOURCE_MCP_CALL_MCP_APP: &str = "mcp.call.mcp_app";
 
 /// Post-call catalog delta observed by a raw upstream proxy call. Same
 /// mid-turn caveat as [`SOURCE_MCP_CALL_CODEMODE`].
@@ -50,8 +57,10 @@ pub const SOURCE_UNKNOWN: &str = "unknown";
 pub const SOURCES: &[&str] = &[
     SOURCE_GATEWAY_RELOAD_SELECTIVE,
     SOURCE_GATEWAY_RELOAD_FULL,
+    SOURCE_GATEWAY_CODE_MODE_SET,
     SOURCE_GATEWAY_ENRICH_HINT,
     SOURCE_MCP_CALL_CODEMODE,
+    SOURCE_MCP_CALL_MCP_APP,
     SOURCE_MCP_CALL_UPSTREAM,
     SOURCE_COALESCED,
     SOURCE_UNKNOWN,

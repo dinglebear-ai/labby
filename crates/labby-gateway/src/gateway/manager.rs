@@ -174,7 +174,12 @@ pub struct GatewayManager {
 }
 
 impl GatewayManager {
-    pub(super) async fn persist_config(&self, cfg: GatewayConfig) -> Result<(), ToolError> {
+    /// Persist a gateway config without replacing the live in-memory snapshot.
+    ///
+    /// Reconcile paths use this when they need the current snapshot to remain the
+    /// "before" side of catalog and upstream-diff calculations until reload has
+    /// successfully installed the newly persisted config.
+    pub(super) async fn write_config_file(&self, cfg: &GatewayConfig) -> Result<(), ToolError> {
         tracing::info!(
             action = "gateway.config.write",
             phase = "start",
@@ -185,8 +190,7 @@ impl GatewayManager {
         // Persistence (TOML render with foreign-key preservation + atomic write)
         // is owned by the host through the `GatewayConfigStore` seam, reusing the
         // existing `write_gateway_config`/`render_gateway_config` toml_edit logic
-        // verbatim. The manager keeps the in-memory `GatewayConfig` authoritative
-        // for the gateway-owned sections and swaps it in after a successful write.
+        // verbatim.
         let store = Arc::clone(&self.store);
         let cfg_for_persist = cfg.clone();
         tokio::task::spawn_blocking(move || store.persist(&cfg_for_persist))
@@ -194,14 +198,19 @@ impl GatewayManager {
             .map_err(|err| {
                 ToolError::internal_message(format!("gateway config write task failed: {err}"))
             })??;
-        *self.protected_route_index.write().await =
-            ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-        *self.config.write().await = cfg;
         tracing::info!(
             action = "gateway.config.write",
             phase = "finish",
             "gateway reconcile"
         );
+        Ok(())
+    }
+
+    pub(super) async fn persist_config(&self, cfg: GatewayConfig) -> Result<(), ToolError> {
+        self.write_config_file(&cfg).await?;
+        *self.protected_route_index.write().await =
+            ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
+        *self.config.write().await = cfg;
         Ok(())
     }
 }

@@ -1223,14 +1223,18 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
         .as_str();
     assert!(text.contains("app_disabled"), "{text}");
 
-    running
+    let stale_resource = running
         .service()
         .read_resource_impl(
             ReadResourceRequestParams::new(CODE_MODE_APP_URI),
             scoped_context(peer.clone(), &["lab:read"]),
         )
         .await
-        .expect("existing app resource remains readable while disabled");
+        .expect_err("cached app resource must stay hidden while disabled");
+    assert!(
+        stale_resource.message.contains("unknown UI resource"),
+        "cached resource should be hidden as unknown: {stale_resource:?}"
+    );
 
     let enable = running
         .service()

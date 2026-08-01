@@ -370,7 +370,7 @@ impl LabMcpServer {
                         match manager
                             .set_code_mode_config(
                                 next,
-                                Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE),
+                                Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
                                 None,
                             )
                             .await
@@ -397,7 +397,7 @@ impl LabMcpServer {
                     schedule_catalog_notification(
                         &self.peers,
                         CatalogNotificationChanges::new(true, true, false),
-                        labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE,
+                        labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
                     );
                 }
 

@@ -196,6 +196,89 @@ async fn concurrent_gateway_adds_persist_both_gateways() {
 }
 
 #[tokio::test]
+async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(path, runtime.clone());
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .await;
+    manager
+        .set_code_mode_config(
+            CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("seed an initial live pool");
+
+    let initial_pool = runtime.current_pool().await.expect("initial pool");
+    assert_eq!(initial_pool.upstream_count().await, 0);
+
+    manager
+        .add(fixture_stdio_upstream("alpha"), None, None, None)
+        .await
+        .expect("add alpha to the live pool");
+    let after_add = runtime.current_pool().await.expect("pool after add");
+    assert!(
+        Arc::ptr_eq(&initial_pool, &after_add),
+        "add-only reconciliation should preserve the live pool"
+    );
+    assert_eq!(after_add.upstream_count().await, 1);
+
+    manager
+        .update(
+            "alpha",
+            crate::gateway::params::GatewayUpdatePatch {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disable alpha");
+    let after_update = runtime.current_pool().await.expect("pool after update");
+    assert!(
+        !Arc::ptr_eq(&after_add, &after_update),
+        "updating an existing upstream should reconcile a fresh pool"
+    );
+    assert_eq!(after_update.upstream_count().await, 0);
+
+    manager
+        .update(
+            "alpha",
+            crate::gateway::params::GatewayUpdatePatch {
+                enabled: Some(true),
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("re-enable alpha");
+    let before_remove = runtime.current_pool().await.expect("pool before remove");
+    assert_eq!(before_remove.upstream_count().await, 1);
+
+    manager
+        .remove("alpha", None, None)
+        .await
+        .expect("remove alpha");
+    let after_remove = runtime.current_pool().await.expect("pool after remove");
+    assert!(
+        !Arc::ptr_eq(&before_remove, &after_remove),
+        "removing an existing upstream should reconcile a fresh pool"
+    );
+    assert_eq!(after_remove.upstream_count().await, 0);
+}
+
+#[tokio::test]
 async fn batch_add_returns_successful_views_and_preserves_errors() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
@@ -279,13 +362,17 @@ async fn concurrent_root_and_virtual_server_mutations_both_persist() {
 }
 
 #[tokio::test]
-async fn code_mode_mcp_ui_setting_persists_and_seeds_live_state() {
+async fn code_mode_mcp_ui_setting_persists_notifies_and_skips_pool_rebuild() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let runtime = GatewayRuntimeHandle::default();
+    let mut manager = GatewayManager::new(path.clone(), runtime.clone());
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+    manager.set_notifier(crate::gateway::types::CatalogChangeNotifier::new(notify_tx));
     manager
         .seed_config_unchecked_for_tests(GatewayConfig::default())
         .await;
+    assert!(runtime.current_pool().await.is_none());
 
     let updated = manager
         .set_code_mode_config(
@@ -293,7 +380,7 @@ async fn code_mode_mcp_ui_setting_persists_and_seeds_live_state() {
                 mcp_ui_enabled: false,
                 ..CodeModeConfig::default()
             },
-            None,
+            Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
             None,
         )
         .await
@@ -301,12 +388,69 @@ async fn code_mode_mcp_ui_setting_persists_and_seeds_live_state() {
 
     assert!(!updated.mcp_ui_enabled);
     assert!(!manager.code_mode_app_state().is_enabled());
+    assert!(
+        runtime.current_pool().await.is_none(),
+        "a UI-only setting must not create or rebuild the upstream pool"
+    );
+    let event = tokio::time::timeout(Duration::from_secs(1), notify_rx.recv())
+        .await
+        .expect("MCP UI catalog notification timed out")
+        .expect("MCP UI catalog notification channel closed");
+    assert!(event.diff.tools_changed);
+    assert!(event.diff.resources_changed);
+    assert!(!event.diff.prompts_changed);
+    assert_eq!(
+        event.source,
+        labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP
+    );
+    assert!(
+        notify_rx.try_recv().is_err(),
+        "a UI-only toggle should emit exactly one catalog event"
+    );
+
     let persisted = load_gateway_config(&path).expect("load persisted config");
     assert!(!persisted.code_mode.mcp_ui_enabled);
 
     let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
     restarted.seed_config_unchecked_for_tests(persisted).await;
     assert!(!restarted.code_mode_app_state().is_enabled());
+}
+
+#[tokio::test]
+async fn code_mode_runtime_change_notifies_from_the_previous_regime() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let runtime = GatewayRuntimeHandle::default();
+    let mut manager = GatewayManager::new(path, runtime.clone());
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+    manager.set_notifier(crate::gateway::types::CatalogChangeNotifier::new(notify_tx));
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .await;
+
+    let updated = manager
+        .set_code_mode_config(
+            CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("enable Code Mode");
+
+    assert!(updated.enabled);
+    assert!(runtime.current_pool().await.is_some());
+    let event = tokio::time::timeout(Duration::from_secs(1), notify_rx.recv())
+        .await
+        .expect("Code Mode regime catalog notification timed out")
+        .expect("Code Mode regime catalog notification channel closed");
+    assert!(event.diff.tools_changed);
+    assert_eq!(
+        event.source,
+        labby_runtime::catalog_notify::SOURCE_GATEWAY_RELOAD_FULL
+    );
 }
 
 // Store-seam env persistence guard (rewritten in the gateway extraction).
