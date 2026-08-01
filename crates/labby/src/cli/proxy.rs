@@ -345,6 +345,65 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
                 }
             }
         }
+    } else if prefs.exposure == crate::proxy::config::ProxyExposure::Tailscale {
+        let mut prepared = crate::proxy::runtime::LocalProxy::prepare(local_options)
+            .await
+            .map_err(|error| anyhow::anyhow!("proxy preparation failed: {error}"))?;
+        let mut abandoned_ports = std::collections::BTreeSet::new();
+        let max_attempts = 32_usize;
+        let mut attempt = 0_usize;
+        loop {
+            attempt += 1;
+            let mut options = tailscale_options(prepared.local_addr(), &prefs);
+            options.max_attempts = max_attempts;
+            let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+            if abandoned_ports.contains(&plan.external_port()) && attempt < max_attempts {
+                continue;
+            }
+            let resource = plan.public_url().clone();
+            let auth = match prefs.auth {
+                crate::proxy::config::ProxyAuthMode::Bearer => {
+                    crate::proxy::runtime::LocalProxyAuthPolicy::Bearer {
+                        token: std::sync::Arc::from(
+                            bearer_token
+                                .as_ref()
+                                .context("bearer token disappeared before proxy startup")?
+                                .clone(),
+                        ),
+                        resource: resource.clone(),
+                    }
+                }
+                crate::proxy::config::ProxyAuthMode::Tailnet
+                | crate::proxy::config::ProxyAuthMode::None => {
+                    crate::proxy::runtime::LocalProxyAuthPolicy::None
+                }
+                crate::proxy::config::ProxyAuthMode::Oauth => {
+                    unreachable!("OAuth startup is handled in the preceding branch")
+                }
+            };
+            let proxy = prepared
+                .start_with_public_resource(auth, Some(resource.clone()))
+                .context("proxy router startup failed")?;
+            match plan.claim_typed().await {
+                Ok(serve) => break (proxy, None, Some(serve)),
+                Err(crate::proxy::tailscale::TailscaleClaimError::Collision(_error))
+                    if prefs.port.fixed().is_none() && attempt < max_attempts =>
+                {
+                    abandoned_ports.insert(resource.port().unwrap_or_default());
+                    prepared = proxy
+                        .rollback_to_prepared()
+                        .await
+                        .context("Tailscale collision rollback failed")?;
+                }
+                Err(error) => {
+                    let cleanup = proxy.shutdown().await;
+                    return Err(combine_cleanup_errors(
+                        anyhow::Error::new(error),
+                        [("LocalProxy", cleanup.err())],
+                    ));
+                }
+            }
+        }
     } else {
         (
             crate::proxy::runtime::LocalProxy::start(local_options)
@@ -355,25 +414,7 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         )
     };
     let info = proxy.info().clone();
-    let mut tailscale = if oauth_tailscale.is_some() {
-        oauth_tailscale
-    } else if prefs.exposure == crate::proxy::config::ProxyExposure::Tailscale {
-        let options = tailscale_options(info.local_addr, &prefs);
-        match crate::proxy::tailscale::TailscaleServe::start(options).await {
-            Ok(serve) => Some(serve),
-            Err(error) => {
-                let shutdown = proxy.shutdown().await;
-                if let Err(shutdown) = shutdown {
-                    return Err(error).context(format!(
-                        "LocalProxy cleanup also failed after Tailscale startup failure: {shutdown:#}"
-                    ));
-                }
-                return Err(error).context("Tailscale Serve publication failed");
-            }
-        }
-    } else {
-        None
-    };
+    let mut tailscale = oauth_tailscale;
     let public_url = tailscale
         .as_ref()
         .map_or_else(|| info.url.clone(), |serve| serve.public_url().clone());

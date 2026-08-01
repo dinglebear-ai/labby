@@ -312,7 +312,15 @@ impl PreparedLocalProxy {
         &self.local_url
     }
 
-    pub fn start(mut self, auth: LocalProxyAuthPolicy) -> Result<LocalProxy> {
+    pub fn start(self, auth: LocalProxyAuthPolicy) -> Result<LocalProxy> {
+        self.start_with_public_resource(auth, None)
+    }
+
+    pub fn start_with_public_resource(
+        mut self,
+        auth: LocalProxyAuthPolicy,
+        public_resource: Option<url::Url>,
+    ) -> Result<LocalProxy> {
         let listener = self
             .listener
             .take()
@@ -334,11 +342,12 @@ impl PreparedLocalProxy {
             format!("http://127.0.0.1:{}", self.local_addr.port()),
             format!("http://localhost:{}", self.local_addr.port()),
         ];
-        let external_resource = match &auth {
+        let auth_resource = match &auth {
             LocalProxyAuthPolicy::None => None,
             LocalProxyAuthPolicy::Bearer { resource, .. }
             | LocalProxyAuthPolicy::Oauth { resource, .. } => Some(resource),
         };
+        let external_resource = public_resource.as_ref().or(auth_resource);
         if let Some(resource) = external_resource {
             if let Some(host) = resource.host_str() {
                 allowed_hosts.push(match resource.port() {

@@ -63,6 +63,30 @@ fn serve_status_finds_exact_mapping_and_ports_from_both_maps() {
 }
 
 #[test]
+fn serve_status_finds_foreground_mapping_and_marks_its_port_occupied() {
+    let status = ServeStatus::parse(
+        r#"{
+          "Foreground": {
+            "session-id": {
+              "TCP": {"49287": {"HTTPS": true}},
+              "Web": {
+                "dookie.example.ts.net:49287": {
+                  "Handlers": {"/": {"Proxy": "http://127.0.0.1:49001"}}
+                }
+              }
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        status.backend_for("dookie.example.ts.net", 49_287),
+        Some("http://127.0.0.1:49001")
+    );
+    assert!(status.occupied_ports().contains(&49_287));
+}
+
+#[test]
 fn fixed_and_random_selection_respect_tcp_and_web_collisions() {
     let status = ServeStatus::parse(SERVE_STATUS).unwrap();
     assert!(
