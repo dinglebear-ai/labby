@@ -8,6 +8,8 @@
 use labby_runtime::gateway_config::UpstreamConfig;
 use rmcp::service::ClientServiceExt;
 use rmcp::{ClientHandler, RoleClient};
+use std::ffi::OsString;
+use std::path::PathBuf;
 
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
@@ -44,51 +46,102 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    let mut env = config
+        .env
+        .iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .collect::<Vec<_>>();
+    if let Some(ref env_name) = config.bearer_token_env
+        && let Some(token) = configured_bearer_token(env_name)
+    {
+        env.push((OsString::from(env_name), OsString::from(token)));
+    }
+    let command_spec = StdioCommandSpec {
+        program: OsString::from(command),
+        args: args.iter().map(OsString::from).collect(),
+        cwd: None,
+        env,
+        inherit_env: Vec::new(),
+        display: command.to_string(),
+        name: config.name.clone(),
+        runtime_origin: runtime_origin_label(runtime_origin, runtime_owner),
+        runtime_owner: runtime_owner.cloned(),
+    };
+    connect_stdio_command(command_spec, handler, true).await
+}
+
+pub(crate) async fn connect_direct_stdio<H: ClientHandler + Clone>(
+    command: crate::upstream::direct_stdio::DirectStdioCommand,
+    handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    let spec = StdioCommandSpec {
+        program: command.program,
+        args: command.args,
+        cwd: Some(command.cwd),
+        env: command.env,
+        inherit_env: command.inherit_env,
+        name: "direct-stdio".to_string(),
+        display: command.display,
+        runtime_origin: Some("proxy:local-cli".to_string()),
+        runtime_owner: None,
+    };
+    connect_stdio_command(spec, handler, false).await
+}
+
+#[derive(Clone)]
+struct StdioCommandSpec {
+    program: OsString,
+    args: Vec<OsString>,
+    cwd: Option<PathBuf>,
+    env: Vec<(OsString, OsString)>,
+    inherit_env: Vec<OsString>,
+    display: String,
+    name: String,
+    runtime_origin: Option<String>,
+    runtime_owner: Option<UpstreamRuntimeOwner>,
+}
+
+async fn connect_stdio_command<H: ClientHandler + Clone>(
+    command: StdioCommandSpec,
+    handler: H,
+    allow_cache_repair: bool,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     // Cross-process spawn lock: stdio servers launched via `npx -y`/`uvx` install
     // into a shared package cache on first cold spawn; two processes installing
     // the same package at once corrupt it. Hold an advisory file lock (keyed on
     // the command + args) for the whole connect — spawn, handshake, list_tools,
     // and a possible targeted cache repair/retry.
-    let mut spawn_lock = super::spawn_lock::open(command, args);
+    let lock_command = command.program.to_string_lossy();
+    let lock_args = command
+        .args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let mut spawn_lock = super::spawn_lock::open(&lock_command, &lock_args);
     let _spawn_guard = super::spawn_lock::acquire(spawn_lock.as_mut()).await;
 
-    match connect_stdio_upstream_once(
-        command,
-        args,
-        config,
-        runtime_origin,
-        runtime_owner,
-        handler.clone(),
-        LifecycleAttempt::Modern,
-    )
-    .await
-    {
+    match connect_stdio_upstream_once(&command, handler.clone(), LifecycleAttempt::Modern).await {
         Ok(ok) => Ok(ok),
         Err(first_error) => {
             let lifecycle_error = anyhow::anyhow!(first_error.diagnostics_with_error());
             if let Some(attempt) = compatibility_retry(&lifecycle_error) {
-                log_fallback(&config.name, "stdio", attempt, &lifecycle_error);
-                return connect_stdio_upstream_once(
-                    command,
-                    args,
-                    config,
-                    runtime_origin,
-                    runtime_owner,
-                    handler,
-                    attempt,
-                )
-                .await
-                .map_err(StdioConnectError::into_anyhow);
+                log_fallback(&command.name, "stdio", attempt, &lifecycle_error);
+                return connect_stdio_upstream_once(&command, handler, attempt)
+                    .await
+                    .map_err(StdioConnectError::into_anyhow);
             }
             let diagnostics = first_error.diagnostics_with_error();
-            let repair = super::cache_repair::maybe_repair(command, &diagnostics).await;
+            if !allow_cache_repair {
+                return Err(first_error.into_anyhow());
+            }
+            let repair = super::cache_repair::maybe_repair(&lock_command, &diagnostics).await;
             match &repair {
                 super::cache_repair::CacheRepairOutcome::Repaired { summary } => {
                     tracing::warn!(
                         surface = "dispatch",
                         service = "upstream.pool",
-                        upstream = %config.name,
-                        command = %command,
+                        upstream = %command.name,
+                        command = %command.display,
                         action = "upstream.cache_repair",
                         repair = %summary,
                         "stdio package-runner cache repaired after startup failure; retrying once"
@@ -98,8 +151,8 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
                     tracing::warn!(
                         surface = "dispatch",
                         service = "upstream.pool",
-                        upstream = %config.name,
-                        command = %command,
+                        upstream = %command.name,
+                        command = %command.display,
                         action = "upstream.cache_repair",
                         repair = %summary,
                         "stdio package-runner cache repair failed; returning original startup error"
@@ -109,17 +162,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
                 _ => return Err(first_error.into_anyhow()),
             }
 
-            match connect_stdio_upstream_once(
-                command,
-                args,
-                config,
-                runtime_origin,
-                runtime_owner,
-                handler,
-                LifecycleAttempt::Modern,
-            )
-            .await
-            {
+            match connect_stdio_upstream_once(&command, handler, LifecycleAttempt::Modern).await {
                 Ok(ok) => Ok(ok),
                 Err(retry_error) => Err(anyhow::anyhow!(
                     "stdio upstream failed after package-runner cache repair retry: {}",
@@ -131,11 +174,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
 }
 
 async fn connect_stdio_upstream_once<H: ClientHandler>(
-    command: &str,
-    args: &[String],
-    config: &UpstreamConfig,
-    runtime_origin: Option<&str>,
-    runtime_owner: Option<&UpstreamRuntimeOwner>,
+    command: &StdioCommandSpec,
     handler: H,
     lifecycle: LifecycleAttempt,
 ) -> Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>), StdioConnectError> {
@@ -187,22 +226,23 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         "HOMEPATH",
     ];
 
-    let mut cmd = Command::new(command);
-    cmd.args(args);
+    let mut cmd = Command::new(&command.program);
+    cmd.args(&command.args);
+    if let Some(cwd) = &command.cwd {
+        cmd.current_dir(cwd);
+    }
     cmd.env_clear();
     for key in STDIO_ENV_ALLOWLIST {
-        if let Ok(value) = std::env::var(key) {
+        if let Some(value) = std::env::var_os(key) {
             cmd.env(key, value);
         }
     }
-    cmd.envs(config.env.iter());
-
-    // Set bearer token env var on the child if configured
-    if let Some(ref env_name) = config.bearer_token_env
-        && let Some(token) = configured_bearer_token(env_name)
-    {
-        cmd.env(env_name, &token);
+    for key in &command.inherit_env {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
     }
+    cmd.envs(command.env.iter().cloned());
 
     // A stdio MCP server logs to stderr (stdout is the JSON-RPC channel), so the
     // child's stderr is the ONLY place its server-side diagnostics go. Capture
@@ -235,7 +275,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     // EOF so failures are recoverable from the gateway log instead of lost.
     forward_upstream_stderr(
         child_stderr,
-        config.name.clone(),
+        command.name.clone(),
         stderr_level,
         stderr_capture.clone(),
     );
@@ -243,8 +283,8 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     let pid = process.id();
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
-        upstream = %config.name, transport = "stdio",
-        action = "upstream.connect.start", command = %command, pid = ?pid,
+        upstream = %command.name, transport = "stdio",
+        action = "upstream.connect.start", command = %command.display, pid = ?pid,
         "upstream connect start",
     );
 
@@ -282,7 +322,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     };
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
-        upstream = %config.name, transport = "stdio",
+        upstream = %command.name, transport = "stdio",
         action = "upstream.connect.finish", pid = ?pid, tool_count = tools.len(),
         "upstream connect finish",
     );
@@ -321,8 +361,8 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             #[cfg(windows)]
             job_handle: job_handle_for_runtime,
             started_at: Some(std::time::SystemTime::now()),
-            origin: runtime_origin_label(runtime_origin, runtime_owner),
-            owner: runtime_owner.cloned(),
+            origin: command.runtime_origin.clone(),
+            owner: command.runtime_owner.clone(),
         },
     );
 

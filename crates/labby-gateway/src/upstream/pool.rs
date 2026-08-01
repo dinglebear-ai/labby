@@ -54,6 +54,7 @@ mod tools_call;
 mod usage_record;
 mod validate;
 
+pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
     UpstreamCachedSummary, in_process_upstream_name, redact_resource_uri_for_logging,

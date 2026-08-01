@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::config::LabConfig;
-use crate::output::OutputFormat;
+use crate::output::{OutputFormat, print};
 
 /// Exit code for the proxy command.
 pub type ExitCode = std::process::ExitCode;
@@ -89,8 +89,36 @@ impl ProxyArgs {
     }
 }
 
-/// Prepare the proxy invocation. Runtime wiring lands in the next checkpoint.
-pub async fn run(args: ProxyArgs, config: &LabConfig, _format: OutputFormat) -> Result<ExitCode> {
+#[cfg(feature = "gateway")]
+#[derive(serde::Serialize)]
+struct ProxyReadyOutput {
+    url: String,
+    exposure: &'static str,
+    auth: &'static str,
+    external_port: u16,
+    local_addr: String,
+    command: Vec<String>,
+    child_pid: Option<u32>,
+    protocol_version: String,
+}
+
+#[cfg(feature = "gateway")]
+fn parse_explicit_env(values: &[String]) -> Result<Vec<(OsString, OsString)>> {
+    values
+        .iter()
+        .map(|entry| {
+            let (name, value) = entry
+                .split_once('=')
+                .filter(|(name, _)| !name.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("--env requires NAME=VALUE, got `{entry}`"))?;
+            Ok((OsString::from(name), OsString::from(value)))
+        })
+        .collect()
+}
+
+/// Run the stdio MCP proxy command in the foreground.
+#[cfg(feature = "gateway")]
+pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> Result<ExitCode> {
     let cwd = args.cwd.clone().unwrap_or(std::env::current_dir()?);
     let command = crate::proxy::command::resolve_proxy_command(
         &args.command,
@@ -104,28 +132,116 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, _format: OutputFormat) -> 
         .validate()
         .map_err(|error| anyhow::anyhow!("proxy preferences validation failed: {error}"))?;
 
-    let _bearer_token = if matches!(prefs.auth, crate::proxy::config::ProxyAuthMode::Bearer) {
-        Some(args.read_bearer_token().await?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "bearer auth requires LABBY_PROXY_BEARER_TOKEN, --bearer-token, or --bearer-token-stdin"
-            )
-        })?)
+    let bearer_token = if matches!(prefs.auth, crate::proxy::config::ProxyAuthMode::Bearer) {
+        Some(
+            args.read_bearer_token()
+                .await?
+                .or_else(|| std::env::var(&prefs.bearer_token_env).ok())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "bearer auth requires {}, --bearer-token, or --bearer-token-stdin",
+                        prefs.bearer_token_env
+                    )
+                })?,
+        )
     } else {
         None
     };
 
+    let mut inherit_env = prefs
+        .inherit_env
+        .iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    inherit_env.extend(args.inherit_env.iter().map(OsString::from));
+    let command_json = std::iter::once(command.program.to_string_lossy().into_owned())
+        .chain(
+            command
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned()),
+        )
+        .collect::<Vec<_>>();
+
     tracing::info!(
         surface = "cli",
         service = "proxy",
-        action = "proxy.prepare",
+        action = "proxy.start",
         command = %command.display,
         exposure = ?prefs.exposure,
         auth = ?prefs.auth,
         path = %prefs.path,
-        "prepared stdio MCP proxy invocation"
+        "starting stdio MCP proxy"
     );
 
-    anyhow::bail!("stdio MCP proxy runtime is not implemented in this checkpoint")
+    let proxy =
+        crate::proxy::runtime::LocalProxy::start(crate::proxy::runtime::LocalProxyOptions {
+            command,
+            preferences: prefs,
+            bearer_token,
+            explicit_env: parse_explicit_env(&args.env)?,
+            inherit_env,
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("proxy startup failed: {error}"))?;
+    let info = proxy.info();
+
+    if format.is_json() {
+        print(
+            &ProxyReadyOutput {
+                url: info.url.to_string(),
+                exposure: "local",
+                auth: if info.auth == crate::proxy::config::ProxyAuthMode::Bearer {
+                    "bearer"
+                } else {
+                    "none"
+                },
+                external_port: info.local_addr.port(),
+                local_addr: info.local_addr.to_string(),
+                command: command_json,
+                child_pid: info.child_pid,
+                protocol_version: info.protocol_version.to_string(),
+            },
+            format,
+        )?;
+    } else {
+        #[allow(clippy::print_stdout)]
+        {
+            println!("MCP proxy ready");
+            println!();
+            println!("  Server   {}", info.command);
+            println!("  URL      {}", info.url);
+            println!("  Exposure Local");
+            println!(
+                "  Auth     {}",
+                if info.auth == crate::proxy::config::ProxyAuthMode::Bearer {
+                    "Bearer token"
+                } else {
+                    "None"
+                }
+            );
+            println!();
+            println!("Press Ctrl+C to stop.");
+        }
+    }
+
+    let failure = tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            None
+        }
+        result = proxy.wait_for_failure() => Some(result),
+    };
+    proxy.shutdown().await?;
+    if let Some(result) = failure {
+        result?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(not(feature = "gateway"))]
+pub async fn run(_args: ProxyArgs, _config: &LabConfig, _format: OutputFormat) -> Result<ExitCode> {
+    anyhow::bail!("stdio MCP proxy runtime requires the `gateway` feature")
 }
 
 #[cfg(test)]

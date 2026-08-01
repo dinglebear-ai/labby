@@ -85,12 +85,11 @@ impl ClientHandler for BridgeClientHandler {
     }
 }
 
-/// Holds the live connection to the real daemon. `_service` keeps the
-/// underlying transport worker (and its `BridgeClientHandler`) alive for as
-/// long as the bridge runs; `peer` is the actual handle used to forward
-/// downstream requests to the daemon.
+/// Transparent MCP bridge over a client peer. When constructed from a full
+/// running service, `_service` retains transport ownership. Proxy runtimes may
+/// instead retain that ownership externally and construct the bridge from a peer.
 pub struct BridgeServerHandler {
-    _service: RunningService<RoleClient, BridgeClientHandler>,
+    _service: Option<RunningService<RoleClient, BridgeClientHandler>>,
     peer: Peer<RoleClient>,
 }
 
@@ -98,7 +97,17 @@ impl BridgeServerHandler {
     pub fn new(service: RunningService<RoleClient, BridgeClientHandler>) -> Self {
         let peer = service.peer().clone();
         Self {
-            _service: service,
+            _service: Some(service),
+            peer,
+        }
+    }
+
+    /// Build a transparent bridge over a peer whose connection ownership is
+    /// retained by another runtime supervisor.
+    #[must_use]
+    pub fn from_peer(peer: Peer<RoleClient>) -> Self {
+        Self {
+            _service: None,
             peer,
         }
     }
