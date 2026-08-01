@@ -71,12 +71,16 @@ async fn app_auth_state_with_protected_routes(
             route_count = routes.iter().filter(|route| route.enabled).count(),
             "oauth protected resource scope map refreshed from gateway routes"
         );
-        auth_state.set_allowed_resource_scopes(
-            routes
-                .into_iter()
-                .filter(|route| route.enabled)
-                .map(|route| (route.public_resource(), route.scopes)),
-        );
+        auth_state
+            .replace_configured_resource_scopes(
+                routes
+                    .into_iter()
+                    .filter(|route| route.enabled)
+                    .map(|route| (route.public_resource(), route.scopes)),
+            )
+            .map_err(|error| {
+                LabAuthError::Config(format!("invalid configured protected resource: {error}"))
+            })?;
     }
     Ok(auth_state)
 }
@@ -1272,14 +1276,16 @@ pub(crate) fn build_router_with_external_auth(
         state = state.with_oauth_state(auth_state.clone());
     }
     if let Some(auth_state) = auth_state.as_ref() {
-        auth_state.set_allowed_resource_scopes(
+        if let Err(error) = auth_state.replace_configured_resource_scopes(
             state
                 .config
                 .protected_mcp_routes
                 .iter()
                 .filter(|route| route.enabled)
                 .map(|route| (route.public_resource(), route.scopes.clone())),
-        );
+        ) {
+            tracing::error!(%error, "invalid configured OAuth protected resource route");
+        }
     }
     let static_token = bearer_token.map(Arc::<str>::from);
     state = state.with_bearer_token(static_token.clone());
