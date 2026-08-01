@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 Historical entries use distinct `example*` pseudonyms where retired service
 identifiers were removed. Commit links remain the authoritative historical record.
 
+## Unreleased
+
+### Added
+
+- **proxy:** `labby proxy <stdio-server>` now exposes one stdio MCP server
+  faithfully over loopback or an owned Tailscale Serve HTTPS port. Zero-flag
+  defaults support tailnet policy, while setup can persist separate bearer or
+  stable-issuer OAuth policy, random or fixed ports, endpoint path, child
+  environment inheritance, and cleanup preferences.
+- **setup/doctor:** `labby setup proxy` stores non-secrets in `config.toml`,
+  generates or accepts bearer secrets in the hardened `.env`, and remains
+  idempotent. Zero-route `labby doctor proxy` validates local proxy
+  prerequisites without removing the existing routed reverse-proxy doctor.
+- **oauth:** ephemeral exact-resource leases register each OAuth proxy URL,
+  including port and path, through admin gateway actions; the proxy renews and
+  releases leases while the daemon expires crash leftovers by TTL.
+- **docs:** added the stdio MCP proxy operator guide plus generated proxy
+  configuration, environment, service, action, CLI, API, and OpenAPI inventory
+  coverage with drift tests.
+
 ## [1.8.5](https://github.com/dinglebear-ai/labby/compare/v1.8.4...v1.8.5) (2026-07-30)
 
 

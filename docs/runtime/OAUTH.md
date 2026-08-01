@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-01"
 ---
 
 # HTTP Auth Modes
@@ -518,6 +518,42 @@ names.
 
 Full route configuration and curl verification examples live in
 [GATEWAY.md](../services/GATEWAY.md#gateway-managed-protected-mcp-routes).
+
+## Direct Stdio Proxy OAuth
+
+`labby proxy --auth oauth` uses the same stable Labby authorization-server
+issuer but creates an ephemeral protected resource for the exact printed proxy
+URL. The external port and MCP path are both part of the JWT audience:
+
+```text
+https://node.example.ts.net:53147/mcp
+```
+
+A random-port run is therefore a new resource on every invocation. Prefer a
+fixed proxy port for a long-lived connector configuration.
+
+Before publication, the CLI verifies the live daemon's issuer metadata, JWKS,
+and gateway action inventory, then uses authenticated `POST /v1/gateway` action
+dispatch to create, renew, and release the resource lease. There are no
+route-local or dedicated `/v1/internal/*` lease endpoints. Normal shutdown
+releases the lease; a forced termination recovers through the 120-second TTL
+and the daemon's periodic expiry sweep.
+
+Unlike configured Gateway protected routes, the direct proxy serves metadata
+at the origin root, with no route suffix:
+
+```http
+GET https://node.example.ts.net:53147/.well-known/oauth-protected-resource
+```
+
+The document's `resource` remains the exact `/mcp` URL above, and the
+`WWW-Authenticate` challenge points to that root metadata document. A token for
+the same host with another port or path is rejected. Local HTTP OAuth is not
+supported because resource leases accept HTTPS audiences; startup fails rather
+than downgrading to bearer or none.
+
+See the [stdio MCP proxy guide](../guides/STDIO_MCP_PROXY.md#oauth-resource-lifecycle)
+for daemon discovery, lease timing, fixed-port guidance, and troubleshooting.
 
 ## Troubleshooting ChatGPT MCP Connectors
 

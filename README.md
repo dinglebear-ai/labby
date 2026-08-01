@@ -28,6 +28,10 @@ Labby is centered on the current gateway/operator surface:
   tools/resources/prompts, apply exposure filters, publish protected MCP routes,
   and optionally collapse the upstream catalog into Code Mode `search` and
   `execute`.
+- **Direct stdio proxy** - launch one stdio MCP server with
+  `labby proxy /path/to/dist.js` and expose its unmodified MCP surface over
+  loopback or an owned Tailscale Serve HTTPS port with tailnet, bearer, OAuth,
+  or explicit no-auth policy.
 - **Authentication and protected routes** - run bearer or OAuth authentication,
   manage route-scoped access, authorize upstream OAuth connections, and publish
   protected MCP endpoints.
@@ -41,7 +45,8 @@ Labby is centered on the current gateway/operator surface:
 - **Incus and bare-metal setup** - provision and operate a dedicated Labby
   gateway host without introducing a separate fleet or deployment product.
 - **Generated discovery** - publish code-owned service, action, environment,
-  API route, OpenAPI, MCP help, CLI help, and feature-matrix artifacts under
+  proxy configuration, API route, OpenAPI, MCP help, CLI help, and
+  feature-matrix artifacts under
   [docs/generated](./docs/generated/README.md).
 
 The registered services on this branch are exactly `doctor`, `fs`, `gateway`,
@@ -53,6 +58,31 @@ no CLI commands. Use the generated catalogs below for the current surface
 instead of copying command or action lists by hand.
 
 ## Quick Start
+
+### Proxy One Stdio MCP Server
+
+After installing Labby, configure proxy defaults once and launch a JavaScript
+stdio server without proxy flags:
+
+```bash
+labby setup proxy
+labby doctor proxy
+labby proxy /path/to/dist.js
+```
+
+The built-in zero-flag policy is Tailscale Serve plus tailnet authorization on
+a random high port. Child flags follow the first child token unchanged, and an
+explicit separator is available for unusual commands:
+
+```bash
+labby proxy /path/to/dist.js --workspace /srv/data --read-only
+labby proxy -- npx -y @modelcontextprotocol/server-filesystem /srv/data
+```
+
+Use `labby proxy --local --auth none ...` for explicit loopback-only
+development. Bearer and OAuth setup, exact-port resource audiences, safe Serve
+ownership, configuration precedence, output modes, and recovery are covered in
+the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 
 ### Install A Release
 
@@ -244,7 +274,9 @@ without the `gateway` feature.
 labby doctor            # audit every configured service
 labby doctor system     # local env vars, Docker, disk, toolchain
 labby doctor auth       # auth/OAuth env vars, files, permissions
-labby doctor proxy      # public Lab and protected MCP proxy endpoints
+labby doctor proxy      # zero-route stdio-proxy config/dependency preflight
+labby doctor proxy --app-url URL --mcp-url URL --route /path
+                        # routed public reverse-proxy checks remain available
 labby doctor oauth-relay
 labby health            # lightweight liveness/readiness probe
 labby logs              # tail the active deployment's service journal

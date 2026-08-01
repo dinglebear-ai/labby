@@ -1,9 +1,14 @@
 # Stdio MCP Proxy Research Report
 
 - **Date:** 2026-07-31
+- **Implementation documentation:** 2026-08-01
 - **Labby base:** `eff39c79d97c907f6c9956f4711ecab5cd8df62f`
 - **Target command:** `labby proxy <stdio-server-command>`
 - **Primary UX:** `labby proxy /path/to/dist.js`
+- **Related:** [operator guide](../guides/STDIO_MCP_PROXY.md),
+  [spec](../specs/stdio-mcp-proxy.md),
+  [contract](../contracts/stdio-mcp-proxy.md), and
+  [implementation plan](../superpowers/plans/2026-07-31-stdio-mcp-proxy-implementation.md)
 
 ## Executive finding
 
@@ -310,19 +315,26 @@ The current conformance script is pinned to RMCP 3.0.0-beta.2 and a matching com
 - expected failure baselines where justified;
 - upstream drift baseline.
 
-## Remaining implementation spikes
+## Implementation outcomes
 
-These are bounded engineering spikes, not product questions:
+The implementation resolved the research spikes with a dedicated direct-stdio
+connector, the shared transparent bridge, a stateless loopback HTTP service,
+explicit subscription/cancellation coverage, owned Tailscale Serve status
+checks, and daemon-backed OAuth leases. Parser tests retain `OsString` child
+arguments, and the stdio connector reuses Unix process-group and Windows Job
+Object ownership.
 
-1. Prove the exact RMCP service/factory shape needed to keep one supervised stdio child behind a stateless HTTP handler factory.
-2. Prove progress-token replacement and restoration with two concurrent requests using the same downstream token.
-3. Prove modern `subscriptions/listen` bridging with two concurrent subscriptions.
-4. Prove legacy resource subscription adaptation and ref-counted unsubscribe.
-5. Prove Tailscale foreground termination and exact fallback cleanup on all supported Tailscale versions.
-6. Prove dynamic OAuth resource lease renewal across a daemon restart.
-7. Prove non-UTF-8 command arguments and process-tree cleanup on Linux and Windows.
+The shipped operator boundary differs from two early research assumptions:
 
-Each spike has a mandatory test and evidence artifact in the implementation plan. A failed spike changes the implementation mechanism, not the user-facing command contract.
+- lease create, renew, and release use authenticated gateway actions over
+  `POST /v1/gateway`, not new route-local REST endpoints;
+- direct-proxy OAuth metadata is always the origin-root
+  `/.well-known/oauth-protected-resource` document, while configured Gateway
+  protected routes keep their existing path-suffixed metadata contract.
+
+The dated proof-pack harness and controlled live release evidence remain owned
+by Task 14 of the implementation plan; they do not change the Task 13 operator
+or generated-document contract.
 
 ## Authoritative sources
 
