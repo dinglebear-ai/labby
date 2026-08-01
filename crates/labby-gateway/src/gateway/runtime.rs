@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwapOption;
 use futures::StreamExt;
 #[cfg(unix)]
 use nix::errno::Errno;
@@ -26,18 +27,40 @@ use crate::upstream::types::UpstreamRuntimeOwner;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct GatewayRuntimeHandle {
-    pool: Arc<RwLock<Option<Arc<UpstreamPool>>>>,
+    pool: Arc<ArcSwapOption<UpstreamPool>>,
+    pool_changes: tokio::sync::watch::Sender<Option<Arc<UpstreamPool>>>,
+}
+
+impl Default for GatewayRuntimeHandle {
+    fn default() -> Self {
+        let (pool_changes, _receiver) = tokio::sync::watch::channel(None);
+        Self {
+            pool: Arc::new(ArcSwapOption::empty()),
+            pool_changes,
+        }
+    }
 }
 
 impl GatewayRuntimeHandle {
+    pub fn current_pool_sync(&self) -> Option<Arc<UpstreamPool>> {
+        self.pool.load_full()
+    }
+
     pub async fn current_pool(&self) -> Option<Arc<UpstreamPool>> {
-        self.pool.read().await.clone()
+        self.current_pool_sync()
     }
 
     pub async fn swap(&self, pool: Option<Arc<UpstreamPool>>) {
-        *self.pool.write().await = pool;
+        self.pool.store(pool.clone());
+        self.pool_changes.send_replace(pool);
+    }
+
+    pub fn subscribe_pool_changes(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<Arc<UpstreamPool>>> {
+        self.pool_changes.subscribe()
     }
 }
 

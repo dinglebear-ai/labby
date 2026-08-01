@@ -23,9 +23,9 @@ use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock,
 };
-use rmcp::service::{Peer, RequestContext};
+use rmcp::service::RequestContext;
 
 use crate::mcp::context::{
     auth_context_from_extensions, oauth_upstream_subject_for_request, redacted_oauth_subject_label,
@@ -49,11 +49,16 @@ pub(crate) struct PreResolvedUpstreamTool {
     pub(crate) route: &'static str,
 }
 
-fn downstream_supports_relay(peer: &Peer<RoleServer>) -> bool {
-    !peer.supported_elicitation_modes().is_empty()
-        || peer.peer_info().is_some_and(|info| {
-            info.capabilities.sampling.is_some() || info.capabilities.roots.is_some()
-        })
+fn prepare_upstream_tool_request(
+    mut request: CallToolRequestParams,
+    upstream_tool_name: &str,
+) -> CallToolRequestParams {
+    request.name = upstream_tool_name.to_string().into();
+    request
+}
+
+fn relay_capabilities_for_request(request: &CallToolRequestParams) -> Option<ClientCapabilities> {
+    crate::mcp::context::forwardable_client_capabilities(request.meta.as_ref())
 }
 
 fn upstream_call_failed_message(upstream_name: &str) -> String {
@@ -69,7 +74,7 @@ impl LabMcpServer {
         &self,
         service: &str,
         action: &str,
-        raw_arguments: Option<JsonObject>,
+        upstream_request: CallToolRequestParams,
         resolved_upstream_tool: Option<PreResolvedUpstreamTool>,
         start: Instant,
         subject: &str,
@@ -173,14 +178,14 @@ impl LabMcpServer {
                 "proxying to upstream"
             );
 
-            let mut upstream_params = CallToolRequestParams::new(service.to_string());
-            upstream_params.arguments = raw_arguments;
+            let upstream_params = prepare_upstream_tool_request(upstream_request.clone(), service);
 
-            // A downstream that advertises MRTR input capabilities gets a
-            // dedicated upstream connection whose request metadata mirrors
-            // those capabilities. The response itself is forwarded unchanged.
-            let relay_enabled = downstream_supports_relay(&context.peer);
-            let relay_config = if relay_enabled {
+            // The 2026-07-28 protocol declares client capabilities per request.
+            // Relay only when this request carries capabilities that the normal
+            // unit-handler connection cannot represent, and snapshot the exact
+            // capability set for the dedicated upstream connection.
+            let relay_capabilities = relay_capabilities_for_request(&upstream_params);
+            let relay_config = if relay_capabilities.is_some() {
                 match &self.gateway_manager {
                     Some(manager) => manager.upstream_config(&upstream_name).await,
                     None => None,
@@ -195,26 +200,29 @@ impl LabMcpServer {
             // arm below records it — but only for the pooled path, else a relayed
             // connect failure would be counted twice.
             let used_relay = relay_config.is_some();
-            let call_outcome = if let Some(config) = relay_config {
-                tracing::debug!(
-                    surface = "mcp",
-                    service,
-                    action = upstream_action,
-                    tool = %service,
-                    upstream = %upstream_name,
-                    route = "relayed",
-                    "proxying to upstream over relayed dedicated connection"
-                );
-                pool.call_tool_relayed(
-                    &config,
-                    None,
-                    upstream_params,
-                    context.peer.clone(),
-                    self.relay_session_id,
-                )
-                .await
-            } else {
-                pool.call_tool_once(&upstream_name, upstream_params).await
+            let call_outcome = match (relay_config, relay_capabilities) {
+                (Some(config), Some(capabilities)) => {
+                    tracing::debug!(
+                        surface = "mcp",
+                        service,
+                        action = upstream_action,
+                        tool = %service,
+                        upstream = %upstream_name,
+                        route = "relayed",
+                        "proxying to upstream over relayed dedicated connection"
+                    );
+                    pool.call_tool_relayed(
+                        &config,
+                        None,
+                        upstream_params,
+                        context.peer.clone(),
+                        self.relay_session_id,
+                        capabilities,
+                        self.request_subject(context),
+                    )
+                    .await
+                }
+                _ => pool.call_tool_once(&upstream_name, upstream_params).await,
             };
 
             match call_outcome {
@@ -444,16 +452,21 @@ impl LabMcpServer {
                     oauth_subject = redacted_oauth_subject_label(),
                     "dispatch route selected"
                 );
-                let input_tokens = raw_arguments.as_ref().map_or(0, estimate_tokens_args);
-                let mut upstream_params = CallToolRequestParams::new(service.to_string());
-                upstream_params.arguments = raw_arguments;
+                let input_tokens = upstream_request
+                    .arguments
+                    .as_ref()
+                    .map_or(0, estimate_tokens_args);
+                let upstream_params =
+                    prepare_upstream_tool_request(upstream_request.clone(), service);
                 // Relay path: for OAuth/subject-scoped upstreams, route
                 // over a dedicated relay-handled connection so the upstream's
                 // MRTR input requirements are preserved for the downstream
                 // agent. The relay connect forwards `oauth_subject` so the
                 // dedicated connection authenticates as this caller.
-                let relay_enabled = downstream_supports_relay(&context.peer);
-                let call_result: Result<CallToolResponse, String> = if relay_enabled {
+                let relay_capabilities = relay_capabilities_for_request(&upstream_params);
+                let call_result: Result<CallToolResponse, String> = if let Some(capabilities) =
+                    relay_capabilities
+                {
                     tracing::debug!(
                         surface = "mcp",
                         service,
@@ -470,6 +483,8 @@ impl LabMcpServer {
                             upstream_params,
                             context.peer.clone(),
                             self.relay_session_id,
+                            capabilities,
+                            self.request_subject(context),
                         )
                         .await
                     {
@@ -607,7 +622,10 @@ impl LabMcpServer {
         // Neither built-in nor upstream.
         let elapsed_ms = start.elapsed().as_millis();
         let err = anyhow::anyhow!("service `{service}` has no dispatcher wired");
-        let input_tokens = raw_arguments.as_ref().map_or(0, estimate_tokens_args);
+        let input_tokens = upstream_request
+            .arguments
+            .as_ref()
+            .map_or(0, estimate_tokens_args);
         let (result, outcome) = format_dispatch_result(
             Err(err),
             service,
@@ -625,7 +643,72 @@ impl LabMcpServer {
 
 #[cfg(test)]
 mod tests {
-    use super::{redacted_oauth_subject_label, upstream_call_failed_message};
+    use std::collections::BTreeMap;
+
+    use rmcp::model::{
+        CallToolRequestParams, ClientCapabilities, ElicitationCapability,
+        FormElicitationCapability, Implementation, ProtocolVersion, RequestMetaObject,
+    };
+    use serde_json::json;
+
+    use super::{
+        prepare_upstream_tool_request, redacted_oauth_subject_label,
+        relay_capabilities_for_request, upstream_call_failed_message,
+    };
+
+    fn interactive_request() -> CallToolRequestParams {
+        let capabilities = ClientCapabilities::builder()
+            .enable_elicitation_with(
+                ElicitationCapability::new().with_form(FormElicitationCapability::new()),
+            )
+            .build();
+        let mut meta = RequestMetaObject::with_client_context(
+            ProtocolVersion::V_2026_07_28,
+            Implementation::new("downstream-agent", "1.0.0"),
+            capabilities,
+        );
+        meta.set_traceparent("00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01");
+        let mut request = CallToolRequestParams::new("gateway/echo").with_arguments(
+            serde_json::Map::from_iter([("value".to_string(), json!("hello"))]),
+        );
+        request.meta = Some(meta);
+        request.input_responses = Some(BTreeMap::from([(
+            "confirmation".to_string(),
+            json!({"action": "accept", "content": {"confirm": true}}),
+        )]));
+        request.request_state = Some("opaque-upstream-state".to_string());
+        request
+    }
+
+    #[test]
+    fn upstream_request_preserves_mrtr_and_extension_metadata() {
+        let request = interactive_request();
+
+        let forwarded = prepare_upstream_tool_request(request.clone(), "echo");
+
+        assert_eq!(forwarded.name.as_ref(), "echo");
+        assert_eq!(forwarded.arguments, request.arguments);
+        assert_eq!(forwarded.input_responses, request.input_responses);
+        assert_eq!(forwarded.request_state, request.request_state);
+        assert_eq!(
+            forwarded
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get_traceparent()),
+            Some("00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01")
+        );
+    }
+
+    #[test]
+    fn relay_capabilities_come_from_the_current_request() {
+        let request = interactive_request();
+        let capabilities = relay_capabilities_for_request(&request)
+            .expect("current request advertises elicitation");
+        assert!(capabilities.elicitation.is_some());
+
+        let no_capabilities = CallToolRequestParams::new("echo");
+        assert!(relay_capabilities_for_request(&no_capabilities).is_none());
+    }
 
     #[test]
     fn upstream_error_message_omits_raw_upstream_detail() {

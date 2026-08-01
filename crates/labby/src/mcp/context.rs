@@ -100,6 +100,18 @@ impl LabMcpServer {
     }
 }
 
+pub(crate) fn forwardable_client_capabilities(
+    meta: Option<&rmcp::model::RequestMetaObject>,
+) -> Option<rmcp::model::ClientCapabilities> {
+    let capabilities = meta?.client_capabilities()?;
+    let has_forwardable_capability = capabilities.experimental.is_some()
+        || capabilities.extensions.is_some()
+        || capabilities.roots.is_some()
+        || capabilities.sampling.is_some()
+        || capabilities.elicitation.is_some();
+    has_forwardable_capability.then_some(capabilities)
+}
+
 pub(crate) fn subject_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {
     auth_context_from_extensions(extensions).map(|auth| auth.sub.as_str())
 }

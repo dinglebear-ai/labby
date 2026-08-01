@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use futures::future::BoxFuture;
 use rmcp::RoleClient;
 use tokio::sync::{Mutex, RwLock};
@@ -23,6 +24,7 @@ use super::types::{UpstreamEntry, UpstreamRuntimeMetadata, UpstreamRuntimeOwner}
 mod cache_repair;
 mod capability;
 mod capability_call;
+mod completion;
 mod connect;
 mod connect_stdio;
 #[cfg(test)]
@@ -38,6 +40,7 @@ mod helpers;
 mod lifecycle;
 mod lifecycle_compat;
 mod logging;
+mod notifications;
 mod probe;
 mod prompts_get;
 mod prompts_list;
@@ -47,6 +50,7 @@ mod resources_list;
 mod resources_read;
 mod spawn_lock;
 mod stdio_stderr;
+mod tasks;
 #[cfg(test)]
 mod testsupport;
 mod tools;
@@ -62,6 +66,7 @@ pub(crate) use helpers::{
     install_max_response_bytes_default, install_upstream_discovery_concurrency_default,
     upstream_discovery_concurrency,
 };
+pub use notifications::UpstreamNotificationEvent;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use tools::{tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
@@ -97,6 +102,14 @@ pub struct UpstreamPool {
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
     /// Names of upstreams that have `proxy_resources=true`.
     resource_upstreams: Arc<RwLock<Vec<String>>>,
+    /// Normalized notification events produced by upstream subscription streams.
+    notification_tx: tokio::sync::broadcast::Sender<notifications::UpstreamNotificationEvent>,
+    /// Cancellation tokens for one active subscriptions/listen stream per upstream.
+    subscription_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Native resource URIs acknowledged by each upstream subscription.
+    subscription_resources: Arc<RwLock<HashMap<String, std::collections::BTreeSet<String>>>>,
+    /// Lock-free gateway-facing snapshot used by synchronous subscription negotiation.
+    subscribable_resource_uris: Arc<ArcSwap<std::collections::BTreeSet<String>>>,
     /// Per-upstream OAuth managers, keyed by upstream name.
     /// `None` when the server was started without OAuth support.
     oauth_client_cache: Option<OauthClientCache>,
@@ -133,6 +146,9 @@ pub struct UpstreamPool {
     /// Single-flight locks for the relay-connection cache, mirroring
     /// `subject_connect_locks`. Keyed identically to `relay_connections`.
     relay_connect_locks: Arc<RwLock<HashMap<(String, u64, Option<String>), Arc<Mutex<()>>>>>,
+    /// Gateway-owned task handles and the relay connections that created them.
+    /// Shared across stateless HTTP requests through the pool.
+    task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,
     /// Cancellation token for the background subject-connection sweep task.
     /// `None` until the first subject-scoped connect arms it; cancelled and
     /// cleared on `drain_for_swap` (P-H2). Mirrors the `probe_tasks` lifecycle.
@@ -254,10 +270,17 @@ impl UpstreamPool {
                 .build()
                 .unwrap_or_default(),
         );
+        let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {
             catalog: Arc::new(RwLock::new(HashMap::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
+            notification_tx,
+            subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
+            subscription_resources: Arc::new(RwLock::new(HashMap::new())),
+            subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(
+                std::collections::BTreeSet::new(),
+            )),
             oauth_client_cache: None,
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
@@ -268,6 +291,7 @@ impl UpstreamPool {
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
             relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),
+            task_routes: Arc::new(RwLock::new(HashMap::new())),
             subject_sweep_task: Arc::new(RwLock::new(None)),
             runtime_origin: None,
             runtime_owner: None,

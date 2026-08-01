@@ -310,6 +310,10 @@ impl GatewayManager {
         // cheap and non-blocking.
     }
 
+    pub fn current_pool_sync(&self) -> Option<Arc<UpstreamPool>> {
+        self.runtime.current_pool_sync()
+    }
+
     pub async fn current_pool(&self) -> Option<Arc<UpstreamPool>> {
         self.runtime.current_pool().await
     }

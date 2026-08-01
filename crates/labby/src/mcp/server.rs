@@ -12,18 +12,18 @@ use axum::http;
 #[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CompleteRequestParams, CompleteResult,
-    DiscoverResult, GetPromptRequestParams, GetPromptResponse, InitializeRequestParams,
-    InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerCapabilities, ServerInfo, SubscriptionFilter,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, CompleteRequestParams,
+    CompleteResult, DiscoverResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams,
+    GetTaskResult, InitializeRequestParams, InitializeResult, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerInfo, SubscriptionFilter, UpdateTaskParams,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::mcp::completion::{complete_prompt_arg, completion_info};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::subject_from_extensions;
 use crate::mcp::logging::DispatchLogOutcome;
@@ -209,6 +209,12 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts_list_changed()
             .enable_completions();
         #[cfg(feature = "gateway")]
+        let builder = if gateway_manager_configured {
+            builder.enable_tasks()
+        } else {
+            builder
+        };
+        #[cfg(feature = "gateway")]
         let capabilities = builder.enable_extensions_with(mcp_extensions()).build();
         #[cfg(not(feature = "gateway"))]
         let capabilities = builder.build();
@@ -243,7 +249,39 @@ impl ServerHandler for LabMcpServer {
         &self,
         requested: &SubscriptionFilter,
     ) -> Option<SubscriptionFilter> {
-        Some(requested.clone())
+        let mut accepted = requested.clone();
+        #[cfg(feature = "gateway")]
+        {
+            let deliverable = self
+                .gateway_manager
+                .as_ref()
+                .and_then(|manager| manager.current_pool_sync())
+                .map(|pool| pool.subscribable_resource_uris_snapshot())
+                .unwrap_or_default();
+            accepted.resource_subscriptions = requested
+                .resource_subscriptions
+                .as_ref()
+                .map(|uris| {
+                    uris.iter()
+                        .filter(|uri| {
+                            deliverable.contains(*uri)
+                                && uri
+                                    .strip_prefix("lab://upstream/")
+                                    .and_then(|rest| rest.split('/').next())
+                                    .is_none_or(|upstream| {
+                                        self.route_scope.allows_upstream(upstream)
+                                    })
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .filter(|uris| !uris.is_empty());
+        }
+        #[cfg(not(feature = "gateway"))]
+        {
+            accepted.resource_subscriptions = None;
+        }
+        Some(accepted)
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
@@ -297,54 +335,7 @@ impl ServerHandler for LabMcpServer {
         request: CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, ErrorData> {
-        let start = Instant::now();
-        let subject = self.request_subject_log_tag(&context);
-        let reference_type = request.r#ref.reference_type();
-        let prompt = request.r#ref.as_prompt_name().map(str::to_string);
-        tracing::info!(
-            surface = "mcp",
-            service = "labby",
-            action = "completion.complete",
-            subject,
-            reference_type,
-            prompt = prompt.as_deref().unwrap_or(""),
-            argument = %request.argument.name,
-            "dispatch start"
-        );
-
-        let completion = match prompt.as_deref() {
-            Some(prompt_name) => complete_prompt_arg(
-                &self.registry,
-                prompt_name,
-                &request.argument.name,
-                &request.argument.value,
-            ),
-            None => completion_info(Vec::new()),
-        };
-
-        let elapsed_ms = start.elapsed().as_millis();
-        tracing::info!(
-            surface = "mcp",
-            service = "labby",
-            action = "completion.complete",
-            subject,
-            reference_type,
-            prompt = prompt.as_deref().unwrap_or(""),
-            argument = %request.argument.name,
-            result_count = completion.values.len(),
-            elapsed_ms,
-            "completion ok"
-        );
-        self.emit_dispatch_notification(
-            &context,
-            "lab",
-            "completion.complete",
-            elapsed_ms,
-            DispatchLogOutcome::Success,
-        )
-        .await;
-
-        Ok(CompleteResult::new(completion))
+        self.complete_impl(request, context).await
     }
 
     async fn list_prompts(
@@ -360,7 +351,7 @@ impl ServerHandler for LabMcpServer {
         request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, ErrorData> {
-        self.get_prompt_impl(request, context).await.map(Into::into)
+        self.get_prompt_impl(request, context).await
     }
 
     async fn list_resources(
@@ -373,12 +364,10 @@ impl ServerHandler for LabMcpServer {
 
     async fn list_resource_templates(
         &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private))
+        self.list_resource_templates_impl(request, context).await
     }
 
     async fn read_resource(
@@ -386,14 +375,13 @@ impl ServerHandler for LabMcpServer {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        self.read_resource_impl(request, context)
-            .await
-            .map(|result| {
-                result
-                    .with_ttl_ms(0)
-                    .with_cache_scope(CacheScope::Private)
-                    .into()
-            })
+        match self.read_resource_impl(request, context).await? {
+            ReadResourceResponse::Complete(result) => Ok(result
+                .with_ttl_ms(0)
+                .with_cache_scope(CacheScope::Private)
+                .into()),
+            incomplete => Ok(incomplete),
+        }
     }
 
     async fn list_tools(
@@ -410,6 +398,71 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         self.call_tool_response_impl(request, context).await
+    }
+
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        if let Some(pool) = self.current_upstream_pool().await {
+            return pool
+                .get_task_routed(request, self.request_subject(&context))
+                .await
+                .map_err(|message| {
+                    if message == "task not found" {
+                        ErrorData::invalid_params(message, None)
+                    } else {
+                        ErrorData::internal_error(message, None)
+                    }
+                });
+        }
+        Err(ErrorData::invalid_params("task not found", None))
+    }
+
+    async fn update_task(
+        &self,
+        request: UpdateTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let gateway_task_id = request.task_id.clone();
+        #[cfg(feature = "gateway")]
+        if let Some(pool) = self.current_upstream_pool().await {
+            return pool
+                .update_task_routed(request, self.request_subject(&context), &gateway_task_id)
+                .await
+                .map_err(|message| {
+                    if message == "task not found" {
+                        ErrorData::invalid_params(message, None)
+                    } else {
+                        ErrorData::internal_error(message, None)
+                    }
+                });
+        }
+        Err(ErrorData::invalid_params("task not found", None))
+    }
+
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let gateway_task_id = request.task_id.clone();
+        #[cfg(feature = "gateway")]
+        if let Some(pool) = self.current_upstream_pool().await {
+            return pool
+                .cancel_task_routed(request, self.request_subject(&context), &gateway_task_id)
+                .await
+                .map_err(|message| {
+                    if message == "task not found" {
+                        ErrorData::invalid_params(message, None)
+                    } else {
+                        ErrorData::internal_error(message, None)
+                    }
+                });
+        }
+        Err(ErrorData::invalid_params("task not found", None))
     }
 }
 

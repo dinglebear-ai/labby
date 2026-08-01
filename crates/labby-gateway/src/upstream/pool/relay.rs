@@ -46,23 +46,33 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rmcp::model::{CallToolRequestParams, CallToolResponse, ClientInfo};
-use rmcp::service::Peer;
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
+    ClientCapabilities, ClientInfo, ClientRequest, GetPromptRequest, GetPromptRequestParams,
+    GetPromptResponse, LoggingMessageNotificationParam, ProgressNotificationParam, ProgressToken,
+    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
+    ResourceUpdatedNotificationParam, ServerNotification, ServerResult, TaskStatusNotification,
+    TaskStatusNotificationParams,
+};
+use rmcp::service::{NotificationContext, Peer, PeerRequestOptions};
 use rmcp::{ClientHandler, RoleClient, RoleServer};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::connect::connect_upstream_with_handler;
 use super::helpers::{
-    SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, estimate_call_tool_response_size,
-    max_response_bytes, upstream_transport,
+    SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
+    estimate_call_tool_response_size, estimate_resource_response_size, max_response_bytes,
+    normalize_resource_result_uri, redact_resource_uri_for_logging, upstream_transport,
 };
 use super::logging::{
     UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
     log_upstream_request_start,
 };
+use super::notifications::UpstreamNotificationEvent;
 use super::{UpstreamConnection, UpstreamPool};
 
 /// A client handler that mirrors the downstream agent's MRTR input
@@ -72,50 +82,43 @@ use super::{UpstreamConnection, UpstreamPool};
 #[derive(Clone)]
 pub(crate) struct RelayClientHandler {
     /// The downstream agent connection to forward requests to.
-    downstream: Peer<RoleServer>,
-    /// Name of the upstream this handler is attached to (for logging only).
-    upstream_name: Arc<str>,
+    _downstream: Peer<RoleServer>,
+    /// Name of the upstream this handler is attached to (reserved for forwarding logs).
+    _upstream_name: Arc<str>,
+    /// Exact client capabilities declared on the downstream request that
+    /// opened this relay connection. The 2026 protocol forbids inferring these
+    /// from a prior request or discovery exchange.
+    capabilities: ClientCapabilities,
 }
 
 impl RelayClientHandler {
-    pub(crate) fn new(downstream: Peer<RoleServer>, upstream_name: Arc<str>) -> Self {
+    pub(crate) fn new(
+        downstream: Peer<RoleServer>,
+        upstream_name: Arc<str>,
+        capabilities: ClientCapabilities,
+    ) -> Self {
         Self {
-            downstream,
-            upstream_name,
+            _downstream: downstream,
+            _upstream_name: upstream_name,
+            capabilities,
         }
     }
 }
 
 impl ClientHandler for RelayClientHandler {
-    /// Advertise to the upstream exactly the MRTR input capabilities the
-    /// downstream agent declared. Anything the agent cannot do, the gateway
-    /// does not claim on its behalf.
+    /// Advertise the exact capability snapshot from the current downstream
+    /// request. Anything the caller did not declare for this request is not
+    /// claimed on its behalf.
     fn get_info(&self) -> ClientInfo {
         let mut info = ClientInfo::default();
-        if let Some(downstream_info) = self.downstream.peer_info() {
-            info.capabilities.elicitation = downstream_info.capabilities.elicitation.clone();
-            info.capabilities.sampling = downstream_info.capabilities.sampling.clone();
-            info.capabilities.roots = downstream_info.capabilities.roots.clone();
-        } else {
-            // No downstream `peer_info()` yet — advertise no server→client
-            // capabilities, so the relay silently behaves like the unit handler.
-            // In practice the downstream
-            // peer is always initialized by the time a relay connection opens
-            // mid-`call_tool`, so reaching here is an invariant violation: warn
-            // (not debug) so it is visible at the default log level rather than
-            // being an invisible fleet-wide "declines all elicitation" no-op.
-            tracing::warn!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "upstream.relay",
-                upstream = %self.upstream_name,
-                kind = "relay_peer_uninitialized",
-                "downstream peer_info() unavailable; relay advertising no \
-                 server->client capabilities for this connection",
-            );
-        }
+        info.capabilities = self.capabilities.clone();
         info
     }
+}
+
+pub(super) fn capability_fingerprint(capabilities: &ClientCapabilities) -> String {
+    serde_json::to_string(capabilities)
+        .expect("MCP client capabilities must serialize to a JSON object")
 }
 
 /// A cached relay connection, keyed in the pool by
@@ -129,11 +132,13 @@ impl ClientHandler for RelayClientHandler {
 /// identity is never reused for a call made as another.
 pub(super) struct RelayCachedConnection {
     /// Keeps the relay-served running service (and any stdio child) alive.
-    _connection: UpstreamConnection<RelayClientHandler>,
+    pub(super) _connection: UpstreamConnection<RelayClientHandler>,
     /// Pre-cloned upstream peer for the cache-hit fast path.
-    peer: Peer<RoleClient>,
+    pub(super) peer: Peer<RoleClient>,
+    /// Capability snapshot used to initialize this connection.
+    pub(super) capability_fingerprint: String,
     /// Wall-clock instant when this entry was last used.
-    last_used: Instant,
+    pub(super) last_used: Instant,
 }
 
 /// Evict least-recently-used relay connections until the map holds at most
@@ -194,11 +199,14 @@ impl UpstreamPool {
         params: CallToolRequestParams,
         downstream: Peer<RoleServer>,
         session_id: u64,
+        capabilities: ClientCapabilities,
+        caller_subject: Option<&str>,
     ) -> Option<Result<CallToolResponse, String>> {
         let started = Instant::now();
         let tool_name = params.name.to_string();
+        let relay_key = (config.name.clone(), session_id, subject.map(str::to_owned));
         let peer = self
-            .acquire_or_connect_relay(config, subject, downstream, session_id)
+            .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
 
         // Mirror the pooled path's observability + circuit-breaker contract (see
@@ -248,6 +256,9 @@ impl UpstreamPool {
                     started.elapsed().as_millis(),
                     Some(response_size),
                 );
+                let result = self
+                    .register_task_response(&relay_key, caller_subject, result)
+                    .await;
                 Some(Ok(result))
             }
             Ok(Err(error)) => {
@@ -290,6 +301,200 @@ impl UpstreamPool {
         }
     }
 
+    /// Fetch one prompt over a request-scoped relay connection, preserving an
+    /// upstream `input_required` response for the downstream caller.
+    pub async fn get_prompt_relayed(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        mut params: GetPromptRequestParams,
+        downstream: Peer<RoleServer>,
+        session_id: u64,
+        capabilities: ClientCapabilities,
+    ) -> Option<Result<GetPromptResponse, String>> {
+        let started = Instant::now();
+        params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
+        let prompt_name = params.name.to_string();
+        let peer = self
+            .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
+            .await?;
+        let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, subject.is_some())
+            .with_transport(upstream_transport(config));
+        log_upstream_request_start(event);
+
+        let timeout = self.relay_timeout;
+        match tokio::time::timeout(timeout, peer.get_prompt_once(params)).await {
+            Ok(Ok(result)) => {
+                self.record_success_for(&config.name, UpstreamCapability::Prompts)
+                    .await;
+                log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
+                Some(Ok(result))
+            }
+            Ok(Err(error)) => {
+                let message = format!("relayed upstream prompt get failed: {error}");
+                self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone())
+                    .await;
+                self.evict_relay_connection(&config.name, session_id, subject)
+                    .await;
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "upstream_error",
+                    Some(&error),
+                    None,
+                    None,
+                );
+                Some(Err(message))
+            }
+            Err(_) => {
+                let message = format!(
+                    "relayed upstream prompt get timed out after {}ms",
+                    timeout.as_millis()
+                );
+                self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone())
+                    .await;
+                self.evict_relay_connection(&config.name, session_id, subject)
+                    .await;
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "timeout",
+                    None,
+                    None,
+                    None,
+                );
+                Some(Err(message))
+            }
+        }
+    }
+
+    /// Read one gateway-prefixed resource over a request-scoped relay
+    /// connection, preserving MRTR fields and incomplete responses.
+    pub async fn read_resource_relayed(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        mut params: ReadResourceRequestParams,
+        downstream: Peer<RoleServer>,
+        session_id: u64,
+        capabilities: ClientCapabilities,
+    ) -> Option<Result<ReadResourceResponse, String>> {
+        let started = Instant::now();
+        let gateway_uri = params.uri.clone();
+        let prefix = format!("lab://upstream/{}/", config.name);
+        let original_uri = match gateway_uri.strip_prefix(&prefix) {
+            Some(uri) => uri.to_string(),
+            None => {
+                return Some(Err(format!(
+                    "resource URI does not match upstream `{}`",
+                    config.name
+                )));
+            }
+        };
+        params.uri = original_uri;
+        let peer = self
+            .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
+            .await?;
+        let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
+        let event = UpstreamRequestLog::resource(&config.name, redacted_uri, subject.is_some())
+            .with_transport(upstream_transport(config));
+        log_upstream_request_start(event);
+
+        let timeout = self.relay_timeout;
+        match tokio::time::timeout(timeout, peer.read_resource_once(params)).await {
+            Ok(Ok(result)) => {
+                let response_size = match &result {
+                    ReadResourceResponse::Complete(complete) => {
+                        estimate_resource_response_size(complete)
+                    }
+                    ReadResourceResponse::InputRequired(input_required) => {
+                        serde_json::to_vec(input_required).map_or(0, |bytes| bytes.len())
+                    }
+                    _ => 0,
+                };
+                let max_bytes = max_response_bytes();
+                if response_size > max_bytes {
+                    let message = format!(
+                        "upstream response too large ({response_size} bytes, max {max_bytes})"
+                    );
+                    self.record_failure_for(
+                        &config.name,
+                        UpstreamCapability::Resources,
+                        message.clone(),
+                    )
+                    .await;
+                    log_upstream_request_error(
+                        event,
+                        started.elapsed().as_millis(),
+                        "response_too_large",
+                        None,
+                        Some(response_size),
+                        Some(max_bytes),
+                    );
+                    return Some(Err(message));
+                }
+                let result = match result {
+                    ReadResourceResponse::Complete(complete) => ReadResourceResponse::Complete(
+                        normalize_resource_result_uri(complete, &gateway_uri),
+                    ),
+                    incomplete @ ReadResourceResponse::InputRequired(_) => incomplete,
+                    other => other,
+                };
+                self.record_success_for(&config.name, UpstreamCapability::Resources)
+                    .await;
+                log_upstream_request_finish(
+                    event,
+                    started.elapsed().as_millis(),
+                    Some(response_size),
+                );
+                Some(Ok(result))
+            }
+            Ok(Err(error)) => {
+                let message = format!("relayed upstream resource read failed: {error}");
+                self.record_failure_for(
+                    &config.name,
+                    UpstreamCapability::Resources,
+                    message.clone(),
+                )
+                .await;
+                self.evict_relay_connection(&config.name, session_id, subject)
+                    .await;
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "upstream_error",
+                    Some(&error),
+                    None,
+                    None,
+                );
+                Some(Err(message))
+            }
+            Err(_) => {
+                let message = format!(
+                    "relayed upstream resource read timed out after {}ms",
+                    timeout.as_millis()
+                );
+                self.record_failure_for(
+                    &config.name,
+                    UpstreamCapability::Resources,
+                    message.clone(),
+                )
+                .await;
+                self.evict_relay_connection(&config.name, session_id, subject)
+                    .await;
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "timeout",
+                    None,
+                    None,
+                    None,
+                );
+                Some(Err(message))
+            }
+        }
+    }
+
     /// Return a cached relay peer for `(upstream, session_id)`, or open and
     /// cache a new relay connection. Mirrors `acquire_or_connect_subject`:
     /// write-locked fast path with inline TTL + dead-transport eviction, then a
@@ -300,18 +505,23 @@ impl UpstreamPool {
         subject: Option<&str>,
         downstream: Peer<RoleServer>,
         session_id: u64,
+        capabilities: ClientCapabilities,
     ) -> Option<Peer<RoleClient>> {
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
         let key = (config.name.clone(), session_id, subject.map(str::to_owned));
+        let requested_capability_fingerprint = capability_fingerprint(&capabilities);
 
-        // Fast path: fresh, live cached entry.
+        // Fast path: fresh, live cached entry using the same per-request
+        // capability snapshot. A changed capability set requires a new MCP
+        // connection because rmcp fixes outbound client metadata at discovery.
         {
             let mut cache = self.relay_connections.write().await;
             if let Some(entry) = cache.get_mut(&key) {
                 if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
                     && !entry.peer.is_transport_closed()
+                    && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
                     return Some(entry.peer.clone());
@@ -339,6 +549,7 @@ impl UpstreamPool {
             if let Some(entry) = cache.get_mut(&key) {
                 if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
                     && !entry.peer.is_transport_closed()
+                    && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
                     return Some(entry.peer.clone());
@@ -348,7 +559,7 @@ impl UpstreamPool {
         }
 
         let upstream_name: Arc<str> = Arc::from(config.name.as_str());
-        let handler = RelayClientHandler::new(downstream, Arc::clone(&upstream_name));
+        let handler = RelayClientHandler::new(downstream, Arc::clone(&upstream_name), capabilities);
         let (conn, _tools) = match connect_upstream_with_handler(
             config,
             subject,
@@ -384,6 +595,7 @@ impl UpstreamPool {
                 RelayCachedConnection {
                     _connection: conn,
                     peer: peer.clone(),
+                    capability_fingerprint: requested_capability_fingerprint,
                     last_used: Instant::now(),
                 },
             );
@@ -492,9 +704,10 @@ mod tests {
 
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock,
-        ElicitRequest, ElicitRequestParams, ElicitationSchema, ErrorData, InputRequest,
-        InputRequests, InputRequiredResult, PaginatedRequestParams, PrimitiveSchemaDefinition,
-        ProtocolVersion, ServerCapabilities, ServerInfo,
+        ElicitRequest, ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams,
+        GetPromptResponse, InputRequest, InputRequests, InputRequiredResult,
+        PaginatedRequestParams, PrimitiveSchemaDefinition, ProtocolVersion,
+        ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerInfo,
     };
     use rmcp::service::ClientLifecycleMode;
     use rmcp::service::{RequestContext, RunningService};
@@ -507,6 +720,10 @@ mod tests {
     use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
     use super::*;
 
+    fn relay_test_capabilities() -> ClientCapabilities {
+        ClientCapabilities::builder().enable_elicitation().build()
+    }
+
     /// A downstream client that advertises form elicitation for MRTR.
     #[derive(Clone)]
     struct CapableAgent;
@@ -514,7 +731,7 @@ mod tests {
     impl ClientHandler for CapableAgent {
         fn get_info(&self) -> ClientInfo {
             let mut info = ClientInfo::default();
-            info.capabilities = ClientCapabilities::builder().enable_elicitation().build();
+            info.capabilities = relay_test_capabilities();
             info
         }
     }
@@ -530,13 +747,39 @@ mod tests {
         }
     }
 
-    /// A mock upstream server whose `call_tool` returns an MRTR input request.
+    fn elicitation_input_required() -> InputRequiredResult {
+        let schema = ElicitationSchema::builder()
+            .required_property(
+                "confirm",
+                PrimitiveSchemaDefinition::Boolean(rmcp::model::BooleanSchema::default()),
+            )
+            .build()
+            .expect("schema builds");
+        let params = ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message: "confirm the action?".to_string(),
+            requested_schema: schema,
+        };
+        let requests = InputRequests::from([(
+            "confirmation".to_string(),
+            InputRequest::Elicitation(ElicitRequest::new(params)),
+        )]);
+        InputRequiredResult::from_input_requests(requests)
+    }
+
+    /// A mock upstream server whose interactive primitives return MRTR input requests.
     #[derive(Clone)]
     struct ElicitingUpstream;
 
     impl ServerHandler for ElicitingUpstream {
         fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            ServerInfo::new(
+                ServerCapabilities::builder()
+                    .enable_tools()
+                    .enable_prompts()
+                    .enable_resources()
+                    .build(),
+            )
         }
 
         async fn call_tool(
@@ -544,23 +787,23 @@ mod tests {
             _request: CallToolRequestParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<CallToolResponse, ErrorData> {
-            let schema = ElicitationSchema::builder()
-                .required_property(
-                    "confirm",
-                    PrimitiveSchemaDefinition::Boolean(rmcp::model::BooleanSchema::default()),
-                )
-                .build()
-                .expect("schema builds");
-            let params = ElicitRequestParams::FormElicitationParams {
-                meta: None,
-                message: "confirm the action?".to_string(),
-                requested_schema: schema,
-            };
-            let requests = InputRequests::from([(
-                "confirmation".to_string(),
-                InputRequest::Elicitation(ElicitRequest::new(params)),
-            )]);
-            Ok(InputRequiredResult::from_input_requests(requests).into())
+            Ok(elicitation_input_required().into())
+        }
+
+        async fn get_prompt(
+            &self,
+            _request: GetPromptRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            Ok(elicitation_input_required().into())
+        }
+
+        async fn read_resource(
+            &self,
+            _request: ReadResourceRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ReadResourceResponse, ErrorData> {
+            Ok(elicitation_input_required().into())
         }
 
         async fn list_tools(
@@ -611,7 +854,14 @@ mod tests {
                 .expect("upstream connects");
             running.waiting().await.expect("upstream runs");
         });
-        let gw_client = RelayClientHandler::new(downstream, Arc::from("test-upstream"))
+        let relay_capabilities = relay_test_capabilities();
+        let handler = RelayClientHandler::new(
+            downstream,
+            Arc::from("test-upstream"),
+            relay_capabilities.clone(),
+        );
+        assert_eq!(handler.get_info().capabilities, relay_capabilities);
+        let gw_client = handler
             .serve_with_lifecycle(
                 gw_client_transport,
                 ClientLifecycleMode::Discover {
@@ -630,6 +880,51 @@ mod tests {
             matches!(result, CallToolResponse::InputRequired(_)),
             "the gateway-facing client must receive the input_required result"
         );
+    }
+
+    #[tokio::test]
+    async fn upstream_prompt_and_resource_input_required_are_preserved_for_downstream() {
+        let pool = UpstreamPool::new();
+        let config = super::super::testsupport::test_upstream_config();
+        let capabilities = relay_test_capabilities();
+        let session_id = 41;
+        let (entry, downstream_server) = live_relay_cached_connection(Instant::now()).await;
+        let downstream = downstream_server.peer().clone();
+        pool.relay_connections
+            .write()
+            .await
+            .insert((config.name.clone(), session_id, None), entry);
+
+        let prompt = pool
+            .get_prompt_relayed(
+                &config,
+                None,
+                GetPromptRequestParams::new(format!("{}/confirm", config.name)),
+                downstream.clone(),
+                session_id,
+                capabilities.clone(),
+            )
+            .await
+            .expect("cached relay prompt connection")
+            .expect("relayed prompt request succeeds");
+        assert!(matches!(prompt, GetPromptResponse::InputRequired(_)));
+
+        let resource = pool
+            .read_resource_relayed(
+                &config,
+                None,
+                ReadResourceRequestParams::new(format!(
+                    "lab://upstream/{}/file:///confirm",
+                    config.name
+                )),
+                downstream,
+                session_id,
+                capabilities,
+            )
+            .await
+            .expect("cached relay resource connection")
+            .expect("relayed resource request succeeds");
+        assert!(matches!(resource, ReadResourceResponse::InputRequired(_)));
     }
 
     /// `call_tool_relayed` returns `None` (the "not connected" signal, mirroring
@@ -663,6 +958,8 @@ mod tests {
                 CallToolRequestParams::new("anything"),
                 downstream,
                 1,
+                relay_test_capabilities(),
+                None,
             )
             .await;
 
@@ -702,10 +999,16 @@ mod tests {
                 running.waiting().await.ok();
             }
         });
-        let service = RelayClientHandler::new(downstream, Arc::from("up"))
-            .serve(gw_client_transport)
-            .await
-            .expect("relay client connects");
+        let service =
+            RelayClientHandler::new(downstream, Arc::from("up"), relay_test_capabilities())
+                .serve_with_lifecycle(
+                    gw_client_transport,
+                    ClientLifecycleMode::Discover {
+                        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                    },
+                )
+                .await
+                .expect("relay client connects");
         let peer = service.peer().clone();
         let conn = UpstreamConnection {
             _client_service: service,
@@ -717,6 +1020,7 @@ mod tests {
             RelayCachedConnection {
                 _connection: conn,
                 peer,
+                capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
                 last_used,
             },
             gw_server,
@@ -928,10 +1232,14 @@ mod tests {
                 running.waiting().await.ok();
             }
         });
-        let service = RelayClientHandler::new(downstream.clone(), Arc::from(config.name.as_str()))
-            .serve(gw_client_transport)
-            .await
-            .expect("relay client connects");
+        let service = RelayClientHandler::new(
+            downstream.clone(),
+            Arc::from(config.name.as_str()),
+            relay_test_capabilities(),
+        )
+        .serve(gw_client_transport)
+        .await
+        .expect("relay client connects");
         let peer = service.peer().clone();
         let conn = UpstreamConnection {
             _client_service: service,
@@ -944,6 +1252,7 @@ mod tests {
             RelayCachedConnection {
                 _connection: conn,
                 peer,
+                capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
                 last_used: Instant::now(),
             },
         );
@@ -955,6 +1264,8 @@ mod tests {
                 CallToolRequestParams::new("echo"),
                 downstream,
                 1,
+                relay_test_capabilities(),
+                None,
             )
             .await;
         assert!(
@@ -1048,10 +1359,14 @@ mod tests {
                 running.waiting().await.ok();
             }
         });
-        let service = RelayClientHandler::new(downstream.clone(), Arc::from(config.name.as_str()))
-            .serve(gw_client_transport)
-            .await
-            .expect("relay client connects");
+        let service = RelayClientHandler::new(
+            downstream.clone(),
+            Arc::from(config.name.as_str()),
+            relay_test_capabilities(),
+        )
+        .serve(gw_client_transport)
+        .await
+        .expect("relay client connects");
         let peer = service.peer().clone();
         let conn = UpstreamConnection {
             _client_service: service,
@@ -1064,6 +1379,7 @@ mod tests {
             RelayCachedConnection {
                 _connection: conn,
                 peer,
+                capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
                 last_used: Instant::now(),
             },
         );
@@ -1075,6 +1391,8 @@ mod tests {
                 CallToolRequestParams::new("big"),
                 downstream,
                 1,
+                relay_test_capabilities(),
+                None,
             )
             .await
             .expect("cached relay connection is present")
@@ -1140,7 +1458,13 @@ mod tests {
 
         // alice → fast-path cache hit (Some, no connect attempt).
         let alice = pool
-            .acquire_or_connect_relay(&config, Some("alice"), downstream.clone(), 1)
+            .acquire_or_connect_relay(
+                &config,
+                Some("alice"),
+                downstream.clone(),
+                1,
+                relay_test_capabilities(),
+            )
             .await;
         assert!(
             alice.is_some(),
@@ -1150,7 +1474,13 @@ mod tests {
         // bob → distinct key → miss → connect attempt → fails (no url/command) →
         // None. If the key ignored the subject, bob would wrongly reuse alice's.
         let bob = pool
-            .acquire_or_connect_relay(&config, Some("bob"), downstream, 1)
+            .acquire_or_connect_relay(
+                &config,
+                Some("bob"),
+                downstream,
+                1,
+                relay_test_capabilities(),
+            )
             .await;
         assert!(
             bob.is_none(),
