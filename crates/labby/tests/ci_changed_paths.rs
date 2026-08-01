@@ -259,6 +259,10 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     assert!(browser_job.contains("pnpm test:browser"));
     assert!(browser_job.contains("Install Playwright runtime libraries"));
     assert!(
+        browser_job.contains("PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright"),
+        "Playwright must use the fleet-mounted browser cache regardless of runner UID"
+    );
+    assert!(
         browser_job.contains("PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64"),
         "Ubuntu 26.04 runners must select Playwright's supported dependency manifest"
     );
