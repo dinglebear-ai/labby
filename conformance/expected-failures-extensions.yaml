@@ -1,5 +1,5 @@
 # Known failures for experimental extension scenarios in
-# @modelcontextprotocol/conformance 0.2.0-alpha.9.
+# @modelcontextprotocol/conformance 0.2.0-alpha.10.
 #
 # Extensions are excluded from the 2026-07-28 dated-protocol score. CI runs
 # them separately with this strict baseline:
@@ -7,9 +7,14 @@
 # - a listed scenario that starts passing fails as a stale entry
 #
 # Review the available extension scenarios whenever the conformance package is
-# bumped. The rmcp 3.0.0-beta.2 Tasks server scenarios all pass.
+# bumped. The rmcp 3.1.0 Tasks server scenarios all pass.
 server: []
 
 client:
-  # Informational OAuth extension not implemented by rmcp beta.2.
+  # Experimental outbound authorization flows not implemented by the pinned
+  # rmcp 3.1.0 conformance client. These do not describe Labby's inbound auth
+  # server, which has separate product-level coverage.
   - auth/enterprise-managed-authorization
+  - auth/dpop
+  - auth/dpop-nonce
+  - auth/wif-jwt-bearer

@@ -1,80 +1,115 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-01"
 ---
 
 # MCP 2026-07-28 Conformance
 
 Labby targets the `2026-07-28` MCP protocol through
-`rmcp = "=3.0.0-beta.2"`. The dated protocol suite and experimental extension
-suite are intentionally reported separately: extension results must never
-inflate or reduce the dated-protocol score.
+`rmcp = "=3.1.0"`. Dated protocol results, extension results, and
+Labby-native gateway scenarios are reported separately so SDK fixture coverage
+cannot hide a product-adapter regression.
 
 ## Reproducible Pins
 
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| rmcp | `3.0.0-beta.2` |
-| rmcp tag commit | `14298b72e0b25473ea79d5465fe186e22eb86397` |
-| MCP conformance package | `0.2.0-alpha.9` |
+| rmcp | `3.1.0` |
+| rmcp tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
+| MCP conformance package | `0.2.0-alpha.10` |
 
-Run the same gate locally with:
+Run the complete gate locally with:
 
 ```bash
 scripts/ci/mcp-conformance.sh
 ```
 
-The script verifies the exact Cargo dependency, resolves the exact upstream
-rmcp tag commit, installs the JavaScript conformance dependency once, and then
-runs:
+The script verifies the exact Cargo dependency and rmcp tag commit, installs the
+JavaScript conformance package once, builds a fresh Labby binary, and runs:
 
-1. every dated `2026-07-28` server scenario
-2. every Tasks extension server scenario
-3. every dated `2026-07-28` client scenario
-4. the complete client extension suite
+1. a Labby-native client -> root Labby -> middle Labby -> synthetic leaf chain
+2. the authenticated stateless Labby HTTP boundary smoke checks
+3. every dated `2026-07-28` server scenario
+4. every Tasks extension server scenario
+5. every dated `2026-07-28` client scenario
+6. the complete client extension suite
 
 Reports are written under `target/mcp-conformance/`. Experimental extension
 gaps use the strict
 `conformance/expected-failures-extensions.yaml` baseline. An unexpected
 failure or an expected failure that starts passing both fail CI.
 
-The upstream conformance binaries deliberately exercise the SDK-level
-dispatches for auth, scope step-up, schemas, tools, MRTR, task lifecycle,
-OAuth client credentials, cache hints, event stores, subscriptions, lifecycle,
-disconnect behavior, protocol versions, and SEP-2243 request headers. Labby
-then adds product-adapter tests through its actual Axum `/mcp` route and
-gateway proxy.
+## Labby-Native Multi-Hop Matrix
+
+The `mcp_multihop_conformance` driver launches production Labby transports
+with isolated configuration:
+
+```text
+MCP client -> root Labby (stdio) -> middle Labby (authenticated HTTP) -> leaf MCP server (stdio)
+```
+
+Middle and root are warmed through Labby's real `gateway.reload` lifecycle,
+not by test-only pool mutation. The leaf publishes more than one page of every
+catalog family so the chain proves ownership and pagination beyond the first
+page.
+
+| Scenario | Multi-hop assertion |
+|---|---|
+| Discovery | Root negotiates `2026-07-28` and identifies itself as Labby |
+| Tools | 75 late-page tools plus an MRTR tool survive both gateways |
+| Tool calls | A late-page tool executes through root and middle with its arguments intact |
+| MRTR | `input_required` remains first-class through both gateways |
+| Prompts | 70 prompts aggregate; a late-page prompt can be fetched |
+| Resources | 70 resources aggregate; nested gateway URIs remain routable on read |
+| Resource templates | 70 templates aggregate without flattening nested gateway namespaces |
+| Completion | Completion against a nested resource template reaches the leaf |
+| Provenance | Labby stamps the responding server while preserving leaf identity and custom metadata |
+
+The driver discovered and now guards a critical namespace rule: an upstream
+resource URI is opaque. If middle returns
+`lab://upstream/leaf/fixture://resource/069`, root exposes
+`lab://upstream/middle/lab://upstream/leaf/fixture://resource/069`. Each
+hop removes only its own outer prefix. Flattening the inner prefix makes the URI
+unroutable.
 
 ## Labby Product Contract
 
 | Area | Labby posture | Regression evidence |
 |---|---|---|
-| Protocol lifecycle | `2026-07-28` only; legacy initialize is rejected | `http_mcp_rejects_legacy_initialize_lifecycle` and `http_mcp_discovers_only_the_new_stateless_protocol` |
+| Protocol lifecycle | Modern clients use stateless `server/discover`; legacy `initialize` is adapted only at the transport edge | discovery tests, bridge tests, and the multi-hop driver |
 | Stateless HTTP | No `Mcp-Session-Id`; `NeverSessionManager`; JSON responses | HTTP lifecycle tests and rmcp dated suite |
-| SEP-2243 headers | rmcp validates method/name headers before dispatch | `http_mcp_rejects_mismatched_sep_2243_method_header` and `http_mcp_rejects_missing_sep_2243_name_header_for_tool_call` |
+| SEP-2243 headers | rmcp validates method/name headers before dispatch | HTTP method/name header tests |
+| Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
-| MRTR | Input-required results remain first-class; destructive confirmation uses elicitation with no legacy `requestState` | `destructive_builtin_uses_stateless_mrtr_elicitation` and gateway relay tests |
-| Tasks | Gateway/bridge preserves upstream task outcomes and get/cancel operations | bridge tests plus the rmcp Tasks extension suite |
-| Subscriptions | List-changed notifications work without a legacy session identifier | `stateless_subscription_receives_catalog_notifications` |
-| Disconnect | Stateless HTTP owns no resumable server session to delete | rmcp dated lifecycle suite |
-| Auth and scope step-up | Labby owns inbound OAuth 2.1 policy, CIMD, RFC 9207 issuer binding, revocation, client credentials, ID-JAG exchange, and RFC 9728 challenges | dated client suite plus the Labby auth contract step in conformance CI |
+| MRTR | Tool, prompt, and resource intermediate results remain first-class | relay tests and multi-hop driver |
+| Tasks | Gateway-owned handles route get/update/cancel and translate task-status IDs | task routing tests and relay task-status regression |
+| Subscriptions | Labby consumes upstream listen streams and forwards subscribed list/resource notifications | upstream subscription and peer fanout tests |
+| Resource subscriptions | Labby acknowledges only exact URIs an upstream accepted | subscription filter tests |
+| Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | complete relay module, 15 passing tests |
+| Provenance | Ordinary results identify Labby and preserve distinct upstream server identity under `ai.dinglebear.labby/upstreamServerInfo` | provenance unit test and multi-hop driver |
+| Error fidelity | Tool error classification is observational; original content, structured content, and metadata pass through | upstream normalization tests |
+| Auth and scope step-up | Labby owns inbound OAuth 2.1 policy, CIMD, RFC 9207 issuer binding, revocation, client credentials, ID-JAG exchange, and RFC 9728 challenges | dated client suite plus Labby auth contract tests |
 
-### MRTR confirmation
+### Lifecycle compatibility
 
-Destructive actions are not converted into local policy flags on the MCP
-surface. The tool call returns an MRTR `input_required` result with an
-elicitation form. The client resubmits the accepted form response using the
-normal MCP elicitation flow. `requestState` is not required or emitted.
+Labby's internal contract is stateless `2026-07-28` discovery. A legacy
+`initialize` request is accepted as an edge adapter for existing hosts: Labby
+records the peer information and returns the negotiated legacy version without
+changing internal request handling or creating a resumable session.
 
-### Tasks
+### MRTR and tasks
 
-Labby's root product server does not create a second, private task scheduler.
-When Labby is bridging an upstream MCP server, task-bearing results and
-`tasks/get` or `tasks/cancel` calls pass through without being collapsed to a
-complete-only response. SDK-owned task examples and lifecycle behavior are
-covered by the pinned rmcp conformance binary.
+Destructive actions return an MRTR `input_required` result with an elicitation
+form. The client resubmits normal MCP input responses; Labby does not replace
+this with a private confirmation protocol.
+
+Labby also does not create a second task scheduler. An upstream task receives a
+subject-bound gateway handle. Subsequent `tasks/get`, `tasks/update`, and
+`tasks/cancel` calls route over the connection that created it. Incoming
+`notifications/tasks` messages translate the native task ID back to the
+gateway handle before reaching the downstream client.
 
 ### Cache and subscriptions
 
@@ -87,59 +122,51 @@ Catalog-derived responses are dynamic and private:
 }
 ```
 
-Catalog mutations notify connected peers through list-changed subscriptions.
-Clients that do not honor those notifications must reconnect to refresh their
-cached catalog.
+Labby establishes upstream `subscriptions/listen` streams, consumes list and
+resource updates, and publishes normalized events to downstream subscription
+sinks. Downstream acknowledgement is filtered to notification categories and
+resource URIs Labby can actually deliver. Protected-route scope remains applied
+when notifications fan out.
 
 ### OAuth extensions and scope step-up
 
-Labby's inbound authorization server supports the interactive authorization-code
-flow, refresh-token rotation and revocation, and the optional MCP OAuth client
-credentials extension. Machine clients
-are preregistered out of band and may authenticate with `client_secret_basic`
-or RFC 7523 `private_key_jwt`; assertions are audience-bound to `/token` and
-replay-protected.
+Labby's inbound authorization server supports authorization-code flow,
+refresh-token rotation and revocation, and the optional MCP OAuth client
+credentials extension. Machine clients are preregistered out of band and may
+authenticate with `client_secret_basic` or RFC 7523 `private_key_jwt`;
+assertions are audience-bound to `/token` and replay-protected.
 
-Trusted enterprise issuers may also be configured for
-enterprise-managed authorization extension. Labby validates
-`oauth-id-jag+jwt` assertions against pinned inline or HTTPS JWKS, enforces
-issuer, audience, client, resource, scope, expiry, and one-time `jti`, and mints
-the same audience-restricted Labby access token used by the interactive flow.
+Trusted enterprise issuers may be configured for enterprise-managed
+authorization. Labby validates `oauth-id-jag+jwt` assertions against pinned
+inline or HTTPS JWKS and enforces issuer, audience, client, resource, scope,
+expiry, and one-time `jti`.
 
-The remaining `auth/enterprise-managed-authorization` expected-failure entry is
-specifically the pinned rmcp beta.2 **outbound conformance client**, not Labby's
-authorization server. Product-server coverage runs immediately before the
-upstream SDK conformance harness in the same CI job.
+The expected-failure entries for enterprise-managed authorization, DPoP,
+DPoP nonce, and WIF JWT-bearer describe experimental outbound flows not
+implemented by the pinned rmcp conformance client. They do not describe Labby's
+inbound authorization server. Product-server coverage runs before the SDK
+fixture harness in the same CI job.
 
 ### Event stores and disconnect
 
-The hosted Labby endpoint is intentionally fully stateless. It uses
-`NeverSessionManager`, so there is no server-side session event store, resume
-cursor, or disconnect cleanup contract. Event-store examples are validated in
-the pinned rmcp SDK harness; adding a durable event store to Labby would be a
-different deployment mode, not a prerequisite for stateless conformance.
+The hosted Labby endpoint is intentionally stateless. It uses
+`NeverSessionManager`, so there is no server-side resume cursor or disconnect
+cleanup contract. Event-store examples remain validated by the pinned rmcp SDK
+harness; a durable event-store deployment would be a separate mode.
 
 ## CI and Maintenance
 
-The `MCP 2026-07-28 conformance` CI job is part of `ci-gate`. Its JavaScript
-dependency installation is serialized before scenarios start. Bump the four
-pins above together and review the scenario list plus extension baseline on
-every conformance package update.
+The `MCP 2026-07-28 conformance` job is part of `ci-gate`. Bump the four
+pins above together and review the Labby-native scenario matrix plus extension
+baseline whenever the conformance package or rmcp version changes.
 
 The separate `MCP upstream drift` workflow compares
-`conformance/upstream-baseline.json` with the current MCP specification branch
-and latest rmcp release. Its report lists upstream files, the Labby modules
-that must be inspected, and the validation commands that must run. Detected
-drift opens or updates one stable issue; advance the baseline only in the PR
-that adopts and verifies the upstream change.
-
-`rmcp` and `rmcp-macros` are upstream packages. Labby's release automation
-publishes Labby artifacts only; it consumes the exact published rmcp version
-and must not attempt to republish upstream crates. This repository also has no
-Chinese README to remove.
+`conformance/upstream-baseline.json` with the current specification branch and
+latest rmcp release. Detected drift opens or updates one stable issue; advance
+the baseline only in the PR that adopts and verifies the upstream change.
 
 Primary references:
 
 - <https://modelcontextprotocol.io/specification/2026-07-28>
-- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.0.0-beta.2>
+- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.1.0>
 - <https://github.com/modelcontextprotocol/conformance>

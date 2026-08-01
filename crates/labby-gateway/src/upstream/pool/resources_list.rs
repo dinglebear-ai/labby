@@ -26,12 +26,7 @@ use super::tools::MAX_UPSTREAM_RESOURCES;
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
     template.name = format!("{upstream_name}/{}", template.name);
     if !template.uri_template.starts_with("ui://") {
-        let bare = template
-            .uri_template
-            .strip_prefix("lab://upstream/")
-            .and_then(|rest| rest.split_once('/').map(|(_, uri)| uri))
-            .unwrap_or(&template.uri_template);
-        template.uri_template = format!("lab://upstream/{upstream_name}/{bare}");
+        template.uri_template = format!("lab://upstream/{upstream_name}/{}", template.uri_template);
     }
 }
 
@@ -458,6 +453,20 @@ mod tests {
             }
             Ok(result)
         }
+    }
+
+    #[test]
+    fn resource_template_rewrite_preserves_nested_gateway_namespace() {
+        let mut template =
+            ResourceTemplate::new("lab://upstream/leaf/fixture://template/{value}", "nested");
+
+        rewrite_resource_template(&mut template, "middle");
+
+        assert_eq!(template.name, "middle/nested");
+        assert_eq!(
+            template.uri_template,
+            "lab://upstream/middle/lab://upstream/leaf/fixture://template/{value}"
+        );
     }
 
     #[tokio::test]
