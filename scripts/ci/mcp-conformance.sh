@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reproduce the upstream rmcp 3.0.0-beta.2 conformance gate against the
+# Reproduce the upstream rmcp 3.1.0 conformance gate against the
 # 2026-07-28 dated protocol and the separately scored extension suite.
 #
 # JavaScript dependencies are installed exactly once before any scenario runs.
 # This avoids concurrent npx cache mutation when scenarios are executed in CI.
 
-RMCP_VERSION="${RMCP_VERSION:-3.0.0-beta.2}"
+RMCP_VERSION="${RMCP_VERSION:-3.1.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_VERSION}}"
-RMCP_COMMIT="${RMCP_COMMIT:-14298b72e0b25473ea79d5465fe186e22eb86397}"
+RMCP_COMMIT="${RMCP_COMMIT:-1f9358eddca42d3a510c70ae6446dd6548c7c856}"
 MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.9}"
 MCP_SPEC_VERSION="${MCP_SPEC_VERSION:-2026-07-28}"
 MCP_CONFORMANCE_PORT="${MCP_CONFORMANCE_PORT:-18002}"
