@@ -84,6 +84,17 @@ pub struct ServeStatus {
     tcp: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     web: BTreeMap<String, ServeWeb>,
+    #[serde(default)]
+    foreground: BTreeMap<String, ServeConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ServeConfig {
+    #[serde(default, rename = "TCP")]
+    tcp: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    web: BTreeMap<String, ServeWeb>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -109,26 +120,42 @@ impl ServeStatus {
         let mut ports = self
             .tcp
             .keys()
-            .filter_map(|port| port.parse().ok())
+            .filter_map(|port| port.parse::<u16>().ok())
             .collect::<BTreeSet<_>>();
-        ports.extend(self.web.keys().filter_map(|authority| {
-            authority
-                .rsplit_once(':')
-                .and_then(|(_, port)| port.parse::<u16>().ok())
-        }));
+        extend_ports(&mut ports, &self.web);
+        for config in self.foreground.values() {
+            ports.extend(
+                config
+                    .tcp
+                    .keys()
+                    .filter_map(|port| port.parse::<u16>().ok()),
+            );
+            extend_ports(&mut ports, &config.web);
+        }
         ports
     }
 
     #[must_use]
     pub fn backend_for(&self, dns_name: &str, port: u16) -> Option<&str> {
         let authority = format!("{dns_name}:{port}");
-        self.web
-            .get(&authority)?
-            .handlers
-            .get("/")?
-            .proxy
-            .as_deref()
+        backend_from_web(&self.web, &authority).or_else(|| {
+            self.foreground
+                .values()
+                .find_map(|config| backend_from_web(&config.web, &authority))
+        })
     }
+}
+
+fn extend_ports(ports: &mut BTreeSet<u16>, web: &BTreeMap<String, ServeWeb>) {
+    ports.extend(web.keys().filter_map(|authority| {
+        authority
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+    }));
+}
+
+fn backend_from_web<'a>(web: &'a BTreeMap<String, ServeWeb>, authority: &str) -> Option<&'a str> {
+    web.get(authority)?.handlers.get("/")?.proxy.as_deref()
 }
 
 pub fn build_public_url(dns_name: &str, port: u16, path: &str) -> Result<url::Url> {

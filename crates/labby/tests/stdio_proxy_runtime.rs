@@ -1009,6 +1009,46 @@ exit 2
         ready["local_addr"].as_str().unwrap()
     ))
     .unwrap();
+    let public_url = url::Url::parse(ready["url"].as_str().unwrap()).unwrap();
+    let public_authority = format!(
+        "{}:{}",
+        public_url.host_str().unwrap(),
+        public_url.port().unwrap()
+    );
+    let public_origin = public_url.origin().ascii_serialization();
+    ensure_tls_provider();
+    let response = reqwest::Client::new()
+        .post(local_url.clone())
+        .header(reqwest::header::HOST, public_authority)
+        .header(reqwest::header::ORIGIN, public_origin)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "tools/list")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "public-authority-test",
+                        "version": "1"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(response.text().await.unwrap().contains("fixture.echo"));
+
     let service = connect(&local_url, None).await;
     assert_eq!(service.peer().list_all_tools().await.unwrap().len(), 1);
 
