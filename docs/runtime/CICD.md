@@ -49,7 +49,7 @@ jobs when their changed-path category is enabled:
 | Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
 | Tests (Linux fork PR fallback) | `rust_test` | same nextest run on the Rust runner-farm pool without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke plus the last known-green rmcp `3.0.0-beta.2` fixture's dated `2026-07-28` server/client suites and separately scored extension suites |
+| MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke plus the pinned rmcp `3.1.0` fixture's dated `2026-07-28` server/client suites, with separate strict dated and extension baselines |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
 | Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |

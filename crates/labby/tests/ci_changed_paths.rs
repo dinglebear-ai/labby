@@ -162,6 +162,7 @@ fn workflow_changes_enable_everything() {
 fn mcp_conformance_inputs_enable_the_full_gate() {
     for path in [
         "scripts/ci/mcp-conformance.sh",
+        "conformance/expected-failures-dated.yaml",
         "conformance/expected-failures-extensions.yaml",
         ".github/labeler.yml",
     ] {
