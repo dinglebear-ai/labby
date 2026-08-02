@@ -12,7 +12,7 @@ use rmcp::model::{ErrorData as McpError, *};
 use rmcp::service::{MaybeSendFuture, NotificationContext, RequestContext, RoleClient};
 
 #[derive(Clone, Debug)]
-pub(super) struct VersionedClientHandler<H> {
+pub(in crate::upstream) struct VersionedClientHandler<H> {
     inner: H,
     protocol_version: ProtocolVersion,
 }
