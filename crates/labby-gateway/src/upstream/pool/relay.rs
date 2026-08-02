@@ -43,26 +43,33 @@
 //! too.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::time::Instant;
 
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
-    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
-    GetPromptRequestParams, GetPromptResponse, LoggingMessageNotificationParam,
+    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, CustomRequest,
+    GetPromptRequest, GetPromptRequestParams, GetPromptResponse, LoggingMessageNotificationParam,
     ProgressNotificationParam, ProgressToken, ReadResourceRequest, ReadResourceRequestParams,
     ReadResourceResponse, RequestId, RequestMetaObject, ResourceUpdatedNotificationParam,
     ServerNotification, ServerResult, TaskStatusNotification, TaskStatusNotificationParams,
 };
 use rmcp::service::{NotificationContext, Peer, PeerRequestOptions, ServiceError};
 use rmcp::{ClientHandler, RoleClient, RoleServer};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
+use crate::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY};
+
 use super::super::types::UpstreamCapability;
-use super::connect::connect_upstream_with_handler;
+use super::connect::{
+    HttpCancellationSender, build_http_cancellation_sender, connect_upstream_with_handler,
+};
 use super::helpers::{
     SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
     estimate_call_tool_response_size, estimate_resource_response_size, max_response_bytes,
@@ -76,6 +83,8 @@ use super::notifications::UpstreamNotificationEvent;
 use super::{UpstreamConnection, UpstreamPool};
 
 const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+const PROGRESS_NOTIFICATION_DELIVERY_GRACE: std::time::Duration =
+    std::time::Duration::from_millis(500);
 
 #[derive(Clone)]
 struct RelayRequestRoute {
@@ -85,10 +94,20 @@ struct RelayRequestRoute {
 }
 
 #[derive(Default)]
+struct RelayTaskRouteState {
+    mappings: HashMap<String, String>,
+    pending: HashMap<String, Vec<TaskStatusNotificationParams>>,
+}
+
+#[derive(Default)]
 pub(super) struct RelayRouteState {
     requests: RwLock<HashMap<RequestId, RelayRequestRoute>>,
     progress: RwLock<HashMap<ProgressToken, ProgressToken>>,
-    tasks: RwLock<HashMap<String, String>>,
+    tasks: Mutex<RelayTaskRouteState>,
+    progress_notification_sequence: AtomicU64,
+    progress_notification_notify: Notify,
+    task_notification_sequence: AtomicU64,
+    task_notification_notify: Notify,
 }
 
 impl RelayRouteState {
@@ -153,15 +172,100 @@ impl RelayRouteState {
             .cloned()
     }
 
-    pub(super) async fn register_task_id(&self, native_task_id: &str, gateway_task_id: &str) {
-        self.tasks
-            .write()
-            .await
+    fn progress_notification_sequence(&self) -> u64 {
+        self.progress_notification_sequence.load(Ordering::Acquire)
+    }
+
+    fn record_progress_notification_delivery(&self) {
+        self.progress_notification_sequence
+            .fetch_add(1, Ordering::AcqRel);
+        self.progress_notification_notify.notify_waiters();
+    }
+
+    async fn wait_for_progress_notification_after(
+        &self,
+        previous: u64,
+        timeout: std::time::Duration,
+    ) -> bool {
+        if self.progress_notification_sequence() > previous {
+            return true;
+        }
+        let notified = self.progress_notification_notify.notified();
+        if self.progress_notification_sequence() > previous {
+            return true;
+        }
+        tokio::time::timeout(timeout, notified).await.is_ok()
+            && self.progress_notification_sequence() > previous
+    }
+
+    pub(super) async fn register_task_id(
+        &self,
+        native_task_id: &str,
+        gateway_task_id: &str,
+    ) -> Vec<TaskStatusNotificationParams> {
+        let mut tasks = self.tasks.lock().await;
+        tasks
+            .mappings
             .insert(native_task_id.to_string(), gateway_task_id.to_string());
+        let mut pending = tasks.pending.remove(native_task_id).unwrap_or_default();
+        for params in &mut pending {
+            params.task.task.task_id = gateway_task_id.to_string();
+        }
+        pending
+    }
+
+    async fn translate_or_queue_task_status(
+        &self,
+        mut params: TaskStatusNotificationParams,
+    ) -> Option<TaskStatusNotificationParams> {
+        let native_task_id = params.task.task.task_id.clone();
+        let mut tasks = self.tasks.lock().await;
+        if let Some(gateway_task_id) = tasks.mappings.get(&native_task_id) {
+            params.task.task.task_id = gateway_task_id.clone();
+            Some(params)
+        } else {
+            tasks
+                .pending
+                .entry(native_task_id)
+                .or_default()
+                .push(params);
+            None
+        }
     }
 
     async fn gateway_task_id(&self, native_task_id: &str) -> Option<String> {
-        self.tasks.read().await.get(native_task_id).cloned()
+        self.tasks
+            .lock()
+            .await
+            .mappings
+            .get(native_task_id)
+            .cloned()
+    }
+
+    pub(super) fn task_notification_sequence(&self) -> u64 {
+        self.task_notification_sequence.load(Ordering::Acquire)
+    }
+
+    fn record_task_notification_delivery(&self) {
+        self.task_notification_sequence
+            .fetch_add(1, Ordering::AcqRel);
+        self.task_notification_notify.notify_waiters();
+    }
+
+    pub(super) async fn wait_for_task_notification_after(
+        &self,
+        previous: u64,
+        timeout: std::time::Duration,
+    ) -> bool {
+        if self.task_notification_sequence() > previous {
+            return true;
+        }
+        let notified = self.task_notification_notify.notified();
+        if self.task_notification_sequence() > previous {
+            return true;
+        }
+        tokio::time::timeout(timeout, notified).await.is_ok()
+            && self.task_notification_sequence() > previous
     }
 }
 
@@ -172,7 +276,8 @@ impl RelayRouteState {
 #[derive(Clone)]
 pub(crate) struct RelayClientHandler {
     /// The downstream agent connection to forward request-scoped notifications to.
-    downstream: Peer<RoleServer>,
+    /// Task-owned relay connections rebind this peer for each stateless HTTP request.
+    downstream: Arc<RwLock<Peer<RoleServer>>>,
     /// Name of the upstream this handler is attached to.
     upstream_name: Arc<str>,
     /// Exact client capabilities declared on the downstream request that
@@ -213,12 +318,51 @@ impl RelayClientHandler {
         publish_catalog_events: bool,
     ) -> Self {
         Self {
-            downstream,
+            downstream: Arc::new(RwLock::new(downstream)),
             upstream_name,
             capabilities,
             routes,
             notification_tx,
             publish_catalog_events,
+        }
+    }
+
+    async fn downstream(&self) -> Peer<RoleServer> {
+        self.downstream.read().await.clone()
+    }
+
+    pub(super) async fn rebind_downstream(&self, downstream: Peer<RoleServer>) {
+        *self.downstream.write().await = downstream;
+    }
+
+    pub(super) async fn forward_task_status(&self, params: TaskStatusNotificationParams) {
+        let task_id = params.task.task.task_id.clone();
+        let status = params.task.status();
+        let downstream = self.downstream().await;
+        match downstream
+            .send_notification(ServerNotification::TaskStatusNotification(
+                TaskStatusNotification::new(params),
+            ))
+            .await
+        {
+            Ok(()) => {
+                self.routes.record_task_notification_delivery();
+                tracing::warn!(
+                    upstream = %self.upstream_name,
+                    task_id,
+                    ?status,
+                    "DIAGNOSTIC forwarded translated task notification downstream"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    upstream = %self.upstream_name,
+                    task_id,
+                    ?status,
+                    error = %error,
+                    "failed to forward translated task notification downstream"
+                );
+            }
         }
     }
 }
@@ -249,7 +393,8 @@ impl ClientHandler for RelayClientHandler {
             return;
         };
         params.request_id = Some(downstream_request_id);
-        drop(self.downstream.notify_cancelled(params).await);
+        let downstream = self.downstream().await;
+        drop(downstream.notify_cancelled(params).await);
         self.routes.unregister_request(&upstream_request_id).await;
     }
 
@@ -266,7 +411,15 @@ impl ClientHandler for RelayClientHandler {
             return;
         };
         params.progress_token = downstream_token;
-        drop(self.downstream.notify_progress(params).await);
+        let downstream = self.downstream().await;
+        match downstream.notify_progress(params).await {
+            Ok(()) => self.routes.record_progress_notification_delivery(),
+            Err(error) => tracing::warn!(
+                upstream = %self.upstream_name,
+                error = %error,
+                "failed to forward progress notification downstream"
+            ),
+        }
     }
 
     #[allow(deprecated)]
@@ -275,7 +428,8 @@ impl ClientHandler for RelayClientHandler {
         params: LoggingMessageNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
-        drop(self.downstream.notify_logging_message(params).await);
+        let downstream = self.downstream().await;
+        drop(downstream.notify_logging_message(params).await);
     }
 
     async fn on_resource_updated(
@@ -330,26 +484,26 @@ impl ClientHandler for RelayClientHandler {
 
     async fn on_task_status(
         &self,
-        mut params: TaskStatusNotificationParams,
+        params: TaskStatusNotificationParams,
         _context: NotificationContext<RoleClient>,
     ) {
         let native_task_id = params.task.task.task_id.clone();
-        let Some(gateway_task_id) = self.routes.gateway_task_id(&native_task_id).await else {
+        let status = params.task.status();
+        tracing::warn!(
+            upstream = %self.upstream_name,
+            native_task_id,
+            ?status,
+            "DIAGNOSTIC received upstream task notification"
+        );
+        let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
             tracing::debug!(
                 upstream = %self.upstream_name,
                 native_task_id,
-                "ignoring task notification before gateway task registration"
+                "queued task notification until gateway task registration"
             );
             return;
         };
-        params.task.task.task_id = gateway_task_id;
-        drop(
-            self.downstream
-                .send_notification(ServerNotification::TaskStatusNotification(
-                    TaskStatusNotification::new(params),
-                ))
-                .await,
-        );
+        self.forward_task_status(params).await;
     }
 
     async fn on_custom_notification(
@@ -357,31 +511,218 @@ impl ClientHandler for RelayClientHandler {
         notification: CustomNotification,
         _context: NotificationContext<RoleClient>,
     ) {
+        let downstream = self.downstream().await;
         drop(
-            self.downstream
+            downstream
                 .send_notification(ServerNotification::CustomNotification(notification))
                 .await,
         );
     }
 }
 
+async fn send_labby_relay_cancellation(
+    peer: &Peer<RoleClient>,
+    reason: &str,
+    token: &str,
+) -> Result<(), ServiceError> {
+    let result = peer
+        .send_request(ClientRequest::CustomRequest(CustomRequest::new(
+            MCP_RELAY_CANCELLATION_REQUEST_METHOD,
+            Some(serde_json::json!({
+                "reason": reason,
+                "token": token,
+            })),
+        )))
+        .await?;
+    match result {
+        ServerResult::CustomResult(_) => Ok(()),
+        _ => Err(ServiceError::UnexpectedResponse),
+    }
+}
+
+#[derive(Default)]
+struct PendingRelayRequestId {
+    id: Mutex<Option<RequestId>>,
+    notify: Notify,
+}
+
+impl PendingRelayRequestId {
+    async fn set(&self, request_id: RequestId) {
+        *self.id.lock().await = Some(request_id);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self, timeout: std::time::Duration) -> Option<RequestId> {
+        if let Some(request_id) = self.id.lock().await.clone() {
+            return Some(request_id);
+        }
+        let notified = self.notify.notified();
+        if let Some(request_id) = self.id.lock().await.clone() {
+            return Some(request_id);
+        }
+        tokio::time::timeout(timeout, notified).await.ok()?;
+        self.id.lock().await.clone()
+    }
+}
+
+async fn dispatch_relay_cancellation(
+    peer: &Peer<RoleClient>,
+    cancellation_sender: Option<&HttpCancellationSender>,
+    request_id: &PendingRelayRequestId,
+    reason: &str,
+    token: &str,
+    dispatched: &AtomicBool,
+) {
+    if dispatched.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    if let Err(error) = send_labby_relay_cancellation(peer, reason, token).await {
+        tracing::debug!(
+            error = %error,
+            "upstream did not accept the Labby relay cancellation request"
+        );
+    }
+
+    let Some(request_id) = request_id.wait(std::time::Duration::from_secs(1)).await else {
+        tracing::debug!("upstream request id was unavailable for standard cancellation");
+        return;
+    };
+
+    if let Err(error) = peer
+        .notify_cancelled(CancelledNotificationParam::new(
+            Some(request_id.clone()),
+            Some(reason.to_string()),
+        ))
+        .await
+    {
+        tracing::debug!(
+            request_id = ?request_id,
+            error = %error,
+            "standard upstream cancellation notification failed"
+        );
+    }
+
+    if let Some(sender) = cancellation_sender {
+        let sender = sender.clone();
+        let reason = reason.to_string();
+        let token = token.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = sender.send(request_id.clone(), Some(reason), &token).await {
+                tracing::debug!(
+                    request_id = ?request_id,
+                    error = %error,
+                    "best-effort standard HTTP cancellation failed"
+                );
+            }
+        });
+    }
+}
+
 async fn send_relay_request(
     peer: &Peer<RoleClient>,
     routes: &Arc<RelayRouteState>,
+    cancellation_sender: Option<&HttpCancellationSender>,
     request: ClientRequest,
-    request_meta: Option<RequestMetaObject>,
+    mut request_meta: Option<RequestMetaObject>,
     downstream_request_id: RequestId,
     downstream_cancel: CancellationToken,
     timeout: std::time::Duration,
 ) -> Result<ServerResult, ServiceError> {
+    let cancellation_token = uuid::Uuid::new_v4().to_string();
+    request_meta
+        .get_or_insert_with(RequestMetaObject::new)
+        .0
+        .0
+        .insert(
+            MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            serde_json::Value::String(cancellation_token.clone()),
+        );
     let downstream_progress_token = request_meta
         .as_ref()
         .and_then(RequestMetaObject::get_progress_token);
+    let expects_progress = downstream_progress_token.is_some();
+    let progress_sequence = routes.progress_notification_sequence();
     let options = request_meta
         .map(|meta| PeerRequestOptions::no_options().with_meta(meta))
         .unwrap_or_else(PeerRequestOptions::no_options);
-    let mut handle = peer.send_cancellable_request(request, options).await?;
+    let pending_request_id = Arc::new(PendingRelayRequestId::default());
+    let cancellation_dispatched = Arc::new(AtomicBool::new(false));
+    let relay_finished = CancellationToken::new();
+    {
+        let peer = peer.clone();
+        let cancellation_sender = cancellation_sender.cloned();
+        let pending_request_id = Arc::clone(&pending_request_id);
+        let cancellation_token = cancellation_token.clone();
+        let downstream_cancel = downstream_cancel.clone();
+        let relay_finished = relay_finished.clone();
+        let cancellation_dispatched = Arc::clone(&cancellation_dispatched);
+        tokio::spawn(async move {
+            tracing::warn!(
+                process_id = std::process::id(),
+                "DIAGNOSTIC detached relay cancellation watcher armed"
+            );
+            tokio::select! {
+                () = downstream_cancel.cancelled() => {
+                    dispatch_relay_cancellation(
+                        &peer,
+                        cancellation_sender.as_ref(),
+                        &pending_request_id,
+                        "downstream request cancelled",
+                        &cancellation_token,
+                        &cancellation_dispatched,
+                    )
+                    .await;
+                }
+                () = relay_finished.cancelled() => {
+                    tracing::warn!(
+                        process_id = std::process::id(),
+                        "DIAGNOSTIC detached relay watcher entered finish grace"
+                    );
+                    tokio::select! {
+                        () = downstream_cancel.cancelled() => {
+                            dispatch_relay_cancellation(
+                                &peer,
+                                cancellation_sender.as_ref(),
+                                &pending_request_id,
+                                "downstream request cancelled during relay teardown",
+                                &cancellation_token,
+                                &cancellation_dispatched,
+                            )
+                            .await;
+                        }
+                        () = tokio::time::sleep(RELAY_ROUTE_CLEANUP_GRACE) => {}
+                    }
+                }
+                () = tokio::time::sleep(timeout) => {
+                    tracing::warn!(
+                        process_id = std::process::id(),
+                        "DIAGNOSTIC detached relay cancellation watcher timed out"
+                    );
+                    dispatch_relay_cancellation(
+                        &peer,
+                        cancellation_sender.as_ref(),
+                        &pending_request_id,
+                        "relayed request timeout",
+                        &cancellation_token,
+                        &cancellation_dispatched,
+                    )
+                    .await;
+                }
+            }
+        });
+    }
+
+    let mut handle = match peer.send_cancellable_request(request, options).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            relay_finished.cancel();
+            return Err(error);
+        }
+    };
     let upstream_request_id = handle.id.clone();
+    pending_request_id.set(upstream_request_id.clone()).await;
+
     routes
         .register_request(
             upstream_request_id.clone(),
@@ -393,22 +734,55 @@ async fn send_relay_request(
 
     let result = tokio::select! {
         response = &mut handle.rx => {
-            response.map_err(|_| ServiceError::TransportClosed)?
+            let response = response.map_err(|_| ServiceError::TransportClosed)?;
+            if !matches!(
+                &response,
+                Err(ServiceError::Cancelled { .. }) | Err(ServiceError::TransportClosed)
+            ) {
+                relay_finished.cancel();
+            }
+            if expects_progress && response.is_ok() {
+                routes
+                    .wait_for_progress_notification_after(
+                        progress_sequence,
+                        PROGRESS_NOTIFICATION_DELIVERY_GRACE,
+                    )
+                    .await;
+            }
+            response
         }
         () = downstream_cancel.cancelled() => {
             routes.unregister_request(&upstream_request_id).await;
-            handle
-                .cancel(Some("downstream request cancelled".to_string()))
-                .await?;
+            let reason = "downstream request cancelled".to_string();
+            dispatch_relay_cancellation(
+                peer,
+                cancellation_sender,
+                &pending_request_id,
+                &reason,
+                &cancellation_token,
+                &cancellation_dispatched,
+            )
+            .await;
+            relay_finished.cancel();
+            handle.cancel(Some(reason.clone())).await?;
             return Err(ServiceError::Cancelled {
-                reason: Some("downstream request cancelled".to_string()),
+                reason: Some(reason),
             });
         }
         () = tokio::time::sleep(timeout) => {
             routes.unregister_request(&upstream_request_id).await;
-            handle
-                .cancel(Some("relayed request timeout".to_string()))
-                .await?;
+            let reason = "relayed request timeout".to_string();
+            dispatch_relay_cancellation(
+                peer,
+                cancellation_sender,
+                &pending_request_id,
+                &reason,
+                &cancellation_token,
+                &cancellation_dispatched,
+            )
+            .await;
+            relay_finished.cancel();
+            handle.cancel(Some(reason)).await?;
             return Err(ServiceError::Timeout { timeout });
         }
     };
@@ -440,8 +814,29 @@ pub(super) struct RelayCachedConnection {
     pub(super) capability_fingerprint: String,
     /// Request/progress/task identifier translations owned by this connection.
     pub(super) routes: Arc<RelayRouteState>,
+    /// Explicit cancellation POST sender for HTTP and Unix-socket transports.
+    pub(super) cancellation_sender: Option<HttpCancellationSender>,
     /// Wall-clock instant when this entry was last used.
     pub(super) last_used: Instant,
+}
+impl RelayCachedConnection {
+    pub(super) async fn rebind_downstream(&self, downstream: Peer<RoleServer>) {
+        self._connection
+            ._client_service
+            .service()
+            .rebind_downstream(downstream)
+            .await;
+    }
+
+    pub(super) async fn flush_task_status_notifications(
+        &self,
+        notifications: Vec<TaskStatusNotificationParams>,
+    ) {
+        let handler = self._connection._client_service.service();
+        for params in notifications {
+            handler.forward_task_status(params).await;
+        }
+    }
 }
 
 /// Evict least-recently-used relay connections until the map holds at most
@@ -511,7 +906,7 @@ impl UpstreamPool {
         let tool_name = params.name.to_string();
         let relay_key = (config.name.clone(), session_id, subject.map(str::to_owned));
         let request_meta = params.meta.clone();
-        let (peer, routes) = self
+        let (peer, routes, cancellation_sender) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
 
@@ -535,6 +930,7 @@ impl UpstreamPool {
         let response = send_relay_request(
             &peer,
             &routes,
+            cancellation_sender.as_ref(),
             ClientRequest::CallToolRequest(CallToolRequest::new(params)),
             request_meta,
             downstream_request_id,
@@ -637,7 +1033,7 @@ impl UpstreamPool {
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
         let prompt_name = params.name.to_string();
         let request_meta = params.meta.clone();
-        let (peer, routes) = self
+        let (peer, routes, cancellation_sender) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, subject.is_some())
@@ -648,6 +1044,7 @@ impl UpstreamPool {
         let response = send_relay_request(
             &peer,
             &routes,
+            cancellation_sender.as_ref(),
             ClientRequest::GetPromptRequest(GetPromptRequest::new(params)),
             request_meta,
             downstream_request_id,
@@ -731,7 +1128,7 @@ impl UpstreamPool {
         };
         params.uri = original_uri;
         let request_meta = params.meta.clone();
-        let (peer, routes) = self
+        let (peer, routes, cancellation_sender) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
         let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
@@ -743,6 +1140,7 @@ impl UpstreamPool {
         let response = send_relay_request(
             &peer,
             &routes,
+            cancellation_sender.as_ref(),
             ClientRequest::ReadResourceRequest(ReadResourceRequest::new(params)),
             request_meta,
             downstream_request_id,
@@ -857,7 +1255,11 @@ impl UpstreamPool {
         downstream: Peer<RoleServer>,
         session_id: u64,
         capabilities: ClientCapabilities,
-    ) -> Option<(Peer<RoleClient>, Arc<RelayRouteState>)> {
+    ) -> Option<(
+        Peer<RoleClient>,
+        Arc<RelayRouteState>,
+        Option<HttpCancellationSender>,
+    )> {
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
@@ -875,7 +1277,11 @@ impl UpstreamPool {
                     && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
-                    return Some((entry.peer.clone(), Arc::clone(&entry.routes)));
+                    return Some((
+                        entry.peer.clone(),
+                        Arc::clone(&entry.routes),
+                        entry.cancellation_sender.clone(),
+                    ));
                 }
                 cache.remove(&key);
             }
@@ -903,7 +1309,11 @@ impl UpstreamPool {
                     && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
-                    return Some((entry.peer.clone(), Arc::clone(&entry.routes)));
+                    return Some((
+                        entry.peer.clone(),
+                        Arc::clone(&entry.routes),
+                        entry.cancellation_sender.clone(),
+                    ));
                 }
                 cache.remove(&key);
             }
@@ -942,6 +1352,27 @@ impl UpstreamPool {
             }
         };
 
+        let cancellation_sender = match build_http_cancellation_sender(
+            config,
+            subject,
+            self.oauth_client_cache.as_ref(),
+            Some(&self.shared_http_client),
+        )
+        .await
+        {
+            Ok(sender) => sender,
+            Err(error) => {
+                self.record_failure_for(
+                    &config.name,
+                    UpstreamCapability::Tools,
+                    format!("relayed cancellation sender setup failed: {error}"),
+                )
+                .await;
+                conn.shutdown(&config.name, "relay.cancellation_sender.error")
+                    .await;
+                return None;
+            }
+        };
         let peer = conn.peer.clone();
         // Enforce the LRU cap BEFORE inserting so a burst of unique sessions
         // cannot push the live-peer count past the bound; shut evicted peers
@@ -956,6 +1387,7 @@ impl UpstreamPool {
                     peer: peer.clone(),
                     capability_fingerprint: requested_capability_fingerprint,
                     routes: Arc::clone(&routes),
+                    cancellation_sender: cancellation_sender.clone(),
                     last_used: Instant::now(),
                 },
             );
@@ -965,7 +1397,7 @@ impl UpstreamPool {
             evicted_conn.shutdown(&name, "relay.cache.lru_evict").await;
         }
 
-        Some((peer, routes))
+        Some((peer, routes, cancellation_sender))
     }
 
     /// Evict and shut down the cached relay connection for one
@@ -1117,7 +1549,12 @@ mod tests {
             Some(downstream_progress)
         );
 
-        routes.register_task_id("native-task", "gateway-task").await;
+        assert!(
+            routes
+                .register_task_id("native-task", "gateway-task")
+                .await
+                .is_empty()
+        );
         assert_eq!(
             routes.gateway_task_id("native-task").await.as_deref(),
             Some("gateway-task")
@@ -1129,6 +1566,34 @@ mod tests {
             routes.downstream_progress_token(&upstream_progress).await,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn task_status_waits_for_gateway_task_registration() {
+        let routes = RelayRouteState::default();
+        let native_task = DetailedTask::new(
+            Task::new(
+                "native-early-task",
+                TaskStatus::Working,
+                "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+            ),
+            TaskPayload::Working,
+        );
+        let params = TaskStatusNotificationParams::new(native_task);
+
+        assert!(
+            routes
+                .translate_or_queue_task_status(params)
+                .await
+                .is_none()
+        );
+        let pending = routes
+            .register_task_id("native-early-task", "gateway-early-task")
+            .await;
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].task.task.task_id, "gateway-early-task");
     }
 
     /// A downstream client that advertises form elicitation for MRTR.
@@ -1273,6 +1738,7 @@ mod tests {
                 peer,
                 capability_fingerprint: capability_fingerprint(&capabilities),
                 routes,
+                cancellation_sender: None,
                 last_used: Instant::now(),
             },
         );
@@ -1825,6 +2291,7 @@ mod tests {
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
                 routes,
+                cancellation_sender: None,
                 last_used,
             },
             gw_server,
@@ -2058,6 +2525,7 @@ mod tests {
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
                 routes: Arc::new(RelayRouteState::default()),
+                cancellation_sender: None,
                 last_used: Instant::now(),
             },
         );
@@ -2188,6 +2656,7 @@ mod tests {
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
                 routes: Arc::new(RelayRouteState::default()),
+                cancellation_sender: None,
                 last_used: Instant::now(),
             },
         );

@@ -13,13 +13,20 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt as _;
 #[cfg(unix)]
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
+use rmcp::model::{
+    CancelledNotification, CancelledNotificationParam, ClientJsonRpcMessage, ClientNotification,
+    NotificationMetaObject, ProtocolVersion, RequestId, RequestMetaObject,
+};
 use rmcp::service::ClientServiceExt;
+use rmcp::transport::AuthClient;
+use rmcp::transport::common::http_header::HEADER_MCP_PROTOCOL_VERSION;
 use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
+    StreamableHttpClient, StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
 use rmcp::{ClientHandler, RoleClient};
 
@@ -38,6 +45,7 @@ use super::helpers::{
     DEFAULT_REQUEST_TIMEOUT, max_response_bytes, upstream_target_redacted, upstream_transport,
 };
 use super::lifecycle_compat::{LifecycleAttempt, compatibility_retry, log_fallback};
+use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
 /// `reqwest::Client` for HTTP connections (P-M10).
@@ -414,6 +422,195 @@ fn configured_custom_headers(
     Ok(headers)
 }
 
+#[derive(Clone)]
+enum HttpCancellationClient {
+    Plain(http_client::BodyCappedHttpClient),
+    Oauth(AuthClient<http_client::BodyCappedHttpClient>),
+}
+
+/// Sends an explicit notifications/cancelled POST for HTTP transports.
+///
+/// rmcp 3.1 closes a modern HTTP request's local response stream when a
+/// RequestHandle is cancelled, but does not transmit the cancellation
+/// notification to the server. Relay calls retain this sender so Labby can
+/// deliver the wire notification before asking rmcp to close its local stream.
+#[derive(Clone)]
+pub(super) struct HttpCancellationSender {
+    uri: Arc<str>,
+    client: HttpCancellationClient,
+    auth_token: Option<String>,
+    custom_headers: HashMap<HeaderName, HeaderValue>,
+}
+
+fn cancellation_message(
+    request_id: RequestId,
+    reason: Option<String>,
+    token: &str,
+) -> ClientJsonRpcMessage {
+    let mut params = CancelledNotificationParam::new(Some(request_id), reason);
+    let mut meta = NotificationMetaObject::new();
+    meta.0.0.insert(
+        MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+        serde_json::Value::String(token.to_string()),
+    );
+    params.meta = Some(meta.clone());
+    let mut cancelled = CancelledNotification::new(params);
+    cancelled.extensions.insert(meta);
+    ClientJsonRpcMessage::notification(ClientNotification::CancelledNotification(cancelled))
+}
+
+impl HttpCancellationSender {
+    pub(super) fn new_request_token(&self) -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    pub(super) fn attach_request_token(&self, meta: &mut RequestMetaObject, token: &str) {
+        meta.0.0.insert(
+            MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            serde_json::Value::String(token.to_string()),
+        );
+    }
+
+    async fn post_message(&self, message: ClientJsonRpcMessage) -> anyhow::Result<()> {
+        let result = match &self.client {
+            HttpCancellationClient::Plain(client) => {
+                client
+                    .post_message(
+                        Arc::clone(&self.uri),
+                        message,
+                        None,
+                        self.auth_token.clone(),
+                        self.custom_headers.clone(),
+                    )
+                    .await
+            }
+            HttpCancellationClient::Oauth(client) => {
+                client
+                    .post_message(
+                        Arc::clone(&self.uri),
+                        message,
+                        None,
+                        None,
+                        self.custom_headers.clone(),
+                    )
+                    .await
+            }
+        };
+        result
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("explicit HTTP cancellation failed: {error}"))
+    }
+
+    pub(super) async fn send(
+        &self,
+        request_id: RequestId,
+        reason: Option<String>,
+        token: &str,
+    ) -> anyhow::Result<()> {
+        self.post_message(cancellation_message(request_id, reason, token))
+            .await
+    }
+}
+
+/// Build the side-channel used to deliver cancellation notifications for HTTP
+/// relay connections. Non-HTTP transports return None because their rmcp
+/// worker already forwards notifications/cancelled on the underlying stream.
+pub(super) async fn build_http_cancellation_sender(
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    shared_client: Option<&reqwest::Client>,
+) -> anyhow::Result<Option<HttpCancellationSender>> {
+    let transport = config.effective_transport();
+    if !matches!(
+        transport,
+        Some(UpstreamTransport::Http | UpstreamTransport::UnixSocket)
+    ) {
+        return Ok(None);
+    }
+
+    let url = config.url.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "upstream {} HTTP cancellation sender has no url",
+            config.name
+        )
+    })?;
+    let mut custom_headers = configured_custom_headers(config)?;
+    custom_headers.insert(
+        HeaderName::from_bytes(HEADER_MCP_PROTOCOL_VERSION.as_bytes())?,
+        HeaderValue::from_str(&ProtocolVersion::V_2026_07_28.to_string())?,
+    );
+
+    let base_client = match transport {
+        Some(UpstreamTransport::Http) => {
+            if let Some(client) = shared_client {
+                client.clone()
+            } else {
+                drop(rustls::crypto::ring::default_provider().install_default());
+                reqwest::Client::builder()
+                    .timeout(DEFAULT_REQUEST_TIMEOUT)
+                    .build()?
+            }
+        }
+        Some(UpstreamTransport::UnixSocket) => {
+            #[cfg(unix)]
+            {
+                let socket_path = config.socket_path.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "upstream {} Unix socket cancellation sender has no socket_path",
+                        config.name
+                    )
+                })?;
+                drop(rustls::crypto::ring::default_provider().install_default());
+                reqwest::Client::builder()
+                    .timeout(DEFAULT_REQUEST_TIMEOUT)
+                    .http1_only()
+                    .unix_socket(unix_socket_connect_path(socket_path))
+                    .build()?
+            }
+            #[cfg(not(unix))]
+            {
+                return Ok(None);
+            }
+        }
+        _ => return Ok(None),
+    };
+    let capped = http_client::BodyCappedHttpClient::new(base_client, max_response_bytes());
+
+    let (client, auth_token) = if config.oauth.is_some() {
+        let subject = subject.ok_or_else(|| {
+            anyhow::anyhow!(
+                "upstream {} requires an authenticated subject for cancellation",
+                config.name
+            )
+        })?;
+        let cache = oauth_client_cache.ok_or_else(|| {
+            anyhow::anyhow!(
+                "upstream {} requires OAuth but no auth client cache is registered",
+                config.name
+            )
+        })?;
+        let auth_client = cache
+            .get_or_build_capped(config, subject, capped)
+            .await
+            .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?;
+        (HttpCancellationClient::Oauth(auth_client), None)
+    } else {
+        let auth_token = config
+            .bearer_token_env
+            .as_deref()
+            .and_then(configured_bearer_token);
+        (HttpCancellationClient::Plain(capped), auth_token)
+    };
+
+    Ok(Some(HttpCancellationSender {
+        uri: Arc::from(url),
+        client,
+        auth_token,
+        custom_headers,
+    }))
+}
+
 async fn connect_http_upstream_once<H: ClientHandler>(
     url: &str,
     config: &UpstreamConfig,
@@ -563,4 +760,50 @@ pub(super) fn runtime_origin_label(
     }
 
     Some("gateway-managed".to_string())
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_token_survives_json_round_trip() {
+        let token = "test-cancellation-token";
+        let message = cancellation_message(
+            RequestId::Number(13),
+            Some("downstream request cancelled".to_string()),
+            token,
+        );
+        let wire = serde_json::to_value(&message).expect("serialize cancellation notification");
+        assert_eq!(
+            wire.pointer("/params/_meta/ai.dinglebear.labby~1relayCancellationToken")
+                .and_then(serde_json::Value::as_str),
+            Some(token)
+        );
+
+        let decoded: ClientJsonRpcMessage =
+            serde_json::from_value(wire).expect("deserialize cancellation notification");
+        let ClientJsonRpcMessage::Notification(notification) = decoded else {
+            panic!("expected notification");
+        };
+        let ClientNotification::CancelledNotification(cancelled) = notification.notification else {
+            panic!("expected cancelled notification");
+        };
+        let typed_token = cancelled.params.meta.as_ref().and_then(|meta| {
+            meta.0
+                .0
+                .get(MCP_RELAY_CANCELLATION_TOKEN_META_KEY)
+                .and_then(serde_json::Value::as_str)
+        });
+        let extension_token = cancelled
+            .extensions
+            .get::<NotificationMetaObject>()
+            .and_then(|meta| {
+                meta.0
+                    .0
+                    .get(MCP_RELAY_CANCELLATION_TOKEN_META_KEY)
+                    .and_then(serde_json::Value::as_str)
+            });
+        assert_eq!(typed_token.or(extension_token), Some(token));
+    }
 }

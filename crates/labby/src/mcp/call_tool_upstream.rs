@@ -36,7 +36,7 @@ use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::result_format::{
     estimate_tokens, estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
-use crate::mcp::server::LabMcpServer;
+use crate::mcp::server::{LabMcpServer, LabRequestCancellation};
 use crate::mcp::upstream::normalize_upstream_result;
 
 use crate::config::UpstreamConfig;
@@ -59,6 +59,34 @@ fn prepare_upstream_tool_request(
 
 fn relay_capabilities_for_request(request: &CallToolRequestParams) -> Option<ClientCapabilities> {
     crate::mcp::context::forwardable_client_capabilities(request.meta.as_ref())
+}
+
+fn relay_cancellation_token(
+    context: &RequestContext<RoleServer>,
+) -> tokio_util::sync::CancellationToken {
+    let cancellation = context.extensions.get::<LabRequestCancellation>();
+    tracing::warn!(
+        has_lab_cancellation = cancellation.is_some(),
+        cancellation_id = cancellation.map(LabRequestCancellation::id),
+        process_id = std::process::id(),
+        "DIAGNOSTIC selected relay cancellation token"
+    );
+    cancellation
+        .map(|cancellation| {
+            let token = cancellation.token();
+            let observer = token.clone();
+            let cancellation_id = cancellation.id();
+            tokio::spawn(async move {
+                observer.cancelled().await;
+                tracing::warn!(
+                    cancellation_id,
+                    process_id = std::process::id(),
+                    "DIAGNOSTIC Labby-to-gateway cancellation token fired"
+                );
+            });
+            token
+        })
+        .unwrap_or_else(|| context.ct.clone())
 }
 
 fn upstream_call_failed_message(upstream_name: &str) -> String {
@@ -217,7 +245,7 @@ impl LabMcpServer {
                         upstream_params,
                         context.peer.clone(),
                         context.id.clone(),
-                        context.ct.clone(),
+                        relay_cancellation_token(context),
                         self.relay_session_id,
                         capabilities,
                         self.request_subject(context),
@@ -485,7 +513,7 @@ impl LabMcpServer {
                             upstream_params,
                             context.peer.clone(),
                             context.id.clone(),
-                            context.ct.clone(),
+                            relay_cancellation_token(context),
                             self.relay_session_id,
                             capabilities,
                             self.request_subject(context),

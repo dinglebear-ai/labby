@@ -1,17 +1,23 @@
 //! Routing for task handles returned by upstream MCP servers.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
+use rmcp::RoleServer;
 use rmcp::model::{
     CallToolResponse, CancelTaskParams, GetTaskParams, GetTaskResult, UpdateTaskParams,
 };
+use rmcp::service::Peer;
 
 use super::UpstreamPool;
 use super::relay::RelayCachedConnection;
 
 const TASK_ROUTE_IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const TASK_ROUTE_MAX_ENTRIES: usize = 4096;
+const TASK_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 static TASK_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct TaskRoute {
@@ -75,10 +81,11 @@ impl UpstreamPool {
 
         let gateway_task_id = mint_task_handle();
         created.task.task_id = gateway_task_id.clone();
-        connection
+        let pending = connection
             .routes
             .register_task_id(&native_task_id, &gateway_task_id)
             .await;
+        connection.flush_task_status_notifications(pending).await;
         let mut routes = self.task_routes.write().await;
         prune_task_routes(&mut routes);
         routes.insert(
@@ -106,6 +113,7 @@ impl UpstreamPool {
         &self,
         mut params: GetTaskParams,
         caller_subject: Option<&str>,
+        downstream: Peer<RoleServer>,
     ) -> Result<GetTaskResult, String> {
         let gateway_task_id = params.task_id.clone();
         let (peer, native_task_id, upstream_name) = {
@@ -115,6 +123,7 @@ impl UpstreamPool {
                 .get_mut(&gateway_task_id)
                 .ok_or_else(task_not_found)?;
             Self::authorize_task_route(route, caller_subject)?;
+            route.connection.rebind_downstream(downstream).await;
             route.last_used = Instant::now();
             (
                 route.connection.peer.clone(),
@@ -136,23 +145,40 @@ impl UpstreamPool {
         mut params: UpdateTaskParams,
         caller_subject: Option<&str>,
         gateway_task_id: &str,
+        downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
-        let (peer, native_task_id, upstream_name) = {
+        let (peer, native_task_id, upstream_name, relay_routes) = {
             let mut routes = self.task_routes.write().await;
             prune_task_routes(&mut routes);
             let route = routes.get_mut(gateway_task_id).ok_or_else(task_not_found)?;
             Self::authorize_task_route(route, caller_subject)?;
+            route.connection.rebind_downstream(downstream).await;
             route.last_used = Instant::now();
             (
                 route.connection.peer.clone(),
                 route.native_task_id.clone(),
                 route.upstream_name.clone(),
+                Arc::clone(&route.connection.routes),
             )
         };
+        let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
         peer.update_task(params)
             .await
-            .map_err(|error| format!("upstream `{upstream_name}` tasks/update failed: {error}"))
+            .map_err(|error| format!("upstream `{upstream_name}` tasks/update failed: {error}"))?;
+        let delivered = relay_routes
+            .wait_for_task_notification_after(
+                notification_sequence,
+                TASK_NOTIFICATION_DELIVERY_GRACE,
+            )
+            .await;
+        tracing::warn!(
+            upstream = %upstream_name,
+            gateway_task_id,
+            delivered,
+            "DIAGNOSTIC task update notification delivery barrier finished"
+        );
+        Ok(())
     }
 
     pub async fn cancel_task_routed(
@@ -160,23 +186,40 @@ impl UpstreamPool {
         mut params: CancelTaskParams,
         caller_subject: Option<&str>,
         gateway_task_id: &str,
+        downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
-        let (peer, native_task_id, upstream_name) = {
+        let (peer, native_task_id, upstream_name, relay_routes) = {
             let mut routes = self.task_routes.write().await;
             prune_task_routes(&mut routes);
             let route = routes.get_mut(gateway_task_id).ok_or_else(task_not_found)?;
             Self::authorize_task_route(route, caller_subject)?;
+            route.connection.rebind_downstream(downstream).await;
             route.last_used = Instant::now();
             (
                 route.connection.peer.clone(),
                 route.native_task_id.clone(),
                 route.upstream_name.clone(),
+                Arc::clone(&route.connection.routes),
             )
         };
+        let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
         peer.cancel_task(params)
             .await
-            .map_err(|error| format!("upstream `{upstream_name}` tasks/cancel failed: {error}"))
+            .map_err(|error| format!("upstream `{upstream_name}` tasks/cancel failed: {error}"))?;
+        let delivered = relay_routes
+            .wait_for_task_notification_after(
+                notification_sequence,
+                TASK_NOTIFICATION_DELIVERY_GRACE,
+            )
+            .await;
+        tracing::warn!(
+            upstream = %upstream_name,
+            gateway_task_id,
+            delivered,
+            "DIAGNOSTIC task cancel notification delivery barrier finished"
+        );
+        Ok(())
     }
 }
 
@@ -334,6 +377,7 @@ mod tests {
             peer,
             capability_fingerprint: capability_fingerprint(&capabilities),
             routes,
+            cancellation_sender: None,
             last_used: Instant::now(),
         };
 
@@ -357,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn routed_task_lifecycle_uses_gateway_handle_and_native_upstream_id() {
-        let (pool, server, _downstream, relay_key) = task_pool().await;
+        let (pool, server, downstream, relay_key) = task_pool().await;
 
         let registered = pool
             .register_task_response(&relay_key, Some("alice"), create_task_response())
@@ -370,12 +414,20 @@ mod tests {
         assert!(gateway_task_id.starts_with("labby-task-"));
 
         let denied = pool
-            .get_task_routed(GetTaskParams::new(&gateway_task_id), Some("bob"))
+            .get_task_routed(
+                GetTaskParams::new(&gateway_task_id),
+                Some("bob"),
+                downstream.peer().clone(),
+            )
             .await;
         assert!(denied.is_err(), "task handles must remain subject-bound");
 
         let task = pool
-            .get_task_routed(GetTaskParams::new(&gateway_task_id), Some("alice"))
+            .get_task_routed(
+                GetTaskParams::new(&gateway_task_id),
+                Some("alice"),
+                downstream.peer().clone(),
+            )
             .await
             .expect("owner polls task");
         assert_eq!(task.task.task.task_id, gateway_task_id);
@@ -388,6 +440,7 @@ mod tests {
             UpdateTaskParams::new(&gateway_task_id, InputResponses::new()),
             Some("alice"),
             &gateway_task_id,
+            downstream.peer().clone(),
         )
         .await
         .expect("owner updates task");
@@ -395,6 +448,7 @@ mod tests {
             CancelTaskParams::new(&gateway_task_id),
             Some("alice"),
             &gateway_task_id,
+            downstream.peer().clone(),
         )
         .await
         .expect("owner cancels task");

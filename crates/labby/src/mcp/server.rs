@@ -4,28 +4,30 @@
 //! can share the same handler logic.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
 
 use axum::http;
+use dashmap::DashMap;
+use labby_gateway::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY};
 #[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, CompleteRequestParams,
-    CompleteResult, DiscoverResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams,
-    GetTaskResult, InitializeRequestParams, InitializeResult, ListPromptsResult,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
-    ServerInfo, SubscriptionFilter, UpdateTaskParams,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams,
+    CancelledNotificationParam, CompleteRequestParams, CompleteResult, CustomRequest, CustomResult,
+    DiscoverResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams, GetTaskResult,
+    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerInfo,
+    SubscriptionFilter, UpdateTaskParams,
 };
-use rmcp::service::{RequestContext, SubscriptionContext};
+use rmcp::service::{NotificationContext, RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
+use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
-#[cfg(feature = "gateway")]
-use crate::mcp::context::subject_from_extensions;
+use crate::mcp::context::{actor_key_from_extensions, subject_from_extensions};
 use crate::mcp::provenance;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
@@ -37,6 +39,181 @@ use crate::registry::ToolRegistry;
 /// upstream relay cache needs to bind a cached connection to one downstream
 /// agent without ever reusing it across agents.
 static RELAY_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+type ActiveRequestKey = String;
+
+static REQUEST_CANCELLATION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) struct ActiveRequestCancellation {
+    id: u64,
+    token: CancellationToken,
+    signal: tokio::sync::watch::Sender<bool>,
+}
+
+static ACTIVE_REQUEST_CANCELLATIONS: OnceLock<
+    DashMap<ActiveRequestKey, Arc<ActiveRequestCancellation>>,
+> = OnceLock::new();
+
+fn active_request_cancellations()
+-> &'static DashMap<ActiveRequestKey, Arc<ActiveRequestCancellation>> {
+    ACTIVE_REQUEST_CANCELLATIONS.get_or_init(DashMap::new)
+}
+
+#[derive(serde::Deserialize)]
+struct RelayCancellationNotification {
+    token: String,
+}
+
+fn cancel_tracked_request_by_token(token: &str) -> bool {
+    let key = format!("relay:{token}");
+    let Some((_, cancellation)) = active_request_cancellations().remove(&key) else {
+        return false;
+    };
+    tracing::warn!(
+        cancellation_id = cancellation.id,
+        "DIAGNOSTIC cancelling tracked request by relay token"
+    );
+    cancellation.signal.send_replace(true);
+    cancellation.token.cancel();
+    true
+}
+
+fn authenticated_cancellation_scope(extensions: &rmcp::model::Extensions) -> Option<String> {
+    actor_key_from_extensions(extensions)
+        .map(|actor| format!("actor:{actor}"))
+        .or_else(|| subject_from_extensions(extensions).map(|subject| format!("subject:{subject}")))
+}
+
+fn cancellation_token_from_meta(meta: &rmcp::model::NotificationMetaObject) -> Option<&str> {
+    meta.0
+        .0
+        .get(MCP_RELAY_CANCELLATION_TOKEN_META_KEY)
+        .and_then(serde_json::Value::as_str)
+}
+
+fn request_cancellation_key(
+    context: &RequestContext<RoleServer>,
+    relay_session_id: u64,
+) -> ActiveRequestKey {
+    if let Some(token) = context
+        .meta
+        .0
+        .0
+        .get(MCP_RELAY_CANCELLATION_TOKEN_META_KEY)
+        .and_then(serde_json::Value::as_str)
+    {
+        return format!("relay:{token}");
+    }
+
+    authenticated_cancellation_scope(&context.extensions)
+        .map(|scope| format!("{scope}|{}", context.id))
+        .unwrap_or_else(|| format!("session:{relay_session_id}|{}", context.id))
+}
+
+fn notification_cancellation_key(
+    notification: &CancelledNotificationParam,
+    context: &NotificationContext<RoleServer>,
+    relay_session_id: u64,
+) -> Option<ActiveRequestKey> {
+    let token = notification
+        .meta
+        .as_ref()
+        .and_then(cancellation_token_from_meta)
+        .or_else(|| cancellation_token_from_meta(&context.meta))
+        .or_else(|| {
+            context
+                .extensions
+                .get::<rmcp::model::NotificationMetaObject>()
+                .and_then(cancellation_token_from_meta)
+        });
+    if let Some(token) = token {
+        return Some(format!("relay:{token}"));
+    }
+
+    let request_id = notification.request_id.as_ref()?;
+    Some(
+        authenticated_cancellation_scope(&context.extensions)
+            .map(|scope| format!("{scope}|{request_id}"))
+            .unwrap_or_else(|| format!("session:{relay_session_id}|{request_id}")),
+    )
+}
+
+#[derive(Clone)]
+pub(crate) struct LabRequestCancellation(Arc<ActiveRequestCancellation>);
+
+impl LabRequestCancellation {
+    pub(crate) fn token(&self) -> CancellationToken {
+        self.0.token.clone()
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.0.signal.subscribe()
+    }
+}
+
+struct ActiveRequestCancellationGuard {
+    key: Option<ActiveRequestKey>,
+    cancellation: Arc<ActiveRequestCancellation>,
+}
+
+impl ActiveRequestCancellationGuard {
+    fn cancellation(&self) -> Arc<ActiveRequestCancellation> {
+        Arc::clone(&self.cancellation)
+    }
+}
+
+impl Drop for ActiveRequestCancellationGuard {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            active_request_cancellations().remove(&key);
+        }
+    }
+}
+
+fn track_request_cancellation(
+    context: &RequestContext<RoleServer>,
+    relay_session_id: u64,
+) -> ActiveRequestCancellationGuard {
+    let key = request_cancellation_key(context, relay_session_id);
+    let (signal, _) = tokio::sync::watch::channel(false);
+    let cancellation = Arc::new(ActiveRequestCancellation {
+        id: REQUEST_CANCELLATION_COUNTER.fetch_add(1, Ordering::Relaxed),
+        token: CancellationToken::new(),
+        signal,
+    });
+    active_request_cancellations().insert(key.clone(), Arc::clone(&cancellation));
+    ActiveRequestCancellationGuard {
+        key: Some(key),
+        cancellation,
+    }
+}
+
+fn cancel_tracked_request(
+    notification: &CancelledNotificationParam,
+    context: &NotificationContext<RoleServer>,
+    relay_session_id: u64,
+) -> bool {
+    let key = notification_cancellation_key(notification, context, relay_session_id);
+    tracing::warn!(request_id = ?notification.request_id, cancellation_key = ?key, active_request_count = active_request_cancellations().len(), "DIAGNOSTIC notification cancellation key");
+    let Some(key) = key else {
+        return false;
+    };
+    let Some((_, cancellation)) = active_request_cancellations().remove(&key) else {
+        return false;
+    };
+    tracing::warn!(
+        cancellation_id = cancellation.id,
+        process_id = std::process::id(),
+        "DIAGNOSTIC cancelling tracked request by MCP notification"
+    );
+    cancellation.signal.send_replace(true);
+    cancellation.token.cancel();
+    true
+}
 
 /// Mint the next unique relay-session id. Called once per `LabMcpServer`.
 pub(crate) fn next_relay_session_id() -> u64 {
@@ -209,18 +386,62 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts_list_changed()
             .enable_completions();
         #[cfg(feature = "gateway")]
+        let builder = builder.enable_extensions_with(mcp_extensions());
+        #[cfg(feature = "gateway")]
         let builder = if gateway_manager_configured {
-            builder.enable_tasks()
+            builder.enable_resources_subscribe().enable_tasks()
         } else {
             builder
         };
         #[cfg(feature = "gateway")]
-        let capabilities = builder.enable_extensions_with(mcp_extensions()).build();
+        let capabilities = builder.build();
         #[cfg(not(feature = "gateway"))]
         let capabilities = builder.build();
         let mut info = ServerInfo::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
         info
+    }
+
+    async fn on_cancelled(
+        &self,
+        notification: CancelledNotificationParam,
+        context: NotificationContext<RoleServer>,
+    ) {
+        let request_id = notification.request_id.clone();
+        let correlated = cancel_tracked_request(&notification, &context, self.relay_session_id);
+        tracing::debug!(
+            surface = "mcp",
+            service = "labby",
+            action = "request.cancel",
+            ?request_id,
+            correlated,
+            "processed MCP cancellation notification"
+        );
+    }
+
+    async fn on_custom_request(
+        &self,
+        request: CustomRequest,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CustomResult, ErrorData> {
+        if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                request.method,
+                None,
+            ));
+        }
+
+        let params = request
+            .params_as::<RelayCancellationNotification>()
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
+            .ok_or_else(|| {
+                ErrorData::invalid_params("Labby relay cancellation request omitted params", None)
+            })?;
+        let correlated = cancel_tracked_request_by_token(&params.token);
+        Ok(CustomResult::new(serde_json::json!({
+            "cancelled": correlated,
+        })))
     }
 
     async fn discover(
@@ -332,9 +553,11 @@ impl ServerHandler for LabMcpServer {
 
     async fn complete(
         &self,
-        request: CompleteRequestParams,
+        mut request: CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
+        request.meta = Some(context.meta.clone());
         Ok(provenance::stamp_complete_result(
             self.complete_impl(request, context).await?,
         ))
@@ -345,6 +568,7 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_prompts_result(
             self.list_prompts_impl(request, context).await?,
         ))
@@ -352,9 +576,11 @@ impl ServerHandler for LabMcpServer {
 
     async fn get_prompt(
         &self,
-        request: GetPromptRequestParams,
+        mut request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
+        request.meta = Some(context.meta.clone());
         Ok(provenance::stamp_get_prompt_response(
             self.get_prompt_impl(request, context).await?,
         ))
@@ -365,6 +591,7 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_resources_result(
             self.list_resources_impl(request, context).await?,
         ))
@@ -375,6 +602,7 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_resource_templates_result(
             self.list_resource_templates_impl(request, context).await?,
         ))
@@ -382,9 +610,11 @@ impl ServerHandler for LabMcpServer {
 
     async fn read_resource(
         &self,
-        request: ReadResourceRequestParams,
+        mut request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
+        request.meta = Some(context.meta.clone());
         let response = match self.read_resource_impl(request, context).await? {
             ReadResourceResponse::Complete(result) => result
                 .with_ttl_ms(0)
@@ -400,6 +630,7 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_tools_result(
             self.list_tools_impl(request, context).await?,
         ))
@@ -407,9 +638,17 @@ impl ServerHandler for LabMcpServer {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
+        mut request: CallToolRequestParams,
+        mut context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
+        context
+            .extensions
+            .insert(LabRequestCancellation(cancellation_guard.cancellation()));
+        // rmcp keeps deserialized wire metadata in RequestContext.extensions/meta
+        // and intentionally leaves the typed params field empty. Restore the
+        // canonical metadata before handing the envelope to proxy routing.
+        request.meta = Some(context.meta.clone());
         Ok(provenance::stamp_call_tool_response(
             self.call_tool_response_impl(request, context).await?,
         ))
@@ -420,10 +659,15 @@ impl ServerHandler for LabMcpServer {
         request: GetTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             let result = pool
-                .get_task_routed(request, self.request_subject(&context))
+                .get_task_routed(
+                    request,
+                    self.request_subject(&context),
+                    context.peer.clone(),
+                )
                 .await
                 .map_err(|message| {
                     if message == "task not found" {
@@ -442,11 +686,17 @@ impl ServerHandler for LabMcpServer {
         request: UpdateTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             return pool
-                .update_task_routed(request, self.request_subject(&context), &gateway_task_id)
+                .update_task_routed(
+                    request,
+                    self.request_subject(&context),
+                    &gateway_task_id,
+                    context.peer.clone(),
+                )
                 .await
                 .map_err(|message| {
                     if message == "task not found" {
@@ -464,11 +714,17 @@ impl ServerHandler for LabMcpServer {
         request: CancelTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             return pool
-                .cancel_task_routed(request, self.request_subject(&context), &gateway_task_id)
+                .cancel_task_routed(
+                    request,
+                    self.request_subject(&context),
+                    &gateway_task_id,
+                    context.peer.clone(),
+                )
                 .await
                 .map_err(|message| {
                     if message == "task not found" {

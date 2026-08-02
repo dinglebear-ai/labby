@@ -9,26 +9,34 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, ensure};
 use labby::config::{GatewayPreferences, LabConfig, UpstreamConfig};
 use rmcp::model::{
-    ArgumentInfo, CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities,
-    ClientInfo, CompleteRequestParams, CompleteResult, CompletionInfo, ContentBlock, ElicitRequest,
+    ArgumentInfo, CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult,
+    CancelTaskParams, ClientCapabilities, ClientInfo, ClientRequest, CompleteRequestParams,
+    CompleteResult, CompletionInfo, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
     ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams, GetPromptResponse,
-    GetPromptResult, Implementation, InputRequest, InputRequests, InputRequiredResult,
-    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-    MetaObject, PaginatedRequestParams, PrimitiveSchemaDefinition, Prompt, PromptMessage,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    Reference, Resource, ResourceContents, ResourceTemplate, Role, ServerCapabilities, ServerInfo,
-    Tool,
+    GetPromptResult, GetTaskParams, GetTaskResult, Implementation, InputRequest, InputRequests,
+    InputRequiredResult, InputResponses, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, MetaObject, PaginatedRequestParams,
+    PrimitiveSchemaDefinition, ProgressNotificationParam, Prompt, PromptMessage, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Reference, Resource,
+    ResourceContents, ResourceTemplate, Role, ServerCapabilities, ServerInfo, ServerNotification,
+    ServerResult, SubscriptionFilter, Task, TaskPayload, TaskStatus, TaskStatusNotification,
+    TaskStatusNotificationParams, Tool, UpdateTaskParams,
 };
-use rmcp::service::{ClientLifecycleMode, ClientServiceExt, Peer, RequestContext};
+use rmcp::service::{
+    ClientLifecycleMode, ClientServiceExt, NotificationContext, Peer, PeerRequestOptions,
+    RequestContext, SubscriptionContext,
+};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tokio::process::Command;
+use tokio::sync::{Mutex, RwLock};
 
 const TOOL_COUNT: usize = 75;
 const PROMPT_COUNT: usize = 70;
@@ -36,9 +44,40 @@ const RESOURCE_COUNT: usize = 70;
 const TEMPLATE_COUNT: usize = 70;
 const SERVER_INFO_KEY: &str = "io.modelcontextprotocol/serverInfo";
 const UPSTREAM_SERVER_INFO_KEY: &str = "ai.dinglebear.labby/upstreamServerInfo";
+const NATIVE_RESOURCE_URI: &str = "fixture://resource/069";
+const TASK_CREATED_AT: &str = "2026-08-01T00:00:00Z";
 
 #[derive(Clone, Default)]
-struct LeafServer;
+struct LeafServer {
+    tasks: Arc<RwLock<BTreeMap<String, DetailedTask>>>,
+    next_task_id: Arc<AtomicUsize>,
+}
+
+impl LeafServer {
+    fn marker_path(name: &str) -> Option<PathBuf> {
+        std::env::var_os("MULTIHOP_MARKER_DIR")
+            .map(PathBuf::from)
+            .map(|dir| dir.join(name))
+    }
+
+    fn task(task_id: impl Into<String>, payload: TaskPayload, updated_at: &str) -> DetailedTask {
+        DetailedTask::new(
+            Task::new(task_id, payload.status(), TASK_CREATED_AT, updated_at)
+                .with_poll_interval_ms(10),
+            payload,
+        )
+    }
+
+    async fn publish_task(
+        peer: Peer<RoleServer>,
+        task: DetailedTask,
+    ) -> Result<(), rmcp::service::ServiceError> {
+        peer.send_notification(ServerNotification::TaskStatusNotification(
+            TaskStatusNotification::new(TaskStatusNotificationParams::new(task)),
+        ))
+        .await
+    }
+}
 
 fn leaf_meta() -> MetaObject {
     let mut meta = MetaObject::default();
@@ -86,9 +125,14 @@ impl ServerHandler for LeafServer {
         let mut info = ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
+                .enable_tool_list_changed()
                 .enable_resources()
+                .enable_resources_list_changed()
+                .enable_resources_subscribe()
                 .enable_prompts()
+                .enable_prompts_list_changed()
                 .enable_completions()
+                .enable_tasks()
                 .build(),
         );
         info.server_info = Implementation::new("labby-conformance-leaf", "1.0.0");
@@ -101,34 +145,216 @@ impl ServerHandler for LeafServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let mut tools = (0..TOOL_COUNT).map(leaf_tool).collect::<Vec<_>>();
-        tools.push(Tool::new(
-            "needs_input",
-            "Return a first-class MRTR input_required result",
-            Arc::new(Map::new()),
-        ));
+        tools.extend([
+            Tool::new(
+                "needs_input",
+                "Return a first-class MRTR input_required result",
+                Arc::new(Map::new()),
+            ),
+            Tool::new(
+                "task_lifecycle",
+                "Create a task that can be polled, updated, cancelled, and observed",
+                Arc::new(Map::new()),
+            ),
+            Tool::new(
+                "progress",
+                "Emit request-scoped progress notifications",
+                Arc::new(Map::new()),
+            ),
+            Tool::new(
+                "cancellable",
+                "Wait until downstream cancellation reaches the leaf",
+                Arc::new(Map::new()),
+            ),
+        ]);
         Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        if request.name == "needs_input" {
-            return Ok(input_required().into());
+        match request.name.as_ref() {
+            "needs_input" => Ok(input_required().into()),
+            "task_lifecycle" => {
+                let sequence = self.next_task_id.fetch_add(1, Ordering::SeqCst) + 1;
+                let task_id = format!("leaf-task-{sequence}");
+                let task = Self::task(&task_id, TaskPayload::Working, TASK_CREATED_AT);
+                self.tasks
+                    .write()
+                    .await
+                    .insert(task_id.clone(), task.clone());
+
+                Self::publish_task(context.peer.clone(), task)
+                    .await
+                    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+
+                Ok(CreateTaskResult::new(
+                    Task::new(
+                        &task_id,
+                        TaskStatus::Working,
+                        TASK_CREATED_AT,
+                        TASK_CREATED_AT,
+                    )
+                    .with_poll_interval_ms(10),
+                )
+                .with_meta(leaf_meta())
+                .into())
+            }
+            "progress" => {
+                let token = context.meta.get_progress_token().ok_or_else(|| {
+                    ErrorData::invalid_params("progress tool requires a progress token", None)
+                })?;
+                context
+                    .peer
+                    .notify_progress(
+                        ProgressNotificationParam::new(token.clone(), 0.25)
+                            .with_total(1.0)
+                            .with_message("quarter"),
+                    )
+                    .await
+                    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                context
+                    .peer
+                    .notify_progress(
+                        ProgressNotificationParam::new(token, 0.75)
+                            .with_total(1.0)
+                            .with_message("three-quarters"),
+                    )
+                    .await
+                    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                if let Some(path) = Self::marker_path("progress-emitted") {
+                    std::fs::write(path, b"emitted")
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                }
+                Ok(CallToolResult::success(vec![ContentBlock::text("progress-complete")]).into())
+            }
+            "cancellable" => {
+                if let Some(path) = Self::marker_path("cancellation-started") {
+                    std::fs::write(path, b"started")
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                }
+                context.ct.cancelled().await;
+                if let Some(path) = Self::marker_path("cancellation-observed") {
+                    std::fs::write(path, b"cancelled")
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                }
+                Err(ErrorData::internal_error("cancelled by downstream", None))
+            }
+            _ => {
+                let value = request
+                    .arguments
+                    .as_ref()
+                    .and_then(|arguments| arguments.get("value"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("missing");
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "leaf:{}:{value}",
+                    request.name
+                ))])
+                .with_meta(Some(leaf_meta()))
+                .into())
+            }
         }
-        let value = request
-            .arguments
-            .as_ref()
-            .and_then(|arguments| arguments.get("value"))
-            .and_then(Value::as_str)
-            .unwrap_or("missing");
-        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-            "leaf:{}:{value}",
-            request.name
-        ))])
-        .with_meta(Some(leaf_meta()))
-        .into())
+    }
+
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, ErrorData> {
+        let task = self
+            .tasks
+            .read()
+            .await
+            .get(&request.task_id)
+            .cloned()
+            .ok_or_else(|| ErrorData::invalid_params("task not found", None))?;
+        Ok(GetTaskResult::new(task))
+    }
+
+    async fn update_task(
+        &self,
+        request: UpdateTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let completed = Self::task(
+            &request.task_id,
+            TaskPayload::Completed {
+                result: Map::from_iter([("updated".to_string(), json!(true))]),
+            },
+            "2026-08-01T00:00:02Z",
+        );
+        let mut tasks = self.tasks.write().await;
+        if !tasks.contains_key(&request.task_id) {
+            return Err(ErrorData::invalid_params("task not found", None));
+        }
+        tasks.insert(request.task_id.clone(), completed.clone());
+        drop(tasks);
+        Self::publish_task(context.peer, completed)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        if let Some(path) = Self::marker_path("task-update-notification-emitted") {
+            std::fs::write(path, b"emitted")
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        }
+        Ok(())
+    }
+
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let cancelled = Self::task(
+            &request.task_id,
+            TaskPayload::Cancelled,
+            "2026-08-01T00:00:03Z",
+        );
+        let mut tasks = self.tasks.write().await;
+        if !tasks.contains_key(&request.task_id) {
+            return Err(ErrorData::invalid_params("task not found", None));
+        }
+        tasks.insert(request.task_id.clone(), cancelled.clone());
+        drop(tasks);
+        Self::publish_task(context.peer, cancelled)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(())
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        Some(requested.clone())
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        let sink = context.sink().clone();
+        let trigger = Self::marker_path("emit-subscriptions");
+        let mut emitted = false;
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                    if !emitted && trigger.as_ref().is_some_and(|path| path.exists()) {
+                        sink.notify_tool_list_changed().await
+                            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                        sink.notify_prompt_list_changed().await
+                            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                        sink.notify_resource_list_changed().await
+                            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                        sink.notify_resource_updated(NATIVE_RESOURCE_URI).await
+                            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                        emitted = true;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn list_prompts(
@@ -220,8 +446,16 @@ impl ServerHandler for LeafServer {
     }
 }
 
+#[derive(Default)]
+struct DriverEvents {
+    progress: Mutex<Vec<ProgressNotificationParam>>,
+    tasks: Mutex<Vec<TaskStatusNotificationParams>>,
+}
+
 #[derive(Clone, Default)]
-struct DriverClient;
+struct DriverClient {
+    events: Arc<DriverEvents>,
+}
 
 impl ClientHandler for DriverClient {
     fn get_info(&self) -> ClientInfo {
@@ -232,6 +466,22 @@ impl ClientHandler for DriverClient {
             .enable_tasks()
             .build();
         info
+    }
+
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        self.events.progress.lock().await.push(params);
+    }
+
+    async fn on_task_status(
+        &self,
+        params: TaskStatusNotificationParams,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        self.events.tasks.lock().await.push(params);
     }
 }
 
@@ -377,6 +627,74 @@ async fn reload_http_gateway(base_url: &str, token: &str) -> Result<()> {
     Ok(())
 }
 
+async fn wait_for_marker(path: &Path) -> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .with_context(|| format!("timed out waiting for marker {}", path.display()))?;
+    Ok(())
+}
+
+async fn wait_for_progress(
+    events: &DriverEvents,
+    count: usize,
+) -> Result<Vec<ProgressNotificationParam>> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let values = events.progress.lock().await.clone();
+            if values.len() >= count {
+                break values;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("timed out waiting for progress notifications")
+}
+
+async fn wait_for_task_status(
+    events: &DriverEvents,
+    task_id: &str,
+    status: TaskStatus,
+) -> Result<TaskStatusNotificationParams> {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(value) = events
+                .tasks
+                .lock()
+                .await
+                .iter()
+                .find(|value| value.task.task.task_id == task_id && value.task.status() == status)
+                .cloned()
+            {
+                break value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let observed = events
+                .tasks
+                .lock()
+                .await
+                .iter()
+                .map(|value| (value.task.task.task_id.clone(), value.task.status()))
+                .collect::<Vec<_>>();
+            Err(error).with_context(|| {
+                format!(
+                    "timed out waiting for {status:?} task notification for {task_id}; observed {observed:?}"
+                )
+            })
+        }
+    }
+}
+
 fn nested_name<'a, T>(
     items: &'a [T],
     name: impl Fn(&'a T) -> &'a str,
@@ -394,8 +712,10 @@ async fn run_driver() -> Result<()> {
     let temp = TempDir::new()?;
     let root_home = temp.path().join("root-home");
     let middle_home = temp.path().join("middle-home");
+    let marker_dir = temp.path().join("markers");
     std::fs::create_dir_all(&root_home)?;
     std::fs::create_dir_all(&middle_home)?;
+    std::fs::create_dir_all(&marker_dir)?;
 
     let example = std::env::current_exe()?;
     let debug_dir = example
@@ -415,7 +735,10 @@ async fn run_driver() -> Result<()> {
             "leaf",
             example.clone(),
             vec!["fixture".to_string()],
-            BTreeMap::new(),
+            BTreeMap::from([(
+                "MULTIHOP_MARKER_DIR".to_string(),
+                marker_dir.display().to_string(),
+            )]),
         ),
     )?;
 
@@ -435,7 +758,7 @@ async fn run_driver() -> Result<()> {
         .env("LABBY_MCP_HTTP_TOKEN", middle_token)
         .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
         .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
-        .env("LABBY_LOG", "labby=warn,labby_gateway=warn")
+        .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
@@ -462,9 +785,11 @@ async fn run_driver() -> Result<()> {
             .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
             .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
-            .env("LABBY_LOG", "labby=warn,labby_gateway=warn");
+            .env("LABBY_LOG", "labby=debug,labby_gateway=debug");
     }))?;
-    let service = DriverClient
+    let driver = DriverClient::default();
+    let events = Arc::clone(&driver.events);
+    let service = driver
         .serve_with_lifecycle(
             transport,
             ClientLifecycleMode::Discover {
@@ -481,6 +806,18 @@ async fn run_driver() -> Result<()> {
             .as_ref()
             .is_some_and(|info| info.name == "labby"),
         "root discovery must identify Labby"
+    );
+    ensure!(
+        peer_info.capabilities.supports_tasks(),
+        "root discovery must advertise tasks"
+    );
+    ensure!(
+        peer_info
+            .capabilities
+            .resources
+            .as_ref()
+            .is_some_and(|resources| resources.subscribe == Some(true)),
+        "root discovery must advertise resource subscriptions"
     );
 
     // Raw catalog listing intentionally never cold-connects upstreams. Middle
@@ -514,6 +851,10 @@ async fn run_driver() -> Result<()> {
     let echo_name = nested_name(&tools, |tool| tool.name.as_ref(), "echo_074")?.to_string();
     let needs_input_name =
         nested_name(&tools, |tool| tool.name.as_ref(), "needs_input")?.to_string();
+    let task_name = nested_name(&tools, |tool| tool.name.as_ref(), "task_lifecycle")?.to_string();
+    let progress_name = nested_name(&tools, |tool| tool.name.as_ref(), "progress")?.to_string();
+    let cancellable_name =
+        nested_name(&tools, |tool| tool.name.as_ref(), "cancellable")?.to_string();
 
     let mut echo = CallToolRequestParams::new(echo_name);
     echo.arguments = Some(Map::from_iter([(
@@ -539,6 +880,90 @@ async fn run_driver() -> Result<()> {
         .call_tool_once(CallToolRequestParams::new(needs_input_name))
         .await?;
     ensure!(matches!(input_required, CallToolResponse::InputRequired(_)));
+
+    let progress_request = ClientRequest::CallToolRequest(CallToolRequest::new(
+        CallToolRequestParams::new(progress_name),
+    ));
+    let progress_handle = peer
+        .send_cancellable_request(progress_request, PeerRequestOptions::no_options())
+        .await?;
+    let progress_token = progress_handle.progress_token.clone();
+    let ServerResult::CallToolResult(progress_result) = progress_handle.await_response().await?
+    else {
+        anyhow::bail!("nested progress tool did not complete");
+    };
+    ensure!(progress_result.is_error != Some(true));
+    wait_for_marker(&marker_dir.join("progress-emitted")).await?;
+    let progress = wait_for_progress(events.as_ref(), 2).await?;
+    ensure!(
+        progress
+            .iter()
+            .all(|value| value.progress_token == progress_token)
+    );
+    ensure!(
+        progress
+            .iter()
+            .any(|value| value.message.as_deref() == Some("quarter"))
+    );
+    ensure!(
+        progress
+            .iter()
+            .any(|value| value.message.as_deref() == Some("three-quarters"))
+    );
+
+    let CallToolResponse::Task(created) = peer
+        .call_tool_once(CallToolRequestParams::new(task_name.clone()))
+        .await?
+    else {
+        anyhow::bail!("nested task tool did not return a task");
+    };
+    let gateway_task_id = created.task.task_id.clone();
+    ensure!(!gateway_task_id.starts_with("leaf-task-"));
+    wait_for_task_status(events.as_ref(), &gateway_task_id, TaskStatus::Working).await?;
+    let working = peer.get_task(GetTaskParams::new(&gateway_task_id)).await?;
+    ensure!(working.task.task.task_id == gateway_task_id);
+    ensure!(working.task.status() == TaskStatus::Working);
+
+    peer.update_task(UpdateTaskParams::new(
+        &gateway_task_id,
+        InputResponses::new(),
+    ))
+    .await?;
+    wait_for_marker(&marker_dir.join("task-update-notification-emitted")).await?;
+    wait_for_task_status(events.as_ref(), &gateway_task_id, TaskStatus::Completed).await?;
+    let completed = peer.get_task(GetTaskParams::new(&gateway_task_id)).await?;
+    ensure!(completed.task.task.task_id == gateway_task_id);
+    ensure!(completed.task.status() == TaskStatus::Completed);
+
+    let CallToolResponse::Task(cancel_created) = peer
+        .call_tool_once(CallToolRequestParams::new(task_name))
+        .await?
+    else {
+        anyhow::bail!("second nested task tool did not return a task");
+    };
+    let cancelled_task_id = cancel_created.task.task_id.clone();
+    peer.cancel_task(CancelTaskParams::new(&cancelled_task_id))
+        .await?;
+    wait_for_task_status(events.as_ref(), &cancelled_task_id, TaskStatus::Cancelled).await?;
+    let cancelled = peer
+        .get_task(GetTaskParams::new(&cancelled_task_id))
+        .await?;
+    ensure!(cancelled.task.task.task_id == cancelled_task_id);
+    ensure!(cancelled.task.status() == TaskStatus::Cancelled);
+
+    let cancellation_started = marker_dir.join("cancellation-started");
+    let cancellation_observed = marker_dir.join("cancellation-observed");
+    let cancellation_request = ClientRequest::CallToolRequest(CallToolRequest::new(
+        CallToolRequestParams::new(cancellable_name),
+    ));
+    let cancellation_handle = peer
+        .send_cancellable_request(cancellation_request, PeerRequestOptions::no_options())
+        .await?;
+    wait_for_marker(&cancellation_started).await?;
+    cancellation_handle
+        .cancel(Some("multi-hop cancellation check".to_string()))
+        .await?;
+    wait_for_marker(&cancellation_observed).await?;
 
     let prompts = peer.list_all_prompts().await?;
     ensure!(
@@ -578,7 +1003,7 @@ async fn run_driver() -> Result<()> {
         .map(|resource| resource.uri.clone())
         .context("nested resource_069")?;
     let ReadResourceResponse::Complete(resource) = peer
-        .read_resource_once(ReadResourceRequestParams::new(resource_uri))
+        .read_resource_once(ReadResourceRequestParams::new(resource_uri.clone()))
         .await?
     else {
         anyhow::bail!("nested resource did not complete");
@@ -590,6 +1015,53 @@ async fn run_driver() -> Result<()> {
             .as_ref()
             .is_some_and(|meta| meta.0[SERVER_INFO_KEY]["name"] == json!("labby"))
     );
+
+    let requested_notifications = SubscriptionFilter::builder()
+        .tools_list_changed()
+        .prompts_list_changed()
+        .resources_list_changed()
+        .resource_subscription(resource_uri.clone())
+        .build();
+    let mut subscription = peer.listen(requested_notifications).await?;
+    ensure!(subscription.acknowledged().tools_list_changed == Some(true));
+    ensure!(subscription.acknowledged().prompts_list_changed == Some(true));
+    ensure!(subscription.acknowledged().resources_list_changed == Some(true));
+    ensure!(
+        subscription
+            .acknowledged()
+            .resource_subscriptions
+            .as_ref()
+            .is_some_and(|uris| uris == &[resource_uri.clone()])
+    );
+
+    std::fs::write(marker_dir.join("emit-subscriptions"), b"emit")?;
+    let mut tool_changed = false;
+    let mut prompt_changed = false;
+    let mut resource_list_changed = false;
+    let mut resource_updated = false;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !(tool_changed && prompt_changed && resource_list_changed && resource_updated) {
+            let Some(notification) = subscription.next().await? else {
+                anyhow::bail!("subscription ended before all notifications arrived");
+            };
+            match notification {
+                ServerNotification::ToolListChangedNotification(_) => tool_changed = true,
+                ServerNotification::PromptListChangedNotification(_) => prompt_changed = true,
+                ServerNotification::ResourceListChangedNotification(_) => {
+                    resource_list_changed = true;
+                }
+                ServerNotification::ResourceUpdatedNotification(notification) => {
+                    ensure!(notification.params.uri == resource_uri);
+                    resource_updated = true;
+                }
+                _ => {}
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("timed out waiting for multi-hop subscription notifications")??;
+    subscription.cancel().await?;
 
     let templates = peer.list_all_resource_templates().await?;
     ensure!(
@@ -628,7 +1100,7 @@ async fn run_driver() -> Result<()> {
 async fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("fixture") => {
-            LeafServer
+            LeafServer::default()
                 .serve(rmcp::transport::stdio())
                 .await?
                 .waiting()
