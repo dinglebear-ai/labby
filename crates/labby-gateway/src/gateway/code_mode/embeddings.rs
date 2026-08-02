@@ -338,7 +338,11 @@ mod tests {
             {
                 return;
             }
-            let chunk = vec![b'1'; 64 * 1024];
+            // Use a few large writes so the test crosses the memory cap well
+            // inside the request timeout even on a heavily loaded CI runner.
+            // The behavior under test is read-until-close cap enforcement, not
+            // scheduler throughput across hundreds of tiny socket writes.
+            let chunk = vec![b'1'; 2 * 1024 * 1024];
             for _ in 0..(TEI_MAX_RESPONSE_BYTES / chunk.len() + 2) {
                 if socket.write_all(&chunk).await.is_err() {
                     // The client aborted the read at the cap — expected.
