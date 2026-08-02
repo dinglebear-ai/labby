@@ -34,7 +34,7 @@ pub struct UpstreamCachedSummary {
 /// Per-upstream timeout for initial discovery (`list_tools`).
 pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Stdio discovery includes process/package-runner/SSH cold start, not just RPC.
-pub(super) const STDIO_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const STDIO_DISCOVERY_TIMEOUT: Duration = Duration::from_mins(1);
 
 pub(super) fn upstream_discovery_timeout(
     config: &UpstreamConfig,
