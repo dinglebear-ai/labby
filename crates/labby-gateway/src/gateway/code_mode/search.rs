@@ -330,11 +330,10 @@ fn normalize_path(path: &Path) -> String {
         .to_string()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn inaccessible_snippet_directory_is_absent_from_fingerprint() {
         use std::os::unix::fs::PermissionsExt;
