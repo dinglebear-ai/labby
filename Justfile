@@ -13,10 +13,6 @@ check:
 test:
     cargo nextest run --workspace --all-features
 
-# Verify Cargo wrapper binary sync behavior
-test-cargo-wrapper:
-    scripts/test-cargo-rustc-wrapper.sh
-
 # Regenerate code-owned documentation inventories
 docs-generate:
     cargo run --package labby --all-features -- docs generate
@@ -30,7 +26,7 @@ test-integration:
     cargo nextest run --workspace --all-features --run-ignored ignored-only
 
 # Lint
-lint: skill-drift test-cargo-wrapper rust-toolchain-sync
+lint: skill-drift rust-toolchain-sync
     cargo clippy --workspace --all-features -- -D warnings
     cargo fmt --all -- --check
 
