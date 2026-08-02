@@ -426,7 +426,7 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 `[workspace.package]` version, shared `[workspace.dependencies]`, and shared
 `[workspace.lints]` (`unsafe_code = "forbid"`, `mod_module_files = "deny"`,
 `disallowed_macros = "deny"`). The MCP SDK is pinned exactly as
-`rmcp = "=3.0.0-beta.2"`.
+`rmcp = "=3.1.0"`.
 
 | Path | Role |
 | --- | --- |

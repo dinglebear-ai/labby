@@ -25,6 +25,16 @@ identifiers were removed. Commit links remain the authoritative historical recor
   configuration, environment, service, action, CLI, API, and OpenAPI inventory
   coverage with drift tests.
 
+## [1.8.6](https://github.com/dinglebear-ai/labby/compare/v1.8.5...v1.8.6) (2026-08-01)
+
+
+### Fixed
+
+* enforce MCP Registry description limit ([#296](https://github.com/dinglebear-ai/labby/issues/296)) ([7754e9e](https://github.com/dinglebear-ai/labby/commit/7754e9ea0215bc12d5a626c77a07b53a8cbcabae))
+* make release trigger contract cross-platform ([#302](https://github.com/dinglebear-ai/labby/issues/302)) ([eff39c7](https://github.com/dinglebear-ai/labby/commit/eff39c79d97c907f6c9956f4711ecab5cd8df62f))
+* publish npm launcher as @dinglebear/labby ([3385d1a](https://github.com/dinglebear-ai/labby/commit/3385d1a07cca063a1669d851a71011d21f4971af))
+* publish npm launcher under dinglebear scope ([#301](https://github.com/dinglebear-ai/labby/issues/301)) ([47daf44](https://github.com/dinglebear-ai/labby/commit/47daf442f02a8a7e70dc410b083472a96f9b715b))
+
 ## [1.8.5](https://github.com/dinglebear-ai/labby/compare/v1.8.4...v1.8.5) (2026-07-30)
 
 

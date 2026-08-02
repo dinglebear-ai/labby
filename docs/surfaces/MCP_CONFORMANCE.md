@@ -40,10 +40,11 @@ a fresh Labby binary, and then runs:
 5. every dated `2026-07-28` client scenario
 6. the complete client extension suite
 
-Reports are written under `target/mcp-conformance/`. Experimental extension
-gaps use the strict
-`conformance/expected-failures-extensions.yaml` baseline. An unexpected
-failure or an expected failure that starts passing both fail CI.
+Reports are written under `target/mcp-conformance/`. Known dated fixture gaps
+use the strict `conformance/expected-failures-dated.yaml` baseline, while
+experimental extension gaps use
+`conformance/expected-failures-extensions.yaml`. An unexpected failure or an
+expected failure that starts passing both fail CI.
 
 ## Labby-Native Multi-Hop Matrix
 
@@ -163,8 +164,9 @@ harness; a durable event-store deployment would be a separate mode.
 The `MCP 2026-07-28 conformance` job is part of `ci-gate`. JavaScript
 dependency installation is serialized before scenarios start. The production
 rmcp dependency and upstream fixture remain explicit pins even when they match;
-adopt version changes together only after the fixture passes the dated suite,
-and review the Labby-native matrix plus extension baseline on every update.
+adopt version changes together only after reviewing the dated fixture baseline,
+and review the Labby-native matrix plus dated and extension baselines on every
+update.
 
 The separate `MCP upstream drift` workflow compares
 `conformance/upstream-baseline.json` with the current specification branch and

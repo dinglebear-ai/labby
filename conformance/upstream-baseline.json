@@ -7,9 +7,9 @@
   },
   "rmcp": {
     "repository": "modelcontextprotocol/rust-sdk",
-    "release_tag": "rmcp-v3.0.0-beta.2",
-    "commit": "14298b72e0b25473ea79d5465fe186e22eb86397",
-    "crate_version": "3.0.0-beta.2"
+    "release_tag": "rmcp-v3.1.0",
+    "commit": "1f9358eddca42d3a510c70ae6446dd6548c7c856",
+    "crate_version": "3.1.0"
   },
   "conformance": {
     "npm_package": "@modelcontextprotocol/conformance",

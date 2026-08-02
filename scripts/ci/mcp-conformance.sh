@@ -48,7 +48,8 @@ else
   output_dir="${repo_root}/${MCP_CONFORMANCE_OUTPUT_DIR}"
 fi
 cargo_target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"
-baseline="${repo_root}/conformance/expected-failures-extensions.yaml"
+dated_baseline="${repo_root}/conformance/expected-failures-dated.yaml"
+extension_baseline="${repo_root}/conformance/expected-failures-extensions.yaml"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/labby-mcp-conformance.XXXXXX")"
 rmcp_target_dir="${CARGO_TARGET_DIR:-${work_dir}/rust-sdk/target}"
 server_pid=""
@@ -278,6 +279,7 @@ fi
   --url "http://127.0.0.1:${MCP_CONFORMANCE_PORT}/mcp" \
   --suite all \
   --spec-version "$MCP_SPEC_VERSION" \
+  --expected-failures "$dated_baseline" \
   -o "${output_dir}/server-dated"
 
 task_scenarios=(
@@ -297,7 +299,7 @@ for scenario in "${task_scenarios[@]}"; do
   "$conformance" server \
     --url "http://127.0.0.1:${MCP_CONFORMANCE_PORT}/mcp" \
     --scenario "$scenario" \
-    --expected-failures "$baseline" \
+    --expected-failures "$extension_baseline" \
     -o "${output_dir}/server-extensions"
 done
 
@@ -310,7 +312,7 @@ done
 "$conformance" client \
   --command "${rmcp_target_dir}/debug/conformance-client" \
   --suite extensions \
-  --expected-failures "$baseline" \
+  --expected-failures "$extension_baseline" \
   -o "${output_dir}/client-extensions"
 
 run_direct_proxy

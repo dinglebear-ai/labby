@@ -20,7 +20,7 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 | Default branch | `main` |
 | Cargo workspace | 11 members, `resolver = "3"`, single `[workspace.package]` version |
 | Edition / MSRV | edition 2024, `rust-version = "1.97.1"`, toolchain pinned to 1.97.1 in `rust-toolchain.toml` |
-| MCP SDK | `rmcp = "=3.0.0-beta.2"` — exact pin in `[workspace.dependencies]`, and the only repo in the fleet on rmcp 3.x. Bumping it is a breaking change across `crates/labby/src/mcp/` and `crates/labby-gateway/`. |
+| MCP SDK | `rmcp = "=3.1.0"` — exact pin in `[workspace.dependencies]`, and the only repo in the fleet on rmcp 3.x. Bumping it is a breaking change across `crates/labby/src/mcp/` and `crates/labby-gateway/`. |
 | Lint enforcement | `[workspace.lints]` is real here: `unsafe_code = "forbid"`, `mod_module_files = "deny"`, `disallowed_macros = "deny"` (see `/clippy.toml` — bans `#[async_trait]`) |
 | Config / secrets | `~/.labby/config.toml` and `~/.labby/.env`; `$LABBY_HOME` overrides the `~/.labby` root |
 | Worktrees | This checkout carries a busy `.worktrees/` (currently 9 active worktrees). Run `git worktree list` before any workspace-level edit, and never assume the main checkout is the only consumer of `target/`. |
