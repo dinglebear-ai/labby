@@ -1,23 +1,26 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-08-02"
 ---
 
 # MCP 2026-07-28 Conformance
 
-Labby targets the `2026-07-28` MCP protocol through
-`rmcp = "=3.1.0"`. The dated protocol suite and experimental extension
-suite are intentionally reported separately: extension results must never
-inflate or reduce the dated-protocol score.
+Labby targets the `2026-07-28` MCP protocol through `rmcp = "=3.1.0"`.
+The gate verifies that production dependency exactly, exercises Labby's real
+authenticated `/mcp` boundary, and runs the pinned upstream rmcp `3.1.0`
+fixture for synthetic dated and extension scenarios. Dated protocol and
+experimental extension results are intentionally reported separately:
+extension results must never inflate or reduce the dated-protocol score.
 
 ## Reproducible Pins
 
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| rmcp | `3.1.0` |
-| rmcp tag commit | `14298b72e0b25473ea79d5465fe186e22eb86397` |
+| Labby rmcp dependency | `3.1.0` |
+| rmcp conformance fixture | `3.1.0` |
+| rmcp fixture tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
 | MCP conformance package | `0.2.0-alpha.9` |
 
 Run the same gate locally with:
@@ -26,21 +29,19 @@ Run the same gate locally with:
 scripts/ci/mcp-conformance.sh
 ```
 
-The script verifies the exact Cargo dependency, resolves the exact upstream
-rmcp tag commit, installs the JavaScript conformance dependency once, and then
-runs:
+The script verifies the exact production Cargo dependency, resolves the exact
+upstream fixture tag commit, installs the JavaScript conformance dependency
+once, and then runs:
 
 1. every dated `2026-07-28` server scenario
 2. every Tasks extension server scenario
 3. every dated `2026-07-28` client scenario
 4. the complete client extension suite
 
-Reports are written under `target/mcp-conformance/`. The dated server suite uses
-`conformance/expected-failures-dated.yaml` for one confirmed upstream rust-sdk
-fixture gap in `server-stateless`; current rust-sdk main still fails the same
-three SEP-2575 checks. Experimental extension gaps use the separate strict
-`conformance/expected-failures-extensions.yaml` baseline. An unexpected failure
-or an expected failure that starts passing both fail CI.
+Reports are written under `target/mcp-conformance/`. Experimental extension
+gaps use the strict
+`conformance/expected-failures-extensions.yaml` baseline. An unexpected
+failure or an expected failure that starts passing both fail CI.
 
 The upstream conformance binaries deliberately exercise the SDK-level
 dispatches for auth, scope step-up, schemas, tools, MRTR, task lifecycle,
@@ -109,7 +110,7 @@ issuer, audience, client, resource, scope, expiry, and one-time `jti`, and mints
 the same audience-restricted Labby access token used by the interactive flow.
 
 The remaining `auth/enterprise-managed-authorization` expected-failure entry is
-specifically the pinned rmcp 3.1.0 **outbound conformance client**, not Labby's
+specifically the pinned rmcp beta.2 **outbound conformance client**, not Labby's
 authorization server. Product-server coverage runs immediately before the
 upstream SDK conformance harness in the same CI job.
 
@@ -124,9 +125,10 @@ different deployment mode, not a prerequisite for stateless conformance.
 ## CI and Maintenance
 
 The `MCP 2026-07-28 conformance` CI job is part of `ci-gate`. Its JavaScript
-dependency installation is serialized before scenarios start. Bump the four
-pins above together and review the scenario list plus both strict baselines on
-every conformance package update.
+dependency installation is serialized before scenarios start. The production
+dependency and upstream fixture remain separate pins even when they use the
+same release. Advance the fixture, its tag commit, and the strict dated and
+extension baselines together after reviewing every scenario change.
 
 The separate `MCP upstream drift` workflow compares
 `conformance/upstream-baseline.json` with the current MCP specification branch

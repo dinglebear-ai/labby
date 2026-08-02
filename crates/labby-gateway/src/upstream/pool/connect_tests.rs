@@ -124,13 +124,13 @@ async fn http_upstream_falls_back_after_transport_rejects_2026_discovery() {
 }
 
 #[derive(Clone, Default)]
-struct ModernDiscoveryResponder {
+struct DiscoveryMetadataResponder {
     discover_requests: Arc<AtomicUsize>,
     initialize_requests: Arc<AtomicUsize>,
     list_tools_requests: Arc<AtomicUsize>,
 }
 
-impl Respond for ModernDiscoveryResponder {
+impl Respond for DiscoveryMetadataResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
         let method = body
@@ -189,8 +189,8 @@ impl Respond for ModernDiscoveryResponder {
                     "id": id,
                     "result": {
                         "tools": [{
-                            "name": "metadata_fallback_echo",
-                            "description": "misclassified discovery fallback proof",
+                            "name": "metadata_discovery_echo",
+                            "description": "discovery metadata compatibility proof",
                             "inputSchema": {"type": "object"}
                         }]
                     }
@@ -203,9 +203,9 @@ impl Respond for ModernDiscoveryResponder {
 }
 
 #[tokio::test]
-async fn http_upstream_accepts_modern_discovery_without_legacy_initialize() {
+async fn http_upstream_accepts_discovery_result_with_server_info_metadata() {
     let server = MockServer::start().await;
-    let responder = ModernDiscoveryResponder::default();
+    let responder = DiscoveryMetadataResponder::default();
     Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/mcp"))
         .respond_with(responder.clone())
@@ -225,17 +225,13 @@ async fn http_upstream_accepts_modern_discovery_without_legacy_initialize() {
         (),
     )
     .await
-    .expect("gateway should accept the modern discovery response");
+    .expect("gateway should accept a valid discovery response");
 
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        responder.initialize_requests.load(Ordering::SeqCst),
-        0,
-        "rmcp 3.1.0 must keep a valid modern discovery result on the modern lifecycle"
-    );
+    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 0);
     assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "metadata_fallback_echo");
+    assert_eq!(tools[0].name, "metadata_discovery_echo");
 }
 
 #[derive(Clone, Default)]

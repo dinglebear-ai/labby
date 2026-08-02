@@ -686,22 +686,24 @@ fn validate_protected_mcp_route_for_startup(
                 "gateway_subset target must expose at least one upstream, service, or Code Mode",
             );
         }
-        for upstream in &target.upstreams {
-            if !upstream_names.contains(upstream.as_str()) {
-                return invalid_protected_route(
-                    route,
-                    "target.upstreams",
-                    format!("unknown gateway_subset upstream `{upstream}`"),
-                );
+        if route.enabled {
+            for upstream in &target.upstreams {
+                if !upstream_names.contains(upstream.as_str()) {
+                    return invalid_protected_route(
+                        route,
+                        "target.upstreams",
+                        format!("unknown gateway_subset upstream `{upstream}`"),
+                    );
+                }
             }
-        }
-        for service in &target.services {
-            if !service_names.contains(service.as_str()) {
-                return invalid_protected_route(
-                    route,
-                    "target.services",
-                    format!("unknown gateway_subset service `{service}`"),
-                );
+            for service in &target.services {
+                if !service_names.contains(service.as_str()) {
+                    return invalid_protected_route(
+                        route,
+                        "target.services",
+                        format!("unknown gateway_subset service `{service}`"),
+                    );
+                }
             }
         }
         return Ok(());
@@ -3416,6 +3418,28 @@ services = ["gateway", "nope"]
             err.to_string().contains("sonnar") || err.to_string().contains("nope"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn config_validation_allows_stale_targets_on_disabled_gateway_subset_routes() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "retired-ops"
+enabled = false
+public_host = "mcp.example.com"
+public_path = "/ops"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["removed-upstream"]
+services = ["removed-service"]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("disabled route remains structurally valid");
+        cfg.validate()
+            .expect("disabled routes must not block gateway startup");
     }
 
     // ── Code Mode: CodeModeConfig defaults ───────────────────────────────────

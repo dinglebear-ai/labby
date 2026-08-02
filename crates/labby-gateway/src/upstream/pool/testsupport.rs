@@ -14,10 +14,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, GetPromptRequestParams,
-    GetPromptResponse, GetPromptResult, ListPromptsResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, Prompt, PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, Role, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+    GetPromptRequestParams, GetPromptResponse, GetPromptResult, ListPromptsResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, Role,
+    ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -296,6 +297,62 @@ pub(super) async fn slow_response_pool(upstream_name: &str) -> Arc<UpstreamPool>
 }
 
 impl UpstreamPool {
+    /// Register an in-process upstream whose tool call returns a successful MCP
+    /// response carrying `is_error=true`.
+    pub async fn insert_tool_error_server_for_tests(
+        &self,
+        upstream_name: &str,
+        message: &'static str,
+    ) {
+        struct ToolErrorServer {
+            message: &'static str,
+        }
+
+        impl ServerHandler for ToolErrorServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn call_tool(
+                &self,
+                _request: CallToolRequestParams,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                Ok(CallToolResult::error(vec![ContentBlock::text(self.message)]).into())
+            }
+        }
+
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server = ToolErrorServer { message };
+        let server_task = tokio::spawn(async move {
+            let running = server
+                .serve(server_transport)
+                .await
+                .expect("tool error server starts");
+            running.waiting().await.expect("tool error server runs");
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("tool error client starts");
+        let peer = client_service.peer().clone();
+
+        self.catalog
+            .write()
+            .await
+            .entry(upstream_name.to_string())
+            .or_insert_with(|| healthy_in_process_entry(Arc::from(upstream_name), HashMap::new()));
+        self.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service,
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+    }
+
     /// Register an in-process upstream whose advertised tool list is backed by a
     /// shared `Arc<RwLock<Vec<String>>>`, so a test can mutate the live tool set
     /// after connection and exercise live-catalog refresh.

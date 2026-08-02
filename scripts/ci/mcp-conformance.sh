@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reproduce the upstream rmcp 3.1.0 conformance gate against the
-# 2026-07-28 dated protocol and the separately scored extension suite.
+# Verify Labby's production rmcp pin, then run the pinned upstream rmcp
+# fixture against the 2026-07-28 dated protocol and separately scored extension
+# suite. Dated and extension failures use independent strict baselines.
 #
 # JavaScript dependencies are installed exactly once before any scenario runs.
 # This avoids concurrent npx cache mutation when scenarios are executed in CI.
 
-RMCP_VERSION="${RMCP_VERSION:-3.1.0}"
-RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_VERSION}}"
+LABBY_RMCP_VERSION="${LABBY_RMCP_VERSION:-3.1.0}"
+RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.1.0}"
+RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
 RMCP_COMMIT="${RMCP_COMMIT:-1f9358eddca42d3a510c70ae6446dd6548c7c856}"
 MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.9}"
 MCP_SPEC_VERSION="${MCP_SPEC_VERSION:-2026-07-28}"
@@ -37,8 +39,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! grep -Eq "rmcp = \\{ version = \"=${RMCP_VERSION}\"" "${repo_root}/Cargo.toml"; then
-  echo "Cargo.toml must pin rmcp exactly to =${RMCP_VERSION}" >&2
+if ! grep -Eq "rmcp = \\{ version = \"=${LABBY_RMCP_VERSION}\"" "${repo_root}/Cargo.toml"; then
+  echo "Cargo.toml must pin rmcp exactly to =${LABBY_RMCP_VERSION}" >&2
   exit 1
 fi
 
@@ -54,7 +56,7 @@ if [[ "$actual_commit" != "$RMCP_COMMIT" ]]; then
   exit 1
 fi
 
-npm install \
+npm_config_cache="${work_dir}/npm-cache" npm install \
   --prefix "${work_dir}/js" \
   --ignore-scripts \
   --no-audit \
