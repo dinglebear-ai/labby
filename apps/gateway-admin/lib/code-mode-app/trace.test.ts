@@ -33,6 +33,24 @@ test('parses execute traces with redacted params', () => {
   assert.equal(stringifyRedactedParams(calls[0].params).includes('[redacted]'), true)
 })
 
+test('unwraps connector result envelopes before parsing traces', () => {
+  const trace = {
+    kind: 'code_mode_execute_trace',
+    call_count: 0,
+    calls: [],
+    result_shape: { type: 'undefined' },
+  }
+
+  for (const value of [
+    { structuredContent: trace },
+    { structured_content: trace },
+    { result: { output: trace } },
+    { content: [{ type: 'text', text: JSON.stringify(trace) }] },
+  ]) {
+    assert.equal(parseCodeModeTrace(value)?.kind, 'code_mode_execute_trace')
+  }
+})
+
 test('parses per-call upstream MCP UI metadata', () => {
   const trace = parseCodeModeTrace({
     kind: 'code_mode_execute_trace',
