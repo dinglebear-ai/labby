@@ -1338,6 +1338,11 @@ async fn build_gateway_runtime(
     }
     let (notify_tx, notify_rx) = mpsc::unbounded_channel();
     let client_registry = notifier.client_registry.clone();
+    let _upstream_notifier_task = tokio::spawn(
+        notifier
+            .clone()
+            .run_upstream_notifications(gateway_runtime.clone()),
+    );
     let _catalog_notifier_task = tokio::spawn(notifier.clone().run(notify_rx));
     let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
     let live_config = Arc::new(std::sync::RwLock::new(config.clone()));

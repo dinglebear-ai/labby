@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use rmcp::model::ReadResourceResult;
+use rmcp::model::{ReadResourceRequestParams, ReadResourceResult};
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
@@ -29,14 +29,24 @@ impl UpstreamPool {
         &self,
         uri: &str,
     ) -> Option<Result<ReadResourceResult, String>> {
-        let start = Instant::now();
-        let prefix = "lab://upstream/";
-        let rest = uri.strip_prefix(prefix)?;
+        self.read_upstream_resource_request(ReadResourceRequestParams::new(uri))
+            .await
+    }
 
-        // Extract upstream name and original URI
+    /// Read a resource while preserving the complete 2026 request envelope.
+    pub async fn read_upstream_resource_request(
+        &self,
+        mut params: ReadResourceRequestParams,
+    ) -> Option<Result<ReadResourceResult, String>> {
+        let start = Instant::now();
+        let gateway_uri = params.uri.clone();
+        let prefix = "lab://upstream/";
+        let rest = gateway_uri.strip_prefix(prefix)?;
+
+        // Extract upstream name and original URI.
         let slash_pos = rest.find('/')?;
         let upstream_name = &rest[..slash_pos];
-        let original_uri = &rest[slash_pos + 1..];
+        params.uri = rest[slash_pos + 1..].to_string();
 
         // Check if this upstream has resource proxying enabled.
         // Clone the vec and drop the lock before any async work.
@@ -57,7 +67,7 @@ impl UpstreamPool {
 
         // Send the original URI upstream; normalize content URIs back to the
         // gateway-prefixed form the caller passed in.
-        self.read_resource_from_peer(upstream_name, original_uri, uri, start)
+        self.read_resource_request_from_peer(upstream_name, params, &gateway_uri, start)
             .await
     }
 
@@ -163,7 +173,22 @@ impl UpstreamPool {
         normalize_uri: &str,
         start: Instant,
     ) -> Option<Result<ReadResourceResult, String>> {
-        // Clone the peer handle out, then drop the lock before awaiting.
+        self.read_resource_request_from_peer(
+            upstream_name,
+            ReadResourceRequestParams::new(request_uri),
+            normalize_uri,
+            start,
+        )
+        .await
+    }
+
+    async fn read_resource_request_from_peer(
+        &self,
+        upstream_name: &str,
+        params: ReadResourceRequestParams,
+        normalize_uri: &str,
+        start: Instant,
+    ) -> Option<Result<ReadResourceResult, String>> {
         let peer = self
             .acquire_peer(
                 upstream_name,
@@ -175,8 +200,6 @@ impl UpstreamPool {
         let redacted_uri = redact_resource_uri_for_logging(normalize_uri);
         let event = UpstreamRequestLog::resource(upstream_name, redacted_uri, false);
         log_upstream_request_start(event);
-
-        let params = rmcp::model::ReadResourceRequestParams::new(request_uri);
         let timeout_ms = self.request_timeout.as_millis();
 
         Some(
@@ -202,15 +225,25 @@ impl UpstreamPool {
         uri: &str,
         allowed: Option<&std::collections::BTreeSet<String>>,
     ) -> Option<Result<ReadResourceResult, String>> {
+        self.read_upstream_resource_request_allowed(ReadResourceRequestParams::new(uri), allowed)
+            .await
+    }
+
+    pub async fn read_upstream_resource_request_allowed(
+        &self,
+        params: ReadResourceRequestParams,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Option<Result<ReadResourceResult, String>> {
         if let Some(allowed) = allowed {
-            let upstream = uri
+            let upstream = params
+                .uri
                 .strip_prefix("lab://upstream/")
                 .and_then(|rest| rest.split('/').next())?;
             if !allowed.contains(upstream) {
                 return None;
             }
         }
-        self.read_upstream_resource(uri).await
+        self.read_upstream_resource_request(params).await
     }
 
     pub async fn subject_scoped_read_resource(
@@ -219,12 +252,28 @@ impl UpstreamPool {
         subject: &str,
         uri: &str,
     ) -> Result<ReadResourceResult, String> {
+        self.subject_scoped_read_resource_request(
+            config,
+            subject,
+            ReadResourceRequestParams::new(uri),
+        )
+        .await
+    }
+
+    pub async fn subject_scoped_read_resource_request(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        mut params: ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult, String> {
         let start = Instant::now();
+        let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
-        let original_uri = uri
+        params.uri = gateway_uri
             .strip_prefix(&prefix)
-            .ok_or_else(|| "resource uri does not match upstream".to_string())?;
-        let redacted_uri = redact_resource_uri_for_logging(uri);
+            .ok_or_else(|| "resource uri does not match upstream".to_string())?
+            .to_string();
+        let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
         let event = UpstreamRequestLog::resource(&config.name, redacted_uri, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
@@ -249,8 +298,6 @@ impl UpstreamPool {
                 return Err(error.to_string());
             }
         };
-        let params = rmcp::model::ReadResourceRequestParams::new(original_uri);
-        let gateway_uri = uri.to_string();
         let timeout_ms = self.request_timeout.as_millis();
 
         timed_capability_call(
@@ -300,7 +347,7 @@ mod tests {
             listed_uris,
             vec![
                 "lab://upstream/static/file:///tmp/upstream-one",
-                "lab://upstream/static/file:///tmp/upstream-two",
+                "lab://upstream/static/lab://upstream/old-name/file:///tmp/upstream-two",
             ]
         );
 
@@ -311,7 +358,7 @@ mod tests {
                 "static".to_string(),
                 vec![
                     "file:///tmp/upstream-one".to_string(),
-                    "file:///tmp/upstream-two".to_string(),
+                    "lab://upstream/old-name/file:///tmp/upstream-two".to_string(),
                 ],
             )]
         );

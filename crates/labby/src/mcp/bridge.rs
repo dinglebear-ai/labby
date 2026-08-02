@@ -39,17 +39,20 @@
 use std::borrow::Cow;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelledNotificationParam,
-    ClientInfo, ClientNotification, ClientRequest, CompleteRequestParams, CompleteResult,
-    CustomNotification, CustomRequest, CustomResult, DiscoverResult, GetPromptRequestParams,
-    GetPromptResponse, GetTaskParams, GetTaskResult, Implementation, InitializeRequestParams,
-    InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+    CallToolRequest, CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelTaskRequest,
+    CancelledNotificationParam, ClientInfo, ClientNotification, ClientRequest, CompleteRequest,
+    CompleteRequestParams, CompleteResult, CustomNotification, CustomRequest, CustomResult,
+    DiscoverResult, GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetTaskParams,
+    GetTaskRequest, GetTaskResult, Implementation, InitializeRequestParams, InitializeResult,
+    ListPromptsRequest, ListPromptsResult, ListResourceTemplatesRequest,
+    ListResourceTemplatesResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest,
     ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ServerInfo, ServerNotification, ServerResult,
-    SubscriptionFilter, UpdateTaskParams,
+    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, ServerInfo,
+    ServerNotification, ServerResult, SubscriptionFilter, UpdateTaskParams, UpdateTaskRequest,
 };
 use rmcp::service::{
-    NotificationContext, Peer, RequestContext, RunningService, ServiceError, SubscriptionContext,
+    NotificationContext, Peer, PeerRequestOptions, RequestContext, RunningService, ServiceError,
+    SubscriptionContext,
 };
 use rmcp::{ClientHandler, ErrorData, RoleClient, RoleServer, ServerHandler};
 
@@ -74,14 +77,12 @@ impl Default for BridgeClientHandler {
 }
 
 impl ClientHandler for BridgeClientHandler {
-    /// Advertise the capability that the bridge can preserve through MRTR.
+    /// The bridge itself claims no fixed client capabilities. Each forwarded
+    /// request carries the current downstream request metadata explicitly, so
+    /// task and MRTR support are negotiated per request rather than frozen at
+    /// bridge startup.
     fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
-        info.capabilities = rmcp::model::ClientCapabilities::builder()
-            .enable_tasks()
-            .enable_elicitation()
-            .build();
-        info
+        ClientInfo::default()
     }
 }
 
@@ -143,6 +144,41 @@ fn unexpected_response(action: &str) -> ErrorData {
         "live daemon returned an unexpected result type"
     );
     ErrorData::internal_error("live daemon returned an unexpected result type", None)
+}
+
+impl BridgeServerHandler {
+    /// Forward one downstream request with its current request metadata and
+    /// cancellation token. Explicit metadata overrides the bridge connection
+    /// defaults, which keeps capability negotiation request-scoped.
+    async fn forward_request(
+        &self,
+        request: ClientRequest,
+        context: &RequestContext<RoleServer>,
+        action: &str,
+    ) -> Result<ServerResult, ErrorData> {
+        let options = PeerRequestOptions::no_options().with_meta(context.meta.clone());
+        let mut handle = self
+            .peer
+            .send_cancellable_request(request, options)
+            .await
+            .map_err(|error| bridge_error(action, error))?;
+
+        tokio::select! {
+            biased;
+            () = context.ct.cancelled() => {
+                handle
+                    .cancel(Some("downstream request cancelled".to_string()))
+                    .await
+                    .map_err(|error| bridge_error(action, error))?;
+                Err(ErrorData::internal_error("request cancelled", None))
+            }
+            response = &mut handle.rx => {
+                response
+                    .map_err(|_| bridge_error(action, ServiceError::TransportClosed))?
+                    .map_err(|error| bridge_error(action, error))
+            }
+        }
+    }
 }
 
 impl ServerHandler for BridgeServerHandler {
@@ -251,122 +287,221 @@ impl ServerHandler for BridgeServerHandler {
     async fn list_tools(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        self.peer
-            .list_tools(request)
-            .await
-            .map_err(|e| bridge_error("list_tools", e))
+        let request = request
+            .map(ListToolsRequest::with_param)
+            .unwrap_or_default();
+        match self
+            .forward_request(
+                ClientRequest::ListToolsRequest(request),
+                &context,
+                "list_tools",
+            )
+            .await?
+        {
+            ServerResult::ListToolsResult(result) => Ok(result),
+            _ => Err(unexpected_response("list_tools")),
+        }
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.peer
-            .call_tool_once(request)
-            .await
-            .map_err(|e| bridge_error("call_tool", e))
+        match self
+            .forward_request(
+                ClientRequest::CallToolRequest(CallToolRequest::new(request)),
+                &context,
+                "call_tool",
+            )
+            .await?
+        {
+            ServerResult::CallToolResult(result) => Ok(CallToolResponse::Complete(result)),
+            ServerResult::InputRequiredResult(result) => {
+                Ok(CallToolResponse::InputRequired(result))
+            }
+            ServerResult::CreateTaskResult(result) => Ok(CallToolResponse::Task(result)),
+            _ => Err(unexpected_response("call_tool")),
+        }
     }
 
     async fn list_resources(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        self.peer
-            .list_resources(request)
-            .await
-            .map_err(|e| bridge_error("list_resources", e))
+        let request = request
+            .map(ListResourcesRequest::with_param)
+            .unwrap_or_default();
+        match self
+            .forward_request(
+                ClientRequest::ListResourcesRequest(request),
+                &context,
+                "list_resources",
+            )
+            .await?
+        {
+            ServerResult::ListResourcesResult(result) => Ok(result),
+            _ => Err(unexpected_response("list_resources")),
+        }
     }
 
     async fn list_resource_templates(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        self.peer
-            .list_resource_templates(request)
-            .await
-            .map_err(|e| bridge_error("list_resource_templates", e))
+        let request = request
+            .map(ListResourceTemplatesRequest::with_param)
+            .unwrap_or_default();
+        match self
+            .forward_request(
+                ClientRequest::ListResourceTemplatesRequest(request),
+                &context,
+                "list_resource_templates",
+            )
+            .await?
+        {
+            ServerResult::ListResourceTemplatesResult(result) => Ok(result),
+            _ => Err(unexpected_response("list_resource_templates")),
+        }
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        self.peer
-            .read_resource_once(request)
-            .await
-            .map_err(|e| bridge_error("read_resource", e))
+        match self
+            .forward_request(
+                ClientRequest::ReadResourceRequest(ReadResourceRequest::new(request)),
+                &context,
+                "read_resource",
+            )
+            .await?
+        {
+            ServerResult::ReadResourceResult(result) => Ok(ReadResourceResponse::Complete(result)),
+            ServerResult::InputRequiredResult(result) => {
+                Ok(ReadResourceResponse::InputRequired(result))
+            }
+            _ => Err(unexpected_response("read_resource")),
+        }
     }
 
     async fn list_prompts(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
-        self.peer
-            .list_prompts(request)
-            .await
-            .map_err(|e| bridge_error("list_prompts", e))
+        let request = request
+            .map(ListPromptsRequest::with_param)
+            .unwrap_or_default();
+        match self
+            .forward_request(
+                ClientRequest::ListPromptsRequest(request),
+                &context,
+                "list_prompts",
+            )
+            .await?
+        {
+            ServerResult::ListPromptsResult(result) => Ok(result),
+            _ => Err(unexpected_response("list_prompts")),
+        }
     }
 
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, ErrorData> {
-        self.peer
-            .get_prompt_once(request)
-            .await
-            .map_err(|e| bridge_error("get_prompt", e))
+        match self
+            .forward_request(
+                ClientRequest::GetPromptRequest(GetPromptRequest::new(request)),
+                &context,
+                "get_prompt",
+            )
+            .await?
+        {
+            ServerResult::GetPromptResult(result) => Ok(GetPromptResponse::Complete(result)),
+            ServerResult::InputRequiredResult(result) => {
+                Ok(GetPromptResponse::InputRequired(result))
+            }
+            _ => Err(unexpected_response("get_prompt")),
+        }
     }
 
     async fn complete(
         &self,
         request: CompleteRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, ErrorData> {
-        self.peer
-            .complete(request)
-            .await
-            .map_err(|e| bridge_error("complete", e))
+        match self
+            .forward_request(
+                ClientRequest::CompleteRequest(CompleteRequest::new(request)),
+                &context,
+                "complete",
+            )
+            .await?
+        {
+            ServerResult::CompleteResult(result) => Ok(result),
+            _ => Err(unexpected_response("complete")),
+        }
     }
 
     async fn get_task(
         &self,
         request: GetTaskParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
-        self.peer
-            .get_task(request)
-            .await
-            .map_err(|e| bridge_error("get_task", e))
+        match self
+            .forward_request(
+                ClientRequest::GetTaskRequest(GetTaskRequest::new(request)),
+                &context,
+                "get_task",
+            )
+            .await?
+        {
+            ServerResult::GetTaskResult(result) => Ok(result),
+            _ => Err(unexpected_response("get_task")),
+        }
     }
 
     async fn update_task(
         &self,
         request: UpdateTaskParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
-        self.peer
-            .update_task(request)
-            .await
-            .map_err(|e| bridge_error("update_task", e))
+        match self
+            .forward_request(
+                ClientRequest::UpdateTaskRequest(UpdateTaskRequest::new(request)),
+                &context,
+                "update_task",
+            )
+            .await?
+        {
+            ServerResult::TaskAckResult(_) | ServerResult::EmptyResult(_) => Ok(()),
+            _ => Err(unexpected_response("update_task")),
+        }
     }
 
     async fn cancel_task(
         &self,
         request: CancelTaskParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
-        self.peer
-            .cancel_task(request)
-            .await
-            .map_err(|e| bridge_error("cancel_task", e))
+        match self
+            .forward_request(
+                ClientRequest::CancelTaskRequest(CancelTaskRequest::new(request)),
+                &context,
+                "cancel_task",
+            )
+            .await?
+        {
+            ServerResult::TaskAckResult(_) | ServerResult::EmptyResult(_) => Ok(()),
+            _ => Err(unexpected_response("cancel_task")),
+        }
     }
 
     /// Generic escape hatch for any method neither side has typed support
@@ -375,13 +510,15 @@ impl ServerHandler for BridgeServerHandler {
     async fn on_custom_request(
         &self,
         request: CustomRequest,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
         match self
-            .peer
-            .send_request(ClientRequest::CustomRequest(request))
-            .await
-            .map_err(|e| bridge_error("custom_request", e))?
+            .forward_request(
+                ClientRequest::CustomRequest(request),
+                &context,
+                "custom_request",
+            )
+            .await?
         {
             ServerResult::CustomResult(result) => Ok(result),
             _ => Err(unexpected_response("custom_request")),

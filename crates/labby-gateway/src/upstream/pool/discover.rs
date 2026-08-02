@@ -378,7 +378,8 @@ impl UpstreamPool {
                     };
 
                     self.catalog.write().await.insert(name.clone(), entry);
-                    self.connections.write().await.insert(name, conn);
+                    self.connections.write().await.insert(name.clone(), conn);
+                    self.refresh_upstream_subscription(&name).await;
                 }
                 Err((name, error_message)) => {
                     let entry = UpstreamEntry {

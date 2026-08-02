@@ -266,6 +266,42 @@ pub(crate) async fn notify_catalog_peers(
     );
 }
 
+/// Forward one normalized resource update to subscriptions that accepted the
+/// exact URI and whose protected route exposes the owning upstream.
+pub(crate) async fn notify_resource_update_peers(peers: &PeerRegistry, upstream: &str, uri: &str) {
+    let snapshot = peers.read().await.clone();
+    let notification_timeout = crate::config::resolved_catalog_notification_timeout();
+    let deliveries = snapshot.into_iter().filter_map(|registered| {
+        (registered.contract.route_scope.allows_upstream(upstream)
+            && registered.target.wants_resource_update(uri))
+        .then_some(registered)
+    });
+
+    let outcomes = join_all(deliveries.map(|registered| {
+        let target = registered.target.clone();
+        async move {
+            let ok =
+                tokio::time::timeout(notification_timeout, target.notify_resource_updated(uri))
+                    .await
+                    .is_ok_and(|result| result.is_ok());
+            (registered.registration_id, ok)
+        }
+    }))
+    .await;
+
+    if outcomes.iter().all(|(_, ok)| *ok) {
+        return;
+    }
+    let failed = outcomes
+        .into_iter()
+        .filter_map(|(registration_id, ok)| (!ok).then_some(registration_id))
+        .collect::<std::collections::HashSet<_>>();
+    peers
+        .write()
+        .await
+        .retain(|registered| !failed.contains(&registered.registration_id));
+}
+
 /// One peer's evaluated outcome for a single fanout: what it will be told, and
 /// the contract to remember if that succeeds.
 #[derive(Clone)]
@@ -310,13 +346,18 @@ async fn evaluate_peers(
         };
         let tools_changed = next_contract
             .as_ref()
-            .is_some_and(|next| *next != registered.last_contract);
+            .is_some_and(|next| *next != registered.last_contract)
+            && registered.target.wants_tool_list_changed();
+        let resources_changed =
+            changes.resources_changed && registered.target.wants_resource_list_changed();
+        let prompts_changed =
+            changes.prompts_changed && registered.target.wants_prompt_list_changed();
         evaluated.push(EvaluatedPeer {
             registered,
             changes: CatalogNotificationChanges::new(
                 tools_changed,
-                changes.resources_changed,
-                changes.prompts_changed,
+                resources_changed,
+                prompts_changed,
             ),
             next_contract,
         });

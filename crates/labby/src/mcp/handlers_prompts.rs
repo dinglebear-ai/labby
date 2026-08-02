@@ -14,15 +14,15 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    GetPromptRequestParams, GetPromptResult, ListPromptsResult, PaginatedRequestParams,
+    GetPromptRequestParams, GetPromptResponse, ListPromptsResult, PaginatedRequestParams,
 };
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
-use crate::mcp::context::auth_context_from_extensions;
-#[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
+#[cfg(feature = "gateway")]
+use crate::mcp::context::{auth_context_from_extensions, forwardable_client_capabilities};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
@@ -187,7 +187,7 @@ impl LabMcpServer {
         &self,
         request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, ErrorData> {
+    ) -> Result<GetPromptResponse, ErrorData> {
         let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
         tracing::info!(
@@ -267,7 +267,7 @@ impl LabMcpServer {
                 DispatchLogOutcome::Success,
             )
             .await;
-            return Ok(prompt);
+            return Ok(prompt.into());
         }
 
         #[cfg(feature = "gateway")]
@@ -286,7 +286,35 @@ impl LabMcpServer {
                 route = "upstream",
                 "dispatch route selected"
             );
-            let outcome = match pool.get_prompt(&upstream_name, request).await {
+            let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
+            let relay_config = if relay_capabilities.is_some() {
+                match &self.gateway_manager {
+                    Some(manager) => manager.upstream_config(&upstream_name).await,
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let upstream_outcome = match (relay_config, relay_capabilities) {
+                (Some(config), Some(capabilities)) => {
+                    pool.get_prompt_relayed(
+                        &config,
+                        None,
+                        request,
+                        context.peer.clone(),
+                        context.id.clone(),
+                        context.ct.clone(),
+                        self.relay_session_id,
+                        capabilities,
+                    )
+                    .await
+                }
+                _ => pool
+                    .get_prompt(&upstream_name, request)
+                    .await
+                    .map(|outcome| outcome.map(Into::into)),
+            };
+            let outcome = match upstream_outcome {
                 Some(Ok(result)) => {
                     let elapsed_ms = start.elapsed().as_millis();
                     tracing::info!(
@@ -393,10 +421,28 @@ impl LabMcpServer {
                     oauth_subject = %oauth_subject,
                     "dispatch route selected"
                 );
-                let outcome = match pool
-                    .subject_scoped_get_prompt(&config, oauth_subject.as_ref(), request)
+                let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
+                let upstream_outcome = if let Some(capabilities) = relay_capabilities {
+                    pool.get_prompt_relayed(
+                        &config,
+                        Some(oauth_subject.as_ref()),
+                        request,
+                        context.peer.clone(),
+                        context.id.clone(),
+                        context.ct.clone(),
+                        self.relay_session_id,
+                        capabilities,
+                    )
                     .await
-                {
+                    .unwrap_or_else(|| {
+                        Err(format!("relayed upstream `{}` connect failed", config.name))
+                    })
+                } else {
+                    pool.subject_scoped_get_prompt(&config, oauth_subject.as_ref(), request)
+                        .await
+                        .map(Into::into)
+                };
+                let outcome = match upstream_outcome {
                     Ok(result) => {
                         let elapsed_ms = start.elapsed().as_millis();
                         tracing::info!(
@@ -504,6 +550,16 @@ mod tests {
     use crate::mcp::logging::logging_level_rank;
     use crate::mcp::route_scope::McpRouteScope;
     use crate::registry::build_default_registry;
+
+    fn complete_prompt(response: GetPromptResponse) -> rmcp::model::GetPromptResult {
+        match response {
+            GetPromptResponse::Complete(result) => result,
+            GetPromptResponse::InputRequired(_) => {
+                panic!("local prompt unexpectedly required input")
+            }
+            _ => panic!("unexpected prompt response variant"),
+        }
+    }
 
     fn prompt_test_server(route_scope: McpRouteScope) -> LabMcpServer {
         LabMcpServer {
@@ -616,11 +672,13 @@ mod tests {
                 .collect(),
         );
 
-        let prompt = running
-            .service()
-            .get_prompt_impl(request, request_context(running.peer().clone()))
-            .await
-            .expect("allowed built-in prompt service");
+        let prompt = complete_prompt(
+            running
+                .service()
+                .get_prompt_impl(request, request_context(running.peer().clone()))
+                .await
+                .expect("allowed built-in prompt service"),
+        );
 
         assert!(
             prompt

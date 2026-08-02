@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Verify Labby's production rmcp pin, then run the last known-green upstream
-# rmcp fixture against the 2026-07-28 dated protocol and separately scored
-# extension suite.
+# Verify Labby's production rmcp pin, then run the matching upstream
+# rmcp 3.1.0 fixture against the 2026-07-28 dated protocol, Labby-native
+# multi-hop proxying, and the separately scored extension suite.
 #
 # JavaScript dependencies are installed exactly once before any scenario runs.
 # This avoids concurrent npx cache mutation when scenarios are executed in CI.
 
 LABBY_RMCP_VERSION="${LABBY_RMCP_VERSION:-3.1.0}"
-RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.0.0-beta.2}"
+RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.1.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
-RMCP_COMMIT="${RMCP_COMMIT:-14298b72e0b25473ea79d5465fe186e22eb86397}"
-MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.9}"
+RMCP_COMMIT="${RMCP_COMMIT:-1f9358eddca42d3a510c70ae6446dd6548c7c856}"
+MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.10}"
 MCP_SPEC_VERSION="${MCP_SPEC_VERSION:-2026-07-28}"
 MCP_CONFORMANCE_PORT="${MCP_CONFORMANCE_PORT:-18002}"
 MCP_CONFORMANCE_LABBY_PORT="${MCP_CONFORMANCE_LABBY_PORT:-18003}"
@@ -71,7 +71,17 @@ RUSTFLAGS="" cargo test \
   --manifest-path "${work_dir}/rust-sdk/Cargo.toml" \
   -p mcp-conformance \
   --bin conformance-server
-RUSTFLAGS="" cargo build -p labby --all-features --locked
+RUSTFLAGS="" cargo build -p labby --all-features --locked \
+  --bin labby \
+  --example mcp_multihop_conformance
+
+# Exercise a real client -> root Labby -> middle Labby -> leaf chain. The
+# driver verifies modern discovery, multi-page tools/prompts/resources/templates,
+# tool and MRTR forwarding, resource reads, completion, and result provenance.
+"${repo_root}/target/debug/examples/mcp_multihop_conformance" driver \
+  >"${output_dir}/labby-multihop.log" 2>&1
+grep --fixed-strings --line-regexp "Labby multi-hop conformance passed" \
+  "${output_dir}/labby-multihop.log" >/dev/null
 
 # Exercise Labby's real authenticated, stateless HTTP boundary with production
 # tools. The upstream conformance fixture remains necessary because the dated

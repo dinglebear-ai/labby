@@ -382,19 +382,18 @@ pub(super) fn normalize_resource_result_uri(
     result
 }
 
-/// Rewrite an upstream resource's URI to the gateway-prefixed form.
+/// Rewrite an upstream resource URI to the gateway-prefixed form.
 ///
-/// Strips any embedded upstream name from existing `lab://upstream/…` URIs
-/// and re-prefixes with the caller's `upstream_name`.
+/// The upstream URI is opaque. In particular, a nested Labby gateway may
+/// return `lab://upstream/<inner>/...`; stripping that namespace makes the
+/// URI impossible to route back through the nested gateway. Each hop therefore
+/// adds exactly one outer prefix and preserves the complete inner URI.
 pub(super) fn rewrite_resource_uri(resource: &mut Resource, upstream_name: &str) {
-    let bare_uri = bare_upstream_resource_uri(&resource.uri);
-    resource.uri = format!("lab://upstream/{upstream_name}/{bare_uri}");
+    resource.uri = format!("lab://upstream/{upstream_name}/{}", resource.uri);
 }
 
 pub(super) fn bare_upstream_resource_uri(uri: &str) -> &str {
-    uri.strip_prefix("lab://upstream/")
-        .and_then(|rest| rest.split_once('/').map(|x| x.1).or(Some(rest)))
-        .unwrap_or(uri)
+    uri
 }
 
 pub(super) fn cached_upstream_tool(
@@ -513,6 +512,22 @@ mod tests {
         config.command = Some("--api-key=secret".into());
 
         assert_eq!(upstream_target_redacted(&config), "--api-key=[redacted]");
+    }
+
+    #[test]
+    fn resource_uri_rewrite_preserves_nested_gateway_namespace() {
+        let mut resource = Resource::new("lab://upstream/leaf/fixture://resource/069", "nested");
+
+        rewrite_resource_uri(&mut resource, "middle");
+
+        assert_eq!(
+            resource.uri,
+            "lab://upstream/middle/lab://upstream/leaf/fixture://resource/069"
+        );
+        assert_eq!(
+            bare_upstream_resource_uri("lab://upstream/leaf/fixture://resource/069"),
+            "lab://upstream/leaf/fixture://resource/069"
+        );
     }
 
     #[test]

@@ -252,7 +252,7 @@ impl LabMcpServer {
         // harmless catalog movement from the flapping clients actually feel.
         let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
         let service = request.name.as_ref().to_string();
-        let raw_arguments = request.arguments.clone();
+        let upstream_request = request.clone();
         let args = request.arguments.unwrap_or_default();
         let action = args
             .get("action")
@@ -958,7 +958,7 @@ impl LabMcpServer {
             self.call_tool_upstream_impl(
                 &service,
                 &action,
-                raw_arguments,
+                upstream_request,
                 resolved_upstream_tool,
                 start,
                 &subject,
@@ -969,7 +969,7 @@ impl LabMcpServer {
         }
         #[cfg(not(feature = "gateway"))]
         {
-            let _ = (raw_arguments, actor_key, start);
+            let _ = (upstream_request, actor_key, start);
             let envelope = build_error(
                 &service,
                 &action,

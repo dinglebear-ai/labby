@@ -246,17 +246,21 @@ async fn exercise_unix_socket(socket_path: &str, listener: UnixListener) {
         .call_tool_once(CallToolRequestParams::new("unix_echo"))
         .await
         .expect("Unix socket tool call should succeed");
-    match response {
-        CallToolResponse::Complete(result) => assert_eq!(
-            result.content[0]
-                .as_text()
-                .expect("text result")
-                .text
-                .as_str(),
-            "unix-ok"
-        ),
-        other => panic!("expected a complete tool response, got {other:?}"),
-    }
+    assert!(
+        matches!(&response, CallToolResponse::Complete(_)),
+        "expected a complete tool response, got {response:?}"
+    );
+    let CallToolResponse::Complete(result) = response else {
+        return;
+    };
+    assert_eq!(
+        result.content[0]
+            .as_text()
+            .expect("text result")
+            .text
+            .as_str(),
+        "unix-ok"
+    );
 
     signals.assert_complete();
     drop(connection);

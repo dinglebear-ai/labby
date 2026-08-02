@@ -198,7 +198,7 @@ static NEXT_TEST_GATEWAY_CONFIG_ID: std::sync::atomic::AtomicU64 =
 
 #[cfg(test)]
 fn isolated_test_config_path(path: PathBuf) -> PathBuf {
-    if path != PathBuf::from("config.toml") {
+    if path != *"config.toml" {
         return path;
     }
 

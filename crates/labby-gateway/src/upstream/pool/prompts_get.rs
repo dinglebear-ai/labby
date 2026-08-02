@@ -52,8 +52,8 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
-            match peer.list_prompts(None).await {
-                Ok(result) => upstream_prompts.push((name, result.prompts)),
+            match peer.list_all_prompts().await {
+                Ok(prompts) => upstream_prompts.push((name, prompts)),
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
@@ -96,8 +96,8 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
-            if let Ok(result) = peer.list_prompts(None).await
-                && result.prompts.iter().any(|prompt| {
+            if let Ok(prompts) = peer.list_all_prompts().await
+                && prompts.iter().any(|prompt| {
                     // The requested name is namespaced as `{upstream}/{name}`;
                     // the upstream advertises the bare name, so compare against
                     // the prefixed form.
