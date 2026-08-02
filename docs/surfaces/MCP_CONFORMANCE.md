@@ -8,7 +8,7 @@ updated: "2026-08-02"
 
 Labby targets the `2026-07-28` MCP protocol through `rmcp = "=3.1.0"`.
 The gate verifies that production dependency exactly, exercises Labby's real
-authenticated `/mcp` boundary, and uses the last known-green upstream rmcp
+authenticated `/mcp` boundary, and runs the pinned upstream rmcp `3.1.0`
 fixture for synthetic dated and extension scenarios. Dated protocol and
 experimental extension results are intentionally reported separately:
 extension results must never inflate or reduce the dated-protocol score.
@@ -19,8 +19,8 @@ extension results must never inflate or reduce the dated-protocol score.
 |---|---|
 | MCP protocol | `2026-07-28` |
 | Labby rmcp dependency | `3.1.0` |
-| rmcp conformance fixture | `3.0.0-beta.2` |
-| rmcp fixture tag commit | `14298b72e0b25473ea79d5465fe186e22eb86397` |
+| rmcp conformance fixture | `3.1.0` |
+| rmcp fixture tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
 | MCP conformance package | `0.2.0-alpha.9` |
 
 Run the same gate locally with:
@@ -126,9 +126,9 @@ different deployment mode, not a prerequisite for stateless conformance.
 
 The `MCP 2026-07-28 conformance` CI job is part of `ci-gate`. Its JavaScript
 dependency installation is serialized before scenarios start. The production
-dependency and upstream fixture are separate pins: advance the fixture only
-when that release's own conformance server passes the dated suite. Review the
-scenario list and extension baseline on every conformance package update.
+dependency and upstream fixture remain separate pins even when they use the
+same release. Advance the fixture, its tag commit, and the strict dated and
+extension baselines together after reviewing every scenario change.
 
 The separate `MCP upstream drift` workflow compares
 `conformance/upstream-baseline.json` with the current MCP specification branch
@@ -146,5 +146,4 @@ Primary references:
 
 - <https://modelcontextprotocol.io/specification/2026-07-28>
 - <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.1.0>
-- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.0.0-beta.2>
 - <https://github.com/modelcontextprotocol/conformance>
