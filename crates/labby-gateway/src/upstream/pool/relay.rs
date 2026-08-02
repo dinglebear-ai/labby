@@ -69,6 +69,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use crate::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY};
 
 use super::super::types::UpstreamCapability;
+use super::capability_call::service_error_affects_connection_health;
 use super::connect::{
     HttpCancellationSender, build_http_cancellation_sender, connect_upstream_with_handler,
 };
@@ -953,12 +954,10 @@ impl UpstreamPool {
                 let response_size = estimate_call_tool_response_size(&result);
                 let max_bytes = max_response_bytes();
                 if response_size > max_bytes {
-                    self.record_failure_for(
-                        &config.name,
-                        UpstreamCapability::Tools,
-                        format!("response too large: {response_size} bytes"),
-                    )
-                    .await;
+                    // The peer returned a complete response. The gateway's size
+                    // policy rejected it, but the MCP connection remains healthy.
+                    self.record_success_for(&config.name, UpstreamCapability::Tools)
+                        .await;
                     log_upstream_request_error(
                         event,
                         started.elapsed().as_millis(),
@@ -1001,10 +1000,22 @@ impl UpstreamPool {
                     "upstream_error"
                 };
                 let message = format!("relayed upstream call failed: {error}");
-                self.record_failure_for(&config.name, UpstreamCapability::Tools, message.clone())
+                if service_error_affects_connection_health(&error) {
+                    // Transport/protocol failures may mean the cached connection
+                    // is dead, so trip the breaker and force a reconnect.
+                    self.record_failure_for(
+                        &config.name,
+                        UpstreamCapability::Tools,
+                        message.clone(),
+                    )
                     .await;
-                self.evict_relay_connection(&config.name, session_id, subject)
-                    .await;
+                    self.evict_relay_connection(&config.name, session_id, subject)
+                        .await;
+                } else {
+                    // A valid MCP error response proves the relay connection is alive.
+                    self.record_success_for(&config.name, UpstreamCapability::Tools)
+                        .await;
+                }
                 log_upstream_request_error(
                     event,
                     started.elapsed().as_millis(),
@@ -2434,15 +2445,12 @@ mod tests {
         assert_eq!(overridden.relay_timeout, Duration::from_secs(42));
     }
 
-    /// A relayed call that FAILS feeds the circuit breaker, exactly like the
-    /// pooled path does via `timed_capability_call`. Without this the
-    /// subject-scoped relay branch (whose MCP arm records nothing itself) would
-    /// let a wedged OAuth upstream stay "healthy" forever and never be excluded.
-    /// Regression guard for the relay circuit-breaker / observability fix.
+    /// A valid MCP error response proves the relayed connection is alive.
+    /// The error still reaches the caller and logs, but must not poison the
+    /// upstream's connection health or evict the reusable relay peer.
     #[tokio::test]
-    async fn relayed_call_failure_records_circuit_breaker_failure() {
+    async fn relayed_mcp_error_keeps_connection_healthy() {
         use super::super::entries::healthy_in_process_entry;
-        use crate::upstream::types::UpstreamHealth;
         use std::collections::HashMap;
 
         /// Upstream whose tool call always errors.
@@ -2559,26 +2567,26 @@ mod tests {
             .map(|(_, health)| health)
             .expect("upstream present in status");
         assert!(
-            matches!(
-                health,
-                UpstreamHealth::Unhealthy {
-                    consecutive_failures: 1
-                }
-            ),
-            "a failed relayed call must record exactly one circuit-breaker failure, got {health:?}"
+            health.is_routable(),
+            "valid relayed MCP error must keep connection health routable, got {health:?}"
+        );
+        assert!(
+            pool.relay_connections
+                .read()
+                .await
+                .contains_key(&(config.name.clone(), 1, None)),
+            "valid MCP error must not evict the relay connection"
         );
 
         // Hold the downstream server alive until the relayed call completed.
         drop(gw_server);
     }
 
-    /// Relayed calls enforce the same upstream response-size cap as the pooled
-    /// path. The relay invokes `peer.call_tool` directly, so this pins the cap
-    /// at that dedicated branch instead of only proving the shared pooled helper.
+    /// Relayed calls enforce the same response-size cap as the pooled path,
+    /// while preserving connection health because the peer completed a valid response.
     #[tokio::test]
     async fn relayed_call_oversized_response_returns_cap_error() {
         use super::super::entries::healthy_in_process_entry;
-        use crate::upstream::types::UpstreamHealth;
         use std::collections::HashMap;
 
         #[derive(Clone)]
@@ -2693,13 +2701,8 @@ mod tests {
             .map(|(_, health)| health)
             .expect("upstream present in status");
         assert!(
-            matches!(
-                health,
-                UpstreamHealth::Unhealthy {
-                    consecutive_failures: 1
-                }
-            ),
-            "oversized relayed response must record a circuit-breaker failure, got {health:?}"
+            health.is_routable(),
+            "oversized relayed response must preserve connection health, got {health:?}"
         );
 
         drop(gw_server);

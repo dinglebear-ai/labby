@@ -7,14 +7,12 @@
 //! 2. Optionally acquire a subject-scoped peer (OAuth path) or the pool peer (normal path).
 //! 3. Issue the RPC with `tokio::time::timeout`.
 //! 4. On success: check the response size cap, record circuit-breaker success, log finish.
-//! 5. On upstream error: record circuit-breaker failure, evict subject connection, log error.
+//! 5. On upstream error: distinguish valid MCP application errors from broken
+//!    transport/protocol state, updating connection health only for the latter.
 //! 6. On timeout: record circuit-breaker failure, evict subject connection, log error.
 //!
 //! `timed_capability_call` encapsulates steps 3–6 so each capability module only
 //! declares its own peer-acquisition and response-normalization logic.
-//!
-//! **Observable behaviour is byte-identical** to the previous per-file implementations:
-//! same log fields, same error kinds, same timeout and size-cap semantics.
 
 use std::future::Future;
 use std::time::Instant;
@@ -44,6 +42,16 @@ pub(super) fn classify_timeout_result<R>(
         Ok(Err(e)) => RawCallOutcome::UpstreamError(e),
         Err(_) => RawCallOutcome::Timeout,
     }
+}
+
+/// Whether a service error indicates that the MCP connection itself is unhealthy.
+///
+/// A valid JSON-RPC/MCP error proves the peer is reachable and the protocol is
+/// functioning. Tool-level authorization, validation, and execution failures must
+/// remain visible to the caller and request logs without turning the whole upstream
+/// red. Transport/protocol errors continue to feed the circuit breaker.
+pub(super) fn service_error_affects_connection_health(error: &rmcp::ServiceError) -> bool {
+    !matches!(error, rmcp::ServiceError::McpError(_))
 }
 
 /// Execute `rpc_future` under the pool's request timeout, enforce the
@@ -92,12 +100,9 @@ where
             let response_size = size_fn(&result);
             let max_bytes = max_response_bytes();
             if response_size > max_bytes {
-                pool.record_failure_for(
-                    upstream_name,
-                    capability,
-                    format!("response too large: {response_size} bytes"),
-                )
-                .await;
+                // The peer returned a complete, valid response. Rejecting it at
+                // the gateway policy boundary must not mark the connection down.
+                pool.record_success_for(upstream_name, capability).await;
                 log_upstream_request_error(
                     event,
                     start.elapsed().as_millis(),
@@ -123,10 +128,15 @@ where
             Ok(result)
         }
         RawCallOutcome::UpstreamError(error) => {
-            pool.record_failure_for(upstream_name, capability, error_message_fn(&error))
-                .await;
-            if let Some(subj) = subject {
-                pool.evict_subject_connection(upstream_name, subj).await;
+            if service_error_affects_connection_health(&error) {
+                pool.record_failure_for(upstream_name, capability, error_message_fn(&error))
+                    .await;
+                if let Some(subj) = subject {
+                    pool.evict_subject_connection(upstream_name, subj).await;
+                }
+            } else {
+                // A valid MCP error response confirms the connection is alive.
+                pool.record_success_for(upstream_name, capability).await;
             }
             log_upstream_request_error(
                 event,

@@ -5,12 +5,13 @@
 //! (the `InProcessConnector` IoC seam) — this module no longer imports from
 //! `crate::mcp` (A-M6 fix).
 
-use std::ffi::OsString;
-use std::path::PathBuf;
-
 use labby_runtime::gateway_config::UpstreamConfig;
 use rmcp::ClientHandler;
 use rmcp::service::ClientServiceExt;
+use std::collections::HashSet;
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
 
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
@@ -23,6 +24,28 @@ use super::stdio_stderr::{
     StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
 };
 use super::{UpstreamClientService, UpstreamConnection};
+
+static LEGACY_STDIO_LIFECYCLE: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+
+fn stdio_lifecycle_key(name: &str, command: &str, args: &[String]) -> String {
+    format!("{name}\u{0}{command}\u{0}{}", args.join("\u{0}"))
+}
+
+fn prefers_legacy_stdio_lifecycle(key: &str) -> bool {
+    LEGACY_STDIO_LIFECYCLE
+        .get_or_init(|| RwLock::new(HashSet::new()))
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(key)
+}
+
+fn remember_legacy_stdio_lifecycle(key: String) {
+    LEGACY_STDIO_LIFECYCLE
+        .get_or_init(|| RwLock::new(HashSet::new()))
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key);
+}
 
 /// Connect to a stdio upstream MCP server (child process).
 ///
@@ -124,11 +147,21 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     let mut spawn_lock = super::spawn_lock::open(&lock_command, &lock_args);
     let _spawn_guard = super::spawn_lock::acquire(spawn_lock.as_mut()).await;
 
-    match connect_stdio_upstream_once(&command, handler.clone(), LifecycleAttempt::Modern).await {
+    let lifecycle_key = stdio_lifecycle_key(&command.name, lock_command.as_ref(), &lock_args);
+    let initial_attempt = if prefers_legacy_stdio_lifecycle(&lifecycle_key) {
+        LifecycleAttempt::LegacyInitialize
+    } else {
+        LifecycleAttempt::Modern
+    };
+
+    match connect_stdio_upstream_once(&command, handler.clone(), initial_attempt).await {
         Ok(ok) => Ok(ok),
         Err(first_error) => {
             let lifecycle_error = anyhow::anyhow!(first_error.diagnostics_with_error());
-            if let Some(attempt) = compatibility_retry(&lifecycle_error) {
+            if initial_attempt == LifecycleAttempt::Modern
+                && let Some(attempt) = compatibility_retry(&lifecycle_error)
+            {
+                remember_legacy_stdio_lifecycle(lifecycle_key);
                 log_fallback(&command.name, "stdio", attempt, &lifecycle_error);
                 return connect_stdio_upstream_once(&command, handler, attempt)
                     .await
@@ -166,7 +199,7 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
                 _ => return Err(first_error.into_anyhow()),
             }
 
-            match connect_stdio_upstream_once(&command, handler, LifecycleAttempt::Modern).await {
+            match connect_stdio_upstream_once(&command, handler, initial_attempt).await {
                 Ok(ok) => Ok(ok),
                 Err(retry_error) => Err(anyhow::anyhow!(
                     "stdio upstream failed after package-runner cache repair retry: {}",
@@ -390,4 +423,33 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     );
 
     Ok((conn, tools))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testsupport::named_test_upstream_config;
+    use super::*;
+
+    #[test]
+    fn remembers_legacy_lifecycle_for_exact_stdio_command() {
+        let config = named_test_upstream_config("legacy-stdio-cache-test");
+        let args = vec![
+            "nested-host".to_string(),
+            "mcp".to_string(),
+            "serve".to_string(),
+        ];
+        let key = stdio_lifecycle_key(&config.name, "ssh", &args);
+
+        assert!(!prefers_legacy_stdio_lifecycle(&key));
+        remember_legacy_stdio_lifecycle(key.clone());
+        assert!(prefers_legacy_stdio_lifecycle(&key));
+
+        let other_args = vec![
+            "other-host".to_string(),
+            "mcp".to_string(),
+            "serve".to_string(),
+        ];
+        let other_key = stdio_lifecycle_key(&config.name, "ssh", &other_args);
+        assert!(!prefers_legacy_stdio_lifecycle(&other_key));
+    }
 }

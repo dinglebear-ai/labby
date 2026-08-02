@@ -705,6 +705,10 @@ impl GatewayManager {
     ) {
         let owner = owner.cloned();
         let oauth_subject = oauth_subject.map(ToOwned::to_owned);
+        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+            cfg.gateway.upstream_discovery_concurrency,
+        );
+        let warm_up_gate = Arc::new(tokio::sync::Semaphore::new(concurrency));
         for upstream in cfg
             .upstream
             .iter()
@@ -714,6 +718,7 @@ impl GatewayManager {
             let upstream = upstream.clone();
             let owner = owner.clone();
             let oauth_subject = oauth_subject.clone();
+            let warm_up_gate = Arc::clone(&warm_up_gate);
             tokio::spawn(async move {
                 let warm_up_key = upstream.name.clone();
                 {
@@ -725,6 +730,14 @@ impl GatewayManager {
                         return;
                     }
                 }
+                let Ok(_warm_up_permit) = warm_up_gate.acquire_owned().await else {
+                    CODE_MODE_WARM_UP_IN_FLIGHT
+                        .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
+                        .lock()
+                        .await
+                        .remove(&warm_up_key);
+                    return;
+                };
                 // `ensure_tools_for_upstream` skips the upstream internally
                 // when it already has healthy tools.
                 let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
