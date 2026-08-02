@@ -278,7 +278,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -372,7 +372,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(server_task),
                 peer: peer.clone(),
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -414,7 +414,7 @@ mod tests {
             pool.connections.write().await.insert(
                 upstream_name.to_string(),
                 UpstreamConnection {
-                    _client_service: cli,
+                    _client_service: cli.into(),
                     _server_task: None,
                     peer: p2,
                     runtime: UpstreamRuntimeMetadata::default(),
@@ -499,7 +499,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -585,7 +585,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -665,7 +665,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),

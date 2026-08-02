@@ -190,7 +190,7 @@ pub(super) async fn static_catalog_pool_with_server(
     pool.connections.write().await.insert(
         upstream_name.to_string(),
         UpstreamConnection {
-            _client_service: client_service,
+            _client_service: client_service.into(),
             _server_task: Some(server_task),
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
@@ -282,7 +282,7 @@ pub(super) async fn slow_response_pool(upstream_name: &str) -> Arc<UpstreamPool>
     pool.connections.write().await.insert(
         upstream_name.to_string(),
         UpstreamConnection {
-            _client_service: client_service,
+            _client_service: client_service.into(),
             _server_task: Some(server_task),
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
@@ -345,7 +345,7 @@ impl UpstreamPool {
         self.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -418,7 +418,7 @@ impl UpstreamPool {
         self.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
