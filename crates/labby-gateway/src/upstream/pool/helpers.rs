@@ -436,11 +436,9 @@ mod tests {
     /// nextest's per-process isolation and cargo test's threaded model.
     #[test]
     fn stdio_discovery_allows_cold_start_beyond_the_rpc_timeout() {
-        let config = UpstreamConfig {
-            name: "slow-stdio".into(),
-            command: Some("ssh".into()),
-            ..UpstreamConfig::default()
-        };
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.name = "slow-stdio".into();
+        config.command = Some("ssh".into());
         assert_eq!(
             upstream_discovery_timeout(&config, Duration::from_secs(30)),
             STDIO_DISCOVERY_TIMEOUT
@@ -449,11 +447,9 @@ mod tests {
 
     #[test]
     fn http_discovery_honors_the_configured_request_timeout() {
-        let config = UpstreamConfig {
-            name: "remote-http".into(),
-            url: Some("https://example.invalid/mcp".into()),
-            ..UpstreamConfig::default()
-        };
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.name = "remote-http".into();
+        config.url = Some("https://example.invalid/mcp".into());
         assert_eq!(
             upstream_discovery_timeout(&config, Duration::from_secs(45)),
             Duration::from_secs(45)

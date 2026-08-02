@@ -8,8 +8,7 @@
 use std::future::Future;
 
 use rmcp::ClientHandler;
-use rmcp::error::ErrorData as McpError;
-use rmcp::model::*;
+use rmcp::model::{ErrorData as McpError, *};
 use rmcp::service::{MaybeSendFuture, NotificationContext, RequestContext, RoleClient};
 
 #[derive(Clone, Debug)]
@@ -27,6 +26,7 @@ impl<H> VersionedClientHandler<H> {
     }
 }
 
+#[allow(deprecated)]
 impl<H: ClientHandler> ClientHandler for VersionedClientHandler<H> {
     fn ping(
         &self,
