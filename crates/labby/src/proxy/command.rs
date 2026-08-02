@@ -224,13 +224,14 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(unix)]
     fn make_executable(path: &Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
+
+    #[cfg(not(unix))]
+    fn make_executable(_path: &Path) {}
 
     #[test]
     fn resolves_javascript_file_through_node() {
