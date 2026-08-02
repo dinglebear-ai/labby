@@ -11,11 +11,10 @@
 # =============================================================================
 
 # Keep Lab cache-friendly even if a developer's global Cargo config differs.
-# The managed host config also disables incremental builds for sccache, but a
-# repo-local override prevents accidental cache-bypassing profile overrides.
+# Compiler caching is inherited from the host Cargo config (kache on the
+# managed fleet); this repo does not add another rustc wrapper layer.
 [build]
 incremental = false
-rustc-wrapper = "scripts/cargo-rustc-wrapper"
 
 [profile.dev]
 # The all-features labby test harness is large enough that LLVM can exhaust

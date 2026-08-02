@@ -977,10 +977,8 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
-    # GitHub-hosted job: neutralize the repo's .cargo/config.toml
-    # `rustc-wrapper = scripts/cargo-rustc-wrapper` shim, which Windows runners
-    # cannot exec (os error 193). kache jobs override this via setup-rust-kache;
-    # this hosted job keeps the empty-wrapper disabler at job scope.
+    # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
+    # configure kache explicitly through setup-rust-kache.
     env:
       RUSTC_WRAPPER: ""
       CARGO_BUILD_RUSTC_WRAPPER: ""
