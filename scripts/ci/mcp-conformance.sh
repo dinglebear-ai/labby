@@ -39,7 +39,12 @@ MCP_CONFORMANCE_DIRECT_PROXY_PORT="${MCP_CONFORMANCE_DIRECT_PROXY_PORT:-18004}"
 MCP_CONFORMANCE_OUTPUT_DIR="${MCP_CONFORMANCE_OUTPUT_DIR:-target/mcp-conformance}"
 
 repo_root="$(git rev-parse --show-toplevel)"
-output_dir="${repo_root}/${MCP_CONFORMANCE_OUTPUT_DIR}"
+if [[ "$MCP_CONFORMANCE_OUTPUT_DIR" = /* ]]; then
+  output_dir="$MCP_CONFORMANCE_OUTPUT_DIR"
+else
+  output_dir="${repo_root}/${MCP_CONFORMANCE_OUTPUT_DIR}"
+fi
+cargo_target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"
 baseline="${repo_root}/conformance/expected-failures-extensions.yaml"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/labby-mcp-conformance.XXXXXX")"
 server_pid=""
@@ -79,9 +84,9 @@ run_direct_proxy() {
 
   RUSTFLAGS="" cargo build -p labby --all-features --features proxy-testkit --bins --locked
   HOME="$direct_home" LABBY_HOME="$direct_home" LABBY_LOG="labby=warn" \
-    "${repo_root}/target/debug/labby" --json proxy --local --auth none \
+    "${cargo_target_dir}/debug/labby" --json proxy --local --auth none \
     --port "$MCP_CONFORMANCE_DIRECT_PROXY_PORT" \
-    "${repo_root}/target/debug/stdio-mcp-fixture" --pid-file "$child_pid_file" \
+    "${cargo_target_dir}/debug/stdio-mcp-fixture" --pid-file "$child_pid_file" \
     >"$ready_file" 2>"$error_file" &
   direct_proxy_pid="$!"
 
@@ -186,7 +191,7 @@ RUSTFLAGS="" cargo build -p labby --all-features --locked
 conformance_token="mcp-conformance-test-token"
 HOME="${work_dir}/home" LABBY_MCP_HTTP_TOKEN="$conformance_token" \
   LABBY_LOG="labby=warn,labby_auth=warn" \
-  "${repo_root}/target/debug/labby" serve \
+  "${cargo_target_dir}/debug/labby" serve \
   --host 127.0.0.1 --port "$MCP_CONFORMANCE_LABBY_PORT" \
   >"${output_dir}/labby-server.log" 2>&1 &
 labby_pid="$!"

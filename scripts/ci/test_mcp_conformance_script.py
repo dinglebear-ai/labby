@@ -21,6 +21,17 @@ class McpConformanceScriptTests(unittest.TestCase):
         self.assertIn("--direct-proxy-only", completed.stdout)
         self.assertIn("MCP_CONFORMANCE_OUTPUT_DIR", completed.stdout)
 
+    def test_script_honors_cargo_target_dir_and_absolute_output(self) -> None:
+        script = (ROOT / "scripts/ci/mcp-conformance.sh").read_text()
+
+        self.assertIn(
+            'cargo_target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"', script
+        )
+        self.assertIn('"${cargo_target_dir}/debug/labby" --json proxy', script)
+        self.assertIn('"${cargo_target_dir}/debug/stdio-mcp-fixture"', script)
+        self.assertIn('"${cargo_target_dir}/debug/labby" serve', script)
+        self.assertIn('if [[ "$MCP_CONFORMANCE_OUTPUT_DIR" = /* ]]', script)
+
 
 if __name__ == "__main__":
     unittest.main()
