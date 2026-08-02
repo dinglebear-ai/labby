@@ -239,17 +239,24 @@ where
     /// The running service and optional server task are intentionally retained
     /// as private keepalive fields for the connection's lifetime.
     #[must_use]
-    pub fn new<S>(
-        client_service: S,
+    pub fn new(
+        client_service: rmcp::service::RunningService<RoleClient, H>,
         server_task: Option<tokio::task::JoinHandle<()>>,
         peer: rmcp::service::Peer<RoleClient>,
         runtime: UpstreamRuntimeMetadata,
-    ) -> Self
-    where
-        S: Into<UpstreamClientService<H>>,
-    {
+    ) -> Self {
+        Self::new_with_client_service(client_service.into(), server_task, peer, runtime)
+    }
+
+    #[must_use]
+    pub(super) fn new_with_client_service(
+        client_service: UpstreamClientService<H>,
+        server_task: Option<tokio::task::JoinHandle<()>>,
+        peer: rmcp::service::Peer<RoleClient>,
+        runtime: UpstreamRuntimeMetadata,
+    ) -> Self {
         Self {
-            _client_service: client_service.into(),
+            _client_service: client_service,
             _server_task: server_task,
             peer,
             runtime,

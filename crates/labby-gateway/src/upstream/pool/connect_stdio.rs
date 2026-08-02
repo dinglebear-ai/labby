@@ -333,7 +333,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         .map(super::super::process_guard::JobObjectGuard::disarm)
         .unwrap_or(0);
 
-    let conn = UpstreamConnection::new(
+    let conn = UpstreamConnection::new_with_client_service(
         service,
         None,
         peer,
