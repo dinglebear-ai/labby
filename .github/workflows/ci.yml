@@ -536,7 +536,10 @@ jobs:
   mcp-regressions:
     name: MCP focused regressions
     runs-on: ci-pool-rust
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -997,7 +1000,10 @@ jobs:
   rust-coverage:
     name: Rust coverage
     runs-on: ci-pool-rust
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
