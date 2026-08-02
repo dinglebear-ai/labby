@@ -51,6 +51,7 @@ pub(super) fn upstream_discovery_timeout(
         floor
     }
 }
+
 /// Per-service timeout for in-process peer registration and capability probing.
 pub(super) const IN_PROCESS_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Default cap for bulk discovery and concurrent lazy reprobes. Stdio upstreams

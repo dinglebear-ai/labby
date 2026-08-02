@@ -417,6 +417,9 @@ impl UpstreamOauthManager {
             )));
         }
 
+        self.reconfigure_client_after_store_init(&mut manager, subject)
+            .await?;
+
         let credential_row = self.credential_row(subject).await?;
         let refresh_state = credential_row
             .as_ref()
@@ -555,6 +558,9 @@ impl UpstreamOauthManager {
             )));
         }
 
+        self.reconfigure_client_after_store_init(&mut manager, subject)
+            .await?;
+
         let credential_row = self.credential_row(subject).await?;
         let refresh_state = credential_row
             .as_ref()
@@ -672,31 +678,8 @@ impl UpstreamOauthManager {
             )));
         }
 
-        // rmcp's `initialize_from_store()` reconfigures the OAuth client via
-        // `configure_client_id()`, which hardcodes `client_secret: None` and so
-        // discards the secret that `configured_authorization_manager` just set.
-        // Confidential upstreams (e.g. Google, which requires `client_secret` on
-        // the refresh_token grant) then fail refresh with "client_secret is
-        // missing". Re-apply the resolved client config — including the secret —
-        // now that stored credentials and metadata are loaded. `refresh_token()`
-        // reads the refresh token from the credential store, not the client
-        // config, so re-configuring the client does not disturb it. For public
-        // clients `resolve_client_config` yields no secret, so this is a no-op.
-        let scopes_owned = self.oauth_config()?.scopes.clone().unwrap_or_default();
-        let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
-        let client_cfg = self
-            .resolve_client_config(
-                &mut manager,
-                subject,
-                &scopes,
-                DynamicClientRegistrationUse::StoredCredentials,
-            )
+        self.reconfigure_client_after_store_init(&mut manager, subject)
             .await?;
-        manager.configure_client(client_cfg).map_err(|e| {
-            OauthError::Internal(format!(
-                "re-configure client with credentials after store init: {e}"
-            ))
-        })?;
 
         manager.refresh_token().await.map_err(map_auth_error)?;
         tracing::info!(
@@ -749,6 +732,33 @@ impl UpstreamOauthManager {
     }
 
     // ---- private helpers ----
+
+    /// Restore the complete configured OAuth client after rmcp loads stored
+    /// credentials. `initialize_from_store()` currently calls
+    /// `configure_client_id()`, which drops confidential-client secrets. Every
+    /// path that may refresh a token must therefore re-apply the resolved client
+    /// config before asking rmcp for an access token.
+    async fn reconfigure_client_after_store_init(
+        &self,
+        manager: &mut AuthorizationManager,
+        subject: &str,
+    ) -> Result<(), OauthError> {
+        let scopes_owned = self.oauth_config()?.scopes.clone().unwrap_or_default();
+        let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
+        let client_cfg = self
+            .resolve_client_config(
+                manager,
+                subject,
+                &scopes,
+                DynamicClientRegistrationUse::StoredCredentials,
+            )
+            .await?;
+        manager.configure_client(client_cfg).map_err(|error| {
+            OauthError::Internal(format!(
+                "re-configure client with credentials after store init: {error}"
+            ))
+        })
+    }
 
     async fn configured_authorization_manager(
         &self,
