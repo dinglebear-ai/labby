@@ -124,13 +124,13 @@ async fn http_upstream_falls_back_after_transport_rejects_2026_discovery() {
 }
 
 #[derive(Clone, Default)]
-struct MisclassifiedDiscoveryResponder {
+struct DiscoveryMetadataResponder {
     discover_requests: Arc<AtomicUsize>,
     initialize_requests: Arc<AtomicUsize>,
     list_tools_requests: Arc<AtomicUsize>,
 }
 
-impl Respond for MisclassifiedDiscoveryResponder {
+impl Respond for DiscoveryMetadataResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
         let method = body
@@ -189,8 +189,8 @@ impl Respond for MisclassifiedDiscoveryResponder {
                     "id": id,
                     "result": {
                         "tools": [{
-                            "name": "metadata_fallback_echo",
-                            "description": "misclassified discovery fallback proof",
+                            "name": "metadata_discovery_echo",
+                            "description": "discovery metadata compatibility proof",
                             "inputSchema": {"type": "object"}
                         }]
                     }
@@ -203,9 +203,9 @@ impl Respond for MisclassifiedDiscoveryResponder {
 }
 
 #[tokio::test]
-async fn http_upstream_falls_back_when_discovery_result_is_misclassified() {
+async fn http_upstream_accepts_discovery_result_with_server_info_metadata() {
     let server = MockServer::start().await;
-    let responder = MisclassifiedDiscoveryResponder::default();
+    let responder = DiscoveryMetadataResponder::default();
     Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/mcp"))
         .respond_with(responder.clone())
@@ -225,13 +225,13 @@ async fn http_upstream_falls_back_when_discovery_result_is_misclassified() {
         (),
     )
     .await
-    .expect("gateway should retry a misclassified discovery response through initialize");
+    .expect("gateway should accept a valid discovery response");
 
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 0);
     assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "metadata_fallback_echo");
+    assert_eq!(tools[0].name, "metadata_discovery_echo");
 }
 
 #[derive(Clone, Default)]
