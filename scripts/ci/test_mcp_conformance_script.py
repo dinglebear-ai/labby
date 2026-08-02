@@ -27,6 +27,12 @@ class McpConformanceScriptTests(unittest.TestCase):
         self.assertIn(
             'cargo_target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"', script
         )
+        self.assertIn(
+            'rmcp_target_dir="${CARGO_TARGET_DIR:-${work_dir}/rust-sdk/target}"',
+            script,
+        )
+        self.assertIn('"${rmcp_target_dir}/debug/conformance-server"', script)
+        self.assertIn('"${rmcp_target_dir}/debug/conformance-client"', script)
         self.assertIn('"${cargo_target_dir}/debug/labby" --json proxy', script)
         self.assertIn('"${cargo_target_dir}/debug/stdio-mcp-fixture"', script)
         self.assertIn('"${cargo_target_dir}/debug/labby" serve', script)

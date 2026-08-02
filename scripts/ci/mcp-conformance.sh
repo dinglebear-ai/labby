@@ -47,6 +47,7 @@ fi
 cargo_target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"
 baseline="${repo_root}/conformance/expected-failures-extensions.yaml"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/labby-mcp-conformance.XXXXXX")"
+rmcp_target_dir="${CARGO_TARGET_DIR:-${work_dir}/rust-sdk/target}"
 server_pid=""
 labby_pid=""
 direct_proxy_pid=""
@@ -241,7 +242,7 @@ jq --exit-status '.jsonrpc == "2.0" and .id == 1 and (.result.tools | map(.name)
 
 # Score the dated protocol against rmcp's purpose-built fixture catalog.
 STATELESS=1 PORT="$MCP_CONFORMANCE_PORT" \
-  "${work_dir}/rust-sdk/target/debug/conformance-server" \
+  "${rmcp_target_dir}/debug/conformance-server" \
   >"${output_dir}/server.log" 2>&1 &
 server_pid="$!"
 server_ready=false
@@ -288,13 +289,13 @@ for scenario in "${task_scenarios[@]}"; do
 done
 
 "$conformance" client \
-  --command "${work_dir}/rust-sdk/target/debug/conformance-client" \
+  --command "${rmcp_target_dir}/debug/conformance-client" \
   --suite all \
   --spec-version "$MCP_SPEC_VERSION" \
   -o "${output_dir}/client-dated"
 
 "$conformance" client \
-  --command "${work_dir}/rust-sdk/target/debug/conformance-client" \
+  --command "${rmcp_target_dir}/debug/conformance-client" \
   --suite extensions \
   --expected-failures "$baseline" \
   -o "${output_dir}/client-extensions"
