@@ -3,10 +3,14 @@
 //! Labby's downstream server remains on the current stateless lifecycle. This
 //! module only handles independently versioned upstream servers.
 
-use rmcp::model::{ProtocolVersion, ServerResult};
+use rmcp::model::{ErrorCode, ProtocolVersion, ServerResult};
 use rmcp::service::{ClientInitializeError, ClientLifecycleMode};
 
 const DISCOVERY_SERVER_INFO_META_KEY: &str = "io.modelcontextprotocol/serverInfo";
+
+pub(super) fn legacy_protocol_version() -> ProtocolVersion {
+    ProtocolVersion::V_2025_11_25
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LifecycleAttempt {
@@ -59,9 +63,34 @@ fn discovery_response_was_misclassified(error: &anyhow::Error) -> bool {
     })
 }
 
+fn no_compatible_protocol_version(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<ClientInitializeError>(),
+            Some(ClientInitializeError::NoCompatibleProtocolVersion { .. })
+        )
+    })
+}
+
+fn modern_discovery_error_must_not_downgrade(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let Some(ClientInitializeError::JsonRpcError(error)) =
+            cause.downcast_ref::<ClientInitializeError>()
+        else {
+            return false;
+        };
+        error.code == ErrorCode::HEADER_MISMATCH
+            || error.code == ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+            || error.code == ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+    })
+}
+
 /// Select a retry only when an error proves lifecycle incompatibility.
 pub(super) fn compatibility_retry(error: &anyhow::Error) -> Option<LifecycleAttempt> {
-    if discovery_response_was_misclassified(error) {
+    if modern_discovery_error_must_not_downgrade(error) {
+        return None;
+    }
+    if discovery_response_was_misclassified(error) || no_compatible_protocol_version(error) {
         return Some(LifecycleAttempt::LegacyInitialize);
     }
 
@@ -70,6 +99,7 @@ pub(super) fn compatibility_retry(error: &anyhow::Error) -> Option<LifecycleAtte
     if message.contains("unsupported mcp-protocol-version")
         || message.contains("unsupported protocol version")
         || message.contains("method not found")
+        || message.contains("method not supported")
         || message.contains("unknown method")
         || (message.contains("-32601") && message.contains("server/discover"))
     {
@@ -81,9 +111,8 @@ pub(super) fn compatibility_retry(error: &anyhow::Error) -> Option<LifecycleAtte
         || message.contains("expect initialize request")
         || message.contains("expected initialize request")
         || message.contains("connection closed: discover response")
-        || (message.contains("server/discover")
-            && (message.contains("invalid params")
-                || message.contains("invalid request parameters")))
+        || message.contains("invalid params")
+        || message.contains("invalid request parameters")
     {
         return Some(LifecycleAttempt::LegacyInitialize);
     }
@@ -158,6 +187,8 @@ mod tests {
             "JSON-RPC error: -32601: server/discover",
             "server/discover failed: No valid session ID provided",
             "server/discover: Invalid request parameters",
+            "JSON-RPC error: -32602: Invalid request parameters(\"\")",
+            "JSON-RPC error: -32601: Method not supported",
             "HTTP 422 Unprocessable Entity: Unexpected message, expect initialize request",
             "connection closed: discover response",
         ] {
@@ -165,6 +196,32 @@ mod tests {
                 compatibility_retry(&anyhow::anyhow!(message)),
                 Some(LifecycleAttempt::LegacyInitialize)
             );
+        }
+    }
+
+    #[test]
+    fn retries_when_discovery_has_no_mutually_supported_version() {
+        let error = anyhow::Error::new(ClientInitializeError::NoCompatibleProtocolVersion {
+            client_supported: vec![ProtocolVersion::V_2026_07_28],
+            server_supported: vec![ProtocolVersion::V_2025_11_25],
+        });
+        assert_eq!(
+            compatibility_retry(&error),
+            Some(LifecycleAttempt::LegacyInitialize)
+        );
+    }
+
+    #[test]
+    fn does_not_downgrade_modern_protocol_contract_errors() {
+        for code in [
+            ErrorCode::HEADER_MISMATCH,
+            ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY,
+            ErrorCode::UNSUPPORTED_PROTOCOL_VERSION,
+        ] {
+            let error = anyhow::Error::new(ClientInitializeError::JsonRpcError(
+                rmcp::model::ErrorData::new(code, "modern protocol contract error", None),
+            ));
+            assert_eq!(compatibility_retry(&error), None);
         }
     }
 
