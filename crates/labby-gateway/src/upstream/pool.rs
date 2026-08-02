@@ -35,6 +35,7 @@ mod ensure;
 mod entries;
 mod health;
 mod helpers;
+mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
 mod logging;
@@ -162,6 +163,50 @@ pub struct UpstreamPool {
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
 }
 
+/// Type-erased-over-lifecycle running client service.
+///
+/// The handler type remains stable for pool and relay caches, while a legacy
+/// fallback can wrap it to override the initialize protocol version without
+/// discarding server-to-client callbacks.
+pub(super) enum UpstreamClientService<H>
+where
+    H: rmcp::ClientHandler,
+{
+    Direct(rmcp::service::RunningService<RoleClient, H>),
+    Versioned(rmcp::service::RunningService<RoleClient, legacy_client::VersionedClientHandler<H>>),
+}
+
+impl<H> From<rmcp::service::RunningService<RoleClient, H>> for UpstreamClientService<H>
+where
+    H: rmcp::ClientHandler,
+{
+    fn from(service: rmcp::service::RunningService<RoleClient, H>) -> Self {
+        Self::Direct(service)
+    }
+}
+
+impl<H> UpstreamClientService<H>
+where
+    H: rmcp::ClientHandler,
+{
+    pub(super) fn peer(&self) -> &rmcp::service::Peer<RoleClient> {
+        match self {
+            Self::Direct(service) => service.peer(),
+            Self::Versioned(service) => service.peer(),
+        }
+    }
+
+    pub(super) async fn close_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<rmcp::service::QuitReason>, tokio::task::JoinError> {
+        match self {
+            Self::Direct(service) => service.close_with_timeout(timeout).await,
+            Self::Versioned(service) => service.close_with_timeout(timeout).await,
+        }
+    }
+}
+
 /// A live connection to an upstream MCP server.
 ///
 /// Generic over the client handler `H` (default `()`). Almost every connection
@@ -176,7 +221,7 @@ where
     H: rmcp::ClientHandler,
 {
     /// The running client service handle — kept alive to maintain the connection.
-    _client_service: rmcp::service::RunningService<RoleClient, H>,
+    _client_service: UpstreamClientService<H>,
     /// Background task holding an in-process server alive when applicable.
     _server_task: Option<tokio::task::JoinHandle<()>>,
     /// The peer handle for making requests.
@@ -194,14 +239,17 @@ where
     /// The running service and optional server task are intentionally retained
     /// as private keepalive fields for the connection's lifetime.
     #[must_use]
-    pub fn new(
-        client_service: rmcp::service::RunningService<RoleClient, H>,
+    pub fn new<S>(
+        client_service: S,
         server_task: Option<tokio::task::JoinHandle<()>>,
         peer: rmcp::service::Peer<RoleClient>,
         runtime: UpstreamRuntimeMetadata,
-    ) -> Self {
+    ) -> Self
+    where
+        S: Into<UpstreamClientService<H>>,
+    {
         Self {
-            _client_service: client_service,
+            _client_service: client_service.into(),
             _server_task: server_task,
             peer,
             runtime,

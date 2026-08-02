@@ -6,17 +6,20 @@
 //! `crate::mcp` (A-M6 fix).
 
 use labby_runtime::gateway_config::UpstreamConfig;
+use rmcp::ClientHandler;
 use rmcp::service::ClientServiceExt;
-use rmcp::{ClientHandler, RoleClient};
 
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
-use super::UpstreamConnection;
 use super::connect::runtime_origin_label;
-use super::lifecycle_compat::{LifecycleAttempt, compatibility_retry, log_fallback};
+use super::legacy_client::VersionedClientHandler;
+use super::lifecycle_compat::{
+    LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
+};
 use super::stdio_stderr::{
     StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
 };
+use super::{UpstreamClientService, UpstreamConnection};
 
 /// Connect to a stdio upstream MCP server (child process).
 ///
@@ -266,12 +269,31 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     #[cfg(windows)]
     let job_guard = pid.map(super::super::process_guard::JobObjectGuard::arm);
 
-    let service: rmcp::service::RunningService<RoleClient, H> = match handler
-        .serve_with_lifecycle(process, lifecycle.mode())
-        .await
-    {
-        Ok(service) => service,
-        Err(error) => return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await),
+    let service = match lifecycle {
+        LifecycleAttempt::Modern => {
+            let service = match handler
+                .serve_with_lifecycle(process, lifecycle.mode())
+                .await
+            {
+                Ok(service) => service,
+                Err(error) => {
+                    return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await);
+                }
+            };
+            UpstreamClientService::Direct(service)
+        }
+        LifecycleAttempt::LegacyInitialize => {
+            let service = match VersionedClientHandler::new(handler, legacy_protocol_version())
+                .serve_with_lifecycle(process, lifecycle.mode())
+                .await
+            {
+                Ok(service) => service,
+                Err(error) => {
+                    return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await);
+                }
+            };
+            UpstreamClientService::Versioned(service)
+        }
     };
     let peer = service.peer().clone();
 
