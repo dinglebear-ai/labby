@@ -33,6 +33,24 @@ pub struct UpstreamCachedSummary {
 
 /// Per-upstream timeout for initial discovery (`list_tools`).
 pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+/// Stdio discovery includes process/package-runner/SSH cold start, not just RPC.
+pub(super) const STDIO_DISCOVERY_TIMEOUT: Duration = Duration::from_mins(1);
+
+pub(super) fn upstream_discovery_timeout(
+    config: &UpstreamConfig,
+    request_timeout: Duration,
+) -> Duration {
+    let floor = if config.command.is_some() {
+        STDIO_DISCOVERY_TIMEOUT
+    } else {
+        DISCOVERY_TIMEOUT
+    };
+    if request_timeout > floor {
+        request_timeout
+    } else {
+        floor
+    }
+}
 /// Per-service timeout for in-process peer registration and capability probing.
 pub(super) const IN_PROCESS_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Default cap for bulk discovery and concurrent lazy reprobes. Stdio upstreams
@@ -416,6 +434,28 @@ mod tests {
     /// `config_value` fallback is used when the env var isn't set. Doesn't
     /// touch process env or the seeded static, so this is safe under both
     /// nextest's per-process isolation and cargo test's threaded model.
+    #[test]
+    fn stdio_discovery_allows_cold_start_beyond_the_rpc_timeout() {
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.name = "slow-stdio".into();
+        config.command = Some("ssh".into());
+        assert_eq!(
+            upstream_discovery_timeout(&config, Duration::from_secs(30)),
+            STDIO_DISCOVERY_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn http_discovery_honors_the_configured_request_timeout() {
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.name = "remote-http".into();
+        config.url = Some("https://example.invalid/mcp".into());
+        assert_eq!(
+            upstream_discovery_timeout(&config, Duration::from_secs(45)),
+            Duration::from_secs(45)
+        );
+    }
+
     #[test]
     fn upstream_discovery_concurrency_uses_config_value_when_env_unset() {
         assert_eq!(upstream_discovery_concurrency(Some(7)), 7);
