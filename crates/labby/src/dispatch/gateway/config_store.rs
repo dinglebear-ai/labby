@@ -193,10 +193,28 @@ fn values_to_service_creds(service: &str, values: &BTreeMap<String, String>) -> 
 
 // Used by `#[cfg(test)]` unit tests only.
 #[cfg(test)]
+static NEXT_TEST_GATEWAY_CONFIG_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn isolated_test_config_path(path: PathBuf) -> PathBuf {
+    if path != PathBuf::from("config.toml") {
+        return path;
+    }
+
+    let id = NEXT_TEST_GATEWAY_CONFIG_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "labby-test-gateway-config-{}-{id}.toml",
+        std::process::id()
+    ))
+}
+
+#[cfg(test)]
 pub(crate) fn test_gateway_manager(
     path: PathBuf,
     runtime: labby_gateway::gateway::manager::GatewayRuntimeHandle,
 ) -> labby_gateway::gateway::manager::GatewayManager {
+    let path = isolated_test_config_path(path);
     let config = Arc::new(RwLock::new(LabConfig::default()));
     let store = Arc::new(LabConfigStore::new(config, path.clone()));
     labby_gateway::gateway::manager::GatewayManager::with_store(path, runtime, store)
@@ -389,6 +407,25 @@ mod host_config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_relative_test_config_paths_are_isolated() {
+        let first = isolated_test_config_path(PathBuf::from("config.toml"));
+        let second = isolated_test_config_path(PathBuf::from("config.toml"));
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(std::env::temp_dir().as_path()));
+        assert_eq!(second.parent(), Some(std::env::temp_dir().as_path()));
+    }
+
+    #[test]
+    fn explicit_test_config_paths_are_preserved() {
+        let explicit = std::env::temp_dir()
+            .join("labby-explicit-test-config")
+            .join("config.toml");
+
+        assert_eq!(isolated_test_config_path(explicit.clone()), explicit);
+    }
 
     /// Trust invariant: persisting a gateway mutation through the host store must
     /// preserve a FOREIGN top-level section (one `LabConfig` does not model),

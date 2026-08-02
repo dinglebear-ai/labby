@@ -372,7 +372,7 @@ impl GatewayManager {
 
         let restored_name = server.spec.name.clone();
         insert_upstream(&mut cfg, server.spec)?;
-        self.persist_config(cfg).await?;
+        self.write_config_file(&cfg).await?;
         let diff = self.reload_with_origin_unlocked(origin, owner).await?;
         tracing::info!(
             surface = "dispatch",

@@ -978,6 +978,9 @@
           "max_response_tokens": {
             "type": "integer"
           },
+          "mcp_ui_enabled": {
+            "type": "boolean"
+          },
           "result_shape_policy": {
             "type": "string"
           },

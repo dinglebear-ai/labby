@@ -4,7 +4,9 @@ use anyhow::Result;
 use labby_codemode::MAX_SOURCE_BYTES;
 use serde_json::json;
 
-use crate::cli::gateway::{GatewayCodeArgs, GatewayCodeCommand, LazyGatewayManager};
+use crate::cli::gateway::{
+    GatewayCodeArgs, GatewayCodeCommand, GatewayCodeUiCommand, LazyGatewayManager,
+};
 use crate::config::LabConfig;
 use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
 use crate::output::OutputFormat;
@@ -45,6 +47,25 @@ pub(super) async fn run_gateway_code(
                 config,
                 "gateway.code_mode.set".to_string(),
                 json!({ "enabled": false }),
+            )
+            .await?;
+            crate::output::print(&value, format)?;
+        }
+        GatewayCodeCommand::Ui { command } => {
+            let params = match command {
+                GatewayCodeUiCommand::Status => None,
+                GatewayCodeUiCommand::Enable => Some(json!({ "mcp_ui_enabled": true })),
+                GatewayCodeUiCommand::Disable => Some(json!({ "mcp_ui_enabled": false })),
+            };
+            let value = dispatch_gateway_action(
+                manager,
+                config,
+                if params.is_some() {
+                    "gateway.code_mode.set".to_string()
+                } else {
+                    "gateway.code_mode.get".to_string()
+                },
+                params.unwrap_or_else(|| json!({})),
             )
             .await?;
             crate::output::print(&value, format)?;

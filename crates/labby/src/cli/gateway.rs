@@ -101,6 +101,7 @@ async fn build_manager_with_upstream_oauth_runtime(
                 redirect_uri: rt.redirect_uri,
             }),
             usage_store: usage_store.clone(),
+            code_mode_app_state: Default::default(),
         },
         runtime,
     )?;

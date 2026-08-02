@@ -362,14 +362,42 @@ impl LabMcpServer {
                     .into());
                 }
 
-                let previous = desired.map(|enabled| self.code_mode_app_state.set_enabled(enabled));
-                let enabled = self.code_mode_app_state.is_enabled();
-                let changed = previous.is_some_and(|previous| previous != enabled);
-                if changed {
+                let previous = self.code_mode_app_state.is_enabled();
+                let enabled = if let Some(desired) = desired {
+                    if let Some(manager) = self.gateway_manager.as_ref() {
+                        let mut next = manager.code_mode_config().await;
+                        next.mcp_ui_enabled = desired;
+                        match manager
+                            .set_code_mode_config(
+                                next,
+                                Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
+                                None,
+                            )
+                            .await
+                        {
+                            Ok(current) => current.mcp_ui_enabled,
+                            Err(error) => {
+                                let envelope =
+                                    tool_error_envelope(&service, synthetic_action, &error);
+                                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                    envelope.to_string(),
+                                )])
+                                .into());
+                            }
+                        }
+                    } else {
+                        self.code_mode_app_state.set_enabled(desired);
+                        desired
+                    }
+                } else {
+                    previous
+                };
+                let changed = desired.is_some() && previous != enabled;
+                if changed && self.gateway_manager.is_none() {
                     schedule_catalog_notification(
                         &self.peers,
                         CatalogNotificationChanges::new(true, true, false),
-                        labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE,
+                        labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
                     );
                 }
 

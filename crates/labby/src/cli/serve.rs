@@ -1338,7 +1338,7 @@ async fn build_gateway_runtime(
     }
     let (notify_tx, notify_rx) = mpsc::unbounded_channel();
     let client_registry = notifier.client_registry.clone();
-    let _catalog_notifier_task = tokio::spawn(notifier.run(notify_rx));
+    let _catalog_notifier_task = tokio::spawn(notifier.clone().run(notify_rx));
     let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
     let live_config = Arc::new(std::sync::RwLock::new(config.clone()));
     let store: Arc<dyn labby_gateway::gateway::config_store::GatewayConfigStore> = Arc::new(
@@ -1361,6 +1361,7 @@ async fn build_gateway_runtime(
                 redirect_uri: rt.redirect_uri,
             }),
             usage_store: usage_store.clone(),
+            code_mode_app_state: notifier.code_mode_app_state.clone(),
         },
         gateway_runtime,
     )?;

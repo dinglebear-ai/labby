@@ -132,6 +132,10 @@ pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
     #[serde(default)]
     pub enabled: bool,
+    /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
+    /// The text-only `codemode` executor remains available when this is false.
+    #[serde(default = "default_true")]
+    pub mcp_ui_enabled: bool,
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
     pub trace_params: bool,
@@ -196,6 +200,7 @@ impl Default for CodeModeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            mcp_ui_enabled: true,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
@@ -1522,9 +1527,21 @@ mod tests {
         let expected = CodeModeConfig::default();
         assert_eq!(cfg, expected);
         assert!(!cfg.enabled);
+        assert!(cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
+    }
+
+    #[test]
+    fn code_mode_mcp_ui_can_be_disabled_in_toml() {
+        let cfg: CodeModeConfig = toml::from_str(
+            "mcp_ui_enabled = false
+",
+        )
+        .unwrap();
+        assert!(!cfg.mcp_ui_enabled);
+        assert!(!cfg.enabled);
     }
 
     #[test]

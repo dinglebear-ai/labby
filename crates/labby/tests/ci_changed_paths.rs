@@ -258,14 +258,26 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         .expect("Gateway Admin browser job");
     assert!(browser_job.contains("pnpm test:browser"));
     assert!(browser_job.contains("Install Playwright runtime libraries"));
-    assert!(browser_job.contains("libnspr4"));
-    assert!(browser_job.contains("libnss3"));
+    assert!(
+        browser_job.contains("PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright"),
+        "Playwright must use the fleet-mounted browser cache regardless of runner UID"
+    );
+    for library in ["libasound2t64", "libgbm1", "libnss3", "libxkbcommon0"] {
+        assert!(
+            browser_job.contains(library),
+            "Ubuntu 26.04 runners must install the Chromium runtime library {library}"
+        );
+    }
+    assert!(
+        !browser_job.contains("playwright install-deps"),
+        "Ubuntu 26.04 runners must install explicit runtime libraries instead of using Playwright's unsupported distro detector"
+    );
     assert!(browser_job.contains("Verify cached Playwright browser launch"));
     assert!(browser_job.contains("chromium.executablePath()"));
     assert!(browser_job.contains("fs.existsSync(executable)"));
     assert!(browser_job.contains("chromium.launch({ headless: true })"));
     assert!(
-        !browser_job.contains("playwright install"),
+        !browser_job.contains("pnpm exec playwright install chromium"),
         "Ubuntu 26.04 runners must use the image-provided Playwright browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));

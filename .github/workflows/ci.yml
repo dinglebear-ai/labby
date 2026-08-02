@@ -169,6 +169,11 @@ jobs:
     name: Gateway Admin browser tests
     runs-on: ci-pool-typescript
     timeout-minutes: 20
+    env:
+      # JIT jobs may run as root, while the fleet mounts the durable browser
+      # cache at the runner user's home. Keep browser discovery independent
+      # of the process UID.
+      PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
     needs: changes
     if: ${{ needs.changes.outputs.web == 'true' }}
     defaults:

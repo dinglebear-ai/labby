@@ -835,7 +835,9 @@ impl LabMcpServer {
         start: Instant,
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        if !self.code_mode_visibility().await.exposes_synthetic_tools() {
+        if !self.code_mode_visibility().await.exposes_synthetic_tools()
+            || !self.code_mode_app_state.is_enabled()
+        {
             return Err(ErrorData::resource_not_found(
                 format!("unknown UI resource: {uri}"),
                 None,
@@ -2522,6 +2524,44 @@ for (const value of [
         assert_eq!(
             second.resources[0].uri,
             expected_first_service_on_second_page
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_code_mode_app_denies_cached_resource_reads() {
+        let server = code_mode_server().await;
+        server.code_mode_app_state.set_enabled(false);
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+
+        for uri in [
+            CODE_MODE_APP_URI,
+            CODE_MODE_HISTORY_APP_URI,
+            CODE_MODE_APP_SKYBRIDGE_URI,
+        ] {
+            let err = running
+                .service()
+                .read_resource_impl(ReadResourceRequestParams::new(uri), context.clone())
+                .await
+                .expect_err("disabled Code Mode app resource must stay hidden");
+            assert!(
+                err.message.contains("unknown UI resource"),
+                "{uri} should be hidden as an unknown UI resource, got {err:?}"
+            );
+        }
+
+        let versioned = versioned_app_uri(CODE_MODE_APP_URI);
+        let err = running
+            .service()
+            .read_resource_impl(ReadResourceRequestParams::new(versioned.clone()), context)
+            .await
+            .expect_err("cached versioned URI must not bypass the disabled state");
+        assert!(
+            err.message.contains("unknown UI resource"),
+            "{versioned} should be hidden as an unknown UI resource, got {err:?}"
         );
     }
 

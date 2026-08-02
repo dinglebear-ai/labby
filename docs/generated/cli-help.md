@@ -2739,6 +2739,7 @@ Commands:
   status   Read gateway-wide Code Mode settings
   enable   Enable the gateway codemode MCP surface
   disable  Disable the gateway codemode MCP surface
+  ui       Manage the explicit Code Mode MCP App UI while keeping text execution available
   exec     Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly)
   help     Print this message or the help of the given subcommand(s)
 
@@ -2817,6 +2818,108 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `labby gateway code ui`
+
+```text
+Manage the explicit Code Mode MCP App UI while keeping text execution available
+
+Usage: ui [OPTIONS] <COMMAND>
+
+Commands:
+  status   Read whether the explicit Code Mode MCP App UI is enabled
+  enable   Enable the explicit Code Mode MCP App UI
+  disable  Disable the explicit Code Mode MCP App UI without disabling Code Mode
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway code ui status`
+
+```text
+Read whether the explicit Code Mode MCP App UI is enabled
+
+Usage: status [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway code ui enable`
+
+```text
+Enable the explicit Code Mode MCP App UI
+
+Usage: enable [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway code ui disable`
+
+```text
+Disable the explicit Code Mode MCP App UI without disabling Code Mode
+
+Usage: disable [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway code ui help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
 ```
 
 ## `labby gateway code exec`

@@ -12,8 +12,11 @@ use crate::gateway::config::{
 use crate::gateway::config_mutation::read_env_values;
 use crate::gateway::params::{GatewayEnrichmentScope, GatewayUpdatePatch};
 use crate::gateway::projection::*;
-use crate::gateway::types::{GatewayRuntimeView, GatewayView, ServiceConfigView};
+use crate::gateway::types::{
+    GatewayCatalogDiff, GatewayRuntimeView, GatewayView, ServiceConfigView,
+};
 use crate::upstream::types::UpstreamRuntimeOwner;
+use labby_runtime::catalog_notify::{SOURCE_GATEWAY_CODE_MODE_SET, SOURCE_MCP_CALL_MCP_APP};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
 
@@ -168,7 +171,7 @@ impl GatewayManager {
                 target = ?redacted_gateway_target(&spec),
                 "gateway reconcile"
             );
-            self.persist_config(cfg).await?;
+            self.write_config_file(&cfg).await?;
             let diff = self.reload_with_origin_unlocked(origin, owner).await?;
             tracing::info!(
                 surface = "dispatch",
@@ -200,7 +203,7 @@ impl GatewayManager {
     /// Each spec is validated and inserted individually. Specs that fail validation
     /// are collected into `errors`; specs that succeed populate `views`. If every
     /// spec fails the first error is returned as `Err`. Otherwise, a single
-    /// `persist_config` + `reload_with_origin_unlocked` is issued for all successes.
+    /// One config-file write plus `reload_with_origin_unlocked` is issued for all successes.
     pub async fn batch_add(
         &self,
         specs: Vec<UpstreamConfig>,
@@ -248,7 +251,7 @@ impl GatewayManager {
                 return Err(errors.remove(0).1);
             }
 
-            self.persist_config(cfg).await?;
+            self.write_config_file(&cfg).await?;
             let diff = self.reload_with_origin_unlocked(origin, owner).await?;
 
             tracing::info!(
@@ -360,7 +363,7 @@ impl GatewayManager {
         } else {
             update_upstream(&mut cfg, name, patch)?;
         }
-        self.persist_config(cfg).await?;
+        self.write_config_file(&cfg).await?;
         let diff = self.reload_with_origin_unlocked(origin, owner).await?;
         tracing::info!(
             surface = "dispatch",
@@ -400,7 +403,7 @@ impl GatewayManager {
         let code_mode = cfg.code_mode.clone();
         let removed = remove_upstream(&mut cfg, name)?;
         tombstone_removed_import(&mut cfg, &removed);
-        self.persist_config(cfg).await?;
+        self.write_config_file(&cfg).await?;
         let diff = self.reload_with_origin_unlocked(origin, owner).await?;
         tracing::info!(
             surface = "dispatch",
@@ -438,10 +441,47 @@ impl GatewayManager {
         validate_code_mode(&next)?;
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();
-        let old_enabled = cfg.code_mode.enabled;
+        let previous = cfg.code_mode.clone();
+        let old_enabled = previous.enabled;
+        let old_mcp_ui_enabled = previous.mcp_ui_enabled;
+
+        if previous == next {
+            return Ok(previous);
+        }
+
+        let mcp_ui_changed = old_mcp_ui_enabled != next.mcp_ui_enabled;
+        let mut previous_runtime = previous.clone();
+        previous_runtime.mcp_ui_enabled = next.mcp_ui_enabled;
+        let execution_runtime_changed = previous_runtime != next;
         cfg.code_mode = next.clone();
-        self.persist_config(cfg).await?;
-        self.reload_with_origin_unlocked(origin, owner).await?;
+
+        if execution_runtime_changed {
+            // Keep the old in-memory snapshot installed until reload observes it
+            // as the "before" side of the visible catalog transition.
+            self.write_config_file(&cfg).await?;
+            self.reload_with_origin_unlocked(origin, owner).await?;
+        } else {
+            // UI visibility is transport metadata, not an upstream-pool input. A
+            // UI-only toggle must never cold-connect or rebuild gateway upstreams.
+            self.persist_config(cfg).await?;
+        }
+
+        self.code_mode_app_state.set_enabled(next.mcp_ui_enabled);
+        if mcp_ui_changed {
+            let notification_source = if origin == Some(SOURCE_MCP_CALL_MCP_APP) {
+                SOURCE_MCP_CALL_MCP_APP
+            } else {
+                SOURCE_GATEWAY_CODE_MODE_SET
+            };
+            self.notify_catalog_changes(
+                &GatewayCatalogDiff {
+                    tools_changed: true,
+                    resources_changed: true,
+                    prompts_changed: false,
+                },
+                notification_source,
+            );
+        }
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -449,6 +489,9 @@ impl GatewayManager {
             mode = "code_mode",
             enabled = next.enabled,
             previous = old_enabled,
+            mcp_ui_enabled = next.mcp_ui_enabled,
+            previous_mcp_ui_enabled = old_mcp_ui_enabled,
+            execution_runtime_changed,
             timeout_ms = next.timeout_ms,
             max_response_bytes = next.max_response_bytes,
             max_response_tokens = next.max_response_tokens,
