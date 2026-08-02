@@ -71,6 +71,7 @@ pub(super) fn compatibility_retry(error: &anyhow::Error) -> Option<LifecycleAtte
         || message.contains("unsupported protocol version")
         || message.contains("method not found")
         || message.contains("unknown method")
+        || (message.contains("-32601") && message.contains("server/discover"))
     {
         return Some(LifecycleAttempt::LegacyInitialize);
     }
@@ -154,6 +155,7 @@ mod tests {
     fn retries_only_for_explicit_lifecycle_incompatibility() {
         for message in [
             "HTTP 400: Unsupported MCP-Protocol-Version: 2026-07-28",
+            "JSON-RPC error: -32601: server/discover",
             "server/discover failed: No valid session ID provided",
             "server/discover: Invalid request parameters",
             "HTTP 422 Unprocessable Entity: Unexpected message, expect initialize request",

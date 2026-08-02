@@ -26,16 +26,16 @@ env:
 jobs:
   fleet-policy:
     name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@d1a41a7af9c41189e0f1062234364f5814bda99d
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
     with:
       release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
 
   fleet-contract:
     name: Fleet repository contract
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@d1a41a7af9c41189e0f1062234364f5814bda99d
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
     with:
       profile: rust
-      implementation-ref: d1a41a7af9c41189e0f1062234364f5814bda99d
+      implementation-ref: 98e40816bfab64ed9fcce82236e9ecb0c0055d7d
 
   changes:
     name: changes
@@ -171,8 +171,8 @@ jobs:
     timeout-minutes: 20
     env:
       # JIT jobs may run as root, while the fleet mounts the durable browser
-      # cache at the runner user's home. Pin discovery to the mounted cache so
-      # it is independent of the process UID.
+      # cache at the runner user's home. Keep browser discovery independent
+      # of the process UID.
       PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
     needs: changes
     if: ${{ needs.changes.outputs.web == 'true' }}
@@ -193,13 +193,57 @@ jobs:
           cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Install Playwright runtime libraries
-        # Playwright does not identify Ubuntu 26.04 yet, so select its current
-        # Ubuntu fallback explicitly for dependency resolution only. This
-        # installs the complete Chromium runtime set without downloading or
-        # replacing the browser cached in the runner image.
-        env:
-          PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64
-        run: pnpm exec playwright install-deps chromium
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" = "0" ]; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libasound2t64 \
+              libatk-bridge2.0-0t64 \
+              libatk1.0-0t64 \
+              libatspi2.0-0t64 \
+              libcairo2 \
+              libcups2t64 \
+              libdbus-1-3 \
+              libdrm2 \
+              libgbm1 \
+              libglib2.0-0t64 \
+              libnspr4 \
+              libnss3 \
+              libpango-1.0-0 \
+              libx11-6 \
+              libxcb1 \
+              libxcomposite1 \
+              libxdamage1 \
+              libxext6 \
+              libxfixes3 \
+              libxkbcommon0 \
+              libxrandr2
+          else
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libasound2t64 \
+              libatk-bridge2.0-0t64 \
+              libatk1.0-0t64 \
+              libatspi2.0-0t64 \
+              libcairo2 \
+              libcups2t64 \
+              libdbus-1-3 \
+              libdrm2 \
+              libgbm1 \
+              libglib2.0-0t64 \
+              libnspr4 \
+              libnss3 \
+              libpango-1.0-0 \
+              libx11-6 \
+              libxcb1 \
+              libxcomposite1 \
+              libxdamage1 \
+              libxext6 \
+              libxfixes3 \
+              libxkbcommon0 \
+              libxrandr2
+          fi
       # The self-hosted runner image carries the matching Playwright browser.
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
       # already cached, so verify the image contract with a real headless launch

@@ -457,25 +457,23 @@ impl GatewayManager {
         upstream_params.arguments = Some(arguments);
         match pool.call_tool(upstream, upstream_params).await {
             Some(Ok(result)) => {
+                // `is_error=true` is an MCP tool-level failure carried inside
+                // a successful protocol response. Reaching this branch proves
+                // the upstream connection is healthy regardless of the tool's
+                // outcome or payload representation.
+                pool.record_success(upstream).await;
                 if result.is_error == Some(true) {
                     let error_text = result
                         .content
                         .first()
                         .and_then(|content| content.as_text())
                         .map(|content| content.text.as_str());
-                    let (kind, message, counts_as_failure) =
-                        code_mode_upstream_error_info(error_text);
-                    if counts_as_failure {
-                        pool.record_failure(upstream, message.clone()).await;
-                    } else {
-                        pool.record_success(upstream).await;
-                    }
+                    let (kind, message) = code_mode_upstream_error_info(error_text);
                     return Err(ToolError::Sdk {
                         sdk_kind: kind.to_string(),
                         message,
                     });
                 }
-                pool.record_success(upstream).await;
                 let ui = extract_ui_link(&result);
                 if let Some(ui) = ui.as_ref() {
                     let resource_uri = ui_resource_uri(&ui.ui_meta).unwrap_or("<unknown>");
@@ -645,24 +643,23 @@ fn code_mode_canonical_error_kind(s: &str) -> &'static str {
     }
 }
 
-/// Classify an upstream error payload into `(kind, message, counts_as_failure)`.
-fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String, bool) {
+/// Classify a tool-level MCP error payload into `(kind, message)`.
+fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String) {
     let Some(text) = text else {
         return (
             "upstream_error",
             "upstream returned a non-text error payload".to_string(),
-            true,
         );
     };
     let Ok(parsed) = serde_json::from_str::<Value>(text) else {
-        return ("upstream_error", text.to_string(), true);
+        return ("upstream_error", text.to_string());
     };
     let error_obj = parsed
         .get("error")
         .and_then(Value::as_object)
         .or_else(|| parsed.as_object());
     let Some(error_obj) = error_obj else {
-        return ("upstream_error", text.to_string(), true);
+        return ("upstream_error", text.to_string());
     };
     let raw_kind = error_obj
         .get("kind")
@@ -674,11 +671,7 @@ fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String, b
         .and_then(Value::as_str)
         .unwrap_or(text)
         .to_string();
-    let counts_as_failure = matches!(
-        kind,
-        "network_error" | "server_error" | "decode_error" | "internal_error"
-    );
-    (kind, message, counts_as_failure)
+    (kind, message)
 }
 
 #[cfg(test)]
@@ -954,15 +947,10 @@ mod tests {
             })
             .to_string();
 
-            let (actual, message, counts_as_failure) =
-                code_mode_upstream_error_info(Some(&payload));
+            let (actual, message) = code_mode_upstream_error_info(Some(&payload));
 
             assert_eq!(actual, kind);
             assert_eq!(message, format!("{kind} message"));
-            assert!(
-                !counts_as_failure,
-                "{kind} should not poison upstream health"
-            );
         }
     }
 
@@ -976,25 +964,21 @@ mod tests {
         })
         .to_string();
 
-        let (kind, message, counts_as_failure) = code_mode_upstream_error_info(Some(&payload));
+        let (kind, message) = code_mode_upstream_error_info(Some(&payload));
 
         assert_eq!(kind, "unknown_tool");
         assert_eq!(message, "tool is not available");
-        assert!(!counts_as_failure);
     }
 
     #[test]
-    fn classifies_unstructured_upstream_errors_as_infra_failures() {
-        let (kind, message, counts_as_failure) =
-            code_mode_upstream_error_info(Some("plain upstream failure"));
+    fn preserves_unstructured_tool_error_messages() {
+        let (kind, message) = code_mode_upstream_error_info(Some("plain upstream failure"));
         assert_eq!(kind, "upstream_error");
         assert_eq!(message, "plain upstream failure");
-        assert!(counts_as_failure);
 
-        let (kind, message, counts_as_failure) = code_mode_upstream_error_info(None);
+        let (kind, message) = code_mode_upstream_error_info(None);
         assert_eq!(kind, "upstream_error");
         assert_eq!(message, "upstream returned a non-text error payload");
-        assert!(counts_as_failure);
     }
 
     #[test]
@@ -1005,11 +989,10 @@ mod tests {
         })
         .to_string();
 
-        let (kind, message, counts_as_failure) = code_mode_upstream_error_info(Some(&payload));
+        let (kind, message) = code_mode_upstream_error_info(Some(&payload));
 
         assert_eq!(kind, "upstream_error");
         assert_eq!(message, "new kind");
-        assert!(!counts_as_failure);
     }
 
     #[test]

@@ -3150,6 +3150,23 @@ for (const value of [
     }
 
     #[test]
+    fn code_mode_app_html_unwraps_connector_result_envelopes() {
+        let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
+
+        for expected in [
+            "function tracePayload",
+            "structuredContent",
+            "structured_content",
+            "JSON.parse(block.text)",
+        ] {
+            assert!(
+                html.contains(expected),
+                "inline app must unwrap connector envelope marker `{expected}`"
+            );
+        }
+    }
+
+    #[test]
     fn code_mode_app_html_gates_connected_state_on_bridge_handshake() {
         let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
         // Status must not be claimed "connected" before the bridge resolves.
@@ -3223,6 +3240,24 @@ for (const value of [
             html.contains("autoResize: false"),
             "document-root auto-resize can over-report empty iframe space below the widget"
         );
+    }
+
+    #[test]
+    fn code_mode_app_html_starts_minimized() {
+        let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
+
+        for expected in [
+            "<main class=\"widget minimized\">",
+            "let minimized=true;",
+            "id=\"minimizeToggle\" aria-label=\"Restore inspector\" aria-pressed=\"true\" title=\"Restore inspector\"",
+            "class=\"minimize-icon\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" hidden",
+            "class=\"restore-icon\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path",
+        ] {
+            assert!(
+                html.contains(expected),
+                "inline app must start minimized with marker `{expected}`"
+            );
+        }
     }
 
     #[test]

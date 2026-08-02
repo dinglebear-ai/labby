@@ -141,7 +141,7 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 </style>
 </head>
 <body>
-<main class="widget">
+<main class="widget minimized">
 <div class="head">
 <svg class="mark" aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M3 12h18M6.7 6.7l10.6 10.6M17.3 6.7 6.7 17.3" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"/></svg>
 <span class="head-title">Execute</span>
@@ -172,9 +172,9 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 </div>
 </details>
 <span class="head-lock" role="img" aria-label="Read only" title="Read only"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="11" x="5" y="11" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
-<button type="button" class="iconbtn" id="minimizeToggle" aria-label="Minimize inspector" aria-pressed="false" title="Minimize inspector">
-<svg class="minimize-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m7 14 5-5 5 5"/></svg>
-<svg class="restore-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" hidden><path d="m7 10 5 5 5-5"/></svg>
+<button type="button" class="iconbtn" id="minimizeToggle" aria-label="Restore inspector" aria-pressed="true" title="Restore inspector">
+<svg class="minimize-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" hidden><path d="m7 14 5-5 5 5"/></svg>
+<svg class="restore-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg>
 </button>
 </div>
 <div id="content"><p class="empty">Run codemode_ui to populate the inspector.</p></div>
@@ -304,7 +304,7 @@ const copyButtonTimers=new WeakMap();
 let resizeApp=null;
 let resourceReader=null;
 let resizePending=false;
-let minimized=false;
+let minimized=true;
 let activeMcpUiUri="";
 let activeMcpUiLoadToken=0;
 // The LLM's tool-call arguments, delivered by the host (MCP Apps
@@ -1068,10 +1068,29 @@ chips.addEventListener("click",(event)=>{
   selected=button.dataset.target==="live"?"live":Number(button.dataset.target);
   paint();
 });
+function tracePayload(value,depth=0){
+  if(depth>4||!value||typeof value!=="object"||Array.isArray(value))return value;
+  if(value.kind==="code_mode_execute_trace"||value.kind==="code_mode_history")return value;
+  for(const key of ["structuredContent","structured_content","toolOutput","output","result"]){
+    if(!Object.prototype.hasOwnProperty.call(value,key))continue;
+    const nested=tracePayload(value[key],depth+1);
+    if(nested&&(nested.kind==="code_mode_execute_trace"||nested.kind==="code_mode_history"))return nested;
+  }
+  if(Array.isArray(value.content)){
+    for(const block of value.content){
+      if(!block||typeof block!=="object"||typeof block.text!=="string")continue;
+      try{
+        const nested=tracePayload(JSON.parse(block.text),depth+1);
+        if(nested&&(nested.kind==="code_mode_execute_trace"||nested.kind==="code_mode_history"))return nested;
+      }catch(_){}
+    }
+  }
+  return value;
+}
 // Returns true when `trace` matched a known Code Mode trace kind, false for the
 // empty placeholder or an unrecognized shape (rendered as a raw JSON dump).
 function render(trace){
-  const t=trace&&trace.structuredContent?trace.structuredContent:trace;
+  const t=tracePayload(trace);
   if(!t||!t.kind){live=null;history=[];selected="live";paint();return false;}
   if(t.kind==="code_mode_execute_trace"){live=t;selected="live";recognizedOnce=true;paint();return true;}
   if(t.kind==="code_mode_history"){

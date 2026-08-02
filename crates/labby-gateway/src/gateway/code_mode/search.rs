@@ -249,7 +249,14 @@ async fn snippet_directory_fingerprint(policy: &str) -> Result<Option<String>, T
 fn directory_fingerprint_part(dir: &Path) -> Result<Option<String>, ToolError> {
     let metadata = match std::fs::metadata(dir) {
         Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(err) => {
             return Err(ToolError::internal_message(format!(
                 "read snippets directory `{}` metadata failed: {err}",
@@ -321,4 +328,35 @@ fn normalize_path(path: &Path) -> String {
         .unwrap_or_else(|_| PathBuf::from(path))
         .display()
         .to_string()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inaccessible_snippet_directory_is_absent_from_fingerprint() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let blocked_parent = tempfile::tempdir().expect("temporary parent");
+        let snippet_dir = blocked_parent.path().join("snippets");
+        std::fs::create_dir(&snippet_dir).expect("snippet directory");
+        std::fs::set_permissions(
+            blocked_parent.path(),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .expect("block parent traversal");
+
+        let result = directory_fingerprint_part(&snippet_dir);
+
+        std::fs::set_permissions(
+            blocked_parent.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .expect("restore parent traversal");
+        assert_eq!(
+            result.expect("inaccessible directory should fail open"),
+            None
+        );
+    }
 }

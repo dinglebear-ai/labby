@@ -79,10 +79,40 @@ export interface ResultShape {
 }
 
 export function parseCodeModeTrace(value: unknown): CodeModeTrace | null {
-  if (!isRecord(value)) return null
-  if (value.kind === 'code_mode_execute_trace') return parseExecuteTrace(value)
-  if (value.kind === 'code_mode_history') return parseHistoryTrace(value)
+  const payload = unwrapCodeModeTracePayload(value)
+  if (!isRecord(payload)) return null
+  if (payload.kind === 'code_mode_execute_trace') return parseExecuteTrace(payload)
+  if (payload.kind === 'code_mode_history') return parseHistoryTrace(payload)
   return null
+}
+
+function unwrapCodeModeTracePayload(value: unknown, depth = 0): unknown {
+  if (depth > 4 || !isRecord(value)) return value
+  if (value.kind === 'code_mode_execute_trace' || value.kind === 'code_mode_history') return value
+
+  for (const key of ['structuredContent', 'structured_content', 'toolOutput', 'output', 'result']) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue
+    const nested = unwrapCodeModeTracePayload(value[key], depth + 1)
+    if (isRecord(nested) && (nested.kind === 'code_mode_execute_trace' || nested.kind === 'code_mode_history')) {
+      return nested
+    }
+  }
+
+  if (Array.isArray(value.content)) {
+    for (const block of value.content) {
+      if (!isRecord(block) || typeof block.text !== 'string') continue
+      try {
+        const nested = unwrapCodeModeTracePayload(JSON.parse(block.text), depth + 1)
+        if (isRecord(nested) && (nested.kind === 'code_mode_execute_trace' || nested.kind === 'code_mode_history')) {
+          return nested
+        }
+      } catch {
+        // Text content is allowed to be non-JSON.
+      }
+    }
+  }
+
+  return value
 }
 
 export interface DiscoveryHit {

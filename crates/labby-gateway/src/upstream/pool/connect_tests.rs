@@ -124,13 +124,13 @@ async fn http_upstream_falls_back_after_transport_rejects_2026_discovery() {
 }
 
 #[derive(Clone, Default)]
-struct ModernDiscoveryResponder {
+struct DiscoveryMetadataResponder {
     discover_requests: Arc<AtomicUsize>,
     initialize_requests: Arc<AtomicUsize>,
     list_tools_requests: Arc<AtomicUsize>,
 }
 
-impl Respond for ModernDiscoveryResponder {
+impl Respond for DiscoveryMetadataResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
         let method = body
@@ -190,7 +190,7 @@ impl Respond for ModernDiscoveryResponder {
                     "result": {
                         "tools": [{
                             "name": "metadata_discovery_echo",
-                            "description": "modern discovery handshake proof",
+                            "description": "discovery metadata compatibility proof",
                             "inputSchema": {"type": "object"}
                         }]
                     }
@@ -203,9 +203,9 @@ impl Respond for ModernDiscoveryResponder {
 }
 
 #[tokio::test]
-async fn http_upstream_accepts_modern_discovery_without_legacy_initialize() {
+async fn http_upstream_accepts_discovery_result_with_server_info_metadata() {
     let server = MockServer::start().await;
-    let responder = ModernDiscoveryResponder::default();
+    let responder = DiscoveryMetadataResponder::default();
     Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/mcp"))
         .respond_with(responder.clone())
@@ -213,7 +213,7 @@ async fn http_upstream_accepts_modern_discovery_without_legacy_initialize() {
         .await;
 
     let mut config = test_upstream_config();
-    config.name = "metadata-discovery-http".to_string();
+    config.name = "metadata-fallback-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
     let (_connection, tools) = connect_http_upstream(
@@ -225,14 +225,10 @@ async fn http_upstream_accepts_modern_discovery_without_legacy_initialize() {
         (),
     )
     .await
-    .expect("gateway should accept a valid modern discovery response");
+    .expect("gateway should accept a valid discovery response");
 
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        responder.initialize_requests.load(Ordering::SeqCst),
-        0,
-        "a valid 2026 discovery result must not downgrade to legacy initialize"
-    );
+    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 0);
     assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "metadata_discovery_echo");
