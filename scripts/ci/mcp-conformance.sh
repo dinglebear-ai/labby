@@ -55,7 +55,7 @@ if [[ "$actual_commit" != "$RMCP_COMMIT" ]]; then
   exit 1
 fi
 
-npm install \
+npm_config_cache="${work_dir}/npm-cache" npm install \
   --prefix "${work_dir}/js" \
   --ignore-scripts \
   --no-audit \
