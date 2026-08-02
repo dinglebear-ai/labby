@@ -1,7 +1,7 @@
 ---
 title: "Transport Contract"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-01"
 ---
 
 # Transport Contract
@@ -35,6 +35,21 @@ assets when available.
 
 The generated route inventory in
 [../generated/api-routes.md](../generated/api-routes.md) is authoritative.
+
+### Direct stdio proxy
+
+`labby proxy <child>` is a separate foreground transport adapter. It exposes
+only that child over a stateless Streamable HTTP router bound to `127.0.0.1`.
+Tailscale Serve may publish the loopback router, but the aggregate Labby
+catalog and `/v1/*` APIs are not mounted on the proxy endpoint.
+
+The proxy keeps RMCP Host and Origin enforcement enabled. Allowed authorities
+and origins are loopback plus the exact public resource host and port when one
+exists. JSON and request-scoped SSE responses remain enabled. Child launch uses
+an argv vector, a scrubbed environment, continuously drained/redacted stderr,
+and owned process trees. See the
+[stdio MCP proxy guide](../guides/STDIO_MCP_PROXY.md) for the complete security
+and cleanup model.
 
 ## Streamable HTTP Over A Unix-Domain Socket
 

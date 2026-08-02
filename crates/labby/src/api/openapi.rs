@@ -247,6 +247,28 @@ pub fn build_action_schemas(services: &[RegisteredService]) -> Vec<(String, RefO
     let mut schemas = Vec::new();
     for svc in services {
         let svc_pascal = to_pascal_case(svc.name);
+        let action_names = svc
+            .actions
+            .iter()
+            .map(|action| serde_json::Value::String(action.name.to_string()))
+            .collect::<Vec<_>>();
+        let request = ObjectBuilder::new()
+            .property(
+                "action",
+                ObjectBuilder::new()
+                    .schema_type(SchemaType::Type(Type::String))
+                    .enum_values(Some(action_names)),
+            )
+            .required("action")
+            .property(
+                "params",
+                ObjectBuilder::new().schema_type(SchemaType::Type(Type::Object)),
+            )
+            .build();
+        schemas.push((
+            format!("{svc_pascal}ActionRequest"),
+            RefOr::T(request.into()),
+        ));
         for action in svc.actions {
             if action.params.is_empty() {
                 continue;
@@ -407,9 +429,10 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
                         .content(
                             "application/json",
                             ContentBuilder::new()
-                                .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
-                                    "#/components/schemas/ActionRequest",
-                                ))))
+                                .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(format!(
+                                    "#/components/schemas/{}ActionRequest",
+                                    to_pascal_case(svc)
+                                )))))
                                 .build(),
                         )
                         .required(Some(Required::True))

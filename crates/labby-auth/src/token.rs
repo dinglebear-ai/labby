@@ -961,6 +961,7 @@ fn build_token_response(
                 state.config.env_prefix
             ))
         })?,
+        nbf: None,
         iat: now,
         jti: random_token(18)?,
         scope: scope.clone(),

@@ -138,6 +138,7 @@ impl Harness {
                 sub: "jwt-user".to_string(),
                 aud: "https://lab.example.com/mcp".to_string(),
                 exp: now + 3600,
+                nbf: None,
                 iat: now,
                 jti: "test-jti".to_string(),
                 scope: "lab".to_string(),

@@ -23,6 +23,7 @@ Commands:
   gateway      Manage proxied upstream MCP gateways
   snippets     Manage executable Code Mode snippets
   oauth        Run local OAuth callback relay helpers
+  proxy        Proxy a stdio MCP server to Streamable HTTP
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -220,7 +221,7 @@ Options:
 ```text
 Check public Lab and protected MCP proxy endpoints from caller-visible URLs
 
-Usage: proxy [OPTIONS] --route <ROUTE>
+Usage: proxy [OPTIONS]
 
 Options:
       --app-url <APP_URL>
@@ -433,6 +434,7 @@ Commands:
   plugin-connectivity  Validate connectivity to the lab MCP server
   check                Check local setup prerequisites without mutating the filesystem
   repair               Repair missing local setup prerequisites without contacting external services
+  proxy                Configure defaults for the ephemeral stdio MCP proxy
   incusbackup          Validate or apply local Incus backup policy
   incus-ssh            Bootstrap container SSH trust from the host ~/.ssh/config
   install              Copy the labby binary into ~/.local/bin so it is callable in your own terminal
@@ -905,6 +907,70 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup proxy`
+
+```text
+Configure defaults for the ephemeral stdio MCP proxy
+
+Usage: proxy [OPTIONS]
+
+Options:
+      --exposure <EXPOSURE>
+          Exposure mode to persist
+
+          [possible values: tailscale, local]
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --auth <AUTH>
+          Authentication mode to persist
+
+          [possible values: tailnet, bearer, oauth, none]
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --path <PATH>
+          MCP HTTP path to persist
+
+      --port <PORT>
+          External Tailscale port, or `random`
+
+      --port-range-start <PORT_RANGE_START>
+          First candidate in the random external-port range
+
+      --port-range-end <PORT_RANGE_END>
+          Last candidate in the random external-port range
+
+      --bearer-token-env <BEARER_TOKEN_ENV>
+          Environment key used for the proxy bearer secret
+
+      --oauth-scope <OAUTH_SCOPES>
+          OAuth scope to require; repeatable and replaces the configured list
+
+      --inherit-env <INHERIT_ENV>
+          Ambient environment variable inherited by child servers; repeatable
+
+      --shutdown-grace-ms <SHUTDOWN_GRACE_MS>
+          Grace period before forced child shutdown
+
+      --bearer-token-stdin
+          Read a bearer secret from stdin without echoing or persisting it in TOML
+
+  -y, --yes
+          Accept existing values and built-in defaults without prompting
+
+      --dry-run
+          Preview exact file changes without mutating config or secret files
 
   -h, --help
           Print help
@@ -3688,6 +3754,59 @@ Usage: help [COMMAND]...
 Arguments:
   [COMMAND]...
           Print help for the subcommand(s)
+```
+
+## `labby proxy`
+
+```text
+Proxy a stdio MCP server to Streamable HTTP
+
+Usage: proxy [OPTIONS] <COMMAND>...
+
+Arguments:
+  <COMMAND>...
+          Child program or script followed by its arguments
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --port <PORT>
+          Override the external port for this invocation
+
+      --auth <AUTH>
+          Override the configured auth policy
+
+          [possible values: tailnet, bearer, oauth, none]
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --bearer-token <BEARER_TOKEN>
+          One-run static bearer token; implies bearer auth
+
+          [env: LABBY_PROXY_BEARER_TOKEN]
+
+      --bearer-token-stdin
+          Read a one-run static bearer token from stdin; implies bearer auth
+
+      --local
+          Override exposure to a local loopback URL
+
+      --cwd <CWD>
+          Child working directory
+
+      --env <NAME=VALUE>
+          Explicit child environment entry; repeatable
+
+      --inherit-env <NAME>
+          Inherit one ambient environment variable; repeatable
+
+  -h, --help
+          Print help
 ```
 
 ## `labby help`

@@ -832,6 +832,73 @@ pub const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
+        name: "gateway.oauth.resource_lease.create",
+        description: "Create an in-memory OAuth protected-resource lease",
+        destructive: false,
+        requires_admin: true,
+        returns: "ResourceLease",
+        params: &[
+            ParamSpec {
+                name: "resource",
+                ty: "string",
+                required: true,
+                description: "Exact absolute HTTPS OAuth resource audience",
+            },
+            ParamSpec {
+                name: "scopes",
+                ty: "string[]",
+                required: true,
+                description: "Scopes accepted for the resource",
+            },
+            ParamSpec {
+                name: "ttl_secs",
+                ty: "integer",
+                required: true,
+                description: "Lease lifetime in seconds (1 through 86400)",
+            },
+            ParamSpec {
+                name: "owner",
+                ty: "string",
+                required: true,
+                description: "Bounded diagnostic owner label",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "gateway.oauth.resource_lease.renew",
+        description: "Renew an active in-memory OAuth protected-resource lease",
+        destructive: false,
+        requires_admin: true,
+        returns: "ResourceLease",
+        params: &[
+            ParamSpec {
+                name: "id",
+                ty: "string",
+                required: true,
+                description: "Opaque resource lease identifier",
+            },
+            ParamSpec {
+                name: "ttl_secs",
+                ty: "integer",
+                required: true,
+                description: "Replacement lease lifetime in seconds",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "gateway.oauth.resource_lease.release",
+        description: "Release an active in-memory OAuth protected-resource lease",
+        destructive: true,
+        requires_admin: true,
+        returns: "ResourceLeaseReleaseView",
+        params: &[ParamSpec {
+            name: "id",
+            ty: "string",
+            required: true,
+            description: "Opaque resource lease identifier",
+        }],
+    },
+    ActionSpec {
         name: "gateway.oauth.probe",
         description: "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. \
                        Rejects userinfo, query strings, and fragments. Registers a transient \
@@ -1038,6 +1105,7 @@ mod tests {
             "gateway.import_tombstones.restore",
             "gateway.remove",
             "gateway.mcp.cleanup",
+            "gateway.oauth.resource_lease.release",
         ]);
         let actual = ACTIONS
             .iter()

@@ -227,6 +227,8 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let mut bearer_token = http_token();
     let auth_config =
         resolve_auth_for_config(&config).context("invalid HTTP auth configuration")?;
+    let resource_registry = matches!(auth_config.mode, AuthMode::OAuth)
+        .then(labby_auth::resource_registry::ResourceRegistry::new);
     // SECURITY: Only log metadata — never resolved secret values.
     // Safe fields: enum names, booleans, counts. Forbidden: URL strings, token values, key material.
     tracing::info!(
@@ -256,6 +258,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         suppress_upstream_runtime,
         registry.clone(),
         notifier.clone(),
+        resource_registry.clone(),
     )
     .await?;
     #[cfg(not(feature = "gateway"))]
@@ -398,9 +401,14 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     let oauth_state = if matches!(auth_config.mode, AuthMode::OAuth) {
         Some(
-            labby_auth::state::AuthState::new(auth_config.clone())
-                .await
-                .context("initialize lab-auth oauth state")?,
+            labby_auth::state::AuthState::new_with_resource_registry(
+                auth_config.clone(),
+                resource_registry
+                    .clone()
+                    .expect("OAuth mode initializes a resource registry"),
+            )
+            .await
+            .context("initialize lab-auth oauth state")?,
         )
     } else {
         None
@@ -841,6 +849,9 @@ async fn run_http(
 
     let web_assets_enabled = state.web_assets_enabled();
     let bearer_token_configured = bearer_token.is_some();
+    let resource_registry = auth_state
+        .as_ref()
+        .map(labby_auth::state::AuthState::resource_registry);
     tracing::info!(
         subsystem = "api_server",
         phase = "router.build.start",
@@ -887,21 +898,47 @@ async fn run_http(
         #[cfg(unix)]
         peer_auth_enabled,
     };
-    match transport {
-        Transport::Http => {
-            serve_tcp_listener(host, port, router, listener_status).await?;
+    let hosted_listener = async move {
+        match transport {
+            Transport::Http => serve_tcp_listener(host, port, router, listener_status).await,
+            Transport::UnixSocket => {
+                let unix_config = unix_listener_config.ok_or_else(|| {
+                    anyhow::anyhow!("unix_socket transport resolved without listener configuration")
+                })?;
+                serve_unix_listener(unix_config, router, listener_status).await
+            }
+            Transport::Stdio => {
+                anyhow::bail!("stdio transport reached hosted listener startup unexpectedly")
+            }
         }
-        Transport::UnixSocket => {
-            let unix_config = unix_listener_config.ok_or_else(|| {
-                anyhow::anyhow!("unix_socket transport resolved without listener configuration")
-            })?;
-            serve_unix_listener(unix_config, router, listener_status).await?;
+    };
+    if let Some(registry) = resource_registry {
+        tokio::select! {
+            result = hosted_listener => result?,
+            never = prune_resource_leases(registry) => match never {},
         }
-        Transport::Stdio => {
-            anyhow::bail!("stdio transport reached hosted listener startup unexpectedly");
-        }
+    } else {
+        hosted_listener.await?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn prune_resource_leases(
+    registry: labby_auth::resource_registry::ResourceRegistry,
+) -> std::convert::Infallible {
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        let pruned = registry.prune_expired_resource_leases(std::time::SystemTime::now());
+        if pruned > 0 {
+            tracing::debug!(
+                resource_lease_count = registry.lease_count(),
+                pruned_resource_lease_count = pruned,
+                "expired OAuth resource leases pruned"
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1245,6 +1282,7 @@ async fn build_gateway_runtime(
     suppress_upstream_runtime: bool,
     registry: ToolRegistry,
     notifier: PeerNotifier,
+    resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
 ) -> Result<Arc<GatewayManager>> {
     let gateway_runtime = GatewayRuntimeHandle::default();
     let upstream_oauth_runtime = if suppress_upstream_runtime {
@@ -1365,6 +1403,7 @@ async fn build_gateway_runtime(
                 key: rt.key,
                 redirect_uri: rt.redirect_uri,
             }),
+            resource_registry,
             usage_store: usage_store.clone(),
             code_mode_app_state: notifier.code_mode_app_state.clone(),
         },

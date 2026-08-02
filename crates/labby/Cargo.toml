@@ -17,6 +17,12 @@ name = "labby"
 path = "src/main.rs"
 test = false
 
+[[bin]]
+name = "stdio-mcp-fixture"
+path = "tests/fixtures/stdio_mcp_fixture.rs"
+test = false
+required-features = ["proxy-testkit"]
+
 [dependencies]
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
 labby-primitives = { path = "../labby-primitives" }
@@ -148,5 +154,6 @@ default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []
 systemd = ["dep:sd-notify"]
+proxy-testkit = []
 [lints]
 workspace = true

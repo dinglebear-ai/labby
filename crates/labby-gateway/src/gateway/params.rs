@@ -331,6 +331,25 @@ pub(crate) struct GatewayOauthNameParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ResourceLeaseCreateParams {
+    pub resource: String,
+    pub scopes: Vec<String>,
+    pub ttl_secs: u64,
+    pub owner: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ResourceLeaseRenewParams {
+    pub id: String,
+    pub ttl_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ResourceLeaseReleaseParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CodeModeSetParams {
     #[serde(default)]
     pub enabled: Option<bool>,

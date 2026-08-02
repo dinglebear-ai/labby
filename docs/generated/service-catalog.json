@@ -84,6 +84,27 @@
     "metadata_source": "registry synthetic metadata"
   },
   {
+    "name": "proxy",
+    "display_name": "Stdio MCP Proxy",
+    "description": "Expose one explicitly selected stdio MCP server as faithful Streamable HTTP",
+    "category": "bootstrap",
+    "status": "available",
+    "feature": "gateway",
+    "exposure": "feature_gated",
+    "surfaces": {
+      "cli": true,
+      "mcp": false,
+      "api": false,
+      "web_ui": false
+    },
+    "default_port": null,
+    "docs_url": "docs/guides/STDIO_MCP_PROXY.md",
+    "coverage_doc": null,
+    "upstream_doc": null,
+    "supports_multi_instance": false,
+    "metadata_source": "CLI runtime + ProxyPreferences"
+  },
+  {
     "name": "server_logs",
     "display_name": "server_logs",
     "description": "View and filter Labby's own rolling server process logs",

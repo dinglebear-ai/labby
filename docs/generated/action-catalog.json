@@ -135,6 +135,26 @@
   },
   {
     "service": "doctor",
+    "action": "proxy.preflight",
+    "description": "Validate persisted stdio-proxy configuration and read-only local dependencies",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "DoctorReport",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "doctor",
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
@@ -1180,6 +1200,117 @@
       }
     ],
     "returns": "ProbeResult",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.oauth.resource_lease.create",
+    "description": "Create an in-memory OAuth protected-resource lease",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "resource",
+        "ty": "string",
+        "required": true,
+        "description": "Exact absolute HTTPS OAuth resource audience"
+      },
+      {
+        "name": "scopes",
+        "ty": "string[]",
+        "required": true,
+        "description": "Scopes accepted for the resource"
+      },
+      {
+        "name": "ttl_secs",
+        "ty": "integer",
+        "required": true,
+        "description": "Lease lifetime in seconds (1 through 86400)"
+      },
+      {
+        "name": "owner",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded diagnostic owner label"
+      }
+    ],
+    "returns": "ResourceLease",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.oauth.resource_lease.release",
+    "description": "Release an active in-memory OAuth protected-resource lease",
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque resource lease identifier"
+      }
+    ],
+    "returns": "ResourceLeaseReleaseView",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.oauth.resource_lease.renew",
+    "description": "Renew an active in-memory OAuth protected-resource lease",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque resource lease identifier"
+      },
+      {
+        "name": "ttl_secs",
+        "ty": "integer",
+        "required": true,
+        "description": "Replacement lease lifetime in seconds"
+      }
+    ],
+    "returns": "ResourceLease",
     "surface_availability": {
       "cli": true,
       "mcp": true,
@@ -2869,6 +3000,47 @@
       }
     ],
     "returns": "InstalledPlugin[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "proxy.configure",
+    "description": "Persist local stdio-proxy defaults and securely store a bearer secret when required",
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "preferences",
+        "ty": "ProxyPreferences",
+        "required": true,
+        "description": "Validated non-secret proxy preferences to persist in config.toml"
+      },
+      {
+        "name": "bearer_token",
+        "ty": "string",
+        "required": false,
+        "description": "Write-only bearer token read from stdin; never returned or logged"
+      },
+      {
+        "name": "dry_run",
+        "ty": "boolean",
+        "required": false,
+        "description": "Preview whether config or secret files would change without mutation"
+      }
+    ],
+    "returns": "ProxySetupOutcome",
     "surface_availability": {
       "cli": true,
       "mcp": true,

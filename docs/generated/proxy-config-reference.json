@@ -1,0 +1,102 @@
+[
+  {
+    "section": "proxy",
+    "key": "exposure",
+    "toml_path": "proxy.exposure",
+    "ty": "tailscale|local",
+    "default": "tailscale",
+    "secret": false,
+    "env_override": null,
+    "description": "Publication controller"
+  },
+  {
+    "section": "proxy",
+    "key": "auth",
+    "toml_path": "proxy.auth",
+    "ty": "tailnet|bearer|oauth|none",
+    "default": "tailnet",
+    "secret": false,
+    "env_override": null,
+    "description": "Authentication policy"
+  },
+  {
+    "section": "proxy",
+    "key": "path",
+    "toml_path": "proxy.path",
+    "ty": "absolute non-root path",
+    "default": "/mcp",
+    "secret": false,
+    "env_override": null,
+    "description": "Public MCP endpoint path"
+  },
+  {
+    "section": "proxy",
+    "key": "port",
+    "toml_path": "proxy.port",
+    "ty": "random|u16",
+    "default": "random",
+    "secret": false,
+    "env_override": null,
+    "description": "External Tailscale HTTPS port selection"
+  },
+  {
+    "section": "proxy",
+    "key": "port_range_start",
+    "toml_path": "proxy.port_range_start",
+    "ty": "u16",
+    "default": "49152",
+    "secret": false,
+    "env_override": null,
+    "description": "First random external-port candidate"
+  },
+  {
+    "section": "proxy",
+    "key": "port_range_end",
+    "toml_path": "proxy.port_range_end",
+    "ty": "u16",
+    "default": "65535",
+    "secret": false,
+    "env_override": null,
+    "description": "Last random external-port candidate"
+  },
+  {
+    "section": "proxy",
+    "key": "bearer_token_env",
+    "toml_path": "proxy.bearer_token_env",
+    "ty": "environment variable name",
+    "default": "LABBY_PROXY_BEARER_TOKEN",
+    "secret": false,
+    "env_override": "LABBY_PROXY_BEARER_TOKEN",
+    "description": "Environment key containing the static bearer secret"
+  },
+  {
+    "section": "proxy",
+    "key": "oauth_scopes",
+    "toml_path": "proxy.oauth_scopes",
+    "ty": "string[]",
+    "default": "[mcp:read, mcp:write]",
+    "secret": false,
+    "env_override": null,
+    "description": "Scopes required by the exact OAuth resource lease"
+  },
+  {
+    "section": "proxy",
+    "key": "inherit_env",
+    "toml_path": "proxy.inherit_env",
+    "ty": "environment variable name[]",
+    "default": "[]",
+    "secret": false,
+    "env_override": null,
+    "description": "Additional ambient variables inherited by the scrubbed child"
+  },
+  {
+    "section": "proxy",
+    "key": "shutdown_grace_ms",
+    "toml_path": "proxy.shutdown_grace_ms",
+    "ty": "u64 (1..=60000)",
+    "default": "3000",
+    "secret": false,
+    "env_override": null,
+    "description": "Grace period preference for supervised shutdown"
+  }
+]
