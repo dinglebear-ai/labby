@@ -48,6 +48,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         in {
             ".github/actionlint.yaml",
             ".github/labeler.yml",
+            "conformance/expected-failures-dated.yaml",
             "conformance/expected-failures-extensions.yaml",
             "scripts/ci/changed_paths.py",
             "scripts/ci/mcp-conformance.sh",

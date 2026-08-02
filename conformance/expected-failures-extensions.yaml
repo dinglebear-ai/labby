@@ -7,9 +7,9 @@
 # - a listed scenario that starts passing fails as a stale entry
 #
 # Review the available extension scenarios whenever the conformance package is
-# bumped. The rmcp 3.0.0-beta.2 Tasks server scenarios all pass.
+# bumped. The rmcp 3.1.0 Tasks server scenarios all pass.
 server: []
 
 client:
-  # Informational OAuth extension not implemented by rmcp beta.2.
+  # Informational OAuth extension not implemented by rmcp 3.1.0.
   - auth/enterprise-managed-authorization

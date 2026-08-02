@@ -1,13 +1,13 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-01"
 ---
 
 # MCP 2026-07-28 Conformance
 
 Labby targets the `2026-07-28` MCP protocol through
-`rmcp = "=3.0.0-beta.2"`. The dated protocol suite and experimental extension
+`rmcp = "=3.1.0"`. The dated protocol suite and experimental extension
 suite are intentionally reported separately: extension results must never
 inflate or reduce the dated-protocol score.
 
@@ -16,7 +16,7 @@ inflate or reduce the dated-protocol score.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| rmcp | `3.0.0-beta.2` |
+| rmcp | `3.1.0` |
 | rmcp tag commit | `14298b72e0b25473ea79d5465fe186e22eb86397` |
 | MCP conformance package | `0.2.0-alpha.9` |
 
@@ -35,10 +35,12 @@ runs:
 3. every dated `2026-07-28` client scenario
 4. the complete client extension suite
 
-Reports are written under `target/mcp-conformance/`. Experimental extension
-gaps use the strict
-`conformance/expected-failures-extensions.yaml` baseline. An unexpected
-failure or an expected failure that starts passing both fail CI.
+Reports are written under `target/mcp-conformance/`. The dated server suite uses
+`conformance/expected-failures-dated.yaml` for one confirmed upstream rust-sdk
+fixture gap in `server-stateless`; current rust-sdk main still fails the same
+three SEP-2575 checks. Experimental extension gaps use the separate strict
+`conformance/expected-failures-extensions.yaml` baseline. An unexpected failure
+or an expected failure that starts passing both fail CI.
 
 The upstream conformance binaries deliberately exercise the SDK-level
 dispatches for auth, scope step-up, schemas, tools, MRTR, task lifecycle,
@@ -107,7 +109,7 @@ issuer, audience, client, resource, scope, expiry, and one-time `jti`, and mints
 the same audience-restricted Labby access token used by the interactive flow.
 
 The remaining `auth/enterprise-managed-authorization` expected-failure entry is
-specifically the pinned rmcp beta.2 **outbound conformance client**, not Labby's
+specifically the pinned rmcp 3.1.0 **outbound conformance client**, not Labby's
 authorization server. Product-server coverage runs immediately before the
 upstream SDK conformance harness in the same CI job.
 
@@ -123,7 +125,7 @@ different deployment mode, not a prerequisite for stateless conformance.
 
 The `MCP 2026-07-28 conformance` CI job is part of `ci-gate`. Its JavaScript
 dependency installation is serialized before scenarios start. Bump the four
-pins above together and review the scenario list plus extension baseline on
+pins above together and review the scenario list plus both strict baselines on
 every conformance package update.
 
 The separate `MCP upstream drift` workflow compares
@@ -141,5 +143,5 @@ Chinese README to remove.
 Primary references:
 
 - <https://modelcontextprotocol.io/specification/2026-07-28>
-- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.0.0-beta.2>
+- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.1.0>
 - <https://github.com/modelcontextprotocol/conformance>

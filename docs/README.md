@@ -10,7 +10,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [crate-extract/README.md](./crate-extract/README.md) for the reusable crate/package extraction spec, contract, execution strategy, and open questions.
 - Use [adr/README.md](./adr/README.md) for accepted architecture decision records.
 - Read [CONVENTIONS.md](./CONVENTIONS.md) before changing implementation patterns or core APIs.
-- Use [SERVICES.md](./dev/SERVICES.md), [CLI.md](./surfaces/CLI.md), and [MCP.md](./surfaces/MCP.md) for current surface-specific behavior. [MCP_CONFORMANCE.md](./surfaces/MCP_CONFORMANCE.md) records the rmcp 3 beta.2 and MCP 2026-07-28 conformance contract. [TUI.md](./surfaces/TUI.md) records deferred TUI status.
+- Use [SERVICES.md](./dev/SERVICES.md), [CLI.md](./surfaces/CLI.md), and [MCP.md](./surfaces/MCP.md) for current surface-specific behavior. [MCP_CONFORMANCE.md](./surfaces/MCP_CONFORMANCE.md) records the rmcp 3.1.0 and MCP 2026-07-28 conformance contract. [TUI.md](./surfaces/TUI.md) records deferred TUI status.
 - Use [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md) for the human-readable CLI output language and shared color policy.
 - Use [design/component-development.md](./design/component-development.md) and [design/design-system-contract.md](./design/design-system-contract.md) when building or revising Labby web UI components.
 - Use [CONFIG.md](./runtime/CONFIG.md), [INCUS.md](./runtime/INCUS.md), [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md), and [OPERATIONS.md](./OPERATIONS.md) for setup, recommended Incus deployment, gateway runtime choices, and operator workflows.
