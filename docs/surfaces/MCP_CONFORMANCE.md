@@ -1,23 +1,26 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-02"
 ---
 
 # MCP 2026-07-28 Conformance
 
-Labby targets the `2026-07-28` MCP protocol through
-`rmcp = "=3.0.0-beta.2"`. The dated protocol suite and experimental extension
-suite are intentionally reported separately: extension results must never
-inflate or reduce the dated-protocol score.
+Labby targets the `2026-07-28` MCP protocol through `rmcp = "=3.1.0"`.
+The gate verifies that production dependency exactly, exercises Labby's real
+authenticated `/mcp` boundary, and uses the last known-green upstream rmcp
+fixture for synthetic dated and extension scenarios. Dated protocol and
+experimental extension results are intentionally reported separately:
+extension results must never inflate or reduce the dated-protocol score.
 
 ## Reproducible Pins
 
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| rmcp | `3.0.0-beta.2` |
-| rmcp tag commit | `14298b72e0b25473ea79d5465fe186e22eb86397` |
+| Labby rmcp dependency | `3.1.0` |
+| rmcp conformance fixture | `3.0.0-beta.2` |
+| rmcp fixture tag commit | `14298b72e0b25473ea79d5465fe186e22eb86397` |
 | MCP conformance package | `0.2.0-alpha.9` |
 
 Run the same gate locally with:
@@ -26,9 +29,9 @@ Run the same gate locally with:
 scripts/ci/mcp-conformance.sh
 ```
 
-The script verifies the exact Cargo dependency, resolves the exact upstream
-rmcp tag commit, installs the JavaScript conformance dependency once, and then
-runs:
+The script verifies the exact production Cargo dependency, resolves the exact
+upstream fixture tag commit, installs the JavaScript conformance dependency
+once, and then runs:
 
 1. every dated `2026-07-28` server scenario
 2. every Tasks extension server scenario
@@ -122,9 +125,10 @@ different deployment mode, not a prerequisite for stateless conformance.
 ## CI and Maintenance
 
 The `MCP 2026-07-28 conformance` CI job is part of `ci-gate`. Its JavaScript
-dependency installation is serialized before scenarios start. Bump the four
-pins above together and review the scenario list plus extension baseline on
-every conformance package update.
+dependency installation is serialized before scenarios start. The production
+dependency and upstream fixture are separate pins: advance the fixture only
+when that release's own conformance server passes the dated suite. Review the
+scenario list and extension baseline on every conformance package update.
 
 The separate `MCP upstream drift` workflow compares
 `conformance/upstream-baseline.json` with the current MCP specification branch
@@ -141,5 +145,6 @@ Chinese README to remove.
 Primary references:
 
 - <https://modelcontextprotocol.io/specification/2026-07-28>
+- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.1.0>
 - <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.0.0-beta.2>
 - <https://github.com/modelcontextprotocol/conformance>
