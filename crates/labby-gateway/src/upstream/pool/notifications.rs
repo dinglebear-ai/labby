@@ -1,17 +1,17 @@
 //! Upstream notification subscriptions and the pool-level event bus.
 
-use std::collections::BTreeSet;
-#[cfg(test)]
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use rmcp::model::{ServerNotification, SubscriptionFilter};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use super::UpstreamPool;
-use super::helpers::bare_upstream_resource_uri;
+use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri};
 
 const NOTIFICATION_EVENT_CAPACITY: usize = 1024;
 const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -58,10 +58,9 @@ impl UpstreamPool {
         }
     }
 
-    async fn publish_subscribable_resource_snapshot(&self) {
-        let accepted = self.subscription_resources.read().await;
+    fn store_subscribable_resource_snapshot(&self, accepted: &HashMap<String, BTreeSet<String>>) {
         let mut snapshot = BTreeSet::new();
-        for (upstream, uris) in accepted.iter() {
+        for (upstream, uris) in accepted {
             snapshot.extend(
                 uris.iter()
                     .map(|uri| Self::gateway_resource_uri(upstream, uri)),
@@ -70,9 +69,69 @@ impl UpstreamPool {
         self.subscribable_resource_uris.store(Arc::new(snapshot));
     }
 
-    async fn clear_subscription_resources(&self, upstream: &str) {
-        self.subscription_resources.write().await.remove(upstream);
-        self.publish_subscribable_resource_snapshot().await;
+    /// Atomically replace an upstream's active subscription generation and
+    /// retire the prior generation's published acknowledgement.
+    pub(super) async fn begin_subscription_generation(
+        &self,
+        upstream: &str,
+    ) -> Arc<CancellationToken> {
+        let generation = Arc::new(CancellationToken::new());
+        let mut generations = self.subscription_tasks.write().await;
+        if let Some(previous) = generations.insert(upstream.to_string(), generation.clone()) {
+            previous.cancel();
+        }
+        let mut resources = self.subscription_resources.write().await;
+        resources.remove(upstream);
+        self.store_subscribable_resource_snapshot(&resources);
+        generation
+    }
+
+    /// Publish an acknowledgement only while `generation` still owns this
+    /// upstream. Holding the generation read lock through the snapshot store
+    /// makes ownership validation and publication one atomic state transition.
+    pub(super) async fn record_subscription_resources_if_current(
+        &self,
+        upstream: &str,
+        generation: &Arc<CancellationToken>,
+        accepted: &SubscriptionFilter,
+    ) -> bool {
+        let generations = self.subscription_tasks.read().await;
+        if !generations
+            .get(upstream)
+            .is_some_and(|current| Arc::ptr_eq(current, generation))
+        {
+            return false;
+        }
+        let accepted_resources = accepted
+            .resource_subscriptions
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut resources = self.subscription_resources.write().await;
+        resources.insert(upstream.to_string(), accepted_resources);
+        self.store_subscribable_resource_snapshot(&resources);
+        true
+    }
+
+    /// Clear an acknowledgement only while `generation` still owns this
+    /// upstream, so teardown from an older task cannot erase a newer ack.
+    pub(super) async fn clear_subscription_resources_if_current(
+        &self,
+        upstream: &str,
+        generation: &Arc<CancellationToken>,
+    ) -> bool {
+        let generations = self.subscription_tasks.read().await;
+        if !generations
+            .get(upstream)
+            .is_some_and(|current| Arc::ptr_eq(current, generation))
+        {
+            return false;
+        }
+        let mut resources = self.subscription_resources.write().await;
+        resources.remove(upstream);
+        self.store_subscribable_resource_snapshot(&resources);
+        true
     }
 
     fn subscription_filter_is_empty(filter: &SubscriptionFilter) -> bool {
@@ -90,10 +149,7 @@ impl UpstreamPool {
     /// current catalog each time so newly discovered resource URIs become
     /// deliverable without restarting Labby.
     pub(super) async fn refresh_upstream_subscription(&self, upstream: &str) {
-        if let Some(previous) = self.subscription_tasks.write().await.remove(upstream) {
-            previous.cancel();
-        }
-        self.clear_subscription_resources(upstream).await;
+        let generation = self.begin_subscription_generation(upstream).await;
 
         let peer = {
             let connections = self.connections.read().await;
@@ -127,52 +183,114 @@ impl UpstreamPool {
             return;
         }
 
-        let cancel = CancellationToken::new();
-        self.subscription_tasks
-            .write()
-            .await
-            .insert(upstream.to_string(), cancel.clone());
+        // Publish the initial acknowledgement before discovery returns. An
+        // outer Labby may immediately open its own subscription after listing
+        // resources; deferring this handshake to the background creates a
+        // multi-hop race where the middle gateway temporarily rejects an exact
+        // resource URI that its leaf has already accepted.
+        let initial_established = tokio::select! {
+            biased;
+            () = generation.cancelled() => return,
+            result = tokio::time::timeout(
+                DISCOVERY_TIMEOUT,
+                peer.listen(requested.clone()),
+            ) => result,
+        };
+        let initial_subscription = match initial_established {
+            Ok(Ok(mut subscription)) => {
+                if !self
+                    .record_subscription_resources_if_current(
+                        upstream,
+                        &generation,
+                        subscription.acknowledged(),
+                    )
+                    .await
+                {
+                    drop(subscription.cancel().await);
+                    return;
+                }
+                Some(subscription)
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    upstream,
+                    error = %error,
+                    "failed to establish initial upstream subscriptions/listen stream"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    upstream,
+                    timeout_secs = DISCOVERY_TIMEOUT.as_secs(),
+                    "timed out establishing initial upstream subscriptions/listen stream"
+                );
+                None
+            }
+        };
+
         let pool = self.clone();
         let upstream = upstream.to_string();
         tokio::spawn(async move {
+            let mut initial_subscription = initial_subscription;
             loop {
-                let established = tokio::select! {
-                    () = cancel.cancelled() => break,
-                    result = peer.listen(requested.clone()) => result,
-                };
-                let mut subscription = match established {
-                    Ok(subscription) => subscription,
-                    Err(error) => {
-                        tracing::warn!(
-                            upstream = %upstream,
-                            error = %error,
-                            "failed to establish upstream subscriptions/listen stream"
-                        );
-                        pool.clear_subscription_resources(&upstream).await;
-                        tokio::select! {
-                            () = cancel.cancelled() => break,
-                            () = tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY) => continue,
-                        }
+                let (mut subscription, publish_acknowledgement) = match initial_subscription.take()
+                {
+                    Some(subscription) => (subscription, false),
+                    None => {
+                        let established = tokio::select! {
+                            biased;
+                            () = generation.cancelled() => break,
+                            result = peer.listen(requested.clone()) => result,
+                        };
+                        let subscription = match established {
+                            Ok(subscription) => subscription,
+                            Err(error) => {
+                                tracing::warn!(
+                                    upstream = %upstream,
+                                    error = %error,
+                                    "failed to establish upstream subscriptions/listen stream"
+                                );
+                                if !pool
+                                    .clear_subscription_resources_if_current(&upstream, &generation)
+                                    .await
+                                {
+                                    return;
+                                }
+                                tokio::select! {
+                                    biased;
+                                    () = generation.cancelled() => break,
+                                    () = tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY) => continue,
+                                }
+                            }
+                        };
+                        (subscription, true)
                     }
                 };
 
-                let accepted_resources = subscription
-                    .acknowledged()
-                    .resource_subscriptions
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect::<BTreeSet<_>>();
-                pool.subscription_resources
-                    .write()
-                    .await
-                    .insert(upstream.clone(), accepted_resources);
-                pool.publish_subscribable_resource_snapshot().await;
+                if publish_acknowledgement {
+                    if !pool
+                        .record_subscription_resources_if_current(
+                            &upstream,
+                            &generation,
+                            subscription.acknowledged(),
+                        )
+                        .await
+                    {
+                        drop(subscription.cancel().await);
+                        return;
+                    }
+                }
 
                 loop {
                     let next = tokio::select! {
-                        () = cancel.cancelled() => {
+                        biased;
+                        () = generation.cancelled() => {
                             drop(subscription.cancel().await);
+                            let _ = pool.clear_subscription_resources_if_current(
+                                &upstream,
+                                &generation,
+                            ).await;
                             return;
                         }
                         result = subscription.next() => result,
@@ -228,29 +346,52 @@ impl UpstreamPool {
                     }
                 }
 
-                pool.clear_subscription_resources(&upstream).await;
+                if !pool
+                    .clear_subscription_resources_if_current(&upstream, &generation)
+                    .await
+                {
+                    return;
+                }
                 tokio::select! {
-                    () = cancel.cancelled() => break,
+                    biased;
+                    () = generation.cancelled() => break,
                     () = tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY) => {}
                 }
             }
-            pool.clear_subscription_resources(&upstream).await;
+            let _ = pool
+                .clear_subscription_resources_if_current(&upstream, &generation)
+                .await;
         });
     }
 
+    /// Refresh multiple upstream acknowledgements in parallel. Each refresh
+    /// still completes its initial handshake before this batch returns, while
+    /// independent 15-second deadlines no longer accumulate serially.
+    pub(super) async fn refresh_upstream_subscriptions_concurrently(&self, upstreams: Vec<String>) {
+        let mut refreshes = FuturesUnordered::new();
+        for upstream in upstreams.into_iter().collect::<BTreeSet<_>>() {
+            refreshes.push(async move {
+                self.refresh_upstream_subscription(&upstream).await;
+            });
+        }
+        while refreshes.next().await.is_some() {}
+    }
+
     pub(super) async fn cancel_all_upstream_subscriptions(&self) {
-        let tasks = self
-            .subscription_tasks
-            .write()
-            .await
-            .drain()
-            .map(|(_, token)| token)
-            .collect::<Vec<_>>();
+        let tasks = {
+            let mut generations = self.subscription_tasks.write().await;
+            let tasks = generations
+                .drain()
+                .map(|(_, token)| token)
+                .collect::<Vec<_>>();
+            let mut resources = self.subscription_resources.write().await;
+            resources.clear();
+            self.store_subscribable_resource_snapshot(&resources);
+            tasks
+        };
         for token in tasks {
             token.cancel();
         }
-        self.subscription_resources.write().await.clear();
-        self.publish_subscribable_resource_snapshot().await;
     }
 
     #[cfg(test)]
@@ -258,7 +399,8 @@ impl UpstreamPool {
         &self,
         values: HashMap<String, BTreeSet<String>>,
     ) {
-        *self.subscription_resources.write().await = values;
-        self.publish_subscribable_resource_snapshot().await;
+        let mut resources = self.subscription_resources.write().await;
+        *resources = values;
+        self.store_subscribable_resource_snapshot(&resources);
     }
 }

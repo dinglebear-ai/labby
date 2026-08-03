@@ -183,6 +183,7 @@ impl UpstreamPool {
         results.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
         let mut resources = Vec::new();
+        let mut subscription_refreshes = Vec::new();
         for (name, result) in results {
             match result {
                 Ok(upstream_resources) => {
@@ -199,7 +200,7 @@ impl UpstreamPool {
                             entry.resource_uris = resource_uris;
                         }
                     }
-                    self.refresh_upstream_subscription(&name).await;
+                    subscription_refreshes.push(name.clone());
                     for mut resource in upstream_resources {
                         if resources.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
@@ -263,6 +264,9 @@ impl UpstreamPool {
                 }
             }
         }
+
+        self.refresh_upstream_subscriptions_concurrently(subscription_refreshes)
+            .await;
 
         resources
     }

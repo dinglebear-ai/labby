@@ -43,6 +43,8 @@ mod lifecycle;
 mod lifecycle_compat;
 mod logging;
 mod notifications;
+#[cfg(test)]
+mod notifications_tests;
 mod probe;
 mod prompts_get;
 mod prompts_list;
@@ -111,7 +113,7 @@ pub struct UpstreamPool {
     /// Normalized notification events produced by upstream subscription streams.
     notification_tx: tokio::sync::broadcast::Sender<UpstreamNotificationEvent>,
     /// Cancellation tokens for one active subscriptions/listen stream per upstream.
-    subscription_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    subscription_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
     /// Native resource URIs acknowledged by each upstream subscription.
     subscription_resources: Arc<RwLock<HashMap<String, std::collections::BTreeSet<String>>>>,
     /// Lock-free gateway-facing snapshot used by synchronous subscription negotiation.

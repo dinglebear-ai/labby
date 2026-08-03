@@ -336,11 +336,24 @@ mod tests {
         let wire = serde_json::to_value(&message).expect("serialize cancellation notification");
         let decoded: ClientJsonRpcMessage =
             serde_json::from_value(wire).expect("deserialize cancellation notification");
-        let ClientJsonRpcMessage::Notification(notification) = decoded else {
-            panic!("expected cancellation notification");
+        assert!(
+            matches!(&decoded, ClientJsonRpcMessage::Notification(_)),
+            "expected cancellation notification"
+        );
+        let notification = match decoded {
+            ClientJsonRpcMessage::Notification(notification) => notification,
+            _ => return,
         };
-        let ClientNotification::CancelledNotification(cancelled) = notification.notification else {
-            panic!("expected cancelled notification");
+        assert!(
+            matches!(
+                &notification.notification,
+                ClientNotification::CancelledNotification(_)
+            ),
+            "expected cancelled notification"
+        );
+        let cancelled = match notification.notification {
+            ClientNotification::CancelledNotification(cancelled) => cancelled,
+            _ => return,
         };
         let typed_token = cancelled.params.meta.as_ref().and_then(|meta| {
             meta.0

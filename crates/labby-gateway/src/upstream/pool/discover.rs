@@ -319,6 +319,7 @@ impl UpstreamPool {
 
         // Track all tool names across upstreams to detect duplicates.
         let mut global_tool_names: HashMap<String, String> = HashMap::new();
+        let mut subscription_refreshes = Vec::new();
 
         while let Some(result) = futures.next().await {
             match result {
@@ -379,7 +380,7 @@ impl UpstreamPool {
 
                     self.catalog.write().await.insert(name.clone(), entry);
                     self.connections.write().await.insert(name.clone(), conn);
-                    self.refresh_upstream_subscription(&name).await;
+                    subscription_refreshes.push(name);
                 }
                 Err((name, error_message)) => {
                     let entry = UpstreamEntry {
@@ -411,6 +412,9 @@ impl UpstreamPool {
                 }
             }
         }
+
+        self.refresh_upstream_subscriptions_concurrently(subscription_refreshes)
+            .await;
 
         if matches!(lifecycle, DiscoveryLifecycle::LongLived) {
             for config in probe_configs {
