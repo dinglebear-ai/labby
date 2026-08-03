@@ -610,6 +610,36 @@ mod tests {
         server_handle.abort();
     }
 
+    /// A relisted upstream whose visible tools are unchanged must remain quiet
+    /// for that peer even though resources and prompts carry global signals.
+    #[tokio::test]
+    async fn unchanged_upstream_tool_signal_remains_suppressed_for_a_current_peer() {
+        let _catalog_lock = serial_catalog();
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let (client, client_service, server_handle) = connect_peer(&peers, false).await;
+
+        notify_catalog_peers(
+            &peers,
+            CatalogNotificationChanges::new(true, true, true),
+            "upstream.subscription",
+        )
+        .await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            (
+                client.tool_count.load(Ordering::SeqCst),
+                client.resource_count.load(Ordering::SeqCst),
+                client.prompt_count.load(Ordering::SeqCst),
+            ),
+            (0, 1, 1),
+            "an unchanged visible tool contract must not trigger a rebuild"
+        );
+
+        client_service.cancel().await.expect("client cancels");
+        server_handle.abort();
+    }
+
     /// Regression: one trigger, two sessions, only the one whose contract
     /// actually moved is notified.
     ///

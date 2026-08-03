@@ -260,7 +260,11 @@ impl PeerNotifier {
                     }
                     event = notifications.recv() => {
                         match event {
-                            Ok(UpstreamNotificationEvent::ToolListChanged { .. }) => {
+                            Ok(UpstreamNotificationEvent::ToolListChanged { upstream }) => {
+                                // Re-list the exact named upstream before peers recompute their
+                                // visible contracts. Both the shared subscription stream and
+                                // request-scoped relay clients publish through this event bus.
+                                pool.refresh_tools_after_list_changed(&upstream).await;
                                 self.notify_catalog_changes(
                                     &GatewayCatalogDiff {
                                         tools_changed: true,

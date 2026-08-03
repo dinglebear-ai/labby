@@ -10,8 +10,9 @@ use rmcp::model::{ServerNotification, SubscriptionFilter};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri};
+use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri, cached_upstream_tool};
 
 const NOTIFICATION_EVENT_CAPACITY: usize = 1024;
 const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -39,6 +40,95 @@ impl UpstreamPool {
     /// independent; a slow consumer cannot block upstream MCP connections.
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<UpstreamNotificationEvent> {
         self.notification_tx.subscribe()
+    }
+
+    /// Re-list one exact upstream after it reports `tools/list_changed` and
+    /// atomically replace only that upstream's cached tools.
+    ///
+    /// The notification event bus has two producers: the shared
+    /// subscriptions/listen connection and request-scoped relay connections.
+    /// Its consumer calls this method before evaluating downstream catalog
+    /// contracts so both paths observe the updated tools without bypassing the
+    /// visible-contract suppression invariant.
+    pub async fn refresh_tools_after_list_changed(&self, upstream: &str) -> bool {
+        let upstream_name = {
+            let catalog = self.catalog.read().await;
+            catalog.get(upstream).map(|entry| Arc::clone(&entry.name))
+        };
+        let Some(upstream_name) = upstream_name else {
+            tracing::warn!(
+                upstream,
+                "cannot refresh tools after list-changed signal: catalog entry is missing"
+            );
+            return false;
+        };
+
+        let peer = {
+            let connections = self.connections.read().await;
+            connections
+                .get(upstream)
+                .map(|connection| connection.peer.clone())
+        };
+        let Some(peer) = peer else {
+            let error = "cannot refresh tools after list-changed signal: connection is missing";
+            self.record_failure_for(upstream, UpstreamCapability::Tools, error)
+                .await;
+            tracing::warn!(upstream, error, "upstream tool-list refresh failed");
+            return false;
+        };
+
+        let listed = tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await;
+        let tools = match listed {
+            Ok(Ok(tools)) => tools,
+            Ok(Err(error)) => {
+                let error = format!("tool-list refresh after list-changed signal failed: {error}");
+                self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
+                    .await;
+                tracing::warn!(upstream, error = %error, "upstream tool-list refresh failed");
+                return false;
+            }
+            Err(_) => {
+                let error = format!(
+                    "tool-list refresh after list-changed signal timed out after {}s",
+                    DISCOVERY_TIMEOUT.as_secs()
+                );
+                self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
+                    .await;
+                tracing::warn!(upstream, error = %error, "upstream tool-list refresh failed");
+                return false;
+            }
+        };
+        let tool_count = tools.len();
+        let tools = tools
+            .into_iter()
+            .map(|tool| cached_upstream_tool(tool, &upstream_name))
+            .collect::<HashMap<_, _>>();
+
+        let replaced = {
+            let mut catalog = self.catalog.write().await;
+            if let Some(entry) = catalog.get_mut(upstream) {
+                entry.tools = tools;
+                true
+            } else {
+                false
+            }
+        };
+        if !replaced {
+            tracing::warn!(
+                upstream,
+                "discarding refreshed tools because the catalog entry was removed"
+            );
+            return false;
+        }
+
+        self.record_success_for(upstream, UpstreamCapability::Tools)
+            .await;
+        tracing::debug!(
+            upstream,
+            tool_count,
+            "refreshed upstream tools after list-changed signal"
+        );
+        true
     }
 
     /// Snapshot the gateway-facing resource URIs for which an upstream has

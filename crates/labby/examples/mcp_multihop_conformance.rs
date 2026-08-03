@@ -5,7 +5,7 @@
 //!
 //! client -> root Labby -> middle Labby -> synthetic leaf
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -167,6 +167,13 @@ impl ServerHandler for LeafServer {
                 Arc::new(Map::new()),
             ),
         ]);
+        if Self::marker_path("emit-subscriptions").is_some_and(|path| path.exists()) {
+            tools.push(Tool::new(
+                "subscription_added",
+                "Tool added when the subscription conformance signal fires",
+                Arc::new(Map::new()),
+            ));
+        }
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -1041,28 +1048,58 @@ async fn run_driver() -> Result<()> {
     let mut prompt_changed = false;
     let mut resource_list_changed = false;
     let mut resource_updated = false;
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let mut observed = BTreeSet::new();
+    let mut observed_resource_uris = BTreeSet::new();
+    let wait_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while !(tool_changed && prompt_changed && resource_list_changed && resource_updated) {
             let Some(notification) = subscription.next().await? else {
                 anyhow::bail!("subscription ended before all notifications arrived");
             };
             match notification {
-                ServerNotification::ToolListChangedNotification(_) => tool_changed = true,
-                ServerNotification::PromptListChangedNotification(_) => prompt_changed = true,
+                ServerNotification::ToolListChangedNotification(_) => {
+                    observed.insert("tools/list_changed");
+                    tool_changed = true;
+                }
+                ServerNotification::PromptListChangedNotification(_) => {
+                    observed.insert("prompts/list_changed");
+                    prompt_changed = true;
+                }
                 ServerNotification::ResourceListChangedNotification(_) => {
+                    observed.insert("resources/list_changed");
                     resource_list_changed = true;
                 }
                 ServerNotification::ResourceUpdatedNotification(notification) => {
-                    ensure!(notification.params.uri == resource_uri);
-                    resource_updated = true;
+                    observed.insert("resources/updated");
+                    observed_resource_uris.insert(notification.params.uri.clone());
+                    if notification.params.uri == resource_uri {
+                        resource_updated = true;
+                    }
                 }
                 _ => {}
             }
         }
         Ok::<(), anyhow::Error>(())
     })
-    .await
-    .context("timed out waiting for multi-hop subscription notifications")??;
+    .await;
+    let expected = BTreeSet::from([
+        "tools/list_changed",
+        "prompts/list_changed",
+        "resources/list_changed",
+        "resources/updated",
+    ]);
+    let missing = expected.difference(&observed).copied().collect::<Vec<_>>();
+    let diagnostics = format!(
+        "observed={observed:?}; missing={missing:?}; expected_resource_uri={resource_uri:?}; observed_resource_uris={observed_resource_uris:?}"
+    );
+    match wait_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error).context(diagnostics),
+        Err(error) => {
+            return Err(anyhow::Error::new(error)).context(format!(
+                "timed out waiting for multi-hop subscription notifications; {diagnostics}"
+            ));
+        }
+    }
     subscription.cancel().await?;
 
     let templates = peer.list_all_resource_templates().await?;

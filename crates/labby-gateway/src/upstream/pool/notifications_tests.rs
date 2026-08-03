@@ -5,9 +5,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use rmcp::model::{ErrorData, ProtocolVersion, ServerCapabilities, ServerInfo, SubscriptionFilter};
-use rmcp::service::SubscriptionContext;
-use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient, ServerHandler, ServiceExt};
+use rmcp::model::{
+    ErrorData, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
+    ServerInfo, SubscriptionFilter,
+};
+use rmcp::service::{RequestContext, SubscriptionContext};
+use rmcp::{
+    ClientLifecycleMode, ClientServiceExt, RoleClient, RoleServer, ServerHandler, ServiceExt,
+};
 
 use super::super::types::UpstreamRuntimeMetadata;
 use super::entries::healthy_in_process_entry;
@@ -21,6 +26,8 @@ struct SubscriptionServer {
     attempts: Arc<AtomicUsize>,
     failures_before_accept: usize,
     acceptance_delay: Duration,
+    tools: Arc<tokio::sync::RwLock<Vec<rmcp::model::Tool>>>,
+    tool_change: Arc<tokio::sync::Notify>,
 }
 
 impl SubscriptionServer {
@@ -29,14 +36,15 @@ impl SubscriptionServer {
             attempts: Arc::new(AtomicUsize::new(0)),
             failures_before_accept: 0,
             acceptance_delay: Duration::ZERO,
+            tools: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            tool_change: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     fn fail_then_accept() -> Self {
         Self {
-            attempts: Arc::new(AtomicUsize::new(0)),
             failures_before_accept: 1,
-            acceptance_delay: Duration::ZERO,
+            ..Self::accepting()
         }
     }
 
@@ -46,17 +54,37 @@ impl SubscriptionServer {
             ..Self::accepting()
         }
     }
+
+    async fn replace_tools_and_notify(&self, names: &[&str]) {
+        *self.tools.write().await = names
+            .iter()
+            .map(|name| super::testsupport::test_tool(name))
+            .collect();
+        self.tool_change.notify_one();
+    }
 }
 
 impl ServerHandler for SubscriptionServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
                 .enable_resources()
                 .enable_resources_list_changed()
                 .enable_resources_subscribe()
                 .build(),
         )
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult::with_all_items(
+            self.tools.read().await.clone(),
+        ))
     }
 
     fn accepted_subscription_filter(
@@ -72,8 +100,18 @@ impl ServerHandler for SubscriptionServer {
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
-        context.cancelled().await;
-        Ok(())
+        loop {
+            tokio::select! {
+                () = context.cancelled() => return Ok(()),
+                () = self.tool_change.notified() => {
+                    context
+                        .sink()
+                        .notify_tool_list_changed()
+                        .await
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                }
+            }
+        }
     }
 }
 
@@ -207,4 +245,40 @@ async fn initial_failure_is_retried_and_eventually_published() {
     .await
     .expect("retry publishes the accepted resource before the deadline");
     assert!(attempts.load(Ordering::SeqCst) >= 2);
+}
+
+#[tokio::test]
+async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
+    let pool = UpstreamPool::new();
+    let server = SubscriptionServer::accepting();
+    add_subscription_server(&pool, "leaf", server.clone()).await;
+    pool.refresh_upstream_subscription("leaf").await;
+    let mut notifications = pool.subscribe_notifications();
+
+    server
+        .replace_tools_and_notify(&["added_after_list_changed"])
+        .await;
+
+    let event = tokio::time::timeout(Duration::from_secs(2), notifications.recv())
+        .await
+        .expect("tool-list event arrives")
+        .expect("notification channel stays open");
+    assert!(
+        matches!(
+            &event,
+            super::UpstreamNotificationEvent::ToolListChanged { .. }
+        ),
+        "expected a tool-list event, got {event:?}"
+    );
+    let super::UpstreamNotificationEvent::ToolListChanged { upstream } = event else {
+        return;
+    };
+    assert!(pool.refresh_tools_after_list_changed(&upstream).await);
+    let tool_names = pool
+        .healthy_tools_for_upstream("leaf")
+        .await
+        .into_iter()
+        .map(|tool| tool.tool.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, ["added_after_list_changed"]);
 }
