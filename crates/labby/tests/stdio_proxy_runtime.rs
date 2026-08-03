@@ -110,12 +110,19 @@ async fn local_proxy_forwards_tools_list_after_child_discovery_and_bind() {
         ))
         .await
         .unwrap();
-    match &resource.contents[0] {
-        rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
-            assert_eq!(text, "fixture-ready");
-        }
-        other => panic!("expected text resource contents, got {other:?}"),
-    }
+    assert!(
+        matches!(
+            &resource.contents[0],
+            rmcp::model::ResourceContents::TextResourceContents { .. }
+        ),
+        "expected text resource contents, got {:?}",
+        resource.contents[0]
+    );
+    let text = match &resource.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
+        _ => return,
+    };
+    assert_eq!(text, "fixture-ready");
     let prompts = service.peer().list_all_prompts().await.unwrap();
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0].name, "fixture.prompt");

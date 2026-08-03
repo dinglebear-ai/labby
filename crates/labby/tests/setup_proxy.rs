@@ -129,8 +129,8 @@ bearer_token_env = "LABBY_PROXY_TOKEN"
     .unwrap();
     std::fs::write(
         labby_home.join(".env"),
-        r#"LABBY_PROXY_TOKEN=existing-secret
-"#,
+        r"LABBY_PROXY_TOKEN=existing-secret
+",
     )
     .unwrap();
     std::fs::set_permissions(

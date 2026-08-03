@@ -83,7 +83,13 @@ fn linux_build_preflight_accepts_installed_libxdo_without_pkg_config_metadata() 
     }
     write_executable(
         &fake_bin.join("pkg-config"),
-        "#!/bin/sh\n[ \"${2:-}\" = xdo ] && exit 1\nexit 0\n",
+        concat!(
+            "#!/bin/sh\n[ \"$",
+            "{",
+            "2:-",
+            "}",
+            "\" = xdo ] && exit 1\nexit 0\n"
+        ),
     );
     write_executable(
         &fake_bin.join("dpkg-query"),
