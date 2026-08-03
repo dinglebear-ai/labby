@@ -92,8 +92,68 @@ where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
     SizeFn: Fn(&R) -> usize,
 {
-    let outcome =
-        classify_timeout_result(tokio::time::timeout(pool.request_timeout, rpc_future).await);
+    // Enforce one wall-clock budget across peer acquisition, bulkhead wait, and
+    // the RPC itself. Waiting for a permit must not extend the configured
+    // upstream timeout, and queue pressure must not poison connection health.
+    let gate_remaining = pool.request_timeout.saturating_sub(start.elapsed());
+    if gate_remaining.is_zero() {
+        log_upstream_request_error(
+            event,
+            start.elapsed().as_millis(),
+            "queue_saturated",
+            None,
+            None,
+            None,
+        );
+        record_usage_call(
+            pool,
+            event,
+            subject,
+            "queue_saturated",
+            start.elapsed().as_millis(),
+        );
+        return Err(format!(
+            "upstream `{upstream_name}` concurrency queue exhausted the request timeout"
+        ));
+    }
+    let _permit = match tokio::time::timeout(
+        gate_remaining,
+        pool.acquire_upstream_call_permit(upstream_name),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            log_upstream_request_error(
+                event,
+                start.elapsed().as_millis(),
+                "queue_saturated",
+                None,
+                None,
+                None,
+            );
+            record_usage_call(
+                pool,
+                event,
+                subject,
+                "queue_saturated",
+                start.elapsed().as_millis(),
+            );
+            return Err(format!(
+                "upstream `{upstream_name}` concurrency queue timed out"
+            ));
+        }
+    };
+
+    let generation = pool.connection_generation(upstream_name, subject).await;
+    let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
+    let rpc_remaining = pool.request_timeout.saturating_sub(start.elapsed());
+    let outcome = if rpc_remaining.is_zero() {
+        RawCallOutcome::Timeout
+    } else {
+        classify_timeout_result(tokio::time::timeout(rpc_remaining, rpc_future).await)
+    };
 
     match outcome {
         RawCallOutcome::Ok(result) => {

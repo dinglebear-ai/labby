@@ -2,7 +2,8 @@
 //! `server.rs` (bead `lab-kvji.24.1.6`).
 
 use super::{
-    CODE_MODE_DESCRIPTION_MAX_BYTES, CodeModeUpstreamDescription, code_arg, code_mode_description,
+    CODE_MODE_DESCRIPTION_MAX_BYTES, CodeModeUpstreamDescription, InflightCodeModeRole,
+    await_code_mode_execution, begin_code_mode_execution, code_arg, code_mode_description,
     code_mode_execute_trace, route_scoped_capability_filter, string_array_arg,
 };
 use crate::config::CodeModeResultShapePolicy;
@@ -373,4 +374,55 @@ fn execute_trace_preserves_explicit_null_result() {
     );
     assert!(trace["result"].is_null());
     assert_eq!(trace["result_shape"]["type"], json!("null"));
+}
+
+#[tokio::test]
+async fn identical_inflight_code_mode_runs_share_one_leader_result() {
+    let key = format!("dedup-test-{}", ulid::Ulid::new());
+    let leader = match begin_code_mode_execution(key.clone(), "exec_leader".to_string()) {
+        InflightCodeModeRole::Leader(leader) => leader,
+        InflightCodeModeRole::Follower(_) => panic!("first caller must lead"),
+    };
+    let follower = match begin_code_mode_execution(key.clone(), "exec_follower".to_string()) {
+        InflightCodeModeRole::Follower(entry) => entry,
+        InflightCodeModeRole::Leader(_) => panic!("identical concurrent caller must join"),
+    };
+    assert_eq!(follower.leader_execution_id, "exec_leader");
+
+    let waiter = tokio::spawn(await_code_mode_execution(follower));
+    let response = CodeModeExecutionResponse {
+        execution_id: None,
+        result: Some(json!({ "ok": true })),
+        result_shaping: None,
+        ui: None,
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![],
+    };
+    leader.complete(&Ok(response.clone()));
+
+    assert_eq!(waiter.await.unwrap().unwrap(), response);
+    match begin_code_mode_execution(key, "exec_next".to_string()) {
+        InflightCodeModeRole::Leader(_) => {}
+        InflightCodeModeRole::Follower(_) => panic!("completed entry must be removed"),
+    }
+}
+
+#[tokio::test]
+async fn cancelled_code_mode_leader_releases_duplicate_waiters() {
+    let key = format!("dedup-cancel-test-{}", ulid::Ulid::new());
+    let leader = match begin_code_mode_execution(key.clone(), "exec_leader".to_string()) {
+        InflightCodeModeRole::Leader(leader) => leader,
+        InflightCodeModeRole::Follower(_) => panic!("first caller must lead"),
+    };
+    let follower = match begin_code_mode_execution(key, "exec_follower".to_string()) {
+        InflightCodeModeRole::Follower(entry) => entry,
+        InflightCodeModeRole::Leader(_) => panic!("identical concurrent caller must join"),
+    };
+
+    drop(leader);
+    let error = await_code_mode_execution(follower)
+        .await
+        .expect_err("cancelled leader must release follower with an error");
+    assert_eq!(error.kind(), "service_unavailable");
 }

@@ -25,6 +25,17 @@ identifiers were removed. Commit links remain the authoritative historical recor
   configuration, environment, service, action, CLI, API, and OpenAPI inventory
   coverage with drift tests.
 
+### Fixed
+
+- **gateway:** classify valid MCP tool failures as non-retryable `tool_error`
+  responses instead of retryable upstream 502s.
+- **gateway:** bound concurrent calls per upstream, deduplicate identical in-flight
+  Code Mode executions, and exponentially quarantine persistently broken peers.
+- **code-mode:** cancel outstanding host work and evict runners that fail to settle
+  promptly after every upstream call has completed.
+- **stdio:** log child PID, connection generation, exit code or signal, redacted
+  stderr tail, and the exact in-flight requests invalidated by child termination.
+
 ## [1.8.7](https://github.com/dinglebear-ai/labby/compare/v1.8.6...v1.8.7) (2026-08-03)
 
 
