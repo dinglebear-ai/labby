@@ -106,23 +106,30 @@ async fn embed_batch(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolE
 /// The cap breach keeps the pre-existing `decode_error` kind, so callers'
 /// fail-open handling (cooldown + empty result) is unchanged.
 async fn read_tei_body_capped(response: reqwest::Response) -> Result<Vec<u8>, ToolError> {
+    read_tei_body_capped_with_limit(response, TEI_MAX_RESPONSE_BYTES).await
+}
+
+async fn read_tei_body_capped_with_limit(
+    response: reqwest::Response,
+    max_response_bytes: usize,
+) -> Result<Vec<u8>, ToolError> {
     let too_large = |observed: usize| ToolError::Sdk {
         sdk_kind: "decode_error".to_string(),
         message: format!(
-            "TEI response body is {observed} bytes, exceeding the {TEI_MAX_RESPONSE_BYTES} byte cap"
+            "TEI response body is {observed} bytes, exceeding the {max_response_bytes} byte cap"
         ),
     };
     // Fast reject when a hostile/misbehaving endpoint declares the oversized
     // body up front.
     let declared = response.content_length();
     if let Some(cl) = declared
-        && cl > TEI_MAX_RESPONSE_BYTES as u64
+        && cl > max_response_bytes as u64
     {
         return Err(too_large(usize::try_from(cl).unwrap_or(usize::MAX)));
     }
     // Preallocate only when Content-Length is present and honest (≤ cap).
     let initial_cap = declared
-        .map(|cl| cl.min(TEI_MAX_RESPONSE_BYTES as u64) as usize)
+        .map(|cl| cl.min(max_response_bytes as u64) as usize)
         .unwrap_or(0);
     let mut body: Vec<u8> = Vec::with_capacity(initial_cap);
     let mut stream = response.bytes_stream();
@@ -132,7 +139,7 @@ async fn read_tei_body_capped(response: reqwest::Response) -> Result<Vec<u8>, To
             message: format!("failed to read TEI response body: {err}"),
         })?;
         let running_total = body.len().saturating_add(chunk.len());
-        if running_total > TEI_MAX_RESPONSE_BYTES {
+        if running_total > max_response_bytes {
             return Err(too_large(running_total));
         }
         body.extend_from_slice(&chunk);
@@ -311,12 +318,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embed_via_tei_streaming_body_over_cap_aborts_mid_stream() {
-        // A response WITHOUT Content-Length (read-until-close) must be
-        // aborted the moment the streamed running total exceeds the cap —
-        // the cap has to bound memory, not just post-validate a fully
-        // buffered body.
+    async fn read_tei_body_streaming_over_cap_aborts_mid_stream() {
+        // Exercise the streaming memory cap independently from the production
+        // request timeout. A small test-only cap keeps this deterministic even
+        // when the CI host is heavily loaded.
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const TEST_CAP: usize = 64 * 1024;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test listener");
@@ -325,33 +333,34 @@ mod tests {
             let Ok((mut socket, _)) = listener.accept().await else {
                 return;
             };
-            // Minimally drain the request head, then answer with no
-            // Content-Length so reqwest streams until close.
-            let mut buf = [0u8; 4096];
-            drop(socket.read(&mut buf).await);
-            if socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .is_err()
-            {
+            let mut request = [0u8; 4096];
+            drop(socket.read(&mut request).await);
+            const CRLF: &[u8] = &[13, 10];
+            const END_HEADERS: &[u8] = &[13, 10, 13, 10];
+            let response_head = [
+                b"HTTP/1.1 200 OK".as_slice(),
+                CRLF,
+                b"Content-Type: application/json".as_slice(),
+                CRLF,
+                b"Connection: close".as_slice(),
+                END_HEADERS,
+            ]
+            .concat();
+            if socket.write_all(&response_head).await.is_err() {
                 return;
             }
-            // Use a few large writes so the test crosses the memory cap well
-            // inside the request timeout even on a heavily loaded CI runner.
-            // The behavior under test is read-until-close cap enforcement, not
-            // scheduler throughput across hundreds of tiny socket writes.
-            let chunk = vec![b'1'; 2 * 1024 * 1024];
-            for _ in 0..(TEI_MAX_RESPONSE_BYTES / chunk.len() + 2) {
-                if socket.write_all(&chunk).await.is_err() {
-                    // The client aborted the read at the cap — expected.
-                    return;
-                }
-            }
+            let body = vec![b'1'; TEST_CAP * 2];
+            drop(socket.write_all(&body).await);
             drop(socket.shutdown().await);
         });
-        let err = embed_via_tei(&format!("http://{addr}"), &["x".to_string()])
+
+        let response = TEI_CLIENT
+            .post(format!("http://{addr}/embed"))
+            .json(&json!({"inputs": ["x"]}))
+            .send()
+            .await
+            .expect("test response");
+        let err = read_tei_body_capped_with_limit(response, TEST_CAP)
             .await
             .expect_err("over-cap streamed response must be rejected");
         match err {
