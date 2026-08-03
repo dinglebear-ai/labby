@@ -172,11 +172,11 @@ impl UpstreamPool {
                 TASK_NOTIFICATION_DELIVERY_GRACE,
             )
             .await;
-        tracing::warn!(
+        tracing::debug!(
             upstream = %upstream_name,
             gateway_task_id,
             delivered,
-            "DIAGNOSTIC task update notification delivery barrier finished"
+            "task update notification delivery barrier finished"
         );
         Ok(())
     }
@@ -213,11 +213,11 @@ impl UpstreamPool {
                 TASK_NOTIFICATION_DELIVERY_GRACE,
             )
             .await;
-        tracing::warn!(
+        tracing::debug!(
             upstream = %upstream_name,
             gateway_task_id,
             delivered,
-            "DIAGNOSTIC task cancel notification delivery barrier finished"
+            "task cancel notification delivery barrier finished"
         );
         Ok(())
     }

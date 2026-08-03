@@ -40,22 +40,29 @@ use crate::registry::ToolRegistry;
 /// agent without ever reusing it across agents.
 static RELAY_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-type ActiveRequestKey = String;
-
-static REQUEST_CANCELLATION_COUNTER: AtomicU64 = AtomicU64::new(1);
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum ActiveRequestKey {
+    Relay(String),
+    Authenticated {
+        scope: String,
+        request_id: rmcp::model::RequestId,
+    },
+    Session {
+        relay_session_id: u64,
+        request_id: rmcp::model::RequestId,
+    },
+}
 
 pub(crate) struct ActiveRequestCancellation {
-    id: u64,
     token: CancellationToken,
-    signal: tokio::sync::watch::Sender<bool>,
 }
 
 static ACTIVE_REQUEST_CANCELLATIONS: OnceLock<
-    DashMap<ActiveRequestKey, Arc<ActiveRequestCancellation>>,
+    DashMap<ActiveRequestKey, Vec<Arc<ActiveRequestCancellation>>>,
 > = OnceLock::new();
 
 fn active_request_cancellations()
--> &'static DashMap<ActiveRequestKey, Arc<ActiveRequestCancellation>> {
+-> &'static DashMap<ActiveRequestKey, Vec<Arc<ActiveRequestCancellation>>> {
     ACTIVE_REQUEST_CANCELLATIONS.get_or_init(DashMap::new)
 }
 
@@ -65,16 +72,13 @@ struct RelayCancellationNotification {
 }
 
 fn cancel_tracked_request_by_token(token: &str) -> bool {
-    let key = format!("relay:{token}");
-    let Some((_, cancellation)) = active_request_cancellations().remove(&key) else {
+    let key = ActiveRequestKey::Relay(token.to_string());
+    let Some((_, cancellations)) = active_request_cancellations().remove(&key) else {
         return false;
     };
-    tracing::warn!(
-        cancellation_id = cancellation.id,
-        "DIAGNOSTIC cancelling tracked request by relay token"
-    );
-    cancellation.signal.send_replace(true);
-    cancellation.token.cancel();
+    for cancellation in cancellations {
+        cancellation.token.cancel();
+    }
     true
 }
 
@@ -102,12 +106,19 @@ fn request_cancellation_key(
         .get(MCP_RELAY_CANCELLATION_TOKEN_META_KEY)
         .and_then(serde_json::Value::as_str)
     {
-        return format!("relay:{token}");
+        return ActiveRequestKey::Relay(token.to_string());
     }
 
-    authenticated_cancellation_scope(&context.extensions)
-        .map(|scope| format!("{scope}|{}", context.id))
-        .unwrap_or_else(|| format!("session:{relay_session_id}|{}", context.id))
+    authenticated_cancellation_scope(&context.extensions).map_or_else(
+        || ActiveRequestKey::Session {
+            relay_session_id,
+            request_id: context.id.clone(),
+        },
+        |scope| ActiveRequestKey::Authenticated {
+            scope,
+            request_id: context.id.clone(),
+        },
+    )
 }
 
 fn notification_cancellation_key(
@@ -127,14 +138,21 @@ fn notification_cancellation_key(
                 .and_then(cancellation_token_from_meta)
         });
     if let Some(token) = token {
-        return Some(format!("relay:{token}"));
+        return Some(ActiveRequestKey::Relay(token.to_string()));
     }
 
     let request_id = notification.request_id.as_ref()?;
     Some(
-        authenticated_cancellation_scope(&context.extensions)
-            .map(|scope| format!("{scope}|{request_id}"))
-            .unwrap_or_else(|| format!("session:{relay_session_id}|{request_id}")),
+        authenticated_cancellation_scope(&context.extensions).map_or_else(
+            || ActiveRequestKey::Session {
+                relay_session_id,
+                request_id: request_id.clone(),
+            },
+            |scope| ActiveRequestKey::Authenticated {
+                scope,
+                request_id: request_id.clone(),
+            },
+        ),
     )
 }
 
@@ -144,10 +162,6 @@ pub(crate) struct LabRequestCancellation(Arc<ActiveRequestCancellation>);
 impl LabRequestCancellation {
     pub(crate) fn token(&self) -> CancellationToken {
         self.0.token.clone()
-    }
-
-    pub(crate) fn id(&self) -> u64 {
-        self.0.id
     }
 }
 
@@ -165,7 +179,10 @@ impl ActiveRequestCancellationGuard {
 impl Drop for ActiveRequestCancellationGuard {
     fn drop(&mut self) {
         if let Some(key) = self.key.take() {
-            active_request_cancellations().remove(&key);
+            active_request_cancellations().remove_if_mut(&key, |_, current| {
+                current.retain(|candidate| !Arc::ptr_eq(candidate, &self.cancellation));
+                current.is_empty()
+            });
         }
     }
 }
@@ -175,13 +192,17 @@ fn track_request_cancellation(
     relay_session_id: u64,
 ) -> ActiveRequestCancellationGuard {
     let key = request_cancellation_key(context, relay_session_id);
-    let (signal, _) = tokio::sync::watch::channel(false);
     let cancellation = Arc::new(ActiveRequestCancellation {
-        id: REQUEST_CANCELLATION_COUNTER.fetch_add(1, Ordering::Relaxed),
-        token: CancellationToken::new(),
-        signal,
+        token: context.ct.child_token(),
     });
-    active_request_cancellations().insert(key.clone(), Arc::clone(&cancellation));
+    // Independent stateless clients authenticated as the same actor may reuse
+    // the same JSON-RPC id concurrently. The fallback actor/id key cannot
+    // distinguish those requests, so retain every registration and fail safe
+    // by cancelling all matches. Private relay UUID tokens remain exact.
+    active_request_cancellations()
+        .entry(key.clone())
+        .or_default()
+        .push(Arc::clone(&cancellation));
     ActiveRequestCancellationGuard {
         key: Some(key),
         cancellation,
@@ -194,20 +215,15 @@ fn cancel_tracked_request(
     relay_session_id: u64,
 ) -> bool {
     let key = notification_cancellation_key(notification, context, relay_session_id);
-    tracing::warn!(request_id = ?notification.request_id, cancellation_key = ?key, active_request_count = active_request_cancellations().len(), "DIAGNOSTIC notification cancellation key");
     let Some(key) = key else {
         return false;
     };
-    let Some((_, cancellation)) = active_request_cancellations().remove(&key) else {
+    let Some((_, cancellations)) = active_request_cancellations().remove(&key) else {
         return false;
     };
-    tracing::warn!(
-        cancellation_id = cancellation.id,
-        process_id = std::process::id(),
-        "DIAGNOSTIC cancelling tracked request by MCP notification"
-    );
-    cancellation.signal.send_replace(true);
-    cancellation.token.cancel();
+    for cancellation in cancellations {
+        cancellation.token.cancel();
+    }
     true
 }
 
@@ -552,7 +568,6 @@ impl ServerHandler for LabMcpServer {
         mut request: CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         request.meta = Some(context.meta.clone());
         Ok(provenance::stamp_complete_result(
             self.complete_impl(request, context).await?,
@@ -564,7 +579,6 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_prompts_result(
             self.list_prompts_impl(request, context).await?,
         ))
@@ -575,7 +589,6 @@ impl ServerHandler for LabMcpServer {
         mut request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         request.meta = Some(context.meta.clone());
         Ok(provenance::stamp_get_prompt_response(
             self.get_prompt_impl(request, context).await?,
@@ -587,7 +600,6 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_resources_result(
             self.list_resources_impl(request, context).await?,
         ))
@@ -598,7 +610,6 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_resource_templates_result(
             self.list_resource_templates_impl(request, context).await?,
         ))
@@ -609,7 +620,6 @@ impl ServerHandler for LabMcpServer {
         mut request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         request.meta = Some(context.meta.clone());
         let response = match self.read_resource_impl(request, context).await? {
             ReadResourceResponse::Complete(result) => result
@@ -626,7 +636,6 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         Ok(provenance::stamp_list_tools_result(
             self.list_tools_impl(request, context).await?,
         ))
@@ -655,7 +664,6 @@ impl ServerHandler for LabMcpServer {
         request: GetTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             let result = pool
@@ -682,7 +690,6 @@ impl ServerHandler for LabMcpServer {
         request: UpdateTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
@@ -710,7 +717,6 @@ impl ServerHandler for LabMcpServer {
         request: CancelTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
-        let _cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
@@ -760,15 +766,21 @@ impl LabMcpServer {
 mod tests {
     use std::time::Duration;
 
-    use super::LabMcpServer;
     #[cfg(feature = "gateway")]
     use super::verify_upstream_subject_resolution_support;
+    use super::{
+        LabMcpServer, cancel_tracked_request_by_token, request_cancellation_key,
+        track_request_cancellation,
+    };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
     use crate::registry::ToolRegistry;
     use rmcp::ServerHandler;
     use rmcp::ServiceExt;
-    use rmcp::model::{ProtocolVersion, ServerNotification, SubscriptionFilter};
+    use rmcp::model::{
+        CustomRequest, CustomResult, NumberOrString, ProtocolVersion, ServerNotification,
+        SubscriptionFilter,
+    };
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 
     fn stateless_test_server(peers: crate::mcp::peers::PeerRegistry) -> LabMcpServer {
@@ -788,6 +800,196 @@ mod tests {
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
         }
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_custom_request_cancels_tracked_token() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let mut tracked_context = rmcp::service::RequestContext::new(
+            NumberOrString::String(std::sync::Arc::from("tracked-request")),
+            running.peer().clone(),
+        );
+        tracked_context.meta.0.0.insert(
+            labby_gateway::MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            serde_json::Value::String("handler-correlation-test".to_string()),
+        );
+        let tracked = track_request_cancellation(&tracked_context, 0);
+        let cancellation = tracked.cancellation();
+
+        let result = running
+            .service()
+            .on_custom_request(
+                CustomRequest::new(
+                    labby_gateway::MCP_RELAY_CANCELLATION_REQUEST_METHOD,
+                    Some(serde_json::json!({
+                        "reason": "downstream request cancelled",
+                        "token": "handler-correlation-test",
+                    })),
+                ),
+                rmcp::service::RequestContext::new(
+                    NumberOrString::String(std::sync::Arc::from("cancellation-request")),
+                    running.peer().clone(),
+                ),
+            )
+            .await
+            .expect("relay cancellation request succeeds");
+        let CustomResult(value) = result;
+
+        assert_eq!(value["cancelled"], true);
+        assert!(
+            cancellation.token.is_cancelled(),
+            "custom request must cancel the correlated request token"
+        );
+    }
+
+    #[tokio::test]
+    async fn tracked_cancellation_inherits_native_request_cancellation() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = rmcp::service::RequestContext::new(
+            NumberOrString::String(std::sync::Arc::from("native-cancelled-request")),
+            running.peer().clone(),
+        );
+        let native_cancellation = context.ct.clone();
+        let tracked = track_request_cancellation(&context, 0);
+        let cancellation = tracked.cancellation();
+
+        native_cancellation.cancel();
+
+        assert!(
+            cancellation.token.is_cancelled(),
+            "rmcp request cancellation and transport teardown must propagate to the tracked token"
+        );
+    }
+
+    #[tokio::test]
+    async fn numeric_and_string_request_ids_have_distinct_cancellation_keys() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let numeric =
+            rmcp::service::RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        let string = rmcp::service::RequestContext::new(
+            NumberOrString::String(std::sync::Arc::from("1")),
+            running.peer().clone(),
+        );
+
+        assert_ne!(
+            request_cancellation_key(&numeric, 7),
+            request_cancellation_key(&string, 7),
+            "JSON-RPC numeric 1 and string \"1\" must not share a cancellation key"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_custom_request_reports_untracked_token() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let result = running
+            .service()
+            .on_custom_request(
+                CustomRequest::new(
+                    labby_gateway::MCP_RELAY_CANCELLATION_REQUEST_METHOD,
+                    Some(serde_json::json!({
+                        "reason": "downstream request cancelled",
+                        "token": "untracked-handler-correlation-test",
+                    })),
+                ),
+                rmcp::service::RequestContext::new(
+                    NumberOrString::String(std::sync::Arc::from("untracked-cancellation-request")),
+                    running.peer().clone(),
+                ),
+            )
+            .await
+            .expect("untracked relay cancellation request still receives an acknowledgement");
+        let CustomResult(value) = result;
+
+        assert_eq!(
+            value["cancelled"], false,
+            "side channel must not claim cancellation for an untracked handler path"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_cancellation_guard_cannot_remove_other_same_key_request() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let mut context = rmcp::service::RequestContext::new(
+            NumberOrString::String(std::sync::Arc::from("duplicate-request")),
+            running.peer().clone(),
+        );
+        context.meta.0.0.insert(
+            labby_gateway::MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            serde_json::Value::String("duplicate-correlation-token".to_string()),
+        );
+
+        let stale_guard = track_request_cancellation(&context, 0);
+        let stale_cancellation = stale_guard.cancellation();
+        let current_guard = track_request_cancellation(&context, 0);
+        let current_cancellation = current_guard.cancellation();
+        drop(stale_guard);
+
+        assert!(
+            cancel_tracked_request_by_token("duplicate-correlation-token"),
+            "dropping the stale guard must leave the newer request registered"
+        );
+        assert!(current_cancellation.token.is_cancelled());
+        assert!(
+            !stale_cancellation.token.is_cancelled(),
+            "a completed request must be removed from the shared cancellation key"
+        );
+    }
+
+    #[tokio::test]
+    async fn same_key_live_requests_are_all_cancelled() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let mut context = rmcp::service::RequestContext::new(
+            NumberOrString::String(std::sync::Arc::from("shared-request-id")),
+            running.peer().clone(),
+        );
+        context.meta.0.0.insert(
+            labby_gateway::MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            serde_json::Value::String("shared-live-correlation-token".to_string()),
+        );
+
+        let first_guard = track_request_cancellation(&context, 0);
+        let first = first_guard.cancellation();
+        let second_guard = track_request_cancellation(&context, 0);
+        let second = second_guard.cancellation();
+
+        assert!(cancel_tracked_request_by_token(
+            "shared-live-correlation-token"
+        ));
+        assert!(
+            first.token.is_cancelled() && second.token.is_cancelled(),
+            "an ambiguous stateless fallback key must not silently orphan either live request"
+        );
     }
 
     #[test]
@@ -863,10 +1065,8 @@ mod tests {
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
         );
-        let context = rmcp::service::RequestContext::new(
-            rmcp::model::NumberOrString::Number(1),
-            running.peer().clone(),
-        );
+        let context =
+            rmcp::service::RequestContext::new(NumberOrString::Number(1), running.peer().clone());
 
         let result = running
             .service()

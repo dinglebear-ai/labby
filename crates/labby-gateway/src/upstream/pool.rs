@@ -37,6 +37,7 @@ mod ensure;
 mod entries;
 mod health;
 mod helpers;
+mod http_cancellation;
 mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
@@ -47,6 +48,9 @@ mod prompts_get;
 mod prompts_list;
 mod registration;
 mod relay;
+mod relay_cancellation;
+#[cfg(test)]
+mod relay_cancellation_tests;
 mod resources_list;
 mod resources_read;
 mod spawn_lock;

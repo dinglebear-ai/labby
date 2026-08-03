@@ -53,9 +53,9 @@ use std::time::Instant;
 use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
-    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, CustomRequest,
-    GetPromptRequest, GetPromptRequestParams, GetPromptResponse, ProgressNotificationParam,
-    ProgressToken, ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
+    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
+    GetPromptRequestParams, GetPromptResponse, ProgressNotificationParam, ProgressToken,
+    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
     RequestMetaObject, ResourceUpdatedNotificationParam, ServerNotification, ServerResult,
     TaskStatusNotification, TaskStatusNotificationParams,
 };
@@ -66,23 +66,26 @@ use tokio_util::sync::CancellationToken;
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
-use crate::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY};
+use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
 
 use super::super::types::UpstreamCapability;
 use super::capability_call::service_error_affects_connection_health;
-use super::connect::{
-    HttpCancellationSender, build_http_cancellation_sender, connect_upstream_with_handler,
-};
+use super::connect::connect_upstream_with_handler;
 use super::helpers::{
     SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
     estimate_call_tool_response_size, estimate_resource_response_size, max_response_bytes,
     normalize_resource_result_uri, redact_resource_uri_for_logging, upstream_transport,
 };
+use super::http_cancellation::{HttpCancellationSender, build_http_cancellation_sender};
 use super::logging::{
     UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
     log_upstream_request_start,
 };
 use super::notifications::UpstreamNotificationEvent;
+use super::relay_cancellation::{
+    PendingRelayRequestId, RelaySendOutcome, await_relay_send, dispatch_relay_cancellation,
+    spawn_bounded_handle_cancellation,
+};
 use super::{UpstreamConnection, UpstreamPool};
 
 const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -350,11 +353,11 @@ impl RelayClientHandler {
         {
             Ok(()) => {
                 self.routes.record_task_notification_delivery();
-                tracing::warn!(
+                tracing::debug!(
                     upstream = %self.upstream_name,
                     task_id,
                     ?status,
-                    "DIAGNOSTIC forwarded translated task notification downstream"
+                    "forwarded translated task notification downstream"
                 );
             }
             Err(error) => {
@@ -492,11 +495,11 @@ impl ClientHandler for RelayClientHandler {
     ) {
         let native_task_id = params.task.task.task_id.clone();
         let status = params.task.status();
-        tracing::warn!(
+        tracing::debug!(
             upstream = %self.upstream_name,
             native_task_id,
             ?status,
-            "DIAGNOSTIC received upstream task notification"
+            "received upstream task notification"
         );
         let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
             tracing::debug!(
@@ -523,105 +526,6 @@ impl ClientHandler for RelayClientHandler {
     }
 }
 
-async fn send_labby_relay_cancellation(
-    peer: &Peer<RoleClient>,
-    reason: &str,
-    token: &str,
-) -> Result<(), ServiceError> {
-    let result = peer
-        .send_request(ClientRequest::CustomRequest(CustomRequest::new(
-            MCP_RELAY_CANCELLATION_REQUEST_METHOD,
-            Some(serde_json::json!({
-                "reason": reason,
-                "token": token,
-            })),
-        )))
-        .await?;
-    match result {
-        ServerResult::CustomResult(_) => Ok(()),
-        _ => Err(ServiceError::UnexpectedResponse),
-    }
-}
-
-#[derive(Default)]
-struct PendingRelayRequestId {
-    id: Mutex<Option<RequestId>>,
-    notify: Notify,
-}
-
-impl PendingRelayRequestId {
-    async fn set(&self, request_id: RequestId) {
-        *self.id.lock().await = Some(request_id);
-        self.notify.notify_waiters();
-    }
-
-    async fn wait(&self, timeout: std::time::Duration) -> Option<RequestId> {
-        if let Some(request_id) = self.id.lock().await.clone() {
-            return Some(request_id);
-        }
-        let notified = self.notify.notified();
-        if let Some(request_id) = self.id.lock().await.clone() {
-            return Some(request_id);
-        }
-        tokio::time::timeout(timeout, notified).await.ok()?;
-        self.id.lock().await.clone()
-    }
-}
-
-async fn dispatch_relay_cancellation(
-    peer: &Peer<RoleClient>,
-    cancellation_sender: Option<&HttpCancellationSender>,
-    request_id: &PendingRelayRequestId,
-    reason: &str,
-    token: &str,
-    dispatched: &AtomicBool,
-) {
-    if dispatched.swap(true, Ordering::AcqRel) {
-        return;
-    }
-
-    if let Err(error) = send_labby_relay_cancellation(peer, reason, token).await {
-        tracing::debug!(
-            error = %error,
-            "upstream did not accept the Labby relay cancellation request"
-        );
-    }
-
-    let Some(request_id) = request_id.wait(std::time::Duration::from_secs(1)).await else {
-        tracing::debug!("upstream request id was unavailable for standard cancellation");
-        return;
-    };
-
-    if let Err(error) = peer
-        .notify_cancelled(CancelledNotificationParam::new(
-            Some(request_id.clone()),
-            Some(reason.to_string()),
-        ))
-        .await
-    {
-        tracing::debug!(
-            request_id = ?request_id,
-            error = %error,
-            "standard upstream cancellation notification failed"
-        );
-    }
-
-    if let Some(sender) = cancellation_sender {
-        let sender = sender.clone();
-        let reason = reason.to_string();
-        let token = token.to_string();
-        tokio::spawn(async move {
-            if let Err(error) = sender.send(request_id.clone(), Some(reason), &token).await {
-                tracing::debug!(
-                    request_id = ?request_id,
-                    error = %error,
-                    "best-effort standard HTTP cancellation failed"
-                );
-            }
-        });
-    }
-}
-
 async fn send_relay_request(
     peer: &Peer<RoleClient>,
     routes: &Arc<RelayRouteState>,
@@ -641,6 +545,11 @@ async fn send_relay_request(
             MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
             serde_json::Value::String(cancellation_token.clone()),
         );
+    if downstream_cancel.is_cancelled() {
+        return Err(ServiceError::Cancelled {
+            reason: Some("downstream request was already cancelled".to_string()),
+        });
+    }
     let downstream_progress_token = request_meta
         .as_ref()
         .and_then(RequestMetaObject::get_progress_token);
@@ -649,9 +558,28 @@ async fn send_relay_request(
     let options = request_meta
         .map(|meta| PeerRequestOptions::no_options().with_meta(meta))
         .unwrap_or_else(PeerRequestOptions::no_options);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut handle = match await_relay_send(
+        peer.send_cancellable_request(request, options),
+        &downstream_cancel,
+        deadline,
+    )
+    .await
+    {
+        RelaySendOutcome::Sent(Ok(handle)) => handle,
+        RelaySendOutcome::Sent(Err(error)) => return Err(error),
+        RelaySendOutcome::Cancelled => {
+            return Err(ServiceError::Cancelled {
+                reason: Some("downstream request cancelled before relay send".to_string()),
+            });
+        }
+        RelaySendOutcome::TimedOut => return Err(ServiceError::Timeout { timeout }),
+    };
     let pending_request_id = Arc::new(PendingRelayRequestId::default());
     let cancellation_dispatched = Arc::new(AtomicBool::new(false));
     let relay_finished = CancellationToken::new();
+    let upstream_request_id = handle.id.clone();
+    pending_request_id.set(upstream_request_id.clone());
     {
         let peer = peer.clone();
         let cancellation_sender = cancellation_sender.cloned();
@@ -661,10 +589,6 @@ async fn send_relay_request(
         let relay_finished = relay_finished.clone();
         let cancellation_dispatched = Arc::clone(&cancellation_dispatched);
         tokio::spawn(async move {
-            tracing::warn!(
-                process_id = std::process::id(),
-                "DIAGNOSTIC detached relay cancellation watcher armed"
-            );
             tokio::select! {
                 () = downstream_cancel.cancelled() => {
                     dispatch_relay_cancellation(
@@ -674,14 +598,9 @@ async fn send_relay_request(
                         "downstream request cancelled",
                         &cancellation_token,
                         &cancellation_dispatched,
-                    )
-                    .await;
+                    );
                 }
                 () = relay_finished.cancelled() => {
-                    tracing::warn!(
-                        process_id = std::process::id(),
-                        "DIAGNOSTIC detached relay watcher entered finish grace"
-                    );
                     tokio::select! {
                         () = downstream_cancel.cancelled() => {
                             dispatch_relay_cancellation(
@@ -691,17 +610,12 @@ async fn send_relay_request(
                                 "downstream request cancelled during relay teardown",
                                 &cancellation_token,
                                 &cancellation_dispatched,
-                            )
-                            .await;
+                            );
                         }
                         () = tokio::time::sleep(RELAY_ROUTE_CLEANUP_GRACE) => {}
                     }
                 }
-                () = tokio::time::sleep(timeout) => {
-                    tracing::warn!(
-                        process_id = std::process::id(),
-                        "DIAGNOSTIC detached relay cancellation watcher timed out"
-                    );
+                () = tokio::time::sleep_until(deadline) => {
                     dispatch_relay_cancellation(
                         &peer,
                         cancellation_sender.as_ref(),
@@ -709,22 +623,11 @@ async fn send_relay_request(
                         "relayed request timeout",
                         &cancellation_token,
                         &cancellation_dispatched,
-                    )
-                    .await;
+                    );
                 }
             }
         });
     }
-
-    let mut handle = match peer.send_cancellable_request(request, options).await {
-        Ok(handle) => handle,
-        Err(error) => {
-            relay_finished.cancel();
-            return Err(error);
-        }
-    };
-    let upstream_request_id = handle.id.clone();
-    pending_request_id.set(upstream_request_id.clone()).await;
 
     routes
         .register_request(
@@ -764,15 +667,16 @@ async fn send_relay_request(
                 &reason,
                 &cancellation_token,
                 &cancellation_dispatched,
-            )
-            .await;
+            );
             relay_finished.cancel();
-            handle.cancel(Some(reason.clone())).await?;
+            drop(spawn_bounded_handle_cancellation(
+                handle.cancel(Some(reason.clone())),
+            ));
             return Err(ServiceError::Cancelled {
                 reason: Some(reason),
             });
         }
-        () = tokio::time::sleep(timeout) => {
+        () = tokio::time::sleep_until(deadline) => {
             routes.unregister_request(&upstream_request_id).await;
             let reason = "relayed request timeout".to_string();
             dispatch_relay_cancellation(
@@ -782,10 +686,11 @@ async fn send_relay_request(
                 &reason,
                 &cancellation_token,
                 &cancellation_dispatched,
-            )
-            .await;
+            );
             relay_finished.cancel();
-            handle.cancel(Some(reason)).await?;
+            drop(spawn_bounded_handle_cancellation(
+                handle.cancel(Some(reason)),
+            ));
             return Err(ServiceError::Timeout { timeout });
         }
     };
@@ -1520,7 +1425,6 @@ mod tests {
     use rmcp::service::ClientLifecycleMode;
     use rmcp::service::{NotificationContext, RequestContext, RunningService};
     use rmcp::{ClientHandler, ClientServiceExt, RoleServer, ServerHandler, ServiceExt};
-
     use std::time::Instant;
 
     use crate::upstream::types::UpstreamRuntimeMetadata;
@@ -1996,6 +1900,77 @@ mod tests {
         })
         .await
         .expect("upstream request context should be cancelled");
+    }
+
+    #[tokio::test]
+    async fn precancelled_relay_request_never_reaches_the_upstream() {
+        let upstream = CancellationAwareUpstream::default();
+        let capabilities = relay_test_capabilities();
+        let (pool, config, downstream_server) =
+            cached_relay_pool(upstream.clone(), CapableAgent, capabilities.clone()).await;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("must-not-run"),
+                downstream_server.peer().clone(),
+                RequestId::String("pre-cancelled".into()),
+                cancellation,
+                1,
+                capabilities,
+                None,
+            )
+            .await
+            .expect("cached relay exists");
+
+        assert!(
+            matches!(result, Err(ref message) if message.contains("already cancelled")),
+            "pre-cancelled request must fail locally: {result:?}"
+        );
+        tokio::task::yield_now().await;
+        assert!(
+            !upstream.started.load(Ordering::SeqCst),
+            "a pre-cancelled destructive request must never execute upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_dispatch_does_not_wait_for_request_id() {
+        let capabilities = relay_test_capabilities();
+        let (pool, config, _downstream_server) = cached_relay_pool(
+            CancellationAwareUpstream::default(),
+            CapableAgent,
+            capabilities,
+        )
+        .await;
+        let peer = {
+            let connections = pool.relay_connections.read().await;
+            connections
+                .get(&(config.name, 1, None))
+                .expect("cached relay connection")
+                .peer
+                .clone()
+        };
+        let pending_request_id = Arc::new(PendingRelayRequestId::default());
+        let dispatched = AtomicBool::new(false);
+
+        let started = Instant::now();
+        dispatch_relay_cancellation(
+            &peer,
+            None,
+            &pending_request_id,
+            "downstream request cancelled",
+            "test-relay-token",
+            &dispatched,
+        );
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "relay-token cancellation must be dispatched before waiting for the upstream request id"
+        );
     }
 
     #[tokio::test]

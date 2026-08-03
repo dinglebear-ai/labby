@@ -64,28 +64,10 @@ fn relay_capabilities_for_request(request: &CallToolRequestParams) -> Option<Cli
 fn relay_cancellation_token(
     context: &RequestContext<RoleServer>,
 ) -> tokio_util::sync::CancellationToken {
-    let cancellation = context.extensions.get::<LabRequestCancellation>();
-    tracing::warn!(
-        has_lab_cancellation = cancellation.is_some(),
-        cancellation_id = cancellation.map(LabRequestCancellation::id),
-        process_id = std::process::id(),
-        "DIAGNOSTIC selected relay cancellation token"
-    );
-    cancellation
-        .map(|cancellation| {
-            let token = cancellation.token();
-            let observer = token.clone();
-            let cancellation_id = cancellation.id();
-            tokio::spawn(async move {
-                observer.cancelled().await;
-                tracing::warn!(
-                    cancellation_id,
-                    process_id = std::process::id(),
-                    "DIAGNOSTIC Labby-to-gateway cancellation token fired"
-                );
-            });
-            token
-        })
+    context
+        .extensions
+        .get::<LabRequestCancellation>()
+        .map(LabRequestCancellation::token)
         .unwrap_or_else(|| context.ct.clone())
 }
 

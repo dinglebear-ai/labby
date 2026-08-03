@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,6 +50,71 @@ fn classify(event: &str, files: &[&str]) -> HashMap<String, String> {
             (key.to_string(), value.to_string())
         })
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn write_executable(path: &Path, body: &str) {
+    fs::write(path, body).expect("write fake executable");
+    let mut permissions = fs::metadata(path)
+        .expect("read fake executable metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("make fake executable runnable");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_build_preflight_accepts_installed_libxdo_without_pkg_config_metadata() {
+    let action =
+        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
+            .expect("read setup-rust-kache action");
+    let action: serde_yaml::Value = serde_yaml::from_str(&action).expect("parse composite action");
+    let preflight = action["runs"]["steps"]
+        .as_sequence()
+        .and_then(|steps| steps.first())
+        .and_then(|step| step["run"].as_str())
+        .expect("first action step has a shell preflight");
+
+    let temp = tempfile::tempdir().expect("create fake command directory");
+    let fake_bin = temp.path().join("bin");
+    fs::create_dir(&fake_bin).expect("create fake bin");
+    for command in ["cc", "ld.lld"] {
+        write_executable(&fake_bin.join(command), "#!/bin/sh\nexit 0\n");
+    }
+    write_executable(
+        &fake_bin.join("pkg-config"),
+        "#!/bin/sh\n[ \"${2:-}\" = xdo ] && exit 1\nexit 0\n",
+    );
+    write_executable(
+        &fake_bin.join("dpkg-query"),
+        "#!/bin/sh\n: > \"$DPKG_MARKER\"\nprintf 'ii '\n",
+    );
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+    write_executable(
+        &fake_bin.join("apt-get"),
+        "#!/bin/sh\n: > \"$APT_MARKER\"\nexit 0\n",
+    );
+
+    let apt_marker = temp.path().join("apt-ran");
+    let dpkg_marker = temp.path().join("dpkg-queried");
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg(preflight)
+        .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
+        .env("APT_MARKER", &apt_marker)
+        .env("DPKG_MARKER", &dpkg_marker)
+        .status()
+        .expect("run Linux prerequisite preflight");
+
+    assert!(status.success(), "prerequisite preflight must succeed");
+    assert!(
+        dpkg_marker.exists(),
+        "libxdo-dev must be checked through Debian package metadata"
+    );
+    assert!(
+        !apt_marker.exists(),
+        "an installed libxdo-dev package must not trigger apt-get just because xdo.pc is absent"
+    );
 }
 
 #[test]

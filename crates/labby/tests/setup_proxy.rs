@@ -48,8 +48,6 @@ fn setup_proxy_non_tty_without_yes_fails_without_reading_stdin() {
 
 #[test]
 fn bearer_setup_preserves_comments_hardens_secret_and_is_byte_idempotent() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let home = tempfile::tempdir().expect("temp home");
     let lab_home = home.path().join(".labby");
     std::fs::create_dir_all(&lab_home).unwrap();
@@ -87,10 +85,14 @@ fn bearer_setup_preserves_comments_hardens_secret_and_is_byte_idempotent() {
         .expect("generated proxy bearer token");
     assert_eq!(token.len(), 64);
     assert!(token.chars().all(|character| character.is_ascii_hexdigit()));
-    assert_eq!(
-        std::fs::metadata(&env).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&env).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     assert!(!String::from_utf8_lossy(&first.stdout).contains(token));
     assert!(!String::from_utf8_lossy(&first.stderr).contains(token));
 

@@ -771,26 +771,31 @@ async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() 
     );
 }
 
-fn destructive_request_with_elicitation() -> CallToolRequestParams {
+fn destructive_request() -> CallToolRequestParams {
+    CallToolRequestParams::new("danger").with_arguments(serde_json::Map::from_iter([
+        (
+            "action".to_string(),
+            Value::String("danger.delete".to_string()),
+        ),
+        ("params".to_string(), serde_json::json!({})),
+    ]))
+}
+
+fn request_context_with_elicitation(
+    peer: rmcp::service::Peer<rmcp::RoleServer>,
+) -> rmcp::service::RequestContext<rmcp::RoleServer> {
     let capabilities = ClientCapabilities::builder()
         .enable_elicitation_with(
             ElicitationCapability::new().with_form(FormElicitationCapability::new()),
         )
         .build();
-    let mut request =
-        CallToolRequestParams::new("danger").with_arguments(serde_json::Map::from_iter([
-            (
-                "action".to_string(),
-                Value::String("danger.delete".to_string()),
-            ),
-            ("params".to_string(), serde_json::json!({})),
-        ]));
-    request.meta = Some(RequestMetaObject::with_client_context(
+    let mut context = request_context_with_peer(peer);
+    context.meta = RequestMetaObject::with_client_context(
         ProtocolVersion::V_2026_07_28,
         Implementation::new("test-client", "1.0.0"),
         capabilities,
-    ));
-    request
+    );
+    context
 }
 
 #[tokio::test]
@@ -815,8 +820,8 @@ async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
     let first = running
         .service()
         .call_tool(
-            destructive_request_with_elicitation(),
-            request_context_with_peer(running.peer().clone()),
+            destructive_request(),
+            request_context_with_elicitation(running.peer().clone()),
         )
         .await
         .expect("input required");
@@ -826,14 +831,17 @@ async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
     assert!(input_required.request_state.is_none());
     assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 0);
 
-    let mut retry = destructive_request_with_elicitation();
+    let mut retry = destructive_request();
     retry.input_responses = Some(BTreeMap::from([(
         "destructive_confirmation".to_string(),
         serde_json::json!({"action": "accept", "content": {"confirm": true}}),
     )]));
     let second = running
         .service()
-        .call_tool(retry, request_context_with_peer(running.peer().clone()))
+        .call_tool(
+            retry,
+            request_context_with_elicitation(running.peer().clone()),
+        )
         .await
         .expect("completed retry");
     assert!(matches!(second, CallToolResponse::Complete(_)));
