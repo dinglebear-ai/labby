@@ -11,6 +11,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `doctor` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
 | `doctor` | `oauth.relay.check` | false | false | true | lab:admin | `probe_targets: boolean` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `proxy.check` | false | false | false |  | `app_url*: string`<br>`mcp_url*: string`<br>`route*: string`<br>`backend_url: string` | `DoctorReport` | cli, mcp, api |
+| `doctor` | `proxy.preflight` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
 | `doctor` | `system.checks` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
 | `fs` | `fs.list` | false | false | false |  | `path: string` | `{entries: [{name, path, kind, size, modified, accessible}], truncated: bool}` | mcp, api, web |
@@ -21,7 +22,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `name*: string` | `McpClientConfigView` | cli, mcp, api, web |
 | `gateway` | `gateway.clients.list` | false | false | true | lab:admin |  | `GatewayClientView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.code_mode.get` | false | false | true | lab:admin |  | `CodeModeConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.code_mode.set` | false | true | true | lab:admin | `enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.code_mode.set` | false | true | true | lab:admin | `enabled: boolean`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.discover` | false | false | true | lab:admin | `clients: string[]`<br>`include_existing: boolean` | `DiscoveredServerView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.discovered_prompts` | false | false | true | lab:admin | `name*: string` | `string[]` | cli, mcp, api, web |
 | `gateway` | `gateway.discovered_resources` | false | false | true | lab:admin | `name*: string` | `string[]` | cli, mcp, api, web |
@@ -43,6 +44,9 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin |  | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `ok` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.resource_lease.release` | false | true | true | lab:admin | `id*: string` | `ResourceLeaseReleaseView` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.resource_lease.renew` | false | false | true | lab:admin | `id*: string`<br>`ttl_secs*: integer` | `ResourceLease` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `BeginAuthorization` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `UpstreamOauthStatusView` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api, web |
@@ -100,6 +104,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `setup` | `plugin_hook` | false | true | true | lab:admin | `repair: boolean` | `PluginHookReport` | cli, mcp, api, web |
 | `setup` | `plugin_sync` | false | true | true | lab:admin |  | `PluginSyncOutcome` | cli, mcp, api, web |
 | `setup` | `plugins.installed` | false | false | true | lab:admin | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api, web |
+| `setup` | `proxy.configure` | false | true | true | lab:admin | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api, web |
 | `setup` | `repair` | false | true | true | lab:admin |  | `SetupReport` | cli, mcp, api, web |
 | `setup` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `services: string[]` | `ServiceSchemaMap` | cli, mcp, api, web |

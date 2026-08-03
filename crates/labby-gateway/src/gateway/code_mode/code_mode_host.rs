@@ -493,7 +493,9 @@ impl GatewayManager {
                 })
             }
             Some(Err(err)) => {
-                pool.record_failure(upstream, err.clone()).await;
+                // The pool owns transport-vs-MCP error classification and has
+                // already updated connection health. Re-recording here would
+                // turn valid application errors into false disconnects.
                 Err(ToolError::Sdk {
                     sdk_kind: "upstream_error".to_string(),
                     message: err,

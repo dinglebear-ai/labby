@@ -141,6 +141,11 @@ pub enum GatewayCodeCommand {
     Enable,
     /// Disable the gateway codemode MCP surface.
     Disable,
+    /// Manage the explicit Code Mode MCP App UI while keeping text execution available.
+    Ui {
+        #[command(subcommand)]
+        command: GatewayCodeUiCommand,
+    },
     /// Execute a sandboxed JavaScript snippet that calls the typed
     /// `codemode.<upstream>.<tool>` helpers (or `callTool` directly).
     Exec {
@@ -149,6 +154,16 @@ pub enum GatewayCodeCommand {
         #[arg(long)]
         file: Option<std::path::PathBuf>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewayCodeUiCommand {
+    /// Read whether the explicit Code Mode MCP App UI is enabled.
+    Status,
+    /// Enable the explicit Code Mode MCP App UI.
+    Enable,
+    /// Disable the explicit Code Mode MCP App UI without disabling Code Mode.
+    Disable,
 }
 
 #[derive(Debug, Args)]

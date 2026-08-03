@@ -169,6 +169,11 @@ jobs:
     name: Gateway Admin browser tests
     runs-on: ci-pool-typescript
     timeout-minutes: 20
+    env:
+      # JIT jobs may run as root, while the fleet mounts the durable browser
+      # cache at the runner user's home. Keep browser discovery independent
+      # of the process UID.
+      PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
     needs: changes
     if: ${{ needs.changes.outputs.web == 'true' }}
     defaults:
@@ -380,7 +385,7 @@ jobs:
       - name: Execute sandbox through the CLI-hosted runner
         run: |
           set -euo pipefail
-          cargo run -p labby --all-features --locked -- --json gateway code exec \
+          cargo run -p labby --bin labby --all-features --locked -- --json gateway code exec \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
 
@@ -425,9 +430,13 @@ jobs:
     # Slices are compile checks, EXCEPT gateway: the flagship slice also runs
     # its test suite so omission-side tests (#[cfg(not(feature = ...))] —
     # registry omission tests, the no-feature rejection helpers) actually
-    # execute somewhere in CI instead of only ever being compiled.
+    # execute somewhere in CI instead of only ever being compiled. The fs
+    # slice also executes its focused no-gateway proxy preflight regression.
     env:
-      RUSTFLAGS: ""
+      # The gateway slice links the same large test harnesses as the full test
+      # graph, so keep its peak memory below the 8 GiB pool limit too.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     strategy:
       fail-fast: false
       matrix:
@@ -453,6 +462,9 @@ jobs:
       - name: Run gateway-slice test suite
         if: matrix.slice == 'gateway'
         run: cargo nextest run -p labby --no-default-features --features gateway --locked
+      - name: Run fs-slice proxy preflight regression
+        if: matrix.slice == 'fs'
+        run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
 
   extracted-crate-slices:
     name: Extracted crate slice (${{ matrix.name }})
@@ -610,6 +622,11 @@ jobs:
     # save/restore layer is needed.
     runs-on: ci-pool-rust
     timeout-minutes: 60
+    env:
+      # The all-features test graph links multiple large harnesses. Serializing
+      # Cargo builds and using lld keeps peak memory below the 8 GiB pool limit.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
       (
@@ -647,6 +664,10 @@ jobs:
     name: Test
     runs-on: ci-pool-rust
     timeout-minutes: 60
+    env:
+      # Match the internal-PR test job resource profile on the shared pool.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -916,6 +937,7 @@ jobs:
           grep -Fq 'undici/package.json' config/Dockerfile
           grep -Fq '7.5.19' config/Dockerfile
           grep -Fq '6.27.0' config/Dockerfile
+          grep -Fq 'crates/labby/tests/fixtures/stdio_mcp_fixture.rs' config/Dockerfile
           grep -Fq 'node node_modules/@anthropic-ai/claude-code/install.cjs' config/Dockerfile
           grep -Fq 'HEALTHCHECK' config/Dockerfile
 

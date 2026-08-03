@@ -269,6 +269,9 @@ pub struct LabConfig {
     /// MCP server defaults.
     #[serde(default)]
     pub mcp: McpPreferences,
+    /// Ephemeral stdio MCP proxy defaults.
+    #[serde(default)]
+    pub proxy: crate::proxy::config::ProxyPreferences,
     /// Logging preferences (overridden by `LABBY_LOG` / `LABBY_LOG_FORMAT` env vars).
     #[serde(default)]
     pub log: LogPreferences,
@@ -467,6 +470,11 @@ impl From<&LabConfig> for GatewayConfig {
 impl LabConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.code_mode.validate()?;
+        self.proxy
+            .validate()
+            .map_err(|error| ConfigError::InvalidProxyConfig {
+                reason: error.to_string(),
+            })?;
         if let Some(value) = self.upstream_request_timeout_ms
             && !(1..=300_000).contains(&value)
         {

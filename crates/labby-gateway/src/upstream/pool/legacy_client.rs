@@ -24,6 +24,10 @@ impl<H> VersionedClientHandler<H> {
             protocol_version,
         }
     }
+
+    pub(super) fn inner(&self) -> &H {
+        &self.inner
+    }
 }
 
 #[allow(deprecated)]

@@ -455,6 +455,41 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn resource_lease_api_returns_typed_document_for_admin() {
+        let registry = labby_auth::resource_registry::ResourceRegistry::new();
+        let manager = Arc::new(
+            test_gateway_manager(
+                std::env::temp_dir().join("labby-resource-lease-api.toml"),
+                GatewayRuntimeHandle::default(),
+            )
+            .with_resource_registry(registry),
+        );
+        let app = gateway_routes_with_auth_context(manager, admin_auth_context());
+        let response = post_gateway_routes(
+            app,
+            json!({
+                "action": "gateway.oauth.resource_lease.create",
+                "params": {
+                    "resource": "https://proxy.example:53147/mcp",
+                    "scopes": ["mcp:read"],
+                    "ttl_secs": 120,
+                    "owner": "api-test"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let lease: labby_auth::resource_registry::ResourceLease =
+            serde_json::from_slice(&body).unwrap();
+        assert_eq!(lease.resource, "https://proxy.example:53147/mcp");
+        assert_eq!(lease.scopes, vec!["mcp:read"]);
+        assert!(!lease.id.is_empty());
+    }
+
     /// T5 (MCP surface): every gateway action that has requires_admin=true is
     /// correctly identified by `builtin_action_requires_admin` in mcp/context.rs.
     #[test]
@@ -505,6 +540,43 @@ mod tests {
             post_gateway_as_admin(test_manager(), json!({"action":"gateway.list","params":{}}))
                 .await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn gateway_code_mode_mcp_ui_update_persists_via_api() {
+        let (manager, path) = test_manager_with_path();
+        manager
+            .seed_config_unchecked_for_tests(LabConfig::default().to_gateway_config())
+            .await;
+        assert!(manager.code_mode_app_state().is_enabled());
+
+        let response = post_gateway_as_admin(
+            Arc::clone(&manager),
+            json!({
+                "action": "gateway.code_mode.set",
+                "params": {"mcp_ui_enabled": false}
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["mcp_ui_enabled"], false);
+        assert!(!manager.code_mode_app_state().is_enabled());
+        assert!(!manager.code_mode_config().await.mcp_ui_enabled);
+
+        let persisted = load_gateway_config(&path).expect("load persisted gateway config");
+        assert!(!persisted.code_mode.mcp_ui_enabled);
+
+        let restarted = Arc::new(test_gateway_manager(path, GatewayRuntimeHandle::default()));
+        restarted
+            .seed_config_unchecked_for_tests(persisted.to_gateway_config())
+            .await;
+        assert!(!restarted.code_mode_app_state().is_enabled());
+        assert!(!restarted.code_mode_config().await.mcp_ui_enabled);
     }
 
     #[tokio::test]

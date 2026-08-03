@@ -38,7 +38,7 @@ runs:
         pkg-config --exists webkit2gtk-4.1 2>/dev/null || need_install=true
         pkg-config --exists ayatana-appindicator3-0.1 2>/dev/null || need_install=true
         pkg-config --exists librsvg-2.0 2>/dev/null || need_install=true
-        pkg-config --exists xdo 2>/dev/null || need_install=true
+        dpkg-query -W -f='${db:Status-Abbrev}' libxdo-dev 2>/dev/null | grep -q '^ii ' || need_install=true
         if [ "$need_install" = false ]; then
           exit 0
         fi

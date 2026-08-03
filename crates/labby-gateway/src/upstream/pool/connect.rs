@@ -196,7 +196,7 @@ pub(super) async fn connect_upstream(
 }
 
 #[cfg(unix)]
-fn unix_socket_connect_path(path: &str) -> PathBuf {
+pub(super) fn unix_socket_connect_path(path: &str) -> PathBuf {
     #[cfg(target_os = "linux")]
     if let Some(name) = path
         .as_bytes()
@@ -396,7 +396,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     }
 }
 
-fn configured_custom_headers(
+pub(super) fn configured_custom_headers(
     config: &UpstreamConfig,
 ) -> anyhow::Result<HashMap<HeaderName, HeaderValue>> {
     let mut headers = HashMap::with_capacity(config.headers.len());

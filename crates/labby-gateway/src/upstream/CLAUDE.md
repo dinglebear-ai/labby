@@ -32,6 +32,7 @@ Dependency direction:
 | `pool/entries.rs` | `UpstreamEntry` constructors, `resolve_exposure_policy`, `health_str`. |
 | `pool/validate.rs` | `validate_upstream_config` + the `validate_*` tests. |
 | `pool/connect.rs` | `connect_upstream` / `_http` / `_websocket`, `runtime_origin_label`, jitter/oauth-log helpers (reads env). All transport fns are generic over the client handler `H: ClientHandler`; `connect_upstream_with_client` passes `()` (the default for pooled connections), while `connect_upstream_with_handler` is the seam the relay path uses to install a `RelayClientHandler`. |
+| `pool/http_cancellation.rs` | Builds the bounded HTTP/Unix-socket cancellation side channel, serializes relay-token requests and standard cancellation notifications, and requires an acknowledged relay-token response before treating delivery as correlated. |
 | `pool/connect_stdio.rs` | `connect_stdio_upstream` (child-process spawn + process-group guard) + `connect_in_process_service_peer`. |
 | `pool/connection.rs` | `UpstreamConnection` `Debug`/`Drop`/`shutdown` + `UpstreamPool::acquire_peer`. |
 | `pool/lifecycle.rs` | `drain_for_swap`. |
@@ -41,6 +42,10 @@ Dependency direction:
 | `pool/probe.rs` | `ensure_probe_task` + `reprobe_upstream` background heartbeat/reconnect. |
 | `pool/registration.rs` | In-process service-peer registration. |
 | `pool/relay.rs` | `RelayClientHandler` — a `ClientHandler` for dedicated upstream connections that mirrors the downstream agent's MRTR input capabilities. `UpstreamPool::call_tool_relayed(config, subject, params, downstream, session_id)` returns a connection from a per-`(upstream, session_id, subject)` cache (`relay_connections`) or opens one through the generic connection seam. Calls use `call_tool_once`, preserving `input_required` for the downstream client; the handler does not implement legacy server-initiated callbacks. Both MCP proxy branches select this path automatically when the downstream advertises an input capability. |
+| `pool/relay_cancellation.rs` | Coordinates acknowledgement-aware relay-token cancellation, standard cancellation compatibility delivery, fixed relay-send deadlines, and bounded detached request-handle cleanup. |
+| `pool/relay_cancellation_tests.rs` | Focused regressions for early false acknowledgements, blocked relay sends, and stalled request-handle cleanup. |
+| `pool/notifications.rs` | Owns the normalized notification event bus plus generation-guarded `subscriptions/listen` acknowledgment snapshots, retry tasks, concurrent refresh batching, and exact-upstream tool re-listing before downstream catalog publication. |
+| `pool/notifications_tests.rs` | Focused regressions for acknowledgement visibility, stale-generation isolation, concurrent refresh deadlines, and retry after initial failure. |
 | `pool/tools.rs` | Tool queries (`healthy_tools*`, `find_tool*`, `tool_schema`, exposure rows, summaries, runtime metadata, health). |
 | `pool/tools_call.rs` | `call_tool` + `subject_scoped_call_tool`. |
 | `pool/usage_record.rs` | `record_usage_call` — fire-and-forget usage-telemetry write after every tool/resource/prompt call outcome, bounded by `UsageStore`'s write semaphore. |
@@ -51,10 +56,9 @@ Dependency direction:
 | `pool/prompts_get.rs` | `subject_scoped_prompts`, `get_prompt`, `subject_scoped_get_prompt`. |
 | `pool/testsupport.rs` | `#[cfg(test)]` shared fixtures + mock servers (`pub(super)`). |
 
-**Target preserved by this split: no file should exceed 500 LOC (tests included).**
-Known exceptions: `http_client.rs` (~717 LOC) was not split during the initial
-refactor; it is the only file that currently violates the target and is tracked
-for a follow-up split. All *new* files added to `pool/` must stay under 500 LOC.
+**The 500-LOC limit (tests included) remains the target and the rule for new
+files.** Multiple legacy upstream modules still exceed that target and require
+follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 
 ## Key Types
 
@@ -75,7 +79,7 @@ for a follow-up split. All *new* files added to `pool/` must stay under 500 LOC.
 
 ## Rules
 
-- Do not read env vars outside `pool/helpers.rs` (`max_response_bytes()`, `upstream_discovery_concurrency()`) and the connect modules (`pool/connect.rs`, `pool/connect_stdio.rs`). Keep env reads confined to that small, named set of places.
+- Do not read env vars outside `pool/helpers.rs` (`max_response_bytes()`, `upstream_discovery_concurrency()`) and the connect modules (`pool/connect.rs`, `pool/connect_stdio.rs`, `pool/http_cancellation.rs`). Keep env reads confined to that small, named set of places.
 - Do not import MCP-specific types (envelopes, registry) from `mcp/`.
   The `InProcessConnector` IoC seam (`pool.rs`) is the correct boundary: the
   MCP layer (`crate::mcp::in_process_peer`) injects a connector at startup; the

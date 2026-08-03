@@ -7,8 +7,9 @@
 # Docker and local `labby serve` share the same config.
 #
 # Secrets (API keys, tokens, passwords, URLs) belong in ~/.labby/.env.
-# Everything else belongs here. All values below can still be overridden
-# by environment variables — env always wins over config.toml.
+# Everything else belongs here. Only settings with a documented environment
+# alias can be overridden that way; proxy preferences intentionally do not
+# invent one-to-one aliases. Where an alias exists, env wins over config.toml.
 #
 # Config search order (first found wins):
 #   1. ./config.toml              (repo/CWD override)
@@ -57,6 +58,27 @@
 # Additional allowed hosts for DNS rebinding protection.
 # Override with LAB_MCP_ALLOWED_HOSTS env var (comma-separated).
 # allowed_hosts = []                      # default: []
+
+# ── Direct stdio MCP proxy ──────────────────────────────────────────────────
+
+[proxy]
+# Publish through one owned Tailscale Serve HTTPS port, or keep loopback-only.
+# exposure = "tailscale"                  # tailscale | local
+
+# tailnet uses Tailscale reachability/grants without an application token.
+# auth = "tailnet"                        # tailnet | bearer | oauth | none
+# path = "/mcp"                           # absolute, non-root, no query/fragment
+# port = "random"                         # random or fixed integer
+# port_range_start = 49152
+# port_range_end = 65535
+
+# The secret value belongs in ~/.labby/.env, never here.
+# bearer_token_env = "LABBY_PROXY_BEARER_TOKEN"
+# oauth_scopes = ["mcp:read", "mcp:write"]
+
+# Ambient child variables beyond the runtime-essential scrubbed allowlist.
+# inherit_env = []
+# shutdown_grace_ms = 3000                 # valid range: 1..=60000
 
 # ── HTTP API ─────────────────────────────────────────────────────────────────
 
@@ -131,6 +153,7 @@
 # These are product knobs, not secrets/URLs/runtime-discovery values, so keep
 # them here rather than in .env.
 # enabled = false                         # default: false; advertises `codemode`
+# mcp_ui_enabled = true                   # default: true; advertises `codemode_ui` and its app resources
 # trace_params = true                     # default: true; stores only redacted/capped call params in traces/history
 # `codemode` runs a JS async arrow function in the Javy/QuickJS sandbox with
 # in-sandbox discovery (`codemode.search()` / `codemode.describe()`), raw

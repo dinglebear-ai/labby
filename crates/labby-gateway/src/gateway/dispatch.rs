@@ -15,7 +15,8 @@ use super::params::{
     GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams, GatewayReloadParams,
     GatewayStatusParams, GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch,
     GatewayUsageCallsParams, GatewayUsageMetricsParams, ProtectedRouteNameParams,
-    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ServiceConfigGetParams,
+    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ResourceLeaseCreateParams,
+    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServiceConfigGetParams,
     ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
     VirtualServerSurfaceParams,
 };
@@ -400,6 +401,9 @@ async fn handle_tool_actions(
             if let Some(enabled) = params.enabled {
                 next.enabled = enabled;
             }
+            if let Some(mcp_ui_enabled) = params.mcp_ui_enabled {
+                next.mcp_ui_enabled = mcp_ui_enabled;
+            }
             if let Some(trace_params) = params.trace_params {
                 next.trace_params = trace_params;
             }
@@ -699,6 +703,34 @@ async fn handle_oauth_actions(
     params_value: Value,
 ) -> Result<Value, ToolError> {
     match action {
+        "gateway.oauth.resource_lease.create" => {
+            let params: ResourceLeaseCreateParams = parse_params(params_value)?;
+            let registry = require_resource_registry(manager)?;
+            let lease = registry
+                .create_resource_lease(
+                    &params.resource,
+                    params.scopes,
+                    std::time::Duration::from_secs(params.ttl_secs),
+                    &params.owner,
+                )
+                .map_err(resource_registry_error)?;
+            to_json(lease)
+        }
+        "gateway.oauth.resource_lease.renew" => {
+            let params: ResourceLeaseRenewParams = parse_params(params_value)?;
+            let registry = require_resource_registry(manager)?;
+            let lease = registry
+                .renew_resource_lease(&params.id, std::time::Duration::from_secs(params.ttl_secs))
+                .map_err(resource_registry_error)?;
+            to_json(lease)
+        }
+        "gateway.oauth.resource_lease.release" => {
+            let params: ResourceLeaseReleaseParams = parse_params(params_value)?;
+            require_resource_registry(manager)?
+                .release_resource_lease(&params.id)
+                .map_err(resource_registry_error)?;
+            to_json(super::types::ResourceLeaseReleaseView { released: true })
+        }
         "gateway.oauth.probe" => {
             let url = require_str(&params_value, "url")?;
             to_json(crate::gateway::oauth::probe(manager, url).await?)
@@ -754,6 +786,38 @@ async fn handle_oauth_actions(
             }))
         }
         unknown => unknown_action(unknown),
+    }
+}
+
+fn require_resource_registry(
+    manager: &GatewayManager,
+) -> Result<labby_auth::resource_registry::ResourceRegistry, ToolError> {
+    manager.resource_registry().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".to_string(),
+        message: "OAuth resource leases are unavailable because daemon OAuth is not configured"
+            .to_string(),
+    })
+}
+
+fn resource_registry_error(
+    error: labby_auth::resource_registry::ResourceRegistryError,
+) -> ToolError {
+    use labby_auth::resource_registry::ResourceRegistryError;
+    match error {
+        ResourceRegistryError::LeaseNotFound => ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: error.to_string(),
+        },
+        ResourceRegistryError::InvalidResource
+        | ResourceRegistryError::InvalidScopes
+        | ResourceRegistryError::InvalidTtl
+        | ResourceRegistryError::InvalidOwner => ToolError::InvalidParam {
+            message: error.to_string(),
+            param: "params".to_string(),
+        },
+        ResourceRegistryError::RandomnessUnavailable | ResourceRegistryError::InvalidClock => {
+            ToolError::internal_message(error.to_string())
+        }
     }
 }
 

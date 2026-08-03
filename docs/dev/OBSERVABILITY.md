@@ -262,8 +262,10 @@ shared by the gateway and MCP crates:
 |---|---|
 | `gateway.reload.selective` | reconcile that kept the live pool and selectively reconciled added upstreams |
 | `gateway.reload.full` | reconcile that rebuilt the upstream pool |
+| `gateway.code_mode.set` | Code Mode contract update that did not rebuild the upstream pool, such as an MCP App UI toggle |
 | `gateway.enrich.hint_apply` | `gateway.enrich.hint.apply` writing a `code_mode_hint` |
 | `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
+| `mcp.call.mcp_app` | explicit Code Mode MCP App visibility change made through the `mcp_app` control tool |
 | `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
 | `coalesced` | several emitters converged on one net change; see the `catalog.notify.flush` event for the contributors |
 | `unknown` | unattributed — means a new emitter shipped without a label |

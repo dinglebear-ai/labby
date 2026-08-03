@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+mod proxy_verify;
+
 const DEFAULT_CASES: &[&str] = &["cold_return", "warm_return", "tool_fanout", "large_result"];
 
 struct BenchCase {
@@ -26,10 +28,26 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("proxy-verify") => {
+            let opts = match proxy_verify::ProxyVerifyOptions::parse(args.collect()) {
+                Ok(Some(opts)) => opts,
+                Ok(None) => return,
+                Err(err) => {
+                    eprintln!("proxy-verify: {err}");
+                    std::process::exit(2);
+                }
+            };
+            match proxy_verify::run(&opts) {
+                Ok(true) => {}
+                Ok(false) => std::process::exit(1),
+                Err(err) => {
+                    eprintln!("proxy-verify failed: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
-            eprintln!(
-                "usage: cargo run -p xtask -- codemode-bench --binary <path> [--label <name>] [--iterations N] [--warmup N] [--case NAME] [--json]"
-            );
+            eprintln!("usage: cargo run -p xtask -- <codemode-bench|proxy-verify> [options]");
             std::process::exit(2);
         }
     }

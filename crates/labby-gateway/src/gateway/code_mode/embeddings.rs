@@ -7,7 +7,8 @@
 //! itself returns ordinary `Result`s and does not implement the
 //! cooldown/fail-open policy — that is the caller's responsibility.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -16,10 +17,16 @@ use serde_json::json;
 
 use labby_runtime::error::ToolError;
 
-/// TEI's confirmed hard server-side limit on inputs per `/embed` call
-/// (`max_batch_requests` in `GET /info`). `embed_via_tei` chunks any larger
-/// input list into batches of at most this size.
-pub(crate) const TEI_MAX_BATCH_SIZE: usize = 512;
+/// Safe fallback for TEI's per-client `/embed` request limit when `/info` is
+/// temporarily unavailable. The live limit is advertised as
+/// `max_client_batch_size`; `max_batch_requests` is scheduler capacity and must
+/// never be mistaken for the size of one HTTP request.
+pub(crate) const TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE: usize = 128;
+
+/// Preserve the previous 512-input work window without issuing an invalid
+/// 512-input HTTP request: up to four server-compliant batches run concurrently.
+pub(crate) const TEI_MAX_INPUT_WINDOW: usize = 512;
+pub(crate) const TEI_MAX_PARALLEL_BATCHES: usize = 4;
 
 /// Per-request timeout for one `POST /embed` call. Hardcoded, not
 /// configurable — see the plan's YAGNI rationale (the one required knob is
@@ -43,22 +50,100 @@ static TEI_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::new()
 });
 
+/// One Labby process has one configured TEI endpoint in normal operation, but
+/// keying the cache by URL keeps tests and future multi-endpoint deployments
+/// correct without repeating `/info` on every semantic-search call.
+static TEI_BATCH_SIZE_CACHE: LazyLock<Mutex<HashMap<String, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 #[derive(Debug, Deserialize)]
 struct TeiEmbedResponse(Vec<Vec<f32>>);
 
-/// Batch-embed `texts` via one or more `POST {url}/embed` calls, chunked to
-/// at most `TEI_MAX_BATCH_SIZE` inputs per request (TEI's hard server-side
-/// limit). Returns one vector per input text, in input order.
+#[derive(Debug, Deserialize)]
+struct TeiInfoResponse {
+    max_client_batch_size: Option<usize>,
+}
+
+/// Batch-embed `texts` via one or more server-compliant
+/// `POST {url}/embed` calls. The per-request limit is discovered from TEI's
+/// `max_client_batch_size` field and cached per endpoint. Multiple batches run
+/// concurrently within the existing 512-input work window, and `buffered`
+/// preserves input order even when requests complete out of order.
 pub(crate) async fn embed_via_tei(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
+    let batch_size = resolve_tei_batch_size(url).await;
+    let parallel_batches = TEI_MAX_INPUT_WINDOW
+        .div_ceil(batch_size)
+        .clamp(1, TEI_MAX_PARALLEL_BATCHES);
+    let base_url = url.to_string();
+    let owned_batches = texts
+        .chunks(batch_size)
+        .map(<[String]>::to_vec)
+        .collect::<Vec<_>>();
+    let batch_results = futures::stream::iter(owned_batches.into_iter().map(|chunk| {
+        let base_url = base_url.clone();
+        async move { embed_batch(&base_url, &chunk).await }
+    }))
+    .buffered(parallel_batches)
+    .collect::<Vec<_>>()
+    .await;
     let mut all_vectors = Vec::with_capacity(texts.len());
-    for chunk in texts.chunks(TEI_MAX_BATCH_SIZE) {
-        let vectors = embed_batch(url, chunk).await?;
-        all_vectors.extend(vectors);
+    for result in batch_results {
+        all_vectors.extend(result?);
     }
     Ok(all_vectors)
+}
+
+async fn resolve_tei_batch_size(url: &str) -> usize {
+    let base = url.trim_end_matches('/');
+    if let Ok(cache) = TEI_BATCH_SIZE_CACHE.lock()
+        && let Some(size) = cache.get(base)
+    {
+        return *size;
+    }
+    match fetch_tei_batch_size(base).await {
+        Ok(discovered) => {
+            if let Ok(mut cache) = TEI_BATCH_SIZE_CACHE.lock() {
+                cache.insert(base.to_string(), discovered);
+            }
+            discovered
+        }
+        Err(_) => TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE,
+    }
+}
+
+async fn fetch_tei_batch_size(base: &str) -> Result<usize, ToolError> {
+    let endpoint = format!("{base}/info");
+    let response = TEI_CLIENT
+        .get(&endpoint)
+        .timeout(TEI_REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|err| ToolError::Sdk {
+            sdk_kind: "network_error".to_string(),
+            message: format!("TEI /info request failed: {err}"),
+        })?;
+    if !response.status().is_success() {
+        return Err(ToolError::Sdk {
+            sdk_kind: "upstream_error".to_string(),
+            message: format!("TEI /info returned HTTP {}", response.status()),
+        });
+    }
+    let body = read_tei_body_capped(response).await?;
+    let parsed: TeiInfoResponse = serde_json::from_slice(&body).map_err(|err| ToolError::Sdk {
+        sdk_kind: "decode_error".to_string(),
+        message: format!("failed to decode TEI /info response: {err}"),
+    })?;
+    parsed
+        .max_client_batch_size
+        .filter(|size| *size > 0)
+        .map(|size| size.min(TEI_MAX_INPUT_WINDOW))
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "decode_error".to_string(),
+            message: "TEI /info omitted a valid max_client_batch_size".to_string(),
+        })
 }
 
 async fn embed_batch(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError> {
@@ -106,23 +191,30 @@ async fn embed_batch(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolE
 /// The cap breach keeps the pre-existing `decode_error` kind, so callers'
 /// fail-open handling (cooldown + empty result) is unchanged.
 async fn read_tei_body_capped(response: reqwest::Response) -> Result<Vec<u8>, ToolError> {
+    read_tei_body_capped_with_limit(response, TEI_MAX_RESPONSE_BYTES).await
+}
+
+async fn read_tei_body_capped_with_limit(
+    response: reqwest::Response,
+    max_response_bytes: usize,
+) -> Result<Vec<u8>, ToolError> {
     let too_large = |observed: usize| ToolError::Sdk {
         sdk_kind: "decode_error".to_string(),
         message: format!(
-            "TEI response body is {observed} bytes, exceeding the {TEI_MAX_RESPONSE_BYTES} byte cap"
+            "TEI response body is {observed} bytes, exceeding the {max_response_bytes} byte cap"
         ),
     };
     // Fast reject when a hostile/misbehaving endpoint declares the oversized
     // body up front.
     let declared = response.content_length();
     if let Some(cl) = declared
-        && cl > TEI_MAX_RESPONSE_BYTES as u64
+        && cl > max_response_bytes as u64
     {
         return Err(too_large(usize::try_from(cl).unwrap_or(usize::MAX)));
     }
     // Preallocate only when Content-Length is present and honest (≤ cap).
     let initial_cap = declared
-        .map(|cl| cl.min(TEI_MAX_RESPONSE_BYTES as u64) as usize)
+        .map(|cl| cl.min(max_response_bytes as u64) as usize)
         .unwrap_or(0);
     let mut body: Vec<u8> = Vec::with_capacity(initial_cap);
     let mut stream = response.bytes_stream();
@@ -132,7 +224,7 @@ async fn read_tei_body_capped(response: reqwest::Response) -> Result<Vec<u8>, To
             message: format!("failed to read TEI response body: {err}"),
         })?;
         let running_total = body.len().saturating_add(chunk.len());
-        if running_total > TEI_MAX_RESPONSE_BYTES {
+        if running_total > max_response_bytes {
             return Err(too_large(running_total));
         }
         body.extend_from_slice(&chunk);
@@ -281,6 +373,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn embed_via_tei_uses_client_limit_not_scheduler_capacity() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/info"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "max_client_batch_size": 128,
+                    "max_batch_requests": 512
+                })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/embed"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(vec![vec![1.0_f32]; 128]),
+            )
+            .expect(4)
+            .mount(&server)
+            .await;
+        let texts = (0..TEI_MAX_INPUT_WINDOW)
+            .map(|index| format!("input-{index}"))
+            .collect::<Vec<_>>();
+
+        let vectors = embed_via_tei(&server.uri(), &texts)
+            .await
+            .expect("server-compliant concurrent batches");
+
+        assert_eq!(vectors.len(), TEI_MAX_INPUT_WINDOW);
+        let requests = server.received_requests().await.expect("request recording");
+        let embed_requests = requests
+            .iter()
+            .filter(|request| request.url.path() == "/embed")
+            .collect::<Vec<_>>();
+        assert_eq!(embed_requests.len(), TEI_MAX_PARALLEL_BATCHES);
+        for request in embed_requests {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("valid TEI request JSON");
+            assert_eq!(
+                body["inputs"].as_array().map(Vec::len),
+                Some(TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn embed_via_tei_falls_back_to_safe_client_limit_when_info_fails() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/info"))
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/embed"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(vec![vec![1.0_f32]; TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE]),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let texts = (0..TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE)
+            .map(|index| format!("fallback-{index}"))
+            .collect::<Vec<_>>();
+
+        let vectors = embed_via_tei(&server.uri(), &texts)
+            .await
+            .expect("fallback batch remains valid");
+
+        assert_eq!(vectors.len(), TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE);
+    }
+
+    #[tokio::test]
     async fn embed_via_tei_oversized_declared_body_is_rejected() {
         // A body over TEI_MAX_RESPONSE_BYTES with an honest Content-Length is
         // rejected via the header pre-check — before buffering anything —
@@ -311,12 +479,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embed_via_tei_streaming_body_over_cap_aborts_mid_stream() {
-        // A response WITHOUT Content-Length (read-until-close) must be
-        // aborted the moment the streamed running total exceeds the cap —
-        // the cap has to bound memory, not just post-validate a fully
-        // buffered body.
+    async fn read_tei_body_streaming_over_cap_aborts_mid_stream() {
+        // Exercise the streaming memory cap independently from the production
+        // request timeout. A small test-only cap keeps this deterministic even
+        // when the CI host is heavily loaded.
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const TEST_CAP: usize = 64 * 1024;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test listener");
@@ -325,29 +494,34 @@ mod tests {
             let Ok((mut socket, _)) = listener.accept().await else {
                 return;
             };
-            // Minimally drain the request head, then answer with no
-            // Content-Length so reqwest streams until close.
-            let mut buf = [0u8; 4096];
-            drop(socket.read(&mut buf).await);
-            if socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .is_err()
-            {
+            let mut request = [0u8; 4096];
+            drop(socket.read(&mut request).await);
+            const CRLF: &[u8] = &[13, 10];
+            const END_HEADERS: &[u8] = &[13, 10, 13, 10];
+            let response_head = [
+                b"HTTP/1.1 200 OK".as_slice(),
+                CRLF,
+                b"Content-Type: application/json".as_slice(),
+                CRLF,
+                b"Connection: close".as_slice(),
+                END_HEADERS,
+            ]
+            .concat();
+            if socket.write_all(&response_head).await.is_err() {
                 return;
             }
-            let chunk = vec![b'1'; 64 * 1024];
-            for _ in 0..(TEI_MAX_RESPONSE_BYTES / chunk.len() + 2) {
-                if socket.write_all(&chunk).await.is_err() {
-                    // The client aborted the read at the cap — expected.
-                    return;
-                }
-            }
+            let body = vec![b'1'; TEST_CAP * 2];
+            drop(socket.write_all(&body).await);
             drop(socket.shutdown().await);
         });
-        let err = embed_via_tei(&format!("http://{addr}"), &["x".to_string()])
+
+        let response = TEI_CLIENT
+            .post(format!("http://{addr}/embed"))
+            .json(&json!({"inputs": ["x"]}))
+            .send()
+            .await
+            .expect("test response");
+        let err = read_tei_body_capped_with_limit(response, TEST_CAP)
             .await
             .expect_err("over-cap streamed response must be rejected");
         match err {
@@ -363,10 +537,10 @@ mod tests {
     }
 
     #[test]
-    fn tei_max_batch_size_matches_documented_tei_limit() {
-        // Regression guard: this constant must track TEI's real
-        // max_batch_requests (currently 512, confirmed via GET /info against
-        // the live dev TEI server). If TEI's limit changes, update here.
-        assert_eq!(TEI_MAX_BATCH_SIZE, 512);
+    fn tei_parallel_batches_preserve_the_512_input_work_window() {
+        assert_eq!(
+            TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE * TEI_MAX_PARALLEL_BATCHES,
+            TEI_MAX_INPUT_WINDOW
+        );
     }
 }

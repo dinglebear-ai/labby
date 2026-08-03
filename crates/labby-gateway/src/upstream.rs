@@ -13,6 +13,7 @@
 // wired public APIs.
 #[allow(dead_code)]
 pub mod auth;
+pub mod direct_stdio;
 #[allow(dead_code)]
 pub mod http_client;
 #[allow(dead_code)]

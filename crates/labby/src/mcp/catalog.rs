@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use rmcp::RoleServer;
 use rmcp::model::Tool;
@@ -29,29 +28,7 @@ pub(crate) const CODE_MODE_UI_TOOL_NAME: &str = "codemode_ui";
 pub(crate) const MCP_APP_TOOL_NAME: &str = "mcp_app";
 /// Shared Code Mode MCP App state for one running gateway. Every downstream MCP
 /// session receives a clone, while independent gateways and tests remain isolated.
-#[derive(Clone, Debug)]
-pub(crate) struct CodeModeAppState {
-    enabled: Arc<AtomicBool>,
-}
-
-impl Default for CodeModeAppState {
-    fn default() -> Self {
-        Self {
-            enabled: Arc::new(AtomicBool::new(true)),
-        }
-    }
-}
-
-impl CodeModeAppState {
-    pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
-    }
-
-    /// Set the gateway-wide state and return the previous value.
-    pub(crate) fn set_enabled(&self, enabled: bool) -> bool {
-        self.enabled.swap(enabled, Ordering::AcqRel)
-    }
-}
+pub(crate) use labby_runtime::CodeModeAppState;
 
 /// Lab-owned server process log viewer tool name.
 pub(crate) const SERVER_LOGS_TOOL_NAME: &str = "server_logs";

@@ -51,6 +51,8 @@ pub mod output;
 #[allow(unreachable_pub)]
 pub mod process;
 #[allow(unreachable_pub)]
+pub mod proxy;
+#[allow(unreachable_pub)]
 pub mod registry;
 #[cfg(test)]
 pub mod test_support;

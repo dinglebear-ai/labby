@@ -20,6 +20,8 @@ pub struct AccessClaims {
     pub sub: String,
     pub aud: String,
     pub exp: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nbf: Option<usize>,
     pub iat: usize,
     pub jti: String,
     pub scope: String,
@@ -128,6 +130,7 @@ impl SigningKeys {
     ) -> Result<AccessClaims, AuthError> {
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_audience(&[expected_audience]);
+        validation.validate_nbf = true;
         decode::<AccessClaims>(token, &self.decoding_key, &validation)
             .map(|data| data.claims)
             .map_err(|_| AuthError::InvalidAccessToken)
@@ -146,6 +149,7 @@ impl SigningKeys {
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_audience(&[expected_audience]);
         validation.set_issuer(&[expected_issuer]);
+        validation.validate_nbf = true;
         decode::<AccessClaims>(token, &self.decoding_key, &validation)
             .map(|data| data.claims)
             .map_err(|_| AuthError::InvalidAccessToken)
@@ -302,6 +306,7 @@ mod tests {
             sub: "google-user".to_string(),
             aud: "https://lab.example.com".to_string(),
             exp: 4_102_444_800,
+            nbf: None,
             iat: 1_700_000_000,
             jti: "test-jti".to_string(),
             scope: "lab".to_string(),

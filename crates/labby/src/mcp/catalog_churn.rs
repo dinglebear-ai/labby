@@ -169,16 +169,16 @@ fn lock_window() -> MutexGuard<'static, VecDeque<Duration>> {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_for_test() {
+pub(crate) fn reset_notification_history_for_test() {
     NOTIFY_TOTAL.store(0, Ordering::Relaxed);
-    IN_FLIGHT_TOOL_CALLS.store(0, Ordering::Relaxed);
     lock_window().clear();
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ChurnSample, InFlightToolCall, in_flight_tool_calls, record_notification, reset_for_test,
+        ChurnSample, InFlightToolCall, in_flight_tool_calls, record_notification,
+        reset_notification_history_for_test,
     };
 
     fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn first_notification_has_no_predecessor() {
         let _guard = serial();
-        reset_for_test();
+        reset_notification_history_for_test();
 
         let sample = record_notification();
 
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn repeated_notifications_accumulate_into_the_window() {
         let _guard = serial();
-        reset_for_test();
+        reset_notification_history_for_test();
 
         let samples: Vec<ChurnSample> = (0..5).map(|_| record_notification()).collect();
 
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn in_flight_gauge_tracks_guard_lifetime() {
         let _guard = serial();
-        reset_for_test();
+        reset_notification_history_for_test();
 
         assert_eq!(in_flight_tool_calls(), 0);
         {
@@ -246,11 +246,32 @@ mod tests {
     #[test]
     fn gauge_never_wraps_below_zero() {
         let _guard = serial();
-        reset_for_test();
+        reset_notification_history_for_test();
 
         drop(InFlightToolCall::enter());
         drop(InFlightToolCall::enter());
 
         assert_eq!(in_flight_tool_calls(), 0, "saturating decrement, no wrap");
+    }
+
+    #[test]
+    fn resetting_notification_history_does_not_steal_live_call_ownership() {
+        let _guard = serial();
+        reset_notification_history_for_test();
+        let older_call = InFlightToolCall::enter();
+
+        // A history reset may happen while an unrelated request is active. It
+        // must not zero the RAII gauge owned by that request.
+        reset_notification_history_for_test();
+        let current_call = InFlightToolCall::enter();
+        drop(older_call);
+        assert_eq!(
+            in_flight_tool_calls(),
+            1,
+            "dropping the older call must leave the current call accounted for"
+        );
+
+        drop(current_call);
+        assert_eq!(in_flight_tool_calls(), 0);
     }
 }

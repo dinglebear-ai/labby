@@ -1,5 +1,6 @@
 [package]
 name = "labby"
+default-run = "labby"
 description = "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI."
 version.workspace = true
 edition.workspace = true
@@ -16,6 +17,12 @@ categories = ["command-line-utilities", "development-tools"]
 name = "labby"
 path = "src/main.rs"
 test = false
+
+[[bin]]
+name = "stdio-mcp-fixture"
+path = "tests/fixtures/stdio_mcp_fixture.rs"
+test = false
+required-features = ["proxy-testkit"]
 
 [dependencies]
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
@@ -148,5 +155,6 @@ default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []
 systemd = ["dep:sd-notify"]
+proxy-testkit = []
 [lints]
 workspace = true

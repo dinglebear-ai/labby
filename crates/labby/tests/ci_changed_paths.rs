@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,6 +50,77 @@ fn classify(event: &str, files: &[&str]) -> HashMap<String, String> {
             (key.to_string(), value.to_string())
         })
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn write_executable(path: &Path, body: &str) {
+    fs::write(path, body).expect("write fake executable");
+    let mut permissions = fs::metadata(path)
+        .expect("read fake executable metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("make fake executable runnable");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_build_preflight_accepts_installed_libxdo_without_pkg_config_metadata() {
+    let action =
+        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
+            .expect("read setup-rust-kache action");
+    let action: serde_yaml::Value = serde_yaml::from_str(&action).expect("parse composite action");
+    let preflight = action["runs"]["steps"]
+        .as_sequence()
+        .and_then(|steps| steps.first())
+        .and_then(|step| step["run"].as_str())
+        .expect("first action step has a shell preflight");
+
+    let temp = tempfile::tempdir().expect("create fake command directory");
+    let fake_bin = temp.path().join("bin");
+    fs::create_dir(&fake_bin).expect("create fake bin");
+    for command in ["cc", "ld.lld"] {
+        write_executable(&fake_bin.join(command), "#!/bin/sh\nexit 0\n");
+    }
+    write_executable(
+        &fake_bin.join("pkg-config"),
+        concat!(
+            "#!/bin/sh\n[ \"$",
+            "{",
+            "2:-",
+            "}",
+            "\" = xdo ] && exit 1\nexit 0\n"
+        ),
+    );
+    write_executable(
+        &fake_bin.join("dpkg-query"),
+        "#!/bin/sh\n: > \"$DPKG_MARKER\"\nprintf 'ii '\n",
+    );
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+    write_executable(
+        &fake_bin.join("apt-get"),
+        "#!/bin/sh\n: > \"$APT_MARKER\"\nexit 0\n",
+    );
+
+    let apt_marker = temp.path().join("apt-ran");
+    let dpkg_marker = temp.path().join("dpkg-queried");
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg(preflight)
+        .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
+        .env("APT_MARKER", &apt_marker)
+        .env("DPKG_MARKER", &dpkg_marker)
+        .status()
+        .expect("run Linux prerequisite preflight");
+
+    assert!(status.success(), "prerequisite preflight must succeed");
+    assert!(
+        dpkg_marker.exists(),
+        "libxdo-dev must be checked through Debian package metadata"
+    );
+    assert!(
+        !apt_marker.exists(),
+        "an installed libxdo-dev package must not trigger apt-get just because xdo.pc is absent"
+    );
 }
 
 #[test]
@@ -185,8 +258,9 @@ fn scheduled_and_manual_runs_enable_everything() {
 
 #[test]
 fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read ci.yml");
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("read ci.yml")
+        .replace("\r\n", "\n");
 
     assert!(
         workflow.contains("  changes:"),
@@ -259,17 +333,88 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         .expect("Gateway Admin browser job");
     assert!(browser_job.contains("pnpm test:browser"));
     assert!(browser_job.contains("Install Playwright runtime libraries"));
-    assert!(browser_job.contains("libnspr4"));
-    assert!(browser_job.contains("libnss3"));
+    assert!(
+        browser_job.contains("PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright"),
+        "Playwright must use the fleet-mounted browser cache regardless of runner UID"
+    );
+    for library in ["libasound2t64", "libgbm1", "libnss3", "libxkbcommon0"] {
+        assert!(
+            browser_job.contains(library),
+            "Ubuntu 26.04 runners must install the Chromium runtime library {library}"
+        );
+    }
+    assert!(
+        !browser_job.contains("playwright install-deps"),
+        "Ubuntu 26.04 runners must install explicit runtime libraries instead of using Playwright's unsupported distro detector"
+    );
     assert!(browser_job.contains("Verify cached Playwright browser launch"));
     assert!(browser_job.contains("chromium.executablePath()"));
     assert!(browser_job.contains("fs.existsSync(executable)"));
     assert!(browser_job.contains("chromium.launch({ headless: true })"));
     assert!(
-        !browser_job.contains("playwright install"),
+        !browser_job.contains("pnpm exec playwright install chromium"),
         "Ubuntu 26.04 runners must use the image-provided Playwright browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));
+
+    let codemode_smoke = workflow
+        .split("  codemode-runner-smoke:")
+        .nth(1)
+        .and_then(|section| section.split("\n  npm-launcher:").next())
+        .expect("Code Mode runner smoke job");
+    assert!(
+        codemode_smoke.contains("cargo run -p labby --bin labby --all-features --locked --"),
+        "Code Mode smoke must select the public binary when test fixtures add more binaries"
+    );
+
+    let feature_slices = workflow
+        .split("  feature-slices:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  extracted-crate-slices:").next())
+        .expect("feature-slices job");
+    assert!(
+        feature_slices.contains("if: matrix.slice == 'fs'"),
+        "the fs slice must execute its no-gateway regression in CI"
+    );
+    assert!(
+        feature_slices.contains(
+            "cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight"
+        ),
+        "the fs slice must run the proxy preflight integration binary without gateway"
+    );
+
+    for (job, next_job) in [
+        ("feature-slices", "extracted-crate-slices"),
+        ("test", "test-fork"),
+        ("test-fork", "test-windows"),
+    ] {
+        let section = workflow
+            .split(&format!("  {job}:\n"))
+            .nth(1)
+            .and_then(|body| body.split(&format!("\n  {next_job}:")).next())
+            .expect("memory-constrained Rust job body");
+        assert!(
+            section.contains("CARGO_BUILD_JOBS: \"1\""),
+            "{job} must serialize Cargo builds below the shared pool memory limit"
+        );
+        assert!(
+            section.contains("RUSTFLAGS: \"-C linker=clang -C link-arg=-fuse-ld=lld\""),
+            "{job} must use the lower-memory lld linker"
+        );
+    }
+}
+
+#[test]
+fn cargo_run_defaults_to_public_labby_binary() {
+    let manifest = fs::read_to_string(repo_root().join("crates/labby/Cargo.toml"))
+        .expect("read labby Cargo.toml");
+    let manifest: toml::Value = toml::from_str(&manifest).expect("parse labby Cargo.toml");
+
+    assert_eq!(
+        manifest["package"]["default-run"].as_str(),
+        Some("labby"),
+        "unqualified `cargo run -p labby` must keep selecting the public CLI binary"
+    );
 }
 
 #[test]

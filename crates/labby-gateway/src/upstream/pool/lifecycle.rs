@@ -141,6 +141,7 @@ impl UpstreamPool {
         // Evict all cached relay connections (and reap any stdio children they
         // hold) before the pool-level connections are torn down.
         self.evict_all_relay_connections().await;
+        self.cancel_all_upstream_subscriptions().await;
 
         let cancelled_probe_count = {
             let mut tasks = self.probe_tasks.write().await;

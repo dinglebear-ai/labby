@@ -18,12 +18,14 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{ReadResourceResult, ResourceContents};
+use rmcp::model::{
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
+};
 use rmcp::service::RequestContext;
 
 use crate::config::UpstreamConfig;
 use crate::dispatch::upstream::pool::{UpstreamPool, redact_resource_uri_for_logging};
-use crate::mcp::context::redacted_oauth_subject_label;
+use crate::mcp::context::{forwardable_client_capabilities, redacted_oauth_subject_label};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::server::LabMcpServer;
 
@@ -43,7 +45,7 @@ impl LabMcpServer {
             service = "labby",
             action = "read_resource",
             subject,
-            resource_uri = redact_resource_uri_for_logging(uri),
+            resource_uri = redact_resource_uri_for_logging(&uri),
             route = "gateway",
             "dispatch route selected"
         );
@@ -54,7 +56,7 @@ impl LabMcpServer {
                 service = "labby",
                 action = "read_resource",
                 subject,
-                resource_uri = redact_resource_uri_for_logging(uri),
+                resource_uri = redact_resource_uri_for_logging(&uri),
                 route = "gateway",
                 elapsed_ms,
                 kind = "unavailable",
@@ -103,7 +105,7 @@ impl LabMcpServer {
                             surface = "mcp",
                             service = "labby",
                             action = "read_resource",
-                            resource_uri = redact_resource_uri_for_logging(uri),
+                            resource_uri = redact_resource_uri_for_logging(&uri),
                             error = %e,
                             "failed to serialize synthetic gateway resource"
                         );
@@ -118,7 +120,7 @@ impl LabMcpServer {
                     service = "labby",
                     action = "read_resource",
                     subject,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     route = "gateway",
                     elapsed_ms,
                     "synthetic resource ok"
@@ -142,7 +144,7 @@ impl LabMcpServer {
                     service = "labby",
                     action = "read_resource",
                     subject,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     route = "gateway",
                     elapsed_ms,
                     kind = "not_found",
@@ -173,23 +175,57 @@ impl LabMcpServer {
     pub(crate) async fn read_upstream_resource_impl(
         &self,
         pool: &Arc<UpstreamPool>,
-        uri: &str,
+        request: ReadResourceRequestParams,
         subject: &str,
         start: Instant,
         context: &RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let uri = request.uri.clone();
         tracing::info!(
             surface = "mcp",
             service = "labby",
             action = "read_resource",
-            resource_uri = redact_resource_uri_for_logging(uri),
+            resource_uri = redact_resource_uri_for_logging(&uri),
             route = "upstream",
             "dispatch route selected"
         );
-        match pool
-            .read_upstream_resource_allowed(uri, self.route_scope.allowed_upstreams())
-            .await
-        {
+        let upstream_name = uri
+            .strip_prefix("lab://upstream/")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("unknown")
+            .to_string();
+        let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
+        let relay_config = if relay_capabilities.is_some() {
+            match &self.gateway_manager {
+                Some(manager) => manager.upstream_config(&upstream_name).await,
+                None => None,
+            }
+        } else {
+            None
+        };
+        let result = match (relay_config, relay_capabilities) {
+            (Some(config), Some(capabilities)) => {
+                pool.read_resource_relayed(
+                    &config,
+                    None,
+                    request,
+                    context.peer.clone(),
+                    context.id.clone(),
+                    context.ct.clone(),
+                    self.relay_session_id,
+                    capabilities,
+                )
+                .await
+            }
+            _ => pool
+                .read_upstream_resource_request_allowed(
+                    request,
+                    self.route_scope.allowed_upstreams(),
+                )
+                .await
+                .map(|outcome| outcome.map(Into::into)),
+        };
+        match result {
             Some(Ok(result)) => {
                 let elapsed_ms = start.elapsed().as_millis();
                 let upstream = uri
@@ -202,7 +238,7 @@ impl LabMcpServer {
                     action = "read_resource",
                     subject,
                     upstream,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     "resource proxy ok"
                 );
@@ -227,7 +263,7 @@ impl LabMcpServer {
                     service = "labby",
                     action = "read_resource",
                     upstream,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     kind = "internal_error",
                     error = %message,
@@ -257,7 +293,7 @@ impl LabMcpServer {
                     service = "labby",
                     action = "read_resource",
                     upstream,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     kind = "not_found",
                     "upstream not connected for resource"
@@ -300,7 +336,7 @@ impl LabMcpServer {
             surface = "mcp",
             service = "labby",
             action = "read_resource",
-            resource_uri = redact_resource_uri_for_logging(uri),
+            resource_uri = redact_resource_uri_for_logging(&uri),
             route = "upstream_ui",
             "dispatch route selected"
         );
@@ -315,7 +351,7 @@ impl LabMcpServer {
                     service = "labby",
                     action = "read_resource",
                     subject,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     "ui resource proxy ok"
                 );
@@ -326,7 +362,7 @@ impl LabMcpServer {
                     surface = "mcp",
                     service = "labby",
                     action = "read_resource",
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     kind = "internal_error",
                     error = %message,
@@ -345,7 +381,7 @@ impl LabMcpServer {
                     surface = "mcp",
                     service = "labby",
                     action = "read_resource",
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     kind = "not_found",
                     "no upstream owns ui resource"
@@ -375,25 +411,42 @@ impl LabMcpServer {
         pool: &Arc<UpstreamPool>,
         config: &UpstreamConfig,
         oauth_subject: &str,
-        uri: &str,
+        request: ReadResourceRequestParams,
         subject: &str,
         start: Instant,
         context: &RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let uri = request.uri.clone();
         tracing::info!(
             surface = "mcp",
             service = "labby",
             action = "read_resource",
-            resource_uri = redact_resource_uri_for_logging(uri),
+            resource_uri = redact_resource_uri_for_logging(&uri),
             upstream = %config.name,
             route = "subject_scoped",
             oauth_subject = redacted_oauth_subject_label(),
             "dispatch route selected"
         );
-        match pool
-            .subject_scoped_read_resource(config, oauth_subject, uri)
+        let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
+        let upstream_outcome = if let Some(capabilities) = relay_capabilities {
+            pool.read_resource_relayed(
+                config,
+                Some(oauth_subject),
+                request,
+                context.peer.clone(),
+                context.id.clone(),
+                context.ct.clone(),
+                self.relay_session_id,
+                capabilities,
+            )
             .await
-        {
+            .unwrap_or_else(|| Err(format!("relayed upstream `{}` connect failed", config.name)))
+        } else {
+            pool.subject_scoped_read_resource_request(config, oauth_subject, request)
+                .await
+                .map(Into::into)
+        };
+        match upstream_outcome {
             Ok(result) => {
                 let elapsed_ms = start.elapsed().as_millis();
                 tracing::info!(
@@ -403,7 +456,7 @@ impl LabMcpServer {
                     subject,
                     oauth_subject = redacted_oauth_subject_label(),
                     upstream = %config.name,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     "subject-scoped resource proxy ok"
                 );
@@ -424,7 +477,7 @@ impl LabMcpServer {
                     service = "labby",
                     action = "read_resource",
                     upstream = %config.name,
-                    resource_uri = redact_resource_uri_for_logging(uri),
+                    resource_uri = redact_resource_uri_for_logging(&uri),
                     elapsed_ms,
                     kind = "upstream_error",
                     error = %message,

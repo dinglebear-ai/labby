@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Architecture
 
-`lab` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, setup, doctor, server logs, snippets, and the optional filesystem browser.
+`lab` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, the direct stdio MCP proxy, setup, doctor, server logs, snippets, and the optional filesystem browser.
 
 ## Core Shape
 
@@ -88,8 +88,11 @@ and TypeScript descriptor generation. Hosts inject tools through `CodeModeHost`.
 pools, discovery/import orchestration, virtual servers, protected routes,
 gateway OAuth lifecycle, manager state, the Code Mode host adapter, its own
 `action`/`params` dispatch helpers, and the stdio spawn-guard/SSRF security
-checks. It does not own product config rendering or `.env` writes; those are
-injected by the host through `GatewayConfigStore`.
+checks. Its public direct-stdio connector gives the product proxy the same
+environment scrubbing, stderr draining, lifecycle negotiation, Unix process
+group, and Windows Job Object ownership without routing through the aggregate
+gateway catalog. It does not own product config rendering or `.env` writes;
+those are injected by the host through `GatewayConfigStore`.
 
 ### `crates/labby-web`
 
@@ -113,6 +116,8 @@ can keep `unsafe_code = "forbid"` elsewhere.
 - output rendering
 - install/uninstall flows
 - doctor and operator workflows
+- foreground direct stdio proxy orchestration, loopback HTTP, Tailscale Serve,
+  and ephemeral OAuth lease supervision
 - product-local dispatch and config-store adapters
 
 It must stay thin at the surface boundary. Reusable gateway, Code Mode, auth,
@@ -212,6 +217,12 @@ opts into:
 - MCP HTTP: `labby serve`
 - HTTP API and Labby web UI: `labby serve`
 
+`labby proxy` is deliberately different: it is a CLI-only foreground product
+runtime for one explicitly selected child. Its HTTP endpoint exposes the
+child's MCP surface directly and does not register a `proxy` MCP tool or
+`/v1/proxy` action route. OAuth lease management goes through the existing
+admin-authenticated `gateway` action surface on a live daemon.
+
 All three consume the same service metadata and service clients.
 
 The canonical ownership and dependency rules between `labby-apis`, extracted runtime crates, the shared dispatch layer, and the product surfaces live in [DISPATCH.md](./dev/DISPATCH.md).
@@ -246,6 +257,20 @@ Normal request flow:
 4. Let `HttpClient` handle auth, retry, timeout, and error mapping for upstream-backed services
 5. Return typed or surface-neutral data to the caller surface
 6. Render via CLI, MCP envelope, API envelope, or web view
+
+Direct proxy flow:
+
+1. Resolve and spawn one child through the reusable direct-stdio connector.
+2. Bind a Streamable HTTP router to loopback with exact Host/Origin policy.
+3. Apply tailnet, bearer, OAuth, or explicit no-auth policy.
+4. For OAuth, lease the exact public resource through the live daemon.
+5. Publish and supervise one exact Tailscale Serve mapping when selected.
+6. On Ctrl+C or component failure, clean owned HTTP, Serve, lease, and process
+   resources without touching aggregate gateway state.
+
+See [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) for the operator
+contract and [contracts/stdio-mcp-proxy.md](./contracts/stdio-mcp-proxy.md) for
+the stable wire and CLI vocabulary.
 
 ## Config Boundary
 

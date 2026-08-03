@@ -130,7 +130,7 @@ impl<H: rmcp::ClientHandler> Drop for UpstreamConnection<H> {
 }
 
 impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
-    pub(super) async fn shutdown(mut self, upstream_name: &str, reason: &'static str) {
+    pub(crate) async fn shutdown(mut self, upstream_name: &str, reason: &'static str) {
         // Clone runtime BEFORE taking pgid / job_handle so subsequent log
         // lines still surface the original values.
         let runtime = self.runtime.clone();
@@ -728,7 +728,7 @@ mod tests {
                     peer: stale_peer,
                     tools: vec![],
                     last_used: Instant::now()
-                        .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_secs(60))
+                        .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_mins(1))
                         .expect("instant in range"),
                 },
             );

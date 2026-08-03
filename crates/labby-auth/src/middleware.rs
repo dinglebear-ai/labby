@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{HeaderValue, Method, Request, header};
+use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use subtle::ConstantTimeEq;
 use tower::{Layer, Service};
@@ -51,6 +51,30 @@ use crate::state::AuthState;
 /// browser-session subject) and returns a per-request [`Arc<str>`] key.
 pub type ActorKeyDeriver = dyn Fn(&str) -> Option<Arc<str>> + Send + Sync;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RequiredScopes(Vec<String>);
+
+impl RequiredScopes {
+    #[must_use]
+    pub fn new(scopes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let mut scopes = scopes.into_iter().map(Into::into).collect::<Vec<_>>();
+        scopes.sort();
+        scopes.dedup();
+        Self(scopes)
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<Vec<String>> for RequiredScopes {
+    fn from(scopes: Vec<String>) -> Self {
+        Self::new(scopes)
+    }
+}
+
 /// Tower layer that authenticates inbound requests and writes
 /// [`AuthContext`] into request extensions.
 ///
@@ -67,6 +91,8 @@ struct AuthLayerInner {
     auth_state: Option<Arc<AuthState>>,
     actor_key_deriver: Option<Arc<ActorKeyDeriver>>,
     resource_url: Option<Arc<str>>,
+    protected_resource_metadata_url: Option<Arc<str>>,
+    required_scopes: RequiredScopes,
     allow_session_cookie: bool,
     /// Scopes minted into the [`AuthContext`] when the static bearer or
     /// session-cookie path matches. For the static path this is the legacy
@@ -96,6 +122,8 @@ impl AuthLayer {
                 auth_state: None,
                 actor_key_deriver: None,
                 resource_url: None,
+                protected_resource_metadata_url: None,
+                required_scopes: RequiredScopes::default(),
                 allow_session_cookie: false,
                 static_token_scopes: Vec::new(),
                 login_path: crate::config::DEFAULT_LOGIN_PATH.to_string(),
@@ -120,6 +148,8 @@ impl AuthLayer {
                 auth_state: Some(auth_state),
                 actor_key_deriver: None,
                 resource_url: None,
+                protected_resource_metadata_url: None,
+                required_scopes: RequiredScopes::default(),
                 allow_session_cookie: false,
                 static_token_scopes,
                 login_path,
@@ -160,6 +190,16 @@ impl AuthLayer {
     #[must_use]
     pub fn with_resource_url(self, resource_url: Option<Arc<str>>) -> Self {
         self.with(|inner| inner.resource_url = resource_url)
+    }
+
+    #[must_use]
+    pub fn with_protected_resource_metadata_url(self, url: Option<Arc<str>>) -> Self {
+        self.with(|inner| inner.protected_resource_metadata_url = url)
+    }
+
+    #[must_use]
+    pub fn with_required_scopes(self, scopes: impl Into<RequiredScopes>) -> Self {
+        self.with(|inner| inner.required_scopes = scopes.into())
     }
 
     #[must_use]
@@ -280,7 +320,7 @@ async fn authenticate(
         {
             let sub = "static-bearer".to_string();
             let actor_key = derive_actor_key(layer.actor_key_deriver.as_deref(), &sub);
-            request.extensions_mut().insert(AuthContext {
+            let auth = AuthContext {
                 sub,
                 actor_key,
                 scopes: layer.static_token_scopes.clone(),
@@ -288,7 +328,11 @@ async fn authenticate(
                 via_session: false,
                 csrf_token: None,
                 email: None,
-            });
+            };
+            if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+                return Err(response);
+            }
+            request.extensions_mut().insert(auth);
             return Ok(request);
         }
 
@@ -305,11 +349,13 @@ async fn authenticate(
                         "server misconfigured: {}_PUBLIC_URL required for JWT validation",
                         auth_state.config.env_prefix
                     ),
-                    layer.resource_url.as_deref(),
-                    challenge_scopes(layer),
+                    layer,
                 ));
             };
-            let expected_aud = canonical_resource_url(auth_state);
+            let expected_aud = layer
+                .resource_url
+                .as_deref()
+                .map_or_else(|| canonical_resource_url(auth_state), str::to_string);
             match auth_state.signing_keys.validate_access_token_with_issuer(
                 &token,
                 &expected_aud,
@@ -318,7 +364,7 @@ async fn authenticate(
                 Ok(claims) => {
                     let actor_key =
                         derive_actor_key(layer.actor_key_deriver.as_deref(), &claims.sub);
-                    request.extensions_mut().insert(AuthContext {
+                    let auth = AuthContext {
                         actor_key,
                         sub: claims.sub,
                         scopes: claims
@@ -331,7 +377,11 @@ async fn authenticate(
                         via_session: false,
                         csrf_token: None,
                         email: None,
-                    });
+                    };
+                    if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+                        return Err(response);
+                    }
+                    request.extensions_mut().insert(auth);
                     return Ok(request);
                 }
                 Err(error) => {
@@ -340,11 +390,7 @@ async fn authenticate(
             }
         }
 
-        return Err(auth_error_response(
-            "invalid bearer token",
-            layer.resource_url.as_deref(),
-            challenge_scopes(layer),
-        ));
+        return Err(auth_error_response("invalid bearer token", layer));
     }
 
     // 3. Browser session cookie path.
@@ -370,7 +416,7 @@ async fn authenticate(
 
                 let actor_key =
                     derive_actor_key(layer.actor_key_deriver.as_deref(), &session.subject);
-                request.extensions_mut().insert(AuthContext {
+                let auth = AuthContext {
                     actor_key,
                     sub: session.subject,
                     scopes: layer.static_token_scopes.clone(),
@@ -378,7 +424,11 @@ async fn authenticate(
                     via_session: true,
                     csrf_token: Some(session.csrf_token),
                     email: session.email,
-                });
+                };
+                if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+                    return Err(response);
+                }
+                request.extensions_mut().insert(auth);
                 return Ok(request);
             }
             Ok(None) => {}
@@ -414,8 +464,7 @@ async fn authenticate(
         } else {
             "missing bearer token"
         },
-        layer.resource_url.as_deref(),
-        challenge_scopes(layer),
+        layer,
     ))
 }
 
@@ -445,13 +494,18 @@ fn derive_actor_key(deriver: Option<&ActorKeyDeriver>, subject: &str) -> Option<
 
 /// Build a 401 response wrapping [`AuthError::AuthFailed`] and decorate it
 /// with `WWW-Authenticate` when a `resource_url` was supplied.
-fn auth_error_response(message: &str, resource_url: Option<&str>, scopes: &[String]) -> Response {
+fn auth_error_response(message: &str, layer: &AuthLayerInner) -> Response {
     let mut response = AuthError::AuthFailed(message.to_string()).into_response();
-    if let Some(url) = resource_url {
+    let challenge = layer
+        .protected_resource_metadata_url
+        .as_deref()
+        .map(|url| format!("Bearer resource_metadata=\"{url}\""))
+        .or_else(|| layer.resource_url.as_deref().map(www_authenticate_value));
+    if let Some(challenge) = challenge {
         let www_auth = format!(
             "{}, scope=\"{}\"",
-            www_authenticate_value(url),
-            scopes.join(" ")
+            challenge,
+            challenge_scopes(layer).join(" ")
         );
         if let Ok(value) = HeaderValue::from_str(&www_auth) {
             response
@@ -463,12 +517,58 @@ fn auth_error_response(message: &str, resource_url: Option<&str>, scopes: &[Stri
 }
 
 fn challenge_scopes(layer: &AuthLayerInner) -> &[String] {
+    if !layer.required_scopes.as_slice().is_empty() {
+        return layer.required_scopes.as_slice();
+    }
     layer
         .auth_state
         .as_ref()
         .map_or(layer.static_token_scopes.as_slice(), |state| {
             state.config.scopes_supported.as_slice()
         })
+}
+
+fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Option<Response> {
+    let required = layer.required_scopes.as_slice();
+    if required
+        .iter()
+        .all(|scope| granted.iter().any(|granted| granted == scope))
+    {
+        return None;
+    }
+    let metadata_url = layer
+        .protected_resource_metadata_url
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| layer.resource_url.as_deref().map(metadata_url_for_resource));
+    let mut response = (
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({
+            "kind": "insufficient_scope",
+            "message": "authenticated principal lacks required scope",
+        })),
+    )
+        .into_response();
+    if let Some(metadata_url) = metadata_url {
+        let challenge = format!(
+            "Bearer error=\"insufficient_scope\", scope=\"{}\", resource_metadata=\"{}\"",
+            required.join(" "),
+            metadata_url
+        );
+        if let Ok(value) = HeaderValue::from_str(&challenge) {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, value);
+        }
+    }
+    Some(response)
+}
+
+fn metadata_url_for_resource(resource: &str) -> String {
+    format!(
+        "{}/.well-known/oauth-protected-resource",
+        resource.trim_end_matches('/')
+    )
 }
 
 fn csrf_error_response(message: &str) -> Response {
@@ -636,6 +736,7 @@ mod tests {
             sub: "user@example.com".to_string(),
             aud: aud.clone(),
             exp: (crate::util::now_unix() + 60) as usize,
+            nbf: None,
             iat: crate::util::now_unix() as usize,
             jti: "j-1".to_string(),
             scope: "syslog:read syslog:admin".to_string(),
@@ -680,6 +781,7 @@ mod tests {
             sub: "user@example.com".to_string(),
             aud,
             exp: (crate::util::now_unix() + 60) as usize,
+            nbf: None,
             iat: crate::util::now_unix() as usize,
             jti: "j-1".to_string(),
             scope: "syslog:read".to_string(),
@@ -717,6 +819,7 @@ mod tests {
             sub: "user@example.com".to_string(),
             aud: "https://other.example.com/mcp".to_string(),
             exp: (crate::util::now_unix() + 60) as usize,
+            nbf: None,
             iat: crate::util::now_unix() as usize,
             jti: "j-1".to_string(),
             scope: "syslog:read".to_string(),
@@ -823,5 +926,202 @@ mod tests {
             .unwrap();
         // Must be 401 — static token blocked because OAuth is active.
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exact_resource_audience_including_port_and_path_is_enforced() {
+        let state = Arc::new(test_auth_state().await);
+        let issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .trim_end_matches('/')
+            .to_string();
+        let exact_resource = "https://proxy.example:53147/mcp";
+        let token = state
+            .signing_keys
+            .issue_access_token(&crate::jwt::AccessClaims {
+                iss: issuer,
+                sub: "user@example.com".to_string(),
+                aud: exact_resource.to_string(),
+                exp: (crate::util::now_unix() + 60) as usize,
+                nbf: None,
+                iat: crate::util::now_unix() as usize,
+                jti: "exact-resource".to_string(),
+                scope: "mcp:read".to_string(),
+                azp: String::new(),
+            })
+            .unwrap();
+
+        for (configured_resource, expected) in [
+            (exact_resource, StatusCode::OK),
+            ("https://proxy.example:53148/mcp", StatusCode::UNAUTHORIZED),
+            (
+                "https://proxy.example:53147/other",
+                StatusCode::UNAUTHORIZED,
+            ),
+        ] {
+            let app = echo_app(
+                AuthLayer::from_state(Arc::clone(&state))
+                    .with_resource_url(Some(Arc::<str>::from(configured_resource)))
+                    .with_required_scopes(vec!["mcp:read".to_string()]),
+            );
+            let response = app
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/probe")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                expected,
+                "resource {configured_resource}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn insufficient_jwt_and_static_scopes_return_403_challenge() {
+        let state = Arc::new(test_auth_state().await);
+        let resource = "https://proxy.example:53147/mcp";
+        let metadata = "https://proxy.example:53147/.well-known/oauth-protected-resource";
+        let issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .trim_end_matches('/');
+        let jwt = state
+            .signing_keys
+            .issue_access_token(&crate::jwt::AccessClaims {
+                iss: issuer.to_string(),
+                sub: "user@example.com".to_string(),
+                aud: resource.to_string(),
+                exp: (crate::util::now_unix() + 60) as usize,
+                nbf: None,
+                iat: crate::util::now_unix() as usize,
+                jti: "insufficient-scope".to_string(),
+                scope: "mcp:read".to_string(),
+                azp: String::new(),
+            })
+            .unwrap();
+
+        let cases = [
+            (
+                AuthLayer::from_state(Arc::clone(&state)),
+                format!("Bearer {jwt}"),
+            ),
+            (
+                AuthLayer::new()
+                    .with_static_token(Some(Arc::<str>::from("static-secret")))
+                    .with_static_token_scopes(vec!["mcp:read".to_string()]),
+                "Bearer static-secret".to_string(),
+            ),
+        ];
+        for (base_layer, authorization) in cases {
+            let app = echo_app(
+                base_layer
+                    .with_resource_url(Some(Arc::<str>::from(resource)))
+                    .with_protected_resource_metadata_url(Some(Arc::<str>::from(metadata)))
+                    .with_required_scopes(vec!["mcp:write".to_string()]),
+            );
+            let response = app
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/probe")
+                        .header(header::AUTHORIZATION, authorization)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let challenge = response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert_eq!(
+                challenge,
+                concat!(
+                    "Bearer error=\"insufficient_scope\", scope=\"mcp:write\", ",
+                    "resource_metadata=\"https://proxy.example:53147/.well-known/oauth-protected-resource\""
+                )
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn browser_session_is_rejected_when_required_scope_is_missing() {
+        let state = Arc::new(test_auth_state().await);
+        let session = session::create_browser_session(
+            &state,
+            "user@example.com".to_string(),
+            Some("user@example.com".to_string()),
+        )
+        .await
+        .unwrap();
+        let cookie_name = state.config.session_cookie_name.clone();
+        let app = echo_app(
+            AuthLayer::from_state(state)
+                .with_allow_session_cookie(true)
+                .with_required_scopes(vec!["scope:not-granted".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(
+                        header::COOKIE,
+                        format!("{cookie_name}={}", session.session_id),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unauthenticated_challenge_uses_explicit_metadata_url_override() {
+        let app = echo_app(
+            AuthLayer::new()
+                .with_resource_url(Some(Arc::<str>::from("https://proxy.example:53147/mcp")))
+                .with_protected_resource_metadata_url(Some(Arc::<str>::from(
+                    "https://proxy.example:53147/.well-known/oauth-protected-resource",
+                )))
+                .with_required_scopes(vec!["mcp:read".to_string(), "mcp:write".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            concat!(
+                "Bearer resource_metadata=\"https://proxy.example:53147/.well-known/oauth-protected-resource\", ",
+                "scope=\"mcp:read mcp:write\""
+            )
+        );
     }
 }

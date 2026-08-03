@@ -30,6 +30,7 @@ pub(crate) mod peer_contract;
 pub mod peers;
 pub(crate) mod permanent_tools;
 pub mod prompts;
+pub(crate) mod provenance;
 pub mod registry;
 #[cfg(feature = "gateway")]
 pub mod resource_proxy;
