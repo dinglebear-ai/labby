@@ -1,5 +1,6 @@
 [package]
 name = "labby"
+default-run = "labby"
 description = "Rust MCP gateway with Code Mode, authentication, protected routes, setup, logs, CLI, HTTP API, and operator web UI."
 version.workspace = true
 edition.workspace = true

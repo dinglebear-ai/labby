@@ -355,6 +355,49 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "Ubuntu 26.04 runners must use the image-provided Playwright browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));
+
+    let codemode_smoke = workflow
+        .split("  codemode-runner-smoke:")
+        .nth(1)
+        .and_then(|section| section.split("\n  npm-launcher:").next())
+        .expect("Code Mode runner smoke job");
+    assert!(
+        codemode_smoke.contains("cargo run -p labby --bin labby --all-features --locked --"),
+        "Code Mode smoke must select the public binary when test fixtures add more binaries"
+    );
+
+    for (job, next_job) in [
+        ("feature-slices", "extracted-crate-slices"),
+        ("test", "test-fork"),
+        ("test-fork", "test-windows"),
+    ] {
+        let section = workflow
+            .split(&format!("  {job}:\n"))
+            .nth(1)
+            .and_then(|body| body.split(&format!("\n  {next_job}:")).next())
+            .expect("memory-constrained Rust job body");
+        assert!(
+            section.contains("CARGO_BUILD_JOBS: \"1\""),
+            "{job} must serialize Cargo builds below the shared pool memory limit"
+        );
+        assert!(
+            section.contains("RUSTFLAGS: \"-C linker=clang -C link-arg=-fuse-ld=lld\""),
+            "{job} must use the lower-memory lld linker"
+        );
+    }
+}
+
+#[test]
+fn cargo_run_defaults_to_public_labby_binary() {
+    let manifest = fs::read_to_string(repo_root().join("crates/labby/Cargo.toml"))
+        .expect("read labby Cargo.toml");
+    let manifest: toml::Value = toml::from_str(&manifest).expect("parse labby Cargo.toml");
+
+    assert_eq!(
+        manifest["package"]["default-run"].as_str(),
+        Some("labby"),
+        "unqualified `cargo run -p labby` must keep selecting the public CLI binary"
+    );
 }
 
 #[test]

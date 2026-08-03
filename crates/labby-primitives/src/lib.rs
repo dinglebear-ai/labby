@@ -12,6 +12,7 @@
 //! compatibility, and `labby-gateway` depends on it directly.
 
 pub mod action;
+pub mod mcp;
 pub mod plugin;
 pub mod plugin_ui;
 pub mod ssrf;

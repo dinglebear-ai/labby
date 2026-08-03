@@ -1,9 +1,11 @@
 //! Read-only preflight for persisted ephemeral stdio-proxy preferences.
 
 use std::ffi::OsStr;
+#[cfg(feature = "gateway")]
 use std::path::PathBuf;
 
 use crate::proxy::config::{ProxyAuthMode, ProxyExposure, ProxyPreferences};
+#[cfg(feature = "gateway")]
 use crate::proxy::tailscale::{ServeStatus, TailscaleStatus};
 
 use super::types::{Finding, Report, Severity};
@@ -17,11 +19,21 @@ fn finding(check: &str, severity: Severity, message: impl Into<String>) -> Findi
     }
 }
 
+#[cfg(feature = "gateway")]
 fn dependency_failure(check: &str, dependency: &str) -> Finding {
     finding(
         check,
         Severity::Fail,
         format!("check unavailable because {dependency} failed"),
+    )
+}
+
+#[cfg(not(feature = "gateway"))]
+fn gateway_feature_unavailable(check: &str) -> Finding {
+    finding(
+        check,
+        Severity::Warn,
+        "gateway feature is not compiled into this labby build",
     )
 }
 
@@ -49,7 +61,10 @@ pub async fn check_proxy_preflight() -> Report {
             "local exposure does not require Tailscale",
         ));
     } else {
+        #[cfg(feature = "gateway")]
         findings.extend(tailscale_findings().await);
+        #[cfg(not(feature = "gateway"))]
+        findings.push(gateway_feature_unavailable("proxy:tailscale-version"));
     }
     Report { findings }
 }
@@ -101,7 +116,7 @@ fn launcher_findings() -> Vec<Finding> {
 }
 
 async fn auth_findings(
-    config: &crate::config::LabConfig,
+    _config: &crate::config::LabConfig,
     preferences: &ProxyPreferences,
 ) -> Vec<Finding> {
     match preferences.auth {
@@ -138,10 +153,20 @@ async fn auth_findings(
             Severity::Ok,
             "tailnet identity authentication is selected",
         )],
-        ProxyAuthMode::Oauth => oauth_findings(config).await,
+        ProxyAuthMode::Oauth => {
+            #[cfg(feature = "gateway")]
+            {
+                oauth_findings(_config).await
+            }
+            #[cfg(not(feature = "gateway"))]
+            {
+                vec![gateway_feature_unavailable("proxy:oauth-daemon")]
+            }
+        }
     }
 }
 
+#[cfg(feature = "gateway")]
 async fn oauth_findings(config: &crate::config::LabConfig) -> Vec<Finding> {
     let mut findings = Vec::new();
     let issuer = match crate::config::resolve_auth_for_config(config) {
@@ -290,6 +315,7 @@ async fn oauth_findings(config: &crate::config::LabConfig) -> Vec<Finding> {
     findings
 }
 
+#[cfg(feature = "gateway")]
 async fn tailscale_findings() -> Vec<Finding> {
     let executable = std::env::var_os("LABBY_TAILSCALE_BIN")
         .map(PathBuf::from)
@@ -401,4 +427,22 @@ async fn tailscale_findings() -> Vec<Finding> {
         )),
     }
     findings
+}
+
+#[cfg(all(test, not(feature = "gateway")))]
+mod feature_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn gateway_feature_fallback_is_a_structured_warning() {
+        let finding = gateway_feature_unavailable("proxy:gateway-feature");
+
+        assert_eq!(finding.service, "proxy");
+        assert_eq!(finding.check, "proxy:gateway-feature");
+        assert!(matches!(finding.severity, Severity::Warn));
+        assert_eq!(
+            finding.message,
+            "gateway feature is not compiled into this labby build"
+        );
+    }
 }

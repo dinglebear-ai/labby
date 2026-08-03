@@ -695,6 +695,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "gateway")]
     fn tailscale_tailnet_uses_ephemeral_loopback_without_application_auth() {
         let prefs = crate::proxy::config::ProxyPreferences {
             port: crate::proxy::config::ProxyPortPreference::Fixed(52_177),
@@ -707,6 +708,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "gateway")]
     fn tailscale_bearer_stays_bearer_on_loopback() {
         let prefs = crate::proxy::config::ProxyPreferences {
             auth: crate::proxy::config::ProxyAuthMode::Bearer,
@@ -719,6 +721,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "gateway")]
     fn oauth_is_preserved_for_the_finalized_local_router_policy() {
         let prefs = crate::proxy::config::ProxyPreferences {
             auth: crate::proxy::config::ProxyAuthMode::Oauth,

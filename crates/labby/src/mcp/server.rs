@@ -9,7 +9,9 @@ use std::sync::{Arc, OnceLock};
 
 use axum::http;
 use dashmap::DashMap;
-use labby_gateway::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY};
+use labby_primitives::mcp::{
+    MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
+};
 #[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
@@ -778,8 +780,9 @@ mod tests {
     #[cfg(feature = "gateway")]
     use super::verify_upstream_subject_resolution_support;
     use super::{
-        LabMcpServer, cancel_tracked_request_by_token, request_cancellation_key,
-        restore_request_meta, track_request_cancellation,
+        LabMcpServer, MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
+        cancel_tracked_request_by_token, request_cancellation_key, restore_request_meta,
+        track_request_cancellation,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
@@ -851,7 +854,7 @@ mod tests {
             running.peer().clone(),
         );
         tracked_context.meta.0.0.insert(
-            labby_gateway::MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
             serde_json::Value::String("handler-correlation-test".to_string()),
         );
         let tracked = track_request_cancellation(&tracked_context, 0);
@@ -861,7 +864,7 @@ mod tests {
             .service()
             .on_custom_request(
                 CustomRequest::new(
-                    labby_gateway::MCP_RELAY_CANCELLATION_REQUEST_METHOD,
+                    MCP_RELAY_CANCELLATION_REQUEST_METHOD,
                     Some(serde_json::json!({
                         "reason": "downstream request cancelled",
                         "token": "handler-correlation-test",
@@ -942,7 +945,7 @@ mod tests {
             .service()
             .on_custom_request(
                 CustomRequest::new(
-                    labby_gateway::MCP_RELAY_CANCELLATION_REQUEST_METHOD,
+                    MCP_RELAY_CANCELLATION_REQUEST_METHOD,
                     Some(serde_json::json!({
                         "reason": "downstream request cancelled",
                         "token": "untracked-handler-correlation-test",
@@ -976,7 +979,7 @@ mod tests {
             running.peer().clone(),
         );
         context.meta.0.0.insert(
-            labby_gateway::MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
             serde_json::Value::String("duplicate-correlation-token".to_string()),
         );
 
@@ -1010,7 +1013,7 @@ mod tests {
             running.peer().clone(),
         );
         context.meta.0.0.insert(
-            labby_gateway::MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+            MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
             serde_json::Value::String("shared-live-correlation-token".to_string()),
         );
 

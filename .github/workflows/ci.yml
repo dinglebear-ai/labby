@@ -385,7 +385,7 @@ jobs:
       - name: Execute sandbox through the CLI-hosted runner
         run: |
           set -euo pipefail
-          cargo run -p labby --all-features --locked -- --json gateway code exec \
+          cargo run -p labby --bin labby --all-features --locked -- --json gateway code exec \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
 
@@ -432,7 +432,10 @@ jobs:
     # registry omission tests, the no-feature rejection helpers) actually
     # execute somewhere in CI instead of only ever being compiled.
     env:
-      RUSTFLAGS: ""
+      # The gateway slice links the same large test harnesses as the full test
+      # graph, so keep its peak memory below the 8 GiB pool limit too.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     strategy:
       fail-fast: false
       matrix:
@@ -615,6 +618,11 @@ jobs:
     # save/restore layer is needed.
     runs-on: ci-pool-rust
     timeout-minutes: 60
+    env:
+      # The all-features test graph links multiple large harnesses. Serializing
+      # Cargo builds and using lld keeps peak memory below the 8 GiB pool limit.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
       (
@@ -652,6 +660,10 @@ jobs:
     name: Test
     runs-on: ci-pool-rust
     timeout-minutes: 60
+    env:
+      # Match the internal-PR test job resource profile on the shared pool.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: >-
       needs.changes.outputs.rust_test == 'true' &&

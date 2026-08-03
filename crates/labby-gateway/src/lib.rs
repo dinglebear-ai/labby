@@ -25,14 +25,9 @@ pub mod security;
 pub mod upstream;
 pub mod usage;
 
-/// Private MCP `_meta` key correlating stateless HTTP cancellation posts with
-/// the original relayed request. The value is a random per-request token.
-pub const MCP_RELAY_CANCELLATION_TOKEN_META_KEY: &str =
-    "ai.dinglebear.labby/relayCancellationToken";
-
-/// Labby-private request used alongside standard cancellation when an rmcp
-/// stateless HTTP hop hides or rewrites request IDs.
-pub const MCP_RELAY_CANCELLATION_REQUEST_METHOD: &str = "ai.dinglebear.labby/relay-cancel";
+pub use labby_primitives::mcp::{
+    MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
+};
 
 #[cfg(test)]
 mod test_support;
