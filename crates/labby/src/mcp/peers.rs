@@ -183,7 +183,15 @@ impl RegisteredPeer {
                 registry: Arc::new(crate::registry::ToolRegistry::default()),
                 #[cfg(feature = "gateway")]
                 gateway_manager: None,
-                route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+                // Keep the empty-contract fixture independent of process-wide
+                // Code Mode changes made by other tests. Root scope can expose
+                // the synthetic Code Mode tools even without a gateway manager.
+                route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
+                    "catalog-notification-test",
+                    std::iter::empty::<&str>(),
+                    std::iter::empty::<&str>(),
+                    false,
+                ),
                 code_mode_app_state: Default::default(),
                 audience: crate::mcp::peer_contract::PeerCatalogAudience::default(),
             },
@@ -208,6 +216,21 @@ impl RegisteredPeer {
             crate::mcp::catalog::ToolCatalogSnapshot::from_names(std::collections::BTreeSet::new()),
         )
     }
+}
+
+#[cfg(test)]
+#[test]
+fn catalog_notification_fixture_never_exposes_code_mode() {
+    let scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "catalog-notification-test",
+        std::iter::empty::<&str>(),
+        std::iter::empty::<&str>(),
+        false,
+    );
+
+    assert!(!scope.exposes_code_mode());
+    assert!(!scope.allows_service("gateway"));
+    assert!(!scope.allows_upstream("fixture"));
 }
 
 /// MCP-specific peer fanout that forwards catalog-change notifications to

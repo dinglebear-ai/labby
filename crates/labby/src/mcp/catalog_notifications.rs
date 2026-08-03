@@ -700,7 +700,6 @@ mod tests {
     async fn scheduled_notifications_coalesce_into_one_delivery() {
         let _catalog_lock = serial_catalog();
         reset_for_test();
-        crate::mcp::catalog_churn::reset_for_test();
         let peers = Arc::new(RwLock::new(Vec::new()));
         let (client, client_service, server_handle) = connect_peer(&peers, true).await;
 
@@ -739,7 +738,6 @@ mod tests {
     async fn scheduled_notification_defers_until_the_turn_closes() {
         let _catalog_lock = serial_catalog();
         reset_for_test();
-        crate::mcp::catalog_churn::reset_for_test();
         let peers = Arc::new(RwLock::new(Vec::new()));
         let (client, client_service, server_handle) = connect_peer(&peers, true).await;
 
