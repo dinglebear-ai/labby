@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 Historical entries use distinct `example*` pseudonyms where retired service
 identifiers were removed. Commit links remain the authoritative historical record.
 
+## [1.8.7](https://github.com/dinglebear-ai/labby/compare/v1.8.6...v1.8.7) (2026-08-03)
+
+
+### Fixed
+
+* **container:** replace vulnerable bundled npm ([#320](https://github.com/dinglebear-ai/labby/issues/320)) ([2794c8d](https://github.com/dinglebear-ai/labby/commit/2794c8d2d331e2d1e8a13ff849e63ff3d55da79e))
+* **release:** publish MCP metadata with dinglebear.ai ([9f13652](https://github.com/dinglebear-ai/labby/commit/9f136523e723e49209194c6ea9ada59c121818d6))
+
 ## [1.8.6](https://github.com/dinglebear-ai/labby/compare/v1.8.5...v1.8.6) (2026-08-01)
 
 
