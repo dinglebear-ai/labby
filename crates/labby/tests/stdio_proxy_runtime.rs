@@ -79,7 +79,9 @@ async fn connect_with_lifecycle(
 async fn local_proxy_forwards_tools_list_after_child_discovery_and_bind() {
     let temp = tempfile::tempdir().unwrap();
     let pid_file = temp.path().join("child.pid");
-    let mut command = fixture_command(temp.path().to_path_buf(), &pid_file);
+    let command = fixture_command(temp.path().to_path_buf(), &pid_file);
+    #[cfg(unix)]
+    let mut command = command;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;

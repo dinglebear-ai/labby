@@ -43,7 +43,7 @@ COPY crates/xtask/Cargo.toml crates/xtask/Cargo.toml
 
 # Create stub source files so cargo can parse ALL manifests without error.
 #
-# labby has both [[bin]] (main.rs) and [lib] (lib.rs) targets — stub both.
+# labby has two [[bin]] targets plus a [lib] target — stub all three.
 #
 # We also need apps/gateway-admin/out/ to exist for include_dir!() in web.rs,
 # but we copy the real one below — for the dep-cache step a stub dir suffices.
@@ -58,9 +58,11 @@ RUN mkdir -p \
       crates/labby-winjob/src \
       crates/labby-primitives/src \
       crates/labby-openapi/src \
+      crates/labby/tests/fixtures \
       crates/xtask/src \
       apps/gateway-admin/out \
  && echo 'fn main(){}' > crates/labby/src/main.rs \
+ && echo 'fn main(){}' > crates/labby/tests/fixtures/stdio_mcp_fixture.rs \
  && echo 'fn main(){}' > crates/xtask/src/main.rs \
  && echo 'fn main(){}' > crates/labby-web/build.rs \
  && touch \
