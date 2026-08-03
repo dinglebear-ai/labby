@@ -1,0 +1,7 @@
+# No known failures in the 2026-07-28 dated protocol scenarios for Labby
+# with rmcp 3.1.0 and @modelcontextprotocol/conformance 0.2.0-alpha.10.
+#
+# The conformance runner is strict: an unlisted failure fails CI, and any
+# future listed failure that starts passing fails as a stale baseline entry.
+server: []
+client: []

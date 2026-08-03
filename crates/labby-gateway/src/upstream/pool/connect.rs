@@ -18,6 +18,7 @@ use std::time::Instant;
 
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
+use rmcp::ClientHandler;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CancelledNotification, CancelledNotificationParam,
     ClientCapabilities, ClientJsonRpcMessage, ClientNotification, ClientRequest, Implementation,
@@ -32,7 +33,6 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClient, StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
     StreamableHttpPostResponse,
 };
-use rmcp::{ClientHandler, RoleClient};
 
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
@@ -43,12 +43,15 @@ use super::super::transport::websocket::{
     WebSocketTransportConfig, connect as connect_websocket_transport, parse_ws_url,
 };
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
-use super::UpstreamConnection;
 use super::connect_stdio::connect_stdio_upstream;
 use super::helpers::{
     DEFAULT_REQUEST_TIMEOUT, max_response_bytes, upstream_target_redacted, upstream_transport,
 };
-use super::lifecycle_compat::{LifecycleAttempt, compatibility_retry, log_fallback};
+use super::legacy_client::VersionedClientHandler;
+use super::lifecycle_compat::{
+    LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
+};
+use super::{UpstreamClientService, UpstreamConnection};
 use crate::{MCP_RELAY_CANCELLATION_TOKEN_META_KEY, MCP_RELAY_CANCELLATION_TOOL_NAME};
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
@@ -320,9 +323,18 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     let transport = connect_websocket_transport(
         WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
     );
-    let service: rmcp::service::RunningService<RoleClient, H> = handler
-        .serve_with_lifecycle(transport, lifecycle.mode())
-        .await?;
+    let service = match lifecycle {
+        LifecycleAttempt::Modern => UpstreamClientService::Direct(
+            handler
+                .serve_with_lifecycle(transport, lifecycle.mode())
+                .await?,
+        ),
+        LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
+            VersionedClientHandler::new(handler, legacy_protocol_version())
+                .serve_with_lifecycle(transport, lifecycle.mode())
+                .await?,
+        ),
+    };
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
     tracing::info!(
@@ -734,9 +746,18 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             .map_err(|e| anyhow::anyhow!("oauth_required: {e}"))?;
 
         let worker = StreamableHttpClientWorker::new(auth_client, transport_config);
-        let service: rmcp::service::RunningService<RoleClient, H> = handler
-            .serve_with_lifecycle(worker, lifecycle.mode())
-            .await?;
+        let service = match lifecycle {
+            LifecycleAttempt::Modern => UpstreamClientService::Direct(
+                handler
+                    .serve_with_lifecycle(worker, lifecycle.mode())
+                    .await?,
+            ),
+            LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
+                VersionedClientHandler::new(handler, legacy_protocol_version())
+                    .serve_with_lifecycle(worker, lifecycle.mode())
+                    .await?,
+            ),
+        };
         let peer = service.peer().clone();
         let tools = peer.list_all_tools().await?;
         return Ok((
@@ -765,9 +786,18 @@ async fn connect_http_upstream_once<H: ClientHandler>(
 
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
-    let service: rmcp::service::RunningService<RoleClient, H> = handler
-        .serve_with_lifecycle(worker, lifecycle.mode())
-        .await?;
+    let service = match lifecycle {
+        LifecycleAttempt::Modern => UpstreamClientService::Direct(
+            handler
+                .serve_with_lifecycle(worker, lifecycle.mode())
+                .await?,
+        ),
+        LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
+            VersionedClientHandler::new(handler, legacy_protocol_version())
+                .serve_with_lifecycle(worker, lifecycle.mode())
+                .await?,
+        ),
+    };
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
     tracing::info!(

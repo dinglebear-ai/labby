@@ -26,8 +26,8 @@ use super::capability::discover_capability_counts;
 use super::connect::connect_upstream;
 use super::entries::resolve_exposure_policy;
 use super::helpers::{
-    DISCOVERY_TIMEOUT, cached_upstream_tool, classify_upstream_error,
-    upstream_discovery_concurrency, upstream_name_is_uri_safe, upstream_target_redacted,
+    cached_upstream_tool, classify_upstream_error, upstream_discovery_concurrency,
+    upstream_discovery_timeout, upstream_name_is_uri_safe, upstream_target_redacted,
     upstream_transport,
 };
 use super::logging::capability_name;
@@ -178,6 +178,7 @@ impl UpstreamPool {
         let oauth_client_cache = self.oauth_client_cache.clone();
         let runtime_origin = self.runtime_origin.clone();
         let runtime_owner = self.runtime_owner.clone();
+        let request_timeout = self.request_timeout;
 
         for config in configs {
             if !config.enabled {
@@ -230,8 +231,9 @@ impl UpstreamPool {
                 let runtime_owner = runtime_owner.clone();
                 async move {
                     let name = config.name.clone();
+                    let discovery_timeout = upstream_discovery_timeout(&config, request_timeout);
                     match tokio::time::timeout(
-                        DISCOVERY_TIMEOUT,
+                        discovery_timeout,
                         connect_upstream(
                             &config,
                             subject.as_deref(),
@@ -296,7 +298,7 @@ impl UpstreamPool {
                         Err(_) => {
                             let error = format!(
                                 "upstream discovery timed out after {}s waiting for {} MCP list_tools response from {}",
-                                DISCOVERY_TIMEOUT.as_secs(),
+                                discovery_timeout.as_secs(),
                                 upstream_transport(&config),
                                 upstream_target_redacted(&config)
                             );
@@ -305,7 +307,7 @@ impl UpstreamPool {
                                 transport = upstream_transport(&config),
                                 target = %upstream_target_redacted(&config),
                                 kind = "timeout",
-                                timeout_secs = DISCOVERY_TIMEOUT.as_secs(),
+                                timeout_secs = discovery_timeout.as_secs(),
                                 "upstream discovery timed out"
                             );
                             Err((name, error))

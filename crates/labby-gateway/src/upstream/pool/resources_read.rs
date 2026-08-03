@@ -451,7 +451,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -545,7 +545,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -639,7 +639,7 @@ mod tests {
         pool.connections.write().await.insert(
             upstream_name.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -733,7 +733,7 @@ mod tests {
         pool.connections.write().await.insert(
             UPSTREAM_NAME.to_string(),
             UpstreamConnection {
-                _client_service: client_service,
+                _client_service: client_service.into(),
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
@@ -832,7 +832,7 @@ mod tests {
             pool.connections.write().await.insert(
                 upstream_name.to_string(),
                 UpstreamConnection {
-                    _client_service: client_service,
+                    _client_service: client_service.into(),
                     _server_task: Some(server_task),
                     peer,
                     runtime: UpstreamRuntimeMetadata::default(),

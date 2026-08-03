@@ -6,18 +6,21 @@ updated: "2026-08-02"
 
 # MCP 2026-07-28 Conformance
 
-Labby targets the `2026-07-28` MCP protocol through
-`rmcp = "=3.1.0"`. Dated protocol results, extension results, and
-Labby-native gateway scenarios are reported separately so SDK fixture coverage
-cannot hide a product-adapter regression.
+Labby targets the `2026-07-28` MCP protocol through `rmcp = "=3.1.0"`.
+The gate verifies that production dependency exactly, exercises Labby's real
+authenticated `/mcp` boundary and native multi-hop gateway chain, and runs the
+pinned upstream rmcp `3.1.0` fixture for synthetic dated and extension
+scenarios. Dated protocol, extension, and Labby-native results are reported
+separately so fixture coverage cannot hide a product-adapter regression.
 
 ## Reproducible Pins
 
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| rmcp | `3.1.0` |
-| rmcp tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
+| Labby rmcp dependency | `3.1.0` |
+| rmcp conformance fixture | `3.1.0` |
+| rmcp fixture tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
 | MCP conformance package | `0.2.0-alpha.10` |
 
 Run the complete gate locally with:
@@ -26,8 +29,9 @@ Run the complete gate locally with:
 scripts/ci/mcp-conformance.sh
 ```
 
-The script verifies the exact Cargo dependency and rmcp tag commit, installs the
-JavaScript conformance package once, builds a fresh Labby binary, and runs:
+The script verifies the exact production Cargo dependency and upstream fixture
+tag commit, installs the JavaScript conformance package once, builds a fresh
+Labby binary, and then runs:
 
 1. a Labby-native client -> root Labby -> middle Labby -> synthetic leaf chain
 2. the authenticated stateless Labby HTTP boundary smoke checks
@@ -173,9 +177,12 @@ harness; a durable event-store deployment would be a separate mode.
 
 ## CI and Maintenance
 
-The `MCP 2026-07-28 conformance` job is part of `ci-gate`. Bump the four
-pins above together and review the Labby-native scenario matrix plus extension
-baseline whenever the conformance package or rmcp version changes.
+The `MCP 2026-07-28 conformance` CI job is part of `ci-gate`. Its JavaScript
+dependency installation is serialized before scenarios start. The production
+dependency and upstream fixture remain separate pins even when they use the
+same release. Advance the fixture, its tag commit, package version, strict
+dated/extension baselines, and Labby-native scenario matrix together after
+reviewing every scenario change.
 
 The separate `MCP upstream drift` workflow compares
 `conformance/upstream-baseline.json` with the current specification branch and

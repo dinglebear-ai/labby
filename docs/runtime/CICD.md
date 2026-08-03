@@ -49,7 +49,7 @@ jobs when their changed-path category is enabled:
 | Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
 | Tests (Linux fork PR fallback) | `rust_test` | same nextest run on the Rust runner-farm pool without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | pinned rmcp `3.0.0-beta.2` dated `2026-07-28` server/client suites plus separately scored extension suites |
+| MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke plus the pinned rmcp `3.1.0` fixture's dated `2026-07-28` server/client suites, with separate strict dated and extension baselines |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
 | Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
@@ -147,7 +147,7 @@ partially published release.
 - **Container surface:** GitHub Container Registry (`ghcr.io/dinglebear-ai/labby`)
 - **Artifacts per release:** one binary archive per supported target (Linux x86_64 and Windows x86_64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
-- **Package registries:** the `@dinglebear/labby-mcp` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
+- **Package registries:** the `@dinglebear/labby` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
 
 ## MCP Registry DNS Key Rotation
 

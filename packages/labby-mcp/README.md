@@ -67,7 +67,7 @@ labby serve --host 127.0.0.1 --port 8765
 MCP clients that prefer npm launchers can run Labby through the Node wrapper:
 
 ```bash
-npx -y @dinglebear/labby-mcp mcp
+npx -y @dinglebear/labby mcp
 ```
 
 Windows PowerShell:
@@ -394,7 +394,7 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 `[workspace.package]` version, shared `[workspace.dependencies]`, and shared
 `[workspace.lints]` (`unsafe_code = "forbid"`, `mod_module_files = "deny"`,
 `disallowed_macros = "deny"`). The MCP SDK is pinned exactly as
-`rmcp = "=3.0.0-beta.2"`.
+`rmcp = "=3.1.0"`.
 
 | Path | Role |
 | --- | --- |
@@ -410,7 +410,7 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
 | [crates/xtask](./crates/xtask) | Repo automation tasks; not published. |
 | [apps/gateway-admin](./apps/gateway-admin/README.md) | Labby web UI, statically exported and served by `labby serve`. |
-| [packages/labby-mcp](./packages/labby-mcp) | npm launcher wrapper behind `npx -y @dinglebear/labby-mcp mcp`. |
+| [packages/labby-mcp](./packages/labby-mcp) | npm launcher wrapper behind `npx -y @dinglebear/labby mcp`. |
 | [plugins](./plugins) | Claude/Codex plugin assets and skills. |
 | [docs](./docs/README.md) | Topic documentation and generated inventories. |
 

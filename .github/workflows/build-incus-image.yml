@@ -66,10 +66,10 @@ jobs:
           pnpm build
         )
         git diff --exit-code -- apps/gateway-admin/public/install.sh
-        cargo build --workspace --all-features --locked --release \
+        cargo build --workspace --all-features --locked \
           --target x86_64-unknown-linux-gnu
         mkdir -p target/incus-image-input
-        cp target/x86_64-unknown-linux-gnu/release/labby \
+        cp target/x86_64-unknown-linux-gnu/debug/labby \
           target/incus-image-input/labby
         tar -C target/incus-image-input -czf \
           target/incus-image-input/lab-x86_64-unknown-linux-gnu.tar.gz labby

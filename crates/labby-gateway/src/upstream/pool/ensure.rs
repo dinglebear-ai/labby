@@ -21,8 +21,8 @@ use super::UpstreamPool;
 use super::connect::connect_upstream_with_client;
 use super::entries::{lazy_upstream_entry, resolve_exposure_policy};
 use super::helpers::{
-    DISCOVERY_TIMEOUT, cached_upstream_tool, upstream_name_is_uri_safe, upstream_target_redacted,
-    upstream_transport,
+    cached_upstream_tool, upstream_discovery_timeout, upstream_name_is_uri_safe,
+    upstream_target_redacted, upstream_transport,
 };
 use super::tools::tool_has_mcp_app_ui_resource;
 use super::validate::validate_upstream_config;
@@ -139,8 +139,9 @@ impl UpstreamPool {
         let started = Instant::now();
         let subject = config.oauth.as_ref().and(oauth_subject);
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
+        let discovery_timeout = upstream_discovery_timeout(config, self.request_timeout);
         let connect_result = tokio::time::timeout(
-            DISCOVERY_TIMEOUT,
+            discovery_timeout,
             connect_upstream_with_client(
                 config,
                 subject,
@@ -165,7 +166,7 @@ impl UpstreamPool {
             Err(_) => {
                 let error = anyhow::anyhow!(
                     "lazy upstream connect timed out after {}s waiting for {} MCP list_tools response from {}",
-                    DISCOVERY_TIMEOUT.as_secs(),
+                    discovery_timeout.as_secs(),
                     upstream_transport(config),
                     upstream_target_redacted(config)
                 );

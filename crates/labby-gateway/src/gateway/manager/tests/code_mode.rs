@@ -418,6 +418,26 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
 }
 
 #[tokio::test]
+async fn mcp_tool_error_result_does_not_poison_upstream_connection_health() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("unifi")]).await;
+    pool.insert_tool_error_server_for_tests("unifi", "controller rejected the request")
+        .await;
+
+    let err = manager
+        .execute_upstream_tool("unifi", "unifi", json!({}))
+        .await
+        .expect_err("is_error=true must remain a Code Mode tool error");
+
+    assert_eq!(err.kind(), "upstream_error");
+    assert_eq!(
+        pool.upstream_tool_last_error("unifi").await,
+        None,
+        "a successful MCP response must not count as a connection-health failure"
+    );
+}
+
+#[tokio::test]
 async fn palette_catalog_discovers_configured_upstream_tools() {
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;

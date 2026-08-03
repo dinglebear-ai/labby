@@ -193,13 +193,51 @@ jobs:
           if [ "$(id -u)" = "0" ]; then
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libasound2t64 \
+              libatk-bridge2.0-0t64 \
+              libatk1.0-0t64 \
+              libatspi2.0-0t64 \
+              libcairo2 \
+              libcups2t64 \
+              libdbus-1-3 \
+              libdrm2 \
+              libgbm1 \
+              libglib2.0-0t64 \
               libnspr4 \
-              libnss3
+              libnss3 \
+              libpango-1.0-0 \
+              libx11-6 \
+              libxcb1 \
+              libxcomposite1 \
+              libxdamage1 \
+              libxext6 \
+              libxfixes3 \
+              libxkbcommon0 \
+              libxrandr2
           else
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libasound2t64 \
+              libatk-bridge2.0-0t64 \
+              libatk1.0-0t64 \
+              libatspi2.0-0t64 \
+              libcairo2 \
+              libcups2t64 \
+              libdbus-1-3 \
+              libdrm2 \
+              libgbm1 \
+              libglib2.0-0t64 \
               libnspr4 \
-              libnss3
+              libnss3 \
+              libpango-1.0-0 \
+              libx11-6 \
+              libxcb1 \
+              libxcomposite1 \
+              libxdamage1 \
+              libxext6 \
+              libxfixes3 \
+              libxkbcommon0 \
+              libxrandr2
           fi
       # The self-hosted runner image carries the matching Playwright browser.
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
@@ -498,7 +536,10 @@ jobs:
   mcp-regressions:
     name: MCP focused regressions
     runs-on: ci-pool-rust
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -936,10 +977,8 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
-    # GitHub-hosted job: neutralize the repo's .cargo/config.toml
-    # `rustc-wrapper = scripts/cargo-rustc-wrapper` shim, which Windows runners
-    # cannot exec (os error 193). kache jobs override this via setup-rust-kache;
-    # this hosted job keeps the empty-wrapper disabler at job scope.
+    # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
+    # configure kache explicitly through setup-rust-kache.
     env:
       RUSTC_WRAPPER: ""
       CARGO_BUILD_RUSTC_WRAPPER: ""
@@ -959,7 +998,10 @@ jobs:
   rust-coverage:
     name: Rust coverage
     runs-on: ci-pool-rust
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:

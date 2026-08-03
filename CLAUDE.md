@@ -20,7 +20,7 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 | Default branch | `main` |
 | Cargo workspace | 11 members, `resolver = "3"`, single `[workspace.package]` version |
 | Edition / MSRV | edition 2024, `rust-version = "1.97.1"`, toolchain pinned to 1.97.1 in `rust-toolchain.toml` |
-| MCP SDK | `rmcp = "=3.0.0-beta.2"` — exact pin in `[workspace.dependencies]`, and the only repo in the fleet on rmcp 3.x. Bumping it is a breaking change across `crates/labby/src/mcp/` and `crates/labby-gateway/`. |
+| MCP SDK | `rmcp = "=3.1.0"` — exact pin in `[workspace.dependencies]`, and the only repo in the fleet on rmcp 3.x. Bumping it is a breaking change across `crates/labby/src/mcp/` and `crates/labby-gateway/`. |
 | Lint enforcement | `[workspace.lints]` is real here: `unsafe_code = "forbid"`, `mod_module_files = "deny"`, `disallowed_macros = "deny"` (see `/clippy.toml` — bans `#[async_trait]`) |
 | Config / secrets | `~/.labby/config.toml` and `~/.labby/.env`; `$LABBY_HOME` overrides the `~/.labby` root |
 | Worktrees | This checkout carries a busy `.worktrees/` (currently 9 active worktrees). Run `git worktree list` before any workspace-level edit, and never assume the main checkout is the only consumer of `target/`. |
@@ -124,7 +124,7 @@ labby/
 │           ├── config.rs             # ~/.labby/.env + config.toml loading (CWD → ~/.labby/ → ~/.config/labby/)
 │           └── output.rs             # table/json formatting
 ├── apps/gateway-admin/               # Next.js Labby web UI, statically exported
-├── packages/labby-mcp/               # npm launcher wrapper (`npx -y @dinglebear/labby-mcp mcp`)
+├── packages/labby-mcp/               # npm launcher wrapper (`npx -y @dinglebear/labby mcp`)
 ├── plugins/                          # Claude/Codex plugin assets (labby, vibin, testing, …)
 ├── scripts/                          # install.sh/install.ps1, incus-bootstrap.sh, CI helpers
 ├── openwiki/                         # generated repository wiki
@@ -344,7 +344,7 @@ All formatting lives in `crates/labby/src/output.rs`. `labby-apis` types are pur
 just check          # cargo check --workspace --all-features
 just test           # cargo nextest run --workspace --all-features
 just test-integration # nextest --run-ignored ignored-only (needs live services)
-just lint           # skill-drift + cargo-wrapper smoke, then clippy -D warnings + fmt --check
+just lint           # skill drift + toolchain sync, then clippy -D warnings + fmt --check
 just deny           # cargo deny check
 just build          # cargo build --workspace --all-features --profile release-fast
 just build-release  # release build + install to bin/labby + symlink ~/.local/bin/labby
@@ -363,7 +363,7 @@ just mcp-token      # rotate LABBY_MCP_HTTP_TOKEN in ~/.labby/.env
 rather than a debug build — run `cargo build --workspace --all-features` directly
 when you need debug assertions and full unwinding. `just lint` is a superset of
 clippy+fmt: it also runs `plugins/scripts/check-dozzle-skill` (skill drift) and
-`scripts/test-cargo-rustc-wrapper.sh`, so a bare clippy run is not equivalent.
+the Rust toolchain synchronization check, so a bare clippy run is not equivalent.
 
 Generated artifacts under `docs/generated/` (service catalog, action catalog,
 env reference, API routes, OpenAPI, feature matrix, MCP help, CLI help) are

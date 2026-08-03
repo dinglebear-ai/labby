@@ -2284,7 +2284,7 @@ mod tests {
         .expect("relay client connects");
         let peer = service.peer().clone();
         let conn = UpstreamConnection {
-            _client_service: service,
+            _client_service: service.into(),
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
@@ -2517,7 +2517,7 @@ mod tests {
         .expect("relay client connects");
         let peer = service.peer().clone();
         let conn = UpstreamConnection {
-            _client_service: service,
+            _client_service: service.into(),
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
@@ -2648,7 +2648,7 @@ mod tests {
         .expect("relay client connects");
         let peer = service.peer().clone();
         let conn = UpstreamConnection {
-            _client_service: service,
+            _client_service: service.into(),
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
