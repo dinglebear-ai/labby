@@ -15,8 +15,9 @@ grep -Fq "steps.kache-host.outputs.managed != 'true'" "$action"
 grep -Fq 'uses: kunobi-ninja/kache-action@a257c055543c2840700a9bbca8f9c3094a421b1b' "$action"
 grep -Fq 's3-prefix: rust' "$action"
 grep -Fq 's3-endpoint: https://s3.tootie.tv' "$action"
-grep -Fq 'echo "RUSTC_WRAPPER=kache"' "$action"
-grep -Fq 'echo "CARGO_BUILD_RUSTC_WRAPPER=kache"' "$action"
+grep -Fq 'binary="${{ steps.kache-host.outputs.binary }}"' "$action"
+grep -Fq 'echo "RUSTC_WRAPPER=$binary"' "$action"
+grep -Fq 'echo "CARGO_BUILD_RUSTC_WRAPPER=$binary"' "$action"
 
 mkdir -p "$tmpdir/bin" "$tmpdir/home/.config/kache"
 cat >"$tmpdir/bin/systemctl" <<'SH'
@@ -53,10 +54,13 @@ EOF
   PATH="$tmpdir/bin:/usr/bin:/bin" \
   HOME="$tmpdir/home" \
   GITHUB_OUTPUT="$output" \
+  KACHE_MANAGED_BINARY="$tmpdir/bin/kache" \
   FAKE_SERVICE_ACTIVE="$service" \
   FAKE_DAEMON_RUNNING="$daemon" \
     "$detect"
   actual="$(sed -n 's/^managed=//p' "$output")"
+  detected_binary="$(sed -n 's/^binary=//p' "$output")"
+  [ "$detected_binary" = "$tmpdir/bin/kache" ]
   [ "$actual" = "$expected" ] || {
     echo "FAIL: $name expected managed=$expected, got $actual" >&2
     exit 1

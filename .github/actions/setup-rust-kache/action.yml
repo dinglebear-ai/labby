@@ -73,14 +73,16 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        binary="${{ steps.kache-host.outputs.binary }}"
+        [ -x "$binary" ]
         {
-          echo "RUSTC_WRAPPER=kache"
-          echo "CARGO_BUILD_RUSTC_WRAPPER=kache"
+          echo "RUSTC_WRAPPER=$binary"
+          echo "CARGO_BUILD_RUSTC_WRAPPER=$binary"
         } >> "$GITHUB_ENV"
-        status="$(kache daemon status 2>&1)"
+        status="$("$binary" daemon status 2>&1)"
         grep -q "Daemon:" <<<"$status"
         ! grep -q "not running" <<<"$status"
-        stats="$(kache stats 2>&1)"
+        stats="$("$binary" stats 2>&1)"
         grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
 
     - name: Connect shared MinIO Kache
