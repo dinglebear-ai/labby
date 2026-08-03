@@ -18,8 +18,8 @@ use rmcp::model::{
     DiscoverResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams, GetTaskResult,
     InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerInfo,
-    SubscriptionFilter, UpdateTaskParams,
+    ReadResourceRequestParams, ReadResourceResponse, RequestMetaObject, ServerCapabilities,
+    ServerInfo, SubscriptionFilter, UpdateTaskParams,
 };
 use rmcp::service::{NotificationContext, RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -93,6 +93,15 @@ fn cancellation_token_from_meta(meta: &rmcp::model::NotificationMetaObject) -> O
         .0
         .get(MCP_RELAY_CANCELLATION_TOKEN_META_KEY)
         .and_then(serde_json::Value::as_str)
+}
+
+/// Restore the canonical wire metadata that rmcp places on the request context,
+/// while preserving metadata supplied by a direct typed-handler caller when the
+/// context carries no metadata of its own.
+fn restore_request_meta(typed: &mut Option<RequestMetaObject>, context: &RequestMetaObject) {
+    if !context.0.0.is_empty() || typed.is_none() {
+        *typed = Some(context.clone());
+    }
 }
 
 fn request_cancellation_key(
@@ -568,7 +577,7 @@ impl ServerHandler for LabMcpServer {
         mut request: CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, ErrorData> {
-        request.meta = Some(context.meta.clone());
+        restore_request_meta(&mut request.meta, &context.meta);
         Ok(provenance::stamp_complete_result(
             self.complete_impl(request, context).await?,
         ))
@@ -589,7 +598,7 @@ impl ServerHandler for LabMcpServer {
         mut request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, ErrorData> {
-        request.meta = Some(context.meta.clone());
+        restore_request_meta(&mut request.meta, &context.meta);
         Ok(provenance::stamp_get_prompt_response(
             self.get_prompt_impl(request, context).await?,
         ))
@@ -620,7 +629,7 @@ impl ServerHandler for LabMcpServer {
         mut request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        request.meta = Some(context.meta.clone());
+        restore_request_meta(&mut request.meta, &context.meta);
         let response = match self.read_resource_impl(request, context).await? {
             ReadResourceResponse::Complete(result) => result
                 .with_ttl_ms(0)
@@ -653,7 +662,7 @@ impl ServerHandler for LabMcpServer {
         // rmcp keeps deserialized wire metadata in RequestContext.extensions/meta
         // and intentionally leaves the typed params field empty. Restore the
         // canonical metadata before handing the envelope to proxy routing.
-        request.meta = Some(context.meta.clone());
+        restore_request_meta(&mut request.meta, &context.meta);
         Ok(provenance::stamp_call_tool_response(
             self.call_tool_response_impl(request, context).await?,
         ))
@@ -770,7 +779,7 @@ mod tests {
     use super::verify_upstream_subject_resolution_support;
     use super::{
         LabMcpServer, cancel_tracked_request_by_token, request_cancellation_key,
-        track_request_cancellation,
+        restore_request_meta, track_request_cancellation,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
@@ -800,6 +809,33 @@ mod tests {
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
         }
+    }
+
+    #[test]
+    fn typed_request_meta_survives_empty_context_at_handler_boundary() {
+        let mut typed = Some(rmcp::model::RequestMetaObject::new());
+        typed
+            .as_mut()
+            .expect("typed metadata")
+            .0
+            .0
+            .insert("typed.trace".to_string(), serde_json::json!("preserve-me"));
+        let empty_context = rmcp::model::RequestMetaObject::new();
+
+        restore_request_meta(&mut typed, &empty_context);
+
+        assert_eq!(
+            typed.as_ref().and_then(|meta| meta.0.0.get("typed.trace")),
+            Some(&serde_json::json!("preserve-me"))
+        );
+
+        let mut context = rmcp::model::RequestMetaObject::new();
+        context.0.0.insert(
+            "context.trace".to_string(),
+            serde_json::json!("replace-typed"),
+        );
+        restore_request_meta(&mut typed, &context);
+        assert_eq!(typed.as_ref(), Some(&context));
     }
 
     #[tokio::test]
