@@ -282,6 +282,22 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "Ubuntu 26.04 runners must use the image-provided Playwright browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));
+
+    for (job, next_job) in [("test", "test-fork"), ("test-fork", "test-windows")] {
+        let section = workflow
+            .split(&format!("  {job}:\n"))
+            .nth(1)
+            .and_then(|body| body.split(&format!("\n  {next_job}:")).next())
+            .unwrap_or_else(|| panic!("{job} job body"));
+        assert!(
+            section.contains("CARGO_BUILD_JOBS: \"1\""),
+            "{job} must serialize Cargo builds below the shared pool memory limit"
+        );
+        assert!(
+            section.contains("RUSTFLAGS: \"-C linker=clang -C link-arg=-fuse-ld=lld\""),
+            "{job} must use the lower-memory lld linker"
+        );
+    }
 }
 
 #[test]

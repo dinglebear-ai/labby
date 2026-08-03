@@ -615,6 +615,11 @@ jobs:
     # save/restore layer is needed.
     runs-on: ci-pool-rust
     timeout-minutes: 60
+    env:
+      # The all-features test graph links multiple large harnesses. Serializing
+      # Cargo builds and using lld keeps peak memory below the 8 GiB pool limit.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
       (
@@ -652,6 +657,10 @@ jobs:
     name: Test
     runs-on: ci-pool-rust
     timeout-minutes: 60
+    env:
+      # Match the internal-PR test job resource profile on the shared pool.
+      CARGO_BUILD_JOBS: "1"
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
