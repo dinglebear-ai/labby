@@ -48,9 +48,8 @@ impl IntoResponse for ApiError {
             "sync_in_progress" | "service_unavailable" | "provider_unavailable" => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
-            "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint" => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint"
+            | "tool_error" => StatusCode::UNPROCESSABLE_ENTITY,
             "relay_invalid_target" => StatusCode::UNPROCESSABLE_ENTITY,
             "relay_registry_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             "relay_forwarder_init_failed" => StatusCode::BAD_GATEWAY,
@@ -151,6 +150,12 @@ mod tests {
         })
         .into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn tool_error_maps_to_422_instead_of_bad_gateway() {
+        assert_eq!(status_for("tool_error"), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_ne!(status_for("tool_error"), StatusCode::BAD_GATEWAY);
     }
 
     #[test]

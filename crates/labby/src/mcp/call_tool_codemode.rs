@@ -9,17 +9,22 @@
 //! This branch logs via `tracing` directly (not `emit_dispatch_notification`)
 //! and fires lightweight catalog-change detection around the broker call.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use labby_codemode::CodeModeExecutedCall;
-use labby_codemode::{MAX_SOURCE_BYTES, SERVICE as CODE_MODE_SERVICE};
+use labby_codemode::error::ToolError as CodeModeToolError;
+use labby_codemode::{
+    CodeModeExecutedCall, CodeModeExecutionError, CodeModeExecutionResponse, MAX_SOURCE_BYTES,
+    SERVICE as CODE_MODE_SERVICE,
+};
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{CallToolResult, ContentBlock, JsonObject, MetaObject};
 use rmcp::service::RequestContext;
 use serde_json::Value;
+use tokio::sync::Notify;
 
 use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::dispatch::gateway::code_mode::{
@@ -33,15 +38,116 @@ use crate::mcp::result_format::{
 };
 use crate::mcp::server::LabMcpServer;
 
+type SharedCodeModeResult = Result<CodeModeExecutionResponse, CodeModeExecutionError>;
+
+struct InflightCodeModeExecution {
+    leader_execution_id: String,
+    result: Mutex<Option<SharedCodeModeResult>>,
+    notify: Notify,
+}
+
+static CODE_MODE_INFLIGHT: OnceLock<Mutex<HashMap<String, Arc<InflightCodeModeExecution>>>> =
+    OnceLock::new();
+
+fn code_mode_inflight() -> &'static Mutex<HashMap<String, Arc<InflightCodeModeExecution>>> {
+    CODE_MODE_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+enum InflightCodeModeRole {
+    Leader(CodeModeInflightLeader),
+    Follower(Arc<InflightCodeModeExecution>),
+}
+
+fn begin_code_mode_execution(key: String, execution_id: String) -> InflightCodeModeRole {
+    let mut inflight = code_mode_inflight()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = inflight.get(&key) {
+        return InflightCodeModeRole::Follower(Arc::clone(existing));
+    }
+    let entry = Arc::new(InflightCodeModeExecution {
+        leader_execution_id: execution_id,
+        result: Mutex::new(None),
+        notify: Notify::new(),
+    });
+    inflight.insert(key.clone(), Arc::clone(&entry));
+    InflightCodeModeRole::Leader(CodeModeInflightLeader {
+        key,
+        entry,
+        completed: false,
+    })
+}
+
+async fn await_code_mode_execution(entry: Arc<InflightCodeModeExecution>) -> SharedCodeModeResult {
+    loop {
+        // Register before checking the result so a completion between the check
+        // and await cannot be missed.
+        let notified = entry.notify.notified();
+        if let Some(result) = entry
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return result;
+        }
+        notified.await;
+    }
+}
+
+struct CodeModeInflightLeader {
+    key: String,
+    entry: Arc<InflightCodeModeExecution>,
+    completed: bool,
+}
+
+impl CodeModeInflightLeader {
+    fn complete(mut self, result: &SharedCodeModeResult) {
+        *self
+            .entry
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result.clone());
+        code_mode_inflight()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+        self.entry.notify.notify_waiters();
+        self.completed = true;
+    }
+}
+
+impl Drop for CodeModeInflightLeader {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let error = CodeModeExecutionError::from(CodeModeToolError::Sdk {
+            sdk_kind: "service_unavailable".to_string(),
+            message: "leading duplicate Code Mode execution was cancelled".to_string(),
+        });
+        *self
+            .entry
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(error));
+        code_mode_inflight()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+        self.entry.notify.notify_waiters();
+    }
+}
+
 struct StepBufferDropGuard {
-    manager: std::sync::Arc<labby_gateway::gateway::manager::GatewayManager>,
+    manager: Arc<labby_gateway::gateway::manager::GatewayManager>,
     execution_id: String,
     armed: bool,
 }
 
 impl StepBufferDropGuard {
     fn new(
-        manager: std::sync::Arc<labby_gateway::gateway::manager::GatewayManager>,
+        manager: Arc<labby_gateway::gateway::manager::GatewayManager>,
         execution_id: String,
     ) -> Self {
         Self {
@@ -160,7 +266,7 @@ Error handling:
 // To recover: const env: CodeModeError = JSON.parse(String(e.message));
 // Retry-safe:    rate_limited (honor retry_after_ms), timeout, network_error
 // Fix-and-retry: missing_param, invalid_param, validation_failed, confirmation_required
-// Terminal:      unknown_tool, unknown_action, auth_failed, server_error, internal_error
+// Terminal:      tool_error, unknown_tool, unknown_action, auth_failed, server_error, internal_error
 ```
 A failed callTool rejects only its own promise — the run continues, so catch it and \
 proceed. For catch-and-continue fan-out, prefer `Promise.allSettled` so every call \
@@ -414,7 +520,7 @@ impl LabMcpServer {
             .unwrap_or(0);
         let execution_id = format!("exec_{now_ms:016}_{}", ulid::Ulid::new());
         let mut step_buffer_guard =
-            StepBufferDropGuard::new(std::sync::Arc::clone(manager), execution_id.clone());
+            StepBufferDropGuard::new(Arc::clone(manager), execution_id.clone());
         let capability_filter_fingerprint = capability_filter.fingerprint();
         tracing::info!(
             surface = "mcp",
@@ -448,17 +554,47 @@ impl LabMcpServer {
 
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
         let before = self.snapshot_tool_catalog_for_request(context).await;
-        let mut response = match broker
-            .execute(
-                code,
-                caller,
-                self.code_mode_surface(),
-                config,
-                capability_filter,
-                Some(std::sync::Arc::<str>::from(execution_id.as_str())),
-            )
-            .await
-        {
+        let dedup_key = format!(
+            "{}|{}|{}|{}|{}",
+            self.route_scope.label(),
+            service,
+            actor_key.unwrap_or(subject.as_str()),
+            capability_filter_fingerprint,
+            code_hash,
+        );
+        let broker_result = match begin_code_mode_execution(dedup_key, execution_id.clone()) {
+            InflightCodeModeRole::Follower(entry) => {
+                tracing::info!(
+                    surface = "mcp",
+                    service = CODE_MODE_SERVICE,
+                    code_mode_tool = %service,
+                    action = "call_tool.deduplicate",
+                    subject,
+                    actor_key,
+                    actor_label = subject,
+                    agent_kind = "agent",
+                    code_hash = %code_hash,
+                    leader_execution_id = %entry.leader_execution_id,
+                    "joining identical in-flight Code Mode execution"
+                );
+                await_code_mode_execution(entry).await
+            }
+            InflightCodeModeRole::Leader(leader) => {
+                let result = broker
+                    .execute(
+                        code,
+                        caller,
+                        self.code_mode_surface(),
+                        config,
+                        capability_filter,
+                        Some(Arc::<str>::from(execution_id.as_str())),
+                    )
+                    .await;
+                leader.complete(&result);
+                result
+            }
+        };
+        let mut response = match broker_result {
             Ok(response) => {
                 let after = self.snapshot_tool_catalog_for_request(context).await;
                 self.notify_catalog_changes(after.changes_since(&before), SOURCE_MCP_CALL_CODEMODE)

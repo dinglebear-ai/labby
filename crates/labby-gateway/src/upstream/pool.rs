@@ -57,6 +57,7 @@ mod resources_list;
 mod resources_read;
 mod spawn_lock;
 mod stdio_stderr;
+mod stdio_transport;
 mod tasks;
 #[cfg(test)]
 mod testsupport;
@@ -126,6 +127,12 @@ pub struct UpstreamPool {
     /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
     /// independent schedules, but only a bounded number may probe concurrently.
     reprobe_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Per-upstream RPC bulkheads. Each upstream receives an independent
+    /// semaphore so one slow or reconnecting peer cannot absorb unbounded
+    /// concurrent retries.
+    call_semaphores: Arc<RwLock<HashMap<String, Arc<tokio::sync::Semaphore>>>>,
+    /// Permit count used when lazily creating a per-upstream bulkhead.
+    call_concurrency: usize,
     /// Per-upstream lazy connection gates to prevent duplicate cold starts.
     lazy_connect_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     /// Per-`(upstream, subject)` cached connections for the OAuth / subject-scoped
@@ -355,6 +362,8 @@ impl UpstreamPool {
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 upstream_discovery_concurrency(None),
             )),
+            call_semaphores: Arc::new(RwLock::new(HashMap::new())),
+            call_concurrency: helpers::upstream_call_concurrency(),
             lazy_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),
@@ -408,6 +417,60 @@ impl UpstreamPool {
     pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
         self
+    }
+
+    /// Override the per-upstream RPC concurrency bulkhead. Existing lazily
+    /// created semaphores are discarded so the new limit applies consistently.
+    #[must_use]
+    pub fn with_upstream_call_concurrency(mut self, limit: usize) -> Self {
+        self.call_concurrency = limit.clamp(1, 128);
+        self.call_semaphores = Arc::new(RwLock::new(HashMap::new()));
+        self
+    }
+
+    pub(super) async fn acquire_upstream_call_permit(
+        &self,
+        upstream_name: &str,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        let semaphore = if let Some(existing) = self.call_semaphores.read().await.get(upstream_name)
+        {
+            Arc::clone(existing)
+        } else {
+            let mut semaphores = self.call_semaphores.write().await;
+            Arc::clone(
+                semaphores
+                    .entry(upstream_name.to_string())
+                    .or_insert_with(|| {
+                        Arc::new(tokio::sync::Semaphore::new(self.call_concurrency))
+                    }),
+            )
+        };
+        semaphore
+            .acquire_owned()
+            .await
+            .map_err(|_| format!("upstream `{upstream_name}` concurrency gate was closed"))
+    }
+
+    /// Return the exact stdio child generation backing a pooled or
+    /// subject-scoped request. HTTP and in-process connections return `None`.
+    pub(super) async fn connection_generation(
+        &self,
+        upstream_name: &str,
+        subject: Option<&str>,
+    ) -> Option<u64> {
+        if let Some(subject) = subject {
+            return self
+                .subject_connections
+                .read()
+                .await
+                .get(&(upstream_name.to_string(), subject.to_string()))
+                .and_then(|entry| entry._connection.runtime.generation);
+        }
+        self.connections
+            .read()
+            .await
+            .get(upstream_name)
+            .and_then(|connection| connection.runtime.generation)
     }
 
     /// Set the deadline for relayed upstream tool calls (the elicitation-relay

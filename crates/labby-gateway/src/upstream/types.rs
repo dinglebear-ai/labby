@@ -10,8 +10,24 @@ use serde_json::Value;
 /// Number of consecutive failures before marking an upstream unhealthy.
 pub const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 
-/// Interval at which unhealthy upstreams are re-probed.
+/// Base interval before the first reprobe of an open circuit.
 pub const REPROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Maximum quarantine interval for a persistently broken upstream.
+pub const MAX_REPROBE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(30);
+
+/// Exponential quarantine delay for an open circuit. The threshold failure
+/// waits 30 seconds, then each additional failure doubles the delay up to 30
+/// minutes. This prevents permanently broken OAuth/SSH peers from being
+/// reprobed on every catalog request.
+#[must_use]
+pub fn reprobe_interval_for_failures(consecutive_failures: u32) -> std::time::Duration {
+    let exponent = consecutive_failures
+        .saturating_sub(CIRCUIT_BREAKER_THRESHOLD)
+        .min(16);
+    REPROBE_INTERVAL
+        .saturating_mul(1_u32 << exponent)
+        .min(MAX_REPROBE_INTERVAL)
+}
 
 /// A discovered upstream tool with its schema cached.
 #[derive(Debug, Clone)]
@@ -89,6 +105,10 @@ pub struct UpstreamRuntimeOwner {
 #[derive(Debug, Default)]
 pub struct UpstreamRuntimeMetadata {
     pub pid: Option<u32>,
+    /// Monotonic process generation for stdio-backed connections. Each respawn
+    /// receives a new value so exit logs and invalidated requests can be tied
+    /// to the exact child instance.
+    pub generation: Option<u64>,
     pub pgid: Option<u32>,
     /// Windows Job Object handle, stored as `isize` (Send/Sync-safe). `0`
     /// (the `#[derive(Default)]` value) means "no job". Non-zero only for
@@ -105,6 +125,7 @@ impl Clone for UpstreamRuntimeMetadata {
     fn clone(&self) -> Self {
         Self {
             pid: self.pid,
+            generation: self.generation,
             pgid: self.pgid,
             #[cfg(windows)]
             job_handle: 0,

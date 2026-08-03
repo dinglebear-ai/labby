@@ -632,16 +632,17 @@ fn code_mode_canonical_error_kind(s: &str) -> &'static str {
         "not_found" => "not_found",
         "rate_limited" => "rate_limited",
         "validation_failed" => "validation_failed",
-        "network_error" => "network_error",
-        "server_error" => "server_error",
-        "decode_error" => "decode_error",
-        "internal_error" => "internal_error",
-        "upstream_error" => "upstream_error",
+        // A tool-level MCP `isError` response proves the transport and MCP
+        // protocol are healthy. Infrastructure-looking kinds nested inside that
+        // response describe the tool execution, not Labby's upstream hop, and
+        // must therefore remain non-retryable.
+        "tool_error" | "network_error" | "server_error" | "decode_error" | "internal_error"
+        | "upstream_error" => "tool_error",
         "code_mode_timeout" => "code_mode_timeout",
         // `code_mode_fuel_exhausted` and any future upstream-local kinds are
-        // intentionally not passed through. They are upstream payloads, not
-        // host infrastructure failures.
-        _ => "upstream_error",
+        // intentionally not passed through. They are tool payloads, not host
+        // infrastructure failures.
+        _ => "tool_error",
     }
 }
 
@@ -649,19 +650,19 @@ fn code_mode_canonical_error_kind(s: &str) -> &'static str {
 fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String) {
     let Some(text) = text else {
         return (
-            "upstream_error",
-            "upstream returned a non-text error payload".to_string(),
+            "tool_error",
+            "upstream tool returned a non-text error payload".to_string(),
         );
     };
     let Ok(parsed) = serde_json::from_str::<Value>(text) else {
-        return ("upstream_error", text.to_string());
+        return ("tool_error", text.to_string());
     };
     let error_obj = parsed
         .get("error")
         .and_then(Value::as_object)
         .or_else(|| parsed.as_object());
     let Some(error_obj) = error_obj else {
-        return ("upstream_error", text.to_string());
+        return ("tool_error", text.to_string());
     };
     let raw_kind = error_obj
         .get("kind")
@@ -975,16 +976,16 @@ mod tests {
     #[test]
     fn preserves_unstructured_tool_error_messages() {
         let (kind, message) = code_mode_upstream_error_info(Some("plain upstream failure"));
-        assert_eq!(kind, "upstream_error");
+        assert_eq!(kind, "tool_error");
         assert_eq!(message, "plain upstream failure");
 
         let (kind, message) = code_mode_upstream_error_info(None);
-        assert_eq!(kind, "upstream_error");
-        assert_eq!(message, "upstream returned a non-text error payload");
+        assert_eq!(kind, "tool_error");
+        assert_eq!(message, "upstream tool returned a non-text error payload");
     }
 
     #[test]
-    fn unknown_structured_error_kinds_are_upstream_errors_without_health_failure() {
+    fn unknown_structured_error_kinds_are_tool_errors_without_health_failure() {
         let payload = serde_json::json!({
             "kind": "surprise_kind",
             "message": "new kind"
@@ -993,8 +994,30 @@ mod tests {
 
         let (kind, message) = code_mode_upstream_error_info(Some(&payload));
 
-        assert_eq!(kind, "upstream_error");
+        assert_eq!(kind, "tool_error");
         assert_eq!(message, "new kind");
+    }
+
+    #[test]
+    fn infrastructure_named_tool_failures_are_non_retryable_tool_errors() {
+        for raw_kind in [
+            "upstream_error",
+            "network_error",
+            "server_error",
+            "decode_error",
+            "internal_error",
+        ] {
+            let payload = serde_json::json!({
+                "kind": raw_kind,
+                "message": "Exit code 7\nlabby-classification-probe",
+            })
+            .to_string();
+
+            let (kind, message) = code_mode_upstream_error_info(Some(&payload));
+
+            assert_eq!(kind, "tool_error");
+            assert_eq!(message, "Exit code 7\nlabby-classification-probe");
+        }
     }
 
     #[test]

@@ -31,11 +31,13 @@ impl UpstreamPool {
         let mut catalog = self.catalog.write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
             let error = error.into();
-            let new_count = match entry.health_for(capability) {
+            let previous = entry.health_for(capability);
+            let was_open = previous.is_open();
+            let new_count = match previous {
                 UpstreamHealth::Healthy => 1,
                 UpstreamHealth::Unhealthy {
                     consecutive_failures,
-                } => consecutive_failures + 1,
+                } => consecutive_failures.saturating_add(1),
             };
             entry.set_health_for(
                 capability,
@@ -43,17 +45,30 @@ impl UpstreamPool {
                     consecutive_failures: new_count,
                 },
             );
-            if entry.unhealthy_since_for(capability).is_none() {
-                entry.set_unhealthy_since_for(capability, Some(Instant::now()));
-            }
+            // Reset the quarantine clock after every failed reprobe. Keeping the
+            // original failure timestamp made an open circuit immediately due
+            // forever after its first 30 seconds.
+            entry.set_unhealthy_since_for(capability, Some(Instant::now()));
             entry.set_last_error_for(capability, Some(error.clone()));
-            if new_count >= types::CIRCUIT_BREAKER_THRESHOLD {
+            if !was_open && new_count >= types::CIRCUIT_BREAKER_THRESHOLD {
+                let retry_after = types::reprobe_interval_for_failures(new_count);
                 tracing::warn!(
                     upstream = %upstream_name,
                     capability = ?capability,
                     consecutive_failures = new_count,
+                    retry_after_ms = retry_after.as_millis(),
                     error = %error,
-                    "circuit breaker open — upstream excluded from capability listing"
+                    "circuit breaker open — upstream quarantined"
+                );
+            } else if new_count >= types::CIRCUIT_BREAKER_THRESHOLD {
+                let retry_after = types::reprobe_interval_for_failures(new_count);
+                tracing::debug!(
+                    upstream = %upstream_name,
+                    capability = ?capability,
+                    consecutive_failures = new_count,
+                    retry_after_ms = retry_after.as_millis(),
+                    error = %error,
+                    "open circuit reprobe failed; quarantine extended"
                 );
             }
         }
@@ -128,10 +143,13 @@ impl UpstreamPool {
     ) -> bool {
         let catalog = self.catalog.read().await;
         if let Some(entry) = catalog.get(upstream_name)
-            && entry.health_for(capability).is_open()
+            && let UpstreamHealth::Unhealthy {
+                consecutive_failures,
+            } = entry.health_for(capability)
+            && consecutive_failures >= types::CIRCUIT_BREAKER_THRESHOLD
             && let Some(since) = entry.unhealthy_since_for(capability)
         {
-            return since.elapsed() >= types::REPROBE_INTERVAL;
+            return since.elapsed() >= types::reprobe_interval_for_failures(consecutive_failures);
         }
         false
     }
@@ -328,5 +346,92 @@ mod tests {
         assert!(!recovered.is_open());
         // Last-error and unhealthy-since are cleared on recovery.
         assert_eq!(pool.upstream_tool_last_error("github").await, None);
+    }
+
+    #[test]
+    fn reprobe_quarantine_backs_off_exponentially_and_caps() {
+        assert_eq!(
+            types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD),
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(
+            types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD + 1),
+            std::time::Duration::from_secs(60)
+        );
+        assert_eq!(
+            types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD + 2),
+            std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            types::reprobe_interval_for_failures(u32::MAX),
+            types::MAX_REPROBE_INTERVAL
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_reprobe_resets_and_extends_quarantine_clock() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("broken");
+        let entry = healthy_in_process_entry(Arc::clone(&upstream_name), HashMap::new());
+        pool.catalog
+            .write()
+            .await
+            .insert("broken".to_string(), entry);
+
+        for _ in 0..types::CIRCUIT_BREAKER_THRESHOLD {
+            pool.record_failure_for("broken", UpstreamCapability::Tools, "down")
+                .await;
+        }
+        {
+            let mut catalog = pool.catalog.write().await;
+            let entry = catalog.get_mut("broken").unwrap();
+            entry.tool_unhealthy_since = Some(
+                Instant::now()
+                    - types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD),
+            );
+        }
+        assert!(pool.should_reprobe("broken").await);
+
+        pool.record_failure_for("broken", UpstreamCapability::Tools, "still down")
+            .await;
+
+        assert!(
+            !pool.should_reprobe("broken").await,
+            "a failed reprobe must start a fresh, longer quarantine window"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_upstream_bulkhead_is_independent_and_bounded() {
+        let pool = UpstreamPool::new().with_upstream_call_concurrency(1);
+        let alpha = pool.acquire_upstream_call_permit("alpha").await.unwrap();
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                pool.acquire_upstream_call_permit("alpha")
+            )
+            .await
+            .is_err(),
+            "a second call to the same upstream must wait for its permit"
+        );
+
+        let beta = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            pool.acquire_upstream_call_permit("beta"),
+        )
+        .await
+        .expect("another upstream has an independent bulkhead")
+        .unwrap();
+        drop(beta);
+        drop(alpha);
+
+        let _permit = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            pool.acquire_upstream_call_permit("alpha"),
+        )
+        .await
+        .expect("released permit becomes available")
+        .unwrap();
     }
 }

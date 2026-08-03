@@ -58,6 +58,10 @@ pub(super) const IN_PROCESS_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15
 /// can fan out into several child processes, so unbounded connection attempts
 /// can exhaust the container PID limit before any single upstream is unhealthy.
 pub(super) const DEFAULT_UPSTREAM_DISCOVERY_CONCURRENCY: usize = 3;
+/// Default maximum concurrent RPCs admitted to any one upstream. This is a
+/// per-upstream bulkhead: a retry storm against one degraded peer cannot consume
+/// every gateway task or flood a newly reconnected stdio transport.
+pub(super) const DEFAULT_UPSTREAM_CALL_CONCURRENCY: usize = 8;
 /// Per-request timeout for upstream tool/resource/prompt RPCs.
 pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Deadline for a *relayed* upstream tool call (the elicitation-relay path).
@@ -97,6 +101,14 @@ pub(super) const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
 pub(super) const IN_PROCESS_PEER_BUFFER_BYTES: usize = 256 * 1024;
 pub(super) const AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR: u32 = 5;
+
+pub(super) fn upstream_call_concurrency() -> usize {
+    std::env::var("LABBY_GW_UPSTREAM_MAX_IN_FLIGHT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_UPSTREAM_CALL_CONCURRENCY)
+        .clamp(1, 128)
+}
 
 pub fn in_process_upstream_name(service_name: &str) -> String {
     format!("__in_process__{service_name}")
