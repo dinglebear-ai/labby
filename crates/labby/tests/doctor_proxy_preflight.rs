@@ -22,23 +22,29 @@ fn write_config(home: &Path, body: &str) {
 
 fn run_json(command: &mut Command) -> (Output, Value) {
     let output = command.output().expect("run labby doctor proxy");
-    let report = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "doctor output was not JSON: {error}; stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    });
+    let report = serde_json::from_slice(&output.stdout);
+    assert!(
+        report.is_ok(),
+        "doctor output was not JSON: {:?}; stdout={}; stderr={}",
+        report.as_ref().err(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = match report {
+        Ok(report) => report,
+        Err(_) => Value::Null,
+    };
     (output, report)
 }
 
 fn finding<'a>(report: &'a Value, check: &str) -> &'a Value {
-    report["findings"]
+    let finding = report["findings"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|finding| finding["check"] == check)
-        .unwrap_or_else(|| panic!("missing finding {check}: {report}"))
+        .find(|finding| finding["check"] == check);
+    assert!(finding.is_some(), "missing finding {check}: {report}");
+    finding.unwrap_or(report)
 }
 
 fn assert_severity(report: &Value, check: &str, severity: &str) {
@@ -433,13 +439,18 @@ async fn oauth_doctor(home: &Path, server: &MockServer) -> (Output, Value) {
         .output()
         .await
         .unwrap();
-    let report = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "oauth doctor output was not JSON: {error}; stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    });
+    let report = serde_json::from_slice(&output.stdout);
+    assert!(
+        report.is_ok(),
+        "oauth doctor output was not JSON: {:?}; stdout={}; stderr={}",
+        report.as_ref().err(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = match report {
+        Ok(report) => report,
+        Err(_) => Value::Null,
+    };
     (output, report)
 }
 
