@@ -73,6 +73,20 @@ impl UpstreamPool {
         self.publish_subscribable_resource_snapshot().await;
     }
 
+    async fn record_subscription_resources(&self, upstream: &str, accepted: &SubscriptionFilter) {
+        let accepted_resources = accepted
+            .resource_subscriptions
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        self.subscription_resources
+            .write()
+            .await
+            .insert(upstream.to_string(), accepted_resources);
+        self.publish_subscribable_resource_snapshot().await;
+    }
+
     async fn refresh_subscription_tools(
         &self,
         upstream: &str,
@@ -164,42 +178,79 @@ impl UpstreamPool {
             .write()
             .await
             .insert(upstream.to_string(), cancel.clone());
+
+        // Publish the initial acknowledgement before discovery returns. An
+        // outer Labby may immediately open its own subscription after listing
+        // resources; deferring this handshake to the background creates a
+        // multi-hop race where the middle gateway temporarily rejects an exact
+        // resource URI that its leaf has already accepted.
+        let initial_established = tokio::select! {
+            () = cancel.cancelled() => return,
+            result = tokio::time::timeout(
+                DISCOVERY_TIMEOUT,
+                peer.listen(requested.clone()),
+            ) => result,
+        };
+        let initial_subscription = match initial_established {
+            Ok(Ok(subscription)) => {
+                self.record_subscription_resources(upstream, subscription.acknowledged())
+                    .await;
+                Some(subscription)
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    upstream,
+                    error = %error,
+                    "failed to establish initial upstream subscriptions/listen stream"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    upstream,
+                    timeout_secs = DISCOVERY_TIMEOUT.as_secs(),
+                    "timed out establishing initial upstream subscriptions/listen stream"
+                );
+                None
+            }
+        };
+
         let pool = self.clone();
         let upstream = upstream.to_string();
         tokio::spawn(async move {
+            let mut initial_subscription = initial_subscription;
             loop {
-                let established = tokio::select! {
-                    () = cancel.cancelled() => break,
-                    result = peer.listen(requested.clone()) => result,
-                };
-                let mut subscription = match established {
-                    Ok(subscription) => subscription,
-                    Err(error) => {
-                        tracing::warn!(
-                            upstream = %upstream,
-                            error = %error,
-                            "failed to establish upstream subscriptions/listen stream"
-                        );
-                        pool.clear_subscription_resources(&upstream).await;
-                        tokio::select! {
+                let (mut subscription, publish_acknowledgement) = match initial_subscription.take()
+                {
+                    Some(subscription) => (subscription, false),
+                    None => {
+                        let established = tokio::select! {
                             () = cancel.cancelled() => break,
-                            () = tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY) => continue,
-                        }
+                            result = peer.listen(requested.clone()) => result,
+                        };
+                        let subscription = match established {
+                            Ok(subscription) => subscription,
+                            Err(error) => {
+                                tracing::warn!(
+                                    upstream = %upstream,
+                                    error = %error,
+                                    "failed to establish upstream subscriptions/listen stream"
+                                );
+                                pool.clear_subscription_resources(&upstream).await;
+                                tokio::select! {
+                                    () = cancel.cancelled() => break,
+                                    () = tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY) => continue,
+                                }
+                            }
+                        };
+                        (subscription, true)
                     }
                 };
 
-                let accepted_resources = subscription
-                    .acknowledged()
-                    .resource_subscriptions
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect::<BTreeSet<_>>();
-                pool.subscription_resources
-                    .write()
-                    .await
-                    .insert(upstream.clone(), accepted_resources);
-                pool.publish_subscribable_resource_snapshot().await;
+                if publish_acknowledgement {
+                    pool.record_subscription_resources(&upstream, subscription.acknowledged())
+                        .await;
+                }
 
                 loop {
                     let next = tokio::select! {
