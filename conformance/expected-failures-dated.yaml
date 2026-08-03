@@ -1,13 +1,4 @@
-# Known upstream rust-sdk fixture gap for rmcp 3.1.0 and current main
-# commit 830e088d733c7964c806a2305760dd8deb30dff9.
-#
-# The server-stateless scenario currently fails three SEP-2575 checks:
-# - missing clientInfo is accepted instead of returning -32602
-# - that invalid request returns HTTP 200 instead of HTTP 400
-# - the discover fixture omits mandatory setup fields
-#
-# The conformance runner is strict: an unlisted failure fails CI, and this
-# entry becomes stale and fails CI as soon as the upstream scenario passes.
-server:
-  - server-stateless
+# The conformance runner is strict: an unlisted failure fails CI, and any
+# expected failure that starts passing also fails CI.
+server: []
 client: []
