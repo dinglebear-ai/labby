@@ -120,11 +120,16 @@ RUN find crates -type f -exec touch {} + \
 #       builds — floating tag resolves a fresh image per build.
 FROM debian:trixie-slim AS runtime
 
+ARG NPM_VERSION="12.0.2"
+ARG NPM_SHA512="b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
+
 LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
 
 # ca-certificates: reqwest uses rustls for TLS but still validates against the
 # system CA bundle — required for outbound HTTPS calls.
 # git remains available for operator-managed stdio upstreams and setup workflows.
+# NodeSource's bundled npm carries vulnerable nested tar/undici copies.
+# Replace it from a digest-pinned tarball without asking npm to overwrite itself.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git gnupg \
  && mkdir -p /etc/apt/keyrings \
@@ -134,6 +139,19 @@ RUN apt-get update \
     > /etc/apt/sources.list.d/nodesource.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends nodejs zsh \
+ && npm_root="$(npm root --global)" \
+ && curl -fsSLo /tmp/npm.tgz "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz" \
+ && echo "${NPM_SHA512}  /tmp/npm.tgz" | sha512sum --check --strict \
+ && mkdir -p /tmp/npm-package \
+ && tar -xzf /tmp/npm.tgz --strip-components=1 -C /tmp/npm-package \
+ && rm -rf "${npm_root}/npm" \
+ && mv /tmp/npm-package "${npm_root}/npm" \
+ && ln -sf "${npm_root}/npm/bin/npm-cli.js" /usr/local/bin/npm \
+ && ln -sf "${npm_root}/npm/bin/npx-cli.js" /usr/local/bin/npx \
+ && test "$(npm --version)" = "${NPM_VERSION}" \
+ && test "$(node -p "require('${npm_root}/npm/node_modules/tar/package.json').version")" = "7.5.19" \
+ && test "$(node -p "require('${npm_root}/npm/node_modules/undici/package.json').version")" = "6.27.0" \
+ && rm -f /tmp/npm.tgz \
  && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs used by stdio MCP servers that shell out to provider tools.
