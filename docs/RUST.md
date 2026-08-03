@@ -1,7 +1,7 @@
 ---
 title: "Rust Build Setup"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-02"
 doc_type: "guide"
 status: "active"
 owner: "lab"
@@ -25,7 +25,7 @@ The canonical reference is [soma/docs/RUST.md](https://github.com/dinglebear-ai/
 - Rust stable ≥ 1.86 (`rustup update stable`)
 - `clang` and `mold` for fast Linux builds: `apt install clang mold`
 - `just` command runner (optional): `cargo install just`
-- `sccache` (optional, if using distributed build caching): `cargo install sccache`
+- `kache` (optional compiler cache; installed through the managed mise config)
 
 ## Global Cargo config
 
@@ -42,67 +42,42 @@ This repo's `.cargo/config.toml` has one intentional override:
 incremental = false
 ```
 
-**Why:** `lab` supports sccache for distributed build caching. sccache and
-Rust incremental compilation are mutually exclusive — sccache cannot cache
-incremental artifacts because they are non-deterministic. The global
-`~/.cargo/config.toml` sets `incremental = true` for normal dev; this file
-overrides it so developers who have sccache configured get correct caching
-behaviour.
+**Why:** compiler caches cannot safely reuse incremental artifacts. The managed
+host config already disables incremental compilation, and this repo repeats the
+invariant so builds remain cache-friendly on other developer machines.
 
 Developers without sccache take no penalty from this override — Rust simply
 recompiles changed crates in full rather than using incremental fragments.
 
-This repo has no xtask crate, so no `[alias]` section is needed.
+The host Cargo configuration owns compiler caching. This repository deliberately
+does not set `rustc-wrapper`, and building never installs or refreshes a live
+binary as a compiler side effect. Use `just build-release`, `just install`, or
+`just host-sync` when an installed binary should change.
 
-## sccache troubleshooting (cache "poisoning")
+## Kache troubleshooting
 
-sccache is optional but, when configured here, runs as a **long-lived systemd
-user service** (`~/.config/systemd/user/sccache.service`, `Restart=always`)
-backed by a **mise-pinned binary** behind the stable symlink `~/.local/sccache`.
-The cargo `rustc-wrapper` (`~/.local/bin/sccache-wrapper`) resolves the active
-rustup toolchain before handing off to sccache.
+On managed hosts, `~/.cargo/config.toml` sets `rustc-wrapper = "kache"`. Kache
+is content-addressed and fail-open: a cache problem can make a build slow without
+making it fail, so a green build is not proof that the cache is healthy.
 
 **Symptom — "poisoning":** builds produce stale or wrong artifacts (code you
 deleted still seems present, link errors that don't match source, nondeterministic
 failures). The cache is returning artifacts that don't match the current inputs.
 
-**Likely causes, highest first:**
-
-1. **Distributed compilation across mismatched machines.** If `~/.config/sccache/config`
-   has a `[dist]` section, compiles are farmed to remote build servers. Artifacts
-   built on a remote host with a different toolchain/glibc/linker than the local
-   host, then cached and linked locally, are the prime poisoning vector — made
-   worse when the dist transport is flaky (e.g. self-signed-cert TLS failures cause
-   an inconsistent mix of local and remote artifacts). Check the error log for
-   `Could not perform distributed compile` / `certificate verify failed`. Fix:
-   either disable `[dist]` (local-only) or ensure every scheduler/build-server/client
-   runs an **identical** pinned toolchain with valid certs.
-2. **Long-lived daemon + swapped binary.** The systemd daemon does not reload when
-   the mise-pinned sccache binary changes. After `mise upgrade`/re-pin, the running
-   daemon and the client binary can disagree on cache format. Always
-   `just sccache-restart` after the binary changes.
-3. **On-disk corruption** (interrupted writes, disk pressure) — least likely;
-   only this one needs a cache wipe.
-
-**Recovery — tiered, least-destructive first:**
+Inspect and repair it directly:
 
 ```bash
-just sccache-doctor      # diagnose: daemon health, dist config, errors, stats
-just sccache-restart     # fixes daemon-state/version-skew causes (no wipe)
-# only if restart doesn't clear it — wipe on-disk artifacts:
-systemctl --user stop sccache.service && rm -rf ~/.cache/sccache && systemctl --user start sccache.service
-SCCACHE_RECACHE=1 cargo build   # force-overwrite suspect entries without a full wipe
+kache doctor
+kache doctor --verify --repair
+kache why-miss <crate>
+kache stats
 ```
 
 **Bypass for a single build** (e.g. release/CI-parity verification you don't want
 to trust the cache for):
 
 ```bash
-cargo build --workspace --all-features --config 'build.rustc-wrapper=""'
+KACHE_DISABLED=1 cargo build --workspace --all-features
+# or bypass every configured wrapper:
+RUSTC_WRAPPER="" cargo build --workspace --all-features
 ```
-
-**Logging:** the daemon writes to `~/.local/state/sccache/error.log`
-(`SCCACHE_ERROR_LOG` in the unit). Keep `SCCACHE_LOG=warn` — a `debug` level turns
-this file into multi-GB noise that buries real errors and grows unbounded. The
-`sccache.service.d/` drop-in directory holds level overrides; remove the debug
-drop-in when you're done debugging.

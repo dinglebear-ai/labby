@@ -17,11 +17,8 @@ env:
   RUSTFLAGS: -D warnings
   KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
   KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
-  # .cargo/config.toml sets rustc-wrapper = "scripts/cargo-rustc-wrapper" for
-  # local dev. The wrapper is a shell script: Windows runners cannot exec it
-  # (os error 193), so clear
-  # ambient wrappers and override Cargo's build.rustc-wrapper for all release
-  # jobs (mirrors ci.yml).
+  # Release jobs must not inherit a host-level compiler wrapper. Cache-enabled
+  # jobs configure kache explicitly through setup-rust-kache (mirrors ci.yml).
   RUSTC_WRAPPER: ""
   CARGO_BUILD_RUSTC_WRAPPER: ""
 jobs:
@@ -396,10 +393,12 @@ jobs:
         if: steps.mcp-version.outputs.exists != 'true'
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+          MCP_REGISTRY_DOMAIN: ${{ vars.MCP_REGISTRY_DOMAIN }}
         run: |
           set -euo pipefail
           test -n "$MCP_PRIVATE_KEY"
-          ./mcp-publisher login dns --domain dinglebear.ai --private-key "$MCP_PRIVATE_KEY"
+          test "$MCP_REGISTRY_DOMAIN" = dinglebear.ai
+          ./mcp-publisher login dns --domain "$MCP_REGISTRY_DOMAIN" --private-key "$MCP_PRIVATE_KEY"
           ./mcp-publisher publish server.json
       - name: Roll back partial publication
         if: failure()

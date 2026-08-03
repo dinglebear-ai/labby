@@ -344,7 +344,7 @@ All formatting lives in `crates/labby/src/output.rs`. `labby-apis` types are pur
 just check          # cargo check --workspace --all-features
 just test           # cargo nextest run --workspace --all-features
 just test-integration # nextest --run-ignored ignored-only (needs live services)
-just lint           # skill-drift + cargo-wrapper smoke, then clippy -D warnings + fmt --check
+just lint           # skill drift + toolchain sync, then clippy -D warnings + fmt --check
 just deny           # cargo deny check
 just build          # cargo build --workspace --all-features --profile release-fast
 just build-release  # release build + install to bin/labby + symlink ~/.local/bin/labby
@@ -363,7 +363,7 @@ just mcp-token      # rotate LABBY_MCP_HTTP_TOKEN in ~/.labby/.env
 rather than a debug build — run `cargo build --workspace --all-features` directly
 when you need debug assertions and full unwinding. `just lint` is a superset of
 clippy+fmt: it also runs `plugins/scripts/check-dozzle-skill` (skill drift) and
-`scripts/test-cargo-rustc-wrapper.sh`, so a bare clippy run is not equivalent.
+the Rust toolchain synchronization check, so a bare clippy run is not equivalent.
 
 Generated artifacts under `docs/generated/` (service catalog, action catalog,
 env reference, API routes, OpenAPI, feature matrix, MCP help, CLI help) are

@@ -914,6 +914,13 @@ jobs:
           test -f apps/gateway-admin/package.json
           grep -Fq 'FROM rust:' config/Dockerfile
           grep -Fq 'COPY apps/gateway-admin/out' config/Dockerfile
+          grep -Fq 'ARG NPM_VERSION="12.0.2"' config/Dockerfile
+          grep -Fq 'ARG NPM_SHA512="b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"' config/Dockerfile
+          grep -Fq 'registry.npmjs.org/npm/-/npm-' config/Dockerfile
+          grep -Fq 'tar/package.json' config/Dockerfile
+          grep -Fq 'undici/package.json' config/Dockerfile
+          grep -Fq '7.5.19' config/Dockerfile
+          grep -Fq '6.27.0' config/Dockerfile
           grep -Fq 'HEALTHCHECK' config/Dockerfile
 
   palette-web:
@@ -982,10 +989,8 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
-    # GitHub-hosted job: neutralize the repo's .cargo/config.toml
-    # `rustc-wrapper = scripts/cargo-rustc-wrapper` shim, which Windows runners
-    # cannot exec (os error 193). kache jobs override this via setup-rust-kache;
-    # this hosted job keeps the empty-wrapper disabler at job scope.
+    # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
+    # configure kache explicitly through setup-rust-kache.
     env:
       RUSTC_WRAPPER: ""
       CARGO_BUILD_RUSTC_WRAPPER: ""
