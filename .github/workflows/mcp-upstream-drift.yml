@@ -22,13 +22,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Test ownership mapping
-        run: python -m unittest scripts/ci/test_mcp_upstream_drift.py
+        run: python3 -m unittest scripts/ci/test_mcp_upstream_drift.py
       - name: Compare pinned MCP and rmcp baselines
         id: drift
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
-          python scripts/ci/mcp_upstream_drift.py
+          python3 scripts/ci/mcp_upstream_drift.py
           --github-output "$GITHUB_OUTPUT"
       - name: Upload actionable report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
