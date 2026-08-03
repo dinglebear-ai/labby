@@ -1481,11 +1481,16 @@ mod tests {
                 .env(CHILD_ENV, "1")
                 .output()
                 .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success(),
                 "isolated callback log-capture test failed: stdout={} stderr={}",
-                String::from_utf8_lossy(&output.stdout),
+                stdout,
                 String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains("running 1 test"),
+                "isolated callback log-capture test did not execute its exact child: {stdout}"
             );
             return;
         }
@@ -1633,11 +1638,16 @@ mod tests {
                 .env(CHILD_ENV, "1")
                 .output()
                 .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success(),
                 "isolated log-capture test failed: stdout={} stderr={}",
-                String::from_utf8_lossy(&output.stdout),
+                stdout,
                 String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains("running 1 test"),
+                "isolated log-capture test did not execute its exact child: {stdout}"
             );
             return;
         }
