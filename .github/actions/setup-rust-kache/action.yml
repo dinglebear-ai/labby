@@ -59,10 +59,37 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
+    - name: Detect persistent host Kache
+      id: kache-host
+      if: inputs.enable-cache == 'true' && runner.os == 'Linux'
+      shell: bash
+      run: "$GITHUB_ACTION_PATH/detect-persistent-host.sh"
+
+    - name: Reuse persistent host Kache
+      if: >-
+        inputs.enable-cache == 'true' &&
+        runner.os == 'Linux' &&
+        steps.kache-host.outputs.managed == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        binary="${{ steps.kache-host.outputs.binary }}"
+        [ -x "$binary" ]
+        {
+          echo "RUSTC_WRAPPER=$binary"
+          echo "CARGO_BUILD_RUSTC_WRAPPER=$binary"
+        } >> "$GITHUB_ENV"
+        status="$("$binary" daemon status 2>&1)"
+        grep -q "Daemon:" <<<"$status"
+        ! grep -q "not running" <<<"$status"
+        stats="$("$binary" stats 2>&1)"
+        grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
+
     - name: Connect shared MinIO Kache
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
+        steps.kache-host.outputs.managed != 'true' &&
         env.KACHE_S3_ACCESS_KEY != '' &&
         env.KACHE_S3_SECRET_KEY != ''
       uses: kunobi-ninja/kache-action@a257c055543c2840700a9bbca8f9c3094a421b1b
@@ -84,8 +111,13 @@ runs:
       if: >-
         inputs.enable-cache != 'true' ||
         runner.os != 'Linux' ||
-        env.KACHE_S3_ACCESS_KEY == '' ||
-        env.KACHE_S3_SECRET_KEY == ''
+        (
+          steps.kache-host.outputs.managed != 'true' &&
+          (
+            env.KACHE_S3_ACCESS_KEY == '' ||
+            env.KACHE_S3_SECRET_KEY == ''
+          )
+        )
       shell: bash
       run: |
         {
@@ -97,8 +129,13 @@ runs:
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
-        env.KACHE_S3_ACCESS_KEY != '' &&
-        env.KACHE_S3_SECRET_KEY != ''
+        (
+          steps.kache-host.outputs.managed == 'true' ||
+          (
+            env.KACHE_S3_ACCESS_KEY != '' &&
+            env.KACHE_S3_SECRET_KEY != ''
+          )
+        )
       shell: bash
       run: |
         kache --version

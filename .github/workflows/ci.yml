@@ -287,6 +287,8 @@ jobs:
         run: bash scripts/check-version-sync.sh
       - name: Check Rust toolchain sync
         run: bash scripts/check-rust-toolchain-sync.sh
+      - name: Check persistent-host Kache action contract
+        run: bash scripts/check-kache-persistent-host-action.sh
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
         with:
