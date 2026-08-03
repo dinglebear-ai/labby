@@ -103,10 +103,24 @@ require_present() {
   fi
 }
 
+require_absent() {
+  local pattern="$1" file="$2" message="$3"
+  if [[ -f "$file" ]] && grep -qE -- "$pattern" "$file"; then
+    printf 'retired-feature guard: %s\n' "$message" >&2
+    failed=1
+  fi
+}
+
 require_present 'io\.modelcontextprotocol\.registry/publisher-provided' server.json \
   'server.json no longer publishes Labby to the official MCP Registry'
 require_present 'mcp-publisher' .github/workflows/release.yml \
   'MCP Registry publication workflow is missing'
+require_present 'MCP_REGISTRY_DOMAIN:.*vars\.MCP_REGISTRY_DOMAIN' .github/workflows/release.yml \
+  'MCP Registry publication no longer uses the canonical repository domain variable'
+require_present 'test.*MCP_REGISTRY_DOMAIN.*dinglebear\.ai' .github/workflows/release.yml \
+  'MCP Registry publication no longer enforces dinglebear.ai ownership'
+require_absent '--domain[[:space:]]+tootie\.tv' .github/workflows/release.yml \
+  'MCP Registry publication must not authenticate with the homelab tootie.tv domain'
 
 if (( failed != 0 )); then
   exit 1
