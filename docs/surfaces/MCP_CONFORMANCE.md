@@ -66,10 +66,14 @@ page.
 | Tools | 75 late-page tools plus an MRTR tool survive both gateways |
 | Tool calls | A late-page tool executes through root and middle with its arguments intact |
 | MRTR | `input_required` remains first-class through both gateways |
+| Tasks | Create, get, update, and cancel route through both gateways; gateway IDs remain stable and task-status notifications are translated |
+| Progress | Progress tokens and messages survive both gateway hops |
+| Cancellation | A downstream cancellation traverses root -> middle -> leaf, where the leaf observes it |
 | Prompts | 70 prompts aggregate; a late-page prompt can be fetched |
 | Resources | 70 resources aggregate; nested gateway URIs remain routable on read |
 | Resource templates | 70 templates aggregate without flattening nested gateway namespaces |
 | Completion | Completion against a nested resource template reaches the leaf |
+| Subscriptions | Tool, prompt, and resource list changes plus an exact resource update cross both gateways; re-listing exposes the dynamically added catalog entries |
 | Provenance | Labby stamps the responding server while preserving leaf identity and custom metadata |
 
 The driver discovered and now guards a critical namespace rule: an upstream
@@ -131,7 +135,20 @@ Labby establishes upstream `subscriptions/listen` streams, consumes list and
 resource updates, and publishes normalized events to downstream subscription
 sinks. Downstream acknowledgement is filtered to notification categories and
 resource URIs Labby can actually deliver. Protected-route scope remains applied
-when notifications fan out.
+when notifications fan out. A tool-list change first re-lists the exact named
+upstream and atomically replaces that upstream's cached tools before peer-visible
+contracts are evaluated. Both long-lived subscription streams and request-scoped
+relay connections publish through this refresh path.
+
+### Multi-hop cancellation
+
+Stateless HTTP sessions cannot use transport-local request IDs to correlate a
+cancellation reliably across gateway hops. Labby therefore attaches an opaque
+relay token to the proxied request and sends an acknowledgement-bearing custom
+JSON-RPC request using `MCP_RELAY_CANCELLATION_REQUEST_METHOD`. A negative
+acknowledgement is retried within a bounded delivery window after the upstream
+request ID is published. Standard MCP cancellation remains the compatibility
+fallback for peers that do not understand the relay request.
 
 ### OAuth extensions and scope step-up
 

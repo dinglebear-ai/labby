@@ -2,7 +2,7 @@
 
 Original audit: 2026-07-31
 
-Updated closeout: 2026-08-01
+Updated closeout: 2026-08-02
 
 ## Anchors
 
@@ -119,27 +119,26 @@ Completed during implementation:
 - client extensions: 17 passed; 11 failures matched four explicit SDK-owned scenarios
 
 The process driver covers modern discovery, late-page tools, tool execution,
-MRTR, prompts, resources, templates, completion, authentication, and provenance.
-It runs in `scripts/ci/mcp-conformance.sh` before the pinned rmcp fixture suites.
+MRTR, task create/get/update/cancel with translated status notifications,
+progress, root-to-middle-to-leaf cancellation, prompts, resources, templates,
+completion, authentication, provenance, and tool/prompt/resource list changes
+plus an exact resource update. After the subscription signals, it re-lists all
+three catalog families and requires the leaf's dynamically added entries to be
+visible through both gateways. It runs in `scripts/ci/mcp-conformance.sh` before
+the pinned rmcp fixture suites.
 
 ## Remaining Closeout Work
 
-Remaining work is validation depth and repository closeout, not missing core
-proxy implementation:
+Remaining work is additional validation depth, not missing core proxy
+implementation:
 
-1. Extend the process driver with task lifecycle/status, progress/cancellation,
-   and upstream/downstream subscription delivery. These are currently proven by
-   live in-memory relay and subscription tests.
-2. Add proxy-level JSON Schema 2020-12 and arbitrary structured-content cases.
-3. Add configured OAuth issuer/application-type behavior to a Labby-native
+1. Add proxy-level JSON Schema 2020-12 and arbitrary structured-content cases.
+2. Add configured OAuth issuer/application-type behavior to a Labby-native
    gateway scenario; SDK and authorization-server coverage already exists.
-4. Clean compiler warnings in touched gateway modules.
-5. Run Clippy, full workspace tests, CI review, and final diff review. Formatting
-   and the complete conformance script are already green.
 
 ## Definition of Done
 
 Core capability implementation is complete when every advertised capability has
 a working producer or route and proxy envelopes remain transparent. That
-threshold is met by the implemented code and focused regressions. PR closeout
-still requires the full repository verification sequence and successful CI.
+threshold is met by the implemented code and focused regressions. Consolidated
+PR closeout still requires successful hosted CI and merge.

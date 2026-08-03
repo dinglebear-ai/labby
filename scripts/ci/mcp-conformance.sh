@@ -192,8 +192,9 @@ RUSTFLAGS="" cargo build -p labby --all-features --locked \
   --example mcp_multihop_conformance
 
 # Exercise a real client -> root Labby -> middle Labby -> leaf chain. The
-# driver verifies modern discovery, multi-page tools/prompts/resources/templates,
-# tool and MRTR forwarding, resource reads, completion, and result provenance.
+# driver verifies modern discovery; multi-page tools, prompts, resources, and
+# templates; tool and MRTR forwarding; task lifecycle; progress and cancellation;
+# mutable subscription catalogs; resource reads; completion; and provenance.
 "${repo_root}/target/debug/examples/mcp_multihop_conformance" driver \
   >"${output_dir}/labby-multihop.log" 2>&1
 grep --fixed-strings --line-regexp "Labby multi-hop conformance passed" \
