@@ -162,6 +162,9 @@ RUN mkdir -p /opt/agent-clis \
  && npm install --omit=dev --no-audit --no-fund \
       @anthropic-ai/claude-code@2.1.132 \
       @openai/codex@0.130.0 \
+ # npm 12 blocks unapproved dependency install scripts; run Claude Code's pinned
+ # postinstall explicitly so its platform-native optional binary is installed.
+ && node node_modules/@anthropic-ai/claude-code/install.cjs \
  && ln -sf /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
  && npm cache clean --force \
