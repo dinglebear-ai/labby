@@ -1,10 +1,17 @@
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::{Command, Output};
 
-use serde_json::{Value, json};
+#[cfg(unix)]
+use serde_json::Value;
+use serde_json::json;
+#[cfg(unix)]
 use wiremock::matchers::{method, path};
+#[cfg(unix)]
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[cfg(unix)]
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
     command
@@ -14,12 +21,14 @@ fn command(home: &Path) -> Command {
     command
 }
 
+#[cfg(unix)]
 fn write_config(home: &Path, body: &str) {
     let lab_home = home.join(".labby");
     std::fs::create_dir_all(&lab_home).unwrap();
     std::fs::write(lab_home.join("config.toml"), body).unwrap();
 }
 
+#[cfg(unix)]
 fn run_json(command: &mut Command) -> (Output, Value) {
     let output = command.output().expect("run labby doctor proxy");
     let report = serde_json::from_slice(&output.stdout);
@@ -37,6 +46,7 @@ fn run_json(command: &mut Command) -> (Output, Value) {
     (output, report)
 }
 
+#[cfg(unix)]
 fn finding<'a>(report: &'a Value, check: &str) -> &'a Value {
     let finding = report["findings"]
         .as_array()
@@ -47,6 +57,7 @@ fn finding<'a>(report: &'a Value, check: &str) -> &'a Value {
     finding.unwrap_or(report)
 }
 
+#[cfg(unix)]
 fn assert_severity(report: &Value, check: &str, severity: &str) {
     assert_eq!(finding(report, check)["severity"], severity, "{report}");
 }
@@ -385,6 +396,7 @@ fn tailscale_preflight_reports_executable_version_and_https_serve_failures() {
     assert_severity(&serve_report, "proxy:tailscale-https-serve", "fail");
 }
 
+#[cfg(unix)]
 async fn mount_daemon(server: &MockServer, actions: Value, metadata: Value, jwks: Value) {
     Mock::given(method("GET"))
         .and(path("/health"))

@@ -2,13 +2,21 @@
 
 use labby::proxy::config::ProxyPortPreference;
 use labby::proxy::tailscale::{
-    ServeStatus, TailscaleClaimError, TailscaleServe, TailscaleServeOptions, TailscaleServePlan,
-    TailscaleStatus, build_public_url, select_port_from_candidates,
+    ServeStatus, TailscaleStatus, build_public_url, select_port_from_candidates,
 };
+#[cfg(unix)]
+use labby::proxy::tailscale::{
+    TailscaleClaimError, TailscaleServe, TailscaleServeOptions, TailscaleServePlan,
+};
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
 const STATUS: &str = r#"{
