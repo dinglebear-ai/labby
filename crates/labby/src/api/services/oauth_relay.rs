@@ -440,7 +440,7 @@ async fn list_machines(
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let action = "oauth.relay.list";
+    let action = LIST_MACHINES_ACTION;
     let request_id = request_id(&headers);
     require_lab_admin(action, request_id, auth.as_ref())?;
     let started = Instant::now();
@@ -460,7 +460,7 @@ async fn get_machine(
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let action = "oauth.relay.get";
+    let action = GET_MACHINE_ACTION;
     let request_id = request_id(&headers);
     require_lab_admin(action, request_id, auth.as_ref())?;
     let started = Instant::now();
@@ -485,6 +485,46 @@ async fn admin_get_machine(
     Ok(json!({ "machine": crate::oauth::public_relay::PublicRelayMachineView::from_entry(&entry) }))
 }
 
+// Stable action identities shared by routing and audit-contract tests.
+const LIST_MACHINES_ACTION: &str = "oauth.relay.list";
+const GET_MACHINE_ACTION: &str = "oauth.relay.get";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdminReadAuditLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdminReadAudit<'request, 'error> {
+    action: &'static str,
+    request_id: Option<&'request str>,
+    elapsed_ms: u128,
+    level: AdminReadAuditLevel,
+    kind: Option<&'error str>,
+}
+
+fn admin_read_audit<'request, 'error>(
+    action: &'static str,
+    request_id: Option<&'request str>,
+    elapsed_ms: u128,
+    result: &'error Result<serde_json::Value, ToolError>,
+) -> AdminReadAudit<'request, 'error> {
+    let (level, kind) = match result {
+        Ok(_) => (AdminReadAuditLevel::Info, None),
+        Err(error) if error.is_internal() => (AdminReadAuditLevel::Error, Some(error.kind())),
+        Err(error) => (AdminReadAuditLevel::Warn, Some(error.kind())),
+    };
+    AdminReadAudit {
+        action,
+        request_id,
+        elapsed_ms,
+        level,
+        kind,
+    }
+}
+
 /// Standard dispatch log event for admin read endpoints (`list_machines`,
 /// `get_machine`). Mutations already get equivalent coverage from
 /// `audit_admin_mutation`; reads previously emitted nothing at the handler
@@ -496,32 +536,32 @@ fn log_admin_read(
     started: Instant,
     result: &Result<serde_json::Value, ToolError>,
 ) {
-    let elapsed_ms = started.elapsed().as_millis();
-    match result {
-        Ok(_) => tracing::info!(
+    let audit = admin_read_audit(action, request_id, started.elapsed().as_millis(), result);
+    match audit.level {
+        AdminReadAuditLevel::Info => tracing::info!(
             surface = "api",
             service = "oauth_relay",
-            action,
-            request_id,
-            elapsed_ms,
+            action = audit.action,
+            request_id = audit.request_id,
+            elapsed_ms = audit.elapsed_ms,
             "oauth relay admin read complete"
         ),
-        Err(error) if error.is_internal() => tracing::error!(
+        AdminReadAuditLevel::Error => tracing::error!(
             surface = "api",
             service = "oauth_relay",
-            action,
-            request_id,
-            elapsed_ms,
-            kind = error.kind(),
+            action = audit.action,
+            request_id = audit.request_id,
+            elapsed_ms = audit.elapsed_ms,
+            kind = audit.kind.unwrap_or("unknown"),
             "oauth relay admin read failed"
         ),
-        Err(error) => tracing::warn!(
+        AdminReadAuditLevel::Warn => tracing::warn!(
             surface = "api",
             service = "oauth_relay",
-            action,
-            request_id,
-            elapsed_ms,
-            kind = error.kind(),
+            action = audit.action,
+            request_id = audit.request_id,
+            elapsed_ms = audit.elapsed_ms,
+            kind = audit.kind.unwrap_or("unknown"),
             "oauth relay admin read failed"
         ),
     }
@@ -1517,15 +1557,68 @@ mod tests {
         );
     }
 
-    // lab-uvscv: admin read endpoints (`list_machines`, `get_machine`) must
-    // emit a dispatch log event, matching mutation coverage from
-    // `audit_admin_mutation` and the observability contract that every
-    // user-visible action logs surface/service/action/elapsed_ms.
-    #[tokio::test(flavor = "current_thread")]
-    async fn oauth_relay_admin_reads_emit_dispatch_log_events() {
+    // Validate the audit contract without relying on the process-global tracing
+    // callsite cache, which other parallel tests legitimately rebuild.
+    #[test]
+    fn oauth_relay_admin_read_audit_records_dispatch_contract() {
+        let success = Ok(json!({"machines": []}));
+        let list = admin_read_audit(LIST_MACHINES_ACTION, Some("list-request"), 7, &success);
+        assert_eq!(
+            list,
+            AdminReadAudit {
+                action: "oauth.relay.list",
+                request_id: Some("list-request"),
+                elapsed_ms: 7,
+                level: AdminReadAuditLevel::Info,
+                kind: None,
+            }
+        );
+
+        let caller_error = Err(ToolError::MissingParam {
+            message: "machine is required".into(),
+            param: "machine".into(),
+        });
+        let get = admin_read_audit(GET_MACHINE_ACTION, Some("get-request"), 11, &caller_error);
+        assert_eq!(get.action, "oauth.relay.get");
+        assert_eq!(get.request_id, Some("get-request"));
+        assert_eq!(get.elapsed_ms, 11);
+        assert_eq!(get.level, AdminReadAuditLevel::Warn);
+        assert_eq!(get.kind, Some("missing_param"));
+
+        let internal_error: Result<serde_json::Value, ToolError> =
+            Err(ToolError::internal_message("storage unavailable"));
+        let failed = admin_read_audit(GET_MACHINE_ACTION, None, 13, &internal_error);
+        assert_eq!(failed.level, AdminReadAuditLevel::Error);
+        assert_eq!(failed.kind, Some("internal_error"));
+    }
+
+    #[test]
+    fn oauth_relay_admin_reads_emit_dispatch_log_events() {
+        const CHILD_ENV: &str = "LABBY_TEST_OAUTH_RELAY_ADMIN_READ_LOG_CHILD";
+        const TEST_NAME: &str =
+            "api::services::oauth_relay::tests::oauth_relay_admin_reads_emit_dispatch_log_events";
+
+        // Tracing's callsite interest cache is process-global. Run the byte-level
+        // capture in an exact child process so unrelated parallel tests cannot
+        // rebuild the cache under a different subscriber.
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated log-capture test failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
         let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(|error| error.into_inner());
         let buf = crate::test_support::SharedBuf::default();
         let subscriber = tracing_subscriber::registry()
             .with(EnvFilter::new("labby=info"))
@@ -1538,44 +1631,49 @@ mod tests {
             );
         let _guard = tracing::subscriber::set_default(subscriber);
         crate::test_support::rebuild_tracing_interest_cache();
-
-        let (_dir, state) = test_state().await;
-        let manager = state.public_relay.as_ref().unwrap().clone();
-        manager
-            .upsert(PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
-                None,
-                false,
-            ))
-            .await
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .unwrap();
-        let app = admin_routes(state.clone())
-            .layer(Extension(admin_auth_context()))
-            .with_state(state);
+        runtime.block_on(async {
+            let (_dir, state) = test_state().await;
+            let manager = state.public_relay.as_ref().unwrap().clone();
+            manager
+                .upsert(PublicRelayEntry::new(
+                    MachineId::parse("dookie").unwrap(),
+                    "http://100.88.16.79:38935/callback/dookie",
+                    None,
+                    false,
+                ))
+                .await
+                .unwrap();
+            let app = admin_routes(state.clone())
+                .layer(Extension(admin_auth_context()))
+                .with_state(state);
 
-        let list = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/machines")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(list.status(), StatusCode::OK);
+            let list = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/machines")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(list.status(), StatusCode::OK);
 
-        let get = app
-            .oneshot(
-                Request::builder()
-                    .uri("/machines/dookie")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(get.status(), StatusCode::OK);
+            let get = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/machines/dookie")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(get.status(), StatusCode::OK);
+        });
 
         drop(_guard);
         let logs = crate::test_support::captured_logs(&buf);
