@@ -18,6 +18,7 @@ pub mod internal;
 pub mod logs;
 pub mod oauth;
 pub mod params;
+pub mod proxy;
 pub mod serve;
 pub mod setup;
 #[cfg(feature = "gateway")]
@@ -91,6 +92,8 @@ pub enum Command {
     Snippets(snippets::SnippetsArgs),
     /// Run local OAuth callback relay helpers.
     Oauth(oauth::OauthArgs),
+    /// Proxy a stdio MCP server to Streamable HTTP.
+    Proxy(proxy::ProxyArgs),
     /// Hidden internal process helpers.
     #[cfg(feature = "gateway")]
     #[command(hide = true)]
@@ -117,6 +120,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         #[cfg(feature = "gateway")]
         Command::Snippets(args) => snippets::run(args, format, &config).await,
         Command::Oauth(args) => oauth::run(args, format, &config).await,
+        Command::Proxy(args) => proxy::run(args, &config, format).await,
         #[cfg(feature = "gateway")]
         Command::Internal(args) => internal::run(args),
         // [lab-scaffold: cli-dispatch]
@@ -203,6 +207,55 @@ mod tests {
                 "{command}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn cli_accepts_proxy_command_with_js_file() {
+        let cli = Cli::parse_from(["labby", "proxy", "/path/to/dist.js"]);
+        assert!(matches!(cli.command, Command::Proxy(_)));
+    }
+
+    #[test]
+    fn cli_proxy_accepts_child_arguments() {
+        let cli = Cli::parse_from([
+            "labby",
+            "proxy",
+            "/path/to/dist.js",
+            "--workspace",
+            "/srv/data",
+        ]);
+        assert!(matches!(cli.command, Command::Proxy(args) if args.command.len() == 3));
+    }
+
+    #[test]
+    fn cli_proxy_accepts_explicit_separator() {
+        let cli = Cli::parse_from([
+            "labby",
+            "proxy",
+            "--",
+            "npx",
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+        ]);
+        assert!(matches!(cli.command, Command::Proxy(_)));
+    }
+
+    #[test]
+    fn cli_proxy_accepts_port_override() {
+        let cli = Cli::parse_from(["labby", "proxy", "--port", "52177", "server"]);
+        assert!(matches!(
+            cli.command,
+            Command::Proxy(args) if args.port == Some(52177)
+        ));
+    }
+
+    #[test]
+    fn cli_proxy_accepts_bearer_token() {
+        let cli = Cli::parse_from(["labby", "proxy", "--bearer-token", "secret", "server"]);
+        assert!(matches!(
+            cli.command,
+            Command::Proxy(args) if args.bearer_token == Some("secret".to_string())
+        ));
     }
 
     #[test]

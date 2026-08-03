@@ -25,5 +25,9 @@ pub mod security;
 pub mod upstream;
 pub mod usage;
 
+pub use labby_primitives::mcp::{
+    MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
+};
+
 #[cfg(test)]
 mod test_support;

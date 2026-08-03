@@ -87,6 +87,14 @@ fn build_artifacts(projection: &DocsProjection) -> Result<Vec<Artifact>> {
             render::json(&projection.env_reference)?,
         ),
         artifact(
+            "docs/generated/proxy-config-reference.md",
+            render::proxy_config_reference(&projection.proxy_config_reference),
+        ),
+        artifact(
+            "docs/generated/proxy-config-reference.json",
+            render::json(&projection.proxy_config_reference)?,
+        ),
+        artifact(
             "docs/generated/action-catalog.md",
             render::action_catalog(&projection.action_catalog),
         ),

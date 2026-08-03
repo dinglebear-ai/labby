@@ -84,6 +84,18 @@ impl<'a> UpstreamRequestLog<'a> {
         }
     }
 
+    pub(super) fn completion(upstream: &'a str, reference: &'a str, subject_scoped: bool) -> Self {
+        Self {
+            upstream,
+            capability: "completions",
+            operation: "completion.complete",
+            subject_scoped,
+            transport: None,
+            item_kind: Some("reference"),
+            item: Some(reference),
+        }
+    }
+
     pub(super) fn with_transport(mut self, transport: &'static str) -> Self {
         self.transport = Some(transport);
         self

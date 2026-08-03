@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, RwLock};
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_auth::upstream::encryption::EncryptionKey;
 use labby_auth::upstream::manager::UpstreamOauthManager;
+use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
 
@@ -45,9 +46,12 @@ pub struct GatewayManagerConfig {
     pub in_process_connector: Option<InProcessConnector>,
     /// Optional upstream OAuth runtime.  `None` when OAuth is not configured.
     pub oauth: Option<GatewayOauthConfig>,
+    pub resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     /// Optional call-usage recorder, shared with every `UpstreamPool` the
     /// manager builds. `None` disables telemetry capture.
     pub usage_store: Option<Arc<crate::usage::UsageStore>>,
+    /// Shared live state for the explicit Code Mode MCP App surface.
+    pub code_mode_app_state: CodeModeAppState,
 }
 
 /// OAuth components needed by the manager, bundled to avoid partial-move issues.
@@ -70,6 +74,7 @@ impl GatewayManager {
     ) -> Result<Self, ToolError> {
         let mut manager = Self::try_with_store(cfg.config_path, runtime, cfg.store)?
             .with_builtin_service_registry(cfg.registry);
+        manager.code_mode_app_state = cfg.code_mode_app_state;
 
         if let Some(connector) = cfg.in_process_connector {
             manager = manager.with_in_process_connector(connector);
@@ -79,6 +84,9 @@ impl GatewayManager {
                 .with_upstream_oauth_managers(oauth.managers)
                 .with_oauth_client_cache(oauth.cache)
                 .with_oauth_resources(oauth.sqlite, oauth.key, oauth.redirect_uri);
+        }
+        if let Some(registry) = cfg.resource_registry {
+            manager = manager.with_resource_registry(registry);
         }
         if let Some(store) = cfg.usage_store {
             manager = manager.with_usage_store(store);
@@ -122,6 +130,7 @@ impl GatewayManager {
             runtime,
             config: Arc::new(RwLock::new(GatewayConfig::default())),
             config_mutation: Arc::new(Mutex::new(())),
+            code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
             notifier: None,
             oauth_client_cache: None,
@@ -130,6 +139,7 @@ impl GatewayManager {
             oauth_sqlite: None,
             oauth_key: None,
             oauth_redirect_uri: None,
+            resource_registry: None,
             usage_store: None,
             step_journal: None,
             step_buffers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -261,6 +271,20 @@ impl GatewayManager {
     }
 
     #[must_use]
+    pub fn with_resource_registry(
+        mut self,
+        registry: labby_auth::resource_registry::ResourceRegistry,
+    ) -> Self {
+        self.resource_registry = Some(registry);
+        self
+    }
+
+    #[must_use]
+    pub fn resource_registry(&self) -> Option<labby_auth::resource_registry::ResourceRegistry> {
+        self.resource_registry.clone()
+    }
+
+    #[must_use]
     pub fn with_upstream_oauth_managers(
         mut self,
         managers: Arc<dashmap::DashMap<String, UpstreamOauthManager>>,
@@ -275,6 +299,11 @@ impl GatewayManager {
     /// (add, update, remove, reload) if the caller wants notifications.
     pub fn set_notifier(&mut self, notifier: CatalogChangeNotifier) {
         self.notifier = Some(notifier);
+    }
+
+    #[must_use]
+    pub fn code_mode_app_state(&self) -> CodeModeAppState {
+        self.code_mode_app_state.clone()
     }
 
     pub async fn try_seed_config(&self, mut config: GatewayConfig) -> Result<(), ToolError> {
@@ -301,6 +330,8 @@ impl GatewayManager {
     async fn seed_config_unchecked(&self, config: GatewayConfig) {
         self.store
             .set_process_code_mode_enabled(config.code_mode.enabled);
+        self.code_mode_app_state
+            .set_enabled(config.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
         *self.config.write().await = config;
@@ -308,6 +339,10 @@ impl GatewayManager {
         // code_mode path (`ensure_search_runtime_ready`) on first call, so
         // seed_config does not eagerly connect upstreams here. This keeps startup
         // cheap and non-blocking.
+    }
+
+    pub fn current_pool_sync(&self) -> Option<Arc<UpstreamPool>> {
+        self.runtime.current_pool_sync()
     }
 
     pub async fn current_pool(&self) -> Option<Arc<UpstreamPool>> {

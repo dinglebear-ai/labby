@@ -560,7 +560,7 @@ mod tests {
                 "alpha".to_string(),
                 vec![
                     "file:///tmp/upstream-one".to_string(),
-                    "file:///tmp/upstream-two".to_string(),
+                    "lab://upstream/old-name/file:///tmp/upstream-two".to_string(),
                 ],
             )]
         );
@@ -598,7 +598,7 @@ mod tests {
                 "alpha".to_string(),
                 vec![
                     "file:///tmp/upstream-one".to_string(),
-                    "file:///tmp/upstream-two".to_string(),
+                    "lab://upstream/old-name/file:///tmp/upstream-two".to_string(),
                 ],
             )]
         );

@@ -9,6 +9,7 @@ mod client;
 mod dispatch;
 pub mod gateway;
 mod params;
+mod preflight;
 pub mod proxy;
 mod relay;
 pub mod service;

@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use rmcp::model::Resource;
+use rmcp::model::{Resource, ResourceTemplate};
 use serde_json::Value;
 
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -22,6 +22,13 @@ use super::entries::health_str;
 use super::helpers::{bare_upstream_resource_uri, rewrite_resource_uri};
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_RESOURCES;
+
+fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
+    template.name = format!("{upstream_name}/{}", template.name);
+    if !template.uri_template.starts_with("ui://") {
+        template.uri_template = format!("lab://upstream/{upstream_name}/{}", template.uri_template);
+    }
+}
 
 impl UpstreamPool {
     /// Return cached resource URIs keyed by upstream name (used in catalog snapshots).
@@ -164,7 +171,7 @@ impl UpstreamPool {
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
             futures.push(async move {
-                let result = peer.list_resources(None).await;
+                let result = peer.list_all_resources().await;
                 (name, result)
             });
         }
@@ -176,24 +183,25 @@ impl UpstreamPool {
         results.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
         let mut resources = Vec::new();
+        let mut subscription_refreshes = Vec::new();
         for (name, result) in results {
             match result {
-                Ok(result) => {
+                Ok(upstream_resources) => {
                     self.record_success_for(&name, UpstreamCapability::Resources)
                         .await;
-                    let resource_uris = result
-                        .resources
+                    let resource_uris = upstream_resources
                         .iter()
                         .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
                         .collect();
                     {
                         let mut catalog = self.catalog.write().await;
                         if let Some(entry) = catalog.get_mut(&name) {
-                            entry.resource_count = result.resources.len();
+                            entry.resource_count = upstream_resources.len();
                             entry.resource_uris = resource_uris;
                         }
                     }
-                    for mut resource in result.resources {
+                    subscription_refreshes.push(name.clone());
+                    for mut resource in upstream_resources {
                         if resources.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
                                 upstream = %name,
@@ -257,8 +265,85 @@ impl UpstreamPool {
             }
         }
 
+        self.refresh_upstream_subscriptions_concurrently(subscription_refreshes)
+            .await;
+
         resources
     }
+
+    /// List every resource template from all visible resource-proxy upstreams.
+    /// Names and non-UI URI templates are namespaced to avoid cross-upstream
+    /// collisions while preserving all other template metadata verbatim.
+    pub async fn list_upstream_resource_templates_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ResourceTemplate> {
+        let peers = routable_upstream_peers(self, UpstreamCapability::Resources, allowed).await;
+        if peers.is_empty() {
+            return Vec::new();
+        }
+
+        let mut futures = FuturesUnordered::new();
+        for (name, peer) in peers {
+            futures.push(async move {
+                let result = peer.list_all_resource_templates().await;
+                (name, result)
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some(item) = futures.next().await {
+            results.push(item);
+        }
+        results.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+        let mut templates = Vec::new();
+        for (name, result) in results {
+            match result {
+                Ok(upstream_templates) => {
+                    self.record_success_for(&name, UpstreamCapability::Resources)
+                        .await;
+                    for mut template in upstream_templates {
+                        if templates.len() >= MAX_UPSTREAM_RESOURCES {
+                            tracing::warn!(
+                                upstream = %name,
+                                limit = MAX_UPSTREAM_RESOURCES,
+                                "upstream resource template catalog exceeds limit — truncating to cap"
+                            );
+                            break;
+                        }
+                        rewrite_resource_template(&mut template, &name);
+                        templates.push(template);
+                    }
+                }
+                Err(error) if is_capability_unsupported(&error) => {
+                    self.record_success_for(&name, UpstreamCapability::Resources)
+                        .await;
+                    tracing::debug!(
+                        upstream = %name,
+                        error = %error,
+                        "upstream does not implement resources/templates/list — capability absent"
+                    );
+                }
+                Err(error) => {
+                    self.record_failure_for(
+                        &name,
+                        UpstreamCapability::Resources,
+                        format!("failed to list resource templates from upstream: {error}"),
+                    )
+                    .await;
+                    tracing::warn!(
+                        upstream = %name,
+                        error = %error,
+                        "failed to list resource templates from upstream"
+                    );
+                }
+            }
+        }
+
+        templates
+    }
+
     pub async fn subject_scoped_resources(
         &self,
         configs: &[UpstreamConfig],
@@ -292,9 +377,9 @@ impl UpstreamPool {
             let Ok(conn) = result else {
                 continue;
             };
-            match conn.peer.list_resources(None).await {
-                Ok(result) => {
-                    for mut resource in result.resources {
+            match conn.peer.list_all_resources().await {
+                Ok(upstream_resources) => {
+                    for mut resource in upstream_resources {
                         rewrite_resource_uri(&mut resource, &name);
                         resources.push(resource);
                     }
@@ -317,13 +402,172 @@ impl UpstreamPool {
 mod tests {
     use std::collections::{BTreeSet, HashMap};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use rmcp::model::{ReadResourceResult, ResourceContents};
+    use rmcp::model::{
+        ErrorData, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
+        ReadResourceResult, ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo,
+    };
+    use rmcp::service::RequestContext;
+    use rmcp::{RoleServer, ServerHandler};
 
     use super::super::super::types::{ToolExposurePolicy, UpstreamTool};
     use super::super::entries::healthy_in_process_entry;
     use super::super::helpers::normalize_resource_result_uri;
+    use super::super::testsupport::catalog_pool_with_server;
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct PaginatedResourceTemplateServer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ServerHandler for PaginatedResourceTemplateServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resource_templates(
+            &self,
+            request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourceTemplatesResult, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let cursor = request.and_then(|request| request.cursor);
+            let mut result = match cursor.as_deref() {
+                None => ListResourceTemplatesResult::with_all_items(vec![ResourceTemplate::new(
+                    "file:///{path}",
+                    "first",
+                )]),
+                Some("page-2") => {
+                    ListResourceTemplatesResult::with_all_items(vec![ResourceTemplate::new(
+                        "https://example.com/{id}",
+                        "second",
+                    )])
+                }
+                Some(other) => {
+                    return Err(ErrorData::invalid_params(
+                        format!("unexpected cursor: {other}"),
+                        None,
+                    ));
+                }
+            };
+            if cursor.is_none() {
+                result.next_cursor = Some("page-2".to_string());
+            }
+            Ok(result)
+        }
+    }
+
+    #[test]
+    fn resource_template_rewrite_preserves_nested_gateway_namespace() {
+        let mut template =
+            ResourceTemplate::new("lab://upstream/leaf/fixture://template/{value}", "nested");
+
+        rewrite_resource_template(&mut template, "middle");
+
+        assert_eq!(template.name, "middle/nested");
+        assert_eq!(
+            template.uri_template,
+            "lab://upstream/middle/lab://upstream/leaf/fixture://template/{value}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_template_catalog_traverses_and_namespaces_all_pages() {
+        let server = PaginatedResourceTemplateServer::default();
+        let calls = Arc::clone(&server.calls);
+        let pool = catalog_pool_with_server("paged", server).await;
+
+        let templates = pool.list_upstream_resource_templates_allowed(None).await;
+        let rows = templates
+            .iter()
+            .map(|template| (template.name.as_str(), template.uri_template.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("paged/first", "lab://upstream/paged/file:///{path}"),
+                (
+                    "paged/second",
+                    "lab://upstream/paged/https://example.com/{id}",
+                ),
+            ]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[derive(Clone, Default)]
+    struct PaginatedResourceServer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ServerHandler for PaginatedResourceServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let cursor = request.and_then(|request| request.cursor);
+            let mut result = match cursor.as_deref() {
+                None => ListResourcesResult::with_all_items(vec![Resource::new(
+                    "file:///first",
+                    "first",
+                )]),
+                Some("page-2") => ListResourcesResult::with_all_items(vec![Resource::new(
+                    "file:///second",
+                    "second",
+                )]),
+                Some(other) => {
+                    return Err(ErrorData::invalid_params(
+                        format!("unexpected cursor: {other}"),
+                        None,
+                    ));
+                }
+            };
+            if cursor.is_none() {
+                result.next_cursor = Some("page-2".to_string());
+            }
+            Ok(result)
+        }
+    }
+
+    #[tokio::test]
+    async fn resource_catalog_traverses_all_upstream_pages() {
+        let server = PaginatedResourceServer::default();
+        let calls = Arc::clone(&server.calls);
+        let pool = catalog_pool_with_server("paged", server).await;
+
+        let resources = pool.list_upstream_resources().await;
+        let uris = resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            uris,
+            vec![
+                "lab://upstream/paged/file:///first",
+                "lab://upstream/paged/file:///second",
+            ]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            pool.catalog
+                .read()
+                .await
+                .get("paged")
+                .expect("paged catalog entry")
+                .resource_count,
+            2
+        );
+    }
 
     async fn pool_with_empty_upstreams(names: &[&str]) -> UpstreamPool {
         let pool = UpstreamPool::new();

@@ -221,6 +221,88 @@ mod tests {
         assert!(result.contains("timed out"));
     }
 
+    #[tokio::test]
+    async fn call_tool_mcp_error_keeps_connection_healthy() {
+        struct RejectingServer;
+        impl ServerHandler for RejectingServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "reject.tool",
+                        "returns an MCP application error",
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                Err(ErrorData::internal_error(
+                    "forbidden: requires scope: example:write".to_string(),
+                    None,
+                ))
+            }
+        }
+
+        let upstream_name = "rejecting";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = RejectingServer
+                .serve(server_transport)
+                .await
+                .expect("rejecting server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("rejecting client starts");
+        let peer = client_service.peer().clone();
+
+        let pool = Arc::new(UpstreamPool::new());
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        let result = pool
+            .call_tool(upstream_name, CallToolRequestParams::new("reject.tool"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("application error should reach the caller");
+
+        assert!(result.contains("requires scope"));
+        assert_eq!(pool.upstream_tool_last_error(upstream_name).await, None);
+        assert!(
+            pool.upstream_tool_health(upstream_name)
+                .await
+                .expect("health entry")
+                .is_routable(),
+            "valid MCP error response must not poison connection health"
+        );
+    }
+
     /// T9: an upstream that returns an oversized body gets a structured cap error,
     /// not a panic or OOM.
     #[tokio::test]
@@ -298,6 +380,14 @@ mod tests {
         assert!(
             result.contains("bytes"),
             "expected byte count in error, got: {result}"
+        );
+        assert_eq!(pool.upstream_tool_last_error(upstream_name).await, None);
+        assert!(
+            pool.upstream_tool_health(upstream_name)
+                .await
+                .expect("health entry")
+                .is_routable(),
+            "gateway response cap must not poison connection health"
         );
     }
 

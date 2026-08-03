@@ -1,7 +1,7 @@
 ---
 title: "Environment Variables"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-01"
 ---
 
 # Environment Variables
@@ -9,8 +9,36 @@ updated: "2026-07-30"
 This document lists the `lab` environment variables that matter for transport
 and auth setup. The complete per-service env inventory is generated from
 `PluginMeta` and lives in
-[generated/env-reference.md](./generated/env-reference.md) and
-[generated/env-reference.json](./generated/env-reference.json).
+[generated/env-reference.md](../generated/env-reference.md) and
+[generated/env-reference.json](../generated/env-reference.json).
+
+## Direct Stdio Proxy
+
+The default bearer secret is separate from the hosted daemon administrator
+token:
+
+```env
+LABBY_PROXY_BEARER_TOKEN=replace-with-a-generated-secret
+```
+
+`proxy.bearer_token_env` may name another key. `labby setup proxy --auth
+bearer` generates and writes the value when it is absent; piping a value to
+`--bearer-token-stdin` replaces it without writing the literal to TOML.
+
+Other proxy-adjacent process controls are:
+
+```env
+LABBY_TAILSCALE_BIN=tailscale
+LABBY_GW_UPSTREAM_STDERR=debug
+```
+
+`LABBY_PROXY_TEST_RENEW_MS` exists only under the `proxy-testkit` feature and
+is not production configuration. OAuth proxy runs also use the live-daemon
+discovery/auth variables described below. There are no environment aliases for
+the non-secret `[proxy]` exposure, auth, path, port/range, scope, inheritance,
+or shutdown preferences. See the
+[stdio MCP proxy guide](../guides/STDIO_MCP_PROXY.md#configuration-and-precedence)
+and generated [proxy environment inventory](../generated/env-reference.md).
 
 ## HTTP Auth
 

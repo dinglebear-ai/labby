@@ -167,18 +167,25 @@ pub(super) async fn static_catalog_pool_with_server(
     upstream_name: &str,
     server: StaticCatalogServer,
 ) -> Arc<UpstreamPool> {
+    catalog_pool_with_server(upstream_name, server).await
+}
+
+pub(super) async fn catalog_pool_with_server<S>(upstream_name: &str, server: S) -> Arc<UpstreamPool>
+where
+    S: ServerHandler,
+{
     let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
     let server_task = tokio::spawn(async move {
         let running = server
             .serve(server_transport)
             .await
-            .expect("static catalog server starts");
-        running.waiting().await.expect("static catalog server runs");
+            .expect("catalog server starts");
+        running.waiting().await.expect("catalog server runs");
     });
     let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
         .serve(client_transport)
         .await
-        .expect("static catalog client starts");
+        .expect("catalog client starts");
     let peer = client_service.peer().clone();
 
     let pool = Arc::new(UpstreamPool::new());

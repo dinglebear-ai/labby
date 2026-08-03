@@ -71,12 +71,16 @@ async fn app_auth_state_with_protected_routes(
             route_count = routes.iter().filter(|route| route.enabled).count(),
             "oauth protected resource scope map refreshed from gateway routes"
         );
-        auth_state.set_allowed_resource_scopes(
-            routes
-                .into_iter()
-                .filter(|route| route.enabled)
-                .map(|route| (route.public_resource(), route.scopes)),
-        );
+        auth_state
+            .replace_configured_resource_scopes(
+                routes
+                    .into_iter()
+                    .filter(|route| route.enabled)
+                    .map(|route| (route.public_resource(), route.scopes)),
+            )
+            .map_err(|error| {
+                LabAuthError::Config(format!("invalid configured protected resource: {error}"))
+            })?;
     }
     Ok(auth_state)
 }
@@ -1272,14 +1276,16 @@ pub(crate) fn build_router_with_external_auth(
         state = state.with_oauth_state(auth_state.clone());
     }
     if let Some(auth_state) = auth_state.as_ref() {
-        auth_state.set_allowed_resource_scopes(
+        if let Err(error) = auth_state.replace_configured_resource_scopes(
             state
                 .config
                 .protected_mcp_routes
                 .iter()
                 .filter(|route| route.enabled)
                 .map(|route| (route.public_resource(), route.scopes.clone())),
-        );
+        ) {
+            tracing::error!(%error, "invalid configured OAuth protected resource route");
+        }
     }
     let static_token = bearer_token.map(Arc::<str>::from);
     state = state.with_bearer_token(static_token.clone());
@@ -1301,12 +1307,19 @@ pub(crate) fn build_router_with_external_auth(
     let v1_router = Router::new().nest("/v1", v1);
     let resource_url: Option<Arc<str>> = auth_state
         .as_ref()
-        .and_then(|state| state.config.public_url.as_ref().map(url::Url::as_str))
+        .map(|state| labby_auth::metadata::canonical_resource_url(state.as_ref()))
         .or_else(|| {
-            state
-                .auth_config
-                .as_ref()
-                .and_then(|cfg| cfg.public_url.as_ref().map(url::Url::as_str))
+            state.auth_config.as_ref().and_then(|cfg| {
+                cfg.public_url.as_ref().map(|url| {
+                    let base = url.as_str().trim_end_matches('/');
+                    let path = cfg.resource_path.trim_start_matches('/');
+                    if path.is_empty() {
+                        base.to_string()
+                    } else {
+                        format!("{base}/{path}")
+                    }
+                })
+            })
         })
         .map(Arc::from);
     let layer_deriver = state.actor_key_deriver.clone().map(lab_auth_deriver);
@@ -3774,6 +3787,7 @@ mod tests {
                 sub: "google-user".to_string(),
                 aud: audience.to_string(),
                 exp: now + 3600,
+                nbf: None,
                 iat: now,
                 jti: "test-jti".to_string(),
                 scope: scope.to_string(),

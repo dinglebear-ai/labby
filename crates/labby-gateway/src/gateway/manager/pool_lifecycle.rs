@@ -57,6 +57,11 @@ const MAX_LOGGED_DELTA_NAMES: usize = 20;
 /// tokens stay disjoint from tool names in the same `BTreeSet`.
 const NS_TOKEN_PREFIX: &str = "\u{1}ns\u{1}";
 
+/// Stable synthetic tool advertised whenever the gateway is in Code Mode.
+/// Keeping it in the projected snapshot makes raw↔Code Mode transitions visible
+/// even when the gateway has no connected upstreams.
+const CODE_MODE_SYNTHETIC_TOOL_NAME: &str = "codemode";
+
 /// The rendered delta between two catalog snapshots, split so operators read
 /// tool names and namespace tokens as the different things they are.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -722,9 +727,10 @@ fn code_mode_namespace_tokens(cfg: &GatewayConfig) -> BTreeSet<String> {
 /// and emit a spurious `tools/list_changed`, even though the visible contract
 /// (`codemode` + UI tools) never moved. That notification churn is what makes
 /// clients discard and rebuild the canonical `codemode` binding. So under Code
-/// Mode we snapshot the UI-tool names plus `ns_tokens` (the config-derived
-/// determinants of the visible `codemode` tool description); `codemode` itself
-/// is constant and does not affect the diff.
+/// Mode we snapshot the stable `codemode` tool, UI-tool names, and `ns_tokens`
+/// (the config-derived determinants of the visible `codemode` descriptor). The
+/// stable tool is unchanged during ordinary upstream churn but makes a
+/// raw↔Code Mode regime transition observable even with an empty pool.
 ///
 /// The raw tool set is captured alongside the visible one so the reconcile log
 /// can report *suppressed* churn — raw upstream movement that correctly did not
@@ -735,42 +741,51 @@ async fn snapshot_from_pool(
     code_mode_enabled: bool,
     ns_tokens: &BTreeSet<String>,
 ) -> ProjectedCatalogSnapshot {
-    let Some(pool) = pool else {
-        return ProjectedCatalogSnapshot::default();
-    };
-
-    let raw_tools: BTreeSet<String> = pool
-        .healthy_tools()
-        .await
-        .into_iter()
-        .map(|tool| tool.tool.name.to_string())
-        .collect();
-
-    let tools = if code_mode_enabled {
-        let mut tools: BTreeSet<String> = pool
-            .healthy_ui_tool_names_allowed(None)
+    let raw_tools: BTreeSet<String> = match pool.as_ref() {
+        Some(pool) => pool
+            .healthy_tools()
             .await
             .into_iter()
-            .collect();
+            .map(|tool| tool.tool.name.to_string())
+            .collect(),
+        None => BTreeSet::new(),
+    };
+
+    let tools = if code_mode_enabled {
+        let mut tools: BTreeSet<String> = match pool.as_ref() {
+            Some(pool) => pool
+                .healthy_ui_tool_names_allowed(None)
+                .await
+                .into_iter()
+                .collect(),
+            None => BTreeSet::new(),
+        };
+        tools.insert(CODE_MODE_SYNTHETIC_TOOL_NAME.to_string());
         tools.extend(ns_tokens.iter().cloned());
         tools
     } else {
         raw_tools.clone()
     };
 
+    let (resources, prompts) = match pool.as_ref() {
+        Some(pool) => (
+            pool.routable_upstream_names(crate::upstream::types::UpstreamCapability::Resources)
+                .await
+                .into_iter()
+                .collect(),
+            pool.routable_upstream_names(crate::upstream::types::UpstreamCapability::Prompts)
+                .await
+                .into_iter()
+                .collect(),
+        ),
+        None => (BTreeSet::new(), BTreeSet::new()),
+    };
+
     ProjectedCatalogSnapshot {
         visible: GatewayCatalogSnapshot {
             tools,
-            resources: pool
-                .routable_upstream_names(crate::upstream::types::UpstreamCapability::Resources)
-                .await
-                .into_iter()
-                .collect(),
-            prompts: pool
-                .routable_upstream_names(crate::upstream::types::UpstreamCapability::Prompts)
-                .await
-                .into_iter()
-                .collect(),
+            resources,
+            prompts,
         },
         raw_tools,
     }

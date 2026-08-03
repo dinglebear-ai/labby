@@ -46,6 +46,42 @@ pub(crate) enum NotificationTarget {
 }
 
 impl NotificationTarget {
+    pub(crate) fn wants_tool_list_changed(&self) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(_) => true,
+            Self::Subscription(sink) => sink.accepted().tools_list_changed == Some(true),
+        }
+    }
+
+    pub(crate) fn wants_resource_list_changed(&self) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(_) => true,
+            Self::Subscription(sink) => sink.accepted().resources_list_changed == Some(true),
+        }
+    }
+
+    pub(crate) fn wants_prompt_list_changed(&self) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(_) => true,
+            Self::Subscription(sink) => sink.accepted().prompts_list_changed == Some(true),
+        }
+    }
+
+    pub(crate) fn wants_resource_update(&self, uri: &str) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(_) => true,
+            Self::Subscription(sink) => sink
+                .accepted()
+                .resource_subscriptions
+                .as_ref()
+                .is_some_and(|uris| uris.iter().any(|accepted| accepted == uri)),
+        }
+    }
+
     pub(crate) fn is_closed(&self) -> bool {
         match self {
             #[cfg(test)]
@@ -77,6 +113,17 @@ impl NotificationTarget {
             #[cfg(test)]
             Self::LegacyPeer(peer) => peer.notify_prompt_list_changed().await.map_err(|_| ()),
             Self::Subscription(sink) => sink.notify_prompt_list_changed().await.map_err(|_| ()),
+        }
+    }
+
+    pub(crate) async fn notify_resource_updated(&self, uri: &str) -> Result<(), ()> {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(peer) => peer
+                .notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(uri))
+                .await
+                .map_err(|_| ()),
+            Self::Subscription(sink) => sink.notify_resource_updated(uri).await.map_err(|_| ()),
         }
     }
 }
@@ -136,7 +183,15 @@ impl RegisteredPeer {
                 registry: Arc::new(crate::registry::ToolRegistry::default()),
                 #[cfg(feature = "gateway")]
                 gateway_manager: None,
-                route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+                // Keep the empty-contract fixture independent of process-wide
+                // Code Mode changes made by other tests. Root scope can expose
+                // the synthetic Code Mode tools even without a gateway manager.
+                route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
+                    "catalog-notification-test",
+                    std::iter::empty::<&str>(),
+                    std::iter::empty::<&str>(),
+                    false,
+                ),
                 code_mode_app_state: Default::default(),
                 audience: crate::mcp::peer_contract::PeerCatalogAudience::default(),
             },
@@ -163,6 +218,21 @@ impl RegisteredPeer {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn catalog_notification_fixture_never_exposes_code_mode() {
+    let scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "catalog-notification-test",
+        std::iter::empty::<&str>(),
+        std::iter::empty::<&str>(),
+        false,
+    );
+
+    assert!(!scope.exposes_code_mode());
+    assert!(!scope.allows_service("gateway"));
+    assert!(!scope.allows_upstream("fixture"));
+}
+
 /// MCP-specific peer fanout that forwards catalog-change notifications to
 /// active subscriptions whose visible contract actually changed.
 ///
@@ -187,6 +257,85 @@ pub struct PeerNotifier {
 }
 
 impl PeerNotifier {
+    #[cfg(feature = "gateway")]
+    pub async fn run_upstream_notifications(
+        self,
+        runtime: crate::dispatch::gateway::manager::GatewayRuntimeHandle,
+    ) {
+        use crate::dispatch::upstream::pool::UpstreamNotificationEvent;
+
+        let mut pool_changes = runtime.subscribe_pool_changes();
+        loop {
+            let Some(pool) = runtime.current_pool().await else {
+                if pool_changes.changed().await.is_err() {
+                    break;
+                }
+                continue;
+            };
+            let mut notifications = pool.subscribe_notifications();
+            loop {
+                tokio::select! {
+                    changed = pool_changes.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        break;
+                    }
+                    event = notifications.recv() => {
+                        match event {
+                            Ok(UpstreamNotificationEvent::ToolListChanged { upstream }) => {
+                                // Re-list the exact named upstream before peers recompute their
+                                // visible contracts. Both the shared subscription stream and
+                                // request-scoped relay clients publish through this event bus.
+                                pool.refresh_tools_after_list_changed(&upstream).await;
+                                self.notify_catalog_changes(
+                                    &GatewayCatalogDiff {
+                                        tools_changed: true,
+                                        resources_changed: false,
+                                        prompts_changed: false,
+                                    },
+                                    "upstream.subscription",
+                                ).await;
+                            }
+                            Ok(UpstreamNotificationEvent::PromptListChanged { .. }) => {
+                                self.notify_catalog_changes(
+                                    &GatewayCatalogDiff {
+                                        tools_changed: false,
+                                        resources_changed: false,
+                                        prompts_changed: true,
+                                    },
+                                    "upstream.subscription",
+                                ).await;
+                            }
+                            Ok(UpstreamNotificationEvent::ResourceListChanged { .. }) => {
+                                self.notify_catalog_changes(
+                                    &GatewayCatalogDiff {
+                                        tools_changed: false,
+                                        resources_changed: true,
+                                        prompts_changed: false,
+                                    },
+                                    "upstream.subscription",
+                                ).await;
+                            }
+                            Ok(UpstreamNotificationEvent::ResourceUpdated { upstream, uri }) => {
+                                crate::mcp::catalog_notifications::notify_resource_update_peers(
+                                    &self.peers,
+                                    &upstream,
+                                    &uri,
+                                ).await;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                tracing::warn!(skipped, "upstream notification relay lagged");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "gateway")]
     pub async fn run(self, mut rx: mpsc::UnboundedReceiver<CatalogChangeEvent>) {
         tracing::info!(

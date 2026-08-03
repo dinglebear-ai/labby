@@ -5,13 +5,45 @@
 use super::oauth_upstream_subject_for_request;
 use super::{
     actor_key_from_extensions, builtin_action_requires_admin, code_mode_read_scope_allowed,
-    subject_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+    forwardable_client_capabilities, subject_from_extensions, tool_execute_builtin_action_allowed,
+    tool_execute_scope_allowed,
 };
 use crate::dispatch::error::ToolError;
 use crate::registry::RegisteredService;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
+
+#[test]
+fn forwardable_capabilities_are_derived_from_current_request_metadata() {
+    let capabilities = rmcp::model::ClientCapabilities::builder()
+        .enable_elicitation()
+        .build();
+    let meta = rmcp::model::RequestMetaObject::with_client_context(
+        rmcp::model::ProtocolVersion::V_2026_07_28,
+        rmcp::model::Implementation::new("test-client", "1.0.0"),
+        capabilities.clone(),
+    );
+
+    assert_eq!(
+        forwardable_client_capabilities(Some(&meta)),
+        Some(capabilities)
+    );
+    assert_eq!(
+        forwardable_client_capabilities(None),
+        Some(rmcp::model::ClientCapabilities::default())
+    );
+
+    let empty = rmcp::model::RequestMetaObject::with_client_context(
+        rmcp::model::ProtocolVersion::V_2026_07_28,
+        rmcp::model::Implementation::new("test-client", "1.0.0"),
+        rmcp::model::ClientCapabilities::default(),
+    );
+    assert_eq!(
+        forwardable_client_capabilities(Some(&empty)),
+        Some(rmcp::model::ClientCapabilities::default())
+    );
+}
 
 fn noop_dispatch(
     _action: String,

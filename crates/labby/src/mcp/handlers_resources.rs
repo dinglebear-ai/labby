@@ -16,8 +16,9 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    ListResourcesResult, MetaObject, PaginatedRequestParams, ReadResourceRequestParams,
-    ReadResourceResult, Resource, ResourceContents,
+    ListResourceTemplatesResult, ListResourcesResult, MetaObject, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents,
 };
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
@@ -556,17 +557,66 @@ impl LabMcpServer {
         Ok(result)
     }
 
+    pub(crate) async fn list_resource_templates_impl(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        let start = Instant::now();
+        let subject = self.request_subject_log_tag(&context);
+        let mut templates = PageCollector::new(request)?;
+
+        #[cfg(feature = "gateway")]
+        if let Some(pool) = self.current_upstream_pool().await {
+            for template in pool
+                .list_upstream_resource_templates_allowed(self.route_scope.allowed_upstreams())
+                .await
+            {
+                templates.accept(template);
+                if templates.finished() {
+                    break;
+                }
+            }
+        }
+
+        let (templates, next_cursor) = templates.finish()?;
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "list_resource_templates",
+            subject,
+            template_count = templates.len(),
+            elapsed_ms,
+            "resource template list ok"
+        );
+        self.emit_dispatch_notification(
+            &context,
+            "lab",
+            "list_resource_templates",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+
+        let mut result = ListResourceTemplatesResult::with_all_items(templates)
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private);
+        result.next_cursor = next_cursor;
+        Ok(result)
+    }
+
     pub(crate) async fn read_resource_impl(
         &self,
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
         let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
-        let uri = &request.uri;
+        let uri = request.uri.clone();
         #[cfg(feature = "gateway")]
         let resource_uri_log =
-            crate::dispatch::upstream::pool::redact_resource_uri_for_logging(uri);
+            crate::dispatch::upstream::pool::redact_resource_uri_for_logging(&uri);
         #[cfg(not(feature = "gateway"))]
         let resource_uri_log = uri.to_string();
         tracing::info!(
@@ -585,37 +635,41 @@ impl LabMcpServer {
         // and are served from the bundled HTML.
         if uri.starts_with(CODE_MODE_APP_URI_PREFIX) {
             return self
-                .read_code_mode_app_resource_impl(uri, &subject, start, &context)
-                .await;
+                .read_code_mode_app_resource_impl(&uri, &subject, start, &context)
+                .await
+                .map(Into::into);
         }
         if uri.starts_with(SERVER_LOGS_APP_URI_PREFIX) {
             return self
-                .read_server_logs_app_resource_impl(uri, &subject, start, &context)
-                .await;
+                .read_server_logs_app_resource_impl(&uri, &subject, start, &context)
+                .await
+                .map(Into::into);
         }
         #[cfg(feature = "gateway")]
         if uri.starts_with(ADD_SERVER_APP_URI) {
             return self
                 .read_add_server_app_resource_impl(
-                    uri,
+                    &uri,
                     &resource_uri_log,
                     &subject,
                     start,
                     &context,
                 )
-                .await;
+                .await
+                .map(Into::into);
         }
         #[cfg(feature = "gateway")]
         if uri.starts_with(GATEWAY_STATUS_APP_URI) {
             return self
                 .read_gateway_status_app_resource_impl(
-                    uri,
+                    &uri,
                     &resource_uri_log,
                     &subject,
                     start,
                     &context,
                 )
-                .await;
+                .await
+                .map(Into::into);
         }
         // Any other `ui://` is an upstream MCP Apps (mcp-ui) widget resource
         // (referenced by a tool result's `_meta.ui.resourceUri`): reverse-look-up
@@ -637,8 +691,9 @@ impl LabMcpServer {
             }
             if let Some(pool) = self.current_upstream_pool().await {
                 return self
-                    .read_upstream_ui_resource_impl(&pool, uri, &subject, start, &context)
-                    .await;
+                    .read_upstream_ui_resource_impl(&pool, &uri, &subject, start, &context)
+                    .await
+                    .map(Into::into);
             }
             return Err(ErrorData::resource_not_found(
                 format!("unknown UI resource: {uri}"),
@@ -691,29 +746,23 @@ impl LabMcpServer {
 
             let json = self.service_actions_json(service).await;
             return self
-                .read_local_json_resource(json, uri, &subject, start, &context)
-                .await;
+                .read_local_json_resource(json, &uri, &subject, start, &context)
+                .await
+                .map(Into::into);
         }
 
         // Branch 2: gateway-synthetic resources.
         #[cfg(feature = "gateway")]
         if uri.starts_with("lab://gateway/") {
             return self
-                .read_gateway_resource_impl(uri, &subject, start, &context)
-                .await;
+                .read_gateway_resource_impl(&uri, &subject, start, &context)
+                .await
+                .map(Into::into);
         }
 
-        // Branch 3: raw upstream resource proxy.
-        #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await
-            && uri.starts_with("lab://upstream/")
-        {
-            return self
-                .read_upstream_resource_impl(&pool, uri, &subject, start, &context)
-                .await;
-        }
-
-        // Branch 4: subject-scoped upstream resource proxy.
+        // Branch 3: subject-scoped OAuth upstream resource proxy. OAuth
+        // ownership must be resolved before the raw pool path, otherwise the
+        // unconditional raw return makes this route unreachable.
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
@@ -731,11 +780,21 @@ impl LabMcpServer {
                     &pool,
                     &config,
                     oauth_subject.as_ref(),
-                    uri,
+                    request.clone(),
                     &subject,
                     start,
                     &context,
                 )
+                .await;
+        }
+
+        // Branch 4: raw upstream resource proxy.
+        #[cfg(feature = "gateway")]
+        if let Some(pool) = self.current_upstream_pool().await
+            && uri.starts_with("lab://upstream/")
+        {
+            return self
+                .read_upstream_resource_impl(&pool, request, &subject, start, &context)
                 .await;
         }
 
@@ -749,8 +808,9 @@ impl LabMcpServer {
             ));
         };
 
-        self.read_local_json_resource(json, uri, &subject, start, &context)
+        self.read_local_json_resource(json, &uri, &subject, start, &context)
             .await
+            .map(Into::into)
     }
 
     async fn read_local_json_resource(
@@ -835,7 +895,9 @@ impl LabMcpServer {
         start: Instant,
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        if !self.code_mode_visibility().await.exposes_synthetic_tools() {
+        if !self.code_mode_visibility().await.exposes_synthetic_tools()
+            || !self.code_mode_app_state.is_enabled()
+        {
             return Err(ErrorData::resource_not_found(
                 format!("unknown UI resource: {uri}"),
                 None,
@@ -1449,7 +1511,11 @@ mod tests {
     };
     use crate::dispatch::upstream::types::UpstreamRuntimeMetadata;
     use futures::future::BoxFuture;
-    use rmcp::model::{ListResourcesResult, ServerCapabilities, ServerInfo, Tool};
+    use rmcp::model::{
+        ArgumentInfo, CompleteRequestParams, CompleteResult, CompletionInfo,
+        ListResourceTemplatesResult, ListResourcesResult, Reference, ResourceTemplate,
+        ServerCapabilities, ServerInfo, Tool,
+    };
     use rmcp::service::{Peer, RequestContext};
     use rmcp::{RoleClient, ServerHandler, ServiceExt};
     use serde_json::Value;
@@ -1461,6 +1527,16 @@ mod tests {
 
     const UPSTREAM_UI_URI: &str = "ui://quick-shell/app.html";
     const UPSTREAM_UI_TOOL_NAME: &str = "quick_shell_ui";
+
+    fn complete_resource(response: ReadResourceResponse) -> ReadResourceResult {
+        match response {
+            ReadResourceResponse::Complete(result) => result,
+            ReadResourceResponse::InputRequired(_) => {
+                panic!("local resource unexpectedly required input")
+            }
+            _ => panic!("unexpected resource response variant"),
+        }
+    }
 
     fn final_inline_script(html: &str) -> &str {
         html.rsplit_once("<script>")
@@ -1559,7 +1635,12 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
 
     impl ServerHandler for UpstreamUiResourceServer {
         fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            ServerInfo::new(
+                ServerCapabilities::builder()
+                    .enable_resources()
+                    .enable_completions()
+                    .build(),
+            )
         }
 
         async fn list_resources(
@@ -1573,11 +1654,37 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             ]))
         }
 
+        async fn list_resource_templates(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourceTemplatesResult, ErrorData> {
+            Ok(ListResourceTemplatesResult::with_all_items(vec![
+                ResourceTemplate::new("file:///{path}", "widget"),
+            ]))
+        }
+
+        async fn complete(
+            &self,
+            request: CompleteRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<CompleteResult, ErrorData> {
+            assert_eq!(request.r#ref.as_resource_uri(), Some("file:///{path}"));
+            Ok(CompleteResult::new(
+                CompletionInfo::with_pagination(
+                    vec![format!("{}-completion", request.argument.value)],
+                    Some(1),
+                    false,
+                )
+                .expect("valid completion fixture"),
+            ))
+        }
+
         async fn read_resource(
             &self,
             params: ReadResourceRequestParams,
             _context: RequestContext<RoleServer>,
-        ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        ) -> Result<ReadResourceResponse, ErrorData> {
             if params.uri != UPSTREAM_UI_URI {
                 return Err(ErrorData::resource_not_found(
                     format!("unknown upstream UI resource: {}", params.uri),
@@ -1972,14 +2079,46 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             "upstream MCP UI resource should remain listed with its native URI: {uris:?}"
         );
 
-        let code_mode_read = running
+        let templates = running
             .service()
-            .read_resource_impl(
-                ReadResourceRequestParams::new(CODE_MODE_APP_URI),
+            .list_resource_templates(None, resource_context.clone())
+            .await
+            .expect("list resource templates");
+        assert_eq!(templates.ttl_ms, Some(0));
+        assert_eq!(
+            templates.cache_scope,
+            Some(rmcp::model::CacheScope::Private)
+        );
+        assert_eq!(templates.resource_templates.len(), 1);
+        assert_eq!(templates.resource_templates[0].name, "quick_shell/widget");
+        assert_eq!(
+            templates.resource_templates[0].uri_template,
+            "lab://upstream/quick_shell/file:///{path}"
+        );
+
+        let completion = running
+            .service()
+            .complete(
+                CompleteRequestParams::new(
+                    Reference::for_resource("lab://upstream/quick_shell/file:///{path}"),
+                    ArgumentInfo::new("path", "sys"),
+                ),
                 resource_context.clone(),
             )
             .await
-            .expect("read Code Mode UI resource");
+            .expect("complete upstream resource template");
+        assert_eq!(completion.completion.values, vec!["sys-completion"]);
+
+        let code_mode_read = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(CODE_MODE_APP_URI),
+                    resource_context.clone(),
+                )
+                .await
+                .expect("read Code Mode UI resource"),
+        );
         let ResourceContents::TextResourceContents {
             text: code_mode_html,
             ..
@@ -1989,14 +2128,16 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         };
         assert!(code_mode_html.contains("Lab Code Mode Inspector"));
 
-        let upstream_read = running
-            .service()
-            .read_resource_impl(
-                ReadResourceRequestParams::new(UPSTREAM_UI_URI),
-                resource_context,
-            )
-            .await
-            .expect("read upstream UI resource");
+        let upstream_read = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(UPSTREAM_UI_URI),
+                    resource_context,
+                )
+                .await
+                .expect("read upstream UI resource"),
+        );
         let ResourceContents::TextResourceContents {
             uri,
             text: upstream_html,
@@ -2077,14 +2218,16 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             json!("forbidden")
         );
 
-        let ok = running
-            .service()
-            .read_resource_impl(
-                ReadResourceRequestParams::new(SERVER_LOGS_APP_URI),
-                scoped_context(running.peer().clone(), &["lab:admin"]),
-            )
-            .await
-            .expect("server logs app resource with admin scope");
+        let ok = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(SERVER_LOGS_APP_URI),
+                    scoped_context(running.peer().clone(), &["lab:admin"]),
+                )
+                .await
+                .expect("server logs app resource with admin scope"),
+        );
         let ResourceContents::TextResourceContents { text, .. } = &ok.contents[0] else {
             panic!("expected text resource");
         };
@@ -2415,14 +2558,16 @@ for (const value of [
                 CODE_MODE_APP_SKYBRIDGE_MIME,
             ),
         ] {
-            let read = running
-                .service()
-                .read_resource_impl(
-                    ReadResourceRequestParams::new(uri),
-                    scoped_context(running.peer().clone(), &["lab:admin"]),
-                )
-                .await
-                .expect("admin status resource");
+            let read = complete_resource(
+                running
+                    .service()
+                    .read_resource_impl(
+                        ReadResourceRequestParams::new(uri),
+                        scoped_context(running.peer().clone(), &["lab:admin"]),
+                    )
+                    .await
+                    .expect("admin status resource"),
+            );
             let ResourceContents::TextResourceContents {
                 mime_type, text, ..
             } = &read.contents[0]
@@ -2522,6 +2667,44 @@ for (const value of [
         assert_eq!(
             second.resources[0].uri,
             expected_first_service_on_second_page
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_code_mode_app_denies_cached_resource_reads() {
+        let server = code_mode_server().await;
+        server.code_mode_app_state.set_enabled(false);
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+
+        for uri in [
+            CODE_MODE_APP_URI,
+            CODE_MODE_HISTORY_APP_URI,
+            CODE_MODE_APP_SKYBRIDGE_URI,
+        ] {
+            let err = running
+                .service()
+                .read_resource_impl(ReadResourceRequestParams::new(uri), context.clone())
+                .await
+                .expect_err("disabled Code Mode app resource must stay hidden");
+            assert!(
+                err.message.contains("unknown UI resource"),
+                "{uri} should be hidden as an unknown UI resource, got {err:?}"
+            );
+        }
+
+        let versioned = versioned_app_uri(CODE_MODE_APP_URI);
+        let err = running
+            .service()
+            .read_resource_impl(ReadResourceRequestParams::new(versioned.clone()), context)
+            .await
+            .expect_err("cached versioned URI must not bypass the disabled state");
+        assert!(
+            err.message.contains("unknown UI resource"),
+            "{versioned} should be hidden as an unknown UI resource, got {err:?}"
         );
     }
 
@@ -2635,14 +2818,16 @@ for (const value of [
             server, transport, None,
         );
 
-        let allowed = running
-            .service()
-            .read_resource_impl(
-                ReadResourceRequestParams::new("lab://gateway/actions"),
-                scoped_context(running.peer().clone(), &["lab:read"]),
-            )
-            .await
-            .expect("allowed service action resource");
+        let allowed = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new("lab://gateway/actions"),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .expect("allowed service action resource"),
+        );
 
         let ResourceContents::TextResourceContents { text, .. } = &allowed.contents[0] else {
             panic!("expected text resource");
@@ -2683,7 +2868,7 @@ for (const value of [
             )
             .await
             .expect("read history resource");
-        let rmcp::model::ReadResourceResponse::Complete(allowed) = allowed else {
+        let ReadResourceResponse::Complete(allowed) = allowed else {
             panic!("history resource must complete in one round");
         };
         assert_eq!(allowed.ttl_ms, Some(0));
@@ -2750,14 +2935,16 @@ for (const value of [
             server, transport, None,
         );
 
-        let allowed = running
-            .service()
-            .read_resource_impl(
-                ReadResourceRequestParams::new(CODE_MODE_HISTORY_APP_URI),
-                scoped_context(running.peer().clone(), &["lab:read"]),
-            )
-            .await
-            .expect("read history resource");
+        let allowed = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(CODE_MODE_HISTORY_APP_URI),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .expect("read history resource"),
+        );
 
         let ResourceContents::TextResourceContents { text, .. } = &allowed.contents[0] else {
             panic!("expected text resource");
@@ -2781,14 +2968,16 @@ for (const value of [
         // they reach it directly via the tool's `openai/outputTemplate`. Prove
         // the full read path serves it under the skybridge MIME with the
         // model-facing description attached.
-        let allowed = running
-            .service()
-            .read_resource_impl(
-                ReadResourceRequestParams::new(CODE_MODE_APP_SKYBRIDGE_URI),
-                scoped_context(running.peer().clone(), &["lab:read"]),
-            )
-            .await
-            .expect("read skybridge resource");
+        let allowed = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(CODE_MODE_APP_SKYBRIDGE_URI),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .expect("read skybridge resource"),
+        );
         let ResourceContents::TextResourceContents {
             uri,
             mime_type,

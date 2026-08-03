@@ -186,6 +186,7 @@ mod tests {
             "HTTP 400: Unsupported MCP-Protocol-Version: 2026-07-28",
             "JSON-RPC error: -32601: server/discover",
             "server/discover failed: No valid session ID provided",
+            "JSON-RPC error: -32601: server/discover",
             "server/discover: Invalid request parameters",
             "JSON-RPC error: -32602: Invalid request parameters(\"\")",
             "JSON-RPC error: -32601: Method not supported",

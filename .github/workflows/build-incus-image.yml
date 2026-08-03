@@ -14,7 +14,7 @@ permissions:
 jobs:
   build-image:
     name: Build and smoke hosted x86_64 image
-    uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
+    uses: dinglebear-ai/workflows/.github/workflows/hosted-incus-image.yml@d1a41a7af9c41189e0f1062234364f5814bda99d
     with:
       checkout-ref: ${{ github.event.release.tag_name }}
       artifact-name: labby-incus-image
