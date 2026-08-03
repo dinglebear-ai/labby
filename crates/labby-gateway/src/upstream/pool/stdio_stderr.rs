@@ -21,7 +21,7 @@ impl StdioDiagnostics {
         lines.push_back(line);
     }
 
-    async fn snapshot(&self) -> String {
+    pub(super) async fn snapshot(&self) -> String {
         // Give the stderr drain task a short chance to flush lines emitted right
         // before the child exited. This is intentionally tiny; startup failure
         // should still return promptly.

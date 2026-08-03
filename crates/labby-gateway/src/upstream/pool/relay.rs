@@ -814,7 +814,7 @@ impl UpstreamPool {
         let tool_name = params.name.to_string();
         let relay_key = (config.name.clone(), session_id, subject.map(str::to_owned));
         let request_meta = params.meta.clone();
-        let (peer, routes, cancellation_sender) = self
+        let (peer, routes, cancellation_sender, generation) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
 
@@ -829,12 +829,34 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         // Relayed calls block on a human answering the forwarded elicitation,
         // so they use the longer `relay_timeout` (default 5 min) rather than the
         // 30s `request_timeout` the pooled path uses — otherwise a confirmation
         // dialog left open for a minute would abort the whole upstream call.
         let timeout = self.relay_timeout;
+        let _permit =
+            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
+                .await
+            {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(error)) => return Some(Err(error)),
+                Err(_) => {
+                    log_upstream_request_error(
+                        event,
+                        started.elapsed().as_millis(),
+                        "queue_saturated",
+                        None,
+                        None,
+                        None,
+                    );
+                    return Some(Err(format!(
+                        "upstream `{}` relay concurrency queue timed out",
+                        config.name
+                    )));
+                }
+            };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -951,14 +973,36 @@ impl UpstreamPool {
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
         let prompt_name = params.name.to_string();
         let request_meta = params.meta.clone();
-        let (peer, routes, cancellation_sender) = self
+        let (peer, routes, cancellation_sender, generation) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         let timeout = self.relay_timeout;
+        let _permit =
+            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
+                .await
+            {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(error)) => return Some(Err(error)),
+                Err(_) => {
+                    log_upstream_request_error(
+                        event,
+                        started.elapsed().as_millis(),
+                        "queue_saturated",
+                        None,
+                        None,
+                        None,
+                    );
+                    return Some(Err(format!(
+                        "upstream `{}` relay concurrency queue timed out",
+                        config.name
+                    )));
+                }
+            };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -1046,15 +1090,37 @@ impl UpstreamPool {
         };
         params.uri = original_uri;
         let request_meta = params.meta.clone();
-        let (peer, routes, cancellation_sender) = self
+        let (peer, routes, cancellation_sender, generation) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
             .await?;
         let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
         let event = UpstreamRequestLog::resource(&config.name, redacted_uri, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         let timeout = self.relay_timeout;
+        let _permit =
+            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
+                .await
+            {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(error)) => return Some(Err(error)),
+                Err(_) => {
+                    log_upstream_request_error(
+                        event,
+                        started.elapsed().as_millis(),
+                        "queue_saturated",
+                        None,
+                        None,
+                        None,
+                    );
+                    return Some(Err(format!(
+                        "upstream `{}` relay concurrency queue timed out",
+                        config.name
+                    )));
+                }
+            };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -1177,6 +1243,7 @@ impl UpstreamPool {
         Peer<RoleClient>,
         Arc<RelayRouteState>,
         Option<HttpCancellationSender>,
+        Option<u64>,
     )> {
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
@@ -1199,6 +1266,7 @@ impl UpstreamPool {
                         entry.peer.clone(),
                         Arc::clone(&entry.routes),
                         entry.cancellation_sender.clone(),
+                        entry._connection.runtime.generation,
                     ));
                 }
                 cache.remove(&key);
@@ -1231,6 +1299,7 @@ impl UpstreamPool {
                         entry.peer.clone(),
                         Arc::clone(&entry.routes),
                         entry.cancellation_sender.clone(),
+                        entry._connection.runtime.generation,
                     ));
                 }
                 cache.remove(&key);
@@ -1292,6 +1361,7 @@ impl UpstreamPool {
             }
         };
         let peer = conn.peer.clone();
+        let generation = conn.runtime.generation;
         // Enforce the LRU cap BEFORE inserting so a burst of unique sessions
         // cannot push the live-peer count past the bound; shut evicted peers
         // down off-lock.
@@ -1315,7 +1385,7 @@ impl UpstreamPool {
             evicted_conn.shutdown(&name, "relay.cache.lru_evict").await;
         }
 
-        Some((peer, routes, cancellation_sender))
+        Some((peer, routes, cancellation_sender, generation))
     }
 
     /// Evict and shut down the cached relay connection for one

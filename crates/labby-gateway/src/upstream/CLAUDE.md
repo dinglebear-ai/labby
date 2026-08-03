@@ -73,7 +73,9 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 | Constant | Value | Location |
 |----------|-------|----------|
 | `CIRCUIT_BREAKER_THRESHOLD` | 3 | `types.rs` |
-| `REPROBE_INTERVAL` | 30 seconds | `types.rs` |
+| `REPROBE_INTERVAL` | 30 seconds base | `types.rs` |
+| `MAX_REPROBE_INTERVAL` | 30 minutes | `types.rs` |
+| `DEFAULT_UPSTREAM_CALL_CONCURRENCY` | 8 per upstream | `pool/helpers.rs` |
 | `DISCOVERY_TIMEOUT` | 15 seconds | `pool/helpers.rs` |
 | `DEFAULT_MAX_RESPONSE_BYTES` | 10 MB | `pool/helpers.rs` |
 
@@ -94,4 +96,6 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
   `src/security/spawn_guard.rs` for the canonical comment.
 - Do not import API-specific types (router, state) from `api/`.
 - The pool is constructed in `cli/serve.rs` and injected into `AppState` and `LabMcpServer`.
-- Circuit breaker state is internal to the pool. Surfaces call `record_failure()` and `record_success()`.
+- Circuit breaker state is internal to the pool. Surfaces call `record_failure()` and `record_success()`. Open circuits use exponential quarantine, and every failed reprobe resets the quarantine clock.
+- Every upstream RPC must pass through the per-upstream bulkhead. Do not bypass `timed_capability_call` or the relay generation registration when adding tool, prompt, or resource paths.
+- Stdio lifecycle ownership lives in `pool/stdio_transport.rs`; it is the single waiter for child exit so PID, generation, exit status, stderr tail, and invalidated requests remain correlated.

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
 use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome, ToolsRender};
@@ -308,18 +309,23 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         scope: &ToolScope,
         ctx: ExecCtx,
+        cancellation: &CancellationToken,
     ) -> Result<ToolCallOutcome, ToolError> {
-        match tokio::time::timeout_at(
-            deadline,
-            self.call_tool_id_outcome(id, params, caller, surface, scope, ctx),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(ToolError::Sdk {
-                sdk_kind: "timeout".to_string(),
-                message: "Code Mode execution timed out".to_string(),
+        tokio::select! {
+            () = cancellation.cancelled() => Err(ToolError::Sdk {
+                sdk_kind: "cancelled".to_string(),
+                message: "Code Mode execution was cancelled".to_string(),
             }),
+            result = tokio::time::timeout_at(
+                deadline,
+                self.call_tool_id_outcome(id, params, caller, surface, scope, ctx),
+            ) => match result {
+                Ok(result) => result,
+                Err(_) => Err(ToolError::Sdk {
+                    sdk_kind: "timeout".to_string(),
+                    message: "Code Mode execution timed out".to_string(),
+                }),
+            },
         }
     }
 

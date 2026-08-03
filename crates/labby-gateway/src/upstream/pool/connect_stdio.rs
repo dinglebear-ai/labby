@@ -215,11 +215,12 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     handler: H,
     lifecycle: LifecycleAttempt,
 ) -> Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>), StdioConnectError> {
+    use process_wrap::tokio::CommandWrap;
     #[cfg(unix)]
-    use process_wrap::tokio::{CommandWrap, ProcessGroup};
-    use rmcp::transport::child_process::TokioChildProcess;
-    use std::process::Stdio;
+    use process_wrap::tokio::ProcessGroup;
     use tokio::process::Command;
+
+    use super::stdio_transport::DiagnosticChildTransport;
 
     // SECURITY (S1): never inherit labby's full environment — it holds
     // LABBY_OAUTH_ENCRYPTION_KEY and every upstream credential. Start from a
@@ -287,24 +288,12 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     // `LABBY_GW_UPSTREAM_STDERR` (default DEBUG; `off` discards).
     let stderr_level = upstream_stderr_log_level();
     let stderr_capture = StdioDiagnostics::default();
-    let stderr_cfg = || Stdio::piped();
-
+    let mut wrapped = CommandWrap::from(cmd);
     #[cfg(unix)]
-    let (process, child_stderr) = {
-        let mut wrapped = CommandWrap::from(cmd);
-        wrapped.wrap(ProcessGroup::leader());
-        TokioChildProcess::builder(wrapped)
-            .stderr(stderr_cfg())
-            .spawn()
-            .map_err(StdioConnectError::without_diagnostics)?
-    };
-    #[cfg(not(unix))]
-    let (process, child_stderr) = {
-        TokioChildProcess::builder(cmd)
-            .stderr(stderr_cfg())
-            .spawn()
-            .map_err(StdioConnectError::without_diagnostics)?
-    };
+    wrapped.wrap(ProcessGroup::leader());
+    let (process, child_stderr) =
+        DiagnosticChildTransport::spawn(wrapped, command.name.clone(), stderr_capture.clone())
+            .map_err(StdioConnectError::without_diagnostics)?;
 
     // INVARIANT: a piped child stderr MUST be drained continuously. A chatty
     // upstream (e.g. axon at INFO) fills the ~64 KB pipe buffer and then blocks
@@ -318,10 +307,12 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     );
 
     let pid = process.id();
+    let generation = process.generation();
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %command.name, transport = "stdio",
         action = "upstream.connect.start", command = %command.display, pid = ?pid,
+        generation,
         "upstream connect start",
     );
 
@@ -379,7 +370,8 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %command.name, transport = "stdio",
-        action = "upstream.connect.finish", pid = ?pid, tool_count = tools.len(),
+        action = "upstream.connect.finish", pid = ?pid, generation,
+        tool_count = tools.len(),
         "upstream connect finish",
     );
 
@@ -413,6 +405,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         peer,
         UpstreamRuntimeMetadata {
             pid,
+            generation: Some(generation),
             pgid: pgid_for_runtime,
             #[cfg(windows)]
             job_handle: job_handle_for_runtime,
