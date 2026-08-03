@@ -149,11 +149,46 @@ fn parse_shebang(path: &Path) -> Result<Option<(String, Option<String>)>, ProxyC
     )))
 }
 
+#[cfg(not(windows))]
 pub(crate) fn executable_on_path(program: &OsStr, path_env: Option<&OsStr>) -> Option<PathBuf> {
     let path_env = path_env?;
     std::env::split_paths(path_env)
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file() && is_executable(candidate))
+}
+
+#[cfg(windows)]
+pub(crate) fn executable_on_path(program: &OsStr, path_env: Option<&OsStr>) -> Option<PathBuf> {
+    let path_env = path_env?;
+    let names = windows_executable_names(program);
+    for directory in std::env::split_paths(path_env) {
+        for name in &names {
+            let candidate = directory.join(name);
+            if is_executable(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+const WINDOWS_EXECUTABLE_EXTENSIONS: [&str; 4] = ["com", "exe", "bat", "cmd"];
+
+#[cfg(windows)]
+fn windows_executable_names(program: &OsStr) -> Vec<PathBuf> {
+    let program = PathBuf::from(program);
+    if program.extension().is_some() {
+        return vec![program];
+    }
+    WINDOWS_EXECUTABLE_EXTENSIONS
+        .iter()
+        .map(|extension| {
+            let mut candidate = program.clone();
+            candidate.set_extension(extension);
+            candidate
+        })
+        .collect()
 }
 
 fn contains_path_separator(value: &OsStr) -> bool {
@@ -172,6 +207,14 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(windows)]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
+        && path
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| {
+                WINDOWS_EXECUTABLE_EXTENSIONS
+                    .iter()
+                    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+            })
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -233,12 +276,16 @@ mod tests {
     #[cfg(not(unix))]
     fn make_executable(_path: &Path) {}
 
+    fn platform_executable_path(directory: &Path, stem: &str) -> PathBuf {
+        directory.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX))
+    }
+
     #[test]
     fn resolves_javascript_file_through_node() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         fs::create_dir(&bin).unwrap();
-        let node = bin.join("node");
+        let node = platform_executable_path(&bin, "node");
         fs::write(&node, "").unwrap();
         make_executable(&node);
         let script = dir.path().join("server.js");
@@ -262,7 +309,7 @@ mod tests {
     #[test]
     fn executes_executable_target_directly() {
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("server");
+        let target = platform_executable_path(dir.path(), "server");
         fs::write(
             &target,
             "#!/bin/sh
@@ -302,7 +349,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         fs::create_dir(&bin).unwrap();
-        let python = bin.join("python3");
+        let python = platform_executable_path(&bin, "python3");
         fs::write(&python, "").unwrap();
         make_executable(&python);
         let target = dir.path().join("server");
