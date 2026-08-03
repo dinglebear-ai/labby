@@ -1470,8 +1470,26 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn relay_observability_callback_logs_do_not_include_code_state_or_target_url() {
+    #[test]
+    fn relay_observability_callback_logs_do_not_include_code_state_or_target_url() {
+        const CHILD_ENV: &str = "LABBY_TEST_OAUTH_RELAY_CALLBACK_LOG_CHILD";
+        const TEST_NAME: &str = "api::services::oauth_relay::tests::relay_observability_callback_logs_do_not_include_code_state_or_target_url";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated callback log-capture test failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
         let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -1487,45 +1505,53 @@ mod tests {
             );
         let _guard = tracing::subscriber::set_default(subscriber);
         crate::test_support::rebuild_tracing_interest_cache();
-
-        let (_dir, state) = test_state().await;
-        let manager = state.public_relay.as_ref().unwrap().clone();
-        manager
-            .upsert(PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (_dir, state) = test_state().await;
+            let manager = state.public_relay.as_ref().unwrap().clone();
+            manager
+                .upsert(PublicRelayEntry::new(
+                    MachineId::parse("dookie").unwrap(),
+                    "http://100.88.16.79:38935/callback/dookie",
+                    None,
+                    false,
+                ))
+                .await
+                .unwrap();
+            let app = crate::api::router::build_router_with_bearer(
+                state,
+                Some("secret-token".into()),
                 None,
-                false,
-            ))
-            .await
-            .unwrap();
-        let app =
-            crate::api::router::build_router_with_bearer(state, Some("secret-token".into()), None);
-        drop(
-            app.clone().oneshot(
-                Request::builder()
-                    .uri(
-                        "/callback/dookie?code=abc&state=secret-state&iss=https%3A%2F%2Fdinglebear.ai",
-                    )
-                    .header("x-request-id", "issuer-callback")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-        );
-        let oversized_query = "%41".repeat(PUBLIC_QUERY_LIMIT_BYTES / 3 + 2);
-        let oversized = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/callback/dookie?{oversized_query}"))
-                    .header("x-request-id", "oversized-query")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            );
+            drop(
+                app.clone().oneshot(
+                    Request::builder()
+                        .uri(
+                            "/callback/dookie?code=abc&state=secret-state&iss=https%3A%2F%2Fdinglebear.ai",
+                        )
+                        .header("x-request-id", "issuer-callback")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+            );
+            let oversized_query = "%41".repeat(PUBLIC_QUERY_LIMIT_BYTES / 3 + 2);
+            let oversized = app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/callback/dookie?{oversized_query}"))
+                        .header("x-request-id", "oversized-query")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        });
 
         drop(_guard);
         let logs = crate::test_support::captured_logs(&buf);
