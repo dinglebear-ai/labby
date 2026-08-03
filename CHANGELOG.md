@@ -25,6 +25,19 @@ identifiers were removed. Commit links remain the authoritative historical recor
   configuration, environment, service, action, CLI, API, and OpenAPI inventory
   coverage with drift tests.
 
+## [1.9.0](https://github.com/dinglebear-ai/labby/compare/v1.8.7...v1.9.0) (2026-08-03)
+
+
+### Added
+
+* consolidate MCP gateway and stdio proxy ([#316](https://github.com/dinglebear-ai/labby/issues/316)) ([e223894](https://github.com/dinglebear-ai/labby/commit/e22389432d4ddc9db173f3213954452958be981f))
+
+
+### Fixed
+
+* **ci:** preserve managed Kache on persistent hosts ([#319](https://github.com/dinglebear-ai/labby/issues/319)) ([09746a7](https://github.com/dinglebear-ai/labby/commit/09746a7faba5b2d3f1f750d60c86b76734c24575))
+* **container:** install Claude Code native binary under npm 12 ([#322](https://github.com/dinglebear-ai/labby/issues/322)) ([0322a37](https://github.com/dinglebear-ai/labby/commit/0322a37e6ddc3237f4a048e5882d92acffa0dd83))
+
 ## [1.8.7](https://github.com/dinglebear-ai/labby/compare/v1.8.6...v1.8.7) (2026-08-03)
 
 
