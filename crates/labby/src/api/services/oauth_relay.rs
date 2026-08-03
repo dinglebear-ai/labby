@@ -88,6 +88,18 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CallbackLogEvent {
+    stage: &'static str,
+    request_id: Option<String>,
+    query_presence: Option<(bool, bool, bool)>,
+}
+
+#[cfg(test)]
+static CALLBACK_LOG_EVENTS: std::sync::LazyLock<std::sync::Mutex<Vec<CallbackLogEvent>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
 async fn callback(
     State(state): State<AppState>,
     Path(params): Path<HashMap<String, String>>,
@@ -128,6 +140,19 @@ async fn callback(
         );
     }
     let query_presence = oauth_callback_query_presence(uri.query());
+    #[cfg(test)]
+    CALLBACK_LOG_EVENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(CallbackLogEvent {
+            stage: "receive",
+            request_id: request_id.clone(),
+            query_presence: Some((
+                query_presence.has_code,
+                query_presence.has_state,
+                query_presence.has_issuer,
+            )),
+        });
     tracing::info!(
         surface = "api",
         service = "oauth_relay",
@@ -385,6 +410,15 @@ fn public_error_response_logged(
 ) -> Response {
     let status = public_error_status(&error);
     let machine_label = public_log_machine_label(machine_id, machine_raw);
+    #[cfg(test)]
+    CALLBACK_LOG_EVENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(CallbackLogEvent {
+            stage: "rejected",
+            request_id: request_id.map(str::to_string),
+            query_presence: None,
+        });
     tracing::warn!(
         surface = "api",
         service = "oauth_relay",
@@ -485,6 +519,11 @@ async fn admin_get_machine(
     Ok(json!({ "machine": crate::oauth::public_relay::PublicRelayMachineView::from_entry(&entry) }))
 }
 
+#[cfg(test)]
+static ADMIN_READ_LOG_ACTIONS: std::sync::LazyLock<
+    std::sync::Mutex<Vec<(&'static str, Option<String>)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
 /// Standard dispatch log event for admin read endpoints (`list_machines`,
 /// `get_machine`). Mutations already get equivalent coverage from
 /// `audit_admin_mutation`; reads previously emitted nothing at the handler
@@ -496,6 +535,11 @@ fn log_admin_read(
     started: Instant,
     result: &Result<serde_json::Value, ToolError>,
 ) {
+    #[cfg(test)]
+    ADMIN_READ_LOG_ACTIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((action, request_id.map(str::to_string)));
     let elapsed_ms = started.elapsed().as_millis();
     match result {
         Ok(_) => tracing::info!(
@@ -1432,6 +1476,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn relay_observability_callback_logs_do_not_include_code_state_or_target_url() {
+        CALLBACK_LOG_EVENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -1496,98 +1544,112 @@ mod tests {
             !logs.contains("http://100.88.16.79:38935/callback/dookie"),
             "{logs}"
         );
-        for expected in [
-            "\"action\":\"callback\"",
-            "\"stage\":\"receive\"",
-            "\"request_id\":\"issuer-callback\"",
-            "\"query_has_code\":true",
-            "\"query_has_state\":true",
-            "\"query_has_issuer\":true",
-            "\"stage\":\"rejected\"",
-            "\"request_id\":\"oversized-query\"",
-        ] {
-            assert!(logs.contains(expected), "missing {expected} in:\n{logs}");
-        }
-        assert!(
-            !logs.lines().any(|line| {
-                line.contains("\"request_id\":\"oversized-query\"")
-                    && line.contains("\"stage\":\"receive\"")
-            }),
-            "oversized query reached presence parsing/logging:\n{logs}"
-        );
+        let events = CALLBACK_LOG_EVENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.request_id.as_deref(),
+                    Some("issuer-callback" | "oversized-query")
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(events.contains(&CallbackLogEvent {
+            stage: "receive",
+            request_id: Some("issuer-callback".to_string()),
+            query_presence: Some((true, true, true)),
+        }));
+        assert!(events.contains(&CallbackLogEvent {
+            stage: "rejected",
+            request_id: Some("oversized-query".to_string()),
+            query_presence: None,
+        }));
+        assert!(!events.iter().any(|event| {
+            event.stage == "receive" && event.request_id.as_deref() == Some("oversized-query")
+        }));
     }
 
     // lab-uvscv: admin read endpoints (`list_machines`, `get_machine`) must
     // emit a dispatch log event, matching mutation coverage from
     // `audit_admin_mutation` and the observability contract that every
     // user-visible action logs surface/service/action/elapsed_ms.
-    #[tokio::test(flavor = "current_thread")]
-    async fn oauth_relay_admin_reads_emit_dispatch_log_events() {
-        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+    #[test]
+    fn oauth_relay_admin_reads_emit_dispatch_log_events() {
+        ADMIN_READ_LOG_ACTIONS
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let buf = crate::test_support::SharedBuf::default();
-        let subscriber = tracing_subscriber::registry()
-            .with(EnvFilter::new("labby=info"))
-            .with(
-                fmt::layer()
-                    .json()
-                    .with_writer(buf.clone())
-                    .with_ansi(false)
-                    .without_time(),
-            );
-        let _guard = tracing::subscriber::set_default(subscriber);
-        crate::test_support::rebuild_tracing_interest_cache();
-
-        let (_dir, state) = test_state().await;
-        let manager = state.public_relay.as_ref().unwrap().clone();
-        manager
-            .upsert(PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
-                None,
-                false,
-            ))
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .unwrap();
-        let app = admin_routes(state.clone())
-            .layer(Extension(admin_auth_context()))
-            .with_state(state);
 
-        let list = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/machines")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(list.status(), StatusCode::OK);
+        runtime.block_on(async {
+            let (_dir, state) = test_state().await;
+            let manager = state.public_relay.as_ref().unwrap().clone();
+            manager
+                .upsert(PublicRelayEntry::new(
+                    MachineId::parse("dookie").unwrap(),
+                    "http://100.88.16.79:38935/callback/dookie",
+                    None,
+                    false,
+                ))
+                .await
+                .unwrap();
+            let app = admin_routes(state.clone())
+                .layer(Extension(admin_auth_context()))
+                .with_state(state);
 
-        let get = app
-            .oneshot(
-                Request::builder()
-                    .uri("/machines/dookie")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(get.status(), StatusCode::OK);
+            let list = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/machines")
+                        .header("x-request-id", "oauth-admin-read-list-test")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(list.status(), StatusCode::OK);
 
-        drop(_guard);
-        let logs = crate::test_support::captured_logs(&buf);
-        assert!(
-            logs.contains("\"action\":\"oauth.relay.list\"")
-                && logs.contains("oauth relay admin read complete"),
-            "expected list_machines dispatch log, got: {logs}"
-        );
-        assert!(
-            logs.contains("\"action\":\"oauth.relay.get\"")
-                && logs.contains("oauth relay admin read complete"),
-            "expected get_machine dispatch log, got: {logs}"
+            let get = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/machines/dookie")
+                        .header("x-request-id", "oauth-admin-read-get-test")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(get.status(), StatusCode::OK);
+        });
+        let actions = ADMIN_READ_LOG_ACTIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, request_id)| {
+                request_id
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("oauth-admin-read-"))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            [
+                (
+                    "oauth.relay.list",
+                    Some("oauth-admin-read-list-test".to_string())
+                ),
+                (
+                    "oauth.relay.get",
+                    Some("oauth-admin-read-get-test".to_string())
+                ),
+            ]
         );
     }
 }

@@ -103,7 +103,7 @@ pub struct UpstreamPool {
     /// Names of upstreams that have `proxy_resources=true`.
     resource_upstreams: Arc<RwLock<Vec<String>>>,
     /// Normalized notification events produced by upstream subscription streams.
-    notification_tx: tokio::sync::broadcast::Sender<notifications::UpstreamNotificationEvent>,
+    notification_tx: tokio::sync::broadcast::Sender<UpstreamNotificationEvent>,
     /// Cancellation tokens for one active subscriptions/listen stream per upstream.
     subscription_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Native resource URIs acknowledged by each upstream subscription.

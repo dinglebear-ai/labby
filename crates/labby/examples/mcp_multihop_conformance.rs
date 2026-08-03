@@ -60,6 +60,10 @@ impl LeafServer {
             .map(|dir| dir.join(name))
     }
 
+    fn subscription_catalog_changed() -> bool {
+        Self::marker_path("emit-subscriptions").is_some_and(|path| path.exists())
+    }
+
     fn task(task_id: impl Into<String>, payload: TaskPayload, updated_at: &str) -> DetailedTask {
         DetailedTask::new(
             Task::new(task_id, payload.status(), TASK_CREATED_AT, updated_at)
@@ -167,6 +171,13 @@ impl ServerHandler for LeafServer {
                 Arc::new(Map::new()),
             ),
         ]);
+        if Self::subscription_catalog_changed() {
+            tools.push(Tool::new(
+                "subscription_tool",
+                "Appears after the subscription trigger",
+                Arc::new(Map::new()),
+            ));
+        }
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -362,13 +373,17 @@ impl ServerHandler for LeafServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
-        Ok(ListPromptsResult::with_all_items(
-            (0..PROMPT_COUNT)
-                .map(|index| {
-                    Prompt::new(format!("prompt_{index:03}"), Some("Multi-hop prompt"), None)
-                })
-                .collect(),
-        ))
+        let mut prompts = (0..PROMPT_COUNT)
+            .map(|index| Prompt::new(format!("prompt_{index:03}"), Some("Multi-hop prompt"), None))
+            .collect::<Vec<_>>();
+        if Self::subscription_catalog_changed() {
+            prompts.push(Prompt::new(
+                "subscription_prompt",
+                Some("Appears after the subscription trigger"),
+                None,
+            ));
+        }
+        Ok(ListPromptsResult::with_all_items(prompts))
     }
 
     async fn get_prompt(
@@ -389,16 +404,21 @@ impl ServerHandler for LeafServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(
-            (0..RESOURCE_COUNT)
-                .map(|index| {
-                    Resource::new(
-                        format!("fixture://resource/{index:03}"),
-                        format!("resource_{index:03}"),
-                    )
-                })
-                .collect(),
-        ))
+        let mut resources = (0..RESOURCE_COUNT)
+            .map(|index| {
+                Resource::new(
+                    format!("fixture://resource/{index:03}"),
+                    format!("resource_{index:03}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        if Self::subscription_catalog_changed() {
+            resources.push(Resource::new(
+                "fixture://resource/subscription",
+                "subscription_resource",
+            ));
+        }
+        Ok(ListResourcesResult::with_all_items(resources))
     }
 
     async fn list_resource_templates(
@@ -545,13 +565,15 @@ fn config_path(home: &Path) -> PathBuf {
 fn write_config(home: &Path, upstream: UpstreamConfig) -> Result<()> {
     let path = config_path(home);
     std::fs::create_dir_all(path.parent().context("config parent")?)?;
-    let mut config = LabConfig::default();
-    config.gateway = GatewayPreferences {
-        disable_spawn_guard: true,
-        upstream_stderr_level: Some("warn".to_string()),
-        ..GatewayPreferences::default()
+    let config = LabConfig {
+        gateway: GatewayPreferences {
+            disable_spawn_guard: true,
+            upstream_stderr_level: Some("warn".to_string()),
+            ..GatewayPreferences::default()
+        },
+        upstream: vec![upstream],
+        ..LabConfig::default()
     };
-    config.upstream = vec![upstream];
     std::fs::write(path, toml::to_string(&config)?)?;
     Ok(())
 }
@@ -834,7 +856,7 @@ async fn run_driver() -> Result<()> {
             .iter()
             .filter(|tool| tool.name.ends_with("needs_input") || tool.name.contains("echo_"))
             .count();
-        if leaf_tools >= TOOL_COUNT + 1 {
+        if leaf_tools > TOOL_COUNT {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -845,7 +867,7 @@ async fn run_driver() -> Result<()> {
         .take(30)
         .collect::<Vec<_>>();
     ensure!(
-        leaf_tools >= TOOL_COUNT + 1,
+        leaf_tools > TOOL_COUNT,
         "expected all nested leaf tools, got {leaf_tools}; observed {observed:?}"
     );
     let echo_name = nested_name(&tools, |tool| tool.name.as_ref(), "echo_074")?.to_string();

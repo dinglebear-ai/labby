@@ -10,7 +10,6 @@ use futures::StreamExt;
 #[cfg(unix)]
 use nix::errno::Errno;
 use tempfile::NamedTempFile;
-use tokio::sync::RwLock;
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{

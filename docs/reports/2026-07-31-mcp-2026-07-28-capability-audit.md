@@ -2,7 +2,7 @@
 
 Original audit: 2026-07-31
 
-Updated closeout: 2026-08-01
+Updated closeout: 2026-08-02
 
 ## Anchors
 
@@ -28,9 +28,13 @@ A Labby-native process driver now passes through this real chain:
 client -> root Labby -> middle Labby -> synthetic leaf
 ```
 
-That run also discovered and fixed a multi-hop resource namespace defect. Nested
-`lab://upstream/...` resource and template URIs are now opaque and remain
-routable through every gateway hop.
+That run also discovered and fixed multi-hop resource namespace, stateless
+cancellation, and nested subscription-cache defects. Nested
+`lab://upstream/...` resource and template URIs remain opaque and routable. A
+stateful watch handoff plus an opaque per-request token carries cancellation
+through the stdio root and authenticated stateless HTTP middle. Tool-list
+notifications refresh the affected upstream cache before contract-aware fanout,
+so real nested catalog changes reach the outer client.
 
 ## Capability Matrix
 
@@ -74,9 +78,22 @@ tasks receive subject-bound gateway handles tied to the creating connection.
 ### Subscriptions and notifications
 
 Labby opens and retries upstream `subscriptions/listen` streams. It forwards
-tool, prompt, and resource list changes plus exact resource updates. Relay
-connections translate and forward progress, cancellation, task status, custom
-notifications, resource updates, and list changes.
+tool, prompt, and resource list changes plus exact resource updates. Tool-list
+changes first refresh the cached descriptors for the affected upstream; without
+that refresh an outer gateway would correctly suppress a notification because
+its visible contract had not changed. Relay connections translate and forward
+progress, cancellation, task status, custom notifications, resource updates,
+and list changes.
+
+### Stateless cancellation
+
+Labby no longer depends on transport-local request IDs for multi-hop HTTP
+cancellation. The request path carries a stateful `watch::Receiver<bool>` and an
+opaque per-request token. A hidden Labby-to-Labby `tools/call` control request
+uses the required MCP method/name headers and request client context, and the
+HTTP response is drained. Registry entries use identity-safe delayed cleanup so
+a cancellation arriving after stateless request teardown still finds the exact
+request without deleting a newer reused key.
 
 ### Error and result fidelity
 
@@ -104,8 +121,11 @@ resource templates.
 
 Completed during implementation:
 
-- full `labby --all-features` compile
-- relay module: 15 passed, including live progress, cancellation, and task status
+- `cargo fmt --all -- --check`: passed
+- warnings-denied all-target compilation: passed
+- `cargo clippy --workspace --all-features --all-targets -- -D warnings`: passed
+- `cargo test --workspace --all-features`: passed, including doctests
+- relay regressions passed, including live progress, cancellation, and task status
 - provenance regression: passed
 - upstream error-fidelity regressions: passed
 - current-request capability regression: passed
@@ -119,27 +139,24 @@ Completed during implementation:
 - client extensions: 17 passed; 11 failures matched four explicit SDK-owned scenarios
 
 The process driver covers modern discovery, late-page tools, tool execution,
-MRTR, prompts, resources, templates, completion, authentication, and provenance.
-It runs in `scripts/ci/mcp-conformance.sh` before the pinned rmcp fixture suites.
+MRTR, prompts, resources, templates, completion, authentication, provenance,
+task create/get/update/cancel and status translation, progress, cancellation
+through both gateways, tool/prompt/resource list changes, and exact resource
+updates. It runs in `scripts/ci/mcp-conformance.sh` before the pinned rmcp
+fixture suites.
 
-## Remaining Closeout Work
+## Closeout Status
 
-Remaining work is validation depth and repository closeout, not missing core
-proxy implementation:
-
-1. Extend the process driver with task lifecycle/status, progress/cancellation,
-   and upstream/downstream subscription delivery. These are currently proven by
-   live in-memory relay and subscription tests.
-2. Add proxy-level JSON Schema 2020-12 and arbitrary structured-content cases.
-3. Add configured OAuth issuer/application-type behavior to a Labby-native
-   gateway scenario; SDK and authorization-server coverage already exists.
-4. Clean compiler warnings in touched gateway modules.
-5. Run Clippy, full workspace tests, CI review, and final diff review. Formatting
-   and the complete conformance script are already green.
+The implementation, process-level capability matrix, formatting, warnings-denied
+compilation, Clippy, full workspace tests, and complete MCP conformance are
+complete. Remaining future depth items, such as broader arbitrary
+structured-content samples or additional configured OAuth deployment scenarios,
+are enhancements rather than gaps in an advertised primitive or proxy route.
 
 ## Definition of Done
 
 Core capability implementation is complete when every advertised capability has
 a working producer or route and proxy envelopes remain transparent. That
-threshold is met by the implemented code and focused regressions. PR closeout
-still requires the full repository verification sequence and successful CI.
+threshold is met by the implementation, process driver, full repository gates,
+and strict conformance run. Pull-request checks provide the final hosted-CI
+confirmation after the branch is pushed.

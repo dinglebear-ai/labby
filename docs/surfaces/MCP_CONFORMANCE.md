@@ -1,7 +1,7 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-08-02"
 ---
 
 # MCP 2026-07-28 Conformance
@@ -65,7 +65,24 @@ page.
 | Resources | 70 resources aggregate; nested gateway URIs remain routable on read |
 | Resource templates | 70 templates aggregate without flattening nested gateway namespaces |
 | Completion | Completion against a nested resource template reaches the leaf |
+| Tasks | Create/get/update/cancel traverse both gateways; Working, Completed, and Cancelled statuses use the gateway task ID |
+| Progress | A request-scoped progress token is preserved and translated through both relay connections |
+| Cancellation | Client cancellation propagates through the stdio root and stateless authenticated HTTP middle to the leaf request token |
+| Subscriptions | Real tool, prompt, and resource catalog mutations plus an exact resource update reach the root subscriber |
 | Provenance | Labby stamps the responding server while preserving leaf identity and custom metadata |
+
+The driver also exercises stateless cancellation using a stateful watch handoff,
+an opaque per-request cancellation token, and a hidden Labby-to-Labby control
+tool for HTTP hops where rmcp rewrites request IDs. The control request carries
+the required `Mcp-Method`, `Mcp-Name`, protocol version, client information, and
+client capabilities headers/metadata, and its HTTP response is drained before
+completion.
+
+Subscription fanout refreshes the cached upstream tool descriptors before
+notifying downstream peers. This is required for nested gateways: a bare
+`notifications/tools/list_changed` event without cache refresh leaves the outer
+gateway contract unchanged and is correctly suppressed by contract-aware
+fanout.
 
 The driver discovered and now guards a critical namespace rule: an upstream
 resource URI is opaque. If middle returns
@@ -87,7 +104,7 @@ unroutable.
 | Tasks | Gateway-owned handles route get/update/cancel and translate task-status IDs | task routing tests and relay task-status regression |
 | Subscriptions | Labby consumes upstream listen streams and forwards subscribed list/resource notifications | upstream subscription and peer fanout tests |
 | Resource subscriptions | Labby acknowledges only exact URIs an upstream accepted | subscription filter tests |
-| Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | complete relay module, 15 passing tests |
+| Progress and cancellation | Progress tokens are translated per relay connection; stateful watch receivers and opaque cancellation tokens survive early cancellation, stateless request-ID rewriting, and request teardown | focused relay tests plus the three-process driver |
 | Provenance | Ordinary results identify Labby and preserve distinct upstream server identity under `ai.dinglebear.labby/upstreamServerInfo` | provenance unit test and multi-hop driver |
 | Error fidelity | Tool error classification is observational; original content, structured content, and metadata pass through | upstream normalization tests |
 | Auth and scope step-up | Labby owns inbound OAuth 2.1 policy, CIMD, RFC 9207 issuer binding, revocation, client credentials, ID-JAG exchange, and RFC 9728 challenges | dated client suite plus Labby auth contract tests |
@@ -123,8 +140,8 @@ Catalog-derived responses are dynamic and private:
 ```
 
 Labby establishes upstream `subscriptions/listen` streams, consumes list and
-resource updates, and publishes normalized events to downstream subscription
-sinks. Downstream acknowledgement is filtered to notification categories and
+resource updates, refreshes cached tool descriptors on tool-list changes, and
+publishes normalized events to downstream subscription sinks. Downstream acknowledgement is filtered to notification categories and
 resource URIs Labby can actually deliver. Protected-route scope remains applied
 when notifications fan out.
 

@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use super::UpstreamPool;
-use super::helpers::bare_upstream_resource_uri;
+use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri, cached_upstream_tool};
 
 const NOTIFICATION_EVENT_CAPACITY: usize = 1024;
 const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -71,6 +71,40 @@ impl UpstreamPool {
     async fn clear_subscription_resources(&self, upstream: &str) {
         self.subscription_resources.write().await.remove(upstream);
         self.publish_subscribable_resource_snapshot().await;
+    }
+
+    async fn refresh_subscription_tools(
+        &self,
+        upstream: &str,
+        peer: &rmcp::service::Peer<rmcp::RoleClient>,
+    ) {
+        let tools = match tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await {
+            Ok(Ok(tools)) => tools,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    upstream,
+                    error = %error,
+                    "failed to refresh tools after upstream list-changed notification"
+                );
+                return;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    upstream,
+                    timeout_secs = DISCOVERY_TIMEOUT.as_secs(),
+                    "timed out refreshing tools after upstream list-changed notification"
+                );
+                return;
+            }
+        };
+        let upstream_name: Arc<str> = Arc::from(upstream);
+        let tools = tools
+            .into_iter()
+            .map(|tool| cached_upstream_tool(tool, &upstream_name))
+            .collect::<HashMap<_, _>>();
+        if let Some(entry) = self.catalog.write().await.get_mut(upstream) {
+            entry.tools = tools;
+        }
     }
 
     fn subscription_filter_is_empty(filter: &SubscriptionFilter) -> bool {
@@ -170,42 +204,43 @@ impl UpstreamPool {
                 loop {
                     let next = tokio::select! {
                         () = cancel.cancelled() => {
-                            let _ = subscription.cancel().await;
+                            drop(subscription.cancel().await);
                             return;
                         }
                         result = subscription.next() => result,
                     };
                     match next {
                         Ok(Some(ServerNotification::ToolListChangedNotification(_))) => {
-                            let _ = pool.notification_tx.send(
+                            pool.refresh_subscription_tools(&upstream, &peer).await;
+                            drop(pool.notification_tx.send(
                                 UpstreamNotificationEvent::ToolListChanged {
                                     upstream: upstream.clone(),
                                 },
-                            );
+                            ));
                         }
                         Ok(Some(ServerNotification::PromptListChangedNotification(_))) => {
-                            let _ = pool.notification_tx.send(
+                            drop(pool.notification_tx.send(
                                 UpstreamNotificationEvent::PromptListChanged {
                                     upstream: upstream.clone(),
                                 },
-                            );
+                            ));
                         }
                         Ok(Some(ServerNotification::ResourceListChangedNotification(_))) => {
-                            let _ = pool.notification_tx.send(
+                            drop(pool.notification_tx.send(
                                 UpstreamNotificationEvent::ResourceListChanged {
                                     upstream: upstream.clone(),
                                 },
-                            );
+                            ));
                         }
                         Ok(Some(ServerNotification::ResourceUpdatedNotification(notification))) => {
                             let uri =
                                 Self::gateway_resource_uri(&upstream, &notification.params.uri);
-                            let _ = pool.notification_tx.send(
+                            drop(pool.notification_tx.send(
                                 UpstreamNotificationEvent::ResourceUpdated {
                                     upstream: upstream.clone(),
                                     uri,
                                 },
-                            );
+                            ));
                         }
                         Ok(Some(other)) => {
                             tracing::debug!(

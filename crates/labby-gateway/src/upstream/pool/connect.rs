@@ -19,14 +19,18 @@ use std::time::Instant;
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
 use rmcp::model::{
-    CancelledNotification, CancelledNotificationParam, ClientJsonRpcMessage, ClientNotification,
-    NotificationMetaObject, ProtocolVersion, RequestId, RequestMetaObject,
+    CallToolRequest, CallToolRequestParams, CancelledNotification, CancelledNotificationParam,
+    ClientCapabilities, ClientJsonRpcMessage, ClientNotification, ClientRequest, Implementation,
+    NotificationMetaObject, ProtocolVersion, RequestId, RequestMetaObject, ServerJsonRpcMessage,
 };
 use rmcp::service::ClientServiceExt;
 use rmcp::transport::AuthClient;
-use rmcp::transport::common::http_header::HEADER_MCP_PROTOCOL_VERSION;
+use rmcp::transport::common::http_header::{
+    HEADER_MCP_METHOD, HEADER_MCP_NAME, HEADER_MCP_PROTOCOL_VERSION,
+};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClient, StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
+    StreamableHttpPostResponse,
 };
 use rmcp::{ClientHandler, RoleClient};
 
@@ -45,7 +49,7 @@ use super::helpers::{
     DEFAULT_REQUEST_TIMEOUT, max_response_bytes, upstream_target_redacted, upstream_transport,
 };
 use super::lifecycle_compat::{LifecycleAttempt, compatibility_retry, log_fallback};
-use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
+use crate::{MCP_RELAY_CANCELLATION_TOKEN_META_KEY, MCP_RELAY_CANCELLATION_TOOL_NAME};
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
 /// `reqwest::Client` for HTTP connections (P-M10).
@@ -428,18 +432,43 @@ enum HttpCancellationClient {
     Oauth(AuthClient<http_client::BodyCappedHttpClient>),
 }
 
-/// Sends an explicit notifications/cancelled POST for HTTP transports.
+/// Sends stateless cancellation control messages for HTTP transports.
 ///
 /// rmcp 3.1 closes a modern HTTP request's local response stream when a
-/// RequestHandle is cancelled, but does not transmit the cancellation
-/// notification to the server. Relay calls retain this sender so Labby can
-/// deliver the wire notification before asking rmcp to close its local stream.
+/// `RequestHandle` is cancelled, but does not transmit the cancellation to the
+/// server. Labby therefore sends its opaque-token control tool over an
+/// authenticated side channel, followed by a best-effort standard
+/// `notifications/cancelled` message for generic MCP compatibility.
 #[derive(Clone)]
 pub(super) struct HttpCancellationSender {
     uri: Arc<str>,
     client: HttpCancellationClient,
     auth_token: Option<String>,
     custom_headers: HashMap<HeaderName, HeaderValue>,
+}
+
+fn labby_cancellation_request(reason: &str, token: &str) -> ClientJsonRpcMessage {
+    let mut params = CallToolRequestParams::new(MCP_RELAY_CANCELLATION_TOOL_NAME);
+    let mut meta = RequestMetaObject::with_client_context(
+        ProtocolVersion::V_2026_07_28,
+        Implementation::new("labby-relay-cancellation", env!("CARGO_PKG_VERSION")),
+        ClientCapabilities::builder().build(),
+    );
+    meta.0.0.insert(
+        MCP_RELAY_CANCELLATION_TOKEN_META_KEY.to_string(),
+        serde_json::Value::String(token.to_string()),
+    );
+    params.meta = Some(meta);
+    params.arguments = serde_json::json!({
+        "reason": reason,
+        "token": token,
+    })
+    .as_object()
+    .cloned();
+    ClientJsonRpcMessage::request(
+        ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+        RequestId::String(format!("labby-cancel-{token}").into()),
+    )
 }
 
 fn cancellation_message(
@@ -471,7 +500,10 @@ impl HttpCancellationSender {
         );
     }
 
-    async fn post_message(&self, message: ClientJsonRpcMessage) -> anyhow::Result<()> {
+    async fn post_message(
+        &self,
+        message: ClientJsonRpcMessage,
+    ) -> anyhow::Result<StreamableHttpPostResponse> {
         let result = match &self.client {
             HttpCancellationClient::Plain(client) => {
                 client
@@ -496,9 +528,42 @@ impl HttpCancellationSender {
                     .await
             }
         };
-        result
-            .map(|_| ())
-            .map_err(|error| anyhow::anyhow!("explicit HTTP cancellation failed: {error}"))
+        result.map_err(|error| anyhow::anyhow!("explicit HTTP cancellation failed: {error}"))
+    }
+
+    pub(super) async fn send_labby_request(&self, reason: &str, token: &str) -> anyhow::Result<()> {
+        let mut sender = self.clone();
+        sender.custom_headers.insert(
+            HeaderName::from_bytes(HEADER_MCP_METHOD.as_bytes())?,
+            HeaderValue::from_static("tools/call"),
+        );
+        sender.custom_headers.insert(
+            HeaderName::from_bytes(HEADER_MCP_NAME.as_bytes())?,
+            HeaderValue::from_static(MCP_RELAY_CANCELLATION_TOOL_NAME),
+        );
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sender.post_message(labby_cancellation_request(reason, token)),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Labby HTTP cancellation request timed out"))??;
+        let (message, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            response.expect_initialized::<std::io::Error>(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Labby HTTP cancellation response timed out"))?
+        .map_err(|error| anyhow::anyhow!("invalid Labby HTTP cancellation response: {error}"))?;
+        match message {
+            ServerJsonRpcMessage::Response(_) => Ok(()),
+            ServerJsonRpcMessage::Error(error) => Err(anyhow::anyhow!(
+                "Labby HTTP cancellation request failed: {}",
+                error.error
+            )),
+            _ => Err(anyhow::anyhow!(
+                "Labby HTTP cancellation returned an unexpected message"
+            )),
+        }
     }
 
     pub(super) async fn send(
@@ -509,12 +574,14 @@ impl HttpCancellationSender {
     ) -> anyhow::Result<()> {
         self.post_message(cancellation_message(request_id, reason, token))
             .await
+            .map(|_| ())
     }
 }
 
-/// Build the side-channel used to deliver cancellation notifications for HTTP
-/// relay connections. Non-HTTP transports return None because their rmcp
-/// worker already forwards notifications/cancelled on the underlying stream.
+/// Build the side channel used to deliver cancellation control requests and
+/// standard notifications for HTTP relay connections. Non-HTTP transports
+/// return `None` because their rmcp worker already forwards
+/// `notifications/cancelled` on the underlying stream.
 pub(super) async fn build_http_cancellation_sender(
     config: &UpstreamConfig,
     subject: Option<&str>,
@@ -763,6 +830,7 @@ pub(super) fn runtime_origin_label(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod cancellation_tests {
     use super::*;
 

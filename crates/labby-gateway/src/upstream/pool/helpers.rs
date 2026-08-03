@@ -476,8 +476,7 @@ mod tests {
 
     #[test]
     fn resource_uri_rewrite_preserves_nested_gateway_namespace() {
-        let mut resource =
-            rmcp::model::Resource::new("lab://upstream/leaf/fixture://resource/069", "nested");
+        let mut resource = Resource::new("lab://upstream/leaf/fixture://resource/069", "nested");
 
         rewrite_resource_uri(&mut resource, "middle");
 

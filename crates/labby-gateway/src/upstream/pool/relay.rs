@@ -49,22 +49,23 @@ use std::sync::{
 };
 use std::time::Instant;
 
+#[allow(deprecated)]
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
-    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, CustomRequest,
-    GetPromptRequest, GetPromptRequestParams, GetPromptResponse, LoggingMessageNotificationParam,
+    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
+    GetPromptRequestParams, GetPromptResponse, LoggingMessageNotificationParam,
     ProgressNotificationParam, ProgressToken, ReadResourceRequest, ReadResourceRequestParams,
     ReadResourceResponse, RequestId, RequestMetaObject, ResourceUpdatedNotificationParam,
     ServerNotification, ServerResult, TaskStatusNotification, TaskStatusNotificationParams,
 };
 use rmcp::service::{NotificationContext, Peer, PeerRequestOptions, ServiceError};
 use rmcp::{ClientHandler, RoleClient, RoleServer};
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
-use crate::{MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY};
+use crate::{MCP_RELAY_CANCELLATION_TOKEN_META_KEY, MCP_RELAY_CANCELLATION_TOOL_NAME};
 
 use super::super::types::UpstreamCapability;
 use super::connect::{
@@ -347,12 +348,6 @@ impl RelayClientHandler {
         {
             Ok(()) => {
                 self.routes.record_task_notification_delivery();
-                tracing::warn!(
-                    upstream = %self.upstream_name,
-                    task_id,
-                    ?status,
-                    "DIAGNOSTIC forwarded translated task notification downstream"
-                );
             }
             Err(error) => {
                 tracing::warn!(
@@ -488,13 +483,6 @@ impl ClientHandler for RelayClientHandler {
         _context: NotificationContext<RoleClient>,
     ) {
         let native_task_id = params.task.task.task_id.clone();
-        let status = params.task.status();
-        tracing::warn!(
-            upstream = %self.upstream_name,
-            native_task_id,
-            ?status,
-            "DIAGNOSTIC received upstream task notification"
-        );
         let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
             tracing::debug!(
                 upstream = %self.upstream_name,
@@ -525,17 +513,18 @@ async fn send_labby_relay_cancellation(
     reason: &str,
     token: &str,
 ) -> Result<(), ServiceError> {
+    let mut params = CallToolRequestParams::new(MCP_RELAY_CANCELLATION_TOOL_NAME);
+    params.arguments = serde_json::json!({
+        "reason": reason,
+        "token": token,
+    })
+    .as_object()
+    .cloned();
     let result = peer
-        .send_request(ClientRequest::CustomRequest(CustomRequest::new(
-            MCP_RELAY_CANCELLATION_REQUEST_METHOD,
-            Some(serde_json::json!({
-                "reason": reason,
-                "token": token,
-            })),
-        )))
+        .send_request(ClientRequest::CallToolRequest(CallToolRequest::new(params)))
         .await?;
     match result {
-        ServerResult::CustomResult(_) => Ok(()),
+        ServerResult::CallToolResult(_) => Ok(()),
         _ => Err(ServiceError::UnexpectedResponse),
     }
 }
@@ -565,6 +554,32 @@ impl PendingRelayRequestId {
     }
 }
 
+async fn wait_for_downstream_cancellation(receiver: &mut watch::Receiver<bool>) {
+    if *receiver.borrow() {
+        return;
+    }
+    loop {
+        if receiver.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+        if *receiver.borrow_and_update() {
+            return;
+        }
+    }
+}
+
+fn cancellation_watch_from_token(token: CancellationToken) -> watch::Receiver<bool> {
+    let already_cancelled = token.is_cancelled();
+    let (sender, receiver) = watch::channel(already_cancelled);
+    if !already_cancelled {
+        tokio::spawn(async move {
+            token.cancelled().await;
+            sender.send_replace(true);
+        });
+    }
+    receiver
+}
+
 async fn dispatch_relay_cancellation(
     peer: &Peer<RoleClient>,
     cancellation_sender: Option<&HttpCancellationSender>,
@@ -577,7 +592,9 @@ async fn dispatch_relay_cancellation(
         return;
     }
 
-    if let Err(error) = send_labby_relay_cancellation(peer, reason, token).await {
+    if let Some(sender) = cancellation_sender
+        && let Err(error) = sender.send_labby_request(reason, token).await
+    {
         tracing::debug!(
             error = %error,
             "upstream did not accept the Labby relay cancellation request"
@@ -626,7 +643,7 @@ async fn send_relay_request(
     request: ClientRequest,
     mut request_meta: Option<RequestMetaObject>,
     downstream_request_id: RequestId,
-    downstream_cancel: CancellationToken,
+    mut downstream_cancel: watch::Receiver<bool>,
     timeout: std::time::Duration,
 ) -> Result<ServerResult, ServiceError> {
     let cancellation_token = uuid::Uuid::new_v4().to_string();
@@ -654,16 +671,12 @@ async fn send_relay_request(
         let cancellation_sender = cancellation_sender.cloned();
         let pending_request_id = Arc::clone(&pending_request_id);
         let cancellation_token = cancellation_token.clone();
-        let downstream_cancel = downstream_cancel.clone();
+        let mut cancellation_watch = downstream_cancel.clone();
         let relay_finished = relay_finished.clone();
         let cancellation_dispatched = Arc::clone(&cancellation_dispatched);
         tokio::spawn(async move {
-            tracing::warn!(
-                process_id = std::process::id(),
-                "DIAGNOSTIC detached relay cancellation watcher armed"
-            );
             tokio::select! {
-                () = downstream_cancel.cancelled() => {
+                () = wait_for_downstream_cancellation(&mut cancellation_watch) => {
                     dispatch_relay_cancellation(
                         &peer,
                         cancellation_sender.as_ref(),
@@ -675,12 +688,8 @@ async fn send_relay_request(
                     .await;
                 }
                 () = relay_finished.cancelled() => {
-                    tracing::warn!(
-                        process_id = std::process::id(),
-                        "DIAGNOSTIC detached relay watcher entered finish grace"
-                    );
                     tokio::select! {
-                        () = downstream_cancel.cancelled() => {
+                        () = wait_for_downstream_cancellation(&mut cancellation_watch) => {
                             dispatch_relay_cancellation(
                                 &peer,
                                 cancellation_sender.as_ref(),
@@ -695,10 +704,6 @@ async fn send_relay_request(
                     }
                 }
                 () = tokio::time::sleep(timeout) => {
-                    tracing::warn!(
-                        process_id = std::process::id(),
-                        "DIAGNOSTIC detached relay cancellation watcher timed out"
-                    );
                     dispatch_relay_cancellation(
                         &peer,
                         cancellation_sender.as_ref(),
@@ -737,7 +742,7 @@ async fn send_relay_request(
             let response = response.map_err(|_| ServiceError::TransportClosed)?;
             if !matches!(
                 &response,
-                Err(ServiceError::Cancelled { .. }) | Err(ServiceError::TransportClosed)
+                Err(ServiceError::Cancelled { .. } | ServiceError::TransportClosed)
             ) {
                 relay_finished.cancel();
             }
@@ -751,7 +756,7 @@ async fn send_relay_request(
             }
             response
         }
-        () = downstream_cancel.cancelled() => {
+        () = wait_for_downstream_cancellation(&mut downstream_cancel) => {
             routes.unregister_request(&upstream_request_id).await;
             let reason = "downstream request cancelled".to_string();
             dispatch_relay_cancellation(
@@ -897,7 +902,7 @@ impl UpstreamPool {
         params: CallToolRequestParams,
         downstream: Peer<RoleServer>,
         downstream_request_id: RequestId,
-        downstream_cancel: CancellationToken,
+        downstream_cancel: watch::Receiver<bool>,
         session_id: u64,
         capabilities: ClientCapabilities,
         caller_subject: Option<&str>,
@@ -1048,7 +1053,7 @@ impl UpstreamPool {
             ClientRequest::GetPromptRequest(GetPromptRequest::new(params)),
             request_meta,
             downstream_request_id,
-            downstream_cancel,
+            cancellation_watch_from_token(downstream_cancel),
             timeout,
         )
         .await;
@@ -1144,7 +1149,7 @@ impl UpstreamPool {
             ClientRequest::ReadResourceRequest(ReadResourceRequest::new(params)),
             request_meta,
             downstream_request_id,
-            downstream_cancel,
+            cancellation_watch_from_token(downstream_cancel),
             timeout,
         )
         .await;
@@ -1491,6 +1496,7 @@ impl UpstreamPool {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use std::sync::Arc;
 
@@ -1499,7 +1505,7 @@ mod tests {
         ClientCapabilities, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
         ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams,
         GetPromptResponse, Implementation, InputRequest, InputRequests, InputRequiredResult,
-        MetaObject, PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam,
+        PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam,
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
         ServerInfo, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
         TaskStatusNotificationParams,
@@ -1621,9 +1627,9 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct RecordingAgent {
-        progress: Arc<tokio::sync::Mutex<Vec<ProgressNotificationParam>>>,
-        cancellations: Arc<tokio::sync::Mutex<Vec<CancelledNotificationParam>>>,
-        task_ids: Arc<tokio::sync::Mutex<Vec<String>>>,
+        progress: Arc<Mutex<Vec<ProgressNotificationParam>>>,
+        cancellations: Arc<Mutex<Vec<CancelledNotificationParam>>>,
+        task_ids: Arc<Mutex<Vec<String>>>,
     }
 
     impl ClientHandler for RecordingAgent {
@@ -1746,7 +1752,7 @@ mod tests {
         (pool, config, downstream_server)
     }
 
-    async fn wait_for_recorded_count<T>(values: &tokio::sync::Mutex<Vec<T>>, expected: usize) {
+    async fn wait_for_recorded_count<T>(values: &Mutex<Vec<T>>, expected: usize) {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 if values.lock().await.len() >= expected {
@@ -1818,8 +1824,8 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct CancellationAwareUpstream {
-        started: Arc<std::sync::atomic::AtomicBool>,
-        cancelled: Arc<std::sync::atomic::AtomicBool>,
+        started: Arc<AtomicBool>,
+        cancelled: Arc<AtomicBool>,
     }
 
     impl ServerHandler for CancellationAwareUpstream {
@@ -1832,11 +1838,9 @@ mod tests {
             _request: CallToolRequestParams,
             context: RequestContext<RoleServer>,
         ) -> Result<CallToolResponse, ErrorData> {
-            self.started
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.started.store(true, Ordering::SeqCst);
             context.ct.cancelled().await;
-            self.cancelled
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.cancelled.store(true, Ordering::SeqCst);
             Err(ErrorData::internal_error("cancelled by downstream", None))
         }
     }
@@ -1915,7 +1919,7 @@ mod tests {
                 request,
                 downstream_server.peer().clone(),
                 downstream_request_id.clone(),
-                CancellationToken::new(),
+                cancellation_watch_from_token(CancellationToken::new()),
                 1,
                 capabilities,
                 None,
@@ -1958,7 +1962,7 @@ mod tests {
                     CallToolRequestParams::new("wait"),
                     downstream,
                     RequestId::String("downstream-cancel".into()),
-                    cancellation_for_call,
+                    cancellation_watch_from_token(cancellation_for_call),
                     1,
                     capabilities,
                     None,
@@ -1967,7 +1971,7 @@ mod tests {
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !upstream.started.load(std::sync::atomic::Ordering::SeqCst) {
+            while !upstream.started.load(Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
@@ -1979,7 +1983,7 @@ mod tests {
             matches!(result, Err(ref message) if message.contains("downstream request cancelled"))
         );
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !upstream.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            while !upstream.cancelled.load(Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
@@ -2004,7 +2008,7 @@ mod tests {
                 CallToolRequestParams::new("task"),
                 downstream_server.peer().clone(),
                 RequestId::String("downstream-task".into()),
-                CancellationToken::new(),
+                cancellation_watch_from_token(CancellationToken::new()),
                 1,
                 capabilities,
                 None,
@@ -2217,7 +2221,7 @@ mod tests {
                 CallToolRequestParams::new("anything"),
                 downstream,
                 RequestId::Number(1),
-                CancellationToken::new(),
+                cancellation_watch_from_token(CancellationToken::new()),
                 1,
                 relay_test_capabilities(),
                 None,
@@ -2385,7 +2389,7 @@ mod tests {
 
         let pool = UpstreamPool::new();
         let stale_used = Instant::now()
-            .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_secs(60))
+            .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_mins(1))
             .expect("instant in range");
         let (stale, _ks) = live_relay_cached_connection(stale_used).await;
         let (fresh, _kf) = live_relay_cached_connection(Instant::now()).await;
@@ -2418,7 +2422,7 @@ mod tests {
         let pool = UpstreamPool::new();
         assert_eq!(
             pool.relay_timeout,
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             "default relay timeout must be 5 min, NOT the 30s request timeout"
         );
         assert_ne!(
@@ -2537,7 +2541,7 @@ mod tests {
                 CallToolRequestParams::new("echo"),
                 downstream,
                 RequestId::Number(1),
-                CancellationToken::new(),
+                cancellation_watch_from_token(CancellationToken::new()),
                 1,
                 relay_test_capabilities(),
                 None,
@@ -2668,7 +2672,7 @@ mod tests {
                 CallToolRequestParams::new("big"),
                 downstream,
                 RequestId::Number(1),
-                CancellationToken::new(),
+                cancellation_watch_from_token(CancellationToken::new()),
                 1,
                 relay_test_capabilities(),
                 None,

@@ -183,7 +183,12 @@ impl RegisteredPeer {
                 registry: Arc::new(crate::registry::ToolRegistry::default()),
                 #[cfg(feature = "gateway")]
                 gateway_manager: None,
-                route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+                route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
+                    "catalog-test",
+                    std::iter::empty::<&str>(),
+                    std::iter::empty::<&str>(),
+                    false,
+                ),
                 code_mode_app_state: Default::default(),
                 audience: crate::mcp::peer_contract::PeerCatalogAudience::default(),
             },

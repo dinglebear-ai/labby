@@ -335,8 +335,15 @@ mod tests {
 
     #[tokio::test]
     async fn contract_without_gateway_is_a_real_descriptor_hash() {
-        let snapshot = contract(McpRouteScope::Root).visible_contract().await;
-        assert_eq!(snapshot.tools.len(), 0);
+        let snapshot = contract(McpRouteScope::protected_subset(
+            "empty-test-contract",
+            std::iter::empty::<&str>(),
+            std::iter::empty::<&str>(),
+            false,
+        ))
+        .visible_contract()
+        .await;
+        assert!(snapshot.tools.is_empty());
         assert_ne!(snapshot.contract_hash, [0; 32]);
     }
 

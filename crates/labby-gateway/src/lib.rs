@@ -30,9 +30,9 @@ pub mod usage;
 pub const MCP_RELAY_CANCELLATION_TOKEN_META_KEY: &str =
     "ai.dinglebear.labby/relayCancellationToken";
 
-/// Labby-private request used alongside standard cancellation when an rmcp
-/// stateless HTTP hop hides or rewrites request IDs.
-pub const MCP_RELAY_CANCELLATION_REQUEST_METHOD: &str = "ai.dinglebear.labby/relay-cancel";
+/// Hidden Labby-to-Labby tool used alongside standard cancellation when an
+/// rmcp stateless HTTP hop hides or rewrites request IDs. It is never listed.
+pub const MCP_RELAY_CANCELLATION_TOOL_NAME: &str = "labby.internal.relay_cancel";
 
 #[cfg(test)]
 mod test_support;

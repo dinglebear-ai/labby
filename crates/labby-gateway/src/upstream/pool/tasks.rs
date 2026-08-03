@@ -15,7 +15,7 @@ use rmcp::service::Peer;
 use super::UpstreamPool;
 use super::relay::RelayCachedConnection;
 
-const TASK_ROUTE_IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const TASK_ROUTE_IDLE_TTL: Duration = Duration::from_hours(24);
 const TASK_ROUTE_MAX_ENTRIES: usize = 4096;
 const TASK_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 static TASK_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -166,18 +166,12 @@ impl UpstreamPool {
         peer.update_task(params)
             .await
             .map_err(|error| format!("upstream `{upstream_name}` tasks/update failed: {error}"))?;
-        let delivered = relay_routes
+        relay_routes
             .wait_for_task_notification_after(
                 notification_sequence,
                 TASK_NOTIFICATION_DELIVERY_GRACE,
             )
             .await;
-        tracing::warn!(
-            upstream = %upstream_name,
-            gateway_task_id,
-            delivered,
-            "DIAGNOSTIC task update notification delivery barrier finished"
-        );
         Ok(())
     }
 
@@ -207,23 +201,18 @@ impl UpstreamPool {
         peer.cancel_task(params)
             .await
             .map_err(|error| format!("upstream `{upstream_name}` tasks/cancel failed: {error}"))?;
-        let delivered = relay_routes
+        relay_routes
             .wait_for_task_notification_after(
                 notification_sequence,
                 TASK_NOTIFICATION_DELIVERY_GRACE,
             )
             .await;
-        tracing::warn!(
-            upstream = %upstream_name,
-            gateway_task_id,
-            delivered,
-            "DIAGNOSTIC task cancel notification delivery barrier finished"
-        );
         Ok(())
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use std::sync::Arc;
     use std::time::Instant;

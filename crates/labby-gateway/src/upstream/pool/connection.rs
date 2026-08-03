@@ -728,7 +728,7 @@ mod tests {
                     peer: stale_peer,
                     tools: vec![],
                     last_used: Instant::now()
-                        .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_secs(60))
+                        .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_mins(1))
                         .expect("instant in range"),
                 },
             );
