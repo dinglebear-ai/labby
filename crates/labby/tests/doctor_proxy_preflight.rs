@@ -6,9 +6,9 @@ use std::process::{Command, Output};
 #[cfg(unix)]
 use serde_json::Value;
 use serde_json::json;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 use wiremock::matchers::{method, path};
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[cfg(unix)]
@@ -104,7 +104,7 @@ fn launcher_path(root: &Path, include_python: bool) -> PathBuf {
     bin
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 fn fake_tailscale(root: &Path, version: &str, status: &str, serve_status: &str) -> PathBuf {
     let executable_path = root.join("tailscale");
     let calls = root.join("tailscale.calls");
@@ -140,17 +140,17 @@ fn doctor_proxy_without_route_runs_local_preflight_and_skips_tailscale_for_local
             .env("LABBY_TAILSCALE_BIN", "/definitely/must/not/run/tailscale"),
     );
 
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    #[cfg(feature = "gateway")]
+    assert_eq!(output.status.code(), Some(1));
+    #[cfg(not(feature = "gateway"))]
+    assert_eq!(output.status.code(), Some(2));
     assert_severity(&report, "proxy:config", "ok");
     assert_severity(&report, "proxy:launcher-node", "ok");
     assert_severity(&report, "proxy:launcher-python3", "ok");
     assert_severity(&report, "proxy:auth-none", "warn");
     assert_severity(&report, "proxy:tailscale-skipped", "ok");
+    #[cfg(not(feature = "gateway"))]
+    assert_severity(&report, "proxy:gateway-feature", "fail");
     assert!(
         !report["findings"]
             .as_array()
@@ -162,6 +162,31 @@ fn doctor_proxy_without_route_runs_local_preflight_and_skips_tailscale_for_local
                     .is_some_and(|check| check.starts_with("proxy:tailscale-"))
                     && finding["check"] != "proxy:tailscale-skipped"
             })
+    );
+}
+
+#[cfg(all(unix, not(feature = "gateway")))]
+#[test]
+fn no_gateway_proxy_preflight_fails_even_when_local_bearer_dependencies_are_healthy() {
+    let home = tempfile::tempdir().expect("temp home");
+    write_config(
+        home.path(),
+        "[proxy]\nexposure = \"local\"\nauth = \"bearer\"\n",
+    );
+
+    let (output, report) = run_json(
+        command(home.path())
+            .args(["--json", "doctor", "proxy"])
+            .env("PATH", launcher_path(home.path(), true))
+            .env("LABBY_PROXY_BEARER_TOKEN", "preflight-test-token"),
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_severity(&report, "proxy:gateway-feature", "fail");
+    assert!(
+        finding(&report, "proxy:gateway-feature")["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("gateway feature"))
     );
 }
 
@@ -208,7 +233,7 @@ fn proxy_preflight_reports_each_child_launcher_deterministically() {
     assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[test]
 fn bearer_preflight_loads_secret_from_persisted_dotenv_without_rendering_it() {
     let home = tempfile::tempdir().unwrap();
@@ -261,7 +286,7 @@ fn bearer_preflight_loads_secret_from_persisted_dotenv_without_rendering_it() {
     assert_severity(&absent_report, "proxy:bearer-secret", "fail");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[test]
 fn tailscale_preflight_checks_version_identity_dns_and_https_without_mutation() {
     let home = tempfile::tempdir().unwrap();
@@ -300,7 +325,7 @@ fn tailscale_preflight_checks_version_identity_dns_and_https_without_mutation() 
     assert!(!calls.contains("reset"));
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[test]
 fn tailscale_preflight_attributes_status_failures_to_the_exact_category() {
     let cases = [
@@ -335,7 +360,7 @@ fn tailscale_preflight_attributes_status_failures_to_the_exact_category() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[test]
 fn tailscale_preflight_reports_executable_version_and_https_serve_failures() {
     let missing_home = tempfile::tempdir().unwrap();
@@ -396,7 +421,7 @@ fn tailscale_preflight_reports_executable_version_and_https_serve_failures() {
     assert_severity(&serve_report, "proxy:tailscale-https-serve", "fail");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 async fn mount_daemon(server: &MockServer, actions: Value, metadata: Value, jwks: Value) {
     Mock::given(method("GET"))
         .and(path("/health"))
@@ -428,7 +453,7 @@ async fn mount_daemon(server: &MockServer, actions: Value, metadata: Value, jwks
         .await;
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 async fn oauth_doctor(home: &Path, server: &MockServer) -> (Output, Value) {
     let url = url::Url::parse(&server.uri()).unwrap();
     write_config(
@@ -466,7 +491,7 @@ async fn oauth_doctor(home: &Path, server: &MockServer) -> (Output, Value) {
     (output, report)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn oauth_preflight_checks_stable_issuer_daemon_lease_actions_metadata_and_jwks() {
     let home = tempfile::tempdir().unwrap();
@@ -502,7 +527,7 @@ async fn oauth_preflight_checks_stable_issuer_daemon_lease_actions_metadata_and_
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn oauth_preflight_reports_missing_lease_action_and_bad_issuer_metadata_deterministically() {
     let home = tempfile::tempdir().unwrap();
@@ -533,7 +558,7 @@ async fn oauth_preflight_reports_missing_lease_action_and_bad_issuer_metadata_de
     );
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[test]
 fn oauth_preflight_reports_missing_stable_issuer_and_unreachable_daemon_dependencies() {
     let home = tempfile::tempdir().unwrap();
@@ -568,7 +593,7 @@ fn oauth_preflight_reports_missing_stable_issuer_and_unreachable_daemon_dependen
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "gateway"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn oauth_preflight_attributes_invalid_jwks_after_valid_issuer_metadata() {
     let home = tempfile::tempdir().unwrap();

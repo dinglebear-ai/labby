@@ -32,7 +32,7 @@ fn dependency_failure(check: &str, dependency: &str) -> Finding {
 fn gateway_feature_unavailable(check: &str) -> Finding {
     finding(
         check,
-        Severity::Warn,
+        Severity::Fail,
         "gateway feature is not compiled into this labby build",
     )
 }
@@ -52,6 +52,8 @@ pub async fn check_proxy_preflight() -> Report {
     };
     let preferences = &config.proxy;
     let mut findings = vec![config_finding(preferences)];
+    #[cfg(not(feature = "gateway"))]
+    findings.push(gateway_feature_unavailable("proxy:gateway-feature"));
     findings.extend(launcher_findings());
     findings.extend(auth_findings(&config, preferences).await);
     if matches!(preferences.exposure, ProxyExposure::Local) {
@@ -434,12 +436,12 @@ mod feature_boundary_tests {
     use super::*;
 
     #[test]
-    fn gateway_feature_fallback_is_a_structured_warning() {
+    fn gateway_feature_fallback_is_a_structured_failure() {
         let finding = gateway_feature_unavailable("proxy:gateway-feature");
 
         assert_eq!(finding.service, "proxy");
         assert_eq!(finding.check, "proxy:gateway-feature");
-        assert!(matches!(finding.severity, Severity::Warn));
+        assert!(matches!(finding.severity, Severity::Fail));
         assert_eq!(
             finding.message,
             "gateway feature is not compiled into this labby build"

@@ -430,7 +430,8 @@ jobs:
     # Slices are compile checks, EXCEPT gateway: the flagship slice also runs
     # its test suite so omission-side tests (#[cfg(not(feature = ...))] —
     # registry omission tests, the no-feature rejection helpers) actually
-    # execute somewhere in CI instead of only ever being compiled.
+    # execute somewhere in CI instead of only ever being compiled. The fs
+    # slice also executes its focused no-gateway proxy preflight regression.
     env:
       # The gateway slice links the same large test harnesses as the full test
       # graph, so keep its peak memory below the 8 GiB pool limit too.
@@ -461,6 +462,9 @@ jobs:
       - name: Run gateway-slice test suite
         if: matrix.slice == 'gateway'
         run: cargo nextest run -p labby --no-default-features --features gateway --locked
+      - name: Run fs-slice proxy preflight regression
+        if: matrix.slice == 'fs'
+        run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
 
   extracted-crate-slices:
     name: Extracted crate slice (${{ matrix.name }})
