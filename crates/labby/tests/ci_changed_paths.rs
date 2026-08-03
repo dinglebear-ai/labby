@@ -258,8 +258,9 @@ fn scheduled_and_manual_runs_enable_everything() {
 
 #[test]
 fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read ci.yml");
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("read ci.yml")
+        .replace("\r\n", "\n");
 
     assert!(
         workflow.contains("  changes:"),
@@ -364,6 +365,22 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     assert!(
         codemode_smoke.contains("cargo run -p labby --bin labby --all-features --locked --"),
         "Code Mode smoke must select the public binary when test fixtures add more binaries"
+    );
+
+    let feature_slices = workflow
+        .split("  feature-slices:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  extracted-crate-slices:").next())
+        .expect("feature-slices job");
+    assert!(
+        feature_slices.contains("if: matrix.slice == 'fs'"),
+        "the fs slice must execute its no-gateway regression in CI"
+    );
+    assert!(
+        feature_slices.contains(
+            "cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight"
+        ),
+        "the fs slice must run the proxy preflight integration binary without gateway"
     );
 
     for (job, next_job) in [
