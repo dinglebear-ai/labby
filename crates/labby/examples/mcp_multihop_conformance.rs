@@ -60,6 +60,10 @@ impl LeafServer {
             .map(|dir| dir.join(name))
     }
 
+    fn subscription_catalog_changed() -> bool {
+        Self::marker_path("emit-subscriptions").is_some_and(|path| path.exists())
+    }
+
     fn task(task_id: impl Into<String>, payload: TaskPayload, updated_at: &str) -> DetailedTask {
         DetailedTask::new(
             Task::new(task_id, payload.status(), TASK_CREATED_AT, updated_at)
@@ -167,7 +171,7 @@ impl ServerHandler for LeafServer {
                 Arc::new(Map::new()),
             ),
         ]);
-        if Self::marker_path("emit-subscriptions").is_some_and(|path| path.exists()) {
+        if Self::subscription_catalog_changed() {
             tools.push(Tool::new(
                 "subscription_added",
                 "Tool added when the subscription conformance signal fires",
@@ -369,13 +373,17 @@ impl ServerHandler for LeafServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
-        Ok(ListPromptsResult::with_all_items(
-            (0..PROMPT_COUNT)
-                .map(|index| {
-                    Prompt::new(format!("prompt_{index:03}"), Some("Multi-hop prompt"), None)
-                })
-                .collect(),
-        ))
+        let mut prompts = (0..PROMPT_COUNT)
+            .map(|index| Prompt::new(format!("prompt_{index:03}"), Some("Multi-hop prompt"), None))
+            .collect::<Vec<_>>();
+        if Self::subscription_catalog_changed() {
+            prompts.push(Prompt::new(
+                "subscription_prompt",
+                Some("Appears after the subscription trigger"),
+                None,
+            ));
+        }
+        Ok(ListPromptsResult::with_all_items(prompts))
     }
 
     async fn get_prompt(
@@ -396,16 +404,21 @@ impl ServerHandler for LeafServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(
-            (0..RESOURCE_COUNT)
-                .map(|index| {
-                    Resource::new(
-                        format!("fixture://resource/{index:03}"),
-                        format!("resource_{index:03}"),
-                    )
-                })
-                .collect(),
-        ))
+        let mut resources = (0..RESOURCE_COUNT)
+            .map(|index| {
+                Resource::new(
+                    format!("fixture://resource/{index:03}"),
+                    format!("resource_{index:03}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        if Self::subscription_catalog_changed() {
+            resources.push(Resource::new(
+                "fixture://resource/subscription",
+                "subscription_resource",
+            ));
+        }
+        Ok(ListResourcesResult::with_all_items(resources))
     }
 
     async fn list_resource_templates(
@@ -1100,6 +1113,25 @@ async fn run_driver() -> Result<()> {
             ));
         }
     }
+
+    let subscription_tools = peer.list_all_tools().await?;
+    nested_name(
+        &subscription_tools,
+        |tool| tool.name.as_ref(),
+        "subscription_added",
+    )?;
+    let subscription_prompts = peer.list_all_prompts().await?;
+    nested_name(
+        &subscription_prompts,
+        |prompt| prompt.name.as_str(),
+        "subscription_prompt",
+    )?;
+    let subscription_resources = peer.list_all_resources().await?;
+    nested_name(
+        &subscription_resources,
+        |resource| resource.name.as_str(),
+        "subscription_resource",
+    )?;
     subscription.cancel().await?;
 
     let templates = peer.list_all_resource_templates().await?;
