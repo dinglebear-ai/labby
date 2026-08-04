@@ -20,7 +20,7 @@ RUN mkdir -p /opt/agent-clis \
  && cd /opt/agent-clis \
  && npm init -y >/dev/null \
  && npm install --omit=dev --no-audit --no-fund \
-      @anthropic-ai/claude-code@2.1.132 \
+      @anthropic-ai/claude-code@2.1.163 \
       @openai/codex@0.130.0 \
       @google/gemini-cli@0.40.0 \
  && ln -sf /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
