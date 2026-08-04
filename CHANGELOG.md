@@ -42,6 +42,7 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 * **container:** install Claude Code native binary under npm 12 ([#322](https://github.com/dinglebear-ai/labby/issues/322)) ([0322a37](https://github.com/dinglebear-ai/labby/commit/0322a37e6ddc3237f4a048e5882d92acffa0dd83))
 * **container:** upgrade Claude Code to 2.1.163 to clear the release Trivy HIGH findings
+* **container:** replace vulnerable npm-bundled `brace-expansion` and `ip-address` with checksum-pinned fixed patches
 * **release:** compile the stdio process wrapper without Windows-only `unused_mut` failures
 * **ci:** fall back to bare Cargo when a self-hosted runner exposes a locked Actions tool cache
 
