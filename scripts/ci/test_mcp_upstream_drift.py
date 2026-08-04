@@ -29,6 +29,17 @@ class OwnershipMappingTest(unittest.TestCase):
         self.assertIn("Cargo.toml", paths)
         self.assertIn("scripts/ci/mcp-conformance.sh", checks)
 
+    def test_workflow_uses_python3_on_ops_runners(self):
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/mcp-upstream-drift.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "python3 -m unittest scripts/ci/test_mcp_upstream_drift.py", workflow
+        )
+        self.assertIn("python3 scripts/ci/mcp_upstream_drift.py", workflow)
+        self.assertNotIn("run: python -m unittest", workflow)
+        self.assertNotIn("\n          python scripts/ci/mcp_upstream_drift.py", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
