@@ -29,6 +29,7 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - **auth:** replace per-client copies of Google refresh tokens with one encrypted, subject-scoped provider credential. Google `invalid_grant` responses now compare-and-delete the rejected credential, revoke every dependent local grant, and force the next authorization through fresh consent instead of trapping ChatGPT in an hourly reconnect loop.
 - **auth:** reuse the sole allowed Google account credential across DCR/CIMD clients, preventing dynamic client churn from minting hundreds of duplicate Google refresh tokens and evicting older credentials.
+- **agents:** expose one versioned, course-correcting error contract across MCP tools and protocol errors, direct upstream proxying, HTTP/OpenAPI, JSON CLI failures, Code Mode, and its trace inspector.
 - **code-mode:** preserve completed MCP tool failures as a versioned, model-actionable error contract with tool identity, recovery guidance, side-effect risk, all sanitized content blocks, structured evidence, and original upstream error kinds.
 - **gateway:** classify valid MCP tool failures as non-retryable `tool_error`
   responses instead of retryable upstream 502s.

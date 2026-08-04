@@ -2481,14 +2481,10 @@ async fn call_tool_preserves_selected_mcp_app_sibling_upstream() {
 
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
-    assert!(
-        text.contains("upstream `apps` is not connected"),
-        "MCP App sibling callbacks should dispatch to the UI sibling upstream, got {text}"
-    );
-    assert!(
-        !text.contains("upstream `aaa_plain` is not connected"),
-        "callback dispatch must not fall through to an unrelated same-name tool, got {text}"
-    );
+    let envelope: Value = serde_json::from_str(text).expect("structured agent error");
+    assert_eq!(envelope["error"]["upstream"], "apps");
+    assert_eq!(envelope["error"]["tool"], "apps::youtube_probe");
+    assert_ne!(envelope["error"]["upstream"], "aaa_plain");
 }
 
 #[tokio::test]
@@ -2762,14 +2758,10 @@ async fn call_tool_allows_execute_scope_for_hidden_mcp_app_sibling_callbacks() {
 
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
-    assert!(
-        !text.contains("\"kind\":\"forbidden\""),
-        "lab scope should pass the callback execute-scope gate, got {text}"
-    );
-    assert!(
-        text.contains("upstream `apps` is not connected"),
-        "allowed callback should reach selected upstream proxy routing, got {text}"
-    );
+    let envelope: Value = serde_json::from_str(text).expect("structured agent error");
+    assert_ne!(envelope["error"]["kind"], "forbidden");
+    assert_eq!(envelope["error"]["upstream"], "apps");
+    assert_eq!(envelope["error"]["tool"], "apps::youtube_probe");
 }
 
 #[tokio::test]
@@ -2866,13 +2858,15 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
 
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
+    let envelope: Value = serde_json::from_str(text).expect("structured agent error");
+    assert_eq!(envelope["error"]["upstream"], "oauth_apps");
+    assert_eq!(envelope["error"]["kind"], "upstream_error");
+    assert_eq!(envelope["error"]["origin"], "upstream_transport");
     assert!(
-        text.contains("upstream `oauth_apps` call failed"),
-        "OAuth callback should use subject-scoped call routing, got {text}"
-    );
-    assert!(
-        !text.contains("upstream `oauth_apps` is not connected"),
-        "OAuth callback must not use shared raw-pool routing, got {text}"
+        envelope["error"]["cause"]
+            .as_str()
+            .is_some_and(|cause| cause.contains("relayed upstream")),
+        "subject-scoped route should preserve relayed-connect evidence: {text}"
     );
 }
 

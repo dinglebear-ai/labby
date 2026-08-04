@@ -21,6 +21,7 @@ import {
   type CodeModeArtifactReceipt,
   type CodeModeCallUi,
   type CodeModeCallTrace,
+  type CodeModeErrorContract,
   type CodeModeExecuteTrace,
   type CodeModeHistoryEntry,
   type CodeModeTrace,
@@ -358,6 +359,13 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
               // instead of growing the inline card unbounded — the MCP host sizes
               // the iframe to the document height.
               <div className="aurora-scrollbar max-h-[300px] overflow-y-auto overscroll-contain">
+                {live?.error ? (
+                  <ErrorRow
+                    error={live.error}
+                    open={Boolean(expanded.error)}
+                    onToggle={() => toggle('error')}
+                  />
+                ) : null}
                 {calls.length > 0 ? (
                   <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
                 ) : live && live.result !== undefined ? null : (
@@ -623,6 +631,91 @@ function WarnLine({ message }: { message: string }) {
       <AlertTriangle className="size-3 shrink-0" strokeWidth={1.75} />
       {message}
     </p>
+  )
+}
+
+function humanizeErrorToken(value: string): string {
+  return value.replaceAll('_', ' ')
+}
+
+function ErrorRow({
+  error,
+  open,
+  onToggle,
+}: {
+  error: CodeModeErrorContract
+  open: boolean
+  onToggle: () => void
+}) {
+  const evidence = error.evidence ? stringifyRedactedParams(error.evidence) : ''
+  const safety = error.safety ? stringifyRedactedParams(error.safety) : ''
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors first:border-t-0 hover:bg-aurora-hover-bg/40"
+        style={{ borderColor: HAIRLINE }}
+      >
+        <AlertTriangle className="size-3 text-aurora-error" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-error')}>Recovery</span>
+        <span className="truncate text-[11px] text-aurora-text-muted">
+          {humanizeErrorToken(error.recovery.action)} · side effects {humanizeErrorToken(error.side_effects)}
+        </span>
+        <ChevronRight
+          className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+          strokeWidth={1.75}
+        />
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-2 px-3 pb-3 pl-[34px]">
+          <p className="text-xs leading-relaxed text-aurora-text-primary">{error.message}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {[error.kind, error.origin, 'same args: ' + humanizeErrorToken(error.recovery.same_arguments)]
+              .filter(Boolean)
+              .map((label) => (
+                <span
+                  key={label}
+                  className="rounded-full border px-2 py-0.5 text-[10px] font-semibold text-aurora-text-muted"
+                  style={{ borderColor: HAIRLINE }}
+                >
+                  {humanizeErrorToken(label)}
+                </span>
+              ))}
+          </div>
+          <div>
+            <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Next Action</span>
+            <p className="mt-1 text-[11px] leading-relaxed text-aurora-text-muted">
+              {error.recovery.guidance}
+            </p>
+          </div>
+          {error.cause ? (
+            <div>
+              <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Cause</span>
+              <div className="mt-1">
+                <CodeBlock value={error.cause} />
+              </div>
+            </div>
+          ) : null}
+          {safety ? (
+            <div>
+              <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Safety Hints</span>
+              <div className="mt-1">
+                <CodeBlock value={safety} />
+              </div>
+            </div>
+          ) : null}
+          {evidence ? (
+            <div>
+              <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Evidence</span>
+              <div className="mt-1">
+                <CodeBlock value={evidence} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

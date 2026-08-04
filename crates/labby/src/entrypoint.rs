@@ -25,14 +25,17 @@
         clippy::zombie_processes,
     )
 )]
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
 
 use crate::cli::Cli;
 use crate::log_fmt::formatter::PremiumEventFormatter;
 use crate::output::{ColorPolicy, OutputFormat, RenderEnv, human_output_styling_enabled};
 use crate::{cli, config};
+use clap::error::ErrorKind as ClapErrorKind;
 use clap::{ColorChoice, CommandFactory, FromArgMatches};
+use labby_runtime::agent_error::{AgentErrorContext, build_agent_error_value};
+use serde_json::{Value, json};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, filter::filter_fn, fmt, prelude::*};
 
@@ -337,6 +340,146 @@ where
     found
 }
 
+fn argv_requests_json(args: &[OsString]) -> bool {
+    args.iter().any(|arg| arg == "--json")
+}
+
+fn argv_command_label(args: &[OsString]) -> String {
+    let mut skip_value = false;
+    for arg in args.iter().skip(1) {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        let arg = arg.to_string_lossy();
+        if arg == "--json" {
+            continue;
+        }
+        if arg == "--color" {
+            skip_value = true;
+            continue;
+        }
+        if arg.starts_with("--color=") || arg.starts_with('-') {
+            continue;
+        }
+        return arg.into_owned();
+    }
+    "cli".to_string()
+}
+
+fn parse_cli_args(args: &[OsString]) -> Result<Cli, clap::Error> {
+    let pre = scan_color_flag(args.iter()).unwrap_or_default();
+    let choice = color_choice_for(resolve_color_policy(pre, None));
+    let matches = Cli::command().color(choice).try_get_matches_from(args)?;
+    Cli::from_arg_matches(&matches)
+}
+
+fn clap_error_value(command: &str, error: &clap::Error) -> Value {
+    let context = AgentErrorContext {
+        command: Some(command.to_string()),
+        cause: Some(labby_runtime::agent_error::sanitize_error_text(
+            &error.to_string(),
+            4096,
+        )),
+        ..AgentErrorContext::default()
+    };
+    let extra = json!({ "clap_kind": format!("{:?}", error.kind()) });
+    json!({
+        "ok": false,
+        "command": command,
+        "error": build_agent_error_value(
+            "invalid_param",
+            "The command-line arguments are invalid. Correct the command using the reported usage details and retry.",
+            Some(&extra),
+            &context,
+        ),
+    })
+}
+
+fn contextual_tool_error_message(
+    error: &anyhow::Error,
+    tool_error: &crate::dispatch::error::ToolError,
+) -> String {
+    let contexts = error
+        .chain()
+        .take_while(|cause| {
+            cause
+                .downcast_ref::<crate::dispatch::error::ToolError>()
+                .is_none()
+        })
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let message = if contexts.is_empty() {
+        tool_error.user_message().to_string()
+    } else {
+        format!("{}: {}", contexts.join(": "), tool_error.user_message())
+    };
+    labby_runtime::agent_error::sanitize_error_text(&message, 4096)
+}
+
+fn cli_error_value(command: &str, error: &anyhow::Error, fallback_kind: &str) -> Value {
+    let mut context = AgentErrorContext {
+        command: Some(command.to_string()),
+        ..AgentErrorContext::default()
+    };
+
+    let agent_error = if let Some(tool_error) =
+        error.downcast_ref::<crate::dispatch::error::ToolError>()
+    {
+        let message = contextual_tool_error_message(error, tool_error);
+        if message != tool_error.user_message() {
+            context.cause = Some(labby_runtime::agent_error::sanitize_error_text(
+                tool_error.user_message(),
+                4096,
+            ));
+        }
+        let extra = tool_error.extra_fields();
+        build_agent_error_value(tool_error.kind(), &message, Some(&extra), &context)
+    } else {
+        let rendered = labby_runtime::agent_error::sanitize_error_text(&format!("{error:#}"), 4096);
+        let parsed = serde_json::from_str::<Value>(&error.to_string()).ok();
+        let (kind, message, extra) = match parsed {
+            Some(Value::Object(mut object)) => {
+                let kind = object
+                    .remove("kind")
+                    .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                    .unwrap_or_else(|| fallback_kind.to_string());
+                let message = object
+                    .remove("message")
+                    .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                    .unwrap_or_else(|| rendered.clone());
+                (kind, message, Some(Value::Object(object)))
+            }
+            _ => (fallback_kind.to_string(), rendered.clone(), None),
+        };
+        context.cause = Some(rendered);
+        build_agent_error_value(&kind, &message, extra.as_ref(), &context)
+    };
+
+    json!({
+        "ok": false,
+        "command": command,
+        "error": agent_error,
+    })
+}
+
+fn emit_cli_failure(
+    json_output: bool,
+    command: &str,
+    error: &anyhow::Error,
+    fallback_kind: &str,
+    tracing_ready: bool,
+) {
+    #[allow(clippy::print_stderr)]
+    if json_output {
+        eprintln!("{}", cli_error_value(command, error, fallback_kind));
+    } else if tracing_ready {
+        tracing::error!("{error:#}");
+    } else {
+        eprintln!("{error:#}");
+    }
+}
+
 /// Render the Aurora service + action catalog for the root help path.
 fn run_root_catalog(flags: &GlobalFlags) -> ExitCode {
     // The env-filtered catalog needs config + .env (unlike the metadata-only
@@ -351,11 +494,7 @@ fn run_root_catalog(flags: &GlobalFlags) -> ExitCode {
     match cli::help::run(cli::help::HelpArgs { all }, format) {
         Ok(code) => code,
         Err(err) => {
-            // This runs before `init_tracing`, so `tracing::error!` would have no
-            // subscriber and the failure (e.g. a malformed config.toml) would be
-            // invisible. Use stderr directly, matching the pre-tracing error path
-            // in `main`. (`clippy::print_stderr` is `allow` workspace-wide.)
-            eprintln!("error: {err:#}");
+            emit_cli_failure(flags.json, "help", &err, "internal_error", false);
             ExitCode::from(1)
         }
     }
@@ -377,7 +516,8 @@ pub async fn run() -> ExitCode {
     // which clap cannot express via derive (it would auto-handle `--help` and
     // panics on a duplicate `help`). Every *non-root* help path (`gateway help`,
     // `gateway --help`, `help gateway`) falls through to clap's themed output.
-    if let Some(flags) = root_help_request(std::env::args_os()) {
+    let argv = std::env::args_os().collect::<Vec<_>>();
+    if let Some(flags) = root_help_request(argv.iter()) {
         return run_root_catalog(&flags);
     }
 
@@ -386,15 +526,32 @@ pub async fn run() -> ExitCode {
     // scan argv for `--color` directly rather than doing a clap pre-parse: a
     // pre-parse `get_matches()` would itself auto-exit (rendering unthemed help)
     // the moment it saw `--help`, before the real themed parse could run.
-    let cli = {
-        let pre = scan_color_flag(std::env::args_os()).unwrap_or_default();
-        // Same fast-path rationale as run_root_catalog: config.toml isn't
-        // loaded yet here, only the env var can override.
-        let choice = color_choice_for(resolve_color_policy(pre, None));
-        let matches = Cli::command().color(choice).get_matches();
-        Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
+    let cli = match parse_cli_args(&argv) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let exit_code = u8::try_from(error.exit_code()).unwrap_or(2);
+            let display_only = matches!(
+                error.kind(),
+                ClapErrorKind::DisplayHelp | ClapErrorKind::DisplayVersion
+            );
+            if display_only || !argv_requests_json(&argv) {
+                #[allow(clippy::print_stderr)]
+                if let Err(print_error) = error.print() {
+                    eprintln!("failed to render command-line error: {print_error}");
+                }
+            } else {
+                let command = argv_command_label(&argv);
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("{}", clap_error_value(&command, &error));
+                }
+            }
+            return ExitCode::from(exit_code);
+        }
     };
 
+    let json_output = cli.json;
+    let command_label = cli.command.label();
     let uses_default_config = matches!(cli.command, cli::Command::Docs(_)) || {
         #[cfg(feature = "gateway")]
         {
@@ -409,10 +566,7 @@ pub async fn run() -> ExitCode {
         return match cli::dispatch(cli, config::LabConfig::default()).await {
             Ok(code) => code,
             Err(err) => {
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!("{err:#}");
-                }
+                emit_cli_failure(json_output, command_label, &err, "internal_error", false);
                 ExitCode::from(1)
             }
         };
@@ -423,10 +577,7 @@ pub async fn run() -> ExitCode {
     let config = match config::load_toml(&config::toml_candidates()) {
         Ok(cfg) => cfg,
         Err(err) => {
-            #[allow(clippy::print_stderr)]
-            {
-                eprintln!("config.toml parse error: {err:#}");
-            }
+            emit_cli_failure(json_output, command_label, &err, "invalid_param", false);
             return ExitCode::from(2);
         }
     };
@@ -468,7 +619,7 @@ pub async fn run() -> ExitCode {
     // Static docs generation is intentionally metadata-only and must not
     // depend on operator env/config secrets.
     if let Err(err) = config::load_dotenv() {
-        tracing::error!("dotenv load error: {err:#}");
+        emit_cli_failure(json_output, command_label, &err, "invalid_param", true);
         return ExitCode::from(2);
     }
 
@@ -479,8 +630,109 @@ pub async fn run() -> ExitCode {
     match cli::dispatch(cli, config).await {
         Ok(code) => code,
         Err(err) => {
-            tracing::error!("{err:#}");
+            emit_cli_failure(json_output, command_label, &err, "internal_error", true);
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use anyhow::{Context as _, anyhow};
+
+    use super::{
+        ClapErrorKind, argv_command_label, clap_error_value, cli_error_value, parse_cli_args,
+    };
+    use crate::dispatch::error::ToolError;
+
+    #[test]
+    fn json_clap_failure_is_structured_and_course_correcting() {
+        let args = [
+            OsString::from("labby"),
+            OsString::from("--json"),
+            OsString::from("definitely-not-a-command"),
+        ];
+        let error = parse_cli_args(&args).expect_err("invalid subcommand must fail");
+        let command = argv_command_label(&args);
+        let value = clap_error_value(&command, &error);
+
+        assert_eq!(command, "definitely-not-a-command");
+        assert_eq!(error.exit_code(), 2);
+        assert_eq!(value["error"]["kind"], "invalid_param");
+        assert_eq!(value["error"]["command"], "definitely-not-a-command");
+        assert_eq!(value["error"]["origin"], "validation");
+        assert_eq!(value["error"]["recovery"]["action"], "revise_and_retry");
+        assert_eq!(value["error"]["side_effects"], "none_expected");
+        assert!(
+            value["error"]["cause"]
+                .as_str()
+                .is_some_and(|cause| { cause.contains("unrecognized subcommand") })
+        );
+    }
+
+    #[test]
+    fn clap_help_remains_a_successful_display_response() {
+        let args = [
+            OsString::from("labby"),
+            OsString::from("doctor"),
+            OsString::from("--help"),
+        ];
+        let error = parse_cli_args(&args).expect_err("help is returned as clap display error");
+        assert_eq!(error.kind(), ClapErrorKind::DisplayHelp);
+        assert_eq!(error.exit_code(), 0);
+    }
+
+    #[test]
+    fn json_cli_failure_preserves_canonical_tool_error_fields() {
+        let error = anyhow::Error::from(ToolError::MissingParam {
+            message: "missing required parameter `query`".to_string(),
+            param: "query".to_string(),
+        });
+        let value = cli_error_value("gateway", &error, "internal_error");
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["command"], "gateway");
+        assert_eq!(value["error"]["kind"], "missing_param");
+        assert_eq!(value["error"]["command"], "gateway");
+        assert_eq!(value["error"]["recovery"]["action"], "revise_and_retry");
+        assert_eq!(value["error"]["side_effects"], "none_expected");
+        assert_eq!(value["error"]["param"], "query");
+    }
+
+    #[test]
+    fn json_cli_failure_preserves_wrapped_tool_error_context() {
+        let error = anyhow::Error::from(ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "live gateway daemon returned HTTP 500 Internal Server Error".to_string(),
+        })
+        .context("OAuth resource lease renewal failed");
+        let value = cli_error_value("proxy", &error, "internal_error");
+
+        assert_eq!(value["error"]["kind"], "internal_error");
+        assert_eq!(value["error"]["command"], "proxy");
+        assert_eq!(
+            value["error"]["message"],
+            "OAuth resource lease renewal failed: live gateway daemon returned HTTP 500 Internal Server Error"
+        );
+        assert_eq!(
+            value["error"]["cause"],
+            "live gateway daemon returned HTTP 500 Internal Server Error"
+        );
+    }
+
+    #[test]
+    fn json_cli_failure_wraps_unstructured_anyhow_errors() {
+        let value = cli_error_value("setup", &anyhow!("dependency exploded"), "internal_error");
+
+        assert_eq!(value["error"]["kind"], "internal_error");
+        assert_eq!(value["error"]["command"], "setup");
+        assert_eq!(value["error"]["recovery"]["action"], "inspect_and_escalate");
+        assert!(
+            value["error"]["cause"]
+                .as_str()
+                .is_some_and(|cause| cause.contains("dependency exploded"))
+        );
     }
 }

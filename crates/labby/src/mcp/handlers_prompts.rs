@@ -19,6 +19,12 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
+use labby_runtime::agent_error::{AgentErrorContext, AgentErrorOrigin, AgentSideEffectRisk};
+
+use crate::mcp::agent_error::{
+    internal as internal_agent_error, invalid_params as invalid_params_agent_error,
+};
+
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
@@ -26,6 +32,22 @@ use crate::mcp::context::{auth_context_from_extensions, forwardable_client_capab
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
+
+fn prompt_error_context(
+    prompt: &str,
+    upstream: Option<&str>,
+    cause: Option<&str>,
+) -> AgentErrorContext {
+    let mut context = AgentErrorContext::for_service_action("labby", "get_prompt");
+    context.prompt = Some(prompt.to_string());
+    context.upstream = upstream.map(ToOwned::to_owned);
+    context.cause = cause.map(|cause| labby_runtime::agent_error::sanitize_error_text(cause, 4096));
+    if upstream.is_some() {
+        context.origin = Some(AgentErrorOrigin::UpstreamTransport);
+        context.side_effects = Some(AgentSideEffectRisk::NoneExpected);
+    }
+    context
+}
 
 impl LabMcpServer {
     pub(crate) async fn list_prompts_impl(
@@ -239,13 +261,15 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Err(ErrorData::invalid_params(
-                format!("service `{service_name}` is not exposed on this MCP route"),
-                Some(serde_json::json!({
-                    "kind": "route_scope_denied",
-                    "service": service_name,
-                    "prompt": request.name,
-                })),
+            let mut error_context = prompt_error_context(&request.name, None, None);
+            error_context.origin = Some(AgentErrorOrigin::Policy);
+            error_context.side_effects = Some(AgentSideEffectRisk::NoneExpected);
+            let extra = serde_json::json!({ "service": service_name });
+            return Err(invalid_params_agent_error(
+                "route_scope_denied",
+                format!("Service `{service_name}` is not exposed on this MCP route."),
+                Some(&extra),
+                &error_context,
             ));
         }
 
@@ -361,7 +385,16 @@ impl LabMcpServer {
                         },
                     )
                     .await;
-                    Err(ErrorData::internal_error(message, None))
+                    let error_context =
+                        prompt_error_context(&prompt_name, Some(&upstream_name), Some(&message));
+                    Err(internal_agent_error(
+                        "upstream_error",
+                        format!(
+                            "Upstream `{upstream_name}` failed while fetching prompt `{prompt_name}`."
+                        ),
+                        None,
+                        &error_context,
+                    ))
                 }
                 None => {
                     let elapsed_ms = start.elapsed().as_millis();
@@ -386,9 +419,18 @@ impl LabMcpServer {
                         },
                     )
                     .await;
-                    Err(ErrorData::invalid_params(
-                        format!("unknown prompt: {prompt_name}"),
+                    let error_context = prompt_error_context(
+                        &prompt_name,
+                        Some(&upstream_name),
+                        Some("upstream is not connected"),
+                    );
+                    Err(invalid_params_agent_error(
+                        "upstream_error",
+                        format!(
+                            "Upstream `{upstream_name}` is not connected, so prompt `{prompt_name}` could not be fetched."
+                        ),
                         None,
+                        &error_context,
                     ))
                 }
             };
@@ -490,9 +532,16 @@ impl LabMcpServer {
                             },
                         )
                         .await;
-                        Err(ErrorData::invalid_params(
-                            format!("upstream prompt `{prompt_name}` failed: {message}"),
+                        let error_context =
+                            prompt_error_context(&prompt_name, Some(&config.name), Some(&message));
+                        Err(invalid_params_agent_error(
+                            "upstream_error",
+                            format!(
+                                "Upstream `{}` failed while fetching prompt `{prompt_name}`.",
+                                config.name
+                            ),
                             None,
+                            &error_context,
                         ))
                     }
                 };
@@ -521,9 +570,15 @@ impl LabMcpServer {
             },
         )
         .await;
-        Err(ErrorData::invalid_params(
-            format!("unknown prompt: {}", request.name),
+        let error_context = prompt_error_context(&request.name, None, None);
+        Err(invalid_params_agent_error(
+            "not_found",
+            format!(
+                "Unknown prompt `{}`. Call `prompts/list` and retry with an advertised prompt name.",
+                request.name
+            ),
             None,
+            &error_context,
         ))
     }
 }

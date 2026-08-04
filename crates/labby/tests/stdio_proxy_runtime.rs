@@ -910,7 +910,21 @@ exit 2
         .expect("renewal failure did not terminate proxy")
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("renewal failed"));
+    let stderr: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(stderr["ok"], false);
+    assert_eq!(stderr["command"], "proxy");
+    assert_eq!(stderr["error"]["contract_version"], 1);
+    assert_eq!(stderr["error"]["kind"], "internal_error");
+    assert_eq!(stderr["error"]["origin"], "runtime");
+    assert!(
+        stderr["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("OAuth resource lease renewal failed"))
+    );
+    assert_eq!(
+        stderr["error"]["cause"],
+        "live gateway daemon returned HTTP 500 Internal Server Error"
+    );
 
     let requests = server.received_requests().await.unwrap();
     let actions = requests

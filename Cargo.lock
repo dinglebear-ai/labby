@@ -2036,6 +2036,7 @@ name = "labby-runtime"
 version = "1.8.9"
 dependencies = [
  "jiff",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

@@ -1,34 +1,46 @@
-# Code Mode Tool Error Contract Implementation Plan
+---
+title: Agent error contract implementation plan
+created: 2026-08-04
+updated: 2026-08-04
+---
+
+# Agent Error Contract Implementation Plan
 
 Date: 2026-08-04
-Status: implemented and under verification
+Status: implemented and under final verification
 
 ## Goal
 
-Replace the lossy `{kind,message}` Code Mode error path with a versioned, evidence-preserving contract aligned with MCP tool-error semantics.
+Replace thin or inconsistent agent-facing failures with one versioned recovery contract across Code Mode, direct MCP proxying, built-in MCP tools, MCP protocol errors, HTTP/OpenAPI, JSON CLI output, and the Code Mode inspector.
 
 ## Work packages
 
-1. Define host-neutral Rust contract types for origin, recovery, exact-retry policy, side-effect risk, safety hints, and sanitized evidence.
-2. Extend the runner protocol so caught and uncaught JavaScript errors carry the complete object.
-3. Convert completed MCP `isError` results in the gateway adapter while preserving all blocks and structured content.
-4. Keep real transport failures distinct and retry-oriented.
-5. Add redaction, binary omission, and evidence caps.
-6. Emit the rich object through Labby's outer MCP envelope and execution trace.
-7. Update Code Mode's model-facing instructions.
-8. Publish the normative contract and JSON Schema.
-9. Add regression coverage for multi-block partial failures, structured errors, binary data, secrets, annotations, transport separation, and health isolation.
-10. Run formatting, checks, tests, strict clippy, commit, push, and open the protected-branch PR.
+1. Define surface-neutral origin, recovery, exact-retry, and side-effect types in labby-runtime.
+2. Make ToolError serialize the additive contract without changing existing constructors.
+3. Keep Code Mode evidence and safety hints while reusing the shared vocabulary.
+4. Analyze completed MCP isError results across all content blocks and structuredContent.
+5. Enrich direct MCP errors while preserving every original upstream payload channel.
+6. Ensure completed MCP tool errors never poison upstream connection health.
+7. Distinguish transport and OAuth failures with tool identity, sanitized cause, and explicit gateway.oauth.start recovery.
+8. Emit the same MCP envelope in text and structuredContent for all built-in and early-gate failures.
+9. Document AgentErrorResponse and complete non-2xx status classes in OpenAPI.
+10. Emit stable machine-readable stderr failures for labby --json while preserving nonzero exit codes.
+11. Place contract data in MCP JSON-RPC errors for bridge, prompt, and resource failures.
+12. Render recovery, side effects, cause, safety hints, and evidence in the Code Mode inspector.
+13. Publish the shared contract and JSON Schemas.
+14. Run formatting, generated-doc drift, feature slices, full tests, strict clippy, repository contract, commit, push, and protected-branch PR checks.
 
 ## Verification gates
 
-- Rust types serialize against the schema examples.
-- A completed MCP tool error remains `tool_error` and does not alter upstream health.
-- A transport closure remains `upstream_error` with `origin: upstream_transport`.
-- `JSON.parse(e.message)` works for caught failures.
-- An uncaught failure returns the same object in the outer envelope and trace.
-- All text blocks survive in order.
-- Structured content survives after redaction/capping.
-- Binary data is not embedded.
-- Secret-shaped strings are redacted.
-- Read-only/idempotent hints only soften guidance; they never become trusted guarantees.
+- ToolError is byte-compatible in kind/message/existing extras and additive in recovery metadata.
+- Direct MCP completed tool errors retain every original content block and upstream structured content.
+- Completed isError results never increment the upstream breaker.
+- Transport loss and OAuth reauthorization are distinguishable and course-correcting.
+- MCP text and structuredContent contain equivalent error envelopes.
+- MCP protocol ErrorData.data contains the versioned contract.
+- HTTP runtime and OpenAPI expose AgentErrorResponse consistently.
+- labby --json writes valid structured errors to stderr on failure.
+- Caught and uncaught Code Mode failures expose the same object.
+- The inspector visibly renders recovery, side-effect risk, cause, safety, and evidence.
+- Secret-shaped strings and binary evidence remain redacted or omitted.
+- All feature slices, tests, generated docs, and repository contracts pass.

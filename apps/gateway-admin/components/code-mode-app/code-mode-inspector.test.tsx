@@ -65,6 +65,50 @@ test('renders execute call rows with expandable redacted params', async () => {
   await unmount()
 })
 
+test('renders actionable recovery, cause, safety, and evidence', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        error_kind: 'tool_error',
+        calls: [
+          { id: 'shell::run', namespace: 'shell', tool: 'run', ok: false, elapsed_ms: 14, error_kind: 'tool_error' },
+        ],
+        error: {
+          contract_version: 1,
+          kind: 'tool_error',
+          message: 'Tool shell::run ran but reported a failure.',
+          tool: 'shell::run',
+          origin: 'tool_execution',
+          recovery: {
+            action: 'revise_and_retry',
+            same_arguments: 'discouraged',
+            guidance: 'Inspect the output, change the command, and retry only after revision.',
+          },
+          side_effects: 'possible',
+          cause: 'Exit code 7',
+          safety: { read_only_hint: false },
+          evidence: { content: [{ type: 'text', text: 'Exit code 7' }] },
+        },
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /Recovery/)
+  assert.match(container.textContent ?? '', /revise and retry/)
+  assert.match(container.textContent ?? '', /side effects possible/)
+  assert.doesNotMatch(container.textContent ?? '', /Exit code 7/)
+  await clickButton(container, (text) => text.startsWith('Recovery'))
+  assert.match(container.textContent ?? '', /Next Action/)
+  assert.match(container.textContent ?? '', /change the command/)
+  assert.match(container.textContent ?? '', /Exit code 7/)
+  assert.match(container.textContent ?? '', /Safety Hints/)
+  assert.match(container.textContent ?? '', /Evidence/)
+  await unmount()
+})
+
 test('minimizes and restores the inspector', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(

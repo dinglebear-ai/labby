@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://dinglebear.ai/schemas/labby/code-mode-call-error-v1.json",
-  "title": "Labby Code Mode Call Error",
+  "$id": "https://dinglebear.ai/schemas/labby/agent-error-v1.json",
+  "title": "Labby Agent Error",
   "type": "object",
   "required": [
     "contract_version",
@@ -23,18 +23,17 @@
       "type": "string",
       "minLength": 1
     },
-    "tool": {
-      "type": "string",
-      "pattern": "^.+::.+$"
-    },
     "origin": {
       "enum": [
+        "runtime",
         "code_mode",
         "tool_execution",
         "upstream_transport",
         "validation",
         "policy",
-        "budget"
+        "budget",
+        "discovery",
+        "bridge"
       ]
     },
     "recovery": {
@@ -47,17 +46,22 @@
         "unknown"
       ]
     },
-    "original_kind": {
-      "type": "string"
-    },
-    "cause": {
-      "type": "string"
-    },
+    "service": { "type": "string" },
+    "action": { "type": "string" },
+    "tool": { "type": "string" },
+    "upstream": { "type": "string" },
+    "command": { "type": "string" },
+    "prompt": { "type": "string" },
+    "resource": { "type": "string" },
+    "cause": { "type": "string" },
+    "original_kind": { "type": "string" },
     "safety": {
-      "$ref": "#/$defs/safety"
+      "type": "object",
+      "additionalProperties": true
     },
     "evidence": {
-      "$ref": "#/$defs/evidence"
+      "type": "object",
+      "additionalProperties": true
     }
   },
   "additionalProperties": true,
@@ -96,40 +100,6 @@
           "minLength": 1
         },
         "retry_after_ms": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": true
-    },
-    "safety": {
-      "type": "object",
-      "properties": {
-        "read_only_hint": {
-          "type": "boolean"
-        },
-        "destructive_hint": {
-          "type": "boolean"
-        },
-        "idempotent_hint": {
-          "type": "boolean"
-        },
-        "open_world_hint": {
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": true
-    },
-    "evidence": {
-      "type": "object",
-      "properties": {
-        "content": {
-          "type": "array",
-          "items": {}
-        },
-        "structured_content": {},
-        "parsed_error": {},
-        "omitted_content_blocks": {
           "type": "integer",
           "minimum": 0
         }

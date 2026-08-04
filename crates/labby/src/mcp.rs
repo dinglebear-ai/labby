@@ -2,6 +2,7 @@
 //! the Model Context Protocol. See `crates/lab/src/mcp/CLAUDE.md` for
 //! the full rulebook on dispatch, envelopes, and the shared catalog.
 
+pub(crate) mod agent_error;
 #[cfg(feature = "gateway")]
 pub mod bridge;
 pub mod call_tool;
@@ -32,6 +33,7 @@ pub(crate) mod permanent_tools;
 pub mod prompts;
 pub(crate) mod provenance;
 pub mod registry;
+pub(crate) mod resource_errors;
 #[cfg(feature = "gateway")]
 pub mod resource_proxy;
 pub mod resources;

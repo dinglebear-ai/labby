@@ -11,11 +11,34 @@ export interface CodeModeExecuteTrace {
   elapsed_ms?: number
   /** Present on failed runs — the ToolError kind that aborted the snippet. */
   error_kind?: string
+  /** Complete model-actionable contract emitted for an uncaught failure. */
+  error?: CodeModeErrorContract
   input_tokens?: number
   output_tokens?: number
   logs_count?: number
   artifacts?: CodeModeArtifactReceipt[]
   warnings?: CodeModeTraceWarning[]
+}
+
+export interface CodeModeRecoveryAdvice {
+  action: string
+  same_arguments: string
+  guidance: string
+  retry_after_ms?: number
+}
+
+export interface CodeModeErrorContract {
+  contract_version: number
+  kind: string
+  message: string
+  tool?: string
+  origin: string
+  recovery: CodeModeRecoveryAdvice
+  side_effects: string
+  original_kind?: string
+  cause?: string
+  safety?: Record<string, unknown>
+  evidence?: Record<string, unknown>
 }
 
 export interface CodeModeArtifactReceipt {
@@ -200,11 +223,45 @@ function parseExecuteTrace(value: Record<string, unknown>): CodeModeExecuteTrace
     execution_id: optionalString(value.execution_id),
     elapsed_ms: optionalNumber(value.elapsed_ms),
     error_kind: optionalString(value.error_kind),
+    error: parseCodeModeError(value.error),
     input_tokens: optionalNumber(value.input_tokens),
     output_tokens: optionalNumber(value.output_tokens),
     logs_count: optionalNumber(value.logs_count),
     artifacts: parseArtifacts(value.artifacts),
     warnings: droppedWarning(calls.dropped, 'execute call'),
+  }
+}
+
+function parseCodeModeError(value: unknown): CodeModeErrorContract | undefined {
+  if (!isRecord(value)) return undefined
+  const recovery = isRecord(value.recovery) ? value.recovery : null
+  if (
+    typeof value.kind !== 'string' ||
+    typeof value.message !== 'string' ||
+    recovery === null ||
+    typeof recovery.action !== 'string' ||
+    typeof recovery.same_arguments !== 'string' ||
+    typeof recovery.guidance !== 'string'
+  ) {
+    return undefined
+  }
+  return {
+    contract_version: numberValue(value.contract_version, 1),
+    kind: value.kind,
+    message: value.message,
+    tool: optionalString(value.tool),
+    origin: stringValue(value.origin, 'code_mode'),
+    recovery: {
+      action: recovery.action,
+      same_arguments: recovery.same_arguments,
+      guidance: recovery.guidance,
+      retry_after_ms: optionalNumber(recovery.retry_after_ms),
+    },
+    side_effects: stringValue(value.side_effects, 'unknown'),
+    original_kind: optionalString(value.original_kind),
+    cause: optionalString(value.cause),
+    safety: isRecord(value.safety) ? value.safety : undefined,
+    evidence: isRecord(value.evidence) ? value.evidence : undefined,
   }
 }
 

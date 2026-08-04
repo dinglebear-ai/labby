@@ -34,8 +34,8 @@ use crate::dispatch::gateway::code_mode::{
 use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::result_format::{
-    code_mode_error_envelope, estimate_tokens, estimate_tokens_args, hash_arguments,
-    tool_error_envelope,
+    code_mode_error_envelope, error_result_from_envelope, estimate_tokens, estimate_tokens_args,
+    hash_arguments, tool_error_envelope,
 };
 use crate::mcp::server::LabMcpServer;
 
@@ -481,9 +481,7 @@ impl LabMcpServer {
                 "gateway codemode denied by scope"
             );
             let env = tool_error_envelope(service, "call_tool", &err);
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                env.to_string(),
-            )]));
+            return Ok(error_result_from_envelope(env));
         }
         let Some(manager) = &self.gateway_manager else {
             let envelope = build_error(
@@ -492,9 +490,7 @@ impl LabMcpServer {
                 "unknown_tool",
                 "codemode is not enabled",
             );
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]));
+            return Ok(error_result_from_envelope(envelope));
         };
         let config = manager.code_mode_config().await;
         let code = match code_arg(args) {
@@ -507,9 +503,7 @@ impl LabMcpServer {
                     &err.to_string(),
                     &serde_json::json!({ "param": "code" }),
                 );
-                return Ok(CallToolResult::error(vec![ContentBlock::text(
-                    env.to_string(),
-                )]));
+                return Ok(error_result_from_envelope(env));
             }
         };
         let capability_filter =
@@ -517,9 +511,7 @@ impl LabMcpServer {
                 Ok(filter) => filter,
                 Err(err) => {
                     let env = tool_error_envelope(service, "call_tool", &err);
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        env.to_string(),
-                    )]));
+                    return Ok(error_result_from_envelope(env));
                 }
             };
         let code_hash = hash_arguments(&Value::String(code.to_string()));

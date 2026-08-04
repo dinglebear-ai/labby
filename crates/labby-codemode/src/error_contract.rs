@@ -5,70 +5,20 @@
 //! JavaScript promises, so the rejection payload must preserve enough evidence
 //! for model-authored code to diagnose, course-correct, and retry safely.
 
+use labby_runtime::agent_error::{
+    AGENT_ERROR_CONTRACT_VERSION, AgentErrorOrigin, AgentRecoveryAction, AgentRecoveryAdvice,
+    AgentSameArgumentsRetry, AgentSideEffectRisk, origin_for_kind as shared_origin_for_kind,
+    recovery_for_kind as shared_recovery_for_kind,
+};
 use labby_runtime::error::ToolError;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-/// Where a Code Mode call failure originated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodeModeErrorOrigin {
-    /// The Code Mode runtime or broker rejected the call.
-    CodeMode,
-    /// The upstream MCP server returned a completed `isError: true` result.
-    ToolExecution,
-    /// The Labby-to-upstream transport did not yield a completed MCP result.
-    UpstreamTransport,
-    /// Input or output validation rejected the call before execution completed.
-    Validation,
-    /// Authorization, confirmation, or route policy rejected the call.
-    Policy,
-    /// A Code Mode execution/result budget rejected the call.
-    Budget,
-}
-
-/// The next recovery move recommended to model-authored code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodeModeRecoveryAction {
-    ReviseAndRetry,
-    RetryLater,
-    Reauthenticate,
-    Confirm,
-    Rediscover,
-    ReduceWork,
-    InspectAndEscalate,
-    DoNotRetry,
-}
-
-/// Whether repeating the exact same call is appropriate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodeModeSameArgumentsRetry {
-    Safe,
-    Conditional,
-    Discouraged,
-    Never,
-}
-
-/// Conservative side-effect assessment for the failed call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodeModeSideEffectRisk {
-    NoneExpected,
-    Possible,
-    Unknown,
-}
-
-/// Structured recovery guidance paired with the human-readable message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CodeModeRecoveryAdvice {
-    pub action: CodeModeRecoveryAction,
-    pub same_arguments: CodeModeSameArgumentsRetry,
-    pub guidance: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_after_ms: Option<u64>,
-}
+pub type CodeModeErrorOrigin = AgentErrorOrigin;
+pub type CodeModeRecoveryAction = AgentRecoveryAction;
+pub type CodeModeSameArgumentsRetry = AgentSameArgumentsRetry;
+pub type CodeModeSideEffectRisk = AgentSideEffectRisk;
+pub type CodeModeRecoveryAdvice = AgentRecoveryAdvice;
 
 /// MCP tool annotations that informed retry and side-effect guidance.
 ///
@@ -132,7 +82,7 @@ const fn is_zero(value: &usize) -> bool {
 }
 
 /// Stable JSON object carried in `Error.message` for a failed `callTool`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CodeModeCallError {
     /// Version of this model-facing contract. Additive changes keep version 1.
     pub contract_version: u32,
@@ -158,13 +108,69 @@ pub struct CodeModeCallError {
     pub evidence: Option<CodeModeErrorEvidence>,
 }
 
+impl<'de> Deserialize<'de> for CodeModeCallError {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireError {
+            #[serde(default)]
+            contract_version: Option<u32>,
+            kind: String,
+            message: String,
+            #[serde(default)]
+            tool: Option<String>,
+            #[serde(default)]
+            origin: Option<CodeModeErrorOrigin>,
+            #[serde(default)]
+            recovery: Option<CodeModeRecoveryAdvice>,
+            #[serde(default)]
+            side_effects: Option<CodeModeSideEffectRisk>,
+            #[serde(default)]
+            original_kind: Option<String>,
+            #[serde(default)]
+            cause: Option<String>,
+            #[serde(default)]
+            safety: CodeModeToolSafetyHints,
+            #[serde(default)]
+            evidence: Option<CodeModeErrorEvidence>,
+        }
+
+        let wire = WireError::deserialize(deserializer)?;
+        let recovery = wire
+            .recovery
+            .unwrap_or_else(|| recovery_for_kind(&wire.kind, &wire.safety, None));
+        let origin = wire.origin.unwrap_or_else(|| origin_for_kind(&wire.kind));
+        let side_effects = wire
+            .side_effects
+            .unwrap_or_else(|| side_effects_for_kind(&wire.kind));
+
+        Ok(Self {
+            contract_version: wire
+                .contract_version
+                .unwrap_or(AGENT_ERROR_CONTRACT_VERSION),
+            kind: wire.kind,
+            message: wire.message,
+            tool: wire.tool,
+            origin,
+            recovery,
+            side_effects,
+            original_kind: wire.original_kind,
+            cause: wire.cause,
+            safety: wire.safety,
+            evidence: wire.evidence,
+        })
+    }
+}
+
 impl CodeModeCallError {
     #[must_use]
     pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {
         let kind = kind.into();
         let message = message.into();
         Self {
-            contract_version: 1,
+            contract_version: AGENT_ERROR_CONTRACT_VERSION,
             origin: origin_for_kind(&kind),
             recovery: recovery_for_kind(&kind, &CodeModeToolSafetyHints::default(), None),
             side_effects: side_effects_for_kind(&kind),
@@ -200,7 +206,7 @@ impl CodeModeCallError {
         };
         let message = tool_execution_message(&tool, &cause, &recovery, side_effects);
         Self {
-            contract_version: 1,
+            contract_version: AGENT_ERROR_CONTRACT_VERSION,
             kind,
             message,
             tool: Some(tool),
@@ -242,7 +248,7 @@ Upstream transport error:
 {cause}"
         );
         Self {
-            contract_version: 1,
+            contract_version: AGENT_ERROR_CONTRACT_VERSION,
             kind: "upstream_error".to_string(),
             message,
             tool: Some(tool),
@@ -329,21 +335,11 @@ impl std::fmt::Display for CodeModeCallError {
 impl std::error::Error for CodeModeCallError {}
 
 fn origin_for_kind(kind: &str) -> CodeModeErrorOrigin {
-    match kind {
-        "missing_param" | "invalid_param" | "validation_failed" | "invalid_code_mode_id" => {
-            CodeModeErrorOrigin::Validation
-        }
-        "forbidden"
-        | "permission_denied"
-        | "route_scope_denied"
-        | "confirmation_required"
-        | "auth_failed" => CodeModeErrorOrigin::Policy,
-        "budget_exceeded"
-        | "call_budget_exceeded"
-        | "quota_exceeded"
-        | "result_too_large"
-        | "artifact_too_large" => CodeModeErrorOrigin::Budget,
-        _ => CodeModeErrorOrigin::CodeMode,
+    match shared_origin_for_kind(kind) {
+        CodeModeErrorOrigin::Runtime
+        | CodeModeErrorOrigin::Discovery
+        | CodeModeErrorOrigin::Bridge => CodeModeErrorOrigin::CodeMode,
+        origin => origin,
     }
 }
 
@@ -351,7 +347,11 @@ fn side_effects_for_kind(kind: &str) -> CodeModeSideEffectRisk {
     match origin_for_kind(kind) {
         CodeModeErrorOrigin::Validation
         | CodeModeErrorOrigin::Policy
-        | CodeModeErrorOrigin::Budget => CodeModeSideEffectRisk::NoneExpected,
+        | CodeModeErrorOrigin::Budget
+        | CodeModeErrorOrigin::Discovery => CodeModeSideEffectRisk::NoneExpected,
+        CodeModeErrorOrigin::ToolExecution | CodeModeErrorOrigin::UpstreamTransport => {
+            CodeModeSideEffectRisk::Possible
+        }
         _ => CodeModeSideEffectRisk::Unknown,
     }
 }
@@ -361,82 +361,7 @@ fn recovery_for_kind(
     safety: &CodeModeToolSafetyHints,
     retry_after_ms: Option<u64>,
 ) -> CodeModeRecoveryAdvice {
-    let exact_retry = if safety.exact_retry_is_hint_safe() {
-        CodeModeSameArgumentsRetry::Conditional
-    } else {
-        CodeModeSameArgumentsRetry::Discouraged
-    };
-    match kind {
-        "missing_param" | "invalid_param" | "validation_failed" | "tool_error"
-        | "conflict" => CodeModeRecoveryAdvice {
-            action: CodeModeRecoveryAction::ReviseAndRetry,
-            same_arguments: exact_retry,
-            guidance: "Inspect the preserved tool evidence, correct the command or parameters, and retry only after changing the call.".to_string(),
-            retry_after_ms: None,
-        },
-        "unknown_tool" | "unknown_action" | "unknown_subaction" | "not_found"
-        | "invalid_code_mode_id" | "snippet_not_found" => CodeModeRecoveryAdvice {
-            action: CodeModeRecoveryAction::Rediscover,
-            same_arguments: CodeModeSameArgumentsRetry::Never,
-            guidance: "Rediscover the available tool, action, or identifier, then call the corrected target.".to_string(),
-            retry_after_ms: None,
-        },
-        "rate_limited" | "queue_saturated" => CodeModeRecoveryAdvice {
-            action: CodeModeRecoveryAction::RetryLater,
-            same_arguments: CodeModeSameArgumentsRetry::Conditional,
-            guidance: "Wait for the supplied retry interval when present, then retry with bounded concurrency.".to_string(),
-            retry_after_ms,
-        },
-        "timeout" | "network_error" | "upstream_error" | "service_unavailable" => {
-            CodeModeRecoveryAdvice {
-                action: CodeModeRecoveryAction::RetryLater,
-                same_arguments: CodeModeSameArgumentsRetry::Conditional,
-                guidance: "Retry after the transient condition clears, but verify whether the previous call may have committed partial effects.".to_string(),
-                retry_after_ms,
-            }
-        }
-        "auth_failed" | "oauth_needs_reauth" | "authorization_failed" => {
-            CodeModeRecoveryAdvice {
-                action: CodeModeRecoveryAction::Reauthenticate,
-                same_arguments: CodeModeSameArgumentsRetry::Never,
-                guidance: "Repair or refresh authentication before retrying the call.".to_string(),
-                retry_after_ms: None,
-            }
-        }
-        "confirmation_required" => CodeModeRecoveryAdvice {
-            action: CodeModeRecoveryAction::Confirm,
-            same_arguments: CodeModeSameArgumentsRetry::Never,
-            guidance: "Obtain the required user confirmation, then retry through the confirmed path.".to_string(),
-            retry_after_ms: None,
-        },
-        "budget_exceeded" | "call_budget_exceeded" | "quota_exceeded"
-        | "result_too_large" | "artifact_too_large" => CodeModeRecoveryAdvice {
-            action: CodeModeRecoveryAction::ReduceWork,
-            same_arguments: CodeModeSameArgumentsRetry::Never,
-            guidance: "Reduce fan-out or payload size, split the work, or write large results to an artifact before retrying.".to_string(),
-            retry_after_ms: None,
-        },
-        "forbidden" | "permission_denied" | "route_scope_denied" => {
-            CodeModeRecoveryAdvice {
-                action: CodeModeRecoveryAction::DoNotRetry,
-                same_arguments: CodeModeSameArgumentsRetry::Never,
-                guidance: "The caller lacks permission for this operation. Use an authorized route or ask the user/operator to grant access.".to_string(),
-                retry_after_ms: None,
-            }
-        }
-        "server_error" | "internal_error" | "decode_error" => CodeModeRecoveryAdvice {
-            action: CodeModeRecoveryAction::InspectAndEscalate,
-            same_arguments: CodeModeSameArgumentsRetry::Discouraged,
-            guidance: "Inspect the preserved evidence and server diagnostics. Escalate if the failure is not explained by the call input.".to_string(),
-            retry_after_ms: None,
-        },
-        _ => CodeModeRecoveryAdvice {
-            action: CodeModeRecoveryAction::InspectAndEscalate,
-            same_arguments: exact_retry,
-            guidance: "Inspect the preserved evidence, adjust the call when possible, and avoid an unchanged retry when side effects are uncertain.".to_string(),
-            retry_after_ms,
-        },
-    }
+    shared_recovery_for_kind(kind, retry_after_ms, safety.exact_retry_is_hint_safe())
 }
 
 fn tool_execution_message(
@@ -518,6 +443,29 @@ mod tests {
         assert_eq!(
             error.recovery.same_arguments,
             CodeModeSameArgumentsRetry::Conditional
+        );
+    }
+
+    #[test]
+    fn legacy_kind_message_payload_upgrades_to_current_contract() {
+        let error: CodeModeCallError = serde_json::from_value(serde_json::json!({
+            "kind": "tool_error",
+            "message": "legacy failure"
+        }))
+        .expect("legacy error must remain compatible");
+
+        assert_eq!(error.contract_version, AGENT_ERROR_CONTRACT_VERSION);
+        assert_eq!(error.kind, "tool_error");
+        assert_eq!(error.message, "legacy failure");
+        assert_eq!(error.origin, CodeModeErrorOrigin::ToolExecution);
+        assert_eq!(error.side_effects, CodeModeSideEffectRisk::Possible);
+        assert_eq!(
+            error.recovery.action,
+            CodeModeRecoveryAction::ReviseAndRetry
+        );
+        assert_eq!(
+            error.recovery.same_arguments,
+            CodeModeSameArgumentsRetry::Discouraged
         );
     }
 

@@ -887,7 +887,6 @@ mod tests {
         });
         for (action, response) in [
             ("gateway.oauth.resource_lease.create", lease.clone()),
-            ("gateway.oauth.resource_lease.renew", lease.clone()),
             (
                 "gateway.oauth.resource_lease.release",
                 json!({"released": true}),
@@ -902,6 +901,20 @@ mod tests {
                 .mount(&server)
                 .await;
         }
+        let renewal_observed = std::sync::Arc::new(tokio::sync::Notify::new());
+        let renewal_observed_response = std::sync::Arc::clone(&renewal_observed);
+        let renewed_lease = lease.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "action": "gateway.oauth.resource_lease.renew"
+            })))
+            .respond_with(move |_request: &wiremock::Request| {
+                renewal_observed_response.notify_one();
+                ResponseTemplate::new(200).set_body_json(&renewed_lease)
+            })
+            .mount(&server)
+            .await;
         let mut guard = OAuthLeaseGuard::create(
             test_gateway(server.uri(), None),
             "https://proxy.example:53147/mcp",
@@ -916,7 +929,9 @@ mod tests {
         .await
         .unwrap();
         assert!(!format!("{guard:?}").contains("lease-secret-id"));
-        tokio::time::sleep(Duration::from_millis(35)).await;
+        tokio::time::timeout(Duration::from_secs(1), renewal_observed.notified())
+            .await
+            .expect("OAuth lease renewal request was not observed");
         guard.release().await.unwrap();
 
         let requests = server.received_requests().await.unwrap();

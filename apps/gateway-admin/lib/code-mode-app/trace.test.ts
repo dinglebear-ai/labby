@@ -146,6 +146,38 @@ test('parses failed-run traces with error kind and call start offsets', () => {
   }
 })
 
+test('parses the actionable failed-run error contract', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    calls: [{ id: 'shell::run', ok: false, elapsed_ms: 14, error_kind: 'tool_error' }],
+    error_kind: 'tool_error',
+    error: {
+      contract_version: 1,
+      kind: 'tool_error',
+      message: 'Tool failed after starting.',
+      tool: 'shell::run',
+      origin: 'tool_execution',
+      recovery: {
+        action: 'revise_and_retry',
+        same_arguments: 'discouraged',
+        guidance: 'Inspect the output and change the command.',
+      },
+      side_effects: 'possible',
+      cause: 'Exit code 7',
+      evidence: { content: [{ type: 'text', text: 'Exit code 7' }] },
+    },
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.error?.tool, 'shell::run')
+    assert.equal(trace.error?.recovery.action, 'revise_and_retry')
+    assert.equal(trace.error?.side_effects, 'possible')
+    assert.equal(trace.error?.cause, 'Exit code 7')
+  }
+})
+
 test('parses artifact receipts', () => {
   const trace = parseCodeModeTrace({
     kind: 'code_mode_execute_trace',

@@ -1,9 +1,17 @@
+---
+title: Code Mode tool error contract
+created: 2026-08-04
+updated: 2026-08-04
+---
+
 # Code Mode Tool Error Contract
 
 Status: implemented
 Contract version: 1
 
 ## Purpose
+
+Code Mode extends the shared [Agent Error Contract](agent-error-contract.md) with JavaScript rejection behavior, sanitized MCP evidence, and advisory tool safety hints.
 
 Code Mode converts an MCP `CallToolResult` with `isError: true` into a rejected JavaScript promise. The rejection must give model-authored code enough trustworthy context to diagnose the failure, choose a safe recovery action, and avoid duplicate side effects.
 
@@ -71,6 +79,7 @@ Version 1 changes are additive unless a field's documented semantics change. A b
 
 ## Source of truth
 
-- Rust types: `crates/labby-codemode/src/error_contract.rs`
+- Shared metadata: `crates/labby-runtime/src/agent_error.rs`
+- Code Mode types: `crates/labby-codemode/src/error_contract.rs`
 - MCP adapter: `crates/labby-gateway/src/gateway/code_mode/tool_error.rs`
 - JSON Schema: `docs/contracts/schemas/code-mode-call-error.schema.json`

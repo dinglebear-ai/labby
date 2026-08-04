@@ -30,6 +30,7 @@ impl<T> ToolEnvelope<T> {
 //   success: `{ ok: true,  service, action, data }`
 //   error:   `{ ok: false, service, action, error: { kind, message, … } }`
 
+use labby_runtime::agent_error::{AgentErrorContext, build_agent_error_value};
 use serde_json::{Value, json};
 
 /// Build a success envelope.
@@ -55,14 +56,12 @@ pub fn build_success(service: &str, action: &str, data: &Value) -> Value {
 /// ```
 #[must_use]
 pub fn build_error(service: &str, action: &str, kind: &str, message: &str) -> Value {
+    let context = AgentErrorContext::for_service_action(service, action);
     json!({
         "ok": false,
         "service": service,
         "action": action,
-        "error": {
-            "kind": kind,
-            "message": message,
-        },
+        "error": build_agent_error_value(kind, message, None, &context),
     })
 }
 
@@ -75,16 +74,13 @@ pub fn build_error_extra(
     message: &str,
     extra: &Value,
 ) -> Value {
-    let mut obj = build_error(service, action, kind, message);
-    if let (Some(err), Some(ext_map)) = (
-        obj.get_mut("error").and_then(Value::as_object_mut),
-        extra.as_object(),
-    ) {
-        for (k, v) in ext_map {
-            err.insert(k.clone(), v.clone());
-        }
-    }
-    obj
+    let context = AgentErrorContext::for_service_action(service, action);
+    json!({
+        "ok": false,
+        "service": service,
+        "action": action,
+        "error": build_agent_error_value(kind, message, Some(extra), &context),
+    })
 }
 
 #[cfg(test)]

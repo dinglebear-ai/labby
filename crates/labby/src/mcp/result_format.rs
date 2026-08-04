@@ -6,6 +6,7 @@
 //! `normalize_upstream_result` intentionally does NOT live here — it is
 //! consolidated into `upstream.rs` (its semantic home) in bead `.5`.
 
+#[cfg(feature = "gateway")]
 use labby_codemode::CodeModeCallError;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
@@ -36,6 +37,7 @@ pub(crate) fn tool_error_envelope(service: &str, action: &str, err: &DispatchToo
     }
 }
 
+#[cfg(feature = "gateway")]
 pub(crate) fn code_mode_error_envelope(
     service: &str,
     action: &str,
@@ -48,6 +50,12 @@ pub(crate) fn code_mode_error_envelope(
         error.user_message(),
         &error.extra_fields(),
     )
+}
+
+pub(crate) fn error_result_from_envelope(envelope: Value) -> CallToolResult {
+    let mut result = CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
+    result.structured_content = Some(envelope);
+    result
 }
 
 pub(crate) fn hash_arguments(arguments: &Value) -> String {
@@ -135,10 +143,8 @@ pub(crate) fn format_dispatch_result(
                 || build_error(service, action, kind, &message),
                 |ref extra| build_error_extra(service, action, kind, &message, extra),
             );
-            let mut result = CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
-            result.structured_content = Some(envelope);
             (
-                result,
+                error_result_from_envelope(envelope),
                 DispatchLogOutcome::Failure {
                     level: if is_fatal {
                         LoggingLevel::Error

@@ -19,22 +19,23 @@
 
 use std::time::Instant;
 
+use labby_gateway::upstream::tool_error::McpToolSafetyHints;
+use labby_runtime::agent_error::sanitize_error_text;
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock,
-};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, ClientCapabilities};
 use rmcp::service::RequestContext;
 
 use crate::mcp::context::{
     auth_context_from_extensions, oauth_upstream_subject_for_request, redacted_oauth_subject_label,
 };
-use crate::mcp::envelope::build_error;
+use crate::mcp::envelope::build_error_extra;
 use crate::mcp::error::canonical_kind;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::result_format::{
-    estimate_tokens, estimate_tokens_args, format_dispatch_result, tool_error_envelope,
+    error_result_from_envelope, estimate_tokens, estimate_tokens_args, format_dispatch_result,
+    tool_error_envelope,
 };
 use crate::mcp::server::{LabMcpServer, LabRequestCancellation};
 use crate::mcp::upstream::normalize_upstream_result;
@@ -71,8 +72,67 @@ fn relay_cancellation_token(
         .unwrap_or_else(|| context.ct.clone())
 }
 
-fn upstream_call_failed_message(upstream_name: &str) -> String {
-    format!("upstream `{upstream_name}` call failed")
+fn qualified_upstream_tool(upstream_name: &str, service: &str) -> String {
+    if service.contains("::") {
+        service.to_string()
+    } else {
+        format!("{upstream_name}::{service}")
+    }
+}
+
+fn upstream_failure_kind(error: &str) -> &'static str {
+    let error = error.to_ascii_lowercase();
+    if [
+        "401",
+        "unauthorized",
+        "invalid_grant",
+        "invalid_token",
+        "token expired",
+        "oauth error",
+        "oauth authorization",
+        "oauth token",
+        "requires oauth",
+        "reauth",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
+    {
+        "oauth_needs_reauth"
+    } else {
+        "upstream_error"
+    }
+}
+
+fn upstream_transport_error_envelope(
+    service: &str,
+    action: &str,
+    upstream_name: &str,
+    raw_error: &str,
+) -> (serde_json::Value, &'static str) {
+    let kind = upstream_failure_kind(raw_error);
+    let tool = qualified_upstream_tool(upstream_name, service);
+    let cause = sanitize_error_text(raw_error, 4096);
+    let message = if kind == "oauth_needs_reauth" {
+        format!(
+            "Tool `{tool}` did not return a completed MCP result because upstream `{upstream_name}` requires authorization. Do not retry this tool call unchanged. Call the `gateway` tool with action `gateway.oauth.start` and parameter `upstream = {upstream_name}`, complete authorization, then verify whether the original operation took effect before retrying."
+        )
+    } else {
+        format!(
+            "Tool `{tool}` did not return a completed MCP result because the transport to upstream `{upstream_name}` failed. Retry after the upstream reconnects, but first verify whether the previous call may have committed partial effects."
+        )
+    };
+    let envelope = build_error_extra(
+        service,
+        action,
+        kind,
+        &message,
+        &serde_json::json!({
+            "tool": tool,
+            "upstream": upstream_name,
+            "cause": cause,
+        }),
+    );
+    (envelope, kind)
 }
 
 impl LabMcpServer {
@@ -131,6 +191,13 @@ impl LabMcpServer {
         } else {
             None
         };
+        let pre_resolved_safety = raw_resolved
+            .as_ref()
+            .and_then(|resolved| resolved.as_ref().ok())
+            .map(|(_, tool, _)| {
+                McpToolSafetyHints::from_annotations(tool.tool.annotations.as_ref())
+            })
+            .unwrap_or_default();
         if let Some(Err(err)) = &raw_resolved
             && !matches!(err.kind(), "unknown_tool" | "not_found")
         {
@@ -158,14 +225,14 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Ok(
-                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
-            );
+            return Ok(error_result_from_envelope(envelope).into());
         }
         if let Some(pool) = self.current_upstream_pool().await
-            && let Some(Ok((upstream_name, _tool, route))) = raw_resolved
+            && let Some(Ok((upstream_name, resolved_tool, route))) = raw_resolved
             && pre_resolved_oauth_config.is_none()
         {
+            let safety =
+                McpToolSafetyHints::from_annotations(resolved_tool.tool.annotations.as_ref());
             let before = self.snapshot_tool_catalog_for_request(context).await;
             tracing::info!(
                 surface = "mcp",
@@ -256,8 +323,13 @@ impl LabMcpServer {
                         return Ok(result);
                     };
                     let elapsed_ms = start.elapsed().as_millis();
-                    let (result, kind, counts_as_failure) =
-                        normalize_upstream_result(service, upstream_action, result);
+                    let (result, kind, counts_as_failure) = normalize_upstream_result(
+                        service,
+                        upstream_action,
+                        &upstream_name,
+                        result,
+                        &safety,
+                    );
                     let outcome = if counts_as_failure || kind != "ok" {
                         DispatchLogOutcome::Failure {
                             level: if counts_as_failure {
@@ -330,6 +402,12 @@ impl LabMcpServer {
                     )
                     .await;
                     let elapsed_ms = start.elapsed().as_millis();
+                    let (envelope, kind) = upstream_transport_error_envelope(
+                        service,
+                        upstream_action,
+                        &upstream_name,
+                        &e,
+                    );
                     tracing::warn!(
                         surface = "mcp",
                         service,
@@ -340,15 +418,9 @@ impl LabMcpServer {
                         operation = upstream_operation,
                         subject_scoped = false,
                         elapsed_ms,
-                        kind = "upstream_error",
+                        kind,
                         error_kind = "upstream_call_failed",
                         "upstream proxy failed"
-                    );
-                    let envelope = build_error(
-                        service,
-                        upstream_action,
-                        "upstream_error",
-                        &upstream_call_failed_message(&upstream_name),
                     );
                     self.emit_dispatch_notification(
                         context,
@@ -357,14 +429,11 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Error,
-                            kind: "upstream_error",
+                            kind,
                         },
                     )
                     .await;
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
                 None => {
                     // Connection is gone — record failure so the circuit
@@ -401,11 +470,11 @@ impl LabMcpServer {
                         error = "upstream disconnected",
                         "upstream not connected"
                     );
-                    let envelope = build_error(
+                    let (envelope, kind) = upstream_transport_error_envelope(
                         service,
                         upstream_action,
-                        "upstream_error",
-                        &format!("upstream `{upstream_name}` is not connected"),
+                        &upstream_name,
+                        "upstream is not connected",
                     );
                     self.emit_dispatch_notification(
                         context,
@@ -414,14 +483,11 @@ impl LabMcpServer {
                         elapsed_ms,
                         DispatchLogOutcome::Failure {
                             level: LoggingLevel::Error,
-                            kind: "upstream_error",
+                            kind,
                         },
                     )
                     .await;
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
             }
         }
@@ -434,12 +500,14 @@ impl LabMcpServer {
             let mut owner = pre_resolved_oauth_config
                 .as_ref()
                 .map(|config| config.name.clone());
+            let mut safety = pre_resolved_safety.clone();
             if owner.is_none() {
                 for (upstream_name, tools) in pool
                     .subject_scoped_tools(&route_scoped_oauth_configs, oauth_subject.as_ref())
                     .await
                 {
-                    if tools.iter().any(|tool| tool.name.as_ref() == service) {
+                    if let Some(tool) = tools.iter().find(|tool| tool.name.as_ref() == service) {
+                        safety = McpToolSafetyHints::from_annotations(tool.annotations.as_ref());
                         owner = Some(upstream_name);
                         break;
                     }
@@ -519,8 +587,13 @@ impl LabMcpServer {
                             return Ok(result);
                         };
                         let elapsed_ms = start.elapsed().as_millis();
-                        let (result, kind, counts_as_failure) =
-                            normalize_upstream_result(service, upstream_action, result);
+                        let (result, kind, counts_as_failure) = normalize_upstream_result(
+                            service,
+                            upstream_action,
+                            &upstream_name,
+                            result,
+                            &safety,
+                        );
                         let output_tokens = serde_json::to_string(&result)
                             .map(|output| estimate_tokens(&output))
                             .unwrap_or(0);
@@ -585,8 +658,14 @@ impl LabMcpServer {
                         .await;
                         return Ok(result.into());
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         let elapsed_ms = start.elapsed().as_millis();
+                        let (envelope, kind) = upstream_transport_error_envelope(
+                            service,
+                            upstream_action,
+                            &upstream_name,
+                            &e,
+                        );
                         tracing::warn!(
                             surface = "mcp",
                             service,
@@ -603,15 +682,9 @@ impl LabMcpServer {
                             elapsed_ms,
                             input_tokens,
                             output_tokens = 0,
-                            kind = "upstream_error",
+                            kind,
                             error_kind = "upstream_call_failed",
                             "upstream dispatch error"
-                        );
-                        let envelope = build_error(
-                            service,
-                            upstream_action,
-                            "upstream_error",
-                            &upstream_call_failed_message(&upstream_name),
                         );
                         self.emit_dispatch_notification(
                             context,
@@ -620,14 +693,11 @@ impl LabMcpServer {
                             elapsed_ms,
                             DispatchLogOutcome::Failure {
                                 level: LoggingLevel::Error,
-                                kind: "upstream_error",
+                                kind,
                             },
                         )
                         .await;
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )])
-                        .into());
+                        return Ok(error_result_from_envelope(envelope).into());
                     }
                 }
             }
@@ -667,7 +737,7 @@ mod tests {
 
     use super::{
         prepare_upstream_tool_request, redacted_oauth_subject_label,
-        relay_capabilities_for_request, upstream_call_failed_message,
+        relay_capabilities_for_request, upstream_failure_kind, upstream_transport_error_envelope,
     };
 
     fn interactive_request() -> CallToolRequestParams {
@@ -728,15 +798,35 @@ mod tests {
     }
 
     #[test]
-    fn upstream_error_message_omits_raw_upstream_detail() {
-        let raw = "oauth subject user@example.com failed with bearer token abc123";
+    fn oauth_transport_failure_is_course_correcting_and_redacted() {
+        let raw = "401 unauthorized for user@example.com with sk-abcdefghijklmnopqrstuvwxyz123456";
+        let (envelope, kind) =
+            upstream_transport_error_envelope("create_issue", "call_tool", "github", raw);
 
-        let message = upstream_call_failed_message("github");
+        assert_eq!(kind, "oauth_needs_reauth");
+        let error = &envelope["error"];
+        assert_eq!(error["origin"], "policy");
+        assert_eq!(error["recovery"]["action"], "reauthenticate");
+        assert_eq!(error["tool"], "github::create_issue");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("gateway.oauth.start")
+        );
+        assert!(
+            !envelope
+                .to_string()
+                .contains("sk-abcdefghijklmnopqrstuvwxyz")
+        );
+    }
 
-        assert_eq!(message, "upstream `github` call failed");
-        assert!(!message.contains(raw));
-        assert!(!message.contains("user@example.com"));
-        assert!(!message.contains("abc123"));
+    #[test]
+    fn generic_transport_failure_stays_upstream_error() {
+        assert_eq!(
+            upstream_failure_kind("connection reset by peer"),
+            "upstream_error"
+        );
     }
 
     #[test]
