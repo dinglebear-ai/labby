@@ -474,11 +474,14 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");
     assert!(!release.contains("/latest/download/"));
-    assert!(release.contains("version=\"v1.8.0\""));
-    assert!(release.contains("1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf"));
-    assert!(release.contains("sha256sum --check --strict"));
-    assert!(release.contains("cosign verify-blob"));
-    assert!(release.contains("${archive}.sigstore.json"));
+    assert!(!release.contains("mcp-publisher"));
+    assert!(!release.contains("registry.modelcontextprotocol.io"));
+    let registry = fs::read_to_string(repo_root().join(".github/workflows/mcp-registry.yml"))
+        .expect("read MCP Registry workflow");
+    assert!(registry.contains("mcp-registry-publish.yml@befa67c7b7f976235bf3fbced6ede93293a7f405"));
+    assert!(!registry.contains("auth-method:"));
+    assert!(registry.contains("manifest-path: server.json"));
+    assert!(registry.contains("MCP_PRIVATE_KEY"));
     let incus = fs::read_to_string(repo_root().join(".github/workflows/build-incus-image.yml"))
         .expect("read hosted Incus workflow");
     assert!(incus.contains("distrobuilder_version=3.3.1"));

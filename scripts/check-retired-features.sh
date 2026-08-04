@@ -113,14 +113,11 @@ require_absent() {
 
 require_present 'io\.modelcontextprotocol\.registry/publisher-provided' server.json \
   'server.json no longer publishes Labby to the official MCP Registry'
-require_present 'mcp-publisher' .github/workflows/release.yml \
-  'MCP Registry publication workflow is missing'
-require_present 'MCP_REGISTRY_DOMAIN:.*vars\.MCP_REGISTRY_DOMAIN' .github/workflows/release.yml \
-  'MCP Registry publication no longer uses the canonical repository domain variable'
-require_present 'test.*MCP_REGISTRY_DOMAIN.*dinglebear\.ai' .github/workflows/release.yml \
-  'MCP Registry publication no longer enforces dinglebear.ai ownership'
-require_absent '--domain[[:space:]]+tootie\.tv' .github/workflows/release.yml \
-  'MCP Registry publication must not authenticate with the homelab tootie.tv domain'
+require_present 'dinglebear-ai/workflows/\.github/workflows/mcp-registry-publish\.yml@befa67c7b7f976235bf3fbced6ede93293a7f405' .github/workflows/mcp-registry.yml 'MCP Registry publication must use the canonical pinned shared workflow'
+require_absent 'auth-method:' .github/workflows/mcp-registry.yml 'MCP Registry caller must not pass the retired auth-method input'
+require_present 'MCP_PRIVATE_KEY:.*secrets\.MCP_PRIVATE_KEY' .github/workflows/mcp-registry.yml 'MCP Registry publication must pass the DNS signing key to the shared workflow'
+require_absent 'mcp-publisher|registry\.modelcontextprotocol\.io|MCP_REGISTRY_DOMAIN' .github/workflows/release.yml 'release.yml must not duplicate the shared MCP Registry publisher'
+require_absent 'tootie\.tv' .github/workflows/mcp-registry.yml 'MCP Registry publication must not use the homelab tootie.tv domain'
 
 if (( failed != 0 )); then
   exit 1
