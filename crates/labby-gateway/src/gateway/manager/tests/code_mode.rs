@@ -429,7 +429,7 @@ async fn mcp_tool_error_result_does_not_poison_upstream_connection_health() {
         .await
         .expect_err("is_error=true must remain a Code Mode tool error");
 
-    assert_eq!(err.kind(), "upstream_error");
+    assert_eq!(err.kind(), "tool_error");
     assert_eq!(
         pool.upstream_tool_last_error("unifi").await,
         None,
