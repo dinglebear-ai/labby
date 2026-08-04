@@ -478,8 +478,8 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(!release.contains("registry.modelcontextprotocol.io"));
     let registry = fs::read_to_string(repo_root().join(".github/workflows/mcp-registry.yml"))
         .expect("read MCP Registry workflow");
-    assert!(registry.contains("mcp-registry-publish.yml@3302f853574ba0c669a647f66cfcacb81f529fff"));
-    assert!(registry.contains("auth-method: dns"));
+    assert!(registry.contains("mcp-registry-publish.yml@befa67c7b7f976235bf3fbced6ede93293a7f405"));
+    assert!(!registry.contains("auth-method:"));
     assert!(registry.contains("manifest-path: server.json"));
     assert!(registry.contains("MCP_PRIVATE_KEY"));
     let incus = fs::read_to_string(repo_root().join(".github/workflows/build-incus-image.yml"))
