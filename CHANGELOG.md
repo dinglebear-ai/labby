@@ -36,6 +36,12 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **stdio:** log child PID, connection generation, exit code or signal, redacted
   stderr tail, and the exact in-flight requests invalidated by child termination.
 
+## [1.8.8](https://github.com/dinglebear-ai/labby/compare/v1.8.7...v1.8.8) (2026-08-03)
+
+### Fixed
+
+* **container:** install Claude Code native binary under npm 12 ([#322](https://github.com/dinglebear-ai/labby/issues/322)) ([0322a37](https://github.com/dinglebear-ai/labby/commit/0322a37e6ddc3237f4a048e5882d92acffa0dd83))
+
 ## [1.8.7](https://github.com/dinglebear-ai/labby/compare/v1.8.6...v1.8.7) (2026-08-03)
 
 

@@ -85,6 +85,23 @@ runs:
         stats="$("$binary" stats 2>&1)"
         grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
 
+    - name: Select writable action tool cache
+      if: >-
+        inputs.enable-cache == 'true' &&
+        runner.os == 'Linux' &&
+        steps.kache-host.outputs.managed != 'true' &&
+        env.KACHE_S3_ACCESS_KEY != '' &&
+        env.KACHE_S3_SECRET_KEY != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        tool_cache="${RUNNER_TOOL_CACHE:-}"
+        if [ -z "$tool_cache" ] || ! mkdir -p "$tool_cache" 2>/dev/null || [ ! -w "$tool_cache" ]; then
+          tool_cache="${RUNNER_TEMP:?RUNNER_TEMP is required}/toolcache"
+          mkdir -p "$tool_cache"
+        fi
+        echo "RUNNER_TOOL_CACHE=$tool_cache" >> "$GITHUB_ENV"
+
     - name: Connect shared MinIO Kache
       if: >-
         inputs.enable-cache == 'true' &&
