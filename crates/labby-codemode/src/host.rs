@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::CodeModeCallError;
 use crate::error::ToolError;
 use crate::pool::RunnerPool;
 use crate::types::{CodeModeCaller, CodeModeSurface, ToolDescriptor, ToolScope, UiLink};
@@ -158,7 +159,7 @@ pub trait CodeModeHost: Send + Sync {
         surface: CodeModeSurface,
         scope: &ToolScope,
         ctx: ExecCtx,
-    ) -> impl Future<Output = Result<ToolCallOutcome, ToolError>> + Send;
+    ) -> impl Future<Output = Result<ToolCallOutcome, CodeModeCallError>> + Send;
 
     /// Decide replay-vs-execute for a `codemode.step(name, fn)` boundary at
     /// `(execution_id, seq)`, BEFORE the sandbox runs `fn`. The step consumes a
@@ -315,11 +316,12 @@ impl CodeModeHost for NoopHost {
         _surface: CodeModeSurface,
         _scope: &ToolScope,
         _ctx: ExecCtx,
-    ) -> Result<ToolCallOutcome, ToolError> {
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
         Err(ToolError::Sdk {
             sdk_kind: "unknown_tool".to_string(),
             message: "NoopHost exposes no tools".to_string(),
-        })
+        }
+        .into())
     }
 
     async fn resolve_snippet(

@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::io::{self, BufReader, BufWriter};
 
+use crate::CodeModeCallError;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum CodeModeRunnerInput {
@@ -32,8 +34,8 @@ pub(crate) enum CodeModeRunnerInput {
     },
     ToolError {
         seq: u64,
-        kind: String,
-        message: String,
+        #[serde(flatten)]
+        error: Box<CodeModeCallError>,
     },
     /// Reply to a `StepBegin` request with the durable decision for this step.
     ///
@@ -106,8 +108,8 @@ pub(crate) enum CodeModeRunnerOutput {
         logs: Vec<String>,
     },
     Error {
-        kind: String,
-        message: String,
+        #[serde(flatten)]
+        error: Box<CodeModeCallError>,
     },
 }
 

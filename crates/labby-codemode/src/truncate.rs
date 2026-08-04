@@ -21,7 +21,7 @@ static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// Self-contained log hygiene so the kernel does not depend on the host's
 /// projection helpers.
-pub(crate) fn sanitize_log_text(input: &str, max_len: usize) -> String {
+pub fn sanitize_log_text(input: &str, max_len: usize) -> String {
     let mut sanitized = input.to_string();
     sanitized.retain(|ch| {
         !matches!(
@@ -37,6 +37,24 @@ pub(crate) fn sanitize_log_text(input: &str, max_len: usize) -> String {
     }
     let redacted = redact_secret_like_segments(&sanitized);
     redacted.chars().take(max_len).collect()
+}
+
+/// Sanitize multiline model-facing diagnostics while preserving line breaks.
+/// Each line uses the same control-character, prompt-marker, and secret hygiene
+/// as runner logs; the final joined value is capped across the whole message.
+#[must_use]
+pub fn sanitize_error_text(input: &str, max_len: usize) -> String {
+    let mut output = String::new();
+    for (index, line) in input.lines().enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+        output.push_str(&sanitize_log_text(line, max_len));
+        if output.chars().count() >= max_len {
+            break;
+        }
+    }
+    output.chars().take(max_len).collect()
 }
 
 /// Redact secret-shaped whitespace-delimited segments (API keys, tokens, JWTs)

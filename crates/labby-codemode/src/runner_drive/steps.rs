@@ -73,8 +73,9 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
         Err(error) => {
             let reply = CodeModeRunnerInput::ToolError {
                 seq,
-                kind: error.kind().to_string(),
-                message: error.user_message().to_string(),
+                error: Box::new(
+                    CodeModeCallError::from(error).with_tool(format!("code_mode::step::{name}")),
+                ),
             };
             return write_runner_input_by_deadline(
                 stdin,
@@ -107,7 +108,13 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
         StepDecision::Execute => CodeModeRunnerInput::StepDecision { seq, replay: None },
         StepDecision::Error { kind, message } => {
             state.step_ordinals.remove(&seq);
-            CodeModeRunnerInput::ToolError { seq, kind, message }
+            CodeModeRunnerInput::ToolError {
+                seq,
+                error: Box::new(
+                    CodeModeCallError::new(kind, message)
+                        .with_tool(format!("code_mode::step::{name}")),
+                ),
+            }
         }
     };
     write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await
@@ -143,8 +150,7 @@ pub(super) async fn handle_step_result_event<H: CodeModeHost>(
         Ok(()) => CodeModeRunnerInput::StepRecorded { seq },
         Err(error) => CodeModeRunnerInput::ToolError {
             seq,
-            kind: error.kind().to_string(),
-            message: error.user_message().to_string(),
+            error: Box::new(CodeModeCallError::from(error).with_tool("code_mode::step")),
         },
     };
     write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await

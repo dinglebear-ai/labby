@@ -10,6 +10,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::CodeModeCallError;
 use crate::error::ToolError;
 use crate::snippet::store::{SnippetInfo, SnippetInputSpec, SnippetInputType};
 
@@ -389,14 +390,20 @@ pub(crate) fn split_code_mode_call_id(id: &str) -> (&str, &str) {
 
 #[derive(Debug, Clone)]
 pub struct CodeModeExecutionError {
-    error: ToolError,
+    error: CodeModeCallError,
     calls: Vec<CodeModeExecutedCall>,
 }
 
 impl CodeModeExecutionError {
     #[must_use]
-    pub fn with_trace(error: ToolError, calls: Vec<CodeModeExecutedCall>) -> Self {
-        Self { error, calls }
+    pub fn with_trace(
+        error: impl Into<CodeModeCallError>,
+        calls: Vec<CodeModeExecutedCall>,
+    ) -> Self {
+        Self {
+            error: error.into(),
+            calls,
+        }
     }
 
     #[must_use]
@@ -405,13 +412,23 @@ impl CodeModeExecutionError {
     }
 
     #[must_use]
+    pub fn call_error(&self) -> &CodeModeCallError {
+        &self.error
+    }
+
+    #[must_use]
     pub fn calls(&self) -> &[CodeModeExecutedCall] {
         &self.calls
     }
 
     #[must_use]
-    pub fn into_tool_error(self) -> ToolError {
+    pub fn into_call_error(self) -> CodeModeCallError {
         self.error
+    }
+
+    #[must_use]
+    pub fn into_tool_error(self) -> ToolError {
+        self.error.into_tool_error()
     }
 }
 
@@ -425,6 +442,12 @@ impl std::error::Error for CodeModeExecutionError {}
 
 impl From<ToolError> for CodeModeExecutionError {
     fn from(error: ToolError) -> Self {
+        Self::with_trace(error, Vec::new())
+    }
+}
+
+impl From<CodeModeCallError> for CodeModeExecutionError {
+    fn from(error: CodeModeCallError) -> Self {
         Self::with_trace(error, Vec::new())
     }
 }

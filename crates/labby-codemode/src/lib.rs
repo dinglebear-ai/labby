@@ -27,6 +27,7 @@ pub mod error {
 mod artifacts;
 mod broker;
 mod config;
+mod error_contract;
 mod execute;
 mod git;
 pub mod host;
@@ -67,6 +68,11 @@ pub use config::{MAX_SOURCE_BYTES, SERVICE, install_call_budget_config_defaults}
 /// Single source of truth for the discovery-catalog scope formulas. Hosts
 /// recomputing the sandbox's scope-filtered entry set (e.g. a gateway's
 /// `semantic_rank`) MUST use these rather than restating the formulas.
+pub use error_contract::{
+    CodeModeCallError, CodeModeErrorEvidence, CodeModeErrorOrigin, CodeModeRecoveryAction,
+    CodeModeRecoveryAdvice, CodeModeSameArgumentsRetry, CodeModeSideEffectRisk,
+    CodeModeToolSafetyHints,
+};
 pub use execute::{discovery_entry_visible, discovery_render_params, local_providers_allowed};
 pub use host::{
     CodeModeHost, ExecCtx, ResolvedSnippet, StepDecision, ToolCallOutcome, ToolsRender,
@@ -82,7 +88,7 @@ pub use runner::run_code_mode_runner_stdio;
 pub use schema::validate_code_mode_params_against_schema;
 pub use shape::CodeModeResultShapeMetadata;
 pub use trace::{code_mode_execute_trace, redact_trace_value};
-pub use truncate::redact_secret_like_segments;
+pub use truncate::{redact_secret_like_segments, sanitize_error_text, sanitize_log_text};
 pub use types::{
     CodeModeCaller, CodeModeCallerCapabilities, CodeModeCatalogKind, CodeModeExecutedCall,
     CodeModeExecutionError, CodeModeExecutionResponse, CodeModeExecutionSource, CodeModeHistory,

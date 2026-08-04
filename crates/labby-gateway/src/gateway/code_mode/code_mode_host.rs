@@ -10,7 +10,8 @@ use labby_codemode::snippet::store::{
     builtin_snippet_dir, code_for_snippet, merge_snippet_input, resolve_snippet,
 };
 use labby_codemode::{
-    CodeModeCaller, CodeModeConfig, CodeModeHost, CodeModeSurface, ResolvedSnippet, RunnerPool,
+    CodeModeCallError, CodeModeCaller, CodeModeConfig, CodeModeErrorOrigin, CodeModeHost,
+    CodeModeSideEffectRisk, CodeModeSurface, CodeModeToolSafetyHints, ResolvedSnippet, RunnerPool,
     ToolCallOutcome, ToolScope, ToolsRender, UiLink, destructive_permitted,
     discovery_entry_visible, discovery_render_params,
 };
@@ -26,6 +27,7 @@ use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
 
 use super::search;
+use super::tool_error::{completed_tool_error, upstream_tool_safety};
 use super::validate_code_mode_params_against_schema;
 
 impl CodeModeHost for GatewayManager {
@@ -66,7 +68,7 @@ impl CodeModeHost for GatewayManager {
         surface: CodeModeSurface,
         _scope: &ToolScope,
         _ctx: labby_codemode::ExecCtx,
-    ) -> Result<ToolCallOutcome, ToolError> {
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
         let (upstream, tool) =
             labby_codemode::split_namespaced_id(id).ok_or_else(|| ToolError::Sdk {
                 sdk_kind: "invalid_code_mode_id".to_string(),
@@ -100,11 +102,15 @@ impl CodeModeHost for GatewayManager {
                 message: format!(
                     "Tool `{upstream}::{tool}` requires Code Mode execute permission."
                 ),
-            });
+            }
+            .into());
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
         let tool_ui = extract_tool_ui_link(&upstream_tool);
-        let mut outcome = self.execute_upstream_tool(upstream, tool, params).await?;
+        let safety = upstream_tool_safety(&upstream_tool);
+        let mut outcome = self
+            .execute_upstream_tool_with_contract(upstream, tool, params, safety)
+            .await?;
         if outcome.ui.is_none()
             && let Some(ui) = tool_ui
         {
@@ -446,12 +452,34 @@ impl GatewayManager {
         tool: &str,
         params: Value,
     ) -> Result<ToolCallOutcome, ToolError> {
-        let arguments = upstream_arguments(upstream, tool, params)?;
+        self.execute_upstream_tool_with_contract(
+            upstream,
+            tool,
+            params,
+            CodeModeToolSafetyHints::default(),
+        )
+        .await
+        .map_err(CodeModeCallError::into_tool_error)
+    }
+
+    async fn execute_upstream_tool_with_contract(
+        &self,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+        safety: CodeModeToolSafetyHints,
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        let id = format!("{upstream}::{tool}");
+        let arguments =
+            upstream_arguments(upstream, tool, params).map_err(CodeModeCallError::from)?;
         let Some(pool) = self.current_pool().await else {
-            return Err(ToolError::Sdk {
-                sdk_kind: "upstream_error".to_string(),
-                message: "gateway upstream pool is unavailable".to_string(),
-            });
+            return Err(CodeModeCallError::new(
+                "upstream_error",
+                "gateway upstream pool is unavailable",
+            )
+            .with_tool(id)
+            .with_origin(CodeModeErrorOrigin::UpstreamTransport)
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
         };
         let mut upstream_params = CallToolRequestParams::new(tool.to_string());
         upstream_params.arguments = Some(arguments);
@@ -463,16 +491,7 @@ impl GatewayManager {
                 // outcome or payload representation.
                 pool.record_success(upstream).await;
                 if result.is_error == Some(true) {
-                    let error_text = result
-                        .content
-                        .first()
-                        .and_then(|content| content.as_text())
-                        .map(|content| content.text.as_str());
-                    let (kind, message) = code_mode_upstream_error_info(error_text);
-                    return Err(ToolError::Sdk {
-                        sdk_kind: kind.to_string(),
-                        message,
-                    });
+                    return Err(completed_tool_error(&id, &result, safety));
                 }
                 let ui = extract_ui_link(&result);
                 if let Some(ui) = ui.as_ref() {
@@ -494,20 +513,21 @@ impl GatewayManager {
             }
             Some(Err(err)) => {
                 // The pool owns transport-vs-MCP error classification and has
-                // already updated connection health. Re-recording here would
-                // turn valid application errors into false disconnects.
-                Err(ToolError::Sdk {
-                    sdk_kind: "upstream_error".to_string(),
-                    message: err,
-                })
+                // already updated connection health. The absence of a completed
+                // MCP result is a real transport failure, distinct from
+                // `CallToolResult(isError=true)` above.
+                Err(CodeModeCallError::upstream_transport_with_safety(
+                    id, err, safety,
+                ))
             }
             None => {
                 pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
                     .await;
-                Err(ToolError::Sdk {
-                    sdk_kind: "not_found".to_string(),
-                    message: format!("upstream tool `{upstream}::{tool}` was not found"),
-                })
+                Err(CodeModeCallError::new(
+                    "not_found",
+                    format!("upstream tool `{upstream}::{tool}` was not found"),
+                )
+                .with_tool(id))
             }
         }
     }
@@ -606,75 +626,6 @@ fn upstream_arguments(
             message: format!("Code Mode tool `{upstream}::{tool}` params must be an object"),
         }),
     }
-}
-
-fn code_mode_canonical_error_kind(s: &str) -> &'static str {
-    match s {
-        "unknown_action" => "unknown_action",
-        "unknown_subaction" => "unknown_subaction",
-        "missing_param" => "missing_param",
-        "invalid_param" => "invalid_param",
-        "unknown_instance" => "unknown_instance",
-        "confirmation_required" => "confirmation_required",
-        "conflict" => "conflict",
-        "forbidden" => "forbidden",
-        "unknown_tool" => "unknown_tool",
-        "route_scope_denied" => "route_scope_denied",
-        "path_traversal" => "path_traversal",
-        "permission_denied" => "permission_denied",
-        "timeout" => "timeout",
-        "budget_exceeded" => "budget_exceeded",
-        "quota_exceeded" => "quota_exceeded",
-        "invalid_code_mode_id" => "invalid_code_mode_id",
-        "snippet_not_found" => "snippet_not_found",
-        "artifact_too_large" => "artifact_too_large",
-        "auth_failed" => "auth_failed",
-        "not_found" => "not_found",
-        "rate_limited" => "rate_limited",
-        "validation_failed" => "validation_failed",
-        // A tool-level MCP `isError` response proves the transport and MCP
-        // protocol are healthy. Infrastructure-looking kinds nested inside that
-        // response describe the tool execution, not Labby's upstream hop, and
-        // must therefore remain non-retryable.
-        "tool_error" | "network_error" | "server_error" | "decode_error" | "internal_error"
-        | "upstream_error" => "tool_error",
-        "code_mode_timeout" => "code_mode_timeout",
-        // `code_mode_fuel_exhausted` and any future upstream-local kinds are
-        // intentionally not passed through. They are tool payloads, not host
-        // infrastructure failures.
-        _ => "tool_error",
-    }
-}
-
-/// Classify a tool-level MCP error payload into `(kind, message)`.
-fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String) {
-    let Some(text) = text else {
-        return (
-            "tool_error",
-            "upstream tool returned a non-text error payload".to_string(),
-        );
-    };
-    let Ok(parsed) = serde_json::from_str::<Value>(text) else {
-        return ("tool_error", text.to_string());
-    };
-    let error_obj = parsed
-        .get("error")
-        .and_then(Value::as_object)
-        .or_else(|| parsed.as_object());
-    let Some(error_obj) = error_obj else {
-        return ("tool_error", text.to_string());
-    };
-    let raw_kind = error_obj
-        .get("kind")
-        .and_then(Value::as_str)
-        .unwrap_or("upstream_error");
-    let kind = code_mode_canonical_error_kind(raw_kind);
-    let message = error_obj
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or(text)
-        .to_string();
-    (kind, message)
 }
 
 #[cfg(test)]
@@ -930,94 +881,6 @@ mod tests {
         assert!(!mgr.step_buffer_is_empty());
         mgr.discard_step_buffer("exec_cancelled");
         assert!(mgr.step_buffer_is_empty());
-    }
-
-    #[test]
-    fn preserves_stable_upstream_error_kinds() {
-        for kind in [
-            "forbidden",
-            "unknown_tool",
-            "route_scope_denied",
-            "path_traversal",
-            "permission_denied",
-            "timeout",
-            "budget_exceeded",
-            "quota_exceeded",
-        ] {
-            let payload = serde_json::json!({
-                "kind": kind,
-                "message": format!("{kind} message"),
-            })
-            .to_string();
-
-            let (actual, message) = code_mode_upstream_error_info(Some(&payload));
-
-            assert_eq!(actual, kind);
-            assert_eq!(message, format!("{kind} message"));
-        }
-    }
-
-    #[test]
-    fn preserves_nested_upstream_error_kinds() {
-        let payload = serde_json::json!({
-            "error": {
-                "kind": "unknown_tool",
-                "message": "tool is not available"
-            }
-        })
-        .to_string();
-
-        let (kind, message) = code_mode_upstream_error_info(Some(&payload));
-
-        assert_eq!(kind, "unknown_tool");
-        assert_eq!(message, "tool is not available");
-    }
-
-    #[test]
-    fn preserves_unstructured_tool_error_messages() {
-        let (kind, message) = code_mode_upstream_error_info(Some("plain upstream failure"));
-        assert_eq!(kind, "tool_error");
-        assert_eq!(message, "plain upstream failure");
-
-        let (kind, message) = code_mode_upstream_error_info(None);
-        assert_eq!(kind, "tool_error");
-        assert_eq!(message, "upstream tool returned a non-text error payload");
-    }
-
-    #[test]
-    fn unknown_structured_error_kinds_are_tool_errors_without_health_failure() {
-        let payload = serde_json::json!({
-            "kind": "surprise_kind",
-            "message": "new kind"
-        })
-        .to_string();
-
-        let (kind, message) = code_mode_upstream_error_info(Some(&payload));
-
-        assert_eq!(kind, "tool_error");
-        assert_eq!(message, "new kind");
-    }
-
-    #[test]
-    fn infrastructure_named_tool_failures_are_non_retryable_tool_errors() {
-        for raw_kind in [
-            "upstream_error",
-            "network_error",
-            "server_error",
-            "decode_error",
-            "internal_error",
-        ] {
-            let payload = serde_json::json!({
-                "kind": raw_kind,
-                "message": "Exit code 7\nlabby-classification-probe",
-            })
-            .to_string();
-
-            let (kind, message) = code_mode_upstream_error_info(Some(&payload));
-
-            assert_eq!(kind, "tool_error");
-            assert_eq!(message, "Exit code 7\nlabby-classification-probe");
-        }
     }
 
     #[test]

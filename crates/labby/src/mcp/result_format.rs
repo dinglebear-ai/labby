@@ -6,6 +6,7 @@
 //! `normalize_upstream_result` intentionally does NOT live here — it is
 //! consolidated into `upstream.rs` (its semantic home) in bead `.5`.
 
+use labby_codemode::CodeModeCallError;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -33,6 +34,20 @@ pub(crate) fn tool_error_envelope(service: &str, action: &str, err: &DispatchToo
     } else {
         build_error_extra(service, action, &kind, &message, &Value::Object(serialized))
     }
+}
+
+pub(crate) fn code_mode_error_envelope(
+    service: &str,
+    action: &str,
+    error: &CodeModeCallError,
+) -> Value {
+    build_error_extra(
+        service,
+        action,
+        error.kind(),
+        error.user_message(),
+        &error.extra_fields(),
+    )
 }
 
 pub(crate) fn hash_arguments(arguments: &Value) -> String {
