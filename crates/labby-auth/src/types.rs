@@ -207,6 +207,43 @@ pub struct RefreshTokenRow {
     pub expires_at: i64,
 }
 
+/// The single reusable Google refresh credential for a verified provider subject.
+///
+/// The refresh token is encrypted at rest by [`SqliteStore`](crate::sqlite::SqliteStore).
+/// `generation` increments whenever the credential is replaced so an in-flight
+/// invalidation cannot delete a newer credential installed by another request.
+///
+/// `Debug` is implemented manually with redaction — never derive it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoogleProviderCredentialRow {
+    pub subject: String,
+    pub email: Option<String>,
+    pub refresh_token: String,
+    pub generation: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl std::fmt::Debug for GoogleProviderCredentialRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleProviderCredentialRow")
+            .field("subject", &"<redacted>")
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("refresh_token", &"<redacted>")
+            .field("generation", &self.generation)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoogleProviderInvalidation {
+    pub invalidated: bool,
+    pub revoked_refresh_tokens: u64,
+    pub revoked_authorization_codes: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserSessionRow {
     pub session_id: String,

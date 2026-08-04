@@ -26,7 +26,7 @@ use crate::types::{
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-pub(super) const SCHEMA_VERSION: i64 = 6;
+pub(super) const SCHEMA_VERSION: i64 = 7;
 
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
@@ -1010,6 +1010,16 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS google_provider_credentials (
+            subject TEXT PRIMARY KEY,
+            email TEXT,
+            refresh_token TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_google_provider_credentials_email
+            ON google_provider_credentials(email COLLATE NOCASE);
         CREATE TABLE IF NOT EXISTS assertion_jtis (
             issuer TEXT NOT NULL,
             jti TEXT NOT NULL,
@@ -1307,53 +1317,138 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_refresh_lookup_is_scoped_to_client_subject_and_expiry() {
+    async fn google_provider_credential_is_subject_scoped_and_email_reusable_across_clients() {
+        let store = temp_store().await;
+        store
+            .upsert_google_provider_credential(
+                "google-subject-123",
+                Some("Admin@Example.com"),
+                "provider-refresh",
+            )
+            .await
+            .unwrap();
+
+        let credential = store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.refresh_token, "provider-refresh");
+        assert_eq!(credential.email.as_deref(), Some("admin@example.com"));
+        assert_eq!(credential.generation, 1);
+        assert!(
+            store
+                .has_google_provider_credential_for_subject("google-subject-123")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .has_google_provider_credential_for_email("ADMIN@example.com")
+                .await
+                .unwrap(),
+            "one verified account credential must be reusable across downstream client IDs"
+        );
+        assert!(
+            !store
+                .has_google_provider_credential_for_email("other@example.com")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn google_provider_invalidation_is_generation_safe_and_revokes_dependent_grants() {
         let store = temp_store().await;
         register_test_client(&store, "chatgpt-client").await;
-        register_test_client(&store, "other-client").await;
+        register_test_client(&store, "claude-client").await;
+        store
+            .upsert_google_provider_credential(
+                "google-subject-123",
+                Some("admin@example.com"),
+                "provider-refresh-v1",
+            )
+            .await
+            .unwrap();
+        let first_generation = store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap()
+            .generation;
 
-        let mut matching = sample_refresh_token("chatgpt-client", "matching-refresh");
-        matching.subject = "google-subject-123".to_string();
-        matching.provider_refresh_token = Some("provider-refresh".to_string());
-        store.upsert_refresh_token(matching).await.unwrap();
+        for (client_id, token) in [
+            ("chatgpt-client", "chatgpt-refresh"),
+            ("claude-client", "claude-refresh"),
+        ] {
+            let mut row = sample_refresh_token(client_id, token);
+            row.subject = "google-subject-123".to_string();
+            row.provider_refresh_token = None;
+            store.upsert_refresh_token(row).await.unwrap();
+        }
+        let mut pending_code = sample_code();
+        pending_code.code = "pending-provider-code".to_string();
+        pending_code.client_id = "chatgpt-client".to_string();
+        pending_code.subject = "google-subject-123".to_string();
+        pending_code.provider_refresh_token = None;
+        store.insert_auth_code(pending_code).await.unwrap();
 
-        let mut expired = sample_refresh_token("other-client", "expired-refresh");
-        expired.subject = "expired-subject".to_string();
-        expired.provider_refresh_token = Some("expired-provider-refresh".to_string());
-        expired.expires_at = now_unix() - 1;
-        store.upsert_refresh_token(expired).await.unwrap();
+        store
+            .upsert_google_provider_credential(
+                "google-subject-123",
+                Some("admin@example.com"),
+                "provider-refresh-v2",
+            )
+            .await
+            .unwrap();
+        let current = store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(current.generation > first_generation);
 
-        assert_eq!(
+        let stale = store
+            .invalidate_google_provider_credential("google-subject-123", first_generation)
+            .await
+            .unwrap();
+        assert!(!stale.invalidated);
+        assert!(
             store
-                .find_provider_refresh_token("chatgpt-client", "google-subject-123")
+                .find_refresh_token("chatgpt-refresh")
                 .await
                 .unwrap()
-                .as_deref(),
-            Some("provider-refresh")
+                .is_some(),
+            "a stale invalidation must not revoke sessions backed by a newer credential"
+        );
+
+        let invalidation = store
+            .invalidate_google_provider_credential("google-subject-123", current.generation)
+            .await
+            .unwrap();
+        assert!(invalidation.invalidated);
+        assert_eq!(invalidation.revoked_refresh_tokens, 2);
+        assert_eq!(invalidation.revoked_authorization_codes, 1);
+        assert!(
+            store
+                .find_google_provider_credential("google-subject-123")
+                .await
+                .unwrap()
+                .is_none()
         );
         assert!(
             store
-                .find_provider_refresh_token("other-client", "google-subject-123")
+                .find_refresh_token("chatgpt-refresh")
                 .await
                 .unwrap()
-                .is_none(),
-            "provider credentials must not cross local OAuth clients"
+                .is_none()
         );
         assert!(
             store
-                .find_provider_refresh_token("chatgpt-client", "other-google-subject")
+                .find_refresh_token("claude-refresh")
                 .await
                 .unwrap()
-                .is_none(),
-            "provider credentials must not cross verified Google subjects"
-        );
-        assert!(
-            store
-                .find_provider_refresh_token("other-client", "expired-subject")
-                .await
-                .unwrap()
-                .is_none(),
-            "expired provider credentials must not be reused"
+                .is_none()
         );
     }
 
@@ -1440,6 +1535,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("FOREIGN KEY"));
+    }
+
+    #[tokio::test]
+    async fn schema_migration_v7_promotes_the_newest_subject_provider_credential() {
+        let path = temp_db_path();
+        let store = SqliteStore::open(path.clone()).await.unwrap();
+        register_test_client(&store, "client").await;
+
+        let mut older = sample_refresh_token("client", "older-local-refresh");
+        older.subject = "google-subject-123".to_string();
+        older.provider_refresh_token = Some("older-provider-refresh".to_string());
+        older.created_at = now_unix() - 60;
+        store.upsert_refresh_token(older).await.unwrap();
+
+        let mut newer = sample_refresh_token("client", "newer-local-refresh");
+        newer.subject = "google-subject-123".to_string();
+        newer.provider_refresh_token = Some("newer-provider-refresh".to_string());
+        newer.created_at = now_unix();
+        store.upsert_refresh_token(newer).await.unwrap();
+        drop(store);
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("DROP TABLE google_provider_credentials; PRAGMA user_version = 6;")
+                .unwrap();
+        }
+        crate::util::set_restrictive_permissions(&path).unwrap();
+
+        let migrated = SqliteStore::open(path).await.unwrap();
+        let credential = migrated
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .expect("v7 migration must promote a provider credential");
+        assert_eq!(credential.refresh_token, "newer-provider-refresh");
+        assert_eq!(credential.generation, 1);
+        assert!(credential.email.is_none());
     }
 
     #[tokio::test]

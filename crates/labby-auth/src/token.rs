@@ -16,6 +16,7 @@ use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 use crate::error::AuthError;
+use crate::google::GoogleExchange;
 use crate::jwt::AccessClaims;
 use crate::state::AuthState;
 use crate::types::AuthorizationCodeRow;
@@ -704,48 +705,53 @@ async fn authorization_code_grant(
         ));
     }
 
-    let refresh_token = if let Some(provider_refresh_token) = row.provider_refresh_token {
-        let refresh_token = random_token(24)?;
-        let created_at = now_unix();
-        state
-            .store
-            .upsert_refresh_token(RefreshTokenRow {
-                refresh_token: refresh_token.clone(),
-                client_id: row.client_id.clone(),
-                subject: row.subject.clone(),
-                resource: row.resource.clone(),
-                scope: row.scope.clone(),
-                provider_refresh_token: Some(provider_refresh_token),
+    if !state
+        .store
+        .has_google_provider_credential_for_subject(&row.subject)
+        .await?
+    {
+        warn!(
+            grant_type = "authorization_code",
+            client_id = %row.client_id,
+            auth_code_id = %auth_code_id,
+            subject_id = %fingerprint(&row.subject),
+            kind = "oauth_needs_reauth",
+            "oauth token rejected: google provider credential disappeared before code redemption"
+        );
+        return Err(AuthError::OauthNeedsReauth(
+            "google provider credential is unavailable; reauthorization required".to_string(),
+        ));
+    }
+
+    let refresh_token = random_token(24)?;
+    let created_at = now_unix();
+    state
+        .store
+        .upsert_refresh_token(RefreshTokenRow {
+            refresh_token: refresh_token.clone(),
+            client_id: row.client_id.clone(),
+            subject: row.subject.clone(),
+            resource: row.resource.clone(),
+            scope: row.scope.clone(),
+            provider_refresh_token: None,
+            created_at,
+            expires_at: expires_at(
                 created_at,
-                expires_at: expires_at(
-                    created_at,
-                    state.config.refresh_token_ttl,
-                    &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
-                )?,
-            })
-            .await?;
-        info!(
-            grant_type = "authorization_code",
-            client_id = %row.client_id,
-            auth_code_id = %auth_code_id,
-            subject_id = %fingerprint(&row.subject),
-            resource = %row.resource,
-            scope = %row.scope,
-            "oauth authorization_code grant issued lab access token and refresh token"
-        );
-        Some(refresh_token)
-    } else {
-        info!(
-            grant_type = "authorization_code",
-            client_id = %row.client_id,
-            auth_code_id = %auth_code_id,
-            subject_id = %fingerprint(&row.subject),
-            resource = %row.resource,
-            scope = %row.scope,
-            "oauth authorization_code grant issued lab access token without refresh token"
-        );
-        None
-    };
+                state.config.refresh_token_ttl,
+                &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
+            )?,
+        })
+        .await?;
+    info!(
+        grant_type = "authorization_code",
+        client_id = %row.client_id,
+        auth_code_id = %auth_code_id,
+        subject_id = %fingerprint(&row.subject),
+        resource = %row.resource,
+        scope = %row.scope,
+        "oauth authorization_code grant issued lab access token and refresh token"
+    );
+    let refresh_token = Some(refresh_token);
 
     let resource = if row.resource.trim().is_empty() {
         crate::metadata::canonical_resource_url(&state)
@@ -824,6 +830,105 @@ async fn refresh_token_grant(
     result
 }
 
+async fn refresh_google_provider_credential(
+    state: &AuthState,
+    subject: &str,
+    refresh_token_id: &str,
+) -> Result<GoogleExchange, AuthError> {
+    let subject_id = fingerprint(subject);
+    let mut credential = state
+        .store
+        .find_google_provider_credential(subject)
+        .await?
+        .ok_or_else(|| {
+            warn!(
+                refresh_token_id = %refresh_token_id,
+                subject_id = %subject_id,
+                kind = "oauth_needs_reauth",
+                "oauth token rejected: no google provider credential exists for subject"
+            );
+            AuthError::OauthNeedsReauth(
+                "google provider credential is unavailable; reauthorization required".to_string(),
+            )
+        })?;
+
+    for attempt in 0..2 {
+        match state.google.refresh(&credential.refresh_token).await {
+            Ok(google) => {
+                if google.subject != subject {
+                    let invalidation = state
+                        .store
+                        .invalidate_google_provider_credential(subject, credential.generation)
+                        .await?;
+                    warn!(
+                        refresh_token_id = %refresh_token_id,
+                        expected_subject_id = %subject_id,
+                        returned_subject_id = %fingerprint(&google.subject),
+                        provider_credential_invalidated = invalidation.invalidated,
+                        kind = "auth_failed",
+                        "oauth token rejected: google refresh returned a different subject"
+                    );
+                    return Err(AuthError::AuthFailed(
+                        "google refresh returned a different account subject".to_string(),
+                    ));
+                }
+                let next_provider_refresh_token = google
+                    .refresh_token
+                    .as_deref()
+                    .unwrap_or(&credential.refresh_token);
+                state
+                    .store
+                    .upsert_google_provider_credential(
+                        &google.subject,
+                        google.email.as_deref(),
+                        next_provider_refresh_token,
+                    )
+                    .await?;
+                return Ok(google);
+            }
+            Err(AuthError::OauthNeedsReauth(message)) => {
+                let invalidation = state
+                    .store
+                    .invalidate_google_provider_credential(subject, credential.generation)
+                    .await?;
+                if invalidation.invalidated {
+                    warn!(
+                        refresh_token_id = %refresh_token_id,
+                        subject_id = %subject_id,
+                        provider_generation = credential.generation,
+                        revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+                        revoked_authorization_codes = invalidation.revoked_authorization_codes,
+                        kind = "oauth_needs_reauth",
+                        "oauth provider credential invalidated after google rejected refresh"
+                    );
+                    return Err(AuthError::OauthNeedsReauth(message));
+                }
+                if attempt == 1 {
+                    return Err(AuthError::OauthNeedsReauth(message));
+                }
+                let replacement = state
+                    .store
+                    .find_google_provider_credential(subject)
+                    .await?
+                    .ok_or_else(|| AuthError::OauthNeedsReauth(message.clone()))?;
+                warn!(
+                    refresh_token_id = %refresh_token_id,
+                    subject_id = %subject_id,
+                    stale_provider_generation = credential.generation,
+                    replacement_provider_generation = replacement.generation,
+                    "oauth provider credential changed during failed refresh; retrying newest generation"
+                );
+                credential = replacement;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(AuthError::OauthNeedsReauth(
+        "google provider credential could not be refreshed; reauthorization required".to_string(),
+    ))
+}
+
 async fn complete_claimed_refresh(
     state: &AuthState,
     client_id: &str,
@@ -863,21 +968,12 @@ async fn complete_claimed_refresh(
         ));
     }
 
-    let Some(provider_refresh_token) = stored.provider_refresh_token.clone() else {
-        warn!(
-            refresh_token_id = %refresh_token_id,
-            client_id = %stored.client_id,
-            "oauth token rejected: refresh token is not backed by an upstream refresh token"
-        );
-        return Err(AuthError::InvalidGrant(
-            "refresh token is not backed by an upstream refresh token".to_string(),
-        ));
-    };
-
-    // Refresh upstream before consuming the local token. If Google or id-token
-    // verification fails, the client can retry the same local refresh token
-    // instead of being stranded with an unreturned replacement.
-    let google = state.google.refresh(&provider_refresh_token).await?;
+    // Refresh the subject-scoped Google credential before consuming the local
+    // token. An invalid_grant compare-and-deletes the exact provider
+    // generation that failed and atomically revokes every dependent local
+    // grant, so the next authorization is forced through fresh consent.
+    let google =
+        refresh_google_provider_credential(state, &stored.subject, refresh_token_id).await?;
 
     let now = now_unix();
     let refreshed_expires_at = expires_at(
@@ -885,10 +981,6 @@ async fn complete_claimed_refresh(
         state.config.refresh_token_ttl,
         &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
     )?;
-    let next_provider_refresh_token = google
-        .refresh_token
-        .clone()
-        .unwrap_or_else(|| provider_refresh_token.clone());
     // Re-apply admin elevation in case this refresh token was originally
     // issued before elevation was wired in, or before the user's email was
     // on the allowlist.  elevate_scope_for_allowed_user is idempotent — if
@@ -905,7 +997,7 @@ async fn complete_claimed_refresh(
         subject: google.subject.clone(),
         resource: stored_resource.clone(),
         scope: elevated_scope.clone(),
-        provider_refresh_token: Some(next_provider_refresh_token),
+        provider_refresh_token: None,
         created_at: now,
         expires_at: refreshed_expires_at,
     };
@@ -1072,6 +1164,24 @@ mod tests {
         test_auth_state_with_mock_google, test_auth_state_with_registered_client,
     };
 
+    async fn install_google_provider_credential(state: &AuthState) {
+        state
+            .store
+            .upsert_google_provider_credential(
+                "google-subject-123",
+                Some("admin@example.com"),
+                "provider-refresh",
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn test_auth_state_with_refreshable_google() -> AuthState {
+        let state = test_auth_state_with_mock_google().await;
+        install_google_provider_credential(&state).await;
+        state
+    }
+
     async fn test_auth_state_with_failing_google_refresh() -> AuthState {
         let state = test_auth_state_with_registered_client().await;
         let server = Box::leak(Box::new(MockServer::start().await));
@@ -1092,12 +1202,14 @@ mod tests {
             server.uri().parse::<Url>().unwrap(),
             server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
         );
-        AuthState::for_tests(
+        let state = AuthState::for_tests(
             (*state.config).clone(),
             state.store.clone(),
             (*state.signing_keys).clone(),
             google,
-        )
+        );
+        install_google_provider_credential(&state).await;
+        state
     }
 
     async fn test_auth_state_with_invalid_google_refresh() -> AuthState {
@@ -1121,12 +1233,14 @@ mod tests {
             server.uri().parse::<Url>().unwrap(),
             server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
         );
-        AuthState::for_tests(
+        let state = AuthState::for_tests(
             (*state.config).clone(),
             state.store.clone(),
             (*state.signing_keys).clone(),
             google,
-        )
+        );
+        install_google_provider_credential(&state).await;
+        state
     }
 
     #[tokio::test]
@@ -1579,6 +1693,15 @@ mod tests {
             })
             .await
             .unwrap();
+        state
+            .store
+            .upsert_google_provider_credential(
+                "subject",
+                Some("user@example.com"),
+                "provider-refresh",
+            )
+            .await
+            .unwrap();
 
         let app = router(state.clone());
         let unauthorized_code = app
@@ -1769,7 +1892,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_endpoint_omits_refresh_token_without_upstream_refresh_capability() {
+    async fn token_endpoint_rejects_authorization_code_without_provider_credential() {
         let state = test_auth_state_with_registered_client().await;
         seed_authorization_code_without_provider_refresh(&state).await;
         let app = router(state);
@@ -1787,7 +1910,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response
                 .headers()
@@ -1806,7 +1929,8 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["access_token"].is_string());
+        assert_eq!(json["error"], "oauth_needs_reauth");
+        assert!(json.get("access_token").is_none());
         assert!(json.get("refresh_token").is_none());
     }
 
@@ -1952,7 +2076,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_endpoint_refresh_grant_sets_cache_headers() {
-        let state = test_auth_state_with_mock_google().await;
+        let state = test_auth_state_with_refreshable_google().await;
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2000,7 +2124,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_endpoint_refresh_grant_preserves_stored_resource_when_omitted() {
-        let state = test_auth_state_with_mock_google().await;
+        let state = test_auth_state_with_refreshable_google().await;
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2227,7 +2351,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "oauth_needs_reauth");
     }
 
     async fn seed_authorization_code(state: &AuthState) {
@@ -2255,6 +2384,7 @@ mod tests {
     }
 
     async fn seed_authorization_code_with_expiry(state: &AuthState, expires_at: i64) {
+        install_google_provider_credential(state).await;
         state
             .store
             .insert_auth_code(crate::types::AuthorizationCodeRow {
@@ -2266,7 +2396,7 @@ mod tests {
                 scope: "lab".to_string(),
                 code_challenge: super::pkce_challenge("verifier"),
                 code_challenge_method: "S256".to_string(),
-                provider_refresh_token: Some("provider-refresh".to_string()),
+                provider_refresh_token: None,
                 created_at: 1_700_000_000,
                 expires_at,
             })
@@ -2276,7 +2406,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_grant_rotates_local_token_on_success() {
-        let state = test_auth_state_with_mock_google().await;
+        let state = test_auth_state_with_refreshable_google().await;
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2334,7 +2464,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_refresh_has_exactly_one_winner() {
-        let state = test_auth_state_with_mock_google().await;
+        let state = test_auth_state_with_refreshable_google().await;
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2443,7 +2573,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let app = router(state);
+        let app = router(state.clone());
 
         let response = app
             .oneshot(
@@ -2465,6 +2595,24 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "oauth_needs_reauth");
+        assert!(
+            state
+                .store
+                .find_google_provider_credential("google-subject-123")
+                .await
+                .unwrap()
+                .is_none(),
+            "the rejected Google credential must be permanently invalidated"
+        );
+        assert!(
+            state
+                .store
+                .find_refresh_token("expired-provider-token")
+                .await
+                .unwrap()
+                .is_none(),
+            "dependent local refresh tokens must be revoked so they cannot loop"
+        );
     }
 
     #[tokio::test]
@@ -2473,7 +2621,7 @@ mod tests {
         // storing only the base scope ("lab") without "lab:admin".  The refresh
         // grant must re-apply elevate_scope_for_allowed_user so the new access
         // token carries "lab:admin".
-        let state = test_auth_state_with_mock_google().await;
+        let state = test_auth_state_with_refreshable_google().await;
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2527,7 +2675,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_grant_rejects_reuse_of_rotated_local_token() {
-        let state = test_auth_state_with_mock_google().await;
+        let state = test_auth_state_with_refreshable_google().await;
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {

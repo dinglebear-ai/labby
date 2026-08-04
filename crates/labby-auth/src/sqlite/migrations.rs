@@ -96,5 +96,35 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
         conn.execute_batch("PRAGMA user_version = 6;")
             .map_err(sqlite_error)?;
     }
+    if current < 7 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS google_provider_credentials (
+               subject TEXT PRIMARY KEY,
+               email TEXT,
+               refresh_token TEXT NOT NULL,
+               generation INTEGER NOT NULL,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_google_provider_credentials_email
+               ON google_provider_credentials(email COLLATE NOCASE);
+             INSERT OR IGNORE INTO google_provider_credentials (
+               subject, email, refresh_token, generation, created_at, updated_at
+             )
+             SELECT newest.subject, NULL, newest.provider_refresh_token, 1,
+                    newest.created_at, newest.created_at
+             FROM refresh_tokens AS newest
+             WHERE newest.provider_refresh_token IS NOT NULL
+               AND newest.created_at = (
+                 SELECT MAX(candidate.created_at)
+                 FROM refresh_tokens AS candidate
+                 WHERE candidate.subject = newest.subject
+                   AND candidate.provider_refresh_token IS NOT NULL
+               )
+             GROUP BY newest.subject;
+             PRAGMA user_version = 7;",
+        )
+        .map_err(sqlite_error)?;
+    }
     Ok(())
 }

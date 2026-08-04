@@ -12,38 +12,31 @@ touches `axon`'s `vendor/lab-auth` or `cortex`'s pinned `lab-auth` git rev
 ## Google consent-forcing invariant (`force_consent`)
 
 `authorize()` (`src/authorize.rs`) decides whether to send Google's
-`/authorize` request with `prompt=consent` via `AuthState::store::
-has_refresh_token_for_client()` and `AuthState::resolve_allowed_emails()`.
+`/authorize` request with `prompt=consent` via the subject-scoped
+`google_provider_credentials` store and `AuthState::resolve_allowed_emails()`.
 This logic has already regressed once (see `git log -S"force_consent"` for
 the full history) — the rules that keep it correct:
 
 1. **Google's refresh-token re-issuance is keyed on `(Google account,
-   LABBY_GOOGLE_CLIENT_ID)`, not on Labby's local per-client `client_id`.**
-   Google only mints a fresh refresh token on a forced-consent round trip
-   for an account that hasn't already granted this Google OAuth client
-   before. Everything else here is downstream of that one fact.
-2. **The "skip consent" check must never be broader than the Google-account
-   axis it's approximating.** It was originally a single boolean —
-   "has this gateway ever minted a refresh token" — which let an
-   established client's token mask a brand-new client's need to force
-   consent (a new Claude.ai/ChatGPT/Codex connector would silently get an
-   access token with no refresh token and fail with zero server-side
-   trace). Scoping it to `has_refresh_token_for_client(client_id)` fixed
-   that axis, but is **still** unsound if more than one Google account is
-   allowed to sign in (`resolve_allowed_emails().len() > 1`) and two
-   different accounts share one local `client_id` — per-client-id state
-   can't tell which account is about to authenticate. `authorize()`
-   forces consent unconditionally whenever more than one account is
-   allowed, specifically to close that gap.
-3. **If you add another "skip consent when X" fast path, it must be scoped
-   at least as narrowly as `client_id`, and must account for the
-   multi-account case in rule 2.** A gateway-wide or subject-agnostic
-   check is the exact anti-pattern that caused the original bug.
-4. **`force_consent` is logged** (`oauth authorize request redirected to
-   upstream provider`, `authorize.rs`) specifically so "a new OAuth client
-   silently can't complete setup" is diagnosable from `force_consent=false`
-   in the logs instead of requiring a live repro. Keep it logged if this
-   logic moves.
+   LABBY_GOOGLE_CLIENT_ID)`, not on Labby's downstream `client_id`.** Store
+   exactly one encrypted provider credential per verified Google subject and
+   let every DCR/CIMD client mint its own Labby refresh token against it.
+2. **A single-account gateway may skip consent only when the sole allowed
+   email already owns a provider credential.** This is intentionally reusable
+   across downstream clients and prevents DCR churn from minting enough Google
+   tokens to evict older credentials. With multiple allowed accounts, force
+   consent because the selected subject is unknown until callback.
+3. **`invalid_grant` is terminal for the exact provider generation that
+   failed.** Compare-and-delete that generation, revoke every local refresh
+   token and pending authorization code for its subject in the same
+   transaction, and force the next authorization through consent. Never keep
+   retrying or reattach the rejected credential.
+4. **Successful refreshes replace the subject credential before the local
+   Labby token rotates.** Generation checks ensure a late failing request cannot
+   delete a newer credential installed concurrently.
+5. **`force_consent`, provider-credential presence, invalidation generation,
+   and revoked dependent counts are logged without raw subjects, emails, or
+   tokens.** Keep those fields if this logic moves.
 
 ## Structure
 

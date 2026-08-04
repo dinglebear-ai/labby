@@ -277,24 +277,24 @@ pub async fn authorize(
         })
         .await?;
 
-    // See has_refresh_token_for_client's doc comment for the full rationale.
-    // Short version: skip forcing Google's consent screen only when we can be
-    // confident the account that's about to sign in already granted it. With
-    // exactly one allowed Google account, "this client already holds a
-    // refresh token" is that confidence signal. With more than one allowed
-    // account, per-client_id state can't distinguish *which* account is about
-    // to authenticate (a shared client credential used by two different
-    // admins would otherwise let admin A's consent silently cover admin B's
-    // first-ever login), so force consent unconditionally in that case.
-    let allowed_email_count = state.resolve_allowed_emails().await?.len();
-    let force_consent = if allowed_email_count > 1 {
-        true
-    } else {
-        !state
-            .store
-            .has_refresh_token_for_client(&query.client_id)
-            .await?
+    // Google's refresh credential belongs to the Google account and Labby's
+    // Google OAuth client, not to the downstream DCR/CIMD client. On a
+    // single-account gateway, one verified email-scoped provider credential
+    // can therefore serve every local OAuth client without minting hundreds
+    // of duplicate Google refresh tokens. With multiple allowed accounts we
+    // still force consent because the selected subject is unknown until the
+    // callback returns.
+    let allowed_emails = state.resolve_allowed_emails().await?;
+    let sole_account_has_credential = match allowed_emails.as_slice() {
+        [email] => {
+            state
+                .store
+                .has_google_provider_credential_for_email(email)
+                .await?
+        }
+        _ => false,
     };
+    let force_consent = allowed_emails.len() != 1 || !sole_account_has_credential;
     let location = state.google.authorize_url(&AuthorizeUrlRequest {
         state: request_state,
         scope: scope.clone(),
@@ -310,6 +310,8 @@ pub async fn authorize(
         resource = %resource,
         scope = %scope,
         provider = "google",
+        allowed_email_count = allowed_emails.len(),
+        provider_credential_present = sole_account_has_credential,
         force_consent,
         "oauth authorize request redirected to upstream provider"
     );
@@ -426,23 +428,64 @@ pub async fn callback(
     }
 
     let subject_id = fingerprint(&google.subject);
+    let verified_email = google
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .ok_or_else(|| {
+            AuthError::AuthFailed(
+                "google did not return a verified email address after allowlist validation"
+                    .to_string(),
+            )
+        })?;
     let received_provider_refresh_token = google.refresh_token.is_some();
-    let provider_refresh_token = match google.refresh_token {
-        Some(refresh_token) => Some(refresh_token),
-        None => {
-            state
-                .store
-                .find_provider_refresh_token(&request.client_id, &google.subject)
-                .await?
-        }
+    let reused_provider_refresh_token = if let Some(refresh_token) = google.refresh_token.as_deref()
+    {
+        state
+            .store
+            .upsert_google_provider_credential(&google.subject, Some(verified_email), refresh_token)
+            .await?;
+        false
+    } else if state
+        .store
+        .find_google_provider_credential(&google.subject)
+        .await?
+        .is_some()
+        && state
+            .store
+            .associate_google_provider_email(&google.subject, verified_email)
+            .await?
+    {
+        true
+    } else {
+        warn!(
+            client_id = %request.client_id,
+            oauth_state_id = %oauth_state_id,
+            subject_id = %subject_id,
+            kind = "oauth_needs_reauth",
+            "oauth callback rejected: google did not provide a reusable refresh credential"
+        );
+        let mut redirect_target = url::Url::parse(&request.redirect_uri).map_err(|error| {
+            AuthError::Config(format!("failed to parse registered redirect_uri: {error}"))
+        })?;
+        redirect_target
+            .query_pairs_mut()
+            .append_pair("error", "server_error")
+            .append_pair(
+                "error_description",
+                "Google did not issue a reusable offline credential; reconnect and grant access again",
+            )
+            .append_pair("state", &request.client_state);
+        append_authorization_response_issuer(&state, &mut redirect_target);
+        return Ok(Redirect::to(redirect_target.as_str()).into_response());
     };
-    let reused_provider_refresh_token =
-        !received_provider_refresh_token && provider_refresh_token.is_some();
     info!(
         client_id = %request.client_id,
         oauth_state_id = %oauth_state_id,
         subject_id = %subject_id,
-        has_provider_refresh_token = provider_refresh_token.is_some(),
+        provider_credential_present = true,
+        received_provider_refresh_token,
         reused_provider_refresh_token,
         "oauth callback exchanged upstream code successfully"
     );
@@ -470,7 +513,7 @@ pub async fn callback(
             scope: elevated_scope,
             code_challenge: request.code_challenge,
             code_challenge_method: request.code_challenge_method,
-            provider_refresh_token,
+            provider_refresh_token: None,
             created_at: now_unix(),
             expires_at: expires_at(
                 now_unix(),
@@ -1496,20 +1539,15 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn authorize_omits_forced_consent_once_a_refresh_token_already_exists() {
+    async fn authorize_omits_forced_consent_once_the_allowed_account_has_a_provider_credential() {
         let state = test_auth_state_with_registered_client().await;
         state
             .store
-            .upsert_refresh_token(crate::types::RefreshTokenRow {
-                refresh_token: "existing-refresh".to_string(),
-                client_id: "client".to_string(),
-                subject: "google-user".to_string(),
-                resource: "https://lab.example.com/mcp".to_string(),
-                scope: "lab".to_string(),
-                provider_refresh_token: None,
-                created_at: now_unix(),
-                expires_at: now_unix() + 3600,
-            })
+            .upsert_google_provider_credential(
+                "google-user",
+                Some("user@example.com"),
+                "provider-refresh",
+            )
             .await
             .unwrap();
         let app = router(state);
@@ -1535,8 +1573,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn authorize_forces_consent_for_a_new_client_even_when_another_client_has_a_refresh_token()
-     {
+    async fn authorize_reuses_the_allowed_account_credential_for_a_new_downstream_client() {
         let state = test_auth_state_with_registered_client().await;
         state
             .store
@@ -1549,19 +1586,13 @@ pub mod tests {
             })
             .await
             .unwrap();
-        // Only "client" has ever completed consent; "other-client" has not.
         state
             .store
-            .upsert_refresh_token(crate::types::RefreshTokenRow {
-                refresh_token: "existing-refresh".to_string(),
-                client_id: "client".to_string(),
-                subject: "google-user".to_string(),
-                resource: "https://lab.example.com/mcp".to_string(),
-                scope: "lab".to_string(),
-                provider_refresh_token: None,
-                created_at: now_unix(),
-                expires_at: now_unix() + 3600,
-            })
+            .upsert_google_provider_credential(
+                "google-user",
+                Some("user@example.com"),
+                "provider-refresh",
+            )
             .await
             .unwrap();
         let app = router(state);
@@ -1584,14 +1615,14 @@ pub mod tests {
             .unwrap();
         assert!(location.contains("accounts.google.com"));
         assert!(
-            location.contains("prompt=consent"),
-            "a client that has never held a refresh token must still be forced through \
-             consent, even though another client's refresh token already exists"
+            !location.contains("prompt="),
+            "new downstream clients must reuse the sole allowed account's provider credential \
+             instead of minting another Google refresh token"
         );
     }
 
     #[tokio::test]
-    async fn authorize_forces_consent_when_multiple_accounts_are_allowed_even_with_an_existing_refresh_token()
+    async fn authorize_forces_consent_when_multiple_accounts_are_allowed_even_with_a_provider_credential()
      {
         let state = test_auth_state_with_registered_client().await;
         // A second allowed Google account, on top of the default admin_email —
@@ -1601,21 +1632,15 @@ pub mod tests {
             .add_allowed_user("second-admin@example.com", "admin", now_unix())
             .await
             .unwrap();
-        // "client" already holds a refresh token, which would normally skip
-        // consent — but it must not, because we can't tell in advance which of
-        // the two allowed accounts is about to sign in through it.
+        // One allowed account already has a provider credential, but the
+        // selected Google subject is unknown until the callback returns.
         state
             .store
-            .upsert_refresh_token(crate::types::RefreshTokenRow {
-                refresh_token: "existing-refresh".to_string(),
-                client_id: "client".to_string(),
-                subject: "google-user".to_string(),
-                resource: "https://lab.example.com/mcp".to_string(),
-                scope: "lab".to_string(),
-                provider_refresh_token: None,
-                created_at: now_unix(),
-                expires_at: now_unix() + 3600,
-            })
+            .upsert_google_provider_credential(
+                "google-user",
+                Some("user@example.com"),
+                "provider-refresh",
+            )
             .await
             .unwrap();
         let app = router(state);
@@ -1639,9 +1664,8 @@ pub mod tests {
         assert!(location.contains("accounts.google.com"));
         assert!(
             location.contains("prompt=consent"),
-            "with more than one allowed Google account, a client's existing refresh \
-             token must not be trusted to skip consent — it may belong to a different \
-             account than the one about to sign in"
+            "with more than one allowed Google account, a provider credential must not \
+             suppress consent because it may belong to a different selected account"
         );
     }
 
@@ -1792,20 +1816,15 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_callback_reuses_existing_provider_refresh_for_same_client_and_subject() {
+    async fn oauth_callback_reuses_the_subject_credential_without_copying_it_into_the_auth_code() {
         let base_state = test_auth_state_with_registered_client().await;
         base_state
             .store
-            .upsert_refresh_token(crate::types::RefreshTokenRow {
-                refresh_token: "existing-local-refresh".to_string(),
-                client_id: "client".to_string(),
-                subject: "google-subject-123".to_string(),
-                resource: "https://lab.example.com/mcp".to_string(),
-                scope: "lab".to_string(),
-                provider_refresh_token: Some("existing-provider-refresh".to_string()),
-                created_at: now_unix(),
-                expires_at: now_unix() + 3600,
-            })
+            .upsert_google_provider_credential(
+                "google-subject-123",
+                Some("admin@example.com"),
+                "existing-provider-refresh",
+            )
             .await
             .unwrap();
         base_state
@@ -1883,10 +1902,15 @@ pub mod tests {
             .map(|(_, value)| value.into_owned())
             .unwrap();
         let authorization = state.store.redeem_auth_code(&code).await.unwrap();
-        assert_eq!(
-            authorization.provider_refresh_token.as_deref(),
-            Some("existing-provider-refresh")
-        );
+        assert!(authorization.provider_refresh_token.is_none());
+        let credential = state
+            .store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.refresh_token, "existing-provider-refresh");
+        assert_eq!(credential.email.as_deref(), Some("user@example.com"));
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::at_rest::{maybe_decrypt, maybe_encrypt};
 use crate::error::AuthError;
-use crate::types::RefreshTokenRow;
+use crate::types::{GoogleProviderCredentialRow, GoogleProviderInvalidation, RefreshTokenRow};
 use crate::util::now_unix;
 
 use super::{SqliteStore, hash_token, sqlite_error};
@@ -289,39 +289,187 @@ impl SqliteStore {
         .await
     }
 
-    /// Return the newest unexpired upstream refresh credential held by this
-    /// exact local OAuth client and verified provider subject.
+    /// Store the single reusable Google refresh credential for a verified subject.
     ///
-    /// Google commonly omits `refresh_token` from repeat authorization-code
-    /// exchanges. Reuse must remain scoped to both identifiers so one DCR
-    /// client or Google account can never inherit another's credential.
-    pub async fn find_provider_refresh_token(
+    /// Local OAuth clients receive their own Labby refresh tokens, but they all
+    /// reference this subject-scoped provider credential instead of copying the
+    /// Google token into every client session.
+    pub async fn upsert_google_provider_credential(
         &self,
-        client_id: &str,
         subject: &str,
-    ) -> Result<Option<String>, AuthError> {
-        let client_id = client_id.to_string();
+        email: Option<&str>,
+        refresh_token: &str,
+    ) -> Result<(), AuthError> {
         let subject = subject.to_string();
+        let email = email
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase);
+        let encrypted_refresh_token = maybe_encrypt(self.enc_key.as_deref(), refresh_token)?;
         let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO google_provider_credentials (
+                    subject, email, refresh_token, generation, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, 1, ?4, ?4)
+                 ON CONFLICT(subject) DO UPDATE SET
+                    email = COALESCE(excluded.email, google_provider_credentials.email),
+                    refresh_token = excluded.refresh_token,
+                    generation = google_provider_credentials.generation + 1,
+                    updated_at = excluded.updated_at",
+                params![subject, email, encrypted_refresh_token, now],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Attach a verified email to a migrated credential without replacing its token.
+    pub async fn associate_google_provider_email(
+        &self,
+        subject: &str,
+        email: &str,
+    ) -> Result<bool, AuthError> {
+        let subject = subject.to_string();
+        let email = email.trim().to_ascii_lowercase();
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE google_provider_credentials
+                 SET email = ?2, updated_at = ?3
+                 WHERE subject = ?1",
+                params![subject, email, now],
+            )
+            .map(|updated| updated != 0)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    pub async fn find_google_provider_credential(
+        &self,
+        subject: &str,
+    ) -> Result<Option<GoogleProviderCredentialRow>, AuthError> {
+        let subject = subject.to_string();
         let enc_key = self.enc_key.clone();
         self.with_conn(move |conn| {
             let row = conn
                 .query_row(
-                    "SELECT provider_refresh_token
-                     FROM refresh_tokens
-                     WHERE client_id = ?1
-                       AND subject = ?2
-                       AND expires_at > ?3
-                       AND provider_refresh_token IS NOT NULL
-                     ORDER BY created_at DESC
-                     LIMIT 1",
-                    params![client_id, subject, now],
-                    |row| row.get::<_, String>(0),
+                    "SELECT subject, email, refresh_token, generation, created_at, updated_at
+                     FROM google_provider_credentials
+                     WHERE subject = ?1",
+                    params![subject],
+                    |row| {
+                        Ok(GoogleProviderCredentialRow {
+                            subject: row.get(0)?,
+                            email: row.get(1)?,
+                            refresh_token: row.get(2)?,
+                            generation: row.get(3)?,
+                            created_at: row.get(4)?,
+                            updated_at: row.get(5)?,
+                        })
+                    },
                 )
                 .optional()
                 .map_err(sqlite_error)?;
-            row.map(|raw| maybe_decrypt(enc_key.as_deref(), &raw))
-                .transpose()
+            match row {
+                Some(mut row) => {
+                    row.refresh_token = maybe_decrypt(enc_key.as_deref(), &row.refresh_token)?;
+                    Ok(Some(row))
+                }
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
+    pub async fn has_google_provider_credential_for_subject(
+        &self,
+        subject: &str,
+    ) -> Result<bool, AuthError> {
+        let subject = subject.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM google_provider_credentials WHERE subject = ?1
+                 )",
+                params![subject],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    /// Whether the only allowed Google account already has a reusable credential.
+    ///
+    /// This email-scoped check is safe across arbitrary DCR client IDs because
+    /// Google's refresh-token issuance is keyed by Google account and the Labby
+    /// Google OAuth client, not by Labby's downstream OAuth client IDs.
+    pub async fn has_google_provider_credential_for_email(
+        &self,
+        email: &str,
+    ) -> Result<bool, AuthError> {
+        let email = email.trim().to_ascii_lowercase();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM google_provider_credentials
+                    WHERE email = ?1 COLLATE NOCASE
+                 )",
+                params![email],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    /// Delete a provider credential only if it is still the generation that failed.
+    ///
+    /// When the compare-and-delete succeeds, every dependent Labby refresh token
+    /// and pending authorization code for that Google subject is revoked in the
+    /// same transaction. A concurrent request that already installed a newer
+    /// provider credential wins and leaves its sessions untouched.
+    pub async fn invalidate_google_provider_credential(
+        &self,
+        subject: &str,
+        generation: i64,
+    ) -> Result<GoogleProviderInvalidation, AuthError> {
+        let subject = subject.to_string();
+        self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            let invalidated = transaction
+                .execute(
+                    "DELETE FROM google_provider_credentials
+                     WHERE subject = ?1 AND generation = ?2",
+                    params![subject, generation],
+                )
+                .map_err(sqlite_error)?;
+            if invalidated == 0 {
+                return Ok(GoogleProviderInvalidation::default());
+            }
+            let revoked_authorization_codes = transaction
+                .execute(
+                    "DELETE FROM authorization_codes WHERE subject = ?1",
+                    params![subject],
+                )
+                .map_err(sqlite_error)?;
+            let revoked_refresh_tokens = transaction
+                .execute(
+                    "DELETE FROM refresh_tokens WHERE subject = ?1",
+                    params![subject],
+                )
+                .map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            Ok(GoogleProviderInvalidation {
+                invalidated: true,
+                revoked_refresh_tokens: revoked_refresh_tokens as u64,
+                revoked_authorization_codes: revoked_authorization_codes as u64,
+            })
         })
         .await
     }
