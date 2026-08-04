@@ -96,10 +96,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        writable_kache_root() {
+          local root="$1"
+          local probe="$root/kache/.labby-write-probe-$$"
+          mkdir -p "$root/kache" 2>/dev/null || return 1
+          mkdir "$probe" 2>/dev/null || return 1
+          rmdir "$probe"
+        }
+
         tool_cache="${RUNNER_TOOL_CACHE:-}"
-        if [ -z "$tool_cache" ] || ! mkdir -p "$tool_cache" 2>/dev/null || [ ! -w "$tool_cache" ]; then
+        if [ -z "$tool_cache" ] || ! writable_kache_root "$tool_cache"; then
           tool_cache="${RUNNER_TEMP:?RUNNER_TEMP is required}/toolcache"
-          mkdir -p "$tool_cache"
+          writable_kache_root "$tool_cache"
         fi
         echo "path=$tool_cache" >> "$GITHUB_OUTPUT"
         echo "RUNNER_TOOL_CACHE=$tool_cache" >> "$GITHUB_ENV"
