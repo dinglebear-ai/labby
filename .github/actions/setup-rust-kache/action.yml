@@ -85,7 +85,8 @@ runs:
         stats="$("$binary" stats 2>&1)"
         grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
 
-    - name: Select writable action tool cache
+    - name: Check action tool cache writability
+      id: tool-cache
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
@@ -95,18 +96,27 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        writable_kache_root() {
+          local root="$1"
+          local probe="$root/kache/.labby-write-probe-$$"
+          mkdir -p "$root/kache" 2>/dev/null || return 1
+          mkdir "$probe" 2>/dev/null || return 1
+          rmdir "$probe"
+        }
+
         tool_cache="${RUNNER_TOOL_CACHE:-}"
-        if [ -z "$tool_cache" ] || ! mkdir -p "$tool_cache" 2>/dev/null || [ ! -w "$tool_cache" ]; then
-          tool_cache="${RUNNER_TEMP:?RUNNER_TEMP is required}/toolcache"
-          mkdir -p "$tool_cache"
+        usable=false
+        if [ -n "$tool_cache" ] && writable_kache_root "$tool_cache"; then
+          usable=true
         fi
-        echo "RUNNER_TOOL_CACHE=$tool_cache" >> "$GITHUB_ENV"
+        echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
     - name: Connect shared MinIO Kache
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
         steps.kache-host.outputs.managed != 'true' &&
+        steps.tool-cache.outputs.usable == 'true' &&
         env.KACHE_S3_ACCESS_KEY != '' &&
         env.KACHE_S3_SECRET_KEY != ''
       uses: kunobi-ninja/kache-action@a257c055543c2840700a9bbca8f9c3094a421b1b
@@ -132,7 +142,8 @@ runs:
           steps.kache-host.outputs.managed != 'true' &&
           (
             env.KACHE_S3_ACCESS_KEY == '' ||
-            env.KACHE_S3_SECRET_KEY == ''
+            env.KACHE_S3_SECRET_KEY == '' ||
+            steps.tool-cache.outputs.usable != 'true'
           )
         )
       shell: bash
@@ -150,7 +161,8 @@ runs:
           steps.kache-host.outputs.managed == 'true' ||
           (
             env.KACHE_S3_ACCESS_KEY != '' &&
-            env.KACHE_S3_SECRET_KEY != ''
+            env.KACHE_S3_SECRET_KEY != '' &&
+            steps.tool-cache.outputs.usable == 'true'
           )
         )
       shell: bash
