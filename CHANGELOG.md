@@ -38,6 +38,14 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **stdio:** log child PID, connection generation, exit code or signal, redacted
   stderr tail, and the exact in-flight requests invalidated by child termination.
 
+## [1.8.9](https://github.com/dinglebear-ai/labby/compare/v1.8.8...v1.8.9) (2026-08-04)
+
+
+### Fixed
+
+* **auth:** recover revoked Google refresh credentials ([#335](https://github.com/dinglebear-ai/labby/issues/335)) ([3d352ce](https://github.com/dinglebear-ai/labby/commit/3d352cefeaeebc87fe7404309f52bbeda491f0c6))
+* **ci:** use python3 for MCP drift workflow ([#327](https://github.com/dinglebear-ai/labby/issues/327)) ([2f69b99](https://github.com/dinglebear-ai/labby/commit/2f69b9935ed8ad31f335c37b21e8f32598b4d8bf))
+
 ## [1.8.8](https://github.com/dinglebear-ai/labby/compare/v1.8.7...v1.8.8) (2026-08-04)
 
 ### Fixed
