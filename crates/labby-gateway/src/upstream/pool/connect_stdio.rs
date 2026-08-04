@@ -288,7 +288,9 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     // `LABBY_GW_UPSTREAM_STDERR` (default DEBUG; `off` discards).
     let stderr_level = upstream_stderr_log_level();
     let stderr_capture = StdioDiagnostics::default();
-    let mut wrapped = CommandWrap::from(cmd);
+    let wrapped = CommandWrap::from(cmd);
+    #[cfg(unix)]
+    let mut wrapped = wrapped;
     #[cfg(unix)]
     wrapped.wrap(ProcessGroup::leader());
     let (process, child_stderr) =
