@@ -216,6 +216,7 @@ impl UpstreamPool {
                 format!("upstream resource read timed out after {timeout_ms}ms"),
             )
             .await
+            .map_err(|error| error.to_string())
             .map(|result| normalize_resource_result_uri(result, normalize_uri)),
         )
     }
@@ -313,6 +314,7 @@ impl UpstreamPool {
             format!("upstream resource read timed out after {timeout_ms}ms"),
         )
         .await
+        .map_err(|error| error.to_string())
         .map(|result| normalize_resource_result_uri(result, &gateway_uri))
     }
 }

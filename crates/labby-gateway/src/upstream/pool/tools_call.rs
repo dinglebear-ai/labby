@@ -10,7 +10,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call;
+use super::capability_call::{CapabilityCallError, timed_capability_call};
 use super::helpers::{
     estimate_call_tool_response_size, estimate_response_size, upstream_transport,
 };
@@ -47,6 +47,7 @@ impl UpstreamPool {
             format!("upstream call timed out after {timeout_ms}ms"),
         )
         .await
+        .map_err(|error| error.to_string())
     }
 
     /// Call a tool on an OAuth-subject-scoped upstream.
@@ -107,6 +108,7 @@ impl UpstreamPool {
             format!("upstream call timed out after {timeout_ms}ms"),
         )
         .await
+        .map_err(|error| error.to_string())
     }
 
     /// Call a tool on an upstream server.
@@ -132,6 +134,17 @@ impl UpstreamPool {
         upstream_name: &str,
         params: CallToolRequestParams,
     ) -> Option<Result<CallToolResult, String>> {
+        self.call_tool_classified(upstream_name, params)
+            .await
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// Call a tool while preserving the upstream failure class for Code Mode.
+    pub(crate) async fn call_tool_classified(
+        &self,
+        upstream_name: &str,
+        params: CallToolRequestParams,
+    ) -> Option<Result<CallToolResult, CapabilityCallError>> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
         let event = UpstreamRequestLog::tool(upstream_name, &tool_name, false);
@@ -184,7 +197,8 @@ impl UpstreamPool {
                 |error| format!("upstream call failed: {error}"),
                 format!("upstream call timed out after {timeout_ms}ms"),
             )
-            .await,
+            .await
+            .map_err(|error| error.to_string()),
         )
     }
 }

@@ -255,9 +255,9 @@ Common error kinds:
 | Kind | Recovery |
 | --- | --- |
 | `missing_param` | Read `codemode.search()` / `codemode.describe()` output and include the required field. |
-| `invalid_param` | Fix type/shape against the schema. |
-| `validation_failed` | Fix nested schema validation errors. |
-| `unknown_tool` | Rerun `codemode.search()`; use `<namespace>::<tool>` IDs only. |
+| `invalid_param` | Fix type/shape against the schema. Upstream MCP/JSON-RPC `-32602` errors map here and are not retryable or upstream-health failures. |
+| `validation_failed` | Fix nested schema or protocol-capability validation errors. |
+| `unknown_tool` | Rerun `codemode.search()`; use `<namespace>::<tool>` IDs only. Upstream `-32601` errors map here. |
 | `route_scope_denied` | The protected route scope does not allow that upstream/tool. |
 | `forbidden` / `permission_denied` | Caller lacks permission; destructive tools require execute-capable Code Mode callers. |
 | `path_traversal` | Fix the workspace/artifact path. |

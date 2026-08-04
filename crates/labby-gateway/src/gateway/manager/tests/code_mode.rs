@@ -438,6 +438,47 @@ async fn mcp_tool_error_result_does_not_poison_upstream_connection_health() {
 }
 
 #[tokio::test]
+async fn mcp_invalid_params_map_to_code_mode_invalid_param_without_health_failure() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("cortex")]).await;
+    let message =
+        "invalid project_context arguments: unknown field `since`, expected project, tool, limit";
+    pool.insert_mcp_error_server_for_tests(
+        "cortex",
+        rmcp::model::ErrorData::invalid_params(message, None),
+    )
+    .await;
+
+    let err = manager
+        .execute_upstream_tool("cortex", "cortex", json!({}))
+        .await
+        .expect_err("invalid params must remain a Code Mode caller error");
+
+    match err {
+        ToolError::Sdk {
+            sdk_kind,
+            message: actual,
+        } => {
+            assert_eq!(sdk_kind, "invalid_param");
+            assert_eq!(actual, message);
+        }
+        other => panic!("expected invalid_param sdk error, got {other:?}"),
+    }
+    assert_eq!(
+        pool.upstream_tool_last_error("cortex").await,
+        None,
+        "valid MCP errors must not poison upstream health"
+    );
+    assert!(
+        pool.upstream_tool_health("cortex")
+            .await
+            .expect("health entry")
+            .is_routable(),
+        "upstream must remain routable after invalid params"
+    );
+}
+
+#[tokio::test]
 async fn palette_catalog_discovers_configured_upstream_tools() {
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;

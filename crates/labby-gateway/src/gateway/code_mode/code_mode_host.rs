@@ -16,11 +16,12 @@ use labby_codemode::{
 };
 use std::sync::Arc;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorCode, ErrorData};
 use serde_json::{Map, Value};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::manager::GatewayManager;
+use crate::upstream::pool::CapabilityCallError;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
@@ -455,7 +456,7 @@ impl GatewayManager {
         };
         let mut upstream_params = CallToolRequestParams::new(tool.to_string());
         upstream_params.arguments = Some(arguments);
-        match pool.call_tool(upstream, upstream_params).await {
+        match pool.call_tool_classified(upstream, upstream_params).await {
             Some(Ok(result)) => {
                 // `is_error=true` is an MCP tool-level failure carried inside
                 // a successful protocol response. Reaching this branch proves
@@ -493,12 +494,13 @@ impl GatewayManager {
                 })
             }
             Some(Err(err)) => {
-                // The pool owns transport-vs-MCP error classification and has
-                // already updated connection health. Re-recording here would
-                // turn valid application errors into false disconnects.
+                // The pool owns transport-vs-MCP health accounting. Preserve
+                // its typed failure here so caller mistakes do not masquerade
+                // as broken upstream infrastructure.
+                let (kind, message) = code_mode_capability_error_info(&err);
                 Err(ToolError::Sdk {
-                    sdk_kind: "upstream_error".to_string(),
-                    message: err,
+                    sdk_kind: kind.to_string(),
+                    message,
                 })
             }
             None => {
@@ -605,6 +607,71 @@ fn upstream_arguments(
             sdk_kind: "invalid_param".to_string(),
             message: format!("Code Mode tool `{upstream}::{tool}` params must be an object"),
         }),
+    }
+}
+
+fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str, String) {
+    match error {
+        CapabilityCallError::Mcp { data, .. } => {
+            (code_mode_mcp_error_kind(data), data.message.to_string())
+        }
+        CapabilityCallError::Timeout { message } => ("timeout", message.clone()),
+        CapabilityCallError::QueueSaturated { message } => ("rate_limited", message.clone()),
+        CapabilityCallError::ResponseTooLarge { message } => {
+            ("response_too_large", message.clone())
+        }
+        CapabilityCallError::Transport { message } => ("network_error", message.clone()),
+        CapabilityCallError::Protocol { message } => ("decode_error", message.clone()),
+        CapabilityCallError::Other { message } => ("upstream_error", message.clone()),
+    }
+}
+
+fn code_mode_mcp_error_kind(error: &ErrorData) -> &'static str {
+    if let Some(kind) = error
+        .data
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|data| data.get("kind"))
+        .and_then(Value::as_str)
+    {
+        match kind {
+            "unknown_action" => return "unknown_action",
+            "unknown_subaction" => return "unknown_subaction",
+            "missing_param" => return "missing_param",
+            "invalid_param" | "invalid_params" => return "invalid_param",
+            "unknown_instance" => return "unknown_instance",
+            "confirmation_required" => return "confirmation_required",
+            "conflict" => return "conflict",
+            "forbidden" => return "forbidden",
+            "unknown_tool" => return "unknown_tool",
+            "route_scope_denied" => return "route_scope_denied",
+            "path_traversal" => return "path_traversal",
+            "permission_denied" => return "permission_denied",
+            "auth_failed" => return "auth_failed",
+            "not_found" => return "not_found",
+            "rate_limited" => return "rate_limited",
+            "validation_failed" => return "validation_failed",
+            _ => {}
+        }
+    }
+
+    if error.code == ErrorCode::INVALID_PARAMS {
+        "invalid_param"
+    } else if error.code == ErrorCode::METHOD_NOT_FOUND {
+        "unknown_tool"
+    } else if error.code == ErrorCode::RESOURCE_NOT_FOUND {
+        "not_found"
+    } else if error.code == ErrorCode::PARSE_ERROR {
+        "decode_error"
+    } else if error.code == ErrorCode::INTERNAL_ERROR {
+        "server_error"
+    } else if error.code == ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+        || error.code == ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+        || error.code == ErrorCode::HEADER_MISMATCH
+    {
+        "validation_failed"
+    } else {
+        "upstream_error"
     }
 }
 
@@ -930,6 +997,39 @@ mod tests {
         assert!(!mgr.step_buffer_is_empty());
         mgr.discard_step_buffer("exec_cancelled");
         assert!(mgr.step_buffer_is_empty());
+    }
+
+    #[test]
+    fn maps_standard_mcp_error_codes_to_code_mode_kinds() {
+        let cases = [
+            (
+                ErrorData::invalid_params("bad params", None),
+                "invalid_param",
+            ),
+            (
+                ErrorData::new(ErrorCode::METHOD_NOT_FOUND, "missing method", None),
+                "unknown_tool",
+            ),
+            (
+                ErrorData::internal_error("server failed", None),
+                "server_error",
+            ),
+            (ErrorData::parse_error("invalid JSON", None), "decode_error"),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(code_mode_mcp_error_kind(&error), expected);
+        }
+    }
+
+    #[test]
+    fn structured_mcp_error_kind_takes_precedence_over_generic_code() {
+        let error = ErrorData::invalid_request(
+            "scope denied",
+            Some(serde_json::json!({"kind": "forbidden"})),
+        );
+
+        assert_eq!(code_mode_mcp_error_kind(&error), "forbidden");
     }
 
     #[test]

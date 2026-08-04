@@ -73,7 +73,8 @@ impl UpstreamPool {
                 |error| format!("upstream completion failed: {error}"),
                 format!("upstream completion timed out after {timeout_ms}ms"),
             )
-            .await,
+            .await
+            .map_err(|error| error.to_string()),
         )
     }
 
@@ -129,6 +130,7 @@ impl UpstreamPool {
             format!("upstream completion timed out after {timeout_ms}ms"),
         )
         .await
+        .map_err(|error| error.to_string())
     }
 }
 
