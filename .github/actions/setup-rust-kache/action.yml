@@ -86,6 +86,7 @@ runs:
         grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
 
     - name: Select writable action tool cache
+      id: tool-cache
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
@@ -100,6 +101,7 @@ runs:
           tool_cache="${RUNNER_TEMP:?RUNNER_TEMP is required}/toolcache"
           mkdir -p "$tool_cache"
         fi
+        echo "path=$tool_cache" >> "$GITHUB_OUTPUT"
         echo "RUNNER_TOOL_CACHE=$tool_cache" >> "$GITHUB_ENV"
 
     - name: Connect shared MinIO Kache
@@ -110,6 +112,8 @@ runs:
         env.KACHE_S3_ACCESS_KEY != '' &&
         env.KACHE_S3_SECRET_KEY != ''
       uses: kunobi-ninja/kache-action@a257c055543c2840700a9bbca8f9c3094a421b1b
+      env:
+        RUNNER_TOOL_CACHE: ${{ steps.tool-cache.outputs.path }}
       with:
         version: "0.12.0"
         s3-bucket: kache
