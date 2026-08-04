@@ -124,14 +124,18 @@ FROM debian:trixie-slim AS runtime
 
 ARG NPM_VERSION="12.0.2"
 ARG NPM_SHA512="b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
+ARG NPM_BRACE_EXPANSION_VERSION="5.0.9"
+ARG NPM_BRACE_EXPANSION_SHA512="49c43822ebc8105d533253fb66dfaf8c9ffff7394f6f64837315b13376e4f2ceade8619d27b28ed5d09c4e274e3c929e3d6df42c4ff6713ef00b23e1a3dfd6c6"
+ARG NPM_IP_ADDRESS_VERSION="10.3.1"
+ARG NPM_IP_ADDRESS_SHA512="d5ef5dde46fdecd1c94c8243656f6b2aa5b687af9d15ae740f2d1fa4f48c429d800e37b982f2ac5e67622ba770639b7be93693b79f8fe4dd58fcba13a08c4fea"
 
 LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
 
 # ca-certificates: reqwest uses rustls for TLS but still validates against the
 # system CA bundle — required for outbound HTTPS calls.
 # git remains available for operator-managed stdio upstreams and setup workflows.
-# NodeSource's bundled npm carries vulnerable nested tar/undici copies.
-# Replace it from a digest-pinned tarball without asking npm to overwrite itself.
+# Replace NodeSource's bundled npm from a digest-pinned tarball, then patch
+# fixed bundled dependencies that have not yet landed in an npm release.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git gnupg \
  && mkdir -p /etc/apt/keyrings \
@@ -148,12 +152,24 @@ RUN apt-get update \
  && tar -xzf /tmp/npm.tgz --strip-components=1 -C /tmp/npm-package \
  && rm -rf "${npm_root}/npm" \
  && mv /tmp/npm-package "${npm_root}/npm" \
+ && curl -fsSLo /tmp/brace-expansion.tgz "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${NPM_BRACE_EXPANSION_VERSION}.tgz" \
+ && echo "${NPM_BRACE_EXPANSION_SHA512}  /tmp/brace-expansion.tgz" | sha512sum --check --strict \
+ && rm -rf "${npm_root}/npm/node_modules/brace-expansion" \
+ && mkdir -p "${npm_root}/npm/node_modules/brace-expansion" \
+ && tar -xzf /tmp/brace-expansion.tgz --strip-components=1 -C "${npm_root}/npm/node_modules/brace-expansion" \
+ && curl -fsSLo /tmp/ip-address.tgz "https://registry.npmjs.org/ip-address/-/ip-address-${NPM_IP_ADDRESS_VERSION}.tgz" \
+ && echo "${NPM_IP_ADDRESS_SHA512}  /tmp/ip-address.tgz" | sha512sum --check --strict \
+ && rm -rf "${npm_root}/npm/node_modules/ip-address" \
+ && mkdir -p "${npm_root}/npm/node_modules/ip-address" \
+ && tar -xzf /tmp/ip-address.tgz --strip-components=1 -C "${npm_root}/npm/node_modules/ip-address" \
  && ln -sf "${npm_root}/npm/bin/npm-cli.js" /usr/local/bin/npm \
  && ln -sf "${npm_root}/npm/bin/npx-cli.js" /usr/local/bin/npx \
  && test "$(npm --version)" = "${NPM_VERSION}" \
  && test "$(node -p "require('${npm_root}/npm/node_modules/tar/package.json').version")" = "7.5.19" \
  && test "$(node -p "require('${npm_root}/npm/node_modules/undici/package.json').version")" = "6.27.0" \
- && rm -f /tmp/npm.tgz \
+ && test "$(node -p "require('${npm_root}/npm/node_modules/brace-expansion/package.json').version")" = "${NPM_BRACE_EXPANSION_VERSION}" \
+ && test "$(node -p "require('${npm_root}/npm/node_modules/ip-address/package.json').version")" = "${NPM_IP_ADDRESS_VERSION}" \
+ && rm -f /tmp/npm.tgz /tmp/brace-expansion.tgz /tmp/ip-address.tgz \
  && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs used by stdio MCP servers that shell out to provider tools.
