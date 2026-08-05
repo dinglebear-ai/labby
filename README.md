@@ -1,3 +1,6 @@
+<!-- Absolute raw URL, not relative: unraid/ca/labby.xml points Community Applications at this file's raw URL, and CA renders the markdown outside any repo context where a relative path would 404. Markdown image syntax, not <img>: the fleet repository contract's readme_lead() skips lines starting with '![' when locating the lead paragraph, but not raw HTML tags. Keep this comment on ONE line for the same reason -- only a comment's first line is skipped. -->
+![Labby](https://raw.githubusercontent.com/dinglebear-ai/labby/main/docs/assets/brand/labby-banner.png)
+
 # Labby
 
 Rust MCP gateway with Code Mode, authentication, setup, logs, CLI, HTTP API, and operator web UI.

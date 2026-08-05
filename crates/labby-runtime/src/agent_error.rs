@@ -303,6 +303,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "validation_failed"
         | "invalid_hint"
         | "conflict"
+        | "oauth_account_ambiguous"
+        | "oauth_client_mismatch"
         | "path_traversal"
         | "symlink_rejected"
         | "invalid_encoding"
@@ -316,6 +318,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "auth_failed"
         | "auth_required"
         | "oauth_needs_reauth"
+        | "oauth_scope_upgrade_required"
+        | "oauth_shared_credential_protected"
         | "route_scope_denied" => AgentErrorOrigin::Policy,
         "rate_limited"
         | "queue_saturated"
@@ -414,6 +418,24 @@ pub fn recovery_for_kind(
             guidance: "Repair or refresh authentication before retrying. For an upstream OAuth server, use the gateway OAuth start action for that upstream.".to_string(),
             retry_after_ms: None,
         },
+        "oauth_scope_upgrade_required" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Reauthenticate,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Start the gateway OAuth flow for this upstream and grant the reported missing Google scopes before retrying.".to_string(),
+            retry_after_ms: None,
+        },
+        "oauth_account_ambiguous" | "oauth_client_mismatch" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReviseAndRetry,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Correct the shared Google credential account selector or OAuth client binding, then retry with the updated configuration.".to_string(),
+            retry_after_ms: None,
+        },
+        "oauth_shared_credential_protected" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Confirm,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Do not clear this credential through a single upstream. Use gateway.oauth.google_revoke and obtain explicit confirmation because the credential is shared.".to_string(),
+            retry_after_ms: None,
+        },
         "confirmation_required" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::Confirm,
             same_arguments: AgentSameArgumentsRetry::Never,
@@ -509,6 +531,32 @@ mod tests {
     }
 
     #[test]
+    fn google_broker_errors_have_actionable_recovery_metadata() {
+        let scope = metadata_for_kind("oauth_scope_upgrade_required", None);
+        assert_eq!(scope.origin, AgentErrorOrigin::Policy);
+        assert_eq!(scope.recovery.action, AgentRecoveryAction::Reauthenticate);
+        assert_eq!(scope.side_effects, AgentSideEffectRisk::NoneExpected);
+
+        for kind in ["oauth_account_ambiguous", "oauth_client_mismatch"] {
+            let metadata = metadata_for_kind(kind, None);
+            assert_eq!(metadata.origin, AgentErrorOrigin::Validation, "kind={kind}");
+            assert_eq!(
+                metadata.recovery.action,
+                AgentRecoveryAction::ReviseAndRetry,
+                "kind={kind}"
+            );
+            assert_eq!(
+                metadata.recovery.same_arguments,
+                AgentSameArgumentsRetry::Never,
+                "kind={kind}"
+            );
+        }
+
+        let protected = metadata_for_kind("oauth_shared_credential_protected", None);
+        assert_eq!(protected.origin, AgentErrorOrigin::Policy);
+        assert_eq!(protected.recovery.action, AgentRecoveryAction::Confirm);
+        assert_eq!(protected.side_effects, AgentSideEffectRisk::NoneExpected);
+    }
     fn context_fields_are_additive_and_reserved_fields_win() {
         let value = build_agent_error_value(
             "missing_param",

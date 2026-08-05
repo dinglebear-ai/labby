@@ -1234,6 +1234,30 @@
           "returns": "ok"
         },
         {
+          "name": "gateway.oauth.google_revoke",
+          "description": "Explicitly revoke the central Google provider credential selected by an upstream. This also revokes dependent inbound Labby grants and evicts all cached OAuth clients.",
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "upstream",
+              "ty": "string",
+              "required": true,
+              "description": "Configured upstream using credential.source=google_provider"
+            },
+            {
+              "name": "confirm",
+              "ty": "boolean",
+              "required": true,
+              "description": "Must be true because this revokes a shared credential"
+            }
+          ],
+          "returns": "GoogleProviderInvalidation"
+        },
+        {
           "name": "gateway.oauth.wait",
           "description": "Poll gateway.oauth.status until the upstream is authenticated or timeout elapses. Returns {authenticated: bool, timed_out: bool}. Moves the --wait poll loop out of the CLI into shared dispatch (Q-H3).",
           "destructive": false,

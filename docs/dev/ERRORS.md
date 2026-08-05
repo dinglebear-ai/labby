@@ -75,7 +75,9 @@ Supported code may emit additional stable kinds, including:
 
 - auth/OAuth: `auth_failed`, `auth_required`, `permission_denied`,
   `oauth_needs_reauth`, `oauth_state_invalid`, `oauth_resource_mismatch`,
-  `oauth_issuer_mismatch`, `oauth_unsupported_method`;
+  `oauth_issuer_mismatch`, `oauth_unsupported_method`,
+  `oauth_scope_upgrade_required`, `oauth_account_ambiguous`,
+  `oauth_client_mismatch`, `oauth_shared_credential_protected`;
 - routing/upstreams: `not_found`, `unknown_upstream`, `unknown_tool`,
   `upstream_error`, `bad_gateway`, `network_error`,
   `service_unavailable`, `not_connected`, `connection_error`, `dns_error`,
@@ -136,10 +138,11 @@ failure — records a breaker failure.
 
 `ApiError` is the local axum wrapper around `ToolError`. Broad mapping rules:
 
-- authentication failure: 401;
-- forbidden scope/action: 403;
+- authentication failure, including `oauth_needs_reauth`: 401;
+- forbidden scope/action, including `oauth_scope_upgrade_required`: 403;
 - unknown resource: 404;
-- conflict/restart/stale state: 409;
+- conflict/restart/stale state, including `oauth_account_ambiguous`,
+  `oauth_client_mismatch`, and `oauth_shared_credential_protected`: 409;
 - invalid input, confirmation, SSRF, or path validation: 422;
 - payload limits: 413;
 - rate/queue limits: 429;

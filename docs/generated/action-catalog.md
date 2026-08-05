@@ -43,6 +43,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin |  | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `ok` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.resource_lease.release` | false | true | true | lab:admin | `id*: string` | `ResourceLeaseReleaseView` | cli, mcp, api, web |

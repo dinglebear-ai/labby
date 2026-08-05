@@ -21,6 +21,7 @@ pub fn gateway_routes(_state: AppState) -> Router<AppState> {
         .route("/start", post(start))
         .route("/status", get(status))
         .route("/clear", post(clear))
+        .route("/google/revoke", post(revoke_google))
 }
 
 pub fn browser_routes(_state: AppState) -> Router<AppState> {
@@ -100,6 +101,12 @@ struct StatusQuery {
 #[derive(Debug, Deserialize)]
 struct ClearQuery {
     upstream: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleRevokeRequest {
+    upstream: String,
+    confirm: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -430,6 +437,52 @@ async fn clear(
         "upstream oauth credentials cleared"
     );
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+}
+
+async fn revoke_google(
+    State(state): State<AppState>,
+    Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    Json(body): Json<GoogleRevokeRequest>,
+) -> Result<Json<labby_auth::types::GoogleProviderInvalidation>, ApiError> {
+    let started = std::time::Instant::now();
+    require_master(&state)?;
+    require_admin_scope(&auth, "google_revoke")?;
+    if body.confirm != Some(true) {
+        return Err(ApiError::new(ToolError::Sdk {
+            sdk_kind: "confirmation_required".to_string(),
+            message: "set confirm=true to revoke the shared Google provider credential".to_string(),
+        }));
+    }
+    let manager = state
+        .gateway_manager
+        .clone()
+        .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
+    let invalidation = crate::dispatch::gateway::oauth::revoke_google(&manager, &body.upstream)
+        .await
+        .inspect_err(|error| {
+            warn!(
+                surface = "api",
+                service = "upstream_oauth",
+                action = "google_revoke",
+                subject = %auth.sub,
+                elapsed_ms = started.elapsed().as_millis(),
+                kind = error.kind(),
+                "Google provider credential revoke failed"
+            );
+        })?;
+    warn!(
+        surface = "api",
+        service = "upstream_oauth",
+        action = "google_revoke",
+        subject = %auth.sub,
+        upstream = %body.upstream,
+        invalidated = invalidation.invalidated,
+        revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+        revoked_authorization_codes = invalidation.revoked_authorization_codes,
+        elapsed_ms = started.elapsed().as_millis(),
+        "Google provider credential explicitly revoked"
+    );
+    Ok(Json(invalidation))
 }
 
 async fn callback(
