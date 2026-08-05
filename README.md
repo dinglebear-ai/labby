@@ -1,3 +1,8 @@
+<!-- Absolute raw URL, not a relative path: unraid/ca/labby.xml points
+     Community Applications at this file's raw URL, and CA renders the
+     markdown outside any repo context where a relative path would 404. -->
+<img src="https://raw.githubusercontent.com/dinglebear-ai/labby/main/docs/assets/brand/labby-banner.png" alt="Labby" width="880">
+
 # Labby
 
 Rust MCP gateway with Code Mode, authentication, setup, logs, CLI, HTTP API, and operator web UI.
