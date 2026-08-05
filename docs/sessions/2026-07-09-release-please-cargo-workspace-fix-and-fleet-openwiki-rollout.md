@@ -14,7 +14,7 @@ transcript: /home/jmagar/.claude/projects/-home-jmagar-workspace-lab/8775dbe1-46
 Session started with "tell me the repo status" for `lab`, escalated through several
 follow-ups: investigate `release-please`/OpenWiki CI failures and fix them, roll the
 OpenWiki proxy fix out fleet-wide plus write a batch of missing operator docs, reconcile
-dotfiles drift, fix a dead GitHub Actions self-hosted runner on `steamy`, and finally
+dotfiles drift, fix a dead GitHub Actions self-hosted runner on `winhost`, and finally
 resolve `release-please`'s repeated failure, merge the resulting release, and sync the
 built binary into the local PATH and the Incus gateway container.
 
@@ -24,7 +24,7 @@ A single-repo CI investigation (`lab`'s `release-please` and `OpenWiki` workflow
 failing) grew into: (1) a fleet-wide rollout of the OpenWiki fix across ~20 repos plus 12
 new operator docs in `~/docs`, (2) a full chezmoi dotfiles reconciliation including
 retiring `.exampleclient`/`.lab` in favor of `.examplegateway`/`.labby`, (3) diagnosing and fixing a
-self-hosted GitHub Actions runner on `steamy` that was dying whenever its console window
+self-hosted GitHub Actions runner on `winhost` that was dying whenever its console window
 closed, and (4) a deep, verified-against-source-code fix for `release-please`'s
 incompatibility with this repo's Cargo workspace structure, ending in a real `v1.0.0`
 release built, tagged, and synced onto the local machine and the Incus container.
@@ -45,8 +45,8 @@ release built, tagged, and synced onto the local machine and the Incus container
    node-entrypoint packaging, MCP registry submission, CI path-gating, xtask/mcporter live
    testing, xtask patterns, agent-first service patterns, `marketplace-no-mcp` branch
    sync, new-repo-setup checklist), build a combined `.gitignore` reference, and SSH into
-   `squirts` to document the remote Dolt server backing `beads`.
-5. **Dispatched 9 parallel research agents** (OpenWiki+beads/Dolt, squirts SSH review,
+   `edgehost` to document the remote Dolt server backing `beads`.
+5. **Dispatched 9 parallel research agents** (OpenWiki+beads/Dolt, edgehost SSH review,
    lavra, examplegateway-rmcp node packaging + xtask/mcporter, template-rmcp xtask patterns +
    other patterns, axon CI path-gating, MCP registry docs, no-mcp branch sync x2) while
    directly executing the mechanical rollout (14 direct-push repos, `axon` via
@@ -71,9 +71,9 @@ release built, tagged, and synced onto the local machine and the Incus container
     (unmanage, not delete) on the old dirs, `chezmoi add --encrypt` on the new dirs'
     config/`.env` files only (not the full multi-hundred-MB runtime directories).
 11. **User asked for repo status again** — CI on `lab` was stuck `queued` for hours;
-    root cause traced to the self-hosted runner `steamy-lab` being offline.
-12. **Investigated `steamy` via `steamy-windows-mcp`** — initial attempt hit an RPC
-    error (machine unreachable via GUI automation); switched to SSH into `steamy-wsl`
+    root cause traced to the self-hosted runner `winhost-lab` being offline.
+12. **Investigated `winhost` via `winhost-windows-mcp`** — initial attempt hit an RPC
+    error (machine unreachable via GUI automation); switched to SSH into `winhost-wsl`
     with `powershell.exe` interop instead.
 13. **Found and fixed the runner root cause** — `labby-actions-runner.lnk` launched
     `run.cmd` directly in a visible (minimized) console window with no supervision;
@@ -145,7 +145,7 @@ release built, tagged, and synced onto the local machine and the Incus container
 - `crates/labby/src/config.rs:16` had pre-existing `cargo fmt` drift on `main`, unrelated
   to any change in this session — caught by CI on the first push after the runner came
   back online.
-- The self-hosted runner `steamy-lab` (`jmagar/labby`) died on 2026-07-06 when its
+- The self-hosted runner `winhost-lab` (`jmagar/labby`) died on 2026-07-06 when its
   console window was closed — confirmed via its own `_diag/Runner_*.log`
   (`System.Threading.Tasks.TaskCanceledException` / "Runner execution been cancelled").
   It had no supervision/auto-restart, unlike the working `rmcp-template` runner on the
@@ -195,7 +195,7 @@ no-mcp-branch-sync,new-repo-setup,megatask-2026-07-08-openwiki-docs-rollout}.md`
 `~/docs/mcp/registry-submission.md`, `~/docs/.gitignore`, `~/docs/.env` (secrets, not
 committed anywhere), OpenWiki workflow updates across 19 other repos, `axon`
 [PR #390](https://github.com/jmagar/axon/pull/390), chezmoi dotfiles re-adds across ~15
-files in `jmagar/dotfiles`, and the `steamy` runner launcher swap
+files in `jmagar/dotfiles`, and the `winhost` runner launcher swap
 (`labby-actions-runner.lnk` → `labby-actions-runner.vbs` + `run-loop.cmd`).
 
 ## Beads Activity
@@ -236,15 +236,15 @@ its own tracked issue.
 - **File tools (Read/Edit/Write)**: config/workflow edits across `lab` and doc authoring
   under `~/docs`.
 - **Agent tool (parallel research)**: 9 concurrent research agents dispatched for the
-  fleet-documentation task (OpenWiki/beads/Dolt, squirts SSH, lavra, examplegateway-rmcp packaging
+  fleet-documentation task (OpenWiki/beads/Dolt, edgehost SSH, lavra, examplegateway-rmcp packaging
   + testing, template-rmcp xtask + patterns, axon CI gating, MCP registry docs, no-mcp
   branch sync ×2). All completed successfully; no failures or retries needed.
-- **`computer-use` MCP**: attempted first for the `steamy` runner investigation; the user
+- **`computer-use` MCP**: attempted first for the `winhost` runner investigation; the user
   denied the access-request dialog, so this path was abandoned in favor of SSH.
-- **`steamy-windows-mcp` (via Labby `codemode`)**: attempted next; returned
+- **`winhost-windows-mcp` (via Labby `codemode`)**: attempted next; returned
   `"RPC server is unavailable"` (machine unreachable for GUI automation at that moment,
   not an approval-gate issue as initially suspected). Abandoned in favor of SSH.
-- **SSH (`steamy-wsl`) + `powershell.exe` WSL interop**: successful path for all `steamy`
+- **SSH (`winhost-wsl`) + `powershell.exe` WSL interop**: successful path for all `winhost`
   investigation and remediation (Get-Service, process listing, Startup-folder inspection,
   shortcut/VBS content reads and writes). One `scp` invocation failed on a
   space-containing remote path (`ambiguous target`); worked around with
@@ -256,7 +256,7 @@ its own tracked issue.
 - **`WebFetch`**: used to pull `release-please` documentation and (via `gh api`, since
   raw `WebFetch` hit a 429) to inspect `release-please`/`release-please-action` source
   files directly.
-- **`AskUserQuestion`**: used three times — steamy investigation redirect
+- **`AskUserQuestion`**: used three times — winhost investigation redirect
   (computer-use → SSH), the `release-please` architecture-decision fix, and the
   `~/docs/.env` key additions (`MCP_PRIVATE_KEY` scoping).
 - **`chezmoi`**: `add`, `re-add`, `forget`, `status`, `diff`, `managed`, `source-path`,
@@ -272,8 +272,8 @@ its own tracked issue.
 | `npx release-please manifest-pr --dry-run --local --local-path=.` (in a scratch clone) | Silently discarded the test config edit before running — led to discovering the `--local` reset behavior |
 | `npx release-please manifest-pr --dry-run --target-branch=test/release-please-simple-type` (real pushed branch, no `--local`) | Correctly showed only `CHANGELOG.md`/`version.txt`/manifest as update targets — confirmed the real fix |
 | `cargo fmt --all -- --check` | Reproduced the `Format` CI job failure locally before fixing |
-| `gh api repos/jmagar/labby/actions/runners` | Confirmed `steamy-lab` offline, then online after the runner fix |
-| `ssh steamy-wsl "... Get-Content '...\_diag\Runner_20260706-172139-utc.log' -Tail 40"` | Found the exact abort reason for the dead runner |
+| `gh api repos/jmagar/labby/actions/runners` | Confirmed `winhost-lab` offline, then online after the runner fix |
+| `ssh winhost-wsl "... Get-Content '...\_diag\Runner_20260706-172139-utc.log' -Tail 40"` | Found the exact abort reason for the dead runner |
 | `labby update --version v1.0.0 --dry-run` then without `--dry-run` | Installed `labby 1.0.0` locally and synced it into the Incus container in one command |
 | `gh release upload v1.0.0 ...` | Manually attached the already-built artifacts after `release.yml`'s `Create Release` job failed |
 
@@ -293,7 +293,7 @@ its own tracked issue.
   edit.** Non-destructive (the edit was trivial and easily redone), but changed the
   investigation approach going forward — all subsequent config testing used real pushed
   branches or fully isolated scratch clones.
-- **`computer-use` access denied by the user**, then **`steamy-windows-mcp` returned
+- **`computer-use` access denied by the user**, then **`winhost-windows-mcp` returned
   `RPC server is unavailable`** — neither was a real approval-gate as initially assumed;
   both were dead ends. Resolved by switching entirely to SSH + PowerShell interop.
 - **`gh release edit --generate-notes`** in `release.yml` — invalid flag combination,
@@ -309,7 +309,7 @@ its own tracked issue.
 |---|---|---|
 | `release-please` on `lab` | Failed on every push with `"value at path package.version is not tagged"` | Successfully opens/merges release PRs; `Cargo.toml`/`Cargo.lock` stay in sync via the new `sync-cargo-version` job |
 | `OpenWiki Update` workflow (fleet-wide) | Failing on z.ai's 5-hour rate limit | Uses the local `openai-compatible` proxy (`cli-api.tootie.tv`) |
-| `steamy-lab` GitHub Actions runner | Dead since 2026-07-06, would only restart on machine reboot, opened a visible console window | Runs hidden with auto-restart on any exit, started immediately without a reboot |
+| `winhost-lab` GitHub Actions runner | Dead since 2026-07-06, would only restart on machine reboot, opened a visible console window | Runs hidden with auto-restart on any exit, started immediately without a reboot |
 | `release.yml` "Create Release" job | Failed whenever the release already existed (i.e. always, now that `release-please` pre-creates it) | Uploads build artifacts to the existing release without attempting an invalid `edit --generate-notes` |
 | `labby` binary (local + Incus container) | `0.30.0` | `1.0.0`, verified matching on both |
 | `~/docs` | No dedicated OpenWiki/beads/lavra/xtask/MCP-registry/no-mcp docs existed | 12 new docs + combined `.gitignore` live and chezmoi-tracked |
@@ -326,7 +326,7 @@ its own tracked issue.
 | `gh release view v1.0.0 --json assets` | All 6 build artifacts attached after manual upload | All 6 listed | pass |
 | `labby --version` (local) | `1.0.0` | `labby 1.0.0` | pass |
 | `labby update` output | Reports Incus container synced to the same version | `synced Incus container: labby` / `container version: labby 1.0.0` | pass |
-| `gh api repos/jmagar/labby/actions/runners` (post-fix) | `steamy-lab` status `online` | `{"status":"online","busy":true}` (immediately picked up the queued CI run) | pass |
+| `gh api repos/jmagar/labby/actions/runners` (post-fix) | `winhost-lab` status `online` | `{"status":"online","busy":true}` (immediately picked up the queued CI run) | pass |
 | `chezmoi managed ~/docs/.env` | Prints nothing (file must stay untracked) | Confirmed untracked, both before and after adding `BEADS_DOLT_PASSWORD` | pass |
 
 ## Risks and Rollback
@@ -394,5 +394,5 @@ its own tracked issue.
   hand-validated case.
 - Consider updating `.github/CLAUDE.md`'s stale "Release Process" section to describe the
   actual `release-please`-based flow (see Open Questions).
-- No immediate action required on the fleet OpenWiki/docs rollout or the `steamy` runner
+- No immediate action required on the fleet OpenWiki/docs rollout or the `winhost` runner
   fix — both verified working at session end.

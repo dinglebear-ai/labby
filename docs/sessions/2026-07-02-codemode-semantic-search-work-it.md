@@ -92,5 +92,5 @@ Executed the committed, engineering-reviewed plan to blend TEI-embedding semanti
 ## Next Steps
 
 1. Wait for the pending Incus-image CI job; run merge-status; merge PR #172 when green.
-2. Post-merge operational step: set `[code_mode.semantic_search] tei_url` in the gateway's config to enable the feature (TEI already runs on dookie); unconfigured deployments are unaffected.
+2. Post-merge operational step: set `[code_mode.semantic_search] tei_url` in the gateway's config to enable the feature (TEI already runs on devhost); unconfigured deployments are unaffected.
 3. Shared follow-ups tracked on the #171 log: completed-plan moves, web-UI capability discovery, feature-table cleanup.

@@ -113,7 +113,7 @@ Code Mode was changed to keep its own top-level MCP UI while also surfacing upst
 | `cargo test -p labby mcp::handlers_tools --all-features` | 49 tests passed, 1 ignored. |
 | `cargo test -p labby --all-features` | 797 library tests passed, 1 ignored; integration suites also completed, with expected ignored gateway stdio spawn tests. |
 | `target/debug/labby gateway test --name quick-shell --json` | Reported quick-shell with 3 tools and 1 exposed resource during the session. |
-| `target/debug/labby gateway code exec --code "async () => { return await codemode.quick_shell.open_quick_shell({ device: 'dookie', reason: 'Show the real quick-shell MCP UI from Labby', suggested_command: 'pwd' }); }" --json` | Succeeded and returned quick-shell session id `0c9f788b-88f3-4888-b3f9-eff1e9db5734`. |
+| `target/debug/labby gateway code exec --code "async () => { return await codemode.quick_shell.open_quick_shell({ device: 'devhost', reason: 'Show the real quick-shell MCP UI from Labby', suggested_command: 'pwd' }); }" --json` | Succeeded and returned quick-shell session id `0c9f788b-88f3-4888-b3f9-eff1e9db5734`. |
 | In-chat Labby app `_codemode` call | Failed with `UNAUTHORIZED`, `oauth_refresh_token_missing`, `TRIGGER_REAUTHENTICATION`. |
 | Direct root MCP JSON-RPC `tools/call` to `open_quick_shell` | Returned `confirmation_required`; destructive upstream tools cannot be called through the widget callback bypass without confirmation. |
 | `git worktree list --porcelain`, `git branch -vv`, `git branch -r -vv` | Inspected worktrees and branches; no cleanup was proven safe or needed. |

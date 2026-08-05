@@ -13,19 +13,19 @@ beads: lab-87euc, lab-87euc.8, lab-wj0on, lab-wypwm, lab-i7oh0, lab-m3myh
 
 ## User Request
 
-The session began with Codex MCP OAuth completing in the browser but not finishing in the CLI, then expanded into documenting client setup, reviewing the existing public callback relay on `squirts`, planning and implementing that relay inside Labby, debugging Zed and MCPJam OAuth callback failures, and saving the session as markdown.
+The session began with Codex MCP OAuth completing in the browser but not finishing in the CLI, then expanded into documenting client setup, reviewing the existing public callback relay on `edgehost`, planning and implementing that relay inside Labby, debugging Zed and MCPJam OAuth callback failures, and saving the session as markdown.
 
 ## Session Overview
 
 The public OAuth callback relay epic was implemented on PR #239 and pushed to `codex/public-oauth-callback-relay`. The branch is clean, pushed, and mergeable; CI run `29336998822` passed on head `c80f720a`.
 
-The debugging work found that Codex has configurable public callback knobs for headless/remote cases, while Zed currently has OAuth client-credential knobs but no callback URL or port override. The practical Zed workaround applied during the session was to configure a static `Authorization: Bearer ...` header in the Windows Zed settings through the Labby-accessible `steamy` Windows MCP path, bypassing Zed's fragile loopback OAuth callback flow.
+The debugging work found that Codex has configurable public callback knobs for headless/remote cases, while Zed currently has OAuth client-credential knobs but no callback URL or port override. The practical Zed workaround applied during the session was to configure a static `Authorization: Bearer ...` header in the Windows Zed settings through the Labby-accessible `winhost` Windows MCP path, bypassing Zed's fragile loopback OAuth callback flow.
 
 ## Sequence of Events
 
 1. Investigated why browser-side MCP OAuth completion did not always finish in CLI clients.
 2. Documented the distinction between normal desktop OAuth flows and headless/remote Codex flows that need public callback configuration.
-3. Located and reviewed the standalone callback relay running on `squirts`, including relay code, registry behavior, SWAG proxying, helper scripts, tests, and architecture docs.
+3. Located and reviewed the standalone callback relay running on `edgehost`, including relay code, registry behavior, SWAG proxying, helper scripts, tests, and architecture docs.
 4. Built and reviewed a plan for folding the relay into Labby, integrating Lavra research and engineering-review feedback.
 5. Implemented the Labby public relay on PR #239 with public callback routes, registry persistence/import, admin API/CLI surfaces, doctor checks, docs, and generated help updates.
 6. Ran live smokes and CI checks, then addressed PR review findings in follow-up commits.
@@ -35,7 +35,7 @@ The debugging work found that Codex has configurable public callback knobs for h
 ## Key Findings
 
 - Codex remote/headless clients can use `mcp_oauth_callback_url` and `mcp_oauth_callback_port`; regular non-headless desktop flows should generally not need config edits.
-- The standalone relay on `squirts` was a transport-only FastAPI relay with public `GET|POST /callback/{machine_id}[/{suffix}]`, registry-backed target lookup, and a `/healthz` public health check.
+- The standalone relay on `edgehost` was a transport-only FastAPI relay with public `GET|POST /callback/{machine_id}[/{suffix}]`, registry-backed target lookup, and a `/healthz` public health check.
 - Labby's public relay must keep the existing public callback contract while hardening registry validation, query/body/response limits, redirects, headers, target policy, logging, and admin mutation boundaries.
 - Zed has an MCP `oauth` config object for `client_id` and optional `client_secret`, but current Zed source still starts an ephemeral loopback server and sends that generated `redirect_uri` in the authorization and token exchange flow.
 - For Zed, setting an `Authorization` header on the remote MCP server config bypasses OAuth prompting and avoids the unreachable/incorrect local callback topology.
@@ -142,7 +142,7 @@ These implementation files are changed on PR branch `codex/public-oauth-callback
 
 - **Shell commands.** Used `git`, `gh`, `bd`, `find`, `sed`, `curl`, and date/status commands for repo evidence, PR state, branch ancestry, CI state, and tracker state.
 - **Skills.** Used `vibin:save-to-md` for this session artifact; earlier session work used Lavra planning/research/review skills, Superpowers debugging/plan skills, and Vibin work/Windows-MCP flows.
-- **Labby gateway and MCP tools.** Used Labby to discover/use the registered `steamy` Windows MCP surface and apply a Zed settings workaround on Windows.
+- **Labby gateway and MCP tools.** Used Labby to discover/use the registered `winhost` Windows MCP surface and apply a Zed settings workaround on Windows.
 - **Browser/web research.** Used official Zed docs and current Zed GitHub source to verify OAuth settings and callback behavior.
 - **External CLIs.** Used GitHub CLI for PR and CI verification and Beads CLI for local tracker evidence.
 - **Issues encountered.** `bd list --all` produced very large/truncated output; the note uses narrowed `bd show` evidence for relevant beads. A Codex transcript search found archived/session files but no authoritative current markdown transcript path was injected by the skill.
@@ -172,9 +172,9 @@ These implementation files are changed on PR branch `codex/public-oauth-callback
 
 | area | before | after |
 |---|---|---|
-| Labby public callback relay | Standalone Python/FastAPI relay on `squirts` owned the public callback path | PR #239 adds a Labby-owned public callback relay implementation and cutover docs |
+| Labby public callback relay | Standalone Python/FastAPI relay on `edgehost` owned the public callback path | PR #239 adds a Labby-owned public callback relay implementation and cutover docs |
 | Codex headless OAuth docs | Client setup requirements were unclear during remote/headless auth | `docs/runtime/OAUTH.md` on main includes Codex MCP OAuth client setup guidance |
-| Zed MCP auth on `steamy` | Zed attempted OAuth and failed on loopback callback delivery | Zed settings were updated externally to use a static bearer `Authorization` header |
+| Zed MCP auth on `winhost` | Zed attempted OAuth and failed on loopback callback delivery | Zed settings were updated externally to use a static bearer `Authorization` header |
 | Relay registry imports | Review found duplicate IDs and unsupported versions could be mishandled | PR #239 follow-up commit rejects ambiguous duplicate IDs and unsupported registry versions |
 
 ## Verification Evidence
@@ -185,7 +185,7 @@ These implementation files are changed on PR branch `codex/public-oauth-callback
 | `gh pr view 239 --json state,mergeStateStatus` | PR open and mergeable | `state=OPEN`, `mergeStateStatus=CLEAN` | pass |
 | `git rev-list --left-right --count HEAD...@{upstream}` in PR worktree | Branch pushed, no divergence | `0 0` | pass |
 | `git rev-list --left-right --count HEAD...@{upstream}` on main | Main pushed, no divergence before session artifact | `0 0` | pass |
-| Windows MCP initialize smoke from `steamy` to `https://labby.tootie.tv/mcp` | Remote Zed-compatible bearer path responds | HTTP 200 initialize response observed during debugging | pass |
+| Windows MCP initialize smoke from `winhost` to `https://labby.tootie.tv/mcp` | Remote Zed-compatible bearer path responds | HTTP 200 initialize response observed during debugging | pass |
 
 ## Risks and Rollback
 

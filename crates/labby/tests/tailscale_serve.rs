@@ -21,13 +21,13 @@ use std::time::Duration;
 
 const STATUS: &str = r#"{
   "BackendState": "Running",
-  "Self": {"Online": true, "DNSName": "dookie.example.ts.net."}
+  "Self": {"Online": true, "DNSName": "devhost.example.ts.net."}
 }"#;
 
 const SERVE_STATUS: &str = r#"{
   "TCP": {"52177": {"HTTPS": true}},
   "Web": {
-    "dookie.example.ts.net:53147": {
+    "devhost.example.ts.net:53147": {
       "Handlers": {"/": {"Proxy": "http://127.0.0.1:38417"}}
     }
   }
@@ -37,7 +37,7 @@ const SERVE_STATUS: &str = r#"{
 fn status_requires_running_online_node_with_dns_name() {
     let status = TailscaleStatus::parse(STATUS).unwrap();
     let identity = status.require_online().unwrap();
-    assert_eq!(identity.dns_name, "dookie.example.ts.net.");
+    assert_eq!(identity.dns_name, "devhost.example.ts.net.");
 
     for invalid in [
         r#"{"BackendState":"Stopped","Self":{"Online":true,"DNSName":"node.ts.net."}}"#,
@@ -55,15 +55,15 @@ fn status_requires_running_online_node_with_dns_name() {
 
 #[test]
 fn public_url_trims_only_the_dns_trailing_dot() {
-    let url = build_public_url("dookie.example.ts.net.", 53_147, "/mcp").unwrap();
-    assert_eq!(url.as_str(), "https://dookie.example.ts.net:53147/mcp");
+    let url = build_public_url("devhost.example.ts.net.", 53_147, "/mcp").unwrap();
+    assert_eq!(url.as_str(), "https://devhost.example.ts.net:53147/mcp");
 }
 
 #[test]
 fn serve_status_finds_exact_mapping_and_ports_from_both_maps() {
     let status = ServeStatus::parse(SERVE_STATUS).unwrap();
     assert_eq!(
-        status.backend_for("dookie.example.ts.net", 53_147),
+        status.backend_for("devhost.example.ts.net", 53_147),
         Some("http://127.0.0.1:38417")
     );
     assert!(status.occupied_ports().contains(&52_177));
@@ -78,7 +78,7 @@ fn serve_status_finds_foreground_mapping_and_marks_its_port_occupied() {
             "session-id": {
               "TCP": {"49287": {"HTTPS": true}},
               "Web": {
-                "dookie.example.ts.net:49287": {
+                "devhost.example.ts.net:49287": {
                   "Handlers": {"/": {"Proxy": "http://127.0.0.1:49001"}}
                 }
               }
@@ -88,7 +88,7 @@ fn serve_status_finds_foreground_mapping_and_marks_its_port_occupied() {
     )
     .unwrap();
     assert_eq!(
-        status.backend_for("dookie.example.ts.net", 49_287),
+        status.backend_for("devhost.example.ts.net", 49_287),
         Some("http://127.0.0.1:49001")
     );
     assert!(status.occupied_ports().contains(&49_287));
@@ -142,7 +142,7 @@ root='{root}'
 printf '%s\n' "$*" >> "$root/invocations"
 mapping="$root/mapping"
 if [[ "${{1:-}} ${{2:-}}" == "status --json" ]]; then
-  printf '%s\n' '{{"BackendState":"Running","Self":{{"Online":true,"DNSName":"dookie.example.ts.net."}}}}'
+  printf '%s\n' '{{"BackendState":"Running","Self":{{"Online":true,"DNSName":"devhost.example.ts.net."}}}}'
   exit 0
 fi
 if [[ "${{1:-}}" == "version" ]]; then printf '%s\n' '1.98.10'; exit 0; fi
@@ -150,9 +150,9 @@ if [[ "${{1:-}} ${{2:-}} ${{3:-}}" == "serve status --json" ]]; then
   if [[ -f "$mapping" ]]; then
     IFS='|' read -r port backend < "$mapping"
     if [[ -f "$root/drift_backend" ]]; then backend=$(<"$root/drift_backend"); fi
-    printf '{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"dookie.example.ts.net:443":{{"Handlers":{{"/":{{"Proxy":"http://127.0.0.1:8765"}}}}}},"dookie.example.ts.net:%s":{{"Handlers":{{"/":{{"Proxy":"%s"}}}}}}}}}}\n' "$port" "$backend"
+    printf '{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"devhost.example.ts.net:443":{{"Handlers":{{"/":{{"Proxy":"http://127.0.0.1:8765"}}}}}},"devhost.example.ts.net:%s":{{"Handlers":{{"/":{{"Proxy":"%s"}}}}}}}}}}\n' "$port" "$backend"
   else
-    printf '%s\n' '{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"dookie.example.ts.net:443":{{"Handlers":{{"/":{{"Proxy":"http://127.0.0.1:8765"}}}}}}}}}}'
+    printf '%s\n' '{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"devhost.example.ts.net:443":{{"Handlers":{{"/":{{"Proxy":"http://127.0.0.1:8765"}}}}}}}}}}'
   fi
   exit 0
 fi
@@ -223,7 +223,7 @@ async fn foreground_serve_is_ready_only_after_exact_mapping_and_cleans_normally(
     assert_eq!(serve.external_port(), 54_000);
     assert_eq!(
         serve.public_url().as_str(),
-        "https://dookie.example.ts.net:54000/mcp"
+        "https://devhost.example.ts.net:54000/mcp"
     );
     assert_eq!(
         mapping(&fake.root).as_deref(),
@@ -249,7 +249,7 @@ async fn foreground_serve_is_ready_only_after_exact_mapping_and_cleans_normally(
     )
     .unwrap();
     assert_eq!(
-        status.backend_for("dookie.example.ts.net", 443),
+        status.backend_for("devhost.example.ts.net", 443),
         Some("http://127.0.0.1:8765")
     );
 }
@@ -264,7 +264,7 @@ async fn plan_exposes_exact_url_before_foreground_claim() {
     assert_eq!(plan.external_port(), 54_000);
     assert_eq!(
         plan.public_url().as_str(),
-        "https://dookie.example.ts.net:54000/mcp"
+        "https://devhost.example.ts.net:54000/mcp"
     );
     assert!(
         mapping(&fake.root).is_none(),

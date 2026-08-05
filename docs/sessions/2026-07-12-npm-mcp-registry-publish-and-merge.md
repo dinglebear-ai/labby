@@ -25,7 +25,7 @@ The session also repaired OpenWiki workflow configuration across multiple repos,
 
 1. Removed `.full-review/` and ran MCP-scoped comprehensive review work, then dispatched agents for the first three security/best-practice findings and later for fifteen MCP hardening issues.
 2. Added or confirmed focused CI coverage for route-scoped MCP resources/tools, upstream `ui://` route scope, list pagination, elicitation timeout and relay env alias behavior, registry canonical serde, and metadata namespace validation.
-3. Merged the protected Axon/OpenWiki workflow-fix PRs, investigated OpenWiki workflow behavior across other repos, and adjusted OpenWiki workflows to use the tootie Tailscale OpenWiki endpoint through repo configuration instead of the old `cli-api` path.
+3. Merged the protected Axon/OpenWiki workflow-fix PRs, investigated OpenWiki workflow behavior across other repos, and adjusted OpenWiki workflows to use the nashost Tailscale OpenWiki endpoint through repo configuration instead of the old `cli-api` path.
 4. Built and synced the latest Labby binary into the Incus container, then researched official MCP Registry publishing and DNS authentication.
 5. Chose `dinglebear.ai` as the MCP Registry namespace, configured the DNS key flow, and rejected `https://lab.tootie.tv/mcp` as a public registry endpoint because it is not a public transport.
 6. Added the npm wrapper package and canonical `server.json`, chose npm package distribution for the MCP Registry entry, and deferred OCI registration until the container image label/release surface is complete.
@@ -149,7 +149,7 @@ The session also repaired OpenWiki workflow configuration across multiple repos,
 | MCP Registry | No canonical `server.json` publication for `ai.dinglebear/labby`. | MCP Registry metadata was published for versions `1.1.0` and `1.2.0`. |
 | release automation | Release workflow did not publish npm launcher or MCP Registry metadata. | Release workflow includes npm trusted-publisher and MCP Registry publish jobs. |
 | CI path gating | npm launcher and `server.json` changes were not separately classified. | CI classifier routes npm/registry metadata changes to focused checks. |
-| OpenWiki workflows | Some repos/workflows were using stale or non-operational OpenWiki endpoint behavior. | Workflow fixes use the tootie Tailscale OpenWiki endpoint through repo configuration and protected PRs were merged. |
+| OpenWiki workflows | Some repos/workflows were using stale or non-operational OpenWiki endpoint behavior. | Workflow fixes use the nashost Tailscale OpenWiki endpoint through repo configuration and protected PRs were merged. |
 | docs pattern | The npm wrapper doc emphasized token publishing. | The doc now explains trusted publishing as primary and token auth as fallback. |
 
 ## Verification Evidence

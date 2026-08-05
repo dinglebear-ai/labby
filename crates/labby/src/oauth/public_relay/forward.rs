@@ -281,7 +281,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .to_string(),
-            "/callback/dookie/extra/path?code=abc&state=xyz&iss=https%3A%2F%2Fdinglebear.ai"
+            "/callback/devhost/extra/path?code=abc&state=xyz&iss=https%3A%2F%2Fdinglebear.ai"
         );
         assert_eq!(
             upstream.seen_body.lock().unwrap().as_ref(),
@@ -374,8 +374,8 @@ mod tests {
         let upstream =
             spawn_upstream(StatusCode::OK, HeaderMap::new(), Bytes::from_static(b"ok")).await;
         let forwarder = PublicRelayForwarder::new().unwrap();
-        let machine = MachineId::parse("dookie").unwrap();
-        let mut url = url::Url::parse("http://100.88.16.79:38935/callback/dookie").unwrap();
+        let machine = MachineId::parse("devhost").unwrap();
+        let mut url = url::Url::parse("http://100.99.0.1:38935/callback/devhost").unwrap();
         url.set_host(Some(&upstream.addr.ip().to_string())).unwrap();
         url.set_port(Some(upstream.addr.port())).unwrap();
         let target = RelayTarget::from_validated_parts_for_tests(machine, url);
@@ -412,9 +412,9 @@ mod tests {
         body: Bytes,
     ) -> Result<ForwardResponse, PublicRelayError> {
         let forwarder = PublicRelayForwarder::new().unwrap();
-        let machine = MachineId::parse("dookie").unwrap();
+        let machine = MachineId::parse("devhost").unwrap();
         let target =
-            RelayTarget::parse(machine.clone(), "http://100.88.16.79:38935/callback/dookie")
+            RelayTarget::parse(machine.clone(), "http://100.99.0.1:38935/callback/devhost")
                 .unwrap();
         let mut url = target.url().clone();
         url.set_host(Some(&upstream.addr.ip().to_string())).unwrap();

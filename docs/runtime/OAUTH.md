@@ -167,7 +167,7 @@ desktop clients should keep local loopback callbacks where possible.
 Client configuration example:
 
 ```toml
-mcp_oauth_callback_url = "https://callback.example.com/callback/dookie"
+mcp_oauth_callback_url = "https://callback.example.com/callback/devhost"
 ```
 
 The public relay is transport-only. It forwards the final callback request to
@@ -178,7 +178,7 @@ Public relay constraints:
 
 - public callback routes are unauthenticated: `GET|POST /callback/<machine>[/*suffix]`
 - admin mutation lives under authenticated `/v1/oauth/relay/*` and requires `lab:admin`
-- targets must be `http://<tailscale-ip>:38935/callback/<machine>` (host in the Tailscale CGNAT range `100.64.0.0/10`, e.g. `http://100.88.16.79:38935/callback/dookie`) with no userinfo, query, or fragment
+- targets must be `http://<tailscale-ip>:38935/callback/<machine>` (host in the Tailscale CGNAT range `100.64.0.0/10`, e.g. `http://100.99.0.1:38935/callback/devhost`) with no userinfo, query, or fragment
 - query strings, request bodies, auth headers, cookies, `code`, `state`, and full target URLs are not logged
 - forwarding does not follow redirects and strips `Location` and `Set-Cookie`
 - `/healthz` is shallow: process alive, relay enabled, registry loaded
@@ -200,11 +200,11 @@ Offline registry management:
 labby oauth relay-registry list --json
 labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
 labby oauth relay-registry register \
-  --machine dookie \
-  --target-url http://100.88.16.79:38935/callback/dookie
-labby oauth relay-registry disable --machine dookie
-labby oauth relay-registry enable --machine dookie
-labby oauth relay-registry remove --machine dookie
+  --machine devhost \
+  --target-url http://100.99.0.1:38935/callback/devhost
+labby oauth relay-registry disable --machine devhost
+labby oauth relay-registry enable --machine devhost
+labby oauth relay-registry remove --machine devhost
 ```
 
 CLI registry mutations write the sidecar file and report
@@ -250,8 +250,8 @@ The public relay must also have a matching machine target that forwards to the
 exact callback path on the Codex host, for example:
 
 ```text
-https://callback.example.com/callback/dookie
-  -> http://100.88.16.79:38935/callback/dookie
+https://callback.example.com/callback/devhost
+  -> http://100.99.0.1:38935/callback/devhost
 ```
 
 For Linux sessions without a usable desktop keyring or D-Bus session, prefer

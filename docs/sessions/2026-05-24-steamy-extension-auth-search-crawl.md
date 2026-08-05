@@ -7,7 +7,7 @@ working directory: /home/jmagar/workspace/axon_rust
 worktree: /home/jmagar/workspace/axon_rust
 ---
 
-# Steamy WSL Extension Auth And Search Crawl Verification
+# winhost WSL Extension Auth And Search Crawl Verification
 
 ## User Request
 

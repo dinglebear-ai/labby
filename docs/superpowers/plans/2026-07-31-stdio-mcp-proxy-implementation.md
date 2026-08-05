@@ -784,7 +784,7 @@ Add concurrency tests with duplicate downstream JSON-RPC IDs and progress tokens
 
 **Tests first:** fake CLI version and status parsing, random selection, collision retry, ready mapping, process exit, stale mapping cleanup, ownership drift refusal, unrelated mapping preservation, and proof that `reset` is never invoked.
 
-Then run the live versioned spike on dookie.
+Then run the live versioned spike on devhost.
 
 **Acceptance:** the endpoint is reachable through tailnet HTTPS; Ctrl+C removes only its mapping; forced Labby termination leaves no mapping after the recovery path.
 

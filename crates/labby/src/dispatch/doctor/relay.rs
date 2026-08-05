@@ -241,8 +241,8 @@ mod tests {
         let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
         store
             .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+                MachineId::parse("devhost").unwrap(),
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 true,
             )])
@@ -255,7 +255,7 @@ mod tests {
         let target = report
             .findings
             .iter()
-            .find(|finding| finding.check == "target:dookie")
+            .find(|finding| finding.check == "target:devhost")
             .unwrap();
         assert!(matches!(target.severity, Severity::Warn));
         assert!(target.message.contains("machine is disabled"));
@@ -288,8 +288,8 @@ mod tests {
         let store = PublicRelayRegistryStore::new(path.clone());
         store
             .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+                MachineId::parse("devhost").unwrap(),
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 false,
             )])
@@ -324,8 +324,8 @@ mod tests {
         let store = PublicRelayRegistryStore::new(path.clone());
         store
             .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+                MachineId::parse("devhost").unwrap(),
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 false,
             )])
@@ -339,8 +339,8 @@ mod tests {
                 "version": 1,
                 "entries": [
                     {
-                        "machine_id": "tootie",
-                        "target_url": "http://100.120.242.29:38935/callback/tootie"
+                        "machine_id": "nashost",
+                        "target_url": "http://100.99.0.2:38935/callback/nashost"
                     }
                 ]
             }"#,
@@ -361,8 +361,8 @@ mod tests {
             .find(|finding| finding.check == "registry:stale")
             .unwrap_or_else(|| panic!("expected registry:stale finding, got {report:?}"));
         assert!(matches!(stale.severity, Severity::Warn));
-        assert!(stale.message.contains("dookie"));
-        assert!(stale.message.contains("tootie"));
+        assert!(stale.message.contains("devhost"));
+        assert!(stale.message.contains("nashost"));
     }
 
     #[tokio::test]
@@ -376,8 +376,8 @@ mod tests {
         let store = PublicRelayRegistryStore::new(path.clone());
         store
             .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+                MachineId::parse("devhost").unwrap(),
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 false,
             )])

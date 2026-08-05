@@ -51,7 +51,7 @@ Implemented all 16 tasks of the node runtime split plan using subagent-driven de
 - `run_impl` in `dispatch/deploy/runner.rs` was not updated when `run_jobs` was changed to accept `HashMap<ArtifactRole, Arc<BuildOutcome>>`. Always produced `Controller` role → panicked on any `Node`-role host. Fixed by collecting `needed_roles` and calling `build_artifact()` per role.
 - Live rollout: `controller-deploy` (sha `2e3c83a8`) and `node-deploy` (sha `4aac7aee`) artifacts both built once. Remote nodes showed `skipped_transfer: true` (binary already current). `controller_verify` timed out for all nodes — expected: nodes not yet enrolled, `wait_for_node_connected` correctly returns 404→false.
 - Local controller update failed with "local controller update requires an explicit deploy restart policy" — `[deploy.hosts.node-a]` needs a restart policy in config.
-- vivobook-wsl/workstation-wsl failed `verify` due to OpenSSL 3.2/3.3 version mismatch — pre-existing infrastructure gap.
+- laptophost-wsl/workstation-wsl failed `verify` due to OpenSSL 3.2/3.3 version mismatch — pre-existing infrastructure gap.
 - Pre-existing flaky test: `api::nodes::fleet::tests::node_methods_before_initialize_return_request_error_without_closing_socket` — fails intermittently in both lib and bin suites, not introduced by this work.
 
 ## Technical Decisions
@@ -207,7 +207,7 @@ BEADS_DOLT_PASSWORD=... bd list --status=open
 **Infrastructure follow-up:**
 - Add `[deploy.hosts.node-a]` restart policy so local controller update works
 - Add `[node].role = "controller"` to node-a config (or confirm hostname inference is sufficient)
-- Fix OpenSSL version on vivobook-wsl and workstation-wsl for binary compatibility
+- Fix OpenSSL version on laptophost-wsl and workstation-wsl for binary compatibility
 
 **Epic closure:**
 - Once P2s are resolved: `bd close lab-686q`

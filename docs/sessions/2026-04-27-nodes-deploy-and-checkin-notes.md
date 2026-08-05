@@ -14,13 +14,13 @@ Create a session note capturing the node deployment/check-in investigation and p
 
 ## Session Overview
 
-I verified the current `/nodes` and `/v1/nodes` behavior against the deployed/enrolled node set. The operator confusion (“only vivobook is checking in”) is explained by the distinction between “enrolled” nodes and currently checking-in/active nodes in the node store.
+I verified the current `/nodes` and `/v1/nodes` behavior against the deployed/enrolled node set. The operator confusion (“only laptophost is checking in”) is explained by the distinction between “enrolled” nodes and currently checking-in/active nodes in the node store.
 
 ## Findings
 
 1. `/nodes` in the UI reflects `/v1/nodes` only.
-2. `/v1/nodes` currently returns only `vivobook` as connected/active.
-3. `lab nodes enrollments list` still shows additional approved device enrollments (`backup-node`, `controller`, `node-b`, `workstation`, `vivobook`).
+2. `/v1/nodes` currently returns only `laptophost` as connected/active.
+3. `lab nodes enrollments list` still shows additional approved device enrollments (`backup-node`, `controller`, `node-b`, `workstation`, `laptophost`).
 4. This means deployment and enrollment are not equal to active reporting; some nodes have not completed check-in yet or are offline.
 
 ## Commands Executed
@@ -36,7 +36,7 @@ target/release/lab nodes enrollments list
 `lab nodes list --json`:
 
 ```json
-[{"node_id":"vivobook","connected":true,"role":"node","log_count":0,"discovered_config_count":0}]
+[{"node_id":"laptophost","connected":true,"role":"node","log_count":0,"discovered_config_count":0}]
 ```
 
 `lab nodes enrollments list` (approved subset shown):
@@ -47,7 +47,7 @@ target/release/lab nodes enrollments list
   ▸ node-b
   ▸ workstation
   ▸ controller
-  ▸ vivobook
+  ▸ laptophost
 ```
 
 ## Operational Context
@@ -70,5 +70,5 @@ Recent deploy operations were rerun to target the node set and then focused on n
 ## Open Questions
 
 - Is `backup-node` intentionally firewalled from SSH (needed for deploy and first contact)?
-- Are the non-Vivobook nodes expected to report heartbeats on a periodic schedule or only after reboot?
+- Are the non-laptophost nodes expected to report heartbeats on a periodic schedule or only after reboot?
 - Should `lab nodes list` include an explicit “enrolled not checked-in” view or row to make this distinction explicit in the UI?

@@ -2269,7 +2269,7 @@ mod tests {
                         ),
                     )
                     .body(Body::from(
-                        r#"{"dookie":"http://100.88.16.79:38935/callback/dookie"}"#,
+                        r#"{"devhost":"http://100.99.0.1:38935/callback/devhost"}"#,
                     ))
                     .unwrap(),
             )
@@ -3112,7 +3112,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/callback/dookie?code=abc&state=secret-state")
+                    .uri("/callback/devhost?code=abc&state=secret-state")
                     .header(header::HOST, "callback.tootie.tv")
                     .body(Body::empty())
                     .unwrap(),

@@ -388,29 +388,29 @@ mod tests {
 
     #[test]
     fn relay_target_accepts_live_tailscale_shape() {
-        let machine = MachineId::parse("dookie").unwrap();
+        let machine = MachineId::parse("devhost").unwrap();
         let target =
-            RelayTarget::parse(machine, "http://100.88.16.79:38935/callback/dookie").unwrap();
+            RelayTarget::parse(machine, "http://100.99.0.1:38935/callback/devhost").unwrap();
         assert_eq!(
             target.url().as_str(),
-            "http://100.88.16.79:38935/callback/dookie"
+            "http://100.99.0.1:38935/callback/devhost"
         );
     }
 
     #[test]
     fn relay_target_rejects_unsafe_shapes() {
         let cases = [
-            "https://100.88.16.79:38935/callback/dookie",
-            "http://100.88.16.79:80/callback/dookie",
-            "http://127.0.0.1:38935/callback/dookie",
-            "http://169.254.169.254:38935/callback/dookie",
-            "http://100.88.16.79:38935/callback/other",
-            "http://user@100.88.16.79:38935/callback/dookie",
-            "http://100.88.16.79:38935/callback/dookie?code=abc",
-            "http://100.88.16.79:38935/callback/dookie#frag",
+            "https://100.99.0.1:38935/callback/devhost",
+            "http://100.99.0.1:80/callback/devhost",
+            "http://127.0.0.1:38935/callback/devhost",
+            "http://169.254.169.254:38935/callback/devhost",
+            "http://100.99.0.1:38935/callback/other",
+            "http://user@100.99.0.1:38935/callback/devhost",
+            "http://100.99.0.1:38935/callback/devhost?code=abc",
+            "http://100.99.0.1:38935/callback/devhost#frag",
         ];
         for value in cases {
-            let machine = MachineId::parse("dookie").unwrap();
+            let machine = MachineId::parse("devhost").unwrap();
             assert!(
                 RelayTarget::parse(machine, value).is_err(),
                 "{value} should reject"
@@ -482,8 +482,8 @@ mod tests {
 
     #[test]
     fn relay_target_rejects_non_ip_hostname() {
-        let machine = MachineId::parse("dookie").unwrap();
-        let error = RelayTarget::parse(machine, "http://dookie.example.com:38935/callback/dookie")
+        let machine = MachineId::parse("devhost").unwrap();
+        let error = RelayTarget::parse(machine, "http://devhost.example.com:38935/callback/devhost")
             .expect_err("hostname target should reject");
         assert!(matches!(error, PublicRelayError::InvalidTarget(_)));
     }

@@ -20,7 +20,7 @@ Two things remain, and they are unrelated to each other:
    sessions accumulate without bound. Fixed here.
 2. **Client-side session churn** — Codex opens a new MCP session per
    interaction. This is what still *looks* like flapping, and it cannot be
-   fixed from the gateway. Needs action on `steamy`.
+   fixed from the gateway. Needs action on `winhost`.
 
 ---
 
@@ -106,7 +106,7 @@ server invalidating it. The difference is visible only in the logs: the server
 sent **zero** `tools/list_changed`, so nothing was invalidated — the client
 discarded and rediscovered on its own.
 
-### Current config on `steamy`
+### Current config on `winhost`
 
 `~/.codex/config.toml` (Codex CLI **0.144.6**):
 
@@ -117,7 +117,7 @@ url = "https://dinglebear.ai/mcp"
 
 No transport or session options set.
 
-### What to try — UNVERIFIED, needs testing on `steamy`
+### What to try — UNVERIFIED, needs testing on `winhost`
 
 I have not reproduced or confirmed any of the following. Listing them as
 candidates, in order of likelihood, explicitly so nobody mistakes them for a

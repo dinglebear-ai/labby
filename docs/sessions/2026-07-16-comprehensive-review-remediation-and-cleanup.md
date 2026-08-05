@@ -224,7 +224,7 @@ The remediation squash changed 157 paths: 39 created, 117 modified, and 1 delete
 | <code>lab-5j67j</code> | Comprehensive full-project review and remediation | Worked throughout the review; closed after merge and verification | closed | Tracked the full F-01–F-49 review/remediation outcome |
 | <code>lab-fpsq9</code> | Rotate MCP Registry DNS publishing key | Searched for an existing issue, found none, then created a P1 follow-up | open | Keeps the external secret rotation and workflow verification visible instead of burying it in prose |
 
-The local <code>bd close</code> and <code>bd create</code> operations succeeded. Their automatic MySQL backup/sync attempt timed out against <code>100.75.111.118:3311</code>; local bead state remained authoritative and was verified from command output.
+The local <code>bd close</code> and <code>bd create</code> operations succeeded. Their automatic MySQL backup/sync attempt timed out against <code>100.99.0.3:3311</code>; local bead state remained authoritative and was verified from command output.
 
 ## Repository Maintenance
 

@@ -463,13 +463,13 @@ mod tests {
     use super::*;
 
     const LIVE_REGISTRY_JSON: &str = r#"{
-  "dookie": "http://100.88.16.79:38935/callback/dookie",
-  "shart": "http://100.118.209.1:38935/callback/shart",
-  "squirts": "http://100.75.111.118:38935/callback/squirts",
-  "steamy": "http://100.119.83.39:38935/callback/steamy",
-  "steamy-wsl": "http://100.74.16.82:38935/callback/steamy-wsl",
-  "tootie": "http://100.120.242.29:38935/callback/tootie",
-  "vivobook-wsl": "http://100.104.50.17:38935/callback/vivobook-wsl"
+  "devhost": "http://100.99.0.1:38935/callback/devhost",
+  "backuphost": "http://100.99.0.4:38935/callback/backuphost",
+  "edgehost": "http://100.99.0.3:38935/callback/edgehost",
+  "winhost": "http://100.99.0.5:38935/callback/winhost",
+  "winhost-wsl": "http://100.99.0.6:38935/callback/winhost-wsl",
+  "nashost": "http://100.99.0.2:38935/callback/nashost",
+  "laptophost-wsl": "http://100.99.0.7:38935/callback/laptophost-wsl"
 }"#;
 
     #[test]
@@ -483,47 +483,47 @@ mod tests {
     #[test]
     fn public_relay_store_imports_live_object_registry_json() {
         let raw = r#"{
-            "dookie": {
-                "machine_id": "dookie",
-                "target_url": "http://100.88.16.79:38935/callback/dookie",
-                "description": "dookie codex callback tailscale"
+            "devhost": {
+                "machine_id": "devhost",
+                "target_url": "http://100.99.0.1:38935/callback/devhost",
+                "description": "devhost codex callback tailscale"
             },
-            "steamy-wsl": {
-                "machine_id": "steamy-wsl",
-                "target_url": "http://100.74.16.82:38935/callback/steamy-wsl",
-                "description": "steamy-wsl codex callback tailscale"
+            "winhost-wsl": {
+                "machine_id": "winhost-wsl",
+                "target_url": "http://100.99.0.6:38935/callback/winhost-wsl",
+                "description": "winhost-wsl codex callback tailscale"
             }
         }"#;
         let report = PublicRelayRegistryStore::parse_standalone_registry(raw)
             .expect("object registry should parse");
-        assert_eq!(report.accepted, vec!["dookie", "steamy-wsl"]);
+        assert_eq!(report.accepted, vec!["devhost", "winhost-wsl"]);
         assert!(report.quarantined.is_empty());
     }
 
     #[test]
     fn public_relay_store_quarantines_object_registry_key_mismatch() {
         let raw = r#"{
-            "dookie": {
-                "machine_id": "tootie",
-                "target_url": "http://100.120.242.29:38935/callback/tootie"
+            "devhost": {
+                "machine_id": "nashost",
+                "target_url": "http://100.99.0.2:38935/callback/nashost"
             }
         }"#;
         let report = PublicRelayRegistryStore::parse_standalone_registry(raw)
             .expect("object registry should parse");
         assert!(report.accepted.is_empty());
         assert_eq!(report.quarantined.len(), 1);
-        assert_eq!(report.quarantined[0].machine_id, "dookie");
+        assert_eq!(report.quarantined[0].machine_id, "devhost");
     }
 
     #[test]
     fn public_relay_store_quarantines_invalid_entries() {
         let raw = r#"{
-            "dookie": "http://100.88.16.79:38935/callback/dookie",
+            "devhost": "http://100.99.0.1:38935/callback/devhost",
             "bad": "http://127.0.0.1:38935/callback/bad"
         }"#;
         let report =
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
-        assert_eq!(report.accepted, vec!["dookie"]);
+        assert_eq!(report.accepted, vec!["devhost"]);
         assert_eq!(report.quarantined.len(), 1);
     }
 
@@ -531,22 +531,22 @@ mod tests {
     fn public_relay_store_quarantines_duplicate_machine_ids() {
         let raw = r#"[
             {
-                "machine_id": "dookie",
-                "target_url": "http://100.88.16.79:38935/callback/dookie"
+                "machine_id": "devhost",
+                "target_url": "http://100.99.0.1:38935/callback/devhost"
             },
             {
-                "machine_id": "dookie",
-                "target_url": "http://100.88.16.79:38935/callback/dookie",
+                "machine_id": "devhost",
+                "target_url": "http://100.99.0.1:38935/callback/devhost",
                 "description": "duplicate"
             }
         ]"#;
         let report =
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
 
-        assert_eq!(report.accepted, vec!["dookie"]);
+        assert_eq!(report.accepted, vec!["devhost"]);
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.quarantined.len(), 1);
-        assert_eq!(report.quarantined[0].machine_id, "dookie");
+        assert_eq!(report.quarantined[0].machine_id, "devhost");
         assert!(report.quarantined[0].reason.contains("duplicate"));
     }
 
@@ -556,8 +556,8 @@ mod tests {
             "version": 2,
             "entries": [
                 {
-                    "machine_id": "dookie",
-                    "target_url": "http://100.88.16.79:38935/callback/dookie"
+                    "machine_id": "devhost",
+                    "target_url": "http://100.99.0.1:38935/callback/devhost"
                 }
             ]
         }"#;
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn public_relay_store_quarantines_invalid_machine_ids() {
         let raw = r#"{
-            "bad/machine": "http://100.88.16.79:38935/callback/bad-machine"
+            "bad/machine": "http://100.99.0.1:38935/callback/bad-machine"
         }"#;
         let report =
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
@@ -589,18 +589,18 @@ mod tests {
     fn public_relay_store_quarantines_invalid_machine_id_inside_array_shape() {
         let raw = r#"[
             {
-                "machine_id": "dookie",
-                "target_url": "http://100.88.16.79:38935/callback/dookie"
+                "machine_id": "devhost",
+                "target_url": "http://100.99.0.1:38935/callback/devhost"
             },
             {
                 "machine_id": "bad/machine",
-                "target_url": "http://100.88.16.79:38935/callback/bad-machine"
+                "target_url": "http://100.99.0.1:38935/callback/bad-machine"
             }
         ]"#;
         let report =
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
 
-        assert_eq!(report.accepted, vec!["dookie"]);
+        assert_eq!(report.accepted, vec!["devhost"]);
         assert_eq!(report.quarantined.len(), 1);
         assert_eq!(report.quarantined[0].machine_id, "bad/machine");
         assert!(
@@ -615,19 +615,19 @@ mod tests {
     #[test]
     fn public_relay_store_quarantines_invalid_machine_id_inside_object_entries_shape() {
         let raw = r#"{
-            "dookie": {
-                "machine_id": "dookie",
-                "target_url": "http://100.88.16.79:38935/callback/dookie"
+            "devhost": {
+                "machine_id": "devhost",
+                "target_url": "http://100.99.0.1:38935/callback/devhost"
             },
             "bad/machine": {
                 "machine_id": "bad/machine",
-                "target_url": "http://100.88.16.79:38935/callback/bad-machine"
+                "target_url": "http://100.99.0.1:38935/callback/bad-machine"
             }
         }"#;
         let report =
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
 
-        assert_eq!(report.accepted, vec!["dookie"]);
+        assert_eq!(report.accepted, vec!["devhost"]);
         assert_eq!(report.quarantined.len(), 1);
         assert_eq!(report.quarantined[0].machine_id, "bad/machine");
         assert!(
@@ -644,8 +644,8 @@ mod tests {
     #[test]
     fn public_relay_store_does_not_misdetect_flat_map_keys_named_like_versioned_file() {
         let raw = r#"{
-            "version": "http://100.88.16.79:38935/callback/version",
-            "entries": "http://100.120.242.29:38935/callback/entries"
+            "version": "http://100.99.0.1:38935/callback/version",
+            "entries": "http://100.99.0.2:38935/callback/entries"
         }"#;
         let report =
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
@@ -715,7 +715,7 @@ mod tests {
         store
             .save_entries(vec![PublicRelayEntry::new(
                 MachineId::parse("seed").unwrap(),
-                "http://100.88.16.79:38935/callback/seed",
+                "http://100.99.0.1:38935/callback/seed",
                 None,
                 false,
             )])
@@ -728,7 +728,7 @@ mod tests {
             store
                 .save_entries(vec![PublicRelayEntry::new(
                     MachineId::parse(&format!("m{i}")).unwrap(),
-                    format!("http://100.88.16.79:38935/callback/m{i}"),
+                    format!("http://100.99.0.1:38935/callback/m{i}"),
                     None,
                     false,
                 )])
@@ -821,7 +821,7 @@ mod tests {
         fs::write(
             &path,
             r#"{
-                "dookie": "http://100.88.16.79:38935/callback/dookie",
+                "devhost": "http://100.99.0.1:38935/callback/devhost",
                 "bad": "http://127.0.0.1:38935/callback/bad"
             }"#,
         )

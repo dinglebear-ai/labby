@@ -101,9 +101,9 @@ Perform a thorough mobile-optimization polishing pass starting with `/gateways`,
 - `pwd` → returned `/home/jmagar/workspace/lab`.
 - `git worktree list | grep "$(pwd)" | head -1` → returned `/home/jmagar/workspace/lab  2013dbdd [bd-security/marketplace-p1-fixes]`.
 - `gh pr view --json number,title,url 2>/dev/null || echo none` → returned PR `#29` with title and URL.
-- `LAB_ALLOWED_DEV_ORIGINS=10.1.0.6 NEXT_PUBLIC_MOCK_DATA=true NEXT_PUBLIC_API_URL=http://127.0.0.1:8765/v1 pnpm dev --hostname 0.0.0.0 --port 3101` → started the auth-bypassed mock-data review server earlier in the session.
+- `LAB_ALLOWED_DEV_ORIGINS=192.0.2.6 NEXT_PUBLIC_MOCK_DATA=true NEXT_PUBLIC_API_URL=http://127.0.0.1:8765/v1 pnpm dev --hostname 0.0.0.0 --port 3101` → started the auth-bypassed mock-data review server earlier in the session.
 - `curl -I --max-time 5 http://127.0.0.1:8765/v1/health || curl -I --max-time 5 http://127.0.0.1:8765/health` → confirmed the local Rust backend was reachable on `:8765`.
-- `LAB_ALLOWED_DEV_ORIGINS=10.1.0.6 NEXT_PUBLIC_API_URL=http://127.0.0.1:8765/v1 NEXT_PUBLIC_LOCAL_AUTH_BYPASS=true pnpm dev --hostname 0.0.0.0 --port 3101` → started the real-backend + local-auth-bypass frontend.
+- `LAB_ALLOWED_DEV_ORIGINS=192.0.2.6 NEXT_PUBLIC_API_URL=http://127.0.0.1:8765/v1 NEXT_PUBLIC_LOCAL_AUTH_BYPASS=true pnpm dev --hostname 0.0.0.0 --port 3101` → started the real-backend + local-auth-bypass frontend.
 - `curl -I --max-time 5 http://127.0.0.1:3101/gateways/` → returned `HTTP/1.1 200 OK`.
 - `curl -I --max-time 5 'http://127.0.0.1:3101/gateway/?id=gw-1'` → returned `HTTP/1.1 200 OK`.
 

@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn tool_execution_error_is_actionable_and_preserves_evidence() {
         let error = CodeModeCallError::tool_execution(
-            "claude-dookie::Bash",
+            "claude-devhost::Bash",
             "tool_error",
             Some("upstream_error".to_string()),
             "Exit code 7",
@@ -439,7 +439,7 @@ mod tests {
             error.recovery.action,
             CodeModeRecoveryAction::ReviseAndRetry
         );
-        assert!(error.message.contains("claude-dookie::Bash"));
+        assert!(error.message.contains("claude-devhost::Bash"));
         assert!(
             error
                 .message

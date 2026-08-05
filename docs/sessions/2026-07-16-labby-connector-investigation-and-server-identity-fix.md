@@ -60,7 +60,7 @@ Out-of-repo: wrote agent memory `~/.claude/projects/-home-jmagar-workspace-lab/m
 |---|---|---|---|---|
 | lab-3o0sc | Set labby MCP serverInfo instead of rmcp default | created → claimed → closed | closed | Tracked the server-identity fix per repo workflow; closed with verification evidence |
 
-`bd` commands emitted `[mysql] i/o timeout` auto-backup warnings (known squirts dolt sync flakiness); operations themselves succeeded.
+`bd` commands emitted `[mysql] i/o timeout` auto-backup warnings (known edgehost dolt sync flakiness); operations themselves succeeded.
 
 ## Repository Maintenance
 
@@ -95,7 +95,7 @@ Out-of-repo: wrote agent memory `~/.claude/projects/-home-jmagar-workspace-lab/m
 
 - `cargo nextest … get_info` matched 0 tests — test fn is `server_capabilities_advertise_list_changed_support`; re-ran with correct filter.
 - `jq: not found` in the labby container — pulled `/tmp/tools.json` to host scratchpad and analyzed there.
-- Dolt auto-backup `i/o timeout` warnings on every `bd` call — known squirts sync flakiness, non-blocking.
+- Dolt auto-backup `i/o timeout` warnings on every `bd` call — known edgehost sync flakiness, non-blocking.
 
 ## Behavior Changes (Before/After)
 

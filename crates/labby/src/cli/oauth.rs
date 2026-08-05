@@ -457,7 +457,7 @@ mod tests {
             "relay-registry",
             "remove",
             "--machine",
-            "dookie",
+            "devhost",
             "-y",
         ])
         .expect("relay registry remove with -y should parse");
@@ -469,7 +469,7 @@ mod tests {
                         command: RelayRegistryCommand::Remove { machine, yes },
                     }),
             }) => {
-                assert_eq!(machine, "dookie");
+                assert_eq!(machine, "devhost");
                 assert!(yes);
             }
             other => panic!("unexpected command: {other:?}"),
@@ -484,9 +484,9 @@ mod tests {
             "relay-registry",
             "register",
             "--machine",
-            "dookie",
+            "devhost",
             "--target-url",
-            "http://100.88.16.79:38935/callback/dookie",
+            "http://100.99.0.1:38935/callback/devhost",
         ])
         .expect("relay registry register should parse");
 
@@ -502,8 +502,8 @@ mod tests {
                             },
                     }),
             }) => {
-                assert_eq!(machine, "dookie");
-                assert_eq!(target_url, "http://100.88.16.79:38935/callback/dookie");
+                assert_eq!(machine, "devhost");
+                assert_eq!(target_url, "http://100.99.0.1:38935/callback/devhost");
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -514,7 +514,7 @@ mod tests {
         // `yes=true` must return `Ok(())` immediately without consulting
         // stdin/TTY state at all -- this is the fast, no-prompt path used by
         // `-y`/`--yes` and any non-interactive automation.
-        let result = confirm_destructive_relay_action("relay-registry remove", "dookie", true);
+        let result = confirm_destructive_relay_action("relay-registry remove", "devhost", true);
         assert!(result.is_ok(), "expected Ok, got {result:?}");
     }
 

@@ -27,7 +27,7 @@ Fixed icon contrast in the `ServiceIconBox` component of `gateway-form-dialog.ts
 3. Changed icon box to `background: #ffffff` with `border: 2px solid ${brand}` and `box-shadow: 0 0 0 1px ${brand}33`.
 4. Updated SVG fallback rendering: replaced `fill="white"` with `fill="${brand}"` so fallback icons are visible on white background.
 5. Updated letter avatar fallback from `text-white` to `style={{ color: brand }}` for consistency.
-6. Navigated to `http://10.1.0.6:3002` (dev server on port 3002, not 3000).
+6. Navigated to `http://192.0.2.6:3002` (dev server on port 3002, not 3000).
 7. Injected a DOM overlay with all 20 service icons using the new white-background style.
 8. Waited 2 seconds for CDN images to load, then screenshotted — all 20 logos sharp and fully visible.
 9. Removed test overlay.

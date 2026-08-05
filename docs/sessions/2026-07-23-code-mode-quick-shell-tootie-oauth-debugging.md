@@ -23,7 +23,7 @@ beads:
   - codex-full-review-20260718-dol
 ---
 
-# Code Mode, Quick Shell, tootie SSH, and durable Labby OAuth repair
+# Code Mode, Quick Shell, nashost SSH, and durable Labby OAuth repair
 
 ## User Request
 
@@ -36,7 +36,7 @@ The session began with a Code Mode MCP App resource failing to load with `-32603
 5. Mock up and then implement the chosen compact inspector treatment.
 6. Restyle Quick Shell with Aurora tokens and connect it through Labby.
 7. Replace opaque `MCP error -32000: MCP proxy request failed` failures with actionable copy and make Quick Shell actually attach.
-8. Investigate repeated failed public-key authentication on tootie.
+8. Investigate repeated failed public-key authentication on nashost.
 9. Fix Labby's Google sign-in flow, which returned users to `dinglebear.ai` instead of the Labby web app.
 10. Remove the gitleaks workflow and baseline after CI required a paid organization license.
 11. Preserve unrelated work because other agents and users were active in the repositories.
@@ -61,8 +61,8 @@ The work crossed three repositories and two live hosts. It produced working feat
 5. A delegated auth task implemented Google refresh-token classification so `invalid_grant` becomes `oauth_needs_reauth`, committed as `420f2d8b`.
 6. Quick Shell was restyled with Aurora tokens in `67d5552`, then its Codex App bridge and session hydration were iterated in `6714c61`, `34b8858`, and `1ac89b4`.
 7. Repeated `-32000` attachment failures showed that improving error wording alone did not repair the bridge. The generic proxy layer was inspected, then the app-specific bridge and deployed resource were changed.
-8. Repeated tootie `sshd` failures were delegated for read-only diagnosis. The evidence led to unsafe Incus package directory modes rather than a bad user key.
-9. The affected package artifacts were quarantined, mode-contract tests were added, tootie was repaired, and incus-unraid PR #12 was merged.
+8. Repeated nashost `sshd` failures were delegated for read-only diagnosis. The evidence led to unsafe Incus package directory modes rather than a bad user key.
+9. The affected package artifacts were quarantined, mode-contract tests were added, nashost was repaired, and incus-unraid PR #12 was merged.
 10. Labby's OAuth redirect was initially corrected in a local deployment, but a later deployment from `main` overwrote that fix. This exposed a source-control/delivery gap, not a second OAuth mechanism.
 11. The durable OAuth change separated browser callback origin from issuer/resource origin and added regression coverage.
 12. Gitleaks CI failed because the GitHub action required a paid license, not because it found a secret. At the user's direction the gitleaks surface was removed instead of adding a license.
@@ -84,7 +84,7 @@ The work crossed three repositories and two live hosts. It produced working feat
 - Direct capability hydration and app resource refresh changes were developed locally.
 - Quick Shell `main` is clean but three commits ahead of its remote, while the Aurora command-bar UI remains on a separate branch. No pull request currently lands the complete set.
 
-### tootie SSH
+### nashost SSH
 
 - The failed public-key messages were related to filesystem safety checks, not evidence that the authorized key itself had changed.
 - Unsafe directory modes introduced by affected Incus package artifacts caused OpenSSH `StrictModes` rejection.
@@ -111,7 +111,7 @@ The work crossed three repositories and two live hosts. It produced working feat
 - Default the inspector to minimized presentation when it accompanies another MCP App.
 - Use Aurora's dark navy, cyan, rose, violet, semantic status, and monospace tokens for Quick Shell rather than ad hoc colors.
 - Repair the actual Quick Shell capability/session bridge instead of relying on friendlier error copy.
-- Trust tootie's live ownership/mode and journal evidence over the initial assumption that the SSH key was wrong.
+- Trust nashost's live ownership/mode and journal evidence over the initial assumption that the SSH key was wrong.
 - Quarantine unsafe package artifacts rather than silently leaving them installable.
 - Remove gitleaks rather than creating or requesting a paid license secret.
 - Preserve all worktrees and branches whose ownership or merge status was not proven.
@@ -166,7 +166,7 @@ The table records the implementation work produced during the session, including
 | incus-unraid | modified | `scripts/verify-classic-package.sh` | Reject unsafe package directory modes | merged `71aa4b23` |
 | incus-unraid | modified | `tests/classic-contract.sh` | Extend package contract coverage | merged `71aa4b23` |
 | incus-unraid | added | `tests/package-directory-modes.sh` | Mode-specific package regression test | merged `71aa4b23` |
-| labby | added | `docs/sessions/2026-07-23-code-mode-quick-shell-tootie-oauth-debugging.md` | Complete session and maintenance record | this artifact |
+| labby | added | `docs/sessions/2026-07-23-code-mode-quick-shell-nashost-oauth-debugging.md` | Complete session and maintenance record | this artifact |
 
 ## Beads Activity
 
@@ -181,7 +181,7 @@ The table records the implementation work produced during the session, including
 | `qs-ibz` | quick-shell | Tracked Aurora command-bar UI | closed on local branch; not published |
 | `qs-dgq` | quick-shell | Tracked direct capability hydration | closed on local commits; not published |
 | `qs-u3e` | quick-shell | Created during maintenance to consolidate and publish Quick Shell changes | open, priority 1 |
-| `codex-full-review-20260718-dol` | incus-unraid | Tracked unsafe-build quarantine and tootie remediation | closed after PR #12 and live verification |
+| `codex-full-review-20260718-dol` | incus-unraid | Tracked unsafe-build quarantine and nashost remediation | closed after PR #12 and live verification |
 
 ## Repository Maintenance
 
@@ -200,7 +200,7 @@ The table records the implementation work produced during the session, including
 - `github:gh-fix-ci` supported GitHub Actions diagnosis.
 - `vibin:save-to-md` drove this full transcript and maintenance record.
 - A subagent implemented the `invalid_grant` to `oauth_needs_reauth` behavior.
-- A subagent performed read-only tootie SSH investigation.
+- A subagent performed read-only nashost SSH investigation.
 - Shell and repository tools included `rg`, Git, GitHub CLI, `cargo`, `pnpm`, `just`, `curl`, `jq`, `systemctl`, `journalctl`, SSH, Incus, `sha256sum`, and archive inspection.
 - MCP/App surfaces included Labby gateway search/execute, Code Mode, Quick Shell resources, and embedded Codex App state.
 
@@ -218,7 +218,7 @@ The table records the implementation work produced during the session, including
 | `labby incus sync ...` and runtime polling | Deployed exact merged Labby binary and confirmed readiness |
 | `curl` against `/auth/login`, metadata, and `/ready` | Callback host is Labby; issuer/token endpoints remain dinglebear; ready is true |
 | `actionlint` and CI routing tests | Workflow syntax passed; 14 routing tests passed after gitleaks removal |
-| Fresh non-multiplexed SSH to tootie | Public-key authentication passed after mode repair |
+| Fresh non-multiplexed SSH to nashost | Public-key authentication passed after mode repair |
 | Incus package verification and contract tests | Safe build 53 and package-mode protections passed |
 | GitHub PR/check commands | incus-unraid #12 and Labby #258 merged with checks |
 
@@ -229,7 +229,7 @@ The table records the implementation work produced during the session, including
 | MCP resource read `-32603` | Embedded app/resource refresh state was stale | Resource version/serving changes developed locally; complete feature still needs landing |
 | Inspector did not auto-refresh | Already-running app/gateway state did not reload solely from source/config changes | Rebuilt/refreshed resource and restarted relevant runtime during development |
 | Quick Shell `MCP -32000` | Generic proxy error hid a nested app/session bridge failure | Improved app-specific handling and developed direct hydration; publication remains open |
-| tootie `Failed publickey` | Unsafe filesystem modes triggered OpenSSH `StrictModes` rejection | Restored safe modes, quarantined affected packages, added tests |
+| nashost `Failed publickey` | Unsafe filesystem modes triggered OpenSSH `StrictModes` rejection | Restored safe modes, quarantined affected packages, added tests |
 | OAuth returned to `dinglebear.ai` | Browser callback was derived from issuer identity | Added independent browser callback configuration |
 | OAuth fix disappeared after deployment | First fix was only in a local build, not default-branch source | Merged PR #258 and deployed the exact merged binary |
 | `next: not found` in clean worktree | App dependencies were not installed in that worktree | Installed from `apps/gateway-admin` using its lockfile |
@@ -247,7 +247,7 @@ The table records the implementation work produced during the session, including
 | OAuth browser callback | Derived from issuer and returned to `dinglebear.ai` | Live login requests `labby.dinglebear.ai/auth/google/callback` |
 | OAuth issuer metadata | `dinglebear.ai` | Still `dinglebear.ai` |
 | Gitleaks CI | License-gated job blocked CI | Job, route, baseline, and current docs removed |
-| tootie SSH | Valid key rejected by StrictModes | Fresh public-key SSH succeeds with safe modes |
+| nashost SSH | Valid key rejected by StrictModes | Fresh public-key SSH succeeds with safe modes |
 | Incus packages | Unsafe builds remained in normal package path | Builds 48–51 quarantined and mode tests enforce safety |
 | Code Mode inspector | Repeated stats, search-result row, large read-only treatment | Compact implementation exists locally; not yet on main |
 | Quick Shell | Generic attach failure and older UI | Aurora/bridge fixes exist locally; not yet on origin/main |
@@ -266,7 +266,7 @@ The table records the implementation work produced during the session, including
 | OAuth metadata | Issuer endpoints stay stable | issuer, authorization, and token endpoints remain dinglebear | pass |
 | Live readiness | Service ready | `/ready` returned ready | pass |
 | CI after gitleaks removal | Workflow valid and routing correct | actionlint passed; 14 tests passed | pass |
-| tootie SSH | Fresh key authentication works | passed without multiplexing | pass |
+| nashost SSH | Fresh key authentication works | passed without multiplexing | pass |
 | Incus package protection | Unsafe modes rejected | package and live build verification passed | pass |
 | Labby remaining feature commits | Ancestor of `origin/main` | `ffaa2c3d`, `2e6963de`, and `420f2d8b` are not ancestors | open |
 | Quick Shell publication | Changes on `origin/main` | three commits ahead locally; Aurora UI separate | open |
@@ -278,7 +278,7 @@ The server-side OAuth callback contract is verified. A complete end-user Google 
 - Reverting all of `4dc5ce62` would recouple browser callback and issuer and would also reintroduce the gitleaks surface. Prefer a focused follow-up or targeted revert if a specific regression appears.
 - Quick Shell and the compact inspector are at risk of local-branch drift until their follow-up beads are completed.
 - Closed beads for local-only work can look delivered when viewed without Git ancestry. The new open beads are the authoritative remaining-work signal.
-- Unsafe package artifacts should remain quarantined. Restoring them to the normal package path can recreate tootie-wide permission failures.
+- Unsafe package artifacts should remain quarantined. Restoring them to the normal package path can recreate nashost-wide permission failures.
 - Shared worktrees contain other work. Cleanup must continue to target only branches whose ownership and merge state are proven.
 
 ## Decisions Not Taken

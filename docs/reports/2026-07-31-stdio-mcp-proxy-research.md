@@ -58,7 +58,7 @@ The implementation must be a dedicated direct-proxy runtime. Reusing the aggrega
 
 ### Tailscale
 
-- Live dookie binary inspected: Tailscale 1.98.10.
+- Live devhost binary inspected: Tailscale 1.98.10.
 - The node was connected and already had unrelated Serve mappings.
 - No existing Serve mapping was changed during research.
 - A temporary foreground-cleanup experiment did not return a usable tool result envelope. A post-check confirmed that the temporary port was absent and the existing mappings remained. Exact signal and fallback cleanup behavior therefore remains an explicit implementation spike and release gate, not an assumed contract.

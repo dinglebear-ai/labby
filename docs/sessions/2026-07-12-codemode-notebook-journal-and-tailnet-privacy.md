@@ -32,7 +32,7 @@ Two pieces of work, both merged to `main`:
 - `codemode.step` hooks (`decide_step`/`record_step`/`decide_local`/`record_local`, `crates/labby-codemode/src/host.rs:132-183`) defaulted to no-op with **no host override** — the journal spine existed end-to-end but nothing persisted it.
 - The single `next_runner_seq` spine is valid for intra-run cell attribution but **not** a cross-run replay key (a replayed step skips its internal tool calls, shifting later seqs) — the journal keys on a parent-derived `step_ordinal` instead.
 - `record_step` is `await`ed inline on the main `runner_drive.rs` `select!` loop, so a per-step DB write would head-of-line-block the run — resolved with an in-memory buffer + single bulk flush at the run boundary.
-- `jmagar/labby` is a **public** repo; real Tailscale IPs `100.120.242.29` (tootie) and `100.88.16.79` (dookie) plus tailnet `manatee-triceratops.ts.net` were committed. Everything else on `100.64.0.0/10` was already synthetic; SSRF range tests must keep `100.64.0.1`/`100.127.255.255`.
+- `jmagar/labby` is a **public** repo; real Tailscale IPs `100.99.0.2` (nashost) and `100.99.0.1` (devhost) plus tailnet `example-tailnet.ts.net` were committed. Everything else on `100.64.0.0/10` was already synthetic; SSRF range tests must keep `100.64.0.1`/`100.127.255.255`.
 - `tootie.tv` is an intentionally-public domain woven through functional code (Aurora registry URL, Axon OpenAPI URL, Tauri bundle id `tv.tootie.lab.palette`, auth callback tests) — scrubbing it breaks functionality; it is not a private leak.
 
 ## Technical Decisions
@@ -82,7 +82,7 @@ PR #230 and #231 landed on `main`; this session-log commit adds only the log fil
 | `cargo nextest run --all-features` (post-impl) | 1894 passed, 14 skipped |
 | `just lint` | clippy -D warnings + fmt clean |
 | `gh pr checks 230 --watch` | 32 pass, 1 skipping |
-| `git grep -nE '100\.120\.242\.29\|100\.88\.16\.79\|manatee-triceratops'` (post-scrub) | no matches (real IPs/tailnet gone) |
+| `git grep -nE '100\.120\.242\.29\|100\.88\.16\.79\|example-tailnet'` (post-scrub) | no matches (real IPs/tailnet gone) |
 | `cargo nextest run -p labby -E 'test(incus)'` | 23/23 pass after fixture genericization |
 
 ## Errors Encountered
@@ -93,7 +93,7 @@ PR #230 and #231 landed on `main`; this session-log commit adds only the log fil
 | area | before | after |
 |---|---|---|
 | `codemode.step` | journaled nowhere (no-op hook) | persisted to `~/.labby/codemode_journal.db`, viewable as a notebook (v1 write half) |
-| OpenWiki CI endpoint | hardcoded `http://100.120.242.29:8317/v1` fallback | `OPENAI_COMPATIBLE_BASE_URL` repo variable only; preflight fails clearly if unset |
+| OpenWiki CI endpoint | hardcoded `http://100.99.0.2:8317/v1` fallback | `OPENAI_COMPATIBLE_BASE_URL` repo variable only; preflight fails clearly if unset |
 | Public repo | real Tailscale IPs + tailnet committed | placeholders only; `tootie.tv` public domain preserved |
 
 ## Verification Evidence
@@ -122,7 +122,7 @@ PR #230 and #231 landed on `main`; this session-log commit adds only the log fil
 - Prior work-it log: docs/sessions/2026-07-11-codemode-notebook-as-log-work-it.md
 
 ## Open Questions
-- Device-name scrubbing in narrative docs (session logs / fleet references): do a narrow `tootie`-not-`.tv` docs-only sweep, or leave codenames as-is now that IPs are gone? (User leaning: fine as-is.)
+- Device-name scrubbing in narrative docs (session logs / fleet references): do a narrow `nashost`-not-`.tv` docs-only sweep, or leave codenames as-is now that IPs are gone? (User leaning: fine as-is.)
 
 ## Next Steps
 - Optional cleanup: delete merged branches/worktrees `claude/cortex-search-codemode-step-d805c7` and `claude/sanitize-tailnet-public` once outside them.

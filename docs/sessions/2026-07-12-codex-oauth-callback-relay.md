@@ -16,14 +16,14 @@ worktree: /home/jmagar/workspace/lab 337a148b [main]
 The user reported that Labby/Codex MCP OAuth was still opening a browser to a
 loopback callback URL such as `127.0.0.1:7686/callback/...`, asked how to make
 the flow automatic for the Codex/ChatGPT desktop app, and then asked for durable
-relay documentation plus a deeper SSH inspection of the relay on `squirts`.
+relay documentation plus a deeper SSH inspection of the relay on `edgehost`.
 
 ## Session Overview
 
 The session diagnosed the loopback redirect as a Codex client registration issue,
-not a Labby server-side OAuth issue. The Steamy Windows Codex config was updated
-to use the public callback relay, a `steamy` relay target was registered on
-`squirts`, the user confirmed authentication succeeded, and relay documentation
+not a Labby server-side OAuth issue. The winhost Windows Codex config was updated
+to use the public callback relay, a `winhost` relay target was registered on
+`edgehost`, the user confirmed authentication succeeded, and relay documentation
 was written and expanded under `~/docs`.
 
 ## Sequence of Events
@@ -32,16 +32,16 @@ was written and expanded under `~/docs`.
    to `http://127.0.0.1:7686/callback/EWtlD9o7HXkd`.
 2. Confirmed live Labby metadata advertised the native callback relay endpoints
    and that the failing loopback URI had been registered by the client.
-3. Checked Steamy Windows Codex config through WSL at
+3. Checked winhost Windows Codex config through WSL at
    `/mnt/c/Users/jmaga/.codex/config.toml` and found the Labby MCP server entry
    existed, but `mcp_oauth_callback_url` and `mcp_oauth_callback_port` were
    absent.
-4. Registered `steamy` in the callback relay registry and patched Steamy's Codex
-   config to use `https://callback.tootie.tv/callback/steamy` on port `38935`.
+4. Registered `winhost` in the callback relay registry and patched winhost's Codex
+   config to use `https://callback.tootie.tv/callback/winhost` on port `38935`.
 5. Created the Codex callback relay doc in `~/docs/dev/`, removed dotfile-sync
    content after the user clarified scope, and captured each revision through
    chezmoi.
-6. SSH'd into `squirts` and inspected the relay container, Compose files, SWAG
+6. SSH'd into `edgehost` and inspected the relay container, Compose files, SWAG
    vhost, Docker network, registry, route source, health endpoints, and recent
    logs.
 7. Used `vibin:save-to-md` to capture this session as an in-repo session log.
@@ -52,15 +52,15 @@ was written and expanded under `~/docs`.
   `mcp_oauth_callback_port`; otherwise it can register a browser-local loopback
   redirect. The relay doc now records this at
   `/home/jmagar/docs/dev/codex-oauth-callback-relay.md:10`.
-- Steamy Windows Codex must use the `steamy` relay target, not `steamy-wsl`,
+- winhost Windows Codex must use the `winhost` relay target, not `winhost-wsl`,
   because the Windows app and browser run in the Windows host namespace. See
   `/home/jmagar/docs/dev/codex-oauth-callback-relay.md:20` and
   `/home/jmagar/docs/dev/codex-oauth-callback-relay.md:238`.
-- The relay's public path is `callback.tootie.tv`, proxied by SWAG on `squirts`
+- The relay's public path is `callback.tootie.tv`, proxied by SWAG on `edgehost`
   to `callback-relay:39001`. See
   `/home/jmagar/docs/dev/codex-oauth-callback-relay.md:87`.
-- The live registry has targets for `dookie`, `shart`, `squirts`, `steamy`,
-  `steamy-wsl`, `tootie`, and `vivobook-wsl`. See
+- The live registry has targets for `devhost`, `backuphost`, `edgehost`, `winhost`,
+  `winhost-wsl`, `nashost`, and `laptophost-wsl`. See
   `/home/jmagar/docs/dev/codex-oauth-callback-relay.md:107`.
 - The relay container is from Compose project `mcp-oauth-gateway`, runs
   `python /app/scripts/callback_relay_server.py` as `authuser`, and uses
@@ -76,7 +76,7 @@ was written and expanded under `~/docs`.
 ## Technical Decisions
 
 - The Windows desktop app was configured with the Windows Tailscale IP target
-  (`100.119.83.39`) because the callback listener belongs to the Windows Codex
+  (`100.99.0.5`) because the callback listener belongs to the Windows Codex
   process, not WSL.
 - The relay registry was updated through its admin API from inside the
   `callback-relay` container, pulling `CALLBACK_RELAY_ADMIN_TOKEN` from
@@ -92,12 +92,12 @@ was written and expanded under `~/docs`.
 
 | status | path | previous path | purpose | evidence |
 |---|---|---|---|---|
-| modified | `/mnt/c/Users/jmaga/.codex/config.toml` | - | Added Codex callback relay settings for Steamy Windows. | Config patch was followed by user confirmation: "ok we're authenticated". |
-| created | `/mnt/c/Users/jmaga/.codex/config.toml.bak.20260712T230620Z-oauth-callback` | - | Backup before editing Steamy Windows Codex config. | Created during the config patch step. |
-| modified | `callback-relay:/app/.cache/callback-relay/registry.json` | - | Added/updated `steamy -> http://100.119.83.39:38935/callback/steamy`. | Admin API `PUT /api/machines/steamy` returned the stored target. |
+| modified | `/mnt/c/Users/jmaga/.codex/config.toml` | - | Added Codex callback relay settings for winhost Windows. | Config patch was followed by user confirmation: "ok we're authenticated". |
+| created | `/mnt/c/Users/jmaga/.codex/config.toml.bak.20260712T230620Z-oauth-callback` | - | Backup before editing winhost Windows Codex config. | Created during the config patch step. |
+| modified | `callback-relay:/app/.cache/callback-relay/registry.json` | - | Added/updated `winhost -> http://100.99.0.5:38935/callback/winhost`. | Admin API `PUT /api/machines/winhost` returned the stored target. |
 | created | `/home/jmagar/docs/dev/codex-oauth-callback-relay.md` | - | Durable relay reference for Codex MCP OAuth callbacks. | Chezmoi commit `dfac746`. |
 | modified | `/home/jmagar/docs/dev/codex-oauth-callback-relay.md` | - | Removed dotfile-sync content and kept the doc relay-only. | Chezmoi commit `e6d5c61`; grep for sync terms returned no output. |
-| modified | `/home/jmagar/docs/dev/codex-oauth-callback-relay.md` | - | Added full relay runtime details from `squirts`. | Chezmoi commit `6f8ab6a`; latest doc has Compose, network, registry, and route sections. |
+| modified | `/home/jmagar/docs/dev/codex-oauth-callback-relay.md` | - | Added full relay runtime details from `edgehost`. | Chezmoi commit `6f8ab6a`; latest doc has Compose, network, registry, and route sections. |
 | created | `/home/jmagar/workspace/lab/docs/sessions/2026-07-12-codex-oauth-callback-relay.md` | - | Generated session log from `vibin:save-to-md`. | This file. |
 
 ## Beads Activity
@@ -149,7 +149,7 @@ the session artifact commit.
 
 - **Skills.** `vibin:homelab-map` was used for named-host routing context, and
   `vibin:save-to-md` was used for this session artifact.
-- **Shell and SSH.** Used local shell commands plus `ssh squirts` to inspect
+- **Shell and SSH.** Used local shell commands plus `ssh edgehost` to inspect
   SWAG config, Docker state, relay source, registry, health endpoints, and logs.
 - **File tools.** Used `apply_patch` to create this session file and update the
   relay doc during the session.
@@ -159,19 +159,19 @@ the session artifact commit.
   kept those findings out of the relay doc after the user clarified scope.
 - **External CLIs.** Used `git`, `gh`, `bd`, `docker`, `curl`, `jq`, `grep`,
   `sed`, `nl`, and `chezmoi`.
-- **MCP servers/tools.** No MCP server call was used for the final `squirts`
+- **MCP servers/tools.** No MCP server call was used for the final `edgehost`
   relay inspection; the relay facts came from direct SSH and container reads.
 
 ## Commands Executed
 
 | command | result |
 |---|---|
-| `grep -nE '^(mcp_oauth_callback_url|mcp_oauth_callback_port)\b' /mnt/c/Users/jmaga/.codex/config.toml` | Initially found no callback override keys in Steamy Windows Codex config. |
-| `ssh squirts 'docker ps --filter name=callback-relay --format ...'` | Confirmed `callback-relay` was running and healthy. |
-| `ssh squirts 'sed -n "1,220p" /mnt/appdata/swag/nginx/proxy-confs/callback.subdomain.conf'` | Confirmed SWAG proxies `callback.*` to `callback-relay:39001`. |
-| `ssh squirts 'docker exec callback-relay python -m json.tool /app/.cache/callback-relay/registry.json'` | Confirmed registered targets for dookie, shart, squirts, steamy, steamy-wsl, tootie, and vivobook-wsl. |
-| `ssh squirts 'docker inspect callback-relay ...'` | Confirmed Compose project, command, user, mount, network, health, and environment key names. |
-| `ssh squirts 'docker exec callback-relay sed -n "1,290p" /app/scripts/callback_relay.py'` | Confirmed health, admin, and callback route behavior in the relay source. |
+| `grep -nE '^(mcp_oauth_callback_url|mcp_oauth_callback_port)\b' /mnt/c/Users/jmaga/.codex/config.toml` | Initially found no callback override keys in winhost Windows Codex config. |
+| `ssh edgehost 'docker ps --filter name=callback-relay --format ...'` | Confirmed `callback-relay` was running and healthy. |
+| `ssh edgehost 'sed -n "1,220p" /mnt/appdata/swag/nginx/proxy-confs/callback.subdomain.conf'` | Confirmed SWAG proxies `callback.*` to `callback-relay:39001`. |
+| `ssh edgehost 'docker exec callback-relay python -m json.tool /app/.cache/callback-relay/registry.json'` | Confirmed registered targets for devhost, backuphost, edgehost, winhost, winhost-wsl, nashost, and laptophost-wsl. |
+| `ssh edgehost 'docker inspect callback-relay ...'` | Confirmed Compose project, command, user, mount, network, health, and environment key names. |
+| `ssh edgehost 'docker exec callback-relay sed -n "1,290p" /app/scripts/callback_relay.py'` | Confirmed health, admin, and callback route behavior in the relay source. |
 | `curl -k -sS -D - https://callback.tootie.tv/healthz -o -` | Public relay health returned HTTP 200 with `{"status":"ok"}`. |
 | `chezmoi re-add /home/jmagar/docs/dev/codex-oauth-callback-relay.md` | Captured and pushed relay doc revisions to dotfiles as `e6d5c61` and `6f8ab6a`. |
 | `grep -nEi 'dotfile sync|chezmoi|mise|...' /home/jmagar/docs/dev/codex-oauth-callback-relay.md` | Returned no output after cleanup, verifying the relay doc stayed relay-only. |
@@ -181,7 +181,7 @@ the session artifact commit.
 - **Loopback callback timeout.** Browser opened
   `127.0.0.1:7686/callback/...` and timed out. Root cause: Codex registered a
   loopback redirect because the runtime config lacked `mcp_oauth_callback_url`.
-  Resolution: configure Steamy Windows Codex to use the public callback relay.
+  Resolution: configure winhost Windows Codex to use the public callback relay.
 - **Wrong product assumption.** The issue was initially framed around Labby auth
   in general, then clarified as the Codex/ChatGPT desktop app rather than
   Gemini. Resolution: checked the Windows Codex config under
@@ -194,8 +194,8 @@ the session artifact commit.
 
 | area | before | after |
 |---|---|---|
-| Steamy Windows Codex OAuth | Codex could register `http://127.0.0.1:<random>/callback/...`, leading to a dead browser tab. | Codex config points at `https://callback.tootie.tv/callback/steamy` and local port `38935`. |
-| Relay registry | Registry did not have the `steamy` Windows-host target confirmed for this app. | `steamy` maps to `http://100.119.83.39:38935/callback/steamy`. |
+| winhost Windows Codex OAuth | Codex could register `http://127.0.0.1:<random>/callback/...`, leading to a dead browser tab. | Codex config points at `https://callback.tootie.tv/callback/winhost` and local port `38935`. |
+| Relay registry | Registry did not have the `winhost` Windows-host target confirmed for this app. | `winhost` maps to `http://100.99.0.5:38935/callback/winhost`. |
 | Operator documentation | Relay details were scattered across chat/runtime inspection. | `/home/jmagar/docs/dev/codex-oauth-callback-relay.md` documents the flow, registry, routes, Compose source, and verification commands. |
 
 ## Verification Evidence
@@ -203,24 +203,24 @@ the session artifact commit.
 | command | expected | actual | status |
 |---|---|---|---|
 | `curl -k -sS -D - https://callback.tootie.tv/healthz -o -` | HTTP 200 from public relay health. | HTTP 200 with `{"status":"ok"}`. | pass |
-| `ssh squirts 'docker exec callback-relay sh -lc "curl -fsS http://127.0.0.1:${CALLBACK_RELAY_PORT:-39001}/healthz"'` | Internal relay health returns ok. | `{"status":"ok"}`. | pass |
-| `ssh squirts 'docker exec callback-relay python -m json.tool /app/.cache/callback-relay/registry.json'` | Registry includes `steamy`. | `steamy` target was `http://100.119.83.39:38935/callback/steamy`. | pass |
+| `ssh edgehost 'docker exec callback-relay sh -lc "curl -fsS http://127.0.0.1:${CALLBACK_RELAY_PORT:-39001}/healthz"'` | Internal relay health returns ok. | `{"status":"ok"}`. | pass |
+| `ssh edgehost 'docker exec callback-relay python -m json.tool /app/.cache/callback-relay/registry.json'` | Registry includes `winhost`. | `winhost` target was `http://100.99.0.5:38935/callback/winhost`. | pass |
 | `grep -nEi 'dotfile sync|chezmoi|mise|...' /home/jmagar/docs/dev/codex-oauth-callback-relay.md` | No dotfile-sync terms in the relay doc. | No output. | pass |
 | `chezmoi status /home/jmagar/docs/dev/codex-oauth-callback-relay.md` | No unmanaged diff after capture. | No output. | pass |
 | `chezmoi git -- log -1 --oneline -- docs/dev/private_codex-oauth-callback-relay.md` | Latest dotfiles commit reflects relay doc update. | `6f8ab6a Update docs/dev/codex-oauth-callback-relay.md`. | pass |
 
 ## Risks and Rollback
 
-- Steamy Windows Codex config is machine-specific. Roll back by restoring
+- winhost Windows Codex config is machine-specific. Roll back by restoring
   `/mnt/c/Users/jmaga/.codex/config.toml.bak.20260712T230620Z-oauth-callback`.
-- The relay registry now contains a `steamy` target. Roll back with the relay
-  admin `DELETE /api/machines/steamy` endpoint if that target is ever invalid.
+- The relay registry now contains a `winhost` target. Roll back with the relay
+  admin `DELETE /api/machines/winhost` endpoint if that target is ever invalid.
 - The relay doc is managed by chezmoi. Roll back by reverting the dotfiles commits
   `dfac746`, `e6d5c61`, or `6f8ab6a` as appropriate.
 
 ## Decisions Not Taken
 
-- Did not configure the Windows desktop app to use `steamy-wsl`; the listener is
+- Did not configure the Windows desktop app to use `winhost-wsl`; the listener is
   expected on the Windows host, not inside WSL.
 - Did not broad-watch or auto-sync dotfiles from `$HOME`; the dotfile-sync
   research was kept separate from the relay doc.
@@ -231,8 +231,8 @@ the session artifact commit.
 ## References
 
 - `/home/jmagar/docs/dev/codex-oauth-callback-relay.md`
-- `squirts:/mnt/appdata/swag/nginx/proxy-confs/callback.subdomain.conf`
-- `squirts:/mnt/compose/mcp-oauth-gateway/auth/docker-compose.yml`
+- `edgehost:/mnt/appdata/swag/nginx/proxy-confs/callback.subdomain.conf`
+- `edgehost:/mnt/compose/mcp-oauth-gateway/auth/docker-compose.yml`
 - `callback-relay:/app/scripts/callback_relay.py`
 - `callback-relay:/app/.cache/callback-relay/registry.json`
 - Chezmoi docs: `https://chezmoi.io/user-guide/daily-operations/`
