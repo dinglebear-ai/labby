@@ -16,7 +16,12 @@
        PLUGIN tag, which CA gives precedence to and which the plugin manager
        additionally enforces on direct Install-Plugin-URL installs. One
        source of truth for the version floor — see docs/runtime/UNRAID.md. -->
-  <License>MIT</License>
+  <!-- Must track Cargo.toml's `license` field and LICENSING.md. The project
+       moved from MIT to AGPL-3.0-only (with separate commercial terms) in
+       #346; AGPL-3.0 is OSI-approved, which is what CA requires. Do not
+       advertise the commercial option here — CA's field describes the
+       open-source license the listing is distributed under. -->
+  <License>AGPL-3.0-only</License>
   <Icon>https://raw.githubusercontent.com/dinglebear-ai/labby/main/unraid/source/usr/local/emhttp/plugins/labby/images/labby.png</Icon>
   <ReadMe>https://raw.githubusercontent.com/dinglebear-ai/labby/main/README.md</ReadMe>
 </Plugin>

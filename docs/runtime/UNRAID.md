@@ -412,8 +412,13 @@ Submission itself is a manual, one-time step and has **not** been done yet:
 push the repo, then run **Validate** and **Scan** in the Community Apps
 submit flow (`/submit`) per the
 [starter template](https://github.com/unraid/unraid-community-apps-starter).
-CA requires an OSI-approved license in the repo — `LICENSE-MIT` satisfies
-this, and `labby.xml` declares `<License>MIT</License>` to match.
+CA requires an OSI-approved license in the repo. `LICENSE` (AGPL-3.0-only,
+adopted in #346 alongside separate commercial terms) satisfies this, and
+`labby.xml` declares `<License>AGPL-3.0-only</License>` to match. Keep that
+element in sync with `Cargo.toml`'s `license` field and `LICENSING.md` — it
+is a public claim about how the listing is distributed, and nothing checks
+it automatically. Do not advertise the commercial option in that element;
+CA's field describes the open-source license only.
 
 ## Known gaps
 
