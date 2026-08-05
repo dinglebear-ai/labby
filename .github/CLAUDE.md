@@ -76,6 +76,14 @@ other architectures, emulation, cross-platform image matrices, or QEMU setup.
 
 ## Editing rules
 
+- Never set `CARGO_BUILD_JOBS` on a Rust job. Cargo forwards it to every build
+  script as `NUM_JOBS`, and `aws-lc-sys` compiles 414 C and 902 assembly
+  sources through the `cc` crate — work kache cannot cache, because it wraps
+  `rustc`, not `cc`. Measured in a cgroup matching the runner container
+  (7 GiB, no swap): a full workspace build linking all 15 test harnesses peaks
+  at 5.03 GiB and `nextest run --workspace --all-features` peaks at 2.44 GiB,
+  so the limit is not the binding constraint. Use lld to hold link memory down
+  instead.
 - Every local job needs a bounded `timeout-minutes`.
 - Keep `permissions` least-privileged at workflow and job scope.
 - Do not weaken immutable pins, checksum verification, provenance, signing,

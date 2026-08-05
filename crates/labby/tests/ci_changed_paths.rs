@@ -435,27 +435,36 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "the fs slice must run the proxy preflight integration binary without gateway"
     );
 
-    for (job, next_job) in [
-        ("feature-slices", "extracted-crate-slices"),
-        ("test", "test-fork"),
-        ("test-fork", "test-windows"),
+    // Read the job env structurally: the rationale comments below mention
+    // CARGO_BUILD_JOBS by name, so a substring check would match the very
+    // explanation of why it is absent.
+    let parsed = ci_workflow_yaml(&workflow);
+    for job in [
+        "feature-slices",
+        "mcp-regressions",
+        "test",
+        "test-fork",
+        "rust-coverage",
     ] {
-        let section = workflow
-            .split(&format!("  {job}:\n"))
-            .nth(1)
-            .and_then(|body| body.split(&format!("\n  {next_job}:")).next())
-            .expect("memory-constrained Rust job body");
-        // These jobs must NOT pin CARGO_BUILD_JOBS=1. That throttle turned
-        // ~8-minute builds into 30+ and let the autoscaling runners reclaim
-        // them mid-link; with kache restoring most of the graph and lld
-        // keeping link memory down, parallel builds stay within the 8 GiB
-        // pool. If a future OOM forces a cap, use a bounded value, not 1.
+        let env = &parsed["jobs"][job]["env"];
+        // These jobs must NOT pin CARGO_BUILD_JOBS. Cargo forwards it to every
+        // build script as NUM_JOBS, and aws-lc-sys compiles 414 C and 902
+        // assembly sources through the cc crate — work kache cannot cache,
+        // because it wraps rustc, not cc. Pinning it to 1 serialized ~1300
+        // uncached sources, turning ~8-minute builds into 30+ and letting the
+        // autoscaling runners reclaim them mid-link. The memory limit it was
+        // meant to respect is never approached: measured in a cgroup matching
+        // the runner container, a full workspace build linking all 15 test
+        // harnesses peaks at 5.03 GiB of 7 GiB and the nextest run peaks at
+        // 2.44 GiB. If a future OOM ever forces a cap, use a bounded value,
+        // never 1.
         assert!(
-            !section.contains("CARGO_BUILD_JOBS: \"1\""),
-            "{job} must not serialize Cargo to a single build job (see ci: drop CARGO_BUILD_JOBS=1)"
+            env["CARGO_BUILD_JOBS"].is_null(),
+            "{job} must not throttle Cargo build jobs; that also serializes the aws-lc-sys C build, which no cache can absorb"
         );
-        assert!(
-            section.contains("RUSTFLAGS: \"-C linker=clang -C link-arg=-fuse-ld=lld\""),
+        assert_eq!(
+            env["RUSTFLAGS"].as_str(),
+            Some("-C linker=clang -C link-arg=-fuse-ld=lld"),
             "{job} must use the lower-memory lld linker"
         );
     }

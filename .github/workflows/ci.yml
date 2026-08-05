@@ -540,6 +540,7 @@ jobs:
     # execute somewhere in CI instead of only ever being compiled. The fs
     # slice also executes its focused no-gateway proxy preflight regression.
     env:
+      # lld only; see the `test` job for why CARGO_BUILD_JOBS must stay unset.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     strategy:
       fail-fast: false
@@ -724,7 +725,17 @@ jobs:
     runs-on: ci-pool-rust
     timeout-minutes: 60
     env:
-      # lld keeps peak memory down when linking the large all-features harnesses.
+      # lld keeps the link step cheap. Do NOT reintroduce CARGO_BUILD_JOBS
+      # here: Cargo also passes it to every build script as NUM_JOBS, and
+      # aws-lc-sys compiles 414 C and 902 assembly sources through the cc
+      # crate. kache cannot cache any of that -- it wraps rustc, not cc -- so
+      # the throttle serialized ~1300 uncached source files on every run,
+      # turning ~8-minute builds into 30+ and letting the autoscaling runners
+      # reclaim them mid-link. Measured in a 7 GiB/no-swap cgroup matching the
+      # runner container: a full workspace build linking all 15 test harnesses
+      # peaks at 5.03 GiB, and `nextest run --workspace --all-features` peaks
+      # at 2.44 GiB. The limit was never the binding constraint; the
+      # serialization was.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -764,6 +775,7 @@ jobs:
     runs-on: ci-pool-rust
     timeout-minutes: 60
     env:
+      # Match the internal-PR test job resource profile on the shared pool.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: >-
