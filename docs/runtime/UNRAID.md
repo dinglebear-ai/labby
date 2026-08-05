@@ -111,12 +111,29 @@ configured image version and SHA256; if an existing alias or container does not
 match the configured pin, startup fails with explicit delete/recreate guidance
 instead of silently reusing stale runtime bytes.
 
-Known release gap: the `labby-incus-x86_64-unknown-linux-gnu.tar.xz` release
-asset has not published successfully since `v1.2.0` (`gh release view v1.3.0
---repo dinglebear-ai/labby --json assets` shows only the plain binary archives and
-`SHA256SUMS`). Confirm the latest tag before assuming a newer
-`INCUS_IMAGE_VERSION` will work, and bump both `INCUS_IMAGE_VERSION` and
-`INCUS_IMAGE_SHA256` together once the release-asset CI gap is fixed.
+Known release gap (root cause fixed; awaiting the next release): the
+`labby-incus-x86_64-unknown-linux-gnu.tar.xz` asset stopped publishing after
+`v1.8.5`. `build-incus-image.yml`'s `publish-image` job had no
+`actions/checkout` step, and `gh` resolves its target repository from git
+remotes — so every `gh release` call aborted with `failed to run git: fatal:
+not a git repository` *before uploading anything*. The image itself built
+and checksum-verified fine every time, which is why this looked like a
+mysterious "asset gap" rather than an outright build failure, and why
+nothing downstream flagged it: a missing asset only surfaces when someone
+tries to pin a newer `INCUS_IMAGE_VERSION`. The rolling
+`labby-incus-latest` release still carries assets, but they are stale
+`v1.8.5`-era bytes from the last successful run, not the current image.
+
+The job now checks out first (ordered *before* `download-artifact`, since
+`actions/checkout` cleans the workspace and would otherwise delete `dist/`)
+and pins `GH_REPO`. `incus_publish_job_checks_out_before_downloading_artifacts`
+in `crates/labby/tests/ci_changed_paths.rs` guards both halves.
+
+Until a release actually publishes with the fix in place, keep
+`INCUS_IMAGE_VERSION` at `1.2.0`. Then verify the asset exists on the new
+tag, download its published `.sha256`, and bump `INCUS_IMAGE_VERSION` and
+`INCUS_IMAGE_SHA256` together — never one without the other. Tracked as
+`lab-26zqj`.
 
 ## Layout
 
@@ -432,10 +449,12 @@ CA's field describes the open-source license only.
   pointed at the raw `labby.plg` URL.
 - `RUNTIME_MODE="incus"` now has its architecture, image/version pinning,
   Tailscale behavior, bridge, and egress defaults wired into the plugin
-  package, but the Incus path still depends on a known release-asset CI gap:
-  only `v1.2.0` currently publishes the `labby-incus-*.tar.xz` image asset.
-  Newer Incus images require fixing that CI path first, then bumping both
-  `INCUS_IMAGE_VERSION` and `INCUS_IMAGE_SHA256`. Tracked as `lab-26zqj`.
+  package, and the CI defect that stopped publishing `labby-incus-*.tar.xz`
+  after `v1.8.5` is fixed (missing `actions/checkout` in `publish-image` —
+  see "Known release gap" above). No release has shipped with that fix yet,
+  so `v1.2.0` is still the newest tag carrying a usable image asset and
+  `INCUS_IMAGE_VERSION` stays there until a new release is verified.
+  Tracked as `lab-26zqj`.
 - `RUNTIME_MODE="incus"` has not yet been exercised across a real Unraid
   reboot or a real incus-unraid uninstall/reinstall cycle. The current
   implementation is designed for array-start/stop and plugin

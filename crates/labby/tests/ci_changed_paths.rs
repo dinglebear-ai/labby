@@ -584,3 +584,45 @@ fn rolling_incus_release_promotes_verified_immutable_assets_before_tag() {
         "rolling assets must be uploaded and remotely verified before the tag advances"
     );
 }
+
+/// Regression guard for lab-26zqj.
+///
+/// `publish-image` has no source dependency, so it is tempting to leave the
+/// checkout out. But `gh` resolves its target repository from git remotes,
+/// so without one every `gh release` call aborts with "failed to run git:
+/// fatal: not a git repository" — before uploading anything. That is how the
+/// Incus image asset silently stopped shipping after v1.8.5: the image built,
+/// the artifact checksum-verified, and then the first upload died, so every
+/// tag from v1.8.6 onward published without
+/// `labby-incus-x86_64-unknown-linux-gnu.tar.xz`. Nothing downstream noticed,
+/// because the missing asset only surfaces when someone tries to pin a newer
+/// `INCUS_IMAGE_VERSION`.
+///
+/// The ordering half matters just as much: `actions/checkout` cleans the
+/// workspace by default, so a checkout placed *after* `download-artifact`
+/// deletes `dist/` and breaks publication a second, different way.
+#[test]
+fn incus_publish_job_checks_out_before_downloading_artifacts() {
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/build-incus-image.yml"))
+        .expect("read Incus image workflow");
+    let publish = workflow
+        .find("publish-image:")
+        .expect("workflow must define the publish-image job");
+    let publish_section = &workflow[publish..];
+
+    let checkout = publish_section
+        .find("uses: actions/checkout@")
+        .expect("publish-image must check out: gh resolves the repo from git remotes, and the trailing `git tag`/`git push` needs a work tree");
+    let download = publish_section
+        .find("uses: actions/download-artifact@")
+        .expect("publish-image must download the built image artifact");
+    assert!(
+        checkout < download,
+        "checkout must precede download-artifact — checkout cleans the workspace and would delete dist/"
+    );
+
+    assert!(
+        publish_section.contains("GH_REPO: ${{ github.repository }}"),
+        "publish-image must pin GH_REPO so gh stays correct even if the checkout is reconfigured"
+    );
+}
