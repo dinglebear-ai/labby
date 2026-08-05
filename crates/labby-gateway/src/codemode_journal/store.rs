@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use labby_codemode::redact_secret_like_segments;
+use labby_runtime::agent_error::redact_secret_like_segments;
 use labby_runtime::error::ToolError;
 use rusqlite::{Connection, params};
 use serde::Serialize;

@@ -235,6 +235,39 @@ fn extract_error_info_preserves_http_only_from_json_fallback() {
     assert!(extra.is_none());
 }
 
+#[cfg(feature = "gateway")]
+#[test]
+fn code_mode_error_envelope_preserves_refined_metadata() {
+    use labby_codemode::{
+        CodeModeCallError, CodeModeErrorEvidence, CodeModeErrorOrigin, CodeModeToolSafetyHints,
+    };
+
+    // `rate_limited` recomputed from the bare kind would give origin
+    // `budget`; the tool_execution constructor refines it to `tool_execution`
+    // and carries a retry hint. The envelope must preserve both.
+    let error = CodeModeCallError::tool_execution(
+        "alpha::demo",
+        "rate_limited",
+        None,
+        "slow down",
+        CodeModeErrorEvidence::default(),
+        CodeModeToolSafetyHints {
+            read_only_hint: Some(true),
+            ..CodeModeToolSafetyHints::default()
+        },
+        Some(1500),
+    );
+    assert_eq!(error.origin, CodeModeErrorOrigin::ToolExecution);
+
+    let envelope = super::code_mode_error_envelope("codemode", "call_tool", &error);
+
+    assert_eq!(envelope["error"]["kind"], "rate_limited");
+    assert_eq!(envelope["error"]["origin"], "tool_execution");
+    assert_eq!(envelope["error"]["side_effects"], "none_expected");
+    assert_eq!(envelope["error"]["recovery"]["retry_after_ms"], 1500);
+    assert_eq!(envelope["error"]["safety"]["read_only_hint"], true);
+}
+
 #[test]
 fn tool_error_envelope_preserves_structured_extras() {
     let err = ToolError::MissingParam {

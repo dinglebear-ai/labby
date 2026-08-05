@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::CodeModeCallError;
 use crate::error::ToolError;
 use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome, ToolsRender};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
@@ -310,21 +311,21 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         scope: &ToolScope,
         ctx: ExecCtx,
         cancellation: &CancellationToken,
-    ) -> Result<ToolCallOutcome, ToolError> {
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
         tokio::select! {
-            () = cancellation.cancelled() => Err(ToolError::Sdk {
-                sdk_kind: "cancelled".to_string(),
-                message: "Code Mode execution was cancelled".to_string(),
-            }),
+            () = cancellation.cancelled() => Err(CodeModeCallError::new(
+                "cancelled",
+                "Code Mode execution was cancelled",
+            )),
             result = tokio::time::timeout_at(
                 deadline,
                 self.call_tool_id_outcome(id, params, caller, surface, scope, ctx),
             ) => match result {
                 Ok(result) => result,
-                Err(_) => Err(ToolError::Sdk {
-                    sdk_kind: "timeout".to_string(),
-                    message: "Code Mode execution timed out".to_string(),
-                }),
+                Err(_) => Err(CodeModeCallError::new(
+                    "timeout",
+                    "Code Mode execution timed out",
+                )),
             },
         }
     }
@@ -342,6 +343,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         self.call_tool_id_outcome(id, params, caller, surface, scope, ctx)
             .await
             .map(|outcome| outcome.value)
+            .map_err(CodeModeCallError::into_tool_error)
     }
 
     pub(crate) async fn call_tool_id_outcome(
@@ -352,13 +354,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         scope: &ToolScope,
         ctx: ExecCtx,
-    ) -> Result<ToolCallOutcome, ToolError> {
-        let parsed = CodeModeToolId::parse(id)?;
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        let parsed = CodeModeToolId::parse(id).map_err(CodeModeCallError::from)?;
         let Some(host) = self.host else {
-            return Err(ToolError::Sdk {
-                sdk_kind: "unknown_tool".to_string(),
-                message: "no tool source configured".to_string(),
-            });
+            return Err(
+                CodeModeCallError::new("unknown_tool", "no tool source configured").with_tool(id),
+            );
         };
         match parsed.reference {
             CodeModeToolRef::Tool { namespace, tool } => {
@@ -366,16 +367,18 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     return self
                         .dispatch_internal_call(&tool, params, &caller, surface, scope)
                         .await
-                        .map(|value| ToolCallOutcome { value, ui: None });
+                        .map(|value| ToolCallOutcome { value, ui: None })
+                        .map_err(CodeModeCallError::from);
                 }
                 if !scope.allows(&namespace, &tool) {
-                    return Err(ToolError::Sdk {
-                        sdk_kind: "unknown_tool".to_string(),
-                        message: format!(
+                    return Err(CodeModeCallError::new(
+                        "unknown_tool",
+                        format!(
                             "tool `{}` is outside this Code Mode execution capability set",
                             parsed.raw
                         ),
-                    });
+                    )
+                    .with_tool(parsed.raw.clone()));
                 }
                 // The host applies destructive-tool policy when it resolves the
                 // call (read-only callers cannot run a tool the host marks
@@ -954,11 +957,12 @@ mod tests {
             _surface: CodeModeSurface,
             _scope: &ToolScope,
             _ctx: ExecCtx,
-        ) -> Result<ToolCallOutcome, ToolError> {
+        ) -> Result<ToolCallOutcome, CodeModeCallError> {
             Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: "FixtureHost does not dispatch real tool calls".to_string(),
-            })
+            }
+            .into())
         }
 
         async fn resolve_snippet(

@@ -13,6 +13,7 @@
 //! would pull the dependency-free `labby-primitives` types they use into
 //! `labby-auth` and `labby-codemode`, which never touch them.
 
+pub mod agent_error;
 pub mod backoff;
 pub mod catalog_notify;
 pub mod client_registry;

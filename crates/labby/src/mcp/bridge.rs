@@ -56,6 +56,10 @@ use rmcp::service::{
 };
 use rmcp::{ClientHandler, ErrorData, RoleClient, RoleServer, ServerHandler};
 
+use labby_runtime::agent_error::AgentErrorContext;
+
+use crate::mcp::agent_error::internal as internal_agent_error;
+
 /// `ClientHandler` for the bridge's outbound connection to the real daemon.
 ///
 /// It advertises form elicitation because the bridge can preserve an MRTR
@@ -114,6 +118,12 @@ impl BridgeServerHandler {
     }
 }
 
+/// Error context for a bridged action: service is always `labby`, the action
+/// is namespaced under `bridge.`.
+fn bridge_context(action: &str) -> AgentErrorContext {
+    AgentErrorContext::for_service_action("labby", format!("bridge.{action}"))
+}
+
 fn bridge_error(action: &str, error: ServiceError) -> ErrorData {
     if let ServiceError::McpError(error) = error {
         tracing::warn!(
@@ -135,7 +145,13 @@ fn bridge_error(action: &str, error: ServiceError) -> ErrorData {
         error_kind = "bridge_transport_error",
         "bridged request to live daemon failed"
     );
-    ErrorData::internal_error("live daemon request failed", None)
+    let context = bridge_context(action);
+    internal_agent_error(
+        "bridge_transport_error",
+        "The Labby MCP bridge could not reach the canonical daemon.",
+        None,
+        &context,
+    )
 }
 
 /// The live daemon replied to a raw `send_request` with a `ServerResult`
@@ -152,7 +168,15 @@ fn unexpected_response(action: &str) -> ErrorData {
         error_kind = "unexpected_response",
         "live daemon returned an unexpected result type"
     );
-    ErrorData::internal_error("live daemon returned an unexpected result type", None)
+    let context = bridge_context(action);
+    internal_agent_error(
+        "unexpected_response",
+        format!(
+            "The canonical Labby daemon returned an unexpected result for bridge action `{action}`."
+        ),
+        None,
+        &context,
+    )
 }
 
 impl BridgeServerHandler {
@@ -179,7 +203,13 @@ impl BridgeServerHandler {
                     .cancel(Some("downstream request cancelled".to_string()))
                     .await
                     .map_err(|error| bridge_error(action, error))?;
-                Err(ErrorData::internal_error("request cancelled", None))
+                let context = bridge_context(action);
+                Err(internal_agent_error(
+                    "cancelled",
+                    format!("Bridge request `{action}` was cancelled by the downstream caller."),
+                    None,
+                    &context,
+                ))
             }
             response = &mut handle.rx => {
                 response
@@ -258,7 +288,16 @@ impl ServerHandler for BridgeServerHandler {
                             | ServerNotification::PromptListChangedNotification(_)
                             | ServerNotification::ResourceUpdatedNotification(_)
                         )) => sink.send(notification).await.map_err(|error| {
-                            ErrorData::internal_error(format!("failed to relay subscription notification: {error}"), None)
+                            let mut error_context = bridge_context("subscriptions.relay");
+                            error_context.cause = Some(
+                                labby_runtime::agent_error::sanitize_error_text(&error.to_string(), 4096),
+                            );
+                            internal_agent_error(
+                                "bridge_transport_error",
+                                "The Labby MCP bridge failed to relay a subscription notification.",
+                                None,
+                                &error_context,
+                            )
                         })?,
                         Some(_) => {}
                         None => return Ok(()),

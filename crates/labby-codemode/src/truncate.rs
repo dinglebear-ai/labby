@@ -1,69 +1,19 @@
 //! Response-budget truncation for Code Mode execution responses and log caps.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
 use serde_json::{Value, json};
 
 use super::artifacts::CodeModeArtifactReceipt;
 use super::types::CodeModeExecutionResponse;
 
-static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|xox[bp]-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)",
-    )
-    .expect("SECRET_REGEX is valid")
-});
-
 /// Sanitize one line of runner-captured log/output text before it is returned
 /// to the caller: strips control / bidi-override characters and common
 /// prompt-injection markers, redacts secret-like segments, and caps length.
 ///
-/// Self-contained log hygiene so the kernel does not depend on the host's
-/// projection helpers.
+/// Thin crate-local alias of the canonical `labby_runtime` helper so runner
+/// modules keep one import path. External consumers should depend on
+/// `labby_runtime::agent_error` directly.
 pub(crate) fn sanitize_log_text(input: &str, max_len: usize) -> String {
-    let mut sanitized = input.to_string();
-    sanitized.retain(|ch| {
-        !matches!(
-            ch,
-            '\u{0000}'..='\u{001F}'
-                | '\u{007F}'..='\u{009F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2066}'..='\u{2069}'
-        )
-    });
-    for marker in ["<system>", "[INST]", "###", "<<"] {
-        sanitized = sanitized.replace(marker, "");
-    }
-    let redacted = redact_secret_like_segments(&sanitized);
-    redacted.chars().take(max_len).collect()
-}
-
-/// Redact secret-shaped whitespace-delimited segments (API keys, tokens, JWTs)
-/// from free text. Reused by the gateway step-journal store to redact
-/// caller-authored step names/values at rest.
-pub fn redact_secret_like_segments(input: &str) -> String {
-    let after_split = input
-        .split_whitespace()
-        .map(|segment| {
-            let looks_secret = segment.starts_with("sk-")
-                || segment.starts_with("ghp_")
-                || segment.starts_with("github_pat_")
-                || segment.starts_with("glpat-")
-                || segment.starts_with("xoxb-")
-                || segment.starts_with("xoxp-")
-                || segment.starts_with("eyJ");
-            if looks_secret {
-                "[REDACTED]".to_string()
-            } else {
-                segment.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    SECRET_REGEX
-        .replace_all(&after_split, "[REDACTED]")
-        .into_owned()
+    labby_runtime::agent_error::sanitize_log_text(input, max_len)
 }
 
 pub(crate) fn truncate_execution_response(

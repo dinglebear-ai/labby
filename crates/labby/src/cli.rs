@@ -101,6 +101,33 @@ pub enum Command {
     // [lab-scaffold: cli-variants]
 }
 
+impl Command {
+    /// Stable command label used by machine-readable CLI errors.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Serve(_) => "serve",
+            Self::Mcp(_) => "mcp",
+            Self::Doctor(_) => "doctor",
+            Self::Docs(_) => "docs",
+            Self::Health => "health",
+            Self::Logs(_) => "logs",
+            Self::Setup(_) => "setup",
+            Self::Incus(_) => "incus",
+            Self::Update(_) => "update",
+            Self::Completions(_) => "completions",
+            #[cfg(feature = "gateway")]
+            Self::Gateway(_) => "gateway",
+            #[cfg(feature = "gateway")]
+            Self::Snippets(_) => "snippets",
+            Self::Oauth(_) => "oauth",
+            Self::Proxy(_) => "proxy",
+            #[cfg(feature = "gateway")]
+            Self::Internal(_) => "internal",
+        }
+    }
+}
+
 /// Dispatch a parsed [`Cli`] to the correct handler.
 pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
     let format = cli.format();

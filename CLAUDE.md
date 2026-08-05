@@ -191,18 +191,34 @@ Mark actions `destructive: true` whenever they delete, overwrite, spawn local pr
 
 ### Structured error envelopes
 
-Every MCP tool failure returns a JSON envelope with a stable `kind` tag so agents can react programmatically:
+Every MCP tool failure returns a JSON envelope with a stable `kind` tag plus the versioned agent recovery contract (`contract_version`, `origin`, `recovery`, `side_effects`) so agents can react programmatically:
 
 ```jsonc
-{ "kind": "unknown_action", "message": "...", "valid": ["movie.search", ...], "hint": "movie.serch" }
-{ "kind": "missing_param",  "message": "...", "param": "query" }
-{ "kind": "unknown_instance", "message": "...", "valid": ["default", "node2"] }
-{ "kind": "rate_limited", "message": "...", "retry_after_ms": 5000 }
+{
+  "kind": "unknown_action",
+  "message": "unknown action `movie.serch` for service `radarr`",
+  "contract_version": 1,
+  "origin": "discovery",                 // validation | policy | budget | discovery |
+                                         // tool_execution | upstream_transport | bridge |
+                                         // code_mode | runtime
+  "recovery": {
+    "action": "rediscover",              // revise_and_retry | retry_later | reauthenticate |
+                                         // confirm | rediscover | reduce_work |
+                                         // start_dependency | inspect_and_escalate | do_not_retry
+    "same_arguments": "never",           // safe | conditional | discouraged | never
+    "guidance": "List or search the available actions…"
+  },
+  "side_effects": "none_expected",       // none_expected | possible | unknown
+  "valid": ["movie.search", "movie.list"],
+  "hint": "movie.serch"
+}
+{ "kind": "missing_param", "message": "...", "param": "query", /* + contract fields */ }
+{ "kind": "rate_limited", "message": "...", "recovery": { "action": "retry_later", "same_arguments": "conditional", "guidance": "...", "retry_after_ms": 5000 }, /* … */ }
 ```
 
 See `docs/surfaces/MCP.md` for the MCP surface and `docs/CONVENTIONS.md` for the canonical error vocabulary rules.
 
-`docs/dev/ERRORS.md` is the canonical source of truth for stable kinds, envelope expectations, and status mapping.
+`docs/dev/ERRORS.md` is the canonical source of truth for stable kinds, envelope expectations, and status mapping. The versioned recovery contract and its published JSON Schemas are owned by `docs/contracts/agent-error-contract.md` and `docs/contracts/code-mode-tool-errors.md`.
 
 ### Adding a New Service
 

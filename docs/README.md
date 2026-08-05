@@ -25,6 +25,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Consult [TRANSPORT.md](./surfaces/TRANSPORT.md) for stdio and streamable HTTP transport configuration, middleware stack, stateless discovery, and subscriptions.
 - Use [OBSERVABILITY.md](./dev/OBSERVABILITY.md) for the mandatory logging, correlation, redaction, and verification contract.
 - Use [ERRORS.md](./dev/ERRORS.md) for the shared error taxonomy, envelope shapes, and status mapping contract.
+- Use [contracts/agent-error-contract.md](./contracts/agent-error-contract.md) and [contracts/code-mode-tool-errors.md](./contracts/code-mode-tool-errors.md) for the versioned agent-facing error recovery contract and its published JSON Schemas (`contracts/schemas/`).
 - Use [design/SERIALIZATION.md](./design/SERIALIZATION.md) for the shared serde, envelope, and output-boundary contract.
 - Use [DISPATCH.md](./dev/DISPATCH.md) for the shared surface-neutral dispatch-layer contract and dependency rules.
 - Use [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md) for the current status of the older service-layer migration plan.
@@ -151,6 +152,14 @@ The docs are split by topic so contributors do not have to recover architecture,
   Mandatory logging boundaries, required fields, correlation rules, redaction, and verification gates.
 - [ERRORS.md](./dev/ERRORS.md)
   Shared error taxonomy, stable `kind` values, MCP and HTTP error envelopes, and status mapping.
+- [contracts/agent-error-contract.md](./contracts/agent-error-contract.md)
+  Versioned agent-facing error contract: required envelope fields, origins, recovery/retry semantics, and surface rules.
+- [contracts/code-mode-tool-errors.md](./contracts/code-mode-tool-errors.md)
+  Code Mode extension of the agent error contract: JS rejection shape, sanitized evidence, and safety hints.
+- [contracts/stdio-mcp-proxy.md](./contracts/stdio-mcp-proxy.md)
+  Stdio MCP proxy bridge contract.
+- [contracts/gateway-schema-resources.md](./contracts/gateway-schema-resources.md)
+  Gateway schema-resource contract.
 - [design/SERIALIZATION.md](./design/SERIALIZATION.md)
   Serde ownership, stable envelope shapes, CLI output boundaries, and naming rules.
 - [DISPATCH.md](./dev/DISPATCH.md)
@@ -202,6 +211,7 @@ Use the smallest correct doc:
 - config, env, secrets, instance naming: [CONFIG.md](./runtime/CONFIG.md)
 - observability, request tracing, redaction: [OBSERVABILITY.md](./dev/OBSERVABILITY.md)
 - error taxonomy and envelope rules: [ERRORS.md](./dev/ERRORS.md)
+- versioned agent error/recovery contract and schemas: [contracts/agent-error-contract.md](./contracts/agent-error-contract.md), [contracts/code-mode-tool-errors.md](./contracts/code-mode-tool-errors.md)
 - serialization and output-shape rules: [design/SERIALIZATION.md](./design/SERIALIZATION.md)
 - dispatch-layer ownership and adapter rules: [DISPATCH.md](./dev/DISPATCH.md)
 - service-layer migration execution plan: [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md)

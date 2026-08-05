@@ -81,7 +81,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -100,7 +100,7 @@
           "doctor"
         ],
         "summary": "Dispatch action to doctor",
-        "description": "Execute an action on the doctor service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
+        "description": "Execute an action on the doctor service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -123,41 +123,121 @@
             }
           },
           "400": {
-            "description": "Bad request (unknown action, confirmation required)",
+            "description": "Unknown action or malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication is missing, invalid, or must be renewed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "description": "Authenticated caller lacks required scope or policy permission",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (missing or invalid param)",
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMissingParam"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -176,7 +256,7 @@
           "fs"
         ],
         "summary": "Dispatch action to fs",
-        "description": "Execute an action on the fs service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
+        "description": "Execute an action on the fs service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -199,41 +279,121 @@
             }
           },
           "400": {
-            "description": "Bad request (unknown action, confirmation required)",
+            "description": "Unknown action or malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication is missing, invalid, or must be renewed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "description": "Authenticated caller lacks required scope or policy permission",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (missing or invalid param)",
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMissingParam"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -252,7 +412,7 @@
           "gateway"
         ],
         "summary": "Dispatch action to gateway",
-        "description": "Execute an action on the gateway service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
+        "description": "Execute an action on the gateway service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -275,41 +435,121 @@
             }
           },
           "400": {
-            "description": "Bad request (unknown action, confirmation required)",
+            "description": "Unknown action or malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication is missing, invalid, or must be renewed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "description": "Authenticated caller lacks required scope or policy permission",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (missing or invalid param)",
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMissingParam"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -328,7 +568,7 @@
           "lab_admin"
         ],
         "summary": "Dispatch action to lab_admin",
-        "description": "Execute an action on the lab_admin service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
+        "description": "Execute an action on the lab_admin service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -351,41 +591,121 @@
             }
           },
           "400": {
-            "description": "Bad request (unknown action, confirmation required)",
+            "description": "Unknown action or malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication is missing, invalid, or must be renewed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "description": "Authenticated caller lacks required scope or policy permission",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (missing or invalid param)",
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMissingParam"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -504,7 +824,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -514,7 +834,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -533,7 +853,7 @@
           "server_logs"
         ],
         "summary": "Dispatch action to server_logs",
-        "description": "Execute an action on the server_logs service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
+        "description": "Execute an action on the server_logs service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -556,41 +876,121 @@
             }
           },
           "400": {
-            "description": "Bad request (unknown action, confirmation required)",
+            "description": "Unknown action or malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication is missing, invalid, or must be renewed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "description": "Authenticated caller lacks required scope or policy permission",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (missing or invalid param)",
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMissingParam"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -609,7 +1009,7 @@
           "setup"
         ],
         "summary": "Dispatch action to setup",
-        "description": "Execute an action on the setup service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
+        "description": "Execute an action on the setup service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -632,41 +1032,121 @@
             }
           },
           "400": {
-            "description": "Bad request (unknown action, confirmation required)",
+            "description": "Unknown action or malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication is missing, invalid, or must be renewed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "description": "Authenticated caller lacks required scope or policy permission",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (missing or invalid param)",
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMissingParam"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -685,7 +1165,7 @@
           "snippets"
         ],
         "summary": "Dispatch action to snippets",
-        "description": "Execute an action on the snippets service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
+        "description": "Execute an action on the snippets service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -708,41 +1188,121 @@
             }
           },
           "400": {
-            "description": "Bad request (unknown action, confirmation required)",
+            "description": "Unknown action or malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication is missing, invalid, or must be renewed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "description": "Authenticated caller lacks required scope or policy permission",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorSdk"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (missing or invalid param)",
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMissingParam"
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
                 }
               }
             }
@@ -769,6 +1329,162 @@
             "type": "string"
           },
           "params": {}
+        }
+      },
+      "AgentErrorRecovery": {
+        "type": "object",
+        "description": "Structured recovery guidance shared by every agent-facing error response.",
+        "required": [
+          "action",
+          "same_arguments",
+          "guidance"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Recommended next action, such as `revise_and_retry`, `retry_later`,\n`reauthenticate`, `rediscover`, or `do_not_retry`."
+          },
+          "guidance": {
+            "type": "string",
+            "description": "Model-readable course-correction instructions."
+          },
+          "retry_after_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional retry delay supplied by the failing subsystem.",
+            "minimum": 0
+          },
+          "same_arguments": {
+            "type": "string",
+            "description": "Safety of repeating the exact same request: `safe`, `conditional`,\n`discouraged`, or `never`."
+          }
+        }
+      },
+      "AgentErrorResponse": {
+        "type": "object",
+        "description": "Versioned error contract returned by every HTTP action failure.",
+        "required": [
+          "contract_version",
+          "kind",
+          "message",
+          "origin",
+          "recovery",
+          "side_effects"
+        ],
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cause": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contract_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Contract version. Additive version-1 fields may be ignored by clients.",
+            "minimum": 0
+          },
+          "existing_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "description": "Stable machine-readable error kind."
+          },
+          "message": {
+            "type": "string",
+            "description": "Standalone model-readable diagnosis."
+          },
+          "origin": {
+            "type": "string",
+            "description": "Failure origin such as `validation`, `policy`, `tool_execution`,\n`upstream_transport`, `discovery`, or `runtime`."
+          },
+          "param": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recovery": {
+            "$ref": "#/components/schemas/AgentErrorRecovery",
+            "description": "Recovery action and exact-retry safety."
+          },
+          "required_scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "resource": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "side_effects": {
+            "type": "string",
+            "description": "Conservative side-effect assessment: `none_expected`, `possible`, or `unknown`."
+          },
+          "tool": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "DoctorActionRequest": {
@@ -897,24 +1613,6 @@
           "param": {
             "type": "string",
             "description": "The missing parameter name."
-          }
-        }
-      },
-      "ErrorSdk": {
-        "type": "object",
-        "description": "Error envelope for SDK pass-through errors (`auth_failed`, `rate_limited`, etc.).",
-        "required": [
-          "kind",
-          "message"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string",
-            "description": "Stable kind tag from the SDK (e.g. `\"auth_failed\"`, `\"rate_limited\"`)."
-          },
-          "message": {
-            "type": "string",
-            "description": "Human-readable message."
           }
         }
       },

@@ -1,13 +1,13 @@
-//! Tests for upstream-proxy result normalization. Distributed from
-//! `server.rs` (bead `lab-kvji.24.1.6`).
+//! Tests for direct upstream MCP result normalization.
 
 use super::normalize_upstream_result;
 use crate::mcp::envelope::build_error;
+use labby_gateway::upstream::tool_error::{LABBY_ERROR_META_KEY, McpToolSafetyHints};
 use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
-fn normalize_upstream_result_preserves_user_errors_without_poisoning_health() {
+fn completed_user_error_is_enriched_without_poisoning_health() {
     let upstream = CallToolResult::error(vec![ContentBlock::text(
         build_error(
             "gateway-alpha",
@@ -18,22 +18,32 @@ fn normalize_upstream_result_preserves_user_errors_without_poisoning_health() {
         .to_string(),
     )]);
 
-    let (_, kind, counts_as_failure) =
-        normalize_upstream_result("gateway-alpha", "call_tool", upstream);
+    let (normalized, kind, counts_as_failure) = normalize_upstream_result(
+        "status",
+        "call_tool",
+        "gateway-alpha",
+        upstream,
+        &McpToolSafetyHints::default(),
+    );
 
     assert_eq!(kind, "missing_param");
     assert!(!counts_as_failure);
+    let diagnostic = normalized.content[0].as_text().expect("diagnostic text");
+    let value: Value = serde_json::from_str(&diagnostic.text).expect("agent error json");
+    assert_eq!(value["origin"], "tool_execution");
+    assert_eq!(value["tool"], "gateway-alpha::status");
+    assert_eq!(value["recovery"]["action"], "revise_and_retry");
 }
 
 #[test]
-fn normalize_upstream_result_preserves_the_complete_upstream_payload() {
+fn completed_error_retains_every_upstream_payload_channel() {
     let mut meta = MetaObject::default();
     meta.0.insert("vendor.trace".to_string(), json!("trace-42"));
     let structured = json!({
         "machineReadable": true,
         "details": ["one", "two"]
     });
-    let mut upstream = CallToolResult::structured_error(structured).with_meta(Some(meta));
+    let mut upstream = CallToolResult::structured_error(structured.clone()).with_meta(Some(meta));
     upstream.content = vec![
         ContentBlock::text(
             json!({
@@ -47,12 +57,24 @@ fn normalize_upstream_result_preserves_the_complete_upstream_payload() {
         ),
         ContentBlock::text("second diagnostic block"),
     ];
-    let expected = upstream.clone();
+    let original_content = upstream.content.clone();
 
-    let (normalized, kind, counts_as_failure) =
-        normalize_upstream_result("gateway-alpha", "call_tool", upstream);
+    let (normalized, kind, counts_as_failure) = normalize_upstream_result(
+        "status",
+        "call_tool",
+        "gateway-alpha",
+        upstream,
+        &McpToolSafetyHints::default(),
+    );
 
-    assert_eq!(normalized, expected);
-    assert_eq!(kind, "server_error");
-    assert!(counts_as_failure);
+    assert_eq!(kind, "tool_error");
+    assert!(!counts_as_failure);
+    assert_eq!(&normalized.content[1..], original_content.as_slice());
+    assert_eq!(
+        normalized.structured_content.as_ref().unwrap()["upstream_structured_content"],
+        structured
+    );
+    let meta = normalized.meta.expect("metadata preserved and enriched");
+    assert_eq!(meta.0["vendor.trace"], "trace-42");
+    assert!(meta.0.contains_key(LABBY_ERROR_META_KEY));
 }

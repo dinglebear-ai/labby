@@ -11,11 +11,90 @@ export interface CodeModeExecuteTrace {
   elapsed_ms?: number
   /** Present on failed runs — the ToolError kind that aborted the snippet. */
   error_kind?: string
+  /** Complete model-actionable contract emitted for an uncaught failure. */
+  error?: CodeModeErrorContract
   input_tokens?: number
   output_tokens?: number
   logs_count?: number
   artifacts?: CodeModeArtifactReceipt[]
   warnings?: CodeModeTraceWarning[]
+}
+
+/**
+ * Highest error-contract version this UI understands. A numerically newer
+ * contract is dropped with a warning instead of being misrendered as v1.
+ */
+const SUPPORTED_CONTRACT_VERSION = 1
+
+// The closed vocabularies below mirror docs/contracts/schemas/
+// code-mode-call-error.schema.json. `(string & {})` keeps them open enums:
+// documented values autocomplete, but a forward-compatible token still parses.
+
+export type CodeModeErrorOrigin =
+  | 'code_mode'
+  | 'tool_execution'
+  | 'upstream_transport'
+  | 'validation'
+  | 'policy'
+  | 'budget'
+  | (string & {})
+
+export type CodeModeRecoveryAction =
+  | 'revise_and_retry'
+  | 'retry_later'
+  | 'reauthenticate'
+  | 'confirm'
+  | 'rediscover'
+  | 'reduce_work'
+  | 'start_dependency'
+  | 'inspect_and_escalate'
+  | 'do_not_retry'
+  | (string & {})
+
+export type CodeModeRecoverySameArguments =
+  | 'safe'
+  | 'conditional'
+  | 'discouraged'
+  | 'never'
+  | (string & {})
+
+export type CodeModeErrorSideEffects = 'none_expected' | 'possible' | 'unknown' | (string & {})
+
+export interface CodeModeRecoveryAdvice {
+  action: CodeModeRecoveryAction
+  same_arguments: CodeModeRecoverySameArguments
+  guidance: string
+  retry_after_ms?: number
+}
+
+/** MCP tool-annotation hints echoed for the failed tool (schema `$defs/safety`). */
+export interface CodeModeErrorSafety {
+  read_only_hint?: boolean
+  destructive_hint?: boolean
+  idempotent_hint?: boolean
+  open_world_hint?: boolean
+}
+
+/** Raw failure evidence from the upstream result (schema `$defs/evidence`). */
+export interface CodeModeErrorEvidence {
+  content?: unknown[]
+  structured_content?: unknown
+  parsed_error?: unknown
+  omitted_content_blocks?: number
+}
+
+export interface CodeModeErrorContract {
+  contract_version: number
+  kind: string
+  message: string
+  tool?: string
+  origin: CodeModeErrorOrigin
+  recovery: CodeModeRecoveryAdvice
+  side_effects: CodeModeErrorSideEffects
+  original_kind?: string
+  cause?: string
+  safety?: CodeModeErrorSafety
+  evidence?: CodeModeErrorEvidence
 }
 
 export interface CodeModeArtifactReceipt {
@@ -191,6 +270,14 @@ export function stringifyRedactedParams(value: unknown): string {
 function parseExecuteTrace(value: Record<string, unknown>): CodeModeExecuteTrace | null {
   const calls = arrayOfWithDropped(value.calls, parseCallTrace)
   if (!calls) return null
+  const error = parseCodeModeError(value.error)
+  // An `error` key that fails to parse means "contract sent but broken" — warn
+  // like dropped calls do, rather than rendering as if no contract was sent.
+  const droppedErrors = value.error !== undefined && error === undefined ? 1 : 0
+  const warnings = [
+    ...(droppedWarning(calls.dropped, 'execute call') ?? []),
+    ...(droppedWarning(droppedErrors, 'error contract') ?? []),
+  ]
   return {
     kind: 'code_mode_execute_trace',
     call_count: numberValue(value.call_count, calls.items.length),
@@ -200,11 +287,74 @@ function parseExecuteTrace(value: Record<string, unknown>): CodeModeExecuteTrace
     execution_id: optionalString(value.execution_id),
     elapsed_ms: optionalNumber(value.elapsed_ms),
     error_kind: optionalString(value.error_kind),
+    error,
     input_tokens: optionalNumber(value.input_tokens),
     output_tokens: optionalNumber(value.output_tokens),
     logs_count: optionalNumber(value.logs_count),
     artifacts: parseArtifacts(value.artifacts),
-    warnings: droppedWarning(calls.dropped, 'execute call'),
+    warnings: warnings.length > 0 ? warnings : undefined,
+  }
+}
+
+function parseCodeModeError(value: unknown): CodeModeErrorContract | undefined {
+  if (!isRecord(value)) return undefined
+  // A numerically newer contract may have changed field semantics — fail loud
+  // instead of rendering it as v1. Absent/non-numeric versions keep the
+  // lenient v1 default below.
+  if (
+    typeof value.contract_version === 'number' &&
+    value.contract_version > SUPPORTED_CONTRACT_VERSION
+  ) {
+    return undefined
+  }
+  const recovery = isRecord(value.recovery) ? value.recovery : null
+  if (
+    typeof value.kind !== 'string' ||
+    typeof value.message !== 'string' ||
+    recovery === null ||
+    typeof recovery.action !== 'string' ||
+    typeof recovery.same_arguments !== 'string' ||
+    typeof recovery.guidance !== 'string'
+  ) {
+    return undefined
+  }
+  return {
+    contract_version: numberValue(value.contract_version, 1),
+    kind: value.kind,
+    message: value.message,
+    tool: optionalString(value.tool),
+    origin: stringValue(value.origin, 'code_mode'),
+    recovery: {
+      action: recovery.action,
+      same_arguments: recovery.same_arguments,
+      guidance: recovery.guidance,
+      retry_after_ms: optionalNumber(recovery.retry_after_ms),
+    },
+    side_effects: stringValue(value.side_effects, 'unknown'),
+    original_kind: optionalString(value.original_kind),
+    cause: optionalString(value.cause),
+    safety: parseErrorSafety(value.safety),
+    evidence: parseErrorEvidence(value.evidence),
+  }
+}
+
+function parseErrorSafety(value: unknown): CodeModeErrorSafety | undefined {
+  if (!isRecord(value)) return undefined
+  return {
+    read_only_hint: booleanOptional(value.read_only_hint),
+    destructive_hint: booleanOptional(value.destructive_hint),
+    idempotent_hint: booleanOptional(value.idempotent_hint),
+    open_world_hint: booleanOptional(value.open_world_hint),
+  }
+}
+
+function parseErrorEvidence(value: unknown): CodeModeErrorEvidence | undefined {
+  if (!isRecord(value)) return undefined
+  return {
+    content: Array.isArray(value.content) ? value.content : undefined,
+    structured_content: 'structured_content' in value ? value.structured_content : undefined,
+    parsed_error: 'parsed_error' in value ? value.parsed_error : undefined,
+    omitted_content_blocks: optionalNumber(value.omitted_content_blocks),
   }
 }
 

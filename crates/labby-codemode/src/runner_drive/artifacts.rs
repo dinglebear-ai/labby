@@ -84,8 +84,9 @@ pub(super) async fn handle_snippet_resolve_event<H: CodeModeHost>(
                 stdin,
                 &CodeModeRunnerInput::ToolError {
                     seq,
-                    kind: error.kind().to_string(),
-                    message: error.user_message().to_string(),
+                    error: Box::new(
+                        CodeModeCallError::from(error).with_tool(format!("snippet::{name}")),
+                    ),
                 },
                 deadline,
                 child,
@@ -180,20 +181,20 @@ async fn handle_artifact_write(
             write_runner_input(stdin, &CodeModeRunnerInput::ToolResult { seq, result }).await
         }
         Err(error) => {
-            let kind = error.kind().to_string();
+            let error = CodeModeCallError::from(error).with_tool(ARTIFACT_WRITE_CALL_ID);
+            let kind = error.kind.clone();
             calls.push(artifact_call(
                 seq,
                 false,
                 started.elapsed().as_millis(),
                 redacted_params,
-                Some(kind.clone()),
+                Some(kind),
             ));
             write_runner_input(
                 stdin,
                 &CodeModeRunnerInput::ToolError {
                     seq,
-                    kind,
-                    message: error.user_message().to_string(),
+                    error: Box::new(error),
                 },
             )
             .await

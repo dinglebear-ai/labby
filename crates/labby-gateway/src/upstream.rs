@@ -21,6 +21,7 @@ pub mod pool;
 #[allow(dead_code)]
 pub mod process_guard;
 pub use crate::security::spawn_guard;
+pub mod tool_error;
 #[allow(dead_code)]
 pub mod transport;
 #[allow(dead_code)]

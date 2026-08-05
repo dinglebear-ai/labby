@@ -21,6 +21,7 @@ import {
   type CodeModeArtifactReceipt,
   type CodeModeCallUi,
   type CodeModeCallTrace,
+  type CodeModeErrorContract,
   type CodeModeExecuteTrace,
   type CodeModeHistoryEntry,
   type CodeModeTrace,
@@ -142,14 +143,21 @@ function applyTrace(state: InspectorState, trace: CodeModeTrace): InspectorState
 }
 
 /**
- * Expansion state that opens the first failed call, so an error run shows its
- * error_kind and params without a tap.
+ * Expansion state for a freshly shown run: the top-level Recovery row opens
+ * when an error contract is present, and the first failed call opens so its
+ * error_kind and params show without a tap.
  */
-function expandFirstFailedCall(calls: CodeModeCallTrace[] | undefined): Record<string, boolean> {
-  const index = (calls ?? []).findIndex((call) => !call.ok)
-  if (index < 0) return {}
-  const call = (calls ?? [])[index]
-  return { [`call:${call.id}-${index}`]: true }
+function initialExpansion(
+  calls: CodeModeCallTrace[] | undefined,
+  hasError: boolean,
+): Record<string, boolean> {
+  const expanded: Record<string, boolean> = hasError ? { error: true } : {}
+  const failed = (calls ?? []).findIndex((call) => !call.ok)
+  if (failed >= 0) {
+    const call = (calls ?? [])[failed]
+    expanded[`call:${call.id}-${failed}`] = true
+  }
+  return expanded
 }
 
 function stateFromInitialTrace(initialTrace: unknown): InspectorState {
@@ -161,7 +169,9 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const [state, setState] = useState<InspectorState>(() => stateFromInitialTrace(initialTrace))
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
     const trace = parseCodeModeTrace(initialTrace)
-    return trace?.kind === 'code_mode_execute_trace' ? expandFirstFailedCall(trace.calls) : {}
+    return trace?.kind === 'code_mode_execute_trace'
+      ? initialExpansion(trace.calls, trace.error !== undefined)
+      : {}
   })
   const [toolInput, setToolInput] = useState<unknown>(null)
   const [bridgeWarning, setBridgeWarning] = useState<string | null>(null)
@@ -173,7 +183,11 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
     const trace = parseCodeModeTrace(raw)
     if (!trace) return false
     setState((previous) => applyTrace(previous, trace))
-    setExpanded(trace.kind === 'code_mode_execute_trace' ? expandFirstFailedCall(trace.calls) : {})
+    setExpanded(
+      trace.kind === 'code_mode_execute_trace'
+        ? initialExpansion(trace.calls, trace.error !== undefined)
+        : {},
+    )
     setBridgeWarning(null)
     return true
   }, [])
@@ -337,8 +351,9 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
                 : state.history.find((candidate) => candidate.seq === selection)
             setExpanded(
               selection === 'live'
-                ? expandFirstFailedCall(state.live?.calls)
-                : expandFirstFailedCall(entry?.calls),
+                ? initialExpansion(state.live?.calls, state.live?.error !== undefined)
+                : // History entries never retain an error contract — calls only.
+                  initialExpansion(entry?.calls, false),
             )
           }}
         />
@@ -358,6 +373,13 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
               // instead of growing the inline card unbounded — the MCP host sizes
               // the iframe to the document height.
               <div className="aurora-scrollbar max-h-[300px] overflow-y-auto overscroll-contain">
+                {live?.error ? (
+                  <ErrorRow
+                    error={live.error}
+                    open={Boolean(expanded.error)}
+                    onToggle={() => toggle('error')}
+                  />
+                ) : null}
                 {calls.length > 0 ? (
                   <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
                 ) : live && live.result !== undefined ? null : (
@@ -623,6 +645,102 @@ function WarnLine({ message }: { message: string }) {
       <AlertTriangle className="size-3 shrink-0" strokeWidth={1.75} />
       {message}
     </p>
+  )
+}
+
+function humanizeErrorToken(value: string): string {
+  return value.replaceAll('_', ' ')
+}
+
+function ErrorRow({
+  error,
+  open,
+  onToggle,
+}: {
+  error: CodeModeErrorContract
+  open: boolean
+  onToggle: () => void
+}) {
+  // Stringification only matters once the panel is open — skip it while the
+  // row is collapsed.
+  const evidence = open && error.evidence ? stringifyRedactedParams(error.evidence) : ''
+  const safety = open && error.safety ? stringifyRedactedParams(error.safety) : ''
+  // Raw tokens with slot-prefixed keys (kind/origin can carry the same value);
+  // humanization happens exactly once, in render.
+  const badges: { key: string; token: string }[] = [
+    { key: `k:${error.kind}`, token: error.kind },
+    { key: `o:${error.origin}`, token: error.origin },
+    { key: `s:${error.recovery.same_arguments}`, token: `same args: ${error.recovery.same_arguments}` },
+  ]
+  if (error.recovery.retry_after_ms !== undefined) {
+    badges.push({ key: 'r:retry_after', token: `retry after ${formatMs(error.recovery.retry_after_ms)}` })
+  }
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors first:border-t-0 hover:bg-aurora-hover-bg/40"
+        style={{ borderColor: HAIRLINE }}
+      >
+        <AlertTriangle className="size-3 text-aurora-error" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-error')}>Recovery</span>
+        <span className="truncate text-[11px] text-aurora-text-muted">
+          {error.tool ? `${error.tool} · ` : ''}
+          {humanizeErrorToken(error.recovery.action)} · side effects {humanizeErrorToken(error.side_effects)}
+        </span>
+        <ChevronRight
+          className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+          strokeWidth={1.75}
+        />
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-2 px-3 pb-3 pl-[34px]">
+          <p className="text-xs leading-relaxed text-aurora-text-primary">{error.message}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {badges.map((badge) => (
+              <span
+                key={badge.key}
+                className="rounded-full border px-2 py-0.5 text-[10px] font-semibold text-aurora-text-muted"
+                style={{ borderColor: HAIRLINE }}
+              >
+                {humanizeErrorToken(badge.token)}
+              </span>
+            ))}
+          </div>
+          <div>
+            <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Next Action</span>
+            <p className="mt-1 text-[11px] leading-relaxed text-aurora-text-muted">
+              {error.recovery.guidance}
+            </p>
+          </div>
+          {error.cause ? (
+            <div>
+              <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Cause</span>
+              <div className="mt-1">
+                <CodeBlock value={error.cause} />
+              </div>
+            </div>
+          ) : null}
+          {safety ? (
+            <div>
+              <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Safety Hints</span>
+              <div className="mt-1">
+                <CodeBlock value={safety} />
+              </div>
+            </div>
+          ) : null}
+          {evidence ? (
+            <div>
+              <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Evidence</span>
+              <div className="mt-1">
+                <CodeBlock value={evidence} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

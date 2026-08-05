@@ -9,14 +9,16 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::model::CallToolResult;
 use rmcp::service::RequestContext;
 use serde_json::{Map, Value};
 
 use crate::mcp::context::auth_context_from_extensions;
 use crate::mcp::envelope::build_error;
 use crate::mcp::error::DispatchError;
-use crate::mcp::result_format::{estimate_tokens_args, format_dispatch_result};
+use crate::mcp::result_format::{
+    error_result_from_envelope, estimate_tokens_args, format_dispatch_result,
+};
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {
@@ -38,9 +40,7 @@ impl LabMcpServer {
                 "internal_error",
                 "gateway manager not wired",
             );
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]));
+            return Ok(error_result_from_envelope(envelope));
         };
 
         let auth = auth_context_from_extensions(&context.extensions);
