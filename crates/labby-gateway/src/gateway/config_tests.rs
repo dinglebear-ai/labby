@@ -185,7 +185,8 @@ fn unsafe_code_mode_hint_is_not_model_visible() {
         .is_none()
     );
     assert!(
-        labby_runtime::gateway_config::normalize_code_mode_hint("query 192.0.2.1 metrics").is_none()
+        labby_runtime::gateway_config::normalize_code_mode_hint("query 192.0.2.1 metrics")
+            .is_none()
     );
     assert!(
         labby_runtime::gateway_config::normalize_code_mode_hint("connect to C:/Users/Jacob/config")

@@ -15,7 +15,7 @@ beads: lab-fvwgy, lab-cqqg6, lab-6vlz0, lab-semog
 
 ## User Request
 
-The session started with a request to "test quick-shell mcp ui via labby", then narrowed sharply to calling the Labby Code Mode tool visibly in the current Codex session. After the visible app connector failed with OAuth reauthentication, the explicit request was: "CONFIGURE CODEX TO USE BEARER TOKEN", targeting `winhost-WSL:/MNT/C/USERS/JMAGA/.CODEX`.
+The session started with a request to "test quick-shell mcp ui via labby", then narrowed sharply to calling the Labby Code Mode tool visibly in the current Codex session. After the visible app connector failed with OAuth reauthentication, the explicit request was: "CONFIGURE CODEX TO USE BEARER TOKEN", targeting `winhost-wsl:/MNT/C/USERS/JMAGA/.CODEX`.
 
 ## Session Overview
 
@@ -29,7 +29,7 @@ The session validated the Labby quick-shell path, identified a difference betwee
 4. The visible `mcp__codex_apps__labby._codemode` tool was discovered and called; it failed before Code Mode execution with `UNAUTHORIZED` and `oauth_refresh_token_missing`.
 5. Codex config was inspected first on the local devhost path, then the user corrected the target to `winhost-wsl:/mnt/c/Users/jmaga/.codex`.
 6. winhost Codex was configured to use `https://mcp.tootie.tv/mcp` with `bearer_token_env_var = "LABBY_MCP_HTTP_TOKEN"`, and the Windows user environment received both `LABBY_MCP_HTTP_TOKEN` and `LAB_MCP_HTTP_TOKEN`.
-7. winhost-Wsl bearer auth was verified against the MCP endpoint with HTTP 200, 12 listed tools, `codemode=true`, and `quick_shell_visible=true`.
+7. winhost-wsl bearer auth was verified against the MCP endpoint with HTTP 200, 12 listed tools, `codemode=true`, and `quick_shell_visible=true`.
 8. After a context restart, the visible `mcp__codex_apps__labby._codemode` call was tried again in this session and still failed via the app connector OAuth path.
 9. The user invoked `vibin:save-to-md`, so this artifact was written and committed as the session log.
 
@@ -39,7 +39,7 @@ The session validated the Labby quick-shell path, identified a difference betwee
 - Codex CLI supports HTTP MCP bearer configuration through `bearer_token_env_var`, observed via `codex mcp add --help` and `CODEX_HOME=/mnt/c/Users/jmaga/.codex codex mcp get labby`.
 - The winhost Codex config before the change used `url = "https://labby.tootie.tv/mcp"` with no bearer token env var.
 - The configured winhost raw MCP server uses `url = "https://mcp.tootie.tv/mcp"` and `bearer_token_env_var = "LABBY_MCP_HTTP_TOKEN"`.
-- A bearer-auth MCP probe from winhost-Wsl returned HTTP 200, and `tools/list` returned 12 tools with `codemode=true` and `quick_shell_visible=true`.
+- A bearer-auth MCP probe from winhost-wsl returned HTTP 200, and `tools/list` returned 12 tools with `codemode=true` and `quick_shell_visible=true`.
 - An earlier maintenance read showed a transient diff in `crates/labby/src/api/services/server_logs.rs`; a repeat immediately before committing the session artifact showed no repo diff beyond the untracked session file.
 
 ## Technical Decisions
@@ -117,7 +117,7 @@ No bead was created or closed during this save-to-md pass. The remaining in-sess
 | `codex mcp add --help` | Confirmed `--bearer-token-env-var <ENV_VAR>` is supported for streamable HTTP MCP servers. |
 | `ssh winhost-wsl 'CODEX_HOME=/mnt/c/Users/jmaga/.codex codex mcp get labby'` | Reported `transport: streamable_http`, `url: https://mcp.tootie.tv/mcp`, and `bearer_token_env_var: LABBY_MCP_HTTP_TOKEN`. |
 | `ssh winhost-wsl 'sed -n "126,134p" /mnt/c/Users/jmaga/.codex/config.toml'` | Showed the edited `[mcp_servers.labby]` section. |
-| `curl -X POST https://mcp.tootie.tv/mcp ... initialize` | Bearer-auth MCP initialize probe returned HTTP 200 from winhost-Wsl. |
+| `curl -X POST https://mcp.tootie.tv/mcp ... initialize` | Bearer-auth MCP initialize probe returned HTTP 200 from winhost-wsl. |
 | `curl -X POST https://mcp.tootie.tv/mcp ... tools/list` | Returned 12 tools after SSE parsing; `codemode=true` and `quick_shell_visible=true`. |
 | `mcp__codex_apps__labby._codemode` | Visible in-session tool call failed with `UNAUTHORIZED` and `oauth_refresh_token_missing`. |
 | `git status --short` | Final pre-commit check showed only the untracked session artifact. |
@@ -141,7 +141,7 @@ No bead was created or closed during this save-to-md pass. The remaining in-sess
 |---|---|---|
 | winhost Codex raw `labby` MCP server | Pointed at `https://labby.tootie.tv/mcp` with no bearer-token env var. | Points at `https://mcp.tootie.tv/mcp` with `bearer_token_env_var = "LABBY_MCP_HTTP_TOKEN"`. |
 | Windows user environment on winhost | `LABBY_MCP_HTTP_TOKEN` was not observed as present. | `LABBY_MCP_HTTP_TOKEN` and `LAB_MCP_HTTP_TOKEN` were stored as Windows user env vars with length 64. |
-| Raw bearer MCP connectivity from winhost-Wsl | Not configured/verified in Codex config. | MCP initialize returned HTTP 200 and tool discovery exposed `codemode` and quick-shell. |
+| Raw bearer MCP connectivity from winhost-wsl | Not configured/verified in Codex config. | MCP initialize returned HTTP 200 and tool discovery exposed `codemode` and quick-shell. |
 | Current in-session visible Labby app connector | Required OAuth reauthentication. | Still requires OAuth reauthentication until a restart/new session loads the raw bearer MCP server surface or the app connector is reauthenticted. |
 
 ## Verification Evidence
@@ -150,8 +150,8 @@ No bead was created or closed during this save-to-md pass. The remaining in-sess
 |---|---|---|---|
 | `CODEX_HOME=/mnt/c/Users/jmaga/.codex codex mcp get labby` | Labby raw MCP config uses bearer env var. | Reported `url: https://mcp.tootie.tv/mcp` and `bearer_token_env_var: LABBY_MCP_HTTP_TOKEN`. | pass |
 | PowerShell user env check on winhost | Both Labby token env vars exist without printing the token. | `LABBY_MCP_HTTP_TOKEN user length: 64`; `LAB_MCP_HTTP_TOKEN user length: 64`. | pass |
-| Bearer `initialize` request to `https://mcp.tootie.tv/mcp` from winhost-Wsl | Authenticated MCP endpoint returns success. | `http_code=200`. | pass |
-| Bearer `tools/list` request to `https://mcp.tootie.tv/mcp` from winhost-Wsl | Labby exposes Code Mode and quick-shell. | `tools=12`, `codemode=true`, `quick_shell_visible=true`. | pass |
+| Bearer `initialize` request to `https://mcp.tootie.tv/mcp` from winhost-wsl | Authenticated MCP endpoint returns success. | `http_code=200`. | pass |
+| Bearer `tools/list` request to `https://mcp.tootie.tv/mcp` from winhost-wsl | Labby exposes Code Mode and quick-shell. | `tools=12`, `codemode=true`, `quick_shell_visible=true`. | pass |
 | Visible `mcp__codex_apps__labby._codemode` call in this session | Call should reach Code Mode. | Failed before execution with `UNAUTHORIZED` and `oauth_refresh_token_missing`. | warn |
 
 ## Risks and Rollback

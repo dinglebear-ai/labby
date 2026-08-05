@@ -483,8 +483,9 @@ mod tests {
     #[test]
     fn relay_target_rejects_non_ip_hostname() {
         let machine = MachineId::parse("devhost").unwrap();
-        let error = RelayTarget::parse(machine, "http://devhost.example.com:38935/callback/devhost")
-            .expect_err("hostname target should reject");
+        let error =
+            RelayTarget::parse(machine, "http://devhost.example.com:38935/callback/devhost")
+                .expect_err("hostname target should reject");
         assert!(matches!(error, PublicRelayError::InvalidTarget(_)));
     }
 
