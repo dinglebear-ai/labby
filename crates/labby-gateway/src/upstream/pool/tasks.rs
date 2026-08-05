@@ -12,7 +12,11 @@ use rmcp::model::{
 };
 use rmcp::service::Peer;
 
+use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::capability_call::timed_capability_call_str;
+use super::helpers::estimate_task_response_size;
+use super::logging::{UpstreamRequestLog, log_upstream_request_start};
 use super::relay::RelayCachedConnection;
 
 const TASK_ROUTE_IDLE_TTL: Duration = Duration::from_hours(24);
@@ -115,6 +119,7 @@ impl UpstreamPool {
         caller_subject: Option<&str>,
         downstream: Peer<RoleServer>,
     ) -> Result<GetTaskResult, String> {
+        let start = Instant::now();
         let gateway_task_id = params.task_id.clone();
         let (peer, native_task_id, upstream_name) = {
             let mut routes = self.task_routes.write().await;
@@ -132,10 +137,30 @@ impl UpstreamPool {
             )
         };
         params.task_id = native_task_id;
-        let mut result = peer
-            .get_task(params)
-            .await
-            .map_err(|error| format!("upstream `{upstream_name}` tasks/get failed: {error}"))?;
+        // Task RPCs ride the retained relay connection captured at task
+        // creation, but they share the pooled path's per-upstream bulkhead,
+        // timeout, telemetry, and circuit-breaker contract: the concurrency
+        // permit is keyed by upstream name, not by connection, so a wedged
+        // upstream cannot absorb unbounded task polls either. `subject: None`
+        // because caller authorization is enforced above against the
+        // subject-bound `task_routes` entry — there is no `subject_connections`
+        // entry to evict for this dedicated connection.
+        let event = UpstreamRequestLog::task(&upstream_name, &gateway_task_id, "task.get");
+        log_upstream_request_start(event);
+        let timeout_ms = self.request_timeout.as_millis();
+        let mut result = timed_capability_call_str(
+            self,
+            &upstream_name,
+            UpstreamCapability::Tools,
+            event,
+            start,
+            peer.get_task(params),
+            estimate_task_response_size,
+            None,
+            |error| format!("upstream `{upstream_name}` tasks/get failed: {error}"),
+            format!("upstream `{upstream_name}` tasks/get timed out after {timeout_ms}ms"),
+        )
+        .await?;
         result.task.task.task_id = gateway_task_id;
         Ok(result)
     }
@@ -147,6 +172,7 @@ impl UpstreamPool {
         gateway_task_id: &str,
         downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
+        let start = Instant::now();
         let (peer, native_task_id, upstream_name, relay_routes) = {
             let mut routes = self.task_routes.write().await;
             prune_task_routes(&mut routes);
@@ -163,9 +189,26 @@ impl UpstreamPool {
         };
         let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
-        peer.update_task(params)
-            .await
-            .map_err(|error| format!("upstream `{upstream_name}` tasks/update failed: {error}"))?;
+        // Bulkhead + telemetry parity with `get_task_routed` — see the comment
+        // there for why `subject` is `None` on this retained relay connection.
+        // The notification delivery barrier below runs after the permit is
+        // released, so waiting on it never holds a bulkhead slot.
+        let event = UpstreamRequestLog::task(&upstream_name, gateway_task_id, "task.update");
+        log_upstream_request_start(event);
+        let timeout_ms = self.request_timeout.as_millis();
+        timed_capability_call_str(
+            self,
+            &upstream_name,
+            UpstreamCapability::Tools,
+            event,
+            start,
+            peer.update_task(params),
+            |_: &()| 0,
+            None,
+            |error| format!("upstream `{upstream_name}` tasks/update failed: {error}"),
+            format!("upstream `{upstream_name}` tasks/update timed out after {timeout_ms}ms"),
+        )
+        .await?;
         let delivered = relay_routes
             .wait_for_task_notification_after(
                 notification_sequence,
@@ -188,6 +231,7 @@ impl UpstreamPool {
         gateway_task_id: &str,
         downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
+        let start = Instant::now();
         let (peer, native_task_id, upstream_name, relay_routes) = {
             let mut routes = self.task_routes.write().await;
             prune_task_routes(&mut routes);
@@ -204,9 +248,24 @@ impl UpstreamPool {
         };
         let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
-        peer.cancel_task(params)
-            .await
-            .map_err(|error| format!("upstream `{upstream_name}` tasks/cancel failed: {error}"))?;
+        // Bulkhead + telemetry parity with `get_task_routed` — see the comment
+        // there for why `subject` is `None` on this retained relay connection.
+        let event = UpstreamRequestLog::task(&upstream_name, gateway_task_id, "task.cancel");
+        log_upstream_request_start(event);
+        let timeout_ms = self.request_timeout.as_millis();
+        timed_capability_call_str(
+            self,
+            &upstream_name,
+            UpstreamCapability::Tools,
+            event,
+            start,
+            peer.cancel_task(params),
+            |_: &()| 0,
+            None,
+            |error| format!("upstream `{upstream_name}` tasks/cancel failed: {error}"),
+            format!("upstream `{upstream_name}` tasks/cancel timed out after {timeout_ms}ms"),
+        )
+        .await?;
         let delivered = relay_routes
             .wait_for_task_notification_after(
                 notification_sequence,
@@ -226,7 +285,7 @@ impl UpstreamPool {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use rmcp::model::{
         CallToolResponse, CancelTaskParams, ClientCapabilities, ClientInfo, CreateTaskResult,
@@ -248,6 +307,7 @@ mod tests {
     struct TaskServer {
         updates: Arc<Mutex<Vec<String>>>,
         cancellations: Arc<Mutex<Vec<String>>>,
+        fail_get_task: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl ServerHandler for TaskServer {
@@ -265,6 +325,9 @@ mod tests {
             request: GetTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<GetTaskResult, ErrorData> {
+            if self.fail_get_task.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(ErrorData::internal_error("task backend unavailable", None));
+            }
             let task = Task::new(
                 request.task_id.clone(),
                 TaskStatus::Working,
@@ -307,6 +370,17 @@ mod tests {
     }
 
     async fn task_pool() -> (
+        UpstreamPool,
+        TaskServer,
+        RunningService<RoleServer, DownstreamServer>,
+        (String, u64, Option<String>),
+    ) {
+        task_pool_with_store(None).await
+    }
+
+    async fn task_pool_with_store(
+        usage_store: Option<Arc<crate::usage::UsageStore>>,
+    ) -> (
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
@@ -382,7 +456,7 @@ mod tests {
         };
 
         let key = ("task-upstream".to_string(), 7, None);
-        let pool = UpstreamPool::new();
+        let pool = UpstreamPool::new().with_usage_store(usage_store);
         pool.relay_connections
             .write()
             .await
@@ -461,6 +535,88 @@ mod tests {
         assert_eq!(
             server.cancellations.lock().await.as_slice(),
             [NATIVE_TASK_ID]
+        );
+    }
+
+    /// The bulkhead-routed task path preserves the historical error-string
+    /// format on upstream failure and records usage telemetry for both the
+    /// failing and succeeding RPCs (`timed_capability_call` contract).
+    #[tokio::test]
+    async fn routed_task_get_failure_preserves_error_format_and_records_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(dir.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let (pool, server, downstream, relay_key) =
+            task_pool_with_store(Some(Arc::clone(&store))).await;
+
+        let registered = pool
+            .register_task_response(&relay_key, Some("alice"), create_task_response())
+            .await;
+        let CallToolResponse::Task(created) = registered else {
+            panic!("expected task response");
+        };
+        let gateway_task_id = created.task.task_id.clone();
+
+        server
+            .fail_get_task
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let error = pool
+            .get_task_routed(
+                GetTaskParams::new(&gateway_task_id),
+                Some("alice"),
+                downstream.peer().clone(),
+            )
+            .await
+            .expect_err("failing upstream get_task surfaces an error");
+        assert!(
+            error.starts_with("upstream `task-upstream` tasks/get failed:"),
+            "error string format must be preserved, got: {error}"
+        );
+        assert!(
+            error.contains("task backend unavailable"),
+            "upstream message must survive, got: {error}"
+        );
+
+        server
+            .fail_get_task
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        pool.get_task_routed(
+            GetTaskParams::new(&gateway_task_id),
+            Some("alice"),
+            downstream.peer().clone(),
+        )
+        .await
+        .expect("recovered upstream get_task succeeds");
+
+        // Usage writes are fire-and-forget (`tokio::spawn`); give them a beat.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let rows: Vec<(String, String)> = store
+            .with_conn(|conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT tool_name, outcome FROM upstream_calls \
+                         WHERE upstream_name = 'task-upstream' ORDER BY outcome",
+                    )
+                    .map_err(crate::usage::store::sqlite_error)?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(crate::usage::store::sqlite_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(crate::usage::store::sqlite_error)?;
+                Ok(rows)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (gateway_task_id.clone(), "ok".to_string()),
+                (gateway_task_id.clone(), "upstream_error".to_string()),
+            ],
+            "task RPCs must record usage telemetry through the bulkhead path"
         );
     }
 }

@@ -316,6 +316,106 @@ mod tests {
         );
     }
 
+    /// A multi-MB JSON-RPC error payload (message + data) is bounded at the
+    /// pool boundary: the retained `CapabilityCallError::Mcp` never carries
+    /// the unbounded upstream payload, and the stringified error stays small.
+    #[tokio::test]
+    async fn call_tool_huge_mcp_error_payload_is_bounded() {
+        struct HugeErrorServer;
+        impl ServerHandler for HugeErrorServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "huge.error",
+                        "returns a multi-MB error payload",
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                let huge = "e".repeat(3 * 1024 * 1024);
+                Err(ErrorData::internal_error(
+                    format!("upstream exploded: {huge}"),
+                    Some(serde_json::json!({ "detail": huge })),
+                ))
+            }
+        }
+
+        let upstream_name = "huge-error";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = HugeErrorServer
+                .serve(server_transport)
+                .await
+                .expect("huge error server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("huge error client starts");
+        let peer = client_service.peer().clone();
+
+        let pool = Arc::new(UpstreamPool::new());
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        let error = pool
+            .call_tool_classified(upstream_name, CallToolRequestParams::new("huge.error"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("huge error payload should surface as an error");
+
+        let super::super::CapabilityCallError::Mcp { data, message } = &error else {
+            panic!("expected Mcp error variant, got: {error:?}");
+        };
+        assert!(
+            message.len() < 32 * 1024,
+            "stringified message must be bounded, got {} bytes",
+            message.len()
+        );
+        assert!(
+            message.contains("upstream exploded"),
+            "the leading upstream message must survive bounding"
+        );
+        assert!(
+            data.message.len() < 32 * 1024,
+            "retained ErrorData message must be bounded, got {} bytes",
+            data.message.len()
+        );
+        let serialized_data = serde_json::to_vec(&data.data).expect("bounded data serializes");
+        assert!(
+            serialized_data.len() < 8 * 1024,
+            "retained ErrorData data payload must be bounded, got {} bytes",
+            serialized_data.len()
+        );
+    }
+
     /// T9: an upstream that returns an oversized body gets a structured cap error,
     /// not a panic or OOM.
     #[tokio::test]

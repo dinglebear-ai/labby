@@ -16,7 +16,7 @@ use rmcp::model::Prompt;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::discover::routable_upstream_peers;
-use super::helpers::merge_upstream_prompts;
+use super::helpers::{classify_upstream_error, merge_upstream_prompts};
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
@@ -32,6 +32,16 @@ impl UpstreamPool {
     ) -> (Vec<Prompt>, HashMap<String, String>) {
         let peers = routable_upstream_peers(self, UpstreamCapability::Prompts, allowed).await;
 
+        // Deliberate bulkhead exception: this is a fan-out aggregation pass
+        // over every routable upstream (catalog listing/refresh), not a
+        // caller-attributed RPC, so it does not take the per-upstream
+        // `timed_capability_call` permit. Per-upstream failures deliberately
+        // degrade the merged result to partial data — the MCP `prompts/list`
+        // wire shape carries no per-upstream error field (do not invent one).
+        // Failure visibility instead lives in the circuit breaker +
+        // `prompt_last_error` recorded below (surfaced via `gateway.status`)
+        // and the classified `warn!` per failing upstream.
+        //
         // Issue RPCs in parallel. merge_upstream_prompts sorts internally,
         // so completion order does not affect the final result.
         let mut futures = FuturesUnordered::new();
@@ -79,10 +89,11 @@ impl UpstreamPool {
                     );
                 }
                 Err(e) => {
+                    let error_text = e.to_string();
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Prompts,
-                        format!("failed to list prompts from upstream: {e}"),
+                        format!("failed to list prompts from upstream: {error_text}"),
                     )
                     .await;
                     {
@@ -93,7 +104,8 @@ impl UpstreamPool {
                     }
                     tracing::warn!(
                         upstream = %name,
-                        error = %e,
+                        kind = classify_upstream_error(&error_text),
+                        error = %error_text,
                         "failed to list prompts from upstream"
                     );
                 }

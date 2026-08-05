@@ -109,6 +109,60 @@ impl std::fmt::Display for CapabilityCallError {
 
 impl std::error::Error for CapabilityCallError {}
 
+/// Char cap for the upstream-authored JSON-RPC error message retained on
+/// [`CapabilityCallError::Mcp`], embedded in stringified surface errors, and
+/// interpolated into dispatch logs.
+const UPSTREAM_ERROR_MESSAGE_CAP_CHARS: usize = 4096;
+
+/// Byte cap for the upstream-authored `ErrorData.data` payload retained on
+/// [`CapabilityCallError::Mcp`]. Matches the Code Mode consumer's
+/// `UPSTREAM_ERROR_DATA_CAP_BYTES` (`code_mode_host.rs`) so the downstream
+/// re-redaction is idempotent rather than double-truncating.
+const UPSTREAM_ERROR_DATA_CAP_BYTES: usize = 2048;
+
+/// Bound the upstream-controlled fields of a JSON-RPC error before it is
+/// logged or stored.
+///
+/// `ErrorData`'s `Display` interpolates both `message` and the full serialized
+/// `data` value, so an unbounded upstream error would otherwise flow multi-MB
+/// payloads into every log line, stringified surface error, and the retained
+/// [`CapabilityCallError::Mcp`] enum. Small payloads pass through byte-for-byte
+/// unchanged — this is a size guard at the pool boundary, not a redaction pass;
+/// consumer-boundary sanitization (secret redaction, prompt-marker stripping)
+/// still happens in `code_mode_host.rs` / `tool_error.rs`.
+fn bound_upstream_service_error(error: rmcp::ServiceError) -> rmcp::ServiceError {
+    match error {
+        rmcp::ServiceError::McpError(data) => {
+            rmcp::ServiceError::McpError(bound_upstream_error_data(data))
+        }
+        other => other,
+    }
+}
+
+fn bound_upstream_error_data(mut data: rmcp::model::ErrorData) -> rmcp::model::ErrorData {
+    // Byte length is a cheap upper bound on char count: only scan and rewrite
+    // when the message can actually exceed the cap.
+    if data.message.len() > UPSTREAM_ERROR_MESSAGE_CAP_CHARS
+        && data.message.chars().count() > UPSTREAM_ERROR_MESSAGE_CAP_CHARS
+    {
+        data.message = labby_runtime::agent_error::sanitize_error_text(
+            &data.message,
+            UPSTREAM_ERROR_MESSAGE_CAP_CHARS,
+        )
+        .into();
+    }
+    if let Some(payload) = data.data.as_ref() {
+        let serialized_len = serde_json::to_vec(payload).map_or(usize::MAX, |bytes| bytes.len());
+        if serialized_len > UPSTREAM_ERROR_DATA_CAP_BYTES {
+            data.data = Some(labby_codemode::redact_trace_value(
+                payload,
+                UPSTREAM_ERROR_DATA_CAP_BYTES,
+            ));
+        }
+    }
+    data
+}
+
 /// Outcome of a timed capability call before size-cap enforcement.
 pub(super) enum RawCallOutcome<R> {
     Ok(R),
@@ -304,6 +358,11 @@ where
             Ok(result)
         }
         RawCallOutcome::UpstreamError(error) => {
+            // Bound upstream-authored error payloads (JSON-RPC message + data)
+            // before they reach `error_message_fn`, dispatch logs, or the
+            // retained error enum — an upstream must not be able to push a
+            // multi-MB error body through the gateway's error plumbing.
+            let error = bound_upstream_service_error(error);
             let message = error_message_fn(&error);
             if service_error_affects_connection_health(&error) {
                 pool.record_failure_for(upstream_name, capability, message.clone())
@@ -394,4 +453,75 @@ where
     )
     .await
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use labby_runtime::agent_error::SANITIZE_TRUNCATION_MARKER;
+    use rmcp::model::{ErrorCode, ErrorData};
+
+    use super::*;
+
+    #[test]
+    fn bound_upstream_error_data_caps_multi_mb_message_and_data() {
+        let huge = "x".repeat(3 * 1024 * 1024);
+        let error = rmcp::ServiceError::McpError(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            huge.clone(),
+            Some(serde_json::json!({ "detail": huge })),
+        ));
+
+        let rmcp::ServiceError::McpError(data) = bound_upstream_service_error(error) else {
+            panic!("McpError variant must be preserved");
+        };
+
+        assert!(
+            data.message.chars().count()
+                <= UPSTREAM_ERROR_MESSAGE_CAP_CHARS + SANITIZE_TRUNCATION_MARKER.len(),
+            "message must be bounded, got {} chars",
+            data.message.chars().count()
+        );
+        assert!(data.message.ends_with(SANITIZE_TRUNCATION_MARKER));
+        let serialized_data =
+            serde_json::to_vec(&data.data).expect("bounded data payload serializes");
+        assert!(
+            serialized_data.len() <= UPSTREAM_ERROR_DATA_CAP_BYTES,
+            "data payload must be bounded, got {} bytes",
+            serialized_data.len()
+        );
+        // What surfaces/logs actually interpolate — the full `Display` — is
+        // bounded too (message + data both flow through `ErrorData::fmt`).
+        let display = rmcp::ServiceError::McpError(data).to_string();
+        assert!(
+            display.len() < 16 * 1024,
+            "stringified error must be bounded, got {} bytes",
+            display.len()
+        );
+    }
+
+    #[test]
+    fn bound_upstream_error_data_leaves_small_payloads_unchanged() {
+        let payload = serde_json::json!({
+            "kind": "forbidden",
+            "required_scopes": ["example:write"],
+        });
+        let error = rmcp::ServiceError::McpError(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "forbidden: requires scope: example:write",
+            Some(payload.clone()),
+        ));
+
+        let rmcp::ServiceError::McpError(data) = bound_upstream_service_error(error) else {
+            panic!("McpError variant must be preserved");
+        };
+
+        assert_eq!(data.message, "forbidden: requires scope: example:write");
+        assert_eq!(data.data, Some(payload));
+    }
+
+    #[test]
+    fn bound_upstream_service_error_passes_non_mcp_errors_through() {
+        let bounded = bound_upstream_service_error(rmcp::ServiceError::TransportClosed);
+        assert!(matches!(bounded, rmcp::ServiceError::TransportClosed));
+    }
 }
