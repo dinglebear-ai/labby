@@ -52,6 +52,11 @@ stable GitHub release triggers the heavy release workflows:
 - `build-incus-image.yml` uses the central hosted Incus image workflow and
   publishes checksum-verified image assets plus the rolling Incus alias.
 
+Releases are created as drafts (`"draft": true` in `release-please-config.json`)
+so publication stays a human decision. Do not make any workflow publish a draft
+release; `release.yml` asserts it was invoked from an already-published release.
+`release-publish-reminder.yml` only surfaces pending drafts as an issue.
+
 The supported artifacts are Linux x86_64 and Windows x86_64 only. Do not add
 other architectures, emulation, cross-platform image matrices, or QEMU setup.
 
