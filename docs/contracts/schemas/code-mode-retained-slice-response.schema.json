@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dinglebear.ai/schemas/labby/code-mode-retained-slice-response-v1.json",
+  "title": "Labby Code Mode Retained Slice Response",
+  "description": "Successful return value of the sandbox helper `codemode.slice(handle, path, range)`. The selection is always returned whole — a selection that would exceed the per-call result ceiling raises `retained_value_too_large` instead of being silently truncated.",
+  "type": "object",
+  "required": [
+    "handle",
+    "path",
+    "value",
+    "selection_bytes",
+    "truncated"
+  ],
+  "properties": {
+    "handle": {
+      "type": "string",
+      "pattern": "^cmr_[0-9a-f]{32}$"
+    },
+    "path": {
+      "type": "string",
+      "description": "The RFC 6901 pointer that was resolved, echoed back verbatim."
+    },
+    "value": {
+      "description": "The selected sub-value, after any range window. Any JSON type."
+    },
+    "selection_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Serialized byte length of `value`."
+    },
+    "truncated": {
+      "const": false,
+      "description": "Always false. Slice never truncates; it errors instead. Present so callers can assert completeness without inspecting sizes."
+    },
+    "range_applied": {
+      "type": "object",
+      "description": "The effective window after clamping, present only when a range was supplied.",
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Length of the value at `path` before the range was applied — array elements or string chars. Present only when a range was supplied. Lets a pager detect the end of the sequence without a second fetch."
+    }
+  },
+  "additionalProperties": false
+}

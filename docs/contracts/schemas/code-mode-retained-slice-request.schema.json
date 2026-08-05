@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dinglebear.ai/schemas/labby/code-mode-retained-slice-request-v1.json",
+  "title": "Labby Code Mode Retained Slice Request",
+  "description": "Parameters accepted by the sandbox helper `codemode.slice(handle, path, range)`, dispatched host-side as `__lab_internal::codemode_result_slice`.",
+  "type": "object",
+  "required": [
+    "handle"
+  ],
+  "properties": {
+    "handle": {
+      "type": "string",
+      "pattern": "^cmr_[0-9a-f]{32}$"
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^(/([^/~]|~[01])*)*$",
+      "description": "RFC 6901 JSON Pointer selecting a sub-value of the retained root. The empty string selects the root. `~0` escapes `~`, `~1` escapes `/`.",
+      "examples": [
+        "",
+        "/items",
+        "/data/results/0/name",
+        "/weird~1key"
+      ]
+    },
+    "range": {
+      "$ref": "#/$defs/range"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "range": {
+      "type": "object",
+      "description": "Optional bounded window applied to the value AT `path`. Legal only when that value is an array or a string; applying a range to an object, number, boolean, or null is a `retained_slice_invalid` error. Semantics follow Array.prototype.slice: indices clamp to bounds, and start >= end yields an empty result rather than an error. For strings, indices count Unicode scalar values (chars), never bytes, so a slice can never split a multi-byte character.",
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Exclusive upper bound. Defaults to the array length or string char-length."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -5,6 +5,7 @@ that are not broad project contracts.
 
 | File | Purpose |
 | --- | --- |
+| [codemode-retained-results/](./codemode-retained-results/README.md) | Retain and page oversized Code Mode results by handle (#274): spec, contract, models, types, plan, progress. |
 | [FEATURE_BRIEF.md](./FEATURE_BRIEF.md) | Feature-level product brief. |
 | [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | Implementation plan for the related feature work. |
 | [artifact-diffs.md](./artifact-diffs.md) | Artifact diff notes used by marketplace/plugin work. |
