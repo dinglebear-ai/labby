@@ -174,9 +174,13 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 
 `Labby.page` is the complete Labby-for-Unraid control plane, rendered
 directly inside Settings > Labby. Its Overview, Gateway, and Settings tabs
-match the supplied Labby-for-Unraid design while remaining a native `.page`;
-there is no iframe, separate route, mock dataset, or standalone settings
-application. Status cards and counts come from `rc.labby` plus the live
+match the original Labby-for-Unraid design mock while remaining a native
+`.page`; there is no iframe, separate route, mock dataset, or standalone
+settings application. (That mock — `Labby for Unraid.html` — and its
+fidelity-QA record `design-qa.md` were removed from the repo root once the
+implementation matched them. Both are still retrievable from git history —
+`git show 59699f459:"Labby for Unraid.html"` — if the visual source is ever
+needed again.) Status cards and counts come from `rc.labby` plus the live
 gateway catalog. Gateway controls expose reload, filter,
 add-HTTP/add-stdio, enable/disable, remove, and stale-process cleanup
 actions. Settings owns SERVICE, LABBY_DIR, HTTP_HOST, HTTP_PORT,
