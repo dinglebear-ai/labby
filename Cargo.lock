@@ -1979,7 +1979,6 @@ dependencies = [
  "nix",
  "process-wrap",
  "proptest",
- "regex",
  "reqwest",
  "rmcp",
  "rusqlite",

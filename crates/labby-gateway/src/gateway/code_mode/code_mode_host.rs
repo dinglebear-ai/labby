@@ -661,8 +661,10 @@ fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str
             // required_scopes/…) the old stringified Display used to carry.
             // Redacted (secret keys + secret-shaped strings) and bounded.
             if let Some(payload) = data.data.as_ref() {
-                let redacted =
-                    labby_codemode::redact_trace_value(payload, UPSTREAM_ERROR_DATA_CAP_BYTES);
+                let redacted = labby_runtime::redact::redact_trace_value(
+                    payload,
+                    UPSTREAM_ERROR_DATA_CAP_BYTES,
+                );
                 if let Ok(serialized) = serde_json::to_string(&redacted) {
                     let serialized =
                         labby_runtime::agent_error::redact_secret_like_segments(&serialized);

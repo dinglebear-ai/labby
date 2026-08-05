@@ -12,28 +12,67 @@
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use labby_runtime::agent_error::AgentErrorContext;
 
 pub use crate::dispatch::error::ToolError;
 
-/// Local newtype wrapping `ToolError` so the API surface can implement
+/// Local wrapper around `ToolError` so the API surface can implement
 /// axum's `IntoResponse` without violating the orphan rule.
 ///
 /// Handlers return `Result<_, ApiError>`. `?` on a `ToolError`-producing
 /// expression converts automatically via `From<ToolError>`. Internal
 /// (non-handler) helpers may keep returning `ToolError`; convert at the
 /// handler boundary.
+///
+/// The optional context carries the dispatch `service`/`action` into the
+/// serialized body so HTTP error envelopes match what MCP envelopes carry.
+/// `handle_action` populates it on the `/v1/<service>` dispatch path; errors
+/// raised outside a service dispatch (router/auth middleware) have none.
 #[derive(Debug, Clone)]
-pub struct ApiError(pub ToolError);
+pub struct ApiError {
+    pub error: ToolError,
+    context: Option<Box<AgentErrorContext>>,
+}
+
+impl ApiError {
+    #[must_use]
+    pub fn new(error: ToolError) -> Self {
+        Self {
+            error,
+            context: None,
+        }
+    }
+
+    /// Attach the dispatch `service`/`action` context serialized into the body.
+    #[must_use]
+    pub fn with_service_action(mut self, service: &str, action: &str) -> Self {
+        self.context = Some(Box::new(AgentErrorContext::for_service_action(
+            service, action,
+        )));
+        self
+    }
+
+    /// The JSON body this error serializes to — byte-identical to the MCP
+    /// error-object shape, with `service`/`action` populated when the error
+    /// came from a service dispatch.
+    #[must_use]
+    pub fn body(&self) -> serde_json::Value {
+        match &self.context {
+            Some(context) => self.error.to_agent_value_with_context(context),
+            None => self.error.to_agent_value(),
+        }
+    }
+}
 
 impl From<ToolError> for ApiError {
     fn from(e: ToolError) -> Self {
-        Self(e)
+        Self::new(e)
     }
 }
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        self.error.fmt(f)
     }
 }
 
@@ -41,7 +80,7 @@ impl std::error::Error for ApiError {}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match self.0.kind() {
+        let status = match self.error.kind() {
             "auth_failed" => StatusCode::UNAUTHORIZED,
             "not_found" => StatusCode::NOT_FOUND,
             "rate_limited" | "queue_saturated" => StatusCode::TOO_MANY_REQUESTS,
@@ -92,11 +131,10 @@ impl IntoResponse for ApiError {
             | "workspace_not_configured" => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        // Serialize the inner ToolError directly — byte-identical to the MCP
-        // error envelope.
-        let body = serde_json::to_value(&self.0).unwrap_or_else(|_| {
-            serde_json::json!({"kind": "internal_error", "message": "error serialization failed"})
-        });
+        // Serialize the inner ToolError with the dispatch context (when one
+        // was attached) — matching the MCP error envelope, which always
+        // carries `service`/`action`.
+        let body = self.body();
 
         // RFC 9728: WWW-Authenticate on 401 responses requires the resolved
         // resource_url from AppState. IntoResponse has no access to state, so
@@ -114,7 +152,7 @@ mod tests {
     use super::{ApiError, ToolError};
 
     fn status_for(kind: &str) -> StatusCode {
-        ApiError(ToolError::Sdk {
+        ApiError::new(ToolError::Sdk {
             sdk_kind: kind.to_string(),
             message: "x".to_string(),
         })
@@ -123,8 +161,24 @@ mod tests {
     }
 
     #[test]
+    fn body_includes_service_action_only_when_context_attached() {
+        let err = ApiError::new(ToolError::Sdk {
+            sdk_kind: "missing_param".to_string(),
+            message: "query is required".to_string(),
+        });
+        let bare = err.body();
+        assert!(bare.get("service").is_none());
+        assert!(bare.get("action").is_none());
+
+        let contextual = err.with_service_action("gateway", "gateway.list").body();
+        assert_eq!(contextual["kind"], "missing_param");
+        assert_eq!(contextual["service"], "gateway");
+        assert_eq!(contextual["action"], "gateway.list");
+    }
+
+    #[test]
     fn confirmation_required_maps_to_422() {
-        let response = ApiError(ToolError::Sdk {
+        let response = ApiError::new(ToolError::Sdk {
             sdk_kind: "confirmation_required".to_string(),
             message: "confirm".to_string(),
         })
@@ -134,7 +188,7 @@ mod tests {
 
     #[test]
     fn restart_required_maps_to_conflict() {
-        let response = ApiError(ToolError::Sdk {
+        let response = ApiError::new(ToolError::Sdk {
             sdk_kind: "restart_required".to_string(),
             message: "restart labby serve".to_string(),
         })
@@ -145,7 +199,7 @@ mod tests {
 
     #[test]
     fn queue_saturated_maps_to_429() {
-        let response = ApiError(ToolError::Sdk {
+        let response = ApiError::new(ToolError::Sdk {
             sdk_kind: "queue_saturated".to_string(),
             message: "queue full".to_string(),
         })
@@ -162,7 +216,7 @@ mod tests {
     #[test]
     fn path_traversal_maps_to_422() {
         // Generic path-safety failures are caller-fixable validation errors.
-        let response = ApiError(ToolError::Sdk {
+        let response = ApiError::new(ToolError::Sdk {
             sdk_kind: "path_traversal".to_string(),
             message: "archive entry escapes extract root".to_string(),
         })
@@ -218,7 +272,7 @@ mod tests {
     #[test]
     fn content_too_large_maps_to_413() {
         // Decompression-bomb / oversized-archive guard (Sec/Test-M3).
-        let response = ApiError(ToolError::Sdk {
+        let response = ApiError::new(ToolError::Sdk {
             sdk_kind: "content_too_large".to_string(),
             message: "uncompressed archive exceeds cap".to_string(),
         })

@@ -46,6 +46,19 @@ use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
 
+/// In-band error-contract discovery: the published JSON Schema for the
+/// versioned agent-error contract every error envelope carries
+/// (`docs/contracts/agent-error-contract.md`).
+pub(crate) const AGENT_ERROR_CONTRACT_URI: &str = "lab://contracts/agent-error";
+/// In-band error-contract discovery: the published JSON Schema for Code Mode
+/// `callTool` rejection payloads (`docs/contracts/code-mode-tool-errors.md`).
+pub(crate) const CODE_MODE_CALL_ERROR_CONTRACT_URI: &str = "lab://contracts/code-mode-call-error";
+const AGENT_ERROR_CONTRACT_SCHEMA: &str =
+    include_str!("../../../../docs/contracts/schemas/agent-error.schema.json");
+const CODE_MODE_CALL_ERROR_CONTRACT_SCHEMA: &str =
+    include_str!("../../../../docs/contracts/schemas/code-mode-call-error.schema.json");
+const CONTRACT_SCHEMA_MIME: &str = "application/schema+json";
+
 /// MCP Apps (Claude / SEP-1724) MIME — bound via the tool's `_meta.ui.resourceUri`.
 pub(crate) const CODE_MODE_APP_MIME: &str = "text/html;profile=mcp-app";
 /// OpenAI Apps (ChatGPT / Codex) MIME — bound via the tool's `openai/outputTemplate`.
@@ -387,6 +400,32 @@ impl LabMcpServer {
                 .with_mime_type("application/json"),
         );
 
+        // Error-contract schemas: always listed so agents can discover the
+        // envelope contract in-band instead of relying on out-of-band docs.
+        if !resources.finished() {
+            resources.accept(
+                Resource::new(AGENT_ERROR_CONTRACT_URI, "contracts/agent-error")
+                    .with_description(
+                        "JSON Schema for the versioned agent-error contract carried by every \
+                         Labby error envelope (kind, origin, recovery, side_effects)",
+                    )
+                    .with_mime_type(CONTRACT_SCHEMA_MIME),
+            );
+        }
+        if !resources.finished() {
+            resources.accept(
+                Resource::new(
+                    CODE_MODE_CALL_ERROR_CONTRACT_URI,
+                    "contracts/code-mode-call-error",
+                )
+                .with_description(
+                    "JSON Schema for the structured error object a failed Code Mode \
+                     callTool rejects with",
+                )
+                .with_mime_type(CONTRACT_SCHEMA_MIME),
+            );
+        }
+
         if !resources.finished()
             && self.code_mode_app_state.is_enabled()
             && code_mode_app_resources_visible(
@@ -701,6 +740,17 @@ impl LabMcpServer {
             return Err(unknown_resource_error(&uri, true));
         }
 
+        // Error-contract schema resources: in-band discovery of the published
+        // agent-error / Code Mode call-error contracts, served from the
+        // embedded schemas. Read-only, no scope requirement — the contract is
+        // documentation, exactly like `lab://catalog`.
+        if uri == AGENT_ERROR_CONTRACT_URI || uri == CODE_MODE_CALL_ERROR_CONTRACT_URI {
+            return self
+                .read_contract_schema_resource(&uri, &subject, start, &context)
+                .await
+                .map(Into::into);
+        }
+
         // Branch 1: local per-service action resources. This must precede the
         // `lab://gateway/*` proxy branch so `lab://gateway/actions` remains the
         // built-in gateway service catalog resource, not a gateway synthetic
@@ -802,6 +852,42 @@ impl LabMcpServer {
         self.read_local_json_resource(json, &uri, &subject, start, &context)
             .await
             .map(Into::into)
+    }
+
+    /// Serve one of the embedded error-contract JSON Schemas.
+    async fn read_contract_schema_resource(
+        &self,
+        uri: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let schema = match uri {
+            AGENT_ERROR_CONTRACT_URI => AGENT_ERROR_CONTRACT_SCHEMA,
+            CODE_MODE_CALL_ERROR_CONTRACT_URI => CODE_MODE_CALL_ERROR_CONTRACT_SCHEMA,
+            _ => return Err(unknown_resource_error(uri, false)),
+        };
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = uri,
+            "contract schema resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(schema, uri.to_string()).with_mime_type(CONTRACT_SCHEMA_MIME),
+        ]))
     }
 
     async fn read_local_json_resource(
@@ -1936,6 +2022,62 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         assert_eq!(meta.0["ui"]["csp"]["connectDomains"], json!([]));
         assert_eq!(meta.0["ui"]["csp"]["resourceDomains"], json!([]));
         assert_eq!(meta.0["ui"]["csp"]["frameDomains"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn contract_schema_resources_are_listed_and_readable() {
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            code_mode_server().await,
+            transport,
+            None,
+        );
+
+        // Listed for in-band discovery — the contract is documentation, so it
+        // is advertised at the same visibility as `lab://catalog`.
+        let listed = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .expect("list resources");
+        for uri in [AGENT_ERROR_CONTRACT_URI, CODE_MODE_CALL_ERROR_CONTRACT_URI] {
+            let resource = listed
+                .resources
+                .iter()
+                .find(|resource| resource.uri == uri)
+                .unwrap_or_else(|| panic!("contract resource {uri} must be listed"));
+            assert_eq!(resource.mime_type.as_deref(), Some(CONTRACT_SCHEMA_MIME));
+        }
+
+        // Each reads back as the embedded, parseable JSON Schema.
+        for (uri, expected_id) in [
+            (AGENT_ERROR_CONTRACT_URI, "agent-error-v1.json"),
+            (
+                CODE_MODE_CALL_ERROR_CONTRACT_URI,
+                "code-mode-call-error-v1.json",
+            ),
+        ] {
+            let response = running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(uri),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("read {uri}: {e:?}"));
+            let result = complete_resource(response);
+            let ResourceContents::TextResourceContents { text, .. } = &result.contents[0] else {
+                panic!("contract schema must be text content");
+            };
+            let schema: Value = serde_json::from_str(text).expect("schema must be valid JSON");
+            assert!(
+                schema["$id"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with(expected_id)),
+                "unexpected $id for {uri}: {}",
+                schema["$id"]
+            );
+        }
     }
 
     #[tokio::test]
