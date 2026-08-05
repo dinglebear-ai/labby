@@ -49,8 +49,28 @@ rasterises the template with headless Chrome at 2x, and downsamples to exactly
 Pillow or `uv` on `PATH`. The font is fetched to a temporary directory and is
 never committed.
 
+Set `OUT=` to render somewhere other than `.github/social-preview.png`, and
+`CHROME=` to pick a specific browser binary.
+
 Edit `social-preview.template.html` to change the card; the `__FONT__` token in
 its `@font-face` block is the substitution point and must survive edits.
+
+### What is pinned, and what "reproducible" means here
+
+The font is pinned to a `google/fonts` **commit SHA** and its SHA-256 is
+verified before use; a mismatch aborts without writing anything. This is not
+ceremony. `curl -fL` only rejects 4xx/5xx, so any 200 response that is not a
+font — an LFS pointer, a captive portal, a redirect to HTML — would otherwise
+be embedded and rendered in a fallback sans, producing a card that looks
+plausible, passes every check in the script, and gets committed and uploaded
+unnoticed. That is precisely the failure this whole PNG-not-SVG approach exists
+to prevent.
+
+Pillow is pinned too. **Chrome is not** — it is whatever is on `PATH`. So the
+output is byte-identical only for a given Chrome build; the committed PNG was
+rendered with Chrome 151. A different major version may re-rasterise the text
+slightly, which is a visual no-op but changes the file hash. Do not treat a
+hash change after a browser upgrade as a regression.
 
 ## Uploading the social preview — this part is manual
 
