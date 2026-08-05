@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommunityApplications>
+  <Profile>Dinglebear AI publishes Labby, a Rust homelab control plane with MCP gateway, CLI, API, dashboard, and Unraid integration.</Profile>
+  <WebPage>https://github.com/dinglebear-ai/labby</WebPage>
+  <Icon>https://raw.githubusercontent.com/dinglebear-ai/labby/main/icon.svg</Icon>
+</CommunityApplications>
