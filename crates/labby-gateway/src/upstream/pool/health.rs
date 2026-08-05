@@ -356,11 +356,11 @@ mod tests {
         );
         assert_eq!(
             types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD + 1),
-            std::time::Duration::from_secs(60)
+            std::time::Duration::from_mins(1)
         );
         assert_eq!(
             types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD + 2),
-            std::time::Duration::from_secs(120)
+            std::time::Duration::from_mins(2)
         );
         assert_eq!(
             types::reprobe_interval_for_failures(u32::MAX),
@@ -385,9 +385,8 @@ mod tests {
         {
             let mut catalog = pool.catalog.write().await;
             let entry = catalog.get_mut("broken").unwrap();
-            entry.tool_unhealthy_since = Some(
-                Instant::now()
-                    - types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD),
+            entry.tool_unhealthy_since = Instant::now().checked_sub(
+                types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD),
             );
         }
         assert!(pool.should_reprobe("broken").await);

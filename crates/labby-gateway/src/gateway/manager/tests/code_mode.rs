@@ -433,6 +433,125 @@ async fn mcp_tool_error_result_does_not_poison_upstream_connection_health() {
 }
 
 #[tokio::test]
+async fn cortex_exact_schema_rejects_bad_fields_before_upstream_dispatch() {
+    // Minimal composed-schema fixture. This test proves the *wiring* facts:
+    // a cached upstream inputSchema is enforced before dispatch (invalid_param)
+    // and a pre-dispatch failure never touches upstream health. Full keyword
+    // regression coverage (the original ~65-line Cortex schema) lives in
+    // `labby-codemode`'s `tests_ids_schema.rs`.
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("cortex")]).await;
+    let schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action"],
+        "properties": {
+            "action": { "type": "string" },
+            "project": { "type": "string" }
+        },
+        "oneOf": [
+            {
+                "properties": { "action": { "const": "project_context" } },
+                "required": ["action", "project"]
+            }
+        ]
+    });
+    let upstream_name: Arc<str> = Arc::from("cortex");
+    let tool = rmcp::model::Tool::new(
+        "cortex".to_string(),
+        "Cortex action dispatcher",
+        Arc::new(serde_json::Map::new()),
+    );
+    pool.insert_entry_for_tests(
+        "cortex",
+        fixture_upstream_entry(
+            "cortex",
+            HashMap::from([(
+                "cortex".to_string(),
+                UpstreamTool {
+                    tool,
+                    input_schema: Some(schema),
+                    output_schema: None,
+                    upstream_name,
+                    destructive: false,
+                },
+            )]),
+        ),
+    )
+    .await;
+
+    for params in [
+        // additionalProperties: false rejects the unknown field.
+        json!({"action": "project_context", "project": "/repo", "since": "x"}),
+        // oneOf requires `project` alongside `project_context`.
+        json!({"action": "project_context"}),
+    ] {
+        let error = CodeModeHost::call_tool(
+            &manager,
+            "cortex::cortex",
+            params,
+            &CodeModeCaller::Scoped {
+                capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+                sub: Some("user-1".to_string()),
+            },
+            CodeModeSurface::Mcp,
+            &ToolScope::default(),
+            labby_codemode::ExecCtx::none(),
+        )
+        .await
+        .expect_err("schema mismatch must fail before the upstream call");
+        assert_eq!(error.kind(), "invalid_param");
+    }
+
+    assert_eq!(
+        pool.upstream_tool_last_error("cortex").await,
+        None,
+        "pre-dispatch schema failures must not affect upstream health"
+    );
+}
+
+#[tokio::test]
+async fn mcp_invalid_params_map_to_code_mode_invalid_param_without_health_failure() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("cortex")]).await;
+    let message =
+        "invalid project_context arguments: unknown field `since`, expected project, tool, limit";
+    pool.insert_mcp_error_server_for_tests(
+        "cortex",
+        rmcp::model::ErrorData::invalid_params(message, None),
+    )
+    .await;
+
+    let err = manager
+        .execute_upstream_tool("cortex", "cortex", json!({}))
+        .await
+        .expect_err("invalid params must remain a Code Mode caller error");
+
+    match err {
+        ToolError::Sdk {
+            sdk_kind,
+            message: actual,
+        } => {
+            assert_eq!(sdk_kind, "invalid_param");
+            assert_eq!(actual, message);
+        }
+        other => panic!("expected invalid_param sdk error, got {other:?}"),
+    }
+    assert_eq!(
+        pool.upstream_tool_last_error("cortex").await,
+        None,
+        "valid MCP errors must not poison upstream health"
+    );
+    assert!(
+        pool.upstream_tool_health("cortex")
+            .await
+            .expect("health entry")
+            .is_routable(),
+        "upstream must remain routable after invalid params"
+    );
+}
+
+#[tokio::test]
 async fn palette_catalog_discovers_configured_upstream_tools() {
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;

@@ -230,6 +230,53 @@ Upstream transport error:
         }
     }
 
+    /// Build a transport-class failure that keeps the pool's classified kind
+    /// (`timeout`, `queue_saturated`, `network_error`, `cancelled`, …) while
+    /// applying the same sanitization and safety-hint handling as
+    /// [`Self::upstream_transport_with_safety`]. Recovery advice derives from
+    /// the classified kind instead of the generic transport guidance.
+    #[must_use]
+    pub fn upstream_transport_classified(
+        tool: impl Into<String>,
+        kind: impl Into<String>,
+        cause: impl Into<String>,
+        safety: CodeModeToolSafetyHints,
+    ) -> Self {
+        let tool = tool.into();
+        let kind = kind.into();
+        let cause = sanitize_error_text(&cause.into(), MAX_TRANSPORT_CAUSE_CHARS);
+        let recovery = recovery_for_kind(&kind, &safety, None);
+        // `queue_saturated` closes the local concurrency gate before dispatch,
+        // so the call never reached the upstream regardless of the tool's
+        // hints.
+        let side_effects = if kind == "queue_saturated" || safety.read_only_hint == Some(true) {
+            CodeModeSideEffectRisk::NoneExpected
+        } else {
+            CodeModeSideEffectRisk::Possible
+        };
+        let caveat = if matches!(side_effects, CodeModeSideEffectRisk::Possible) {
+            " The tool may have started before the failure, so do not repeat a mutating call unchanged unless it is known to be safe."
+        } else {
+            ""
+        };
+        let message = format!(
+            "Tool `{tool}` did not return a completed MCP result ({kind}).{caveat}\n\nUpstream failure:\n{cause}"
+        );
+        Self {
+            contract_version: AGENT_ERROR_CONTRACT_VERSION,
+            kind,
+            message,
+            tool: Some(tool),
+            origin: CodeModeErrorOrigin::UpstreamTransport,
+            recovery,
+            side_effects,
+            original_kind: None,
+            cause: (!cause.is_empty()).then_some(cause),
+            safety,
+            evidence: None,
+        }
+    }
+
     #[must_use]
     pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
         if self.tool.is_none() {

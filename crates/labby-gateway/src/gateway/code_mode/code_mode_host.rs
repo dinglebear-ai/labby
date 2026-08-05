@@ -17,11 +17,12 @@ use labby_codemode::{
 };
 use std::sync::Arc;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorCode, ErrorData};
 use serde_json::{Map, Value};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::manager::GatewayManager;
+use crate::upstream::pool::CapabilityCallError;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
@@ -483,7 +484,7 @@ impl GatewayManager {
         };
         let mut upstream_params = CallToolRequestParams::new(tool.to_string());
         upstream_params.arguments = Some(arguments);
-        match pool.call_tool(upstream, upstream_params).await {
+        match pool.call_tool_classified(upstream, upstream_params).await {
             Some(Ok(result)) => {
                 // `is_error=true` is an MCP tool-level failure carried inside
                 // a successful protocol response. Reaching this branch proves
@@ -512,13 +513,27 @@ impl GatewayManager {
                 })
             }
             Some(Err(err)) => {
-                // The pool owns transport-vs-MCP error classification and has
-                // already updated connection health. The absence of a completed
-                // MCP result is a real transport failure, distinct from
+                // The pool owns transport-vs-MCP health accounting. A JSON-RPC
+                // `ErrorData` is an application-level rejection carried over a
+                // healthy connection — preserve its classified kind and
+                // redacted payload so caller mistakes do not masquerade as
+                // broken upstream infrastructure. Everything else is a real
+                // transport-class failure, distinct from
                 // `CallToolResult(isError=true)` above.
-                Err(CodeModeCallError::upstream_transport_with_safety(
-                    id, err, safety,
-                ))
+                let (kind, message) = code_mode_capability_error_info(&err);
+                Err(match err {
+                    CapabilityCallError::Mcp { .. } => CodeModeCallError::new(
+                        kind,
+                        labby_runtime::agent_error::sanitize_error_text(
+                            &message,
+                            MAX_UPSTREAM_MCP_MESSAGE_CHARS,
+                        ),
+                    )
+                    .with_tool(id),
+                    _ => {
+                        CodeModeCallError::upstream_transport_classified(id, kind, message, safety)
+                    }
+                })
             }
             None => {
                 pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
@@ -625,6 +640,119 @@ fn upstream_arguments(
             sdk_kind: "invalid_param".to_string(),
             message: format!("Code Mode tool `{upstream}::{tool}` params must be an object"),
         }),
+    }
+}
+
+/// Byte cap for the redacted, serialized upstream `ErrorData.data` payload
+/// appended to a Code Mode error message.
+const UPSTREAM_ERROR_DATA_CAP_BYTES: usize = 2048;
+
+/// Char cap for the upstream-authored JSON-RPC error message embedded in a
+/// Code Mode rejection (the payload flows into the runner sandbox and the
+/// outer MCP envelope).
+const MAX_UPSTREAM_MCP_MESSAGE_CHARS: usize = 4096;
+
+fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str, String) {
+    match error {
+        CapabilityCallError::Mcp { data, .. } => {
+            let kind = code_mode_mcp_error_kind(data);
+            let mut message = data.message.to_string();
+            // Preserve the structured payload (param/valid/hint/retry_after_ms/
+            // required_scopes/…) the old stringified Display used to carry.
+            // Redacted (secret keys + secret-shaped strings) and bounded.
+            if let Some(payload) = data.data.as_ref() {
+                let redacted =
+                    labby_codemode::redact_trace_value(payload, UPSTREAM_ERROR_DATA_CAP_BYTES);
+                if let Ok(serialized) = serde_json::to_string(&redacted) {
+                    let serialized =
+                        labby_runtime::agent_error::redact_secret_like_segments(&serialized);
+                    message = format!("{message} (upstream error data: {serialized})");
+                }
+            }
+            // When the kind collapses to the generic `upstream_error`, keep the
+            // numeric JSON-RPC code visible so the original class survives.
+            if kind == "upstream_error" {
+                message = format!("{message} (JSON-RPC code {})", data.code.0);
+            }
+            (kind, message)
+        }
+        CapabilityCallError::Timeout { message } => ("timeout", message.clone()),
+        // Local gateway concurrency gate, not an upstream rate limit — matches
+        // the `queue_saturated` outcome the pool already logs/records.
+        CapabilityCallError::QueueSaturated { message } => ("queue_saturated", message.clone()),
+        CapabilityCallError::ResponseTooLarge { message } => {
+            ("response_too_large", message.clone())
+        }
+        CapabilityCallError::Transport { message } => ("network_error", message.clone()),
+        CapabilityCallError::Protocol { message } => ("decode_error", message.clone()),
+        CapabilityCallError::Cancelled { message } => ("cancelled", message.clone()),
+        CapabilityCallError::InputRequiredRoundsExceeded { message } => {
+            ("confirmation_required", message.clone())
+        }
+        CapabilityCallError::Other { message } => ("upstream_error", message.clone()),
+    }
+}
+
+/// The shared allowlist of stable caller-facing error kinds an upstream may
+/// assert about its own tool dispatch via JSON-RPC `ErrorData.data.kind`
+/// ([`code_mode_mcp_error_kind`]); anything not listed falls back to the
+/// `ErrorCode`-derived classification instead of passing verbatim. The
+/// tool-level `isError` payload path applies the equivalent clamp in
+/// `crate::upstream::tool_error::canonicalize_untrusted_upstream_kind`.
+fn known_stable_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "unknown_action" => "unknown_action",
+        "unknown_subaction" => "unknown_subaction",
+        "missing_param" => "missing_param",
+        "invalid_param" | "invalid_params" => "invalid_param",
+        "unknown_instance" => "unknown_instance",
+        "confirmation_required" => "confirmation_required",
+        "conflict" => "conflict",
+        "forbidden" => "forbidden",
+        "unknown_tool" => "unknown_tool",
+        "route_scope_denied" => "route_scope_denied",
+        "path_traversal" => "path_traversal",
+        "permission_denied" => "permission_denied",
+        "auth_failed" => "auth_failed",
+        "not_found" => "not_found",
+        "rate_limited" => "rate_limited",
+        "validation_failed" => "validation_failed",
+        _ => return None,
+    })
+}
+
+fn code_mode_mcp_error_kind(error: &ErrorData) -> &'static str {
+    // An upstream-supplied `data.kind` is only trusted when it is in the shared
+    // allowlist; unknown or invented kinds fall through to the ErrorCode-derived
+    // classification below instead of passing verbatim.
+    if let Some(kind) = error
+        .data
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|data| data.get("kind"))
+        .and_then(Value::as_str)
+        .and_then(known_stable_kind)
+    {
+        return kind;
+    }
+
+    if error.code == ErrorCode::INVALID_PARAMS {
+        "invalid_param"
+    } else if error.code == ErrorCode::METHOD_NOT_FOUND {
+        "unknown_tool"
+    } else if error.code == ErrorCode::RESOURCE_NOT_FOUND {
+        "not_found"
+    } else if error.code == ErrorCode::PARSE_ERROR {
+        "decode_error"
+    } else if error.code == ErrorCode::INTERNAL_ERROR {
+        "server_error"
+    } else if error.code == ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+        || error.code == ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+        || error.code == ErrorCode::HEADER_MISMATCH
+    {
+        "validation_failed"
+    } else {
+        "upstream_error"
     }
 }
 
@@ -881,6 +1009,123 @@ mod tests {
         assert!(!mgr.step_buffer_is_empty());
         mgr.discard_step_buffer("exec_cancelled");
         assert!(mgr.step_buffer_is_empty());
+    }
+
+    #[test]
+    fn maps_standard_mcp_error_codes_to_code_mode_kinds() {
+        let cases = [
+            (
+                ErrorData::invalid_params("bad params", None),
+                "invalid_param",
+            ),
+            (
+                ErrorData::new(ErrorCode::METHOD_NOT_FOUND, "missing method", None),
+                "unknown_tool",
+            ),
+            (
+                ErrorData::internal_error("server failed", None),
+                "server_error",
+            ),
+            (ErrorData::parse_error("invalid JSON", None), "decode_error"),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(code_mode_mcp_error_kind(&error), expected);
+        }
+    }
+
+    #[test]
+    fn structured_mcp_error_kind_takes_precedence_over_generic_code() {
+        let error = ErrorData::invalid_request(
+            "scope denied",
+            Some(serde_json::json!({"kind": "forbidden"})),
+        );
+
+        assert_eq!(code_mode_mcp_error_kind(&error), "forbidden");
+    }
+
+    #[test]
+    fn unknown_structured_data_kind_falls_back_to_code_derived_kind() {
+        // A fabricated upstream `data.kind` outside the shared allowlist must
+        // not pass verbatim — the ErrorCode-derived classification wins.
+        let error = ErrorData::internal_error(
+            "server exploded",
+            Some(serde_json::json!({"kind": "totally_made_up"})),
+        );
+
+        assert_eq!(code_mode_mcp_error_kind(&error), "server_error");
+    }
+
+    #[test]
+    fn mcp_error_data_payload_is_preserved_and_redacted() {
+        let err = CapabilityCallError::Mcp {
+            data: ErrorData::invalid_params(
+                "invalid arguments",
+                Some(serde_json::json!({
+                    "param": "query",
+                    "valid": ["movie.search", "movie.get"],
+                    "token": "sk-abcdefghij0123456789extra"
+                })),
+            ),
+            message: "upstream call failed: invalid arguments".to_string(),
+        };
+
+        let (kind, message) = code_mode_capability_error_info(&err);
+
+        assert_eq!(kind, "invalid_param");
+        assert!(
+            message.contains("upstream error data"),
+            "payload must be appended: {message}"
+        );
+        assert!(
+            message.contains("query") && message.contains("movie.search"),
+            "structured param info must survive: {message}"
+        );
+        assert!(
+            !message.contains("sk-abcdefghij0123456789extra"),
+            "secret-like values must be redacted: {message}"
+        );
+    }
+
+    #[test]
+    fn unmapped_mcp_error_kind_includes_numeric_json_rpc_code() {
+        let err = CapabilityCallError::Mcp {
+            data: ErrorData::new(ErrorCode(-32000), "implementation defined failure", None),
+            message: "upstream call failed".to_string(),
+        };
+
+        let (kind, message) = code_mode_capability_error_info(&err);
+
+        assert_eq!(kind, "upstream_error");
+        assert!(
+            message.contains("-32000"),
+            "numeric JSON-RPC code must survive for generic kinds: {message}"
+        );
+    }
+
+    #[test]
+    fn queue_saturated_maps_to_queue_saturated_not_rate_limited() {
+        let err = CapabilityCallError::QueueSaturated {
+            message: "upstream `alpha` concurrency queue timed out".to_string(),
+        };
+
+        let (kind, _message) = code_mode_capability_error_info(&err);
+
+        assert_eq!(kind, "queue_saturated");
+    }
+
+    #[test]
+    fn cancelled_and_input_required_rounds_map_to_explicit_kinds() {
+        let (kind, _) = code_mode_capability_error_info(&CapabilityCallError::Cancelled {
+            message: "task cancelled".to_string(),
+        });
+        assert_eq!(kind, "cancelled");
+
+        let (kind, _) =
+            code_mode_capability_error_info(&CapabilityCallError::InputRequiredRoundsExceeded {
+                message: "input_required did not complete within 4 MRTR rounds".to_string(),
+            });
+        assert_eq!(kind, "confirmation_required");
     }
 
     #[test]

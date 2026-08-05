@@ -144,6 +144,11 @@ async () => {
 ```
 
 The host validates params against the upstream input schema before dispatching.
+The enforced subset includes local `$ref`, type/enum/const constraints, object and
+array constraints, `anyOf` / `oneOf` / `allOf`, and conditional `if` / `then` /
+`else` / `not` branches. Generated TypeScript signatures preserve root object
+properties when composition keywords are present instead of replacing the type
+with `unknown` intersections.
 
 ## Action-Dispatched Upstreams
 
@@ -255,14 +260,16 @@ Common error kinds:
 | Kind | Recovery |
 | --- | --- |
 | `missing_param` | Read `codemode.search()` / `codemode.describe()` output and include the required field. |
-| `invalid_param` | Fix type/shape against the schema. |
-| `validation_failed` | Fix nested schema validation errors. |
-| `unknown_tool` | Rerun `codemode.search()`; use `<namespace>::<tool>` IDs only. |
+| `invalid_param` | Fix type/shape against the schema. Upstream MCP/JSON-RPC `-32602` errors map here and are not retryable or upstream-health failures. |
+| `validation_failed` | Fix nested schema or protocol-capability validation errors. |
+| `unknown_tool` | Rerun `codemode.search()`; use `<namespace>::<tool>` IDs only. Upstream `-32601` errors map here. |
 | `route_scope_denied` | The protected route scope does not allow that upstream/tool. |
 | `forbidden` / `permission_denied` | Caller lacks permission; destructive tools require execute-capable Code Mode callers. |
 | `path_traversal` | Fix the workspace/artifact path. |
 | `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Reduce fan-out, workspace writes, or split the work. |
 | `result_too_large` / `artifact_too_large` | Reduce the upstream payload or write large data to a smaller artifact. |
+| `queue_saturated` | Labby's local per-upstream concurrency gate is saturated — not an upstream rate limit. Retry after a short delay or reduce parallel `callTool` fan-out. |
+| `response_too_large` | The gateway capped an oversized upstream response; narrow the query or paginate. Distinct from `result_too_large`/`artifact_too_large`, which cap Code Mode's own result/artifact output. |
 | `timeout` | Split work into smaller executions. |
 | `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry or operate the upstream service; unknown structured upstream-local kinds are returned as `upstream_error` without poisoning upstream health. |
 | `oauth_needs_reauth` | Check `labby gateway mcp auth status <upstream> --json`. |

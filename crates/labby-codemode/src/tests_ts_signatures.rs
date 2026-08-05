@@ -75,6 +75,80 @@ fn json_schema_to_type_matches_cloudflare_edge_cases() {
 }
 
 #[test]
+fn json_schema_to_type_preserves_root_object_with_conditional_all_of() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "enum": ["project_context", "list_ai_projects"]
+            },
+            "project": { "type": "string" },
+            "tool": { "type": "string" },
+            "limit": { "type": "integer" },
+            "since": { "type": "string" }
+        },
+        "required": ["action"],
+        "additionalProperties": false,
+        "allOf": [
+            {
+                "if": {
+                    "properties": { "action": { "const": "project_context" } },
+                    "required": ["action"]
+                },
+                "then": { "required": ["project"] }
+            },
+            {
+                "if": {
+                    "properties": { "action": { "const": "list_ai_projects" } },
+                    "required": ["action"]
+                },
+                "then": { "not": { "required": ["limit"] } }
+            }
+        ]
+    });
+
+    let ts = super::ts_signatures::json_schema_to_type(Some(&schema));
+
+    assert!(
+        ts.contains(r#"action: "project_context" | "list_ai_projects";"#),
+        "{ts}"
+    );
+    assert!(ts.contains("project?: string;"), "{ts}");
+    assert!(ts.contains("limit?: number;"), "{ts}");
+    assert!(!ts.contains("unknown & unknown"), "{ts}");
+    assert!(!ts.starts_with("unknown"), "{ts}");
+}
+
+#[test]
+fn json_schema_to_type_composes_root_object_with_one_of_variants() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "trace_id": { "type": "string" }
+        },
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": { "action": { "const": "alpha" } },
+                "required": ["action"]
+            },
+            {
+                "type": "object",
+                "properties": { "action": { "const": "beta" } },
+                "required": ["action"]
+            }
+        ]
+    });
+
+    let ts = super::ts_signatures::json_schema_to_type(Some(&schema));
+
+    assert!(ts.contains("trace_id?: string;"), "{ts}");
+    assert!(ts.contains(r#"action: "alpha";"#), "{ts}");
+    assert!(ts.contains(r#"action: "beta";"#), "{ts}");
+    assert!(ts.contains(" & ("), "{ts}");
+}
+
+#[test]
 fn json_schema_to_type_maps_binary_strings_to_runtime_buffer_types() {
     let schema = json!({
         "type": "object",
@@ -193,4 +267,23 @@ fn generate_tool_types_sanitizes_reserved_digits_empty_dollar_and_collision_adja
         assert!(!types.dts.contains("  : {"), "{types:?}");
         assert!(!types.dts.contains(" (params:"), "{types:?}");
     }
+}
+
+#[test]
+fn json_schema_to_type_renders_openapi_nullable_as_null_union() {
+    // Pairs with `code_mode_schema_validator_honors_openapi_nullable`: the
+    // `.d.ts` advertises `T | null` for `nullable: true`, and the schema
+    // validator accepts the null the signature promises.
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "note": { "type": "string", "nullable": true },
+            "strict": { "type": "string" }
+        }
+    });
+
+    let ts = super::ts_signatures::json_schema_to_type(Some(&schema));
+
+    assert!(ts.contains("note?: string | null;"), "{ts}");
+    assert!(ts.contains("strict?: string;"), "{ts}");
 }

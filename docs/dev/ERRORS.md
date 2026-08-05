@@ -79,12 +79,15 @@ Supported code may emit additional stable kinds, including:
 - routing/upstreams: `not_found`, `unknown_upstream`, `unknown_tool`,
   `upstream_error`, `bad_gateway`, `network_error`,
   `service_unavailable`, `not_connected`, `connection_error`, `timeout`,
-  `cancelled`, `unexpected_response`;
+  `cancelled` (the upstream reported the proxied call was cancelled; not
+  automatically retryable), `unexpected_response`;
 - relay/bridge: `bridge_transport_error` (the stdio bridge could not reach the
   canonical daemon), `relay_invalid_target`, `relay_forwarder_init_failed`;
 - validation/security: `validation_failed`, `invalid_hint`, `ssrf_blocked`,
   `path_traversal`, `symlink_rejected`, `content_too_large`,
   `invalid_encoding`;
+- payload limits: `response_too_large` — gateway cap on upstream MCP response
+  bytes (distinct from `content_too_large`'s request/content limits);
 - Code Mode: `timeout` (wall-clock expiry — the historical
   `code_mode_timeout`/`code_mode_fuel_exhausted` kinds are retired and must not
   be reintroduced), `invalid_code_mode_id`, `call_budget_exceeded`,

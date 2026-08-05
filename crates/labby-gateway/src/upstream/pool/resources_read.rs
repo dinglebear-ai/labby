@@ -12,7 +12,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call;
+use super::capability_call::timed_capability_call_str;
 use super::helpers::{
     estimate_resource_response_size, normalize_resource_result_uri,
     redact_resource_uri_for_logging, upstream_transport,
@@ -203,7 +203,7 @@ impl UpstreamPool {
         let timeout_ms = self.request_timeout.as_millis();
 
         Some(
-            timed_capability_call(
+            timed_capability_call_str(
                 self,
                 upstream_name,
                 UpstreamCapability::Resources,
@@ -300,7 +300,7 @@ impl UpstreamPool {
         };
         let timeout_ms = self.request_timeout.as_millis();
 
-        timed_capability_call(
+        timed_capability_call_str(
             self,
             &config.name,
             UpstreamCapability::Resources,
