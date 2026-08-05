@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use crate::error::AuthError;
-use crate::google::AuthorizeUrlRequest;
+use crate::google::{AuthorizeUrlRequest, merge_google_scopes};
 use crate::session::{append_set_cookie, build_browser_session_cookie, create_browser_session};
 use crate::state::AuthState;
 use crate::types::{
@@ -108,7 +108,8 @@ pub async fn browser_login(
         scope: state.config.default_scope.clone(),
         code_challenge: provider_code_challenge,
         code_challenge_method: "S256".to_string(),
-        force_consent: true,
+        offline_access: false,
+        force_consent: false,
     })?;
     info!(
         oauth_state_id = %oauth_state_id,
@@ -286,12 +287,11 @@ pub async fn authorize(
     // callback returns.
     let allowed_emails = state.resolve_allowed_emails().await?;
     let sole_account_has_credential = match allowed_emails.as_slice() {
-        [email] => {
-            state
-                .store
-                .has_google_provider_credential_for_email(email)
-                .await?
-        }
+        [email] => state
+            .store
+            .find_google_provider_credential_by_email(email)
+            .await?
+            .is_some_and(|credential| credential.client_id == state.google.client_id),
         _ => false,
     };
     let force_consent = allowed_emails.len() != 1 || !sole_account_has_credential;
@@ -300,6 +300,7 @@ pub async fn authorize(
         scope: scope.clone(),
         code_challenge: provider_code_challenge,
         code_challenge_method: "S256".to_string(),
+        offline_access: true,
         force_consent,
     })?;
     info!(
@@ -440,24 +441,31 @@ pub async fn callback(
             )
         })?;
     let received_provider_refresh_token = google.refresh_token.is_some();
-    let reused_provider_refresh_token = if let Some(refresh_token) = google.refresh_token.as_deref()
-    {
-        state
-            .store
-            .upsert_google_provider_credential(&google.subject, Some(verified_email), refresh_token)
-            .await?;
-        false
-    } else if state
+    let existing_credential = state
         .store
         .find_google_provider_credential(&google.subject)
-        .await?
-        .is_some()
-        && state
-            .store
-            .associate_google_provider_email(&google.subject, verified_email)
-            .await?
+        .await?;
+    let granted_scopes = merge_google_scopes(
+        existing_credential
+            .as_ref()
+            .map(|credential| credential.granted_scopes.as_slice())
+            .unwrap_or_default(),
+        &google.granted_scopes,
+    );
+    let scope_upgraded = existing_credential.as_ref().is_none_or(|existing| {
+        granted_scopes
+            .iter()
+            .any(|scope| !existing.granted_scopes.contains(scope))
+    });
+    let (provider_refresh_token, reused_provider_refresh_token) = if let Some(refresh_token) =
+        google.refresh_token.clone()
     {
-        true
+        (refresh_token, false)
+    } else if let Some(existing) = existing_credential
+        .as_ref()
+        .filter(|credential| credential.client_id == state.google.client_id)
+    {
+        (existing.refresh_token.clone(), true)
     } else {
         warn!(
             client_id = %request.client_id,
@@ -470,16 +478,35 @@ pub async fn callback(
             AuthError::Config(format!("failed to parse registered redirect_uri: {error}"))
         })?;
         redirect_target
-            .query_pairs_mut()
-            .append_pair("error", "server_error")
-            .append_pair(
-                "error_description",
-                "Google did not issue a reusable offline credential; reconnect and grant access again",
-            )
-            .append_pair("state", &request.client_state);
+                .query_pairs_mut()
+                .append_pair("error", "server_error")
+                .append_pair(
+                    "error_description",
+                    "Google did not issue a reusable offline credential; reconnect and grant access again",
+                )
+                .append_pair("state", &request.client_state);
         append_authorization_response_issuer(&state, &mut redirect_target);
         return Ok(Redirect::to(redirect_target.as_str()).into_response());
     };
+    let provider_token_received_at = now_unix();
+    state
+        .store
+        .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
+            subject: google.subject.clone(),
+            email: Some(verified_email.to_string()),
+            client_id: state.google.client_id.clone(),
+            granted_scopes,
+            access_token: google.access_token.clone(),
+            refresh_token: provider_refresh_token,
+            token_received_at: provider_token_received_at,
+            access_token_expires_at: provider_token_received_at.saturating_add(
+                i64::try_from(google.expires_in.unwrap_or(3600)).unwrap_or(i64::MAX),
+            ),
+            issuer: Some("https://accounts.google.com".to_string()),
+            refreshed: false,
+            scope_upgraded,
+        })
+        .await?;
     info!(
         client_id = %request.client_id,
         oauth_state_id = %oauth_state_id,
@@ -996,7 +1023,10 @@ pub mod tests {
     use crate::config::{AuthConfig, AuthMode, GoogleConfig};
     use crate::google::GoogleProvider;
     use crate::state::AuthState;
-    use crate::types::{AuthorizationRequestRow, NativeAuthorizationResultRow, RegisteredClient};
+    use crate::types::{
+        AuthorizationRequestRow, GoogleProviderCredentialUpdate, NativeAuthorizationResultRow,
+        RegisteredClient,
+    };
 
     use crate::util::now_unix;
 
@@ -1011,6 +1041,31 @@ pub mod tests {
     fn router(state: AuthState) -> Router {
         crate::routes::router(state)
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))))
+    }
+
+    async fn seed_provider_credential(state: &AuthState, client_id: &str, refresh_token: &str) {
+        let now = now_unix();
+        state
+            .store
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "google-user".to_string(),
+                email: Some("user@example.com".to_string()),
+                client_id: client_id.to_string(),
+                granted_scopes: vec![
+                    "openid".to_string(),
+                    "email".to_string(),
+                    "profile".to_string(),
+                ],
+                access_token: "provider-access".to_string(),
+                refresh_token: refresh_token.to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
     }
 
     fn assert_authorization_error(response: &axum::response::Response, expected_error: &str) {
@@ -1541,15 +1596,7 @@ pub mod tests {
     #[tokio::test]
     async fn authorize_omits_forced_consent_once_the_allowed_account_has_a_provider_credential() {
         let state = test_auth_state_with_registered_client().await;
-        state
-            .store
-            .upsert_google_provider_credential(
-                "google-user",
-                Some("user@example.com"),
-                "provider-refresh",
-            )
-            .await
-            .unwrap();
+        seed_provider_credential(&state, "client-id", "provider-refresh").await;
         let app = router(state);
 
         let response = app
@@ -1573,6 +1620,31 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn authorize_forces_consent_when_provider_credential_belongs_to_another_google_client() {
+        let state = test_auth_state_with_registered_client().await;
+        seed_provider_credential(&state, "old-google-client", "provider-refresh").await;
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("prompt=consent"));
+    }
+
+    #[tokio::test]
     async fn authorize_reuses_the_allowed_account_credential_for_a_new_downstream_client() {
         let state = test_auth_state_with_registered_client().await;
         state
@@ -1586,15 +1658,7 @@ pub mod tests {
             })
             .await
             .unwrap();
-        state
-            .store
-            .upsert_google_provider_credential(
-                "google-user",
-                Some("user@example.com"),
-                "provider-refresh",
-            )
-            .await
-            .unwrap();
+        seed_provider_credential(&state, "client-id", "provider-refresh").await;
         let app = router(state);
 
         let response = app
@@ -1634,15 +1698,7 @@ pub mod tests {
             .unwrap();
         // One allowed account already has a provider credential, but the
         // selected Google subject is unknown until the callback returns.
-        state
-            .store
-            .upsert_google_provider_credential(
-                "google-user",
-                Some("user@example.com"),
-                "provider-refresh",
-            )
-            .await
-            .unwrap();
+        seed_provider_credential(&state, "client-id", "provider-refresh").await;
         let app = router(state);
 
         let response = app
@@ -1756,6 +1812,11 @@ pub mod tests {
                 .unwrap(),
         )
         .unwrap();
+        assert!(
+            !location.query_pairs().any(|(key, _)| key == "access_type"),
+            "browser login must not request an offline refresh credential"
+        );
+        assert!(!location.query_pairs().any(|(key, _)| key == "prompt"));
         let upstream_state = location
             .query_pairs()
             .find(|(key, _)| key == "state")
@@ -1818,13 +1879,26 @@ pub mod tests {
     #[tokio::test]
     async fn oauth_callback_reuses_the_subject_credential_without_copying_it_into_the_auth_code() {
         let base_state = test_auth_state_with_registered_client().await;
+        let now = now_unix();
         base_state
             .store
-            .upsert_google_provider_credential(
-                "google-subject-123",
-                Some("admin@example.com"),
-                "existing-provider-refresh",
-            )
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "google-subject-123".to_string(),
+                email: Some("admin@example.com".to_string()),
+                client_id: "client-id".to_string(),
+                granted_scopes: vec![
+                    "openid".to_string(),
+                    "email".to_string(),
+                    "profile".to_string(),
+                ],
+                access_token: "existing-provider-access".to_string(),
+                refresh_token: "existing-provider-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
             .await
             .unwrap();
         base_state

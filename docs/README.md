@@ -18,6 +18,9 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) to expose one
   stdio MCP server directly over loopback or an owned Tailscale Serve port.
 - Refer to [OAUTH.md](./runtime/OAUTH.md) for bearer vs OAuth mode selection, Google-backed authorization flow, lab-issued JWT behavior, and callback-forwarding constraints.
+- Use [design/GOOGLE_CREDENTIAL_BROKER.md](./design/GOOGLE_CREDENTIAL_BROKER.md)
+  for the shared inbound/outbound Google credential architecture, schema, scope
+  upgrades, API/CLI contracts, migration, rollout, and security model.
 - Use [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
 - Use [GATEWAY.md](./services/GATEWAY.md) when managing upstream MCP gateways over CLI, MCP, `/v1/gateway`, or Gateway-managed OAuth protected MCP routes.
 - Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.

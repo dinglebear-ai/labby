@@ -50,11 +50,25 @@ pub async fn build_upstream_oauth_runtime(
         public_url.scheme() == "https",
         "public_url must be absolute https:// when upstream oauth is configured"
     );
+    let shared_google_enabled = upstreams.iter().any(|upstream| {
+        upstream
+            .oauth
+            .as_ref()
+            .is_some_and(|oauth| oauth.credential.is_google_provider())
+    });
+    anyhow::ensure!(
+        !shared_google_enabled || auth_config.token_encryption_key.is_some(),
+        "{prefix}_TOKEN_ENCRYPTION_KEY is required when an upstream uses credential.source=google_provider",
+        prefix = auth_config.env_prefix
+    );
     let key = load_key(&encryption_key_raw)
         .map_err(|error| anyhow::anyhow!("invalid upstream OAuth encryption key: {error}"))?;
-    let sqlite = SqliteStore::open(auth_config.sqlite_path.clone())
-        .await
-        .context("open sqlite store for upstream oauth")?;
+    let sqlite = SqliteStore::open_with_key(
+        auth_config.sqlite_path.clone(),
+        auth_config.token_encryption_key.clone(),
+    )
+    .await
+    .context("open sqlite store for upstream oauth")?;
     let redirect_uri = build_upstream_oauth_callback_uri(public_url)?;
 
     Ok(Some(build_upstream_oauth_runtime_from_parts(
@@ -115,4 +129,64 @@ pub fn build_upstream_oauth_callback_uri(public_url: &url::Url) -> Result<String
     redirect_uri.set_query(None);
     redirect_uri.set_fragment(None);
     Ok(redirect_uri.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use labby_runtime::gateway_config::{
+        UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
+        UpstreamOauthRegistration,
+    };
+
+    #[tokio::test]
+    async fn shared_google_runtime_requires_provider_token_encryption_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut auth = AuthConfig::default();
+        auth.public_url = Some(url::Url::parse("https://lab.example.com").unwrap());
+        auth.sqlite_path = dir.path().join("auth.db");
+        auth.token_encryption_key = None;
+        let upstream = UpstreamConfig {
+            enabled: true,
+            name: "google-calendar".to_string(),
+            url: Some("https://calendarmcp.googleapis.com/mcp/v1".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            command: None,
+            args: Vec::new(),
+            bearer_token_env: None,
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: Some(UpstreamOauthConfig {
+                mode: UpstreamOauthMode::AuthorizationCodePkce,
+                registration: UpstreamOauthRegistration::Preregistered {
+                    client_id: "google-client".to_string(),
+                    client_secret_env: Some("GOOGLE_SECRET".to_string()),
+                },
+                scopes: Some(vec!["calendar".to_string()]),
+                credential: UpstreamOauthCredentialSource::GoogleProvider { account: None },
+                prefer_client_metadata_document: None,
+            }),
+            imported_from: None,
+            priority: 1.0,
+        };
+
+        let error = match build_upstream_oauth_runtime(
+            &[upstream],
+            &auth,
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+        )
+        .await
+        {
+            Ok(_) => panic!("shared Google runtime must require provider token encryption"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("TOKEN_ENCRYPTION_KEY"));
+    }
 }
