@@ -99,13 +99,59 @@ test('renders actionable recovery, cause, safety, and evidence', async () => {
   assert.match(container.textContent ?? '', /Recovery/)
   assert.match(container.textContent ?? '', /revise and retry/)
   assert.match(container.textContent ?? '', /side effects possible/)
-  assert.doesNotMatch(container.textContent ?? '', /Exit code 7/)
-  await clickButton(container, (text) => text.startsWith('Recovery'))
+  // The failed run auto-opens the Recovery row — guidance, cause, safety, and
+  // evidence are readable without a tap.
   assert.match(container.textContent ?? '', /Next Action/)
   assert.match(container.textContent ?? '', /change the command/)
   assert.match(container.textContent ?? '', /Exit code 7/)
   assert.match(container.textContent ?? '', /Safety Hints/)
   assert.match(container.textContent ?? '', /Evidence/)
+  // Collapsing the row tucks the detail away again.
+  await clickButton(container, (text) => text.startsWith('Recovery'))
+  assert.doesNotMatch(container.textContent ?? '', /Next Action/)
+  assert.doesNotMatch(container.textContent ?? '', /Safety Hints/)
+  assert.doesNotMatch(container.textContent ?? '', /Exit code 7/)
+  await unmount()
+})
+
+test('renders error badges from raw tokens with tool and retry-after detail', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        error_kind: 'rate_limited',
+        error: {
+          contract_version: 1,
+          kind: 'rate_limited',
+          message: 'Upstream throttled the call.',
+          tool: 'gotify::message.create',
+          origin: 'upstream_transport',
+          recovery: {
+            action: 'retry_later',
+            same_arguments: 'safe',
+            guidance: 'Wait for the retry window before calling again.',
+            retry_after_ms: 5000,
+          },
+          side_effects: 'none_expected',
+        },
+      }}
+    />,
+  )
+
+  // Auto-opened Recovery row: badges are humanized exactly once — the raw
+  // underscore token never reaches the DOM.
+  assert.match(container.textContent ?? '', /upstream transport/)
+  assert.doesNotMatch(container.textContent ?? '', /upstream_transport/)
+  assert.match(container.textContent ?? '', /same args: safe/)
+  assert.match(container.textContent ?? '', /retry after 5\.0 s/)
+  // The failing tool sits in the row's summary line; the header keeps its
+  // humanized action and side effects.
+  assert.match(container.textContent ?? '', /gotify::message\.create/)
+  assert.match(container.textContent ?? '', /retry later/)
+  assert.match(container.textContent ?? '', /side effects none expected/)
   await unmount()
 })
 
