@@ -14,5 +14,7 @@ next.user-config.*
 node_modules
 next-env.d.ts
 .next/
+.next
 out/
+out
 .DS_Store
