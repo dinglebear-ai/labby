@@ -166,8 +166,8 @@ git push
 ## References
 
 - PR #78: https://github.com/jmagar/lab/pull/78
-- `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` — Code Mode spec
-- `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` — agent contract
+- `docs/specs/code-mode-spec-legacy.md` — Code Mode spec
+- `docs/contracts/code-mode-agent-contract-legacy.md` — agent contract
 - `docs/epic-lab-y08q1-code-mode-cloudflare-parity.md` — full epic doc
 
 ## Open Questions

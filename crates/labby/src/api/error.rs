@@ -68,7 +68,10 @@ impl IntoResponse for ApiError {
             | "provider_timeout" => StatusCode::GATEWAY_TIMEOUT,
             "oauth_needs_reauth" => StatusCode::UNAUTHORIZED,
             "oauth_state_invalid" => StatusCode::BAD_REQUEST,
-            "forbidden" => StatusCode::FORBIDDEN,
+            "oauth_scope_upgrade_required" | "forbidden" => StatusCode::FORBIDDEN,
+            "oauth_account_ambiguous"
+            | "oauth_client_mismatch"
+            | "oauth_shared_credential_protected" => StatusCode::CONFLICT,
             "unknown_action" | "unknown_subaction" | "unknown_instance" => StatusCode::BAD_REQUEST,
             "unknown_upstream" => StatusCode::NOT_FOUND,
             "network_error"
@@ -184,6 +187,21 @@ mod tests {
             status_for("invalid_provider_output"),
             StatusCode::BAD_GATEWAY
         );
+    }
+
+    #[test]
+    fn google_credential_broker_kinds_map_to_actionable_statuses() {
+        assert_eq!(
+            status_for("oauth_scope_upgrade_required"),
+            StatusCode::FORBIDDEN
+        );
+        for kind in [
+            "oauth_account_ambiguous",
+            "oauth_client_mismatch",
+            "oauth_shared_credential_protected",
+        ] {
+            assert_eq!(status_for(kind), StatusCode::CONFLICT, "kind={kind}");
+        }
     }
 
     #[test]

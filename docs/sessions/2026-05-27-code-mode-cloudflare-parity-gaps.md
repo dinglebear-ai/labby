@@ -105,7 +105,7 @@ Re-implemented the user's Cloudflare-parity gap fixes on the `bd-work/code-mode-
 
 - **Alias removal is a breaking change for any client still calling `tool_search` / `tool_execute` / etc.** Per the user's explicit direction; rollback path is to revert the alias-removal edits in `mcp/server.rs` and reintroduce the `*_TOOL_NAME` constants in `mcp/catalog.rs`.
 - **PreambleCache LRU size 64 is a heuristic.** If real-world churn exceeds it, cache thrashes (still correct, just less efficient). Tunable via `PreambleCache::with_capacity`; not yet wired to config.
-- **Concurrent auto-committer risk.** Another agent operating on the same branch can re-introduce removed code. Mitigation: pin policies in CLAUDE.md or document the canonical state in `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md`.
+- **Concurrent auto-committer risk.** Another agent operating on the same branch can re-introduce removed code. Mitigation: pin policies in CLAUDE.md or document the canonical state in `docs/specs/code-mode-spec-legacy.md`.
 
 ## Decisions Not Taken
 
@@ -117,8 +117,8 @@ Re-implemented the user's Cloudflare-parity gap fixes on the `bd-work/code-mode-
 
 ## References
 
-- `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md`
-- `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md`
+- `docs/specs/code-mode-spec-legacy.md`
+- `docs/contracts/code-mode-agent-contract-legacy.md`
 - `docs/dev/ERRORS.md`
 - Cloudflare Code Mode: https://developers.cloudflare.com/agents/api-reference/codemode/
 - rmcp `Tool` struct (v1.6+): `output_schema: Option<Arc<JsonObject>>`.

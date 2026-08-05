@@ -1,12 +1,22 @@
 ---
-title: "Code Mode - Agent Contract"
+title: "Code Mode - Agent Contract (legacy)"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-05"
 ---
 
-# Code Mode — Agent Contract
+# Code Mode — Agent Contract (Legacy)
 
-This document describes the current Lab gateway Code Mode surface exposed to MCP agents.
+> **Status: superseded — retained for historical reference.**
+> The agent-facing Code Mode surface (discovery, `callTool`, generated helpers,
+> IDs, sandbox rules, scope) is now owned by [docs/dev/CODE_MODE.md](../dev/CODE_MODE.md).
+> Error behavior is owned by the versioned
+> [Agent Error Contract](agent-error-contract.md) and the
+> [Code Mode Tool Error Contract](code-mode-tool-errors.md).
+> `[code_mode]` config ownership lives in [docs/OPERATIONS.md](../OPERATIONS.md)
+> and the generated action catalog. Where this file disagrees with those docs,
+> those docs win.
+
+This document describes the Lab gateway Code Mode surface exposed to MCP agents as of 2026-07-30.
 
 ## Advertised Tools
 

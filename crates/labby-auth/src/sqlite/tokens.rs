@@ -351,37 +351,8 @@ impl SqliteStore {
         &self,
         subject: &str,
     ) -> Result<Option<GoogleProviderCredentialRow>, AuthError> {
-        let subject = subject.to_string();
-        let enc_key = self.enc_key.clone();
-        self.with_conn(move |conn| {
-            let row = conn
-                .query_row(
-                    "SELECT subject, email, refresh_token, generation, created_at, updated_at
-                     FROM google_provider_credentials
-                     WHERE subject = ?1",
-                    params![subject],
-                    |row| {
-                        Ok(GoogleProviderCredentialRow {
-                            subject: row.get(0)?,
-                            email: row.get(1)?,
-                            refresh_token: row.get(2)?,
-                            generation: row.get(3)?,
-                            created_at: row.get(4)?,
-                            updated_at: row.get(5)?,
-                        })
-                    },
-                )
-                .optional()
-                .map_err(sqlite_error)?;
-            match row {
-                Some(mut row) => {
-                    row.refresh_token = maybe_decrypt(enc_key.as_deref(), &row.refresh_token)?;
-                    Ok(Some(row))
-                }
-                None => Ok(None),
-            }
-        })
-        .await
+        self.find_google_provider_credential_by_selector(Some(subject))
+            .await
     }
 
     pub async fn has_google_provider_credential_for_subject(

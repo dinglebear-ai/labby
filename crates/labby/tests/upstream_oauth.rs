@@ -200,6 +200,7 @@ impl Harness {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
                 registration,
                 scopes: Some(vec!["read".into()]),
+                credential: Default::default(),
                 prefer_client_metadata_document: None,
             }),
             imported_from: None,

@@ -42,6 +42,19 @@ export const upstreamOauthApi = {
     )
   },
 
+  revokeGoogle(upstream: string, signal?: AbortSignal): Promise<{
+    invalidated: boolean
+    revoked_refresh_tokens: number
+    revoked_authorization_codes: number
+  }> {
+    return apiFetch('/gateway/oauth/google/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ upstream, confirm: true }),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    })
+  },
+
   probe(url: string, signal?: AbortSignal, upstream?: string): Promise<ProbeResponse> {
     return apiFetch('/gateway/oauth/probe', {
       method: 'POST',
