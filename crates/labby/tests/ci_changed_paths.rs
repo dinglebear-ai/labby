@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
@@ -356,7 +356,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         .split("  ci-gate:")
         .nth(1)
         .expect("ci-gate job body");
-    for advisory in ["test-windows", "palette-windows"] {
+    for advisory in ADVISORY_JOBS {
         assert!(
             workflow.contains(&format!("  {advisory}:")),
             "CI must retain the advisory {advisory} job"
@@ -368,11 +368,15 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
+    for unconditional in ["changes", "fleet-policy"] {
+        assert!(
+            gate.contains(&format!("require_success {unconditional} ")),
+            "ci-gate must reject a skipped `{unconditional}` job: it has no `if:`, so a skip means it never ran, and for `changes` that also empties every gate expression"
+        );
+    }
     assert!(
-        workflow.contains(
-            "palette: ${{ steps.classify.outputs.palette == 'true' || steps.classify.outputs.all == 'true' }}"
-        ),
-        "Palette routing must compare output strings explicitly so `false` cannot mask fail-closed `all=true`"
+        gate.contains("needs.changes.outputs.gate_key_drift"),
+        "ci-gate must surface routing keys the trusted classifier could not emit"
     );
     let browser_job = workflow
         .split("  gateway-admin-browser:")
@@ -455,6 +459,518 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
             "{job} must use the lower-memory lld linker"
         );
     }
+}
+
+/// Routing keys that `ci.yml` gates on but the classifier never emits, because
+/// the `changes` job synthesizes them at runtime.
+const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
+
+/// Jobs that stay visible on pull requests but must not block `ci-gate`.
+const ADVISORY_JOBS: &[&str] = &["test-windows", "palette-windows"];
+
+fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
+    workflow
+        .split("needs.changes.outputs.")
+        .skip(1)
+        .map(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<String>()
+        })
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
+fn ci_workflow_text() -> String {
+    fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read ci.yml")
+}
+
+fn ci_workflow_yaml(text: &str) -> serde_yaml::Value {
+    serde_yaml::from_str(text).expect("parse ci.yml")
+}
+
+/// Adding a routing key to `changed_paths.py` and gating a job on it are only
+/// safe together when the key is also declared as a `changes` job output, is
+/// forwarded from the identically-named classifier output, and is emitted by
+/// the classifier. Break any link and the gate reads as the empty string, so
+/// the job skips and `ci-gate` accepts the skip.
+#[test]
+fn gated_changed_path_keys_are_declared_and_classifier_backed() {
+    let workflow_text = ci_workflow_text();
+    let workflow = ci_workflow_yaml(&workflow_text);
+    let outputs = workflow["jobs"]["changes"]["outputs"]
+        .as_mapping()
+        .expect("changes job declares outputs");
+    let declared: BTreeSet<String> = outputs
+        .keys()
+        .map(|key| key.as_str().expect("output name").to_string())
+        .collect();
+    let emitted: BTreeSet<String> = classify("pull_request", &["README.md"])
+        .into_keys()
+        .collect();
+
+    // The reconciler in the classify step and this test both discover gates by
+    // scanning for `needs.changes.outputs.<key>`. GitHub also accepts
+    // `needs.changes.outputs['key']`, which neither would see — keep the one
+    // form so a gate can never hide from both.
+    assert!(
+        !workflow_text.contains("needs.changes.outputs["),
+        "use `needs.changes.outputs.<key>`; the bracket form is invisible to the classify step's reconciler"
+    );
+
+    for key in gated_changed_path_keys(&workflow_text) {
+        assert!(
+            declared.contains(&key),
+            "ci.yml gates on `needs.changes.outputs.{key}` but the changes job does not declare that output; the gate would read as an empty string and skip the job"
+        );
+        if RUNTIME_ONLY_CHANGE_OUTPUTS.contains(&key.as_str()) {
+            continue;
+        }
+        assert!(
+            emitted.contains(&key),
+            "ci.yml gates on `{key}` but scripts/ci/changed_paths.py never emits it"
+        );
+    }
+
+    for (name, expression) in outputs {
+        let name = name.as_str().expect("output name");
+        let expression = expression.as_str().expect("output expression").trim();
+        assert_eq!(
+            expression,
+            format!("${{{{ steps.classify.outputs.{name} }}}}"),
+            "the `{name}` job output must forward the identically-named classify output; a mismatch resolves to the empty string and silently skips every job gated on it"
+        );
+        if RUNTIME_ONLY_CHANGE_OUTPUTS.contains(&name) {
+            continue;
+        }
+        assert!(
+            emitted.contains(name),
+            "the changes job exports `{name}` but scripts/ci/changed_paths.py never emits it"
+        );
+    }
+}
+
+/// `ci-gate` runs with `if: always()`, so a job missing from its `needs:` list —
+/// or present there but missing its `require_*` assertion — cannot fail the
+/// build. That is the same vacuously-green shape as a silently skipped gate.
+#[test]
+fn ci_gate_aggregates_every_non_advisory_job() {
+    let workflow_text = ci_workflow_text();
+    let workflow = ci_workflow_yaml(&workflow_text);
+    let jobs: BTreeSet<String> = workflow["jobs"]
+        .as_mapping()
+        .expect("ci.yml declares jobs")
+        .keys()
+        .map(|name| name.as_str().expect("job name").to_string())
+        .collect();
+    let gate = &workflow["jobs"]["ci-gate"];
+    let aggregated: BTreeSet<String> = gate["needs"]
+        .as_sequence()
+        .expect("ci-gate declares needs")
+        .iter()
+        .map(|need| need.as_str().expect("job name").to_string())
+        .collect();
+    let checks = gate["steps"]
+        .as_sequence()
+        .expect("ci-gate steps")
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for name in &jobs {
+        if name == "ci-gate" || ADVISORY_JOBS.contains(&name.as_str()) {
+            continue;
+        }
+        assert!(
+            aggregated.contains(name),
+            "ci-gate does not aggregate `{name}`; a failure there would not block the build"
+        );
+        assert!(
+            checks.contains(&format!("needs.{name}.result")),
+            "ci-gate lists `{name}` in needs but never asserts its result"
+        );
+    }
+
+    for name in &aggregated {
+        assert!(
+            jobs.contains(name),
+            "ci-gate needs `{name}`, which is not a job in this workflow"
+        );
+        assert!(
+            !ADVISORY_JOBS.contains(&name.as_str()),
+            "advisory job `{name}` must not block ci-gate"
+        );
+    }
+}
+
+/// A stand-in for a base commit whose classifier predates the `unraid` key.
+#[cfg(unix)]
+const STALE_CLASSIFIER: &str = r#"import argparse
+from pathlib import Path
+
+keys = "all docs docs_check workflow rust_compile rust_test web palette npm docker security release".split()
+parser = argparse.ArgumentParser()
+parser.add_argument("--event", required=True)
+parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--write-changed-files", type=Path)
+args, _ = parser.parse_known_args()
+if args.write_changed_files:
+    args.write_changed_files.write_text("unraid/labby.plg\n")
+args.output.write_text("".join(f"{key}=false\n" for key in keys))
+"#;
+
+#[cfg(unix)]
+struct ClassifyRun {
+    succeeded: bool,
+    outputs: String,
+    log: String,
+}
+
+#[cfg(unix)]
+fn classify_step_script() -> String {
+    let workflow = ci_workflow_yaml(&ci_workflow_text());
+    workflow["jobs"]["changes"]["steps"]
+        .as_sequence()
+        .expect("changes job steps")
+        .iter()
+        .find(|step| step["id"].as_str() == Some("classify"))
+        .and_then(|step| step["run"].as_str())
+        .expect("classify step runs a shell script")
+        .to_string()
+}
+
+/// A working directory shaped like the runner's: a checkout whose `ci.yml` the
+/// classify step reads back to discover which routing keys jobs gate on.
+#[cfg(unix)]
+fn classify_sandbox() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("create classify sandbox");
+    fs::create_dir_all(temp.path().join(".github/workflows")).expect("create workflow directory");
+    fs::copy(
+        repo_root().join(".github/workflows/ci.yml"),
+        temp.path().join(".github/workflows/ci.yml"),
+    )
+    .expect("copy ci.yml into the sandbox");
+    temp
+}
+
+#[cfg(unix)]
+fn run_classify_step(root: &Path, script: &str, classifier: &Path) -> ClassifyRun {
+    let github_output = root.join("github_output.txt");
+    let step_summary = root.join("step_summary.md");
+    let result = Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .current_dir(root)
+        .env("LABBY_CHANGED_PATHS", classifier)
+        .env("EVENT_NAME", "pull_request")
+        .env("GITHUB_OUTPUT", &github_output)
+        .env("GITHUB_STEP_SUMMARY", &step_summary)
+        .output()
+        .expect("run the classify step");
+    ClassifyRun {
+        succeeded: result.status.success(),
+        outputs: fs::read_to_string(&github_output).unwrap_or_default(),
+        log: format!(
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        ),
+    }
+}
+
+/// The `changes` job deliberately runs the base commit's classifier so a pull
+/// request cannot reroute its own CI. `ci.yml` itself comes from the merge ref,
+/// so a pull request that adds a routing key gates on a key the trusted
+/// classifier cannot emit. That must fail open to running the gated job — the
+/// old behavior skipped it silently and still satisfied `ci-gate`.
+#[cfg(unix)]
+#[test]
+fn classify_step_fails_open_when_the_trusted_classifier_omits_a_gated_key() {
+    let sandbox = classify_sandbox();
+    let root = sandbox.path();
+    let classifier = root.join("stale_classifier.py");
+    fs::write(&classifier, STALE_CLASSIFIER).expect("write stale classifier");
+
+    let run = run_classify_step(root, &classify_step_script(), &classifier);
+    assert!(run.succeeded, "classify step failed:\n{}", run.log);
+
+    let outputs = &run.outputs;
+    assert!(
+        outputs.lines().any(|line| line == "unraid=true"),
+        "a gated key the trusted classifier omits must default to true so the job runs, got:\n{outputs}"
+    );
+    assert!(
+        outputs
+            .lines()
+            .any(|line| line.starts_with("gate_key_drift=") && line.contains("unraid")),
+        "the reconciled keys must be reported to ci-gate, got:\n{outputs}"
+    );
+    assert!(
+        outputs.lines().any(|line| line == "rust_test=false"),
+        "reconciliation must never rewrite a key the trusted classifier did emit, got:\n{outputs}"
+    );
+    // The annotation is the only operator-facing signal on the fail-open path.
+    assert!(
+        run.log.contains("Changed-path routing drift") && run.log.contains("'unraid'"),
+        "fail-open must annotate the run with the reconciled key, got:\n{}",
+        run.log
+    );
+}
+
+/// A malformed value fails `== 'true'` exactly like a missing one, so presence
+/// alone is not enough to conclude the gate will work.
+#[cfg(unix)]
+#[test]
+fn classify_step_reconciles_a_malformed_value_like_a_missing_key() {
+    let sandbox = classify_sandbox();
+    let root = sandbox.path();
+    let classifier = root.join("malformed_classifier.py");
+    fs::write(
+        &classifier,
+        STALE_CLASSIFIER.replace(
+            r#"args.output.write_text("".join(f"{key}=false\n" for key in keys))"#,
+            r#"args.output.write_text("".join(f"{key}=false\n" for key in keys) + "unraid=True")"#,
+        ),
+    )
+    .expect("write malformed classifier");
+
+    let run = run_classify_step(root, &classify_step_script(), &classifier);
+    assert!(run.succeeded, "classify step failed:\n{}", run.log);
+    assert!(
+        run.outputs.lines().any(|line| line == "unraid=true"),
+        "`unraid=True` does not satisfy `== 'true'`, so it must be reconciled, got:\n{}",
+        run.outputs
+    );
+    assert!(
+        !run.outputs.lines().any(|line| line == "unraid=True"),
+        "the malformed value must be replaced, not shadowed, got:\n{}",
+        run.outputs
+    );
+}
+
+/// Writes a stand-in for the branch's own classifier at the path the classify
+/// step re-runs for the base/branch union.
+#[cfg(unix)]
+fn write_branch_classifier(root: &Path, values: &str) {
+    fs::create_dir_all(root.join("scripts/ci")).expect("create scripts/ci");
+    fs::write(
+        root.join("scripts/ci/changed_paths.py"),
+        format!(
+            r#"import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--event", required=True)
+parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--changed-files", type=Path)
+parser.add_argument("--write-changed-files", type=Path)
+args, _ = parser.parse_known_args()
+args.output.write_text({values:?})
+"#
+        ),
+    )
+    .expect("write branch classifier");
+}
+
+/// Pinning the classifier to the base commit also pins its path -> category
+/// mappings, so a branch that routes a new directory into an existing category
+/// gets a well-formed `false` and the gated job skips for real. The branch's
+/// own classifier is unioned in to fix that — but only in the broadening
+/// direction, or a branch could switch its own checks off.
+#[cfg(unix)]
+#[test]
+fn classify_step_unions_the_branch_classifier_but_never_lets_it_narrow() {
+    let sandbox = classify_sandbox();
+    let root = sandbox.path();
+    let trusted = root.join("trusted_classifier.py");
+    fs::write(
+        &trusted,
+        STALE_CLASSIFIER
+            .replace(
+                r#"args.output.write_text("".join(f"{key}=false\n" for key in keys))"#,
+                r#"args.output.write_text("".join(f"{key}=false\n" for key in keys) + "unraid=false\nrust_test=true\n")"#,
+            )
+            .replace("unraid/labby.plg", "apps/palette-v2/App.tsx"),
+    )
+    .expect("write trusted classifier");
+    // The branch knows a mapping the base commit does not, and also tries to
+    // switch the workspace test suite off.
+    write_branch_classifier(root, "palette=true\nrust_test=false\nweb=false\n");
+
+    let run = run_classify_step(root, &classify_step_script(), &trusted);
+    assert!(run.succeeded, "classify step failed:\n{}", run.log);
+
+    let outputs = &run.outputs;
+    assert!(
+        outputs.lines().any(|line| line == "palette=true"),
+        "a category the branch classifier routes to must run even when the base commit's mapping predates it, got:\n{outputs}"
+    );
+    assert!(
+        outputs.lines().any(|line| line == "rust_test=true"),
+        "the branch classifier must never lower a trusted `true`, got:\n{outputs}"
+    );
+    assert!(
+        outputs.lines().any(|line| line == "web=false"),
+        "keys both classifiers call false must stay false, got:\n{outputs}"
+    );
+    assert!(
+        run.log.contains("routing broadened") && run.log.contains("palette"),
+        "broadening must be annotated on the run, got:\n{}",
+        run.log
+    );
+}
+
+/// The union is an enhancement, not a dependency: a branch classifier that
+/// cannot run must degrade to trusted-only routing, not fail the build.
+#[cfg(unix)]
+#[test]
+fn classify_step_survives_a_broken_branch_classifier() {
+    let sandbox = classify_sandbox();
+    let root = sandbox.path();
+    let trusted = root.join("trusted_classifier.py");
+    fs::write(&trusted, STALE_CLASSIFIER).expect("write trusted classifier");
+    fs::create_dir_all(root.join("scripts/ci")).expect("create scripts/ci");
+    fs::write(
+        root.join("scripts/ci/changed_paths.py"),
+        "import sys\nsys.exit(3)\n",
+    )
+    .expect("write broken branch classifier");
+
+    let run = run_classify_step(root, &classify_step_script(), &trusted);
+    assert!(
+        run.succeeded,
+        "a broken branch classifier must not fail routing:\n{}",
+        run.log
+    );
+    assert!(
+        run.outputs.lines().any(|line| line == "rust_test=false"),
+        "trusted routing must survive intact, got:\n{}",
+        run.outputs
+    );
+    assert!(
+        run.outputs.lines().any(|line| line == "unraid=true"),
+        "reconciliation must still fail open for keys the trusted classifier omits, got:\n{}",
+        run.outputs
+    );
+    assert!(
+        run.log.contains("branch's own classifier failed to run"),
+        "the degraded path must be annotated, got:\n{}",
+        run.log
+    );
+}
+
+/// The healthy case: with an in-tree classifier every gated key is emitted, so
+/// nothing is reconciled and no drift is reported.
+#[cfg(unix)]
+#[test]
+fn classify_step_reports_no_drift_when_the_classifier_emits_every_gated_key() {
+    let sandbox = classify_sandbox();
+    let root = sandbox.path();
+    fs::write(root.join("pinned-changed-files.txt"), "unraid/labby.plg\n")
+        .expect("seed changed files");
+
+    let classifier = root.join("changed_paths.py");
+    fs::copy(repo_root().join("scripts/ci/changed_paths.py"), &classifier)
+        .expect("copy the in-tree classifier");
+
+    // The classifier resolves its own diff from git when no explicit file list
+    // is given; pin the list so the sandbox needs no git history. Use a file
+    // the step does not also rewrite through `--write-changed-files`.
+    let script = classify_step_script();
+    let pinned = script.replace(
+        "--event \"$EVENT_NAME\" \\",
+        "--event \"$EVENT_NAME\" --changed-files pinned-changed-files.txt \\",
+    );
+    assert_ne!(
+        pinned, script,
+        "the classify step no longer invokes the classifier in the shape this test patches; \
+         without the patch the classifier sees an empty path list and returns every key true, \
+         which would make this test pass while checking nothing"
+    );
+
+    let run = run_classify_step(root, &pinned, &classifier);
+    assert!(run.succeeded, "classify step failed:\n{}", run.log);
+
+    let outputs = &run.outputs;
+    assert!(
+        outputs.lines().any(|line| line == "gate_key_drift="),
+        "an in-tree classifier must produce no routing drift, got:\n{outputs}"
+    );
+    assert!(
+        outputs.lines().any(|line| line == "unraid=true"),
+        "unraid plugin changes must still enable the plugin check, got:\n{outputs}"
+    );
+    // The negative control: proves a real classification happened rather than
+    // the classifier's empty-path-list fallback, which returns every key true.
+    assert!(
+        outputs.lines().any(|line| line == "web=false"),
+        "an unrelated key must stay false, otherwise this test is passing on the all-true fallback, got:\n{outputs}"
+    );
+}
+
+/// A gate whose key the `changes` job never forwards as a job output always
+/// reads as the empty string, whatever the classifier emits. Reconciliation
+/// cannot repair that, so it must fail the build rather than warn.
+#[cfg(unix)]
+#[test]
+fn classify_step_fails_when_a_gate_has_no_matching_job_output() {
+    let sandbox = classify_sandbox();
+    let root = sandbox.path();
+    let workflow = root.join(".github/workflows/ci.yml");
+    // Add a gate on a key nothing forwards, leaving the existing gates intact.
+    let patched = fs::read_to_string(&workflow)
+        .expect("read sandbox ci.yml")
+        .replace(
+            "if: ${{ needs.changes.outputs.unraid == 'true' }}",
+            "if: ${{ needs.changes.outputs.unraid == 'true' && needs.changes.outputs.undeclared_key == 'true' }}",
+        );
+    assert!(
+        patched.contains("needs.changes.outputs.undeclared_key"),
+        "the unraid gate no longer has the shape this test patches"
+    );
+    fs::write(&workflow, patched).expect("write patched ci.yml");
+
+    let classifier = root.join("classifier.py");
+    fs::copy(repo_root().join("scripts/ci/changed_paths.py"), &classifier)
+        .expect("copy the in-tree classifier");
+
+    let run = run_classify_step(root, &classify_step_script(), &classifier);
+    assert!(
+        !run.succeeded,
+        "a gate with no matching job output must fail the build, got:\n{}",
+        run.log
+    );
+    assert!(
+        run.log.contains("undeclared_key"),
+        "the failure must name the unforwarded key, got:\n{}",
+        run.log
+    );
+}
+
+/// The reconciler discovers gates by reading `ci.yml` back. If that discovery
+/// silently found nothing it would reinstate the exact bug it exists to close,
+/// so it must fail loudly instead.
+#[cfg(unix)]
+#[test]
+fn classify_step_fails_when_it_cannot_enumerate_gates() {
+    let sandbox = classify_sandbox();
+    let root = sandbox.path();
+    fs::remove_file(root.join(".github/workflows/ci.yml")).expect("remove sandbox ci.yml");
+    let classifier = root.join("stale_classifier.py");
+    fs::write(&classifier, STALE_CLASSIFIER).expect("write stale classifier");
+
+    let run = run_classify_step(root, &classify_step_script(), &classifier);
+    assert!(
+        !run.succeeded,
+        "losing track of ci.yml must fail the build rather than report no drift, got:\n{}",
+        run.log
+    );
+    assert!(
+        !run.outputs.contains("gate_key_drift="),
+        "a failed enumeration must not claim there was no drift, got:\n{}",
+        run.outputs
+    );
 }
 
 #[test]
