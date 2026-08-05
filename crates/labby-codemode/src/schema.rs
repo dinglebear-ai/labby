@@ -101,6 +101,13 @@ fn validate_json_schema_value_inner(
     path: &str,
     seen_refs: &mut BTreeSet<String>,
 ) -> Result<(), ToolError> {
+    if let Some(allowed) = schema.as_bool() {
+        return if allowed {
+            Ok(())
+        } else {
+            Err(invalid_schema_param(path, "is rejected by false schema"))
+        };
+    }
     let Some(schema_object) = schema.as_object() else {
         return Ok(());
     };
@@ -120,6 +127,35 @@ fn validate_json_schema_value_inner(
         })?;
         validate_json_schema_value_inner(value, referenced_schema, root_schema, path, seen_refs)?;
         seen_refs.remove(reference);
+    }
+
+    if let Some(not_schema) = schema_object.get("not") {
+        let mut branch_refs = seen_refs.clone();
+        if validate_json_schema_value_inner(value, not_schema, root_schema, path, &mut branch_refs)
+            .is_ok()
+        {
+            return Err(invalid_schema_param(path, "must not match schema"));
+        }
+    }
+
+    if let Some(if_schema) = schema_object.get("if") {
+        let mut condition_refs = seen_refs.clone();
+        let condition_matches = validate_json_schema_value_inner(
+            value,
+            if_schema,
+            root_schema,
+            path,
+            &mut condition_refs,
+        )
+        .is_ok();
+        let branch = if condition_matches {
+            schema_object.get("then")
+        } else {
+            schema_object.get("else")
+        };
+        if let Some(branch_schema) = branch {
+            validate_json_schema_value_inner(value, branch_schema, root_schema, path, seen_refs)?;
+        }
     }
 
     if let Some(values) = schema_object.get("enum").and_then(Value::as_array)

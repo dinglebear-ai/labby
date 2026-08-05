@@ -109,26 +109,60 @@ fn schema_to_type(
         return resolved;
     }
 
-    if let Some(values) = object.get("anyOf").and_then(Value::as_array) {
-        return union(
-            values
-                .iter()
-                .map(|v| schema_to_type(v, root, depth + 1, seen_refs)),
-        );
-    }
-    if let Some(values) = object.get("oneOf").and_then(Value::as_array) {
-        return union(
-            values
-                .iter()
-                .map(|v| schema_to_type(v, root, depth + 1, seen_refs)),
-        );
-    }
-    if let Some(values) = object.get("allOf").and_then(Value::as_array) {
-        return intersection(
-            values
-                .iter()
-                .map(|v| schema_to_type(v, root, depth + 1, seen_refs)),
-        );
+    let has_composition = ["anyOf", "oneOf", "allOf"]
+        .iter()
+        .any(|key| object.get(*key).and_then(Value::as_array).is_some());
+    if has_composition {
+        let mut parts = Vec::new();
+        let mut base = object.clone();
+        base.remove("anyOf");
+        base.remove("oneOf");
+        base.remove("allOf");
+        base.remove("nullable");
+        let base_type = schema_to_type(&Value::Object(base), root, depth + 1, seen_refs);
+        if base_type != "unknown" {
+            parts.push((base_type, false));
+        }
+
+        for key in ["anyOf", "oneOf"] {
+            if let Some(values) = object.get(key).and_then(Value::as_array) {
+                let rendered = union(
+                    values
+                        .iter()
+                        .map(|value| schema_to_type(value, root, depth + 1, seen_refs)),
+                );
+                if rendered != "unknown" {
+                    parts.push((rendered, true));
+                }
+            }
+        }
+        if let Some(values) = object.get("allOf").and_then(Value::as_array) {
+            parts.extend(values.iter().filter_map(|value| {
+                let rendered = schema_to_type(value, root, depth + 1, seen_refs);
+                (rendered != "unknown").then_some((rendered, false))
+            }));
+        }
+
+        let mut rendered = match parts.len() {
+            0 => "unknown".to_string(),
+            1 => parts.pop().expect("single composition part").0,
+            _ => intersection(parts.into_iter().map(|(part, is_union)| {
+                if is_union && part.contains(" | ") {
+                    format!("({part})")
+                } else {
+                    part
+                }
+            })),
+        };
+        if object
+            .get("nullable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && !rendered.split('|').any(|part| part.trim() == "null")
+        {
+            rendered.push_str(" | null");
+        }
+        return rendered;
     }
 
     if let Some(value) = object.get("const") {

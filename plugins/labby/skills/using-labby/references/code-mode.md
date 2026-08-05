@@ -144,6 +144,11 @@ async () => {
 ```
 
 The host validates params against the upstream input schema before dispatching.
+The enforced subset includes local `$ref`, type/enum/const constraints, object and
+array constraints, `anyOf` / `oneOf` / `allOf`, and conditional `if` / `then` /
+`else` / `not` branches. Generated TypeScript signatures preserve root object
+properties when composition keywords are present instead of replacing the type
+with `unknown` intersections.
 
 ## Action-Dispatched Upstreams
 

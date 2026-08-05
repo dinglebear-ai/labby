@@ -401,13 +401,15 @@ fn code_mode_schema_validator_ignores_annotations_but_enforces_supported_asserti
 }
 
 #[test]
-fn code_mode_schema_validator_does_not_enforce_unsupported_assertion_keywords() {
+fn code_mode_schema_validator_enforces_if_then_else_and_not() {
     let schema = json!({
         "type": "object",
+        "additionalProperties": false,
         "properties": {
-            "mode": { "type": "string" },
+            "mode": { "enum": ["basic", "advanced"] },
             "advanced": { "type": "boolean" }
         },
+        "required": ["mode"],
         "if": {
             "properties": { "mode": { "const": "advanced" } },
             "required": ["mode"]
@@ -415,13 +417,105 @@ fn code_mode_schema_validator_does_not_enforce_unsupported_assertion_keywords() 
         "then": {
             "required": ["advanced"]
         },
+        "else": {
+            "not": { "required": ["advanced"] }
+        },
         "dependentRequired": {
             "mode": ["advanced"]
         }
     });
 
-    validate_code_mode_params_against_schema(&json!({"mode": "advanced"}), Some(&schema))
-        .expect("unsupported assertions are intentionally outside the enforced subset");
+    validate_code_mode_params_against_schema(
+        &json!({"mode": "advanced", "advanced": true}),
+        Some(&schema),
+    )
+    .expect("matching then branch passes");
+    validate_code_mode_params_against_schema(&json!({"mode": "basic"}), Some(&schema))
+        .expect("matching else branch passes and unsupported dependentRequired stays ignored");
+
+    let missing =
+        validate_code_mode_params_against_schema(&json!({"mode": "advanced"}), Some(&schema))
+            .expect_err("then branch requires advanced");
+    assert_eq!(missing.kind(), "missing_param");
+
+    let forbidden = validate_code_mode_params_against_schema(
+        &json!({"mode": "basic", "advanced": false}),
+        Some(&schema),
+    )
+    .expect_err("else branch forbids advanced");
+    assert_eq!(forbidden.kind(), "invalid_param");
+}
+
+#[test]
+fn code_mode_schema_validator_rejects_cortex_action_field_mismatches() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "enum": ["project_context", "list_ai_projects"]
+            },
+            "project": { "type": "string" },
+            "tool": { "type": "string" },
+            "limit": { "type": "integer" },
+            "since": { "type": "string" },
+            "until": { "type": "string" }
+        },
+        "required": ["action"],
+        "additionalProperties": false,
+        "allOf": [
+            {
+                "if": {
+                    "properties": { "action": { "const": "project_context" } },
+                    "required": ["action"]
+                },
+                "then": {
+                    "required": ["project"],
+                    "not": {
+                        "anyOf": [
+                            { "required": ["since"] },
+                            { "required": ["until"] }
+                        ]
+                    }
+                }
+            },
+            {
+                "if": {
+                    "properties": { "action": { "const": "list_ai_projects" } },
+                    "required": ["action"]
+                },
+                "then": {
+                    "not": { "required": ["limit"] }
+                }
+            }
+        ]
+    });
+
+    for params in [
+        json!({"action": "project_context", "project": "/repo", "limit": 5}),
+        json!({"action": "list_ai_projects", "since": "2026-08-01T00:00:00Z"}),
+    ] {
+        validate_code_mode_params_against_schema(&params, Some(&schema))
+            .expect("valid Cortex action shape passes");
+    }
+
+    for params in [
+        json!({"action": "project_context", "project": "/repo", "since": "2026-08-01T00:00:00Z"}),
+        json!({"action": "project_context", "project": "/repo", "until": "2026-08-02T00:00:00Z"}),
+        json!({"action": "list_ai_projects", "limit": 20}),
+    ] {
+        let error = validate_code_mode_params_against_schema(&params, Some(&schema))
+            .expect_err("invalid Cortex action fields fail before dispatch");
+        assert_eq!(error.kind(), "invalid_param", "{params}: {error}");
+    }
+}
+
+#[test]
+fn code_mode_schema_validator_enforces_boolean_schemas() {
+    validate_code_mode_params_against_schema(&json!({"value": 1}), Some(&json!(true)))
+        .expect("true schema accepts every value");
+    let error = validate_code_mode_params_against_schema(&json!({"value": 1}), Some(&json!(false)))
+        .expect_err("false schema rejects every value");
+    assert_eq!(error.kind(), "invalid_param");
 }
 
 #[test]
