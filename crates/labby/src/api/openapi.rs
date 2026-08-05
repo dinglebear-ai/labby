@@ -12,8 +12,8 @@ use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::SchemaType;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
-    Components, ContentBuilder, ObjectBuilder, PathItem, RefOr, Required, ResponseBuilder,
-    ResponsesBuilder, Schema, SecurityRequirement, Type,
+    Components, ContentBuilder, ObjectBuilder, PathItem, RefOr, Required, Response,
+    ResponseBuilder, ResponsesBuilder, Schema, SecurityRequirement, Type,
 };
 use utoipa::{Modify, OpenApi, ToSchema};
 
@@ -70,13 +70,68 @@ pub struct ErrorConfirmationRequired {
     pub message: String,
 }
 
-/// Error envelope for SDK pass-through errors (`auth_failed`, `rate_limited`, etc.).
+/// Structured recovery guidance shared by every agent-facing error response.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ErrorSdk {
-    /// Stable kind tag from the SDK (e.g. `"auth_failed"`, `"rate_limited"`).
+pub struct AgentErrorRecovery {
+    /// Recommended next action, such as `revise_and_retry`, `retry_later`,
+    /// `reauthenticate`, `rediscover`, or `do_not_retry`.
+    pub action: String,
+    /// Safety of repeating the exact same request: `safe`, `conditional`,
+    /// `discouraged`, or `never`.
+    pub same_arguments: String,
+    /// Model-readable course-correction instructions.
+    pub guidance: String,
+    /// Optional retry delay supplied by the failing subsystem.
+    pub retry_after_ms: Option<u64>,
+}
+
+/// Versioned error contract returned by every HTTP action failure.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentErrorResponse {
+    /// Contract version. Additive version-1 fields may be ignored by clients.
+    pub contract_version: u32,
+    /// Stable machine-readable error kind.
     pub kind: String,
-    /// Human-readable message.
+    /// Standalone model-readable diagnosis.
     pub message: String,
+    /// Failure origin such as `validation`, `policy`, `tool_execution`,
+    /// `upstream_transport`, `discovery`, or `runtime`.
+    pub origin: String,
+    /// Recovery action and exact-retry safety.
+    pub recovery: AgentErrorRecovery,
+    /// Conservative side-effect assessment: `none_expected`, `possible`, or `unknown`.
+    pub side_effects: String,
+    pub service: Option<String>,
+    pub action: Option<String>,
+    pub tool: Option<String>,
+    pub upstream: Option<String>,
+    pub command: Option<String>,
+    pub prompt: Option<String>,
+    pub resource: Option<String>,
+    pub cause: Option<String>,
+    pub valid: Option<Vec<String>>,
+    pub hint: Option<String>,
+    pub param: Option<String>,
+    pub required_scopes: Option<Vec<String>>,
+    pub existing_id: Option<String>,
+}
+
+/// Compatibility schema name for SDK pass-through errors. Runtime responses use
+/// the full `AgentErrorResponse` contract.
+pub type ErrorSdk = AgentErrorResponse;
+
+fn agent_error_response(description: &str) -> Response {
+    ResponseBuilder::new()
+        .description(description)
+        .content(
+            "application/json",
+            ContentBuilder::new()
+                .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                    "#/components/schemas/AgentErrorResponse",
+                ))))
+                .build(),
+        )
+        .build()
 }
 
 // ── Param type → OpenAPI schema conversion ──────────────────────────────
@@ -422,7 +477,7 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
                 .tag(svc)
                 .summary(Some(format!("Dispatch action to {svc}")))
                 .description(Some(format!(
-                    "Execute an action on the {svc} service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope."
+                    "Execute an action on the {svc} service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`."
                 )))
                 .request_body(Some(
                     RequestBodyBuilder::new()
@@ -459,59 +514,51 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
                         )
                         .response(
                             "400",
-                            ResponseBuilder::new()
-                                .description("Bad request (unknown action, confirmation required)")
-                                .content(
-                                    "application/json",
-                                    ContentBuilder::new()
-                                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
-                                            "#/components/schemas/ErrorUnknownAction",
-                                        ))))
-                                        .build(),
-                                )
-                                .build(),
+                            agent_error_response("Unknown action or malformed request"),
                         )
                         .response(
                             "401",
-                            ResponseBuilder::new()
-                                .description("Authentication failed")
-                                .content(
-                                    "application/json",
-                                    ContentBuilder::new()
-                                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
-                                            "#/components/schemas/ErrorSdk",
-                                        ))))
-                                        .build(),
-                                )
-                                .build(),
+                            agent_error_response("Authentication is missing, invalid, or must be renewed"),
                         )
                         .response(
                             "403",
-                            ResponseBuilder::new()
-                                .description("Authenticated caller lacks the action's required `lab:admin` scope")
-                                .content(
-                                    "application/json",
-                                    ContentBuilder::new()
-                                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
-                                            "#/components/schemas/ErrorSdk",
-                                        ))))
-                                        .build(),
-                                )
-                                .build(),
+                            agent_error_response("Authenticated caller lacks required scope or policy permission"),
+                        )
+                        .response(
+                            "404",
+                            agent_error_response("Requested service, action target, or upstream was not found"),
+                        )
+                        .response(
+                            "409",
+                            agent_error_response("Conflict, ambiguity, stale state, or restart required"),
+                        )
+                        .response(
+                            "413",
+                            agent_error_response("Request or generated content exceeds the configured limit"),
                         )
                         .response(
                             "422",
-                            ResponseBuilder::new()
-                                .description("Validation error (missing or invalid param)")
-                                .content(
-                                    "application/json",
-                                    ContentBuilder::new()
-                                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
-                                            "#/components/schemas/ErrorMissingParam",
-                                        ))))
-                                        .build(),
-                                )
-                                .build(),
+                            agent_error_response("Validation, confirmation, path-safety, or tool-execution error"),
+                        )
+                        .response(
+                            "429",
+                            agent_error_response("Rate limit or queue saturation; honor recovery.retry_after_ms when present"),
+                        )
+                        .response(
+                            "500",
+                            agent_error_response("Internal failure requiring diagnostic inspection"),
+                        )
+                        .response(
+                            "502",
+                            agent_error_response("Upstream gateway, provider, OAuth-resource, or transport failure"),
+                        )
+                        .response(
+                            "503",
+                            agent_error_response("Service or provider temporarily unavailable"),
+                        )
+                        .response(
+                            "504",
+                            agent_error_response("Operation timed out; use recovery guidance before retrying"),
                         )
                         .build(),
                 )
@@ -556,7 +603,7 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
                 "application/json",
                 ContentBuilder::new()
                     .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
-                        "#/components/schemas/ErrorSdk",
+                        "#/components/schemas/AgentErrorResponse",
                     ))))
                     .build(),
             )
@@ -598,7 +645,7 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
                             "application/json",
                             ContentBuilder::new()
                                 .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
-                                    "#/components/schemas/ErrorSdk",
+                                    "#/components/schemas/AgentErrorResponse",
                                 ))))
                                 .build(),
                         )
@@ -679,7 +726,8 @@ fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
         ErrorMissingParam,
         ErrorInvalidParam,
         ErrorConfirmationRequired,
-        ErrorSdk,
+        AgentErrorRecovery,
+        AgentErrorResponse,
     )),
     modifiers(&SecurityAddon),
 )]
@@ -726,6 +774,25 @@ mod tests {
     use super::*;
     use crate::dispatch::error::ToolError;
 
+    fn assert_agent_error_fields(object: &serde_json::Map<String, serde_json::Value>) {
+        for required in [
+            "contract_version",
+            "kind",
+            "message",
+            "origin",
+            "recovery",
+            "side_effects",
+        ] {
+            assert!(
+                object.contains_key(required),
+                "missing agent error field {required}"
+            );
+        }
+        assert!(object["recovery"].get("action").is_some());
+        assert!(object["recovery"].get("same_arguments").is_some());
+        assert!(object["recovery"].get("guidance").is_some());
+    }
+
     /// Verify doc-only error schemas stay in sync with `ToolError` wire format.
     ///
     /// If a field is added/removed from `ToolError`'s hand-written `Serialize`,
@@ -740,6 +807,7 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&err).unwrap();
         let obj = v.as_object().unwrap();
+        assert_agent_error_fields(obj);
         assert!(obj.contains_key("kind"), "UnknownAction missing 'kind'");
         assert!(
             obj.contains_key("message"),
@@ -755,6 +823,7 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&err).unwrap();
         let obj = v.as_object().unwrap();
+        assert_agent_error_fields(obj);
         assert!(obj.contains_key("kind"), "MissingParam missing 'kind'");
         assert!(
             obj.contains_key("message"),
@@ -769,6 +838,7 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&err).unwrap();
         let obj = v.as_object().unwrap();
+        assert_agent_error_fields(obj);
         assert!(obj.contains_key("kind"), "InvalidParam missing 'kind'");
         assert!(
             obj.contains_key("message"),
@@ -782,6 +852,7 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&err).unwrap();
         let obj = v.as_object().unwrap();
+        assert_agent_error_fields(obj);
         assert!(
             obj.contains_key("kind"),
             "ConfirmationRequired missing 'kind'"
@@ -798,6 +869,7 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&err).unwrap();
         let obj = v.as_object().unwrap();
+        assert_agent_error_fields(obj);
         assert!(obj.contains_key("kind"), "Sdk missing 'kind'");
         assert!(obj.contains_key("message"), "Sdk missing 'message'");
         // Verify kind promotion: should be "auth_failed", not "sdk"
@@ -1049,7 +1121,14 @@ mod tests {
             schemas.contains_key("ErrorMissingParam"),
             "missing ErrorMissingParam schema"
         );
-        assert!(schemas.contains_key("ErrorSdk"), "missing ErrorSdk schema");
+        assert!(
+            schemas.contains_key("AgentErrorResponse"),
+            "missing AgentErrorResponse schema"
+        );
+        assert!(
+            schemas.contains_key("AgentErrorRecovery"),
+            "missing AgentErrorRecovery schema"
+        );
         let setup_update = schemas
             .get("SetupSettingsConfigUpdateParams")
             .expect("missing settings config update params");

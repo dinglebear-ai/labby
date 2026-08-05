@@ -23,6 +23,11 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
+use crate::mcp::resource_errors::{
+    forbidden as forbidden_resource_error, render as resource_render_error,
+    route_scope as route_scope_resource_error, unknown as unknown_resource_error,
+};
+
 #[cfg(feature = "gateway")]
 pub(crate) use crate::app_assets::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, GATEWAY_STATUS_APP_SKYBRIDGE_URI,
@@ -681,12 +686,10 @@ impl LabMcpServer {
         if uri.starts_with("ui://") {
             let auth = auth_context_from_extensions(&context.extensions);
             if !code_mode_read_scope_allowed(auth) {
-                return Err(ErrorData::invalid_params(
+                return Err(forbidden_resource_error(
+                    &uri,
                     "UI resources require one of scopes: lab:read, lab, lab:admin",
-                    Some(json!({
-                        "kind": "forbidden",
-                        "required_scopes": ["lab:read", "lab", "lab:admin"],
-                    })),
+                    &["lab:read", "lab", "lab:admin"],
                 ));
             }
             if let Some(pool) = self.current_upstream_pool().await {
@@ -695,10 +698,7 @@ impl LabMcpServer {
                     .await
                     .map(Into::into);
             }
-            return Err(ErrorData::resource_not_found(
-                format!("unknown UI resource: {uri}"),
-                None,
-            ));
+            return Err(unknown_resource_error(&uri, true));
         }
 
         // Branch 1: local per-service action resources. This must precede the
@@ -735,13 +735,7 @@ impl LabMcpServer {
                     },
                 )
                 .await;
-                return Err(ErrorData::invalid_params(
-                    message,
-                    Some(json!({
-                        "kind": "route_scope_denied",
-                        "service": service,
-                    })),
-                ));
+                return Err(route_scope_resource_error(&uri, service, &message));
             }
 
             let json = self.service_actions_json(service).await;
@@ -802,10 +796,7 @@ impl LabMcpServer {
         let json = if uri == "lab://catalog" {
             self.catalog_json().await
         } else {
-            return Err(ErrorData::resource_not_found(
-                format!("unknown resource: {uri}"),
-                None,
-            ));
+            return Err(unknown_resource_error(uri.as_ref(), false));
         };
 
         self.read_local_json_resource(json, &uri, &subject, start, &context)
@@ -834,9 +825,9 @@ impl LabMcpServer {
                             error = %e,
                             "failed to serialize resource"
                         );
-                        return Err(ErrorData::internal_error(
+                        return Err(resource_render_error(
+                            uri,
                             format!("failed to serialize resource: {e}"),
-                            None,
                         ));
                     }
                 };
@@ -883,7 +874,7 @@ impl LabMcpServer {
                     },
                 )
                 .await;
-                Err(ErrorData::internal_error(e.to_string(), None))
+                Err(resource_render_error(uri, e.to_string()))
             }
         }
     }
@@ -898,10 +889,7 @@ impl LabMcpServer {
         if !self.code_mode_visibility().await.exposes_synthetic_tools()
             || !self.code_mode_app_state.is_enabled()
         {
-            return Err(ErrorData::resource_not_found(
-                format!("unknown UI resource: {uri}"),
-                None,
-            ));
+            return Err(unknown_resource_error(uri, true));
         }
         let auth = auth_context_from_extensions(&context.extensions);
         if !code_mode_read_scope_allowed(auth) {
@@ -927,12 +915,10 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Err(ErrorData::invalid_params(
+            return Err(forbidden_resource_error(
+                uri,
                 "Code Mode app resources require one of scopes: lab:read, lab, lab:admin",
-                Some(json!({
-                    "kind": "forbidden",
-                    "required_scopes": ["lab:read", "lab", "lab:admin"],
-                })),
+                &["lab:read", "lab", "lab:admin"],
             ));
         }
         let history = if strip_app_version(uri) == CODE_MODE_HISTORY_APP_URI {
@@ -959,9 +945,7 @@ impl LabMcpServer {
             None
         };
         let descriptor = app_descriptor_for_uri(CODE_MODE_APP_RESOURCE_DESCRIPTORS, uri)
-            .ok_or_else(|| {
-                ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
-            })?;
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
         let html = code_mode_app_html_for_descriptor(history.as_ref());
         let runtime = descriptor.runtime;
         let mime_type = runtime.mime();
@@ -1004,10 +988,7 @@ impl LabMcpServer {
         if !self.route_scope.allows_service(SERVER_LOGS_TOOL_NAME)
             || !self.service_visible_on_mcp(SERVER_LOGS_TOOL_NAME).await
         {
-            return Err(ErrorData::resource_not_found(
-                format!("unknown UI resource: {uri}"),
-                None,
-            ));
+            return Err(unknown_resource_error(uri, true));
         }
         let auth = auth_context_from_extensions(&context.extensions);
         if !admin_app_resources_visible(auth) {
@@ -1033,22 +1014,20 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Err(ErrorData::invalid_params(
+            return Err(forbidden_resource_error(
+                uri,
                 "Server log app resources require scope: lab:admin",
-                Some(json!({
-                    "kind": "forbidden",
-                    "required_scopes": ["lab:admin"],
-                })),
+                &["lab:admin"],
             ));
         }
 
         let app = server_logs_app();
-        let descriptor = app.descriptor(uri).ok_or_else(|| {
-            ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
-        })?;
+        let descriptor = app
+            .descriptor(uri)
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
         let html = app
             .inline_html(descriptor)
-            .map_err(|message| ErrorData::internal_error(message, None))?;
+            .map_err(|message| resource_render_error(uri, message))?;
         let runtime = descriptor.runtime;
         let mime_type = runtime.mime();
         let elapsed_ms = start.elapsed().as_millis();
@@ -1112,10 +1091,7 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Err(ErrorData::resource_not_found(
-                format!("unknown UI resource: {uri}"),
-                None,
-            ));
+            return Err(unknown_resource_error(uri, true));
         }
         let auth = auth_context_from_extensions(&context.extensions);
         if !admin_app_resources_visible(auth) {
@@ -1141,21 +1117,19 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Err(ErrorData::invalid_params(
+            return Err(forbidden_resource_error(
+                uri,
                 "Add Server app resources require scope: lab:admin",
-                Some(json!({
-                    "kind": "forbidden",
-                    "required_scopes": ["lab:admin"],
-                })),
+                &["lab:admin"],
             ));
         }
         let app = add_server_app();
-        let descriptor = app.descriptor(uri).ok_or_else(|| {
-            ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
-        })?;
+        let descriptor = app
+            .descriptor(uri)
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
         let html = app
             .inline_html(descriptor)
-            .map_err(|message| ErrorData::internal_error(message, None))?;
+            .map_err(|message| resource_render_error(uri, message))?;
         let mime_type = descriptor.runtime.mime();
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -1216,10 +1190,7 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Err(ErrorData::resource_not_found(
-                format!("unknown UI resource: {uri}"),
-                None,
-            ));
+            return Err(unknown_resource_error(uri, true));
         }
         if !admin_app_resources_visible(auth_context_from_extensions(&context.extensions)) {
             let elapsed_ms = start.elapsed().as_millis();
@@ -1244,21 +1215,19 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Err(ErrorData::invalid_params(
+            return Err(forbidden_resource_error(
+                uri,
                 "Gateway Status app resources require scope: lab:admin",
-                Some(json!({
-                    "kind": "forbidden",
-                    "required_scopes": ["lab:admin"],
-                })),
+                &["lab:admin"],
             ));
         }
         let app = gateway_status_app();
-        let descriptor = app.descriptor(uri).ok_or_else(|| {
-            ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
-        })?;
+        let descriptor = app
+            .descriptor(uri)
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
         let html = app
             .inline_html(descriptor)
-            .map_err(|message| ErrorData::internal_error(message, None))?;
+            .map_err(|message| resource_render_error(uri, message))?;
         let mime_type = descriptor.runtime.mime();
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(

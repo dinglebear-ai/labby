@@ -49,7 +49,7 @@ use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, spawn_dispatch_notif
 #[cfg(feature = "gateway")]
 use crate::mcp::permanent_tools::PermanentToolId;
 use crate::mcp::result_format::{
-    estimate_tokens_args, format_dispatch_result, tool_error_envelope,
+    error_result_from_envelope, estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
 use crate::mcp::server::LabMcpServer;
 
@@ -76,7 +76,7 @@ enum WidgetCallbackGate {
 
 fn route_scope_denied_result(service: &str, action: &str, message: String) -> CallToolResult {
     let envelope = build_error(service, action, "route_scope_denied", &message);
-    CallToolResult::error(vec![ContentBlock::text(envelope.to_string())])
+    error_result_from_envelope(envelope)
 }
 
 #[cfg(feature = "gateway")]
@@ -237,10 +237,7 @@ impl LabMcpServer {
                         "confirmation_required",
                         &format!("action `{action}` is destructive — confirm to proceed"),
                     );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
             }
         }
@@ -305,10 +302,7 @@ impl LabMcpServer {
                         "mcp_app requires one of scopes: lab, lab:admin",
                         &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
                     );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
 
                 let target = args
@@ -323,10 +317,7 @@ impl LabMcpServer {
                         &format!("unsupported MCP App target `{target}`"),
                         &serde_json::json!({ "valid": ["codemode"] }),
                     );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
 
                 let desired = match synthetic_action {
@@ -341,10 +332,7 @@ impl LabMcpServer {
                             &format!("unknown MCP App action `{synthetic_action}`"),
                             &serde_json::json!({ "valid": ["status", "enable", "disable"] }),
                         );
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )])
-                        .into());
+                        return Ok(error_result_from_envelope(envelope).into());
                     }
                 };
 
@@ -356,10 +344,7 @@ impl LabMcpServer {
                         "changing MCP App state requires lab:admin scope",
                         &serde_json::json!({ "required_scopes": ["lab:admin"] }),
                     );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
 
                 let previous = self.code_mode_app_state.is_enabled();
@@ -379,10 +364,7 @@ impl LabMcpServer {
                             Err(error) => {
                                 let envelope =
                                     tool_error_envelope(&service, synthetic_action, &error);
-                                return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                    envelope.to_string(),
-                                )])
-                                .into());
+                                return Ok(error_result_from_envelope(envelope).into());
                             }
                         }
                     } else {
@@ -466,10 +448,7 @@ impl LabMcpServer {
                             "control_tool": MCP_APP_TOOL_NAME,
                         }),
                     );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
                 return self
                     .call_tool_codemode_impl(&service, &args, &context)
@@ -505,10 +484,7 @@ impl LabMcpServer {
                             .await;
                             let envelope =
                                 build_error(&service, synthetic_action, "internal_error", message);
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )])
-                            .into());
+                            return Ok(error_result_from_envelope(envelope).into());
                         };
                         let gateway_action = if synthetic_action == "test" {
                             "gateway.test"
@@ -537,10 +513,7 @@ impl LabMcpServer {
                                     "valid": self.allowed_mcp_actions("gateway").await,
                                 }),
                             );
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )])
-                            .into());
+                            return Ok(error_result_from_envelope(envelope).into());
                         }
                         let gateway_entry = self
                             .registry
@@ -559,10 +532,7 @@ impl LabMcpServer {
                             .await;
                             let envelope =
                                 build_error(&service, synthetic_action, "internal_error", message);
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )])
-                            .into());
+                            return Ok(error_result_from_envelope(envelope).into());
                         };
                         if !tool_execute_builtin_action_allowed(gateway_entry, gateway_action, auth)
                         {
@@ -583,10 +553,7 @@ impl LabMcpServer {
                                 &message,
                                 &serde_json::json!({ "required_scopes": ["lab:admin"] }),
                             );
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )])
-                            .into());
+                            return Ok(error_result_from_envelope(envelope).into());
                         }
                         let params =
                             inject_gateway_origin_param(params, self.request_subject(&context));
@@ -706,9 +673,7 @@ impl LabMcpServer {
                 "not_found",
                 &format!("service `{service}` is not enabled on the mcp surface"),
             );
-            return Ok(
-                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
-            );
+            return Ok(error_result_from_envelope(envelope).into());
         }
 
         if svc.is_some() && !self.action_allowed_on_mcp(&service, &action).await {
@@ -726,9 +691,7 @@ impl LabMcpServer {
                 &format!("action `{action}` is not exposed for service `{service}`"),
                 &Value::Object(extra),
             );
-            return Ok(
-                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
-            );
+            return Ok(error_result_from_envelope(envelope).into());
         }
 
         // Upstream widget-callback resolution is a gateway-only concern (it
@@ -744,10 +707,7 @@ impl LabMcpServer {
                     Ok(gate) => gate,
                     Err(err) => {
                         let envelope = tool_error_envelope(&service, "call_tool", &err);
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )])
-                        .into());
+                        return Ok(error_result_from_envelope(envelope).into());
                     }
                 }
             } else {
@@ -772,10 +732,7 @@ impl LabMcpServer {
                                 "required_scopes": ["lab", "lab:admin"],
                             }),
                         );
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )])
-                        .into());
+                        return Ok(error_result_from_envelope(envelope).into());
                     }
                     resolved_upstream_tool = Some(*resolved);
                 }
@@ -787,10 +744,7 @@ impl LabMcpServer {
                         &format!("tool `{service}` matched multiple MCP App sibling tools"),
                         &serde_json::json!({ "valid": valid }),
                     );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
                 Some(WidgetCallbackGate::Allowed {
                     resolved,
@@ -810,10 +764,7 @@ impl LabMcpServer {
                                 "required_scopes": ["lab", "lab:admin"],
                             }),
                         );
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )])
-                        .into());
+                        return Ok(error_result_from_envelope(envelope).into());
                     }
                     tracing::info!(
                         surface = "mcp",
@@ -832,10 +783,7 @@ impl LabMcpServer {
                         "not_found",
                         &format!("tool `{service}` is hidden while code_mode mode is enabled"),
                     );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )])
-                    .into());
+                    return Ok(error_result_from_envelope(envelope).into());
                 }
             }
         }
@@ -854,9 +802,7 @@ impl LabMcpServer {
                 &format!("action `{action}` for service `{service}` requires `lab:admin` scope"),
                 &serde_json::json!({ "required_scopes": ["lab:admin"] }),
             );
-            return Ok(
-                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
-            );
+            return Ok(error_result_from_envelope(envelope).into());
         }
 
         let subject = self.request_subject_log_tag(&context);
@@ -907,10 +853,7 @@ impl LabMcpServer {
                             "internal_error",
                             "gateway manager not wired",
                         );
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )])
-                        .into());
+                        return Ok(error_result_from_envelope(envelope).into());
                     };
                     let params =
                         inject_gateway_origin_param(params, self.request_subject(&context));
@@ -976,7 +919,7 @@ impl LabMcpServer {
                 "not_found",
                 &format!("service `{service}` not found"),
             );
-            Ok(CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into())
+            Ok(error_result_from_envelope(envelope).into())
         }
     }
 

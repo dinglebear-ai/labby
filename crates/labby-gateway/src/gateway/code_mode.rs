@@ -12,6 +12,7 @@ pub(crate) mod catalog_cache;
 pub(crate) mod code_mode_host;
 pub(crate) mod embeddings;
 mod search;
+mod tool_error;
 
 // ── Re-exports of the crate's neutral public surface ────────────────────────
 //

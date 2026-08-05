@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
+use crate::CodeModeCallError;
 use crate::error::ToolError;
 use crate::git::provider::dispatch_git_method;
 use crate::host::{CodeModeHost, ExecCtx, StepDecision, ToolCallOutcome};
@@ -80,7 +81,7 @@ type ToolCallFut<'a> = std::pin::Pin<
                     u64,
                     String,
                     Option<Value>,
-                    Result<ToolCallOutcome, ToolError>,
+                    Result<ToolCallOutcome, CodeModeCallError>,
                     u128,
                     u128,
                 ),
@@ -654,19 +655,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 ..response
                             });
                         }
-                        CodeModeRunnerOutput::Error { kind, message } => {
+                        CodeModeRunnerOutput::Error { error } => {
                             // A per-execution error. The runner reset and parked
                             // (it does NOT exit), so it is safe to reuse — return
                             // ExecutionError so the pool releases rather than
-                            // evicts.
+                            // evicts. The complete structured error survives an
+                            // uncaught JavaScript rejection unchanged.
                             stderr.flush_settle().await;
                             stderr.clear().await;
                             return DriveOutcome::ExecutionError(
                                 CodeModeExecutionError::with_trace(
-                                    ToolError::Sdk {
-                                        sdk_kind: kind,
-                                        message,
-                                    },
+                                    *error,
                                     sorted_calls(&state.calls),
                                 ),
                             );
@@ -834,14 +833,16 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
         let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
         if !super::execute::local_providers_allowed(&caller, &capability_filter) {
+            let error = CodeModeCallError::from(ToolError::Forbidden {
+                message: "local Code Mode providers require unscoped lab:admin".to_string(),
+                required_scopes: vec!["lab:admin".to_string()],
+            })
+            .with_tool(id.clone());
             return (
                 seq,
                 id,
                 redacted_params,
-                Err(ToolError::Forbidden {
-                    message: "local Code Mode providers require unscoped lab:admin".to_string(),
-                    required_scopes: vec!["lab:admin".to_string()],
-                }),
+                Err(error),
                 call_start.elapsed().as_millis(),
                 start_ms,
             );
@@ -870,14 +871,12 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 }
                 StepDecision::Execute => {}
                 StepDecision::Error { kind, message } => {
+                    let error = CodeModeCallError::new(kind, message).with_tool(id.clone());
                     return (
                         seq,
                         id,
                         redacted_params,
-                        Err(ToolError::Sdk {
-                            sdk_kind: kind,
-                            message,
-                        }),
+                        Err(error),
                         call_start.elapsed().as_millis(),
                         start_ms,
                     );
@@ -902,20 +901,24 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
         if let (Some(host), Ok(value)) = (broker.host, &dispatched)
             && let Err(err) = host.record_local(ctx, value).await
         {
+            let error = CodeModeCallError::from(err).with_tool(id.clone());
             return (
                 seq,
                 id,
                 redacted_params,
-                Err(err),
+                Err(error),
                 call_start.elapsed().as_millis(),
                 start_ms,
             );
         }
+        let result = dispatched
+            .map(|value| ToolCallOutcome { value, ui: None })
+            .map_err(|error| CodeModeCallError::from(error).with_tool(id.clone()));
         (
             seq,
             id,
             redacted_params,
-            dispatched.map(|value| ToolCallOutcome { value, ui: None }),
+            result,
             call_start.elapsed().as_millis(),
             start_ms,
         )
@@ -953,7 +956,8 @@ fn enqueue_rejected_tool_call(
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     pending_tool_calls.push(Box::pin(async move {
-        (seq, id, redacted_params, Err(err), 0, 0)
+        let error = CodeModeCallError::from(err).with_tool(id.clone());
+        (seq, id, redacted_params, Err(error), 0, 0)
     }));
 }
 
@@ -1061,9 +1065,14 @@ async fn reject_tool_call_over_budget(
         stdin,
         &CodeModeRunnerInput::ToolError {
             seq,
-            kind: "call_budget_exceeded".to_string(),
-            message: format!(
-                "per-run callTool budget of {budget} exceeded; reduce fan-out or split the work across multiple codemode calls"
+            error: Box::new(
+                CodeModeCallError::new(
+                    "call_budget_exceeded",
+                    format!(
+                        "per-run callTool budget of {budget} exceeded; reduce fan-out or split the work across multiple codemode calls"
+                    ),
+                )
+                .with_tool(id.clone()),
             ),
         },
         deadline,
@@ -1126,7 +1135,7 @@ async fn handle_completed_tool_call(
         u64,
         String,
         Option<Value>,
-        Result<ToolCallOutcome, ToolError>,
+        Result<ToolCallOutcome, CodeModeCallError>,
         u128,
         u128,
     )>,
@@ -1156,9 +1165,14 @@ async fn handle_completed_tool_call(
                     stdin,
                     &CodeModeRunnerInput::ToolError {
                         seq,
-                        kind: "result_too_large".to_string(),
-                        message: format!(
-                            "callTool result is {serialized_len} bytes; maximum is {max} bytes (use writeArtifact for large payloads)"
+                        error: Box::new(
+                            CodeModeCallError::new(
+                                "result_too_large",
+                                format!(
+                                    "callTool result is {serialized_len} bytes; maximum is {max} bytes (use writeArtifact for large payloads)"
+                                ),
+                            )
+                            .with_tool(id.clone()),
                         ),
                     },
                     deadline,
@@ -1213,28 +1227,18 @@ async fn handle_completed_tool_call(
         Err(err) => {
             // Catchable tool errors (Cloudflare parity): a single failed
             // callTool must NOT abort the run. Reject the in-sandbox promise
-            // with the structured {kind,message} so the user's JS try/catch
-            // can handle it and continue (e.g. partial fan-out). If the
-            // rejection is uncaught, the main promise rejects and the
-            // existing Rejected/Error runner-output path surfaces it as the
-            // final error. Limit/timeout paths still terminate (handled
-            // elsewhere) — only per-call tool errors are caught here.
-            let kind = match &err {
-                ToolError::Sdk { sdk_kind, .. } => sdk_kind.clone(),
-                other => other.kind().to_string(),
-            };
-            // The ToolError settles this seq's promise in-sandbox; do NOT
-            // also send a ToolResult for the same seq.
-            // Use user_message() (the human text), NOT to_string()
-            // (which emits the full JSON envelope) — otherwise the
-            // runner re-wraps it and the in-sandbox rejection message
-            // becomes double-JSON-encoded.
+            // with the complete structured contract so caller JavaScript can
+            // inspect evidence, recovery guidance, and side-effect risk. If
+            // uncaught, the runner returns the same object to the parent.
+            let error = err.with_tool(id.clone());
+            let kind = error.kind.clone();
+            // This error settles the seq's promise in-sandbox; do NOT also send
+            // a ToolResult for the same seq.
             write_runner_input_by_deadline(
                 stdin,
                 &CodeModeRunnerInput::ToolError {
                     seq,
-                    kind: kind.clone(),
-                    message: err.user_message().to_string(),
+                    error: Box::new(error),
                 },
                 deadline,
                 child,
@@ -1419,11 +1423,12 @@ sleep 3600
                 _surface: CodeModeSurface,
                 _scope: &ToolScope,
                 _ctx: ExecCtx,
-            ) -> Result<ToolCallOutcome, ToolError> {
+            ) -> Result<ToolCallOutcome, CodeModeCallError> {
                 Err(ToolError::Sdk {
                     sdk_kind: "unknown_tool".to_string(),
                     message: "CountingHost exposes no tools".to_string(),
-                })
+                }
+                .into())
             }
 
             async fn resolve_snippet(
@@ -1671,7 +1676,7 @@ sleep 3600
                 _surface: CodeModeSurface,
                 _scope: &ToolScope,
                 _ctx: ExecCtx,
-            ) -> Result<ToolCallOutcome, ToolError> {
+            ) -> Result<ToolCallOutcome, CodeModeCallError> {
                 Ok(ToolCallOutcome {
                     value: json!({"ok": true}),
                     ui: None,

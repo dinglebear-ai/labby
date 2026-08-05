@@ -143,6 +143,121 @@ test('parses failed-run traces with error kind and call start offsets', () => {
   if (trace?.kind === 'code_mode_execute_trace') {
     assert.equal(trace.error_kind, 'timeout')
     assert.equal(trace.calls[0].start_ms, 226)
+    // No `error` key at all means "no contract sent" — no warning either.
+    assert.equal(trace.error, undefined)
+    assert.equal(trace.warnings, undefined)
+  }
+})
+
+test('parses the actionable failed-run error contract', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    calls: [{ id: 'shell::run', ok: false, elapsed_ms: 14, error_kind: 'tool_error' }],
+    error_kind: 'tool_error',
+    error: {
+      contract_version: 1,
+      kind: 'tool_error',
+      message: 'Tool failed after starting.',
+      tool: 'shell::run',
+      origin: 'tool_execution',
+      recovery: {
+        action: 'revise_and_retry',
+        same_arguments: 'discouraged',
+        guidance: 'Inspect the output and change the command.',
+      },
+      side_effects: 'possible',
+      cause: 'Exit code 7',
+      evidence: { content: [{ type: 'text', text: 'Exit code 7' }] },
+    },
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.error?.tool, 'shell::run')
+    assert.equal(trace.error?.recovery.action, 'revise_and_retry')
+    assert.equal(trace.error?.side_effects, 'possible')
+    assert.equal(trace.error?.cause, 'Exit code 7')
+    assert.deepEqual(trace.error?.evidence?.content, [{ type: 'text', text: 'Exit code 7' }])
+    // A well-formed v1 contract parses without warnings.
+    assert.equal(trace.warnings, undefined)
+  }
+})
+
+test('keeps the trace but warns when the error contract is malformed', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    calls: [{ id: 'shell::run', ok: false, elapsed_ms: 14, error_kind: 'tool_error' }],
+    error_kind: 'tool_error',
+    error: {
+      contract_version: 1,
+      kind: 'tool_error',
+      message: 'Tool failed after starting.',
+      origin: 'tool_execution',
+      // recovery.guidance is missing — the contract is unusable.
+      recovery: { action: 'revise_and_retry', same_arguments: 'discouraged' },
+      side_effects: 'possible',
+    },
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.error, undefined)
+    assert.equal(trace.error_kind, 'tool_error')
+    assert.equal(trace.calls.length, 1)
+    assert.deepEqual(trace.warnings, [
+      { kind: 'dropped_rows', message: 'Dropped 1 malformed error contract.' },
+    ])
+  }
+})
+
+test('warns when the error value is not an object', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 0,
+    calls: [],
+    error_kind: 'tool_error',
+    error: 'tool_error',
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.error, undefined)
+    assert.deepEqual(trace.warnings, [
+      { kind: 'dropped_rows', message: 'Dropped 1 malformed error contract.' },
+    ])
+  }
+})
+
+test('drops an error contract from a future version with a warning', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 0,
+    calls: [],
+    error_kind: 'tool_error',
+    error: {
+      // Otherwise valid — but v2 may have changed field semantics, so it must
+      // fail loud instead of rendering as v1.
+      contract_version: 2,
+      kind: 'tool_error',
+      message: 'Tool failed after starting.',
+      origin: 'tool_execution',
+      recovery: {
+        action: 'revise_and_retry',
+        same_arguments: 'discouraged',
+        guidance: 'Inspect the output and change the command.',
+      },
+      side_effects: 'possible',
+    },
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.error, undefined)
+    assert.deepEqual(trace.warnings, [
+      { kind: 'dropped_rows', message: 'Dropped 1 malformed error contract.' },
+    ])
   }
 })
 

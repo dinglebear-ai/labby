@@ -408,13 +408,8 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
     .await
     .expect_err("read-only caller must not execute destructive tool");
 
-    match err {
-        ToolError::Sdk { sdk_kind, message } => {
-            assert_eq!(sdk_kind, "forbidden");
-            assert!(message.contains("alpha::delete"));
-        }
-        other => panic!("expected forbidden sdk error, got {other:?}"),
-    }
+    assert_eq!(err.kind(), "forbidden");
+    assert!(err.user_message().contains("alpha::delete"));
 }
 
 #[tokio::test]

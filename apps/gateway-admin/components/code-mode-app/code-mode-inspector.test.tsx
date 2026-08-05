@@ -65,6 +65,96 @@ test('renders execute call rows with expandable redacted params', async () => {
   await unmount()
 })
 
+test('renders actionable recovery, cause, safety, and evidence', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        error_kind: 'tool_error',
+        calls: [
+          { id: 'shell::run', namespace: 'shell', tool: 'run', ok: false, elapsed_ms: 14, error_kind: 'tool_error' },
+        ],
+        error: {
+          contract_version: 1,
+          kind: 'tool_error',
+          message: 'Tool shell::run ran but reported a failure.',
+          tool: 'shell::run',
+          origin: 'tool_execution',
+          recovery: {
+            action: 'revise_and_retry',
+            same_arguments: 'discouraged',
+            guidance: 'Inspect the output, change the command, and retry only after revision.',
+          },
+          side_effects: 'possible',
+          cause: 'Exit code 7',
+          safety: { read_only_hint: false },
+          evidence: { content: [{ type: 'text', text: 'Exit code 7' }] },
+        },
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /Recovery/)
+  assert.match(container.textContent ?? '', /revise and retry/)
+  assert.match(container.textContent ?? '', /side effects possible/)
+  // The failed run auto-opens the Recovery row — guidance, cause, safety, and
+  // evidence are readable without a tap.
+  assert.match(container.textContent ?? '', /Next Action/)
+  assert.match(container.textContent ?? '', /change the command/)
+  assert.match(container.textContent ?? '', /Exit code 7/)
+  assert.match(container.textContent ?? '', /Safety Hints/)
+  assert.match(container.textContent ?? '', /Evidence/)
+  // Collapsing the row tucks the detail away again.
+  await clickButton(container, (text) => text.startsWith('Recovery'))
+  assert.doesNotMatch(container.textContent ?? '', /Next Action/)
+  assert.doesNotMatch(container.textContent ?? '', /Safety Hints/)
+  assert.doesNotMatch(container.textContent ?? '', /Exit code 7/)
+  await unmount()
+})
+
+test('renders error badges from raw tokens with tool and retry-after detail', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        error_kind: 'rate_limited',
+        error: {
+          contract_version: 1,
+          kind: 'rate_limited',
+          message: 'Upstream throttled the call.',
+          tool: 'gotify::message.create',
+          origin: 'upstream_transport',
+          recovery: {
+            action: 'retry_later',
+            same_arguments: 'safe',
+            guidance: 'Wait for the retry window before calling again.',
+            retry_after_ms: 5000,
+          },
+          side_effects: 'none_expected',
+        },
+      }}
+    />,
+  )
+
+  // Auto-opened Recovery row: badges are humanized exactly once — the raw
+  // underscore token never reaches the DOM.
+  assert.match(container.textContent ?? '', /upstream transport/)
+  assert.doesNotMatch(container.textContent ?? '', /upstream_transport/)
+  assert.match(container.textContent ?? '', /same args: safe/)
+  assert.match(container.textContent ?? '', /retry after 5\.0 s/)
+  // The failing tool sits in the row's summary line; the header keeps its
+  // humanized action and side effects.
+  assert.match(container.textContent ?? '', /gotify::message\.create/)
+  assert.match(container.textContent ?? '', /retry later/)
+  assert.match(container.textContent ?? '', /side effects none expected/)
+  await unmount()
+})
+
 test('minimizes and restores the inspector', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(

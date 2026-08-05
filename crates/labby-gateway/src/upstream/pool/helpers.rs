@@ -209,6 +209,17 @@ pub(super) fn max_response_bytes_override(value: usize) -> bool {
     MAX_RESPONSE_BYTES_CACHE.set(value).is_ok()
 }
 
+/// Classify a raw transport/connect error for breaker, backoff, and operator
+/// logging (`auth_failed` / `auth_required` / `timeout` / `dns_error` /
+/// `connection_refused` / `connection_error`).
+///
+/// This is a DIFFERENT vocabulary from the model-facing
+/// `upstream_failure_kind` in `crates/labby/src/mcp/call_tool_upstream.rs`,
+/// which refines authorization-shaped transport failures on the live MCP call
+/// path to `oauth_needs_reauth` (a deliberate refinement of `auth_failed`
+/// that carries reauthorization recovery guidance). Keep the two classifiers'
+/// auth heuristics aligned when either changes; the relationship is documented
+/// in `docs/dev/ERRORS.md`.
 pub(super) fn classify_upstream_error(error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase();
     if lower.contains("auth required")

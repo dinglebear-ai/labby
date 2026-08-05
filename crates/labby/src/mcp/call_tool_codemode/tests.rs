@@ -117,7 +117,9 @@ fn code_mode_description_contains_protocol_contract() {
     assert!(description.contains("callTool<T = unknown>"));
     assert!(description.contains("Successful return: the upstream tool's structuredContent"));
     assert!(description.contains("JSON.parse(String(e.message))"));
-    assert!(description.contains("Retry-safe:"));
+    assert!(description.contains("recovery.guidance"));
+    assert!(description.contains("side_effects"));
+    assert!(description.contains("origin: \"tool_execution\""));
     assert!(description.contains("Promise.all"));
     assert!(
         description.contains("codemode"),

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dinglebear.ai/schemas/labby/agent-error-v1.json",
+  "title": "Labby Agent Error",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "kind",
+    "message",
+    "origin",
+    "recovery",
+    "side_effects"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "enum": [
+        "runtime",
+        "code_mode",
+        "tool_execution",
+        "upstream_transport",
+        "validation",
+        "policy",
+        "budget",
+        "discovery",
+        "bridge"
+      ]
+    },
+    "recovery": {
+      "$ref": "#/$defs/recovery"
+    },
+    "side_effects": {
+      "enum": [
+        "none_expected",
+        "possible",
+        "unknown"
+      ]
+    },
+    "service": { "type": "string" },
+    "action": { "type": "string" },
+    "tool": { "type": "string" },
+    "upstream": { "type": "string" },
+    "command": { "type": "string" },
+    "prompt": { "type": "string" },
+    "resource": { "type": "string" },
+    "cause": { "type": "string" },
+    "original_kind": { "type": "string" },
+    "safety": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "recovery": {
+      "type": "object",
+      "required": [
+        "action",
+        "same_arguments",
+        "guidance"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "revise_and_retry",
+            "retry_later",
+            "reauthenticate",
+            "confirm",
+            "rediscover",
+            "reduce_work",
+            "start_dependency",
+            "inspect_and_escalate",
+            "do_not_retry"
+          ]
+        },
+        "same_arguments": {
+          "enum": [
+            "safe",
+            "conditional",
+            "discouraged",
+            "never"
+          ]
+        },
+        "guidance": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retry_after_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

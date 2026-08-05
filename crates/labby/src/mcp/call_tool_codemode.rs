@@ -34,7 +34,8 @@ use crate::dispatch::gateway::code_mode::{
 use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::result_format::{
-    estimate_tokens, estimate_tokens_args, hash_arguments, tool_error_envelope,
+    code_mode_error_envelope, error_result_from_envelope, estimate_tokens, estimate_tokens_args,
+    hash_arguments, tool_error_envelope,
 };
 use crate::mcp::server::LabMcpServer;
 
@@ -239,8 +240,9 @@ declare function callTool<T = unknown>(
 ): Promise<T>;
 ```
 
-Successful return: the upstream tool's structuredContent if present, else the parsed \
-text of the first content[0] block. Never the raw MCP envelope.
+Successful return: the upstream tool's structuredContent if present; otherwise all \
+text blocks are joined and parsed as JSON when possible. Mixed/non-text results retain \
+the MCP result shape.
 
 Reduce before returning. Do not return a large upstream response raw.
 
@@ -263,11 +265,20 @@ return { failures: r.items.filter(item => item.ok === false) };
 
 Error handling:
 ```ts
-// To recover: const env: CodeModeError = JSON.parse(String(e.message));
-// Retry-safe:    rate_limited (honor retry_after_ms), timeout, network_error
-// Fix-and-retry: missing_param, invalid_param, validation_failed, confirmation_required
-// Terminal:      tool_error, unknown_tool, unknown_action, auth_failed, server_error, internal_error
+try {
+  return await callTool(id, params);
+} catch (e) {
+  const error = JSON.parse(String(e.message));
+  // Inspect: kind, origin, recovery, side_effects, cause, evidence.
+  // Follow recovery.guidance. Avoid unchanged retries when side_effects is
+  // possible/unknown or recovery.same_arguments is discouraged/never.
+}
 ```
+A completed MCP tool failure uses `origin: \"tool_execution\"`; inspect its preserved \
+`cause` and `evidence`, revise the call, and retry when appropriate. Transport or \
+rate-limit failures generally recommend retrying later. Permission, authentication, \
+and unknown-target failures require changing state or rediscovering first.
+
 A failed callTool rejects only its own promise — the run continues, so catch it and \
 proceed. For catch-and-continue fan-out, prefer `Promise.allSettled` so every call \
 settles before you return.
@@ -470,9 +481,7 @@ impl LabMcpServer {
                 "gateway codemode denied by scope"
             );
             let env = tool_error_envelope(service, "call_tool", &err);
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                env.to_string(),
-            )]));
+            return Ok(error_result_from_envelope(env));
         }
         let Some(manager) = &self.gateway_manager else {
             let envelope = build_error(
@@ -481,9 +490,7 @@ impl LabMcpServer {
                 "unknown_tool",
                 "codemode is not enabled",
             );
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]));
+            return Ok(error_result_from_envelope(envelope));
         };
         let config = manager.code_mode_config().await;
         let code = match code_arg(args) {
@@ -496,9 +503,7 @@ impl LabMcpServer {
                     &err.to_string(),
                     &serde_json::json!({ "param": "code" }),
                 );
-                return Ok(CallToolResult::error(vec![ContentBlock::text(
-                    env.to_string(),
-                )]));
+                return Ok(error_result_from_envelope(env));
             }
         };
         let capability_filter =
@@ -506,9 +511,7 @@ impl LabMcpServer {
                 Ok(filter) => filter,
                 Err(err) => {
                     let env = tool_error_envelope(service, "call_tool", &err);
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        env.to_string(),
-                    )]));
+                    return Ok(error_result_from_envelope(env));
                 }
             };
         let code_hash = hash_arguments(&Value::String(code.to_string()));
@@ -633,7 +636,7 @@ impl LabMcpServer {
                     .flush_step_journal(&execution_id, &journal_owner)
                     .await;
                 step_buffer_guard.disarm();
-                let tool_error = err.into_tool_error();
+                let call_error = err.into_call_error();
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
                         execution_id: Some(execution_id.clone()),
@@ -649,7 +652,7 @@ impl LabMcpServer {
                         match_count: None,
                     })
                     .await;
-                let env = tool_error_envelope(service, "call_tool", &tool_error);
+                let env = code_mode_error_envelope(service, "call_tool", &call_error);
                 // Failures carry a structured trace too — otherwise the inline
                 // inspector renders nothing for a failed run (the error text
                 // block is host-consumed, not widget-consumed).
@@ -658,6 +661,7 @@ impl LabMcpServer {
                     "call_count": calls.len(),
                     "calls": calls,
                     "error_kind": error_kind,
+                    "error": call_error,
                     "execution_id": execution_id,
                     "elapsed_ms": elapsed_ms as u64,
                     "input_tokens": input_tokens as u64,

@@ -1,159 +1,66 @@
 //! Surface-neutral error type for dispatch operations.
 //!
-//! `ToolError` is the single canonical error type across all three surfaces
-//! (MCP, API, CLI). It lives here in `labby-runtime` because it is
-//! surface-neutral — no surface module should own it, and downstream crates
-//! (`lab`, gateway-extraction crates) share it.
+//! `ToolError` is the single canonical error type across MCP, HTTP, and CLI.
+//! Its wire representation includes the additive agent-error contract from
+//! `crate::agent_error` so every surface gives model callers consistent
+//! recovery and side-effect guidance.
 
 use serde::Serialize;
+use serde_json::{Value, json};
 
-/// Error variants that dispatchers can produce on top of SDK errors.
-///
-/// **Serialization contract:** `Serialize` is hand-written so the `Sdk` variant
-/// promotes `sdk_kind` to the top-level `kind` field. `Deserialize` is NOT
-/// derived — the derived impl would expect `{"kind":"sdk","sdk_kind":"..."}`,
-/// which disagrees with the wire format `{"kind":"auth_failed","message":"..."}`.
-/// If you need deserialization, deserialize into `serde_json::Value` and
-/// construct variants manually.
+use crate::agent_error::{AgentErrorContext, build_agent_error_value};
+
 #[derive(Debug, Clone)]
 pub enum ToolError {
-    /// Action name not recognized for this service.
     UnknownAction {
-        /// Human-readable message.
         message: String,
-        /// Valid action names for this service.
         valid: Vec<String>,
-        /// Optional fuzzy suggestion.
         hint: Option<String>,
     },
-    /// Required parameter missing.
     MissingParam {
-        /// Human-readable message.
         message: String,
-        /// Parameter name.
         param: String,
     },
-    /// Parameter present but wrong type or value.
     InvalidParam {
-        /// Human-readable message.
         message: String,
-        /// Parameter name.
         param: String,
     },
-    /// Multi-instance label not found.
     #[allow(dead_code)]
     UnknownInstance {
-        /// Human-readable message.
         message: String,
-        /// Known instance labels.
         valid: Vec<String>,
     },
-    /// Tool name matched multiple upstream tools; caller must qualify it
-    /// with the upstream-qualified name (e.g. `<upstream>::tool_name`).
     AmbiguousTool {
-        /// Human-readable message.
         message: String,
-        /// Fully-qualified candidate names the caller should choose from.
         valid: Vec<String>,
     },
-    /// Destructive action invoked without the required confirmation signal.
     ConfirmationRequired {
-        /// Human-readable message.
         message: String,
     },
-    /// Resource already exists with the given identifier.
     Conflict {
-        /// Human-readable message.
         message: String,
-        /// The identifier of the conflicting resource.
         existing_id: String,
     },
-    /// Caller lacks the required OAuth scopes to invoke this tool.
-    ///
-    /// Replaces the bare `build_error_extra(..., "forbidden", ...)` path so
-    /// scope denials flow through the canonical `ToolError` envelope (lab-l9n0n).
     Forbidden {
-        /// Human-readable message.
         message: String,
-        /// The scopes the caller would need to proceed.
         required_scopes: Vec<String>,
     },
-    /// Pass-through of an `ApiError::kind()` tag from the SDK.
     Sdk {
-        /// Stable kind tag (`auth_failed`, `rate_limited`, …).
         sdk_kind: String,
-        /// Human-readable message.
         message: String,
     },
 }
 
 impl Serialize for ToolError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let v = match self {
-            Self::UnknownAction {
-                message,
-                valid,
-                hint,
-            } => serde_json::json!({
-                "kind": "unknown_action",
-                "message": message,
-                "valid": valid,
-                "hint": hint,
-            }),
-            Self::MissingParam { message, param } => serde_json::json!({
-                "kind": "missing_param",
-                "message": message,
-                "param": param,
-            }),
-            Self::InvalidParam { message, param } => serde_json::json!({
-                "kind": "invalid_param",
-                "message": message,
-                "param": param,
-            }),
-            Self::UnknownInstance { message, valid } => serde_json::json!({
-                "kind": "unknown_instance",
-                "message": message,
-                "valid": valid,
-            }),
-            Self::AmbiguousTool { message, valid } => serde_json::json!({
-                "kind": "ambiguous_tool",
-                "message": message,
-                "valid": valid,
-            }),
-            Self::ConfirmationRequired { message } => serde_json::json!({
-                "kind": "confirmation_required",
-                "message": message,
-            }),
-            Self::Conflict {
-                message,
-                existing_id,
-            } => serde_json::json!({
-                "kind": "conflict",
-                "message": message,
-                "existing_id": existing_id,
-            }),
-            Self::Forbidden {
-                message,
-                required_scopes,
-            } => serde_json::json!({
-                "kind": "forbidden",
-                "message": message,
-                "required_scopes": required_scopes,
-            }),
-            Self::Sdk { sdk_kind, message } => serde_json::json!({
-                "kind": sdk_kind,
-                "message": message,
-            }),
-        };
-        v.serialize(serializer)
+        self.to_agent_value().serialize(serializer)
     }
 }
 
 impl std::fmt::Display for ToolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Serialize to the stable JSON envelope so callers get a machine-readable string.
         match serde_json::to_string(self) {
-            Ok(s) => f.write_str(&s),
+            Ok(serialized) => f.write_str(&serialized),
             Err(_) => write!(f, "{self:?}"),
         }
     }
@@ -162,7 +69,6 @@ impl std::fmt::Display for ToolError {
 impl std::error::Error for ToolError {}
 
 impl ToolError {
-    /// Canonical stable string tag.
     #[must_use]
     pub const fn kind(&self) -> &str {
         match self {
@@ -178,9 +84,6 @@ impl ToolError {
         }
     }
 
-    /// Human-readable message text. `Display` on `ToolError` emits the full
-    /// JSON envelope; this returns only the message field so callers building
-    /// nested error payloads (e.g. `BulkCloseFailure`) can avoid double-encoding.
     #[must_use]
     pub fn user_message(&self) -> &str {
         match self {
@@ -196,12 +99,38 @@ impl ToolError {
         }
     }
 
-    /// Whether this error represents an internal/fatal failure (ERROR level)
-    /// vs a caller/user error (WARN level).
-    ///
-    /// Per OBSERVABILITY.md:
-    /// - WARN: user/caller errors the caller can fix
-    /// - ERROR: unhandled/fatal errors requiring operator investigation
+    #[must_use]
+    pub fn extra_fields(&self) -> Value {
+        match self {
+            Self::UnknownAction { valid, hint, .. } => json!({
+                "valid": valid,
+                "hint": hint,
+            }),
+            Self::MissingParam { param, .. } | Self::InvalidParam { param, .. } => {
+                json!({ "param": param })
+            }
+            Self::UnknownInstance { valid, .. } | Self::AmbiguousTool { valid, .. } => {
+                json!({ "valid": valid })
+            }
+            Self::ConfirmationRequired { .. } | Self::Sdk { .. } => json!({}),
+            Self::Conflict { existing_id, .. } => json!({ "existing_id": existing_id }),
+            Self::Forbidden {
+                required_scopes, ..
+            } => json!({ "required_scopes": required_scopes }),
+        }
+    }
+
+    #[must_use]
+    pub fn to_agent_value(&self) -> Value {
+        self.to_agent_value_with_context(&AgentErrorContext::default())
+    }
+
+    #[must_use]
+    pub fn to_agent_value_with_context(&self, context: &AgentErrorContext) -> Value {
+        let extra = self.extra_fields();
+        build_agent_error_value(self.kind(), self.user_message(), Some(&extra), context)
+    }
+
     #[must_use]
     pub fn is_internal(&self) -> bool {
         matches!(
@@ -222,17 +151,62 @@ impl ToolError {
 #[cfg(test)]
 mod tests {
     use super::ToolError;
+    use crate::agent_error::{AgentErrorContext, AgentRecoveryAction, AgentSideEffectRisk};
 
     #[test]
-    fn sdk_variant_promotes_sdk_kind_to_top_level_kind() {
+    fn sdk_variant_promotes_kind_and_agent_metadata() {
         let err = ToolError::Sdk {
             sdk_kind: "rate_limited".to_string(),
             message: "slow down".to_string(),
         };
-        let v = serde_json::to_value(&err).expect("serialize");
-        assert_eq!(v["kind"], "rate_limited");
-        assert_eq!(v["message"], "slow down");
-        // Must NOT leak the internal `sdk_kind` field name onto the wire.
-        assert!(v.get("sdk_kind").is_none());
+        let value = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(value["kind"], "rate_limited");
+        assert_eq!(value["message"], "slow down");
+        assert_eq!(value["contract_version"], 1);
+        assert_eq!(value["recovery"]["action"], "retry_later");
+        assert!(value.get("sdk_kind").is_none());
+    }
+
+    #[test]
+    fn variant_extras_survive_agent_enrichment() {
+        let err = ToolError::UnknownAction {
+            message: "unknown action".to_string(),
+            valid: vec!["list".to_string()],
+            hint: Some("list".to_string()),
+        };
+        let value = err
+            .to_agent_value_with_context(&AgentErrorContext::for_service_action("example", "lst"));
+        assert_eq!(value["valid"][0], "list");
+        assert_eq!(value["hint"], "list");
+        assert_eq!(value["service"], "example");
+        assert_eq!(value["action"], "lst");
+        assert_eq!(value["side_effects"], "none_expected");
+    }
+
+    #[test]
+    fn upstream_failure_is_conservative() {
+        let err = ToolError::Sdk {
+            sdk_kind: "upstream_error".to_string(),
+            message: "connection closed".to_string(),
+        };
+        let value = err.to_agent_value();
+        assert_eq!(value["side_effects"], "possible");
+        assert_eq!(value["recovery"]["same_arguments"], "conditional");
+    }
+
+    #[test]
+    fn typed_metadata_enums_match_wire_values() {
+        let err = ToolError::InvalidParam {
+            message: "bad".to_string(),
+            param: "query".to_string(),
+        };
+        let value = err.to_agent_value();
+        let metadata = crate::agent_error::metadata_for_kind(err.kind(), None);
+        assert_eq!(
+            metadata.recovery.action,
+            AgentRecoveryAction::ReviseAndRetry
+        );
+        assert_eq!(metadata.side_effects, AgentSideEffectRisk::NoneExpected);
+        assert_eq!(value["origin"], "validation");
     }
 }

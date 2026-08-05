@@ -6,6 +6,8 @@
 //! `normalize_upstream_result` intentionally does NOT live here — it is
 //! consolidated into `upstream.rs` (its semantic home) in bead `.5`.
 
+#[cfg(feature = "gateway")]
+use labby_codemode::CodeModeCallError;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -33,6 +35,38 @@ pub(crate) fn tool_error_envelope(service: &str, action: &str, err: &DispatchToo
     } else {
         build_error_extra(service, action, &kind, &message, &Value::Object(serialized))
     }
+}
+
+#[cfg(feature = "gateway")]
+pub(crate) fn code_mode_error_envelope(
+    service: &str,
+    action: &str,
+    error: &CodeModeCallError,
+) -> Value {
+    // Carry the CodeModeCallError's REFINED origin/recovery (including
+    // retry_after_ms)/side_effects into the envelope via the context so
+    // `build_agent_error_value` does not recompute-and-clobber them from the
+    // bare kind (mirrors `agent_error_for_completed_tool_result` in
+    // `labby_gateway::upstream::tool_error`).
+    let mut context =
+        labby_runtime::agent_error::AgentErrorContext::for_service_action(service, action);
+    context.origin = Some(error.origin);
+    context.recovery = Some(error.recovery.clone());
+    context.side_effects = Some(error.side_effects);
+    crate::mcp::envelope::build_error_with_context(
+        service,
+        action,
+        error.kind(),
+        error.user_message(),
+        Some(&error.extra_fields()),
+        &context,
+    )
+}
+
+pub(crate) fn error_result_from_envelope(envelope: Value) -> CallToolResult {
+    let mut result = CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
+    result.structured_content = Some(envelope);
+    result
 }
 
 pub(crate) fn hash_arguments(arguments: &Value) -> String {
@@ -120,10 +154,8 @@ pub(crate) fn format_dispatch_result(
                 || build_error(service, action, kind, &message),
                 |ref extra| build_error_extra(service, action, kind, &message, extra),
             );
-            let mut result = CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
-            result.structured_content = Some(envelope);
             (
-                result,
+                error_result_from_envelope(envelope),
                 DispatchLogOutcome::Failure {
                     level: if is_fatal {
                         LoggingLevel::Error
