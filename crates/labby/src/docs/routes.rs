@@ -147,6 +147,12 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "upstream_oauth",
             "cancel upstream OAuth flow",
         ),
+        auth(
+            "POST",
+            "/v1/gateway/oauth/google/revoke",
+            "upstream_oauth",
+            "revoke the shared Google provider credential",
+        ),
         public(
             "GET",
             "/auth/upstream/callback",

@@ -50,6 +50,7 @@ fn gateway_actions_include_management_surface() {
     assert!(names.contains(&"gateway.oauth.start"));
     assert!(names.contains(&"gateway.oauth.status"));
     assert!(names.contains(&"gateway.oauth.clear"));
+    assert!(names.contains(&"gateway.oauth.google_revoke"));
     assert!(names.contains(&"gateway.oauth.resource_lease.create"));
     assert!(names.contains(&"gateway.oauth.resource_lease.renew"));
     assert!(names.contains(&"gateway.oauth.resource_lease.release"));
@@ -71,6 +72,7 @@ fn gateway_actions_include_management_surface() {
                 | "gateway.import_tombstones.restore"
                 | "gateway.remove"
                 | "gateway.mcp.cleanup"
+                | "gateway.oauth.google_revoke"
                 | "gateway.oauth.resource_lease.release"
         ) {
             continue;

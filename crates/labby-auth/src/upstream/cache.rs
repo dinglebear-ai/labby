@@ -229,6 +229,14 @@ impl OauthClientCache {
         // build_locks intentionally preserved — see comment in evict_subject.
     }
 
+    /// Evict all cached OAuth clients.
+    ///
+    /// Used when a shared provider credential is explicitly revoked because the
+    /// credential may back several upstream names. Build locks are preserved.
+    pub fn evict_all(&self) {
+        self.clients.clear();
+    }
+
     /// Evict every entry whose upstream is not in `known`.
     ///
     /// Used at config reload to drop cached clients for upstreams that no
@@ -340,6 +348,7 @@ mod tests {
                     client_secret_env: None,
                 },
                 scopes: None,
+                credential: Default::default(),
                 prefer_client_metadata_document: None,
             }),
             imported_from: None,
@@ -425,6 +434,28 @@ mod tests {
 
         assert_eq!(builds.load(Ordering::SeqCst), 1);
         assert!(Arc::ptr_eq(&left, &right));
+    }
+
+    #[tokio::test]
+    async fn evict_all_removes_clients_for_every_google_upstream() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        cache.insert_for_tests(
+            "google-calendar",
+            "gateway",
+            "preregistered:google-client",
+            dummy_auth_client().await,
+        );
+        cache.insert_for_tests(
+            "google-drive",
+            "gateway",
+            "preregistered:google-client",
+            dummy_auth_client().await,
+        );
+        assert_eq!(cache.len(), 2);
+
+        cache.evict_all();
+
+        assert!(cache.is_empty());
     }
 
     #[tokio::test]

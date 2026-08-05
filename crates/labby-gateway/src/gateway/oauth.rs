@@ -1,13 +1,16 @@
 use serde::Serialize;
 
 use crate::gateway::manager::GatewayManager;
-use labby_auth::upstream::types::BeginAuthorization;
+use labby_auth::upstream::types::{BeginAuthorization, GoogleCredentialBrokerStatus};
 use labby_runtime::error::ToolError;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct UpstreamOauthStatusView {
     pub authenticated: bool,
     pub upstream: String,
+    pub credential_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_credential_broker: Option<GoogleCredentialBrokerStatus>,
     pub expires_within_5m: bool,
     pub state: UpstreamOauthConnectionState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,6 +44,7 @@ pub enum UpstreamOauthConnectionState {
     Expiring,
     Expired,
     RefreshFailed,
+    ScopeUpgradeRequired,
     DiscoveryFailed,
     Disconnected,
 }
@@ -110,4 +114,11 @@ pub async fn clear(
     subject: &str,
 ) -> Result<(), ToolError> {
     manager.clear_upstream_credentials(upstream, subject).await
+}
+
+pub async fn revoke_google(
+    manager: &GatewayManager,
+    upstream: &str,
+) -> Result<labby_auth::types::GoogleProviderInvalidation, ToolError> {
+    manager.revoke_google_provider_credential(upstream).await
 }
