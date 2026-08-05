@@ -4,13 +4,17 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: labeler-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
   label:
-    uses: dinglebear-ai/workflows/.github/workflows/repository-labeler.yml@d1a41a7af9c41189e0f1062234364f5814bda99d
+    uses: dinglebear-ai/workflows/.github/workflows/repository-labeler.yml@befa67c7b7f976235bf3fbced6ede93293a7f405
     with:
       configuration-path: .github/labeler.yml
       sync-labels: true
