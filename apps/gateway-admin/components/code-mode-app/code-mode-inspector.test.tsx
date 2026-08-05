@@ -857,7 +857,8 @@ test('unmounting while a copy is pending neither warns nor schedules feedback', 
     errors.push(args)
   }
   try {
-    resolveWrite?.()
+    assert.ok(resolveWrite, 'copy click must reach clipboard.writeText')
+    resolveWrite()
     await Promise.resolve()
     await Promise.resolve()
   } finally {
@@ -1183,6 +1184,56 @@ test('ignores a stale re-delivery of a superseded execute trace', async () => {
     await push(failed)
     assert.match(container.textContent ?? '', /message.create/)
     assert.doesNotMatch(container.textContent ?? '', /timeout/)
+    await unmount()
+  } finally {
+    globalThis.window.openai = undefined
+  }
+})
+
+test('an explicit clear resets the superseded set so a re-sent run renders', async () => {
+  installTestDom()
+  const runA = {
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    execution_id: 'exec-a',
+    calls: [
+      { id: 'arcane::containers', namespace: 'arcane', tool: 'containers', ok: true, elapsed_ms: 21 },
+    ],
+  }
+  const runB = {
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    execution_id: 'exec-b',
+    calls: [
+      { id: 'gotify::message.create', namespace: 'gotify', tool: 'message.create', ok: true, elapsed_ms: 40 },
+    ],
+  }
+  globalThis.window.openai = { toolOutput: runA }
+  try {
+    const { container, unmount } = await renderClient(<CodeModeInspector />)
+    assert.match(container.textContent ?? '', /containers/)
+
+    const push = async (toolOutput: unknown) => {
+      await act(async () => {
+        globalThis.window.dispatchEvent(
+          new globalThis.window.CustomEvent('openai:set_globals', {
+            detail: { globals: { toolOutput } },
+          }),
+        )
+      })
+    }
+
+    // Run B supersedes run A…
+    await push(runB)
+    assert.match(container.textContent ?? '', /message.create/)
+
+    // …but an explicit host clear starts a new epoch: the previously
+    // superseded run A must render when the host deliberately re-sends it.
+    globalThis.window.openai = { toolOutput: undefined }
+    await push(null)
+    await push(runA)
+    assert.match(container.textContent ?? '', /containers/)
+    assert.doesNotMatch(container.textContent ?? '', /message.create/)
     await unmount()
   } finally {
     globalThis.window.openai = undefined

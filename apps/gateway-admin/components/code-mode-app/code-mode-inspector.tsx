@@ -206,8 +206,20 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
     const trace = parseCodeModeTrace(raw)
     if (!trace) return false
     const isExecute = trace.kind === 'code_mode_execute_trace'
-    const serialized = JSON.stringify(trace)
-    if (serialized === (isExecute ? acceptedRef.current.execute : acceptedRef.current.history)) {
+    // Parser output is JSON-safe today (all ingress crosses a JSON boundary),
+    // but passthrough fields (result, params, evidence) are not re-validated —
+    // treat an unserializable trace as new rather than throwing mid-effect,
+    // matching stringifyRedactedParams' paranoia.
+    let serialized: string | null
+    try {
+      serialized = JSON.stringify(trace)
+    } catch {
+      serialized = null
+    }
+    if (
+      serialized !== null &&
+      serialized === (isExecute ? acceptedRef.current.execute : acceptedRef.current.history)
+    ) {
       // Unchanged re-delivery — keep the operator's expansion and selection.
       setBridgeWarning(null)
       return true
@@ -306,9 +318,13 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
       } else if (hasKey) {
         // Host explicitly cleared the result — drop the stale trace and its
         // accepted identity so a later re-delivery of the same run renders.
+        // An explicit clear starts a new epoch: ordering knowledge from the
+        // old epoch is itself stale, so the superseded set resets too — a
+        // cleared-then-resent run must render, not stay blank.
         acceptedRef.current.execute = null
         acceptedRef.current.history = null
         liveExecutionIdRef.current = undefined
+        supersededRef.current.clear()
         setState(emptyState())
         setExpanded({})
         setBridgeWarning(null)
