@@ -1,12 +1,23 @@
 ---
-title: "Code Mode - Implementation Specification"
+title: "Code Mode - Implementation Specification (legacy)"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-05"
 ---
 
-# Code Mode — Implementation Specification
+# Code Mode — Implementation Specification (Legacy)
 
-This specification describes the current Lab implementation. Older design notes that mention a single advertised `code` tool are historical and do not match the shipped surface.
+> **Status: superseded — retained for historical reference.**
+> The current Code Mode implementation (surface, discovery, runner architecture,
+> IDs, result contract) is owned by [docs/dev/CODE_MODE.md](../dev/CODE_MODE.md);
+> error behavior is owned by
+> [docs/contracts/code-mode-tool-errors.md](../contracts/code-mode-tool-errors.md)
+> and [docs/contracts/agent-error-contract.md](../contracts/agent-error-contract.md).
+> Known-stale detail: the "Error Kinds" list below names `code_mode_timeout` and
+> `code_mode_fuel_exhausted` as live kinds — per CODE_MODE.md those belong to the
+> dead Wasmtime reference path and are never emitted; the live wall-clock kind is
+> `timeout`. Where this file disagrees with those docs, those docs win.
+
+This specification describes the Lab implementation as of 2026-07-30. Older design notes that mention a single advertised `code` tool are historical and do not match the shipped surface.
 
 ## Current Surface
 

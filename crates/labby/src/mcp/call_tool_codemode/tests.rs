@@ -102,8 +102,8 @@ fn scoped_capability_filter_defaults_to_route_allowed_upstreams() {
 
 #[test]
 fn code_mode_description_contains_protocol_contract() {
-    // Source of truth: docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md
-    // Full spec:       docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md
+    // Source of truth: docs/dev/CODE_MODE.md
+    // Error contract:  docs/contracts/code-mode-tool-errors.md
     let description = code_mode_description(&[
         CodeModeUpstreamDescription {
             name: "github".to_string(),
