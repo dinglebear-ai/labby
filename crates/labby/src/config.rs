@@ -799,9 +799,10 @@ pub use labby_runtime::gateway_config::{
     CodeModeConfig, CodeModeResultShapePolicy, ConfigError, GatewayConfig, GatewayImportMode,
     GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
     ProtectedMcpRouteEffectiveTarget, ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig,
-    UpstreamImportTombstone, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
-    VirtualServerConfig, VirtualServerMcpPolicyConfig, VirtualServerSurfacesConfig, WebPreferences,
-    default_mcp_path, default_true, normalize_protected_backend_url,
+    UpstreamImportTombstone, UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
+    UpstreamOauthRegistration, VirtualServerConfig, VirtualServerMcpPolicyConfig,
+    VirtualServerSurfacesConfig, WebPreferences, default_mcp_path, default_true,
+    normalize_protected_backend_url,
 };
 // Re-exported for the public `labby::config` API surface (consumed by the
 // `upstream_oauth` integration test); not referenced within the binary build,
@@ -2879,6 +2880,65 @@ client_id = "my-client"
             }
             other => panic!("unexpected registration: {other:?}"),
         }
+    }
+
+    #[test]
+    fn upstream_oauth_google_provider_credential_source_parses() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "google-calendar"
+url = "https://calendarmcp.googleapis.com/mcp/v1"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+scopes = ["https://www.googleapis.com/auth/calendar.events.readonly"]
+
+[upstream.oauth.credential]
+source = "google_provider"
+account = "admin@example.com"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "google-client"
+client_secret_env = "LABBY_GOOGLE_CLIENT_SECRET"
+"#,
+        )
+        .expect("google provider credential config should parse");
+
+        let oauth = cfg.upstream[0].oauth.as_ref().unwrap();
+        assert_eq!(
+            oauth.credential,
+            UpstreamOauthCredentialSource::GoogleProvider {
+                account: Some("admin@example.com".to_string()),
+            }
+        );
+        cfg.upstream[0]
+            .validate()
+            .expect("shared Google configuration should validate");
+    }
+
+    #[test]
+    fn upstream_oauth_credential_source_defaults_to_dedicated() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[[upstream]]
+name = "acme"
+url = "https://acme.example.com/mcp"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "my-client"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.upstream[0].oauth.as_ref().unwrap().credential,
+            UpstreamOauthCredentialSource::Dedicated
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@
 
 pub mod cache;
 pub mod encryption;
+pub mod google_store;
 pub mod manager;
 pub mod refresh;
 pub mod runtime;

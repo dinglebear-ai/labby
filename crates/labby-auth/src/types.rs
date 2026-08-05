@@ -214,11 +214,19 @@ pub struct RefreshTokenRow {
 /// invalidation cannot delete a newer credential installed by another request.
 ///
 /// `Debug` is implemented manually with redaction — never derive it.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GoogleProviderCredentialRow {
     pub subject: String,
     pub email: Option<String>,
+    pub client_id: String,
+    pub granted_scopes: Vec<String>,
+    pub access_token: Option<String>,
     pub refresh_token: String,
+    pub token_received_at: Option<i64>,
+    pub access_token_expires_at: Option<i64>,
+    pub issuer: Option<String>,
+    pub last_refresh_at: Option<i64>,
+    pub last_scope_upgrade_at: Option<i64>,
     pub generation: i64,
     pub created_at: i64,
     pub updated_at: i64,
@@ -229,10 +237,58 @@ impl std::fmt::Debug for GoogleProviderCredentialRow {
         f.debug_struct("GoogleProviderCredentialRow")
             .field("subject", &"<redacted>")
             .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("client_id", &self.client_id)
+            .field("granted_scopes", &self.granted_scopes)
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("refresh_token", &"<redacted>")
+            .field("token_received_at", &self.token_received_at)
+            .field("access_token_expires_at", &self.access_token_expires_at)
+            .field("issuer", &self.issuer)
+            .field("last_refresh_at", &self.last_refresh_at)
+            .field("last_scope_upgrade_at", &self.last_scope_upgrade_at)
             .field("generation", &self.generation)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+/// Full token-bundle update for the central Google credential broker.
+///
+/// The refresh and access tokens are encrypted by `SqliteStore`; this value must
+/// never be logged or included in API responses.
+#[derive(Clone)]
+pub struct GoogleProviderCredentialUpdate {
+    pub subject: String,
+    pub email: Option<String>,
+    pub client_id: String,
+    pub granted_scopes: Vec<String>,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_received_at: i64,
+    pub access_token_expires_at: i64,
+    pub issuer: Option<String>,
+    pub refreshed: bool,
+    pub scope_upgraded: bool,
+}
+
+impl std::fmt::Debug for GoogleProviderCredentialUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleProviderCredentialUpdate")
+            .field("subject", &"<redacted>")
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("client_id", &self.client_id)
+            .field("granted_scopes", &self.granted_scopes)
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("token_received_at", &self.token_received_at)
+            .field("access_token_expires_at", &self.access_token_expires_at)
+            .field("issuer", &self.issuer)
+            .field("refreshed", &self.refreshed)
+            .field("scope_upgraded", &self.scope_upgraded)
             .finish()
     }
 }

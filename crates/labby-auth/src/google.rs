@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode, decode_header};
 use reqwest::Url;
 use reqwest::header;
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -24,18 +24,35 @@ const GOOGLE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const GOOGLE_JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_hours(1);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthorizeUrlRequest {
     pub state: String,
     pub scope: String,
     pub code_challenge: String,
     pub code_challenge_method: String,
+    /// Request a reusable offline credential. Browser-session login sets this
+    /// to false because it needs only verified identity and must not mint an
+    /// unused refresh token. MCP authorization and scope upgrades set it true.
+    pub offline_access: bool,
     /// Force Google's full "wants access" consent screen even if the user
     /// already granted these scopes. Needed the first time (to guarantee a
     /// refresh token comes back), but forcing it on every retry adds a slow,
     /// interactive round trip that impatient MCP clients can time out on
     /// before the human finishes clicking through it.
     pub force_consent: bool,
+}
+
+impl std::fmt::Debug for AuthorizeUrlRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthorizeUrlRequest")
+            .field("state", &"<redacted>")
+            .field("scope", &self.scope)
+            .field("code_challenge", &"<redacted>")
+            .field("code_challenge_method", &self.code_challenge_method)
+            .field("offline_access", &self.offline_access)
+            .field("force_consent", &self.force_consent)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -61,7 +78,7 @@ impl std::fmt::Debug for GoogleProvider {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GoogleExchange {
     pub subject: String,
     pub email: Option<String>,
@@ -69,17 +86,56 @@ pub struct GoogleExchange {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_in: Option<u64>,
-    pub id_token: String,
+    pub granted_scopes: Vec<String>,
+    pub id_token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+impl std::fmt::Debug for GoogleExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleExchange")
+            .field("subject", &"<redacted>")
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("email_verified", &self.email_verified)
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("expires_in", &self.expires_in)
+            .field("granted_scope_count", &self.granted_scopes.len())
+            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct GoogleIdentity {
+    pub subject: String,
+    pub email: Option<String>,
+    pub email_verified: Option<bool>,
+}
+
+impl std::fmt::Debug for GoogleIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleIdentity")
+            .field("subject", &"<redacted>")
+            .field("email", &self.email.as_ref().map(|_| "<redacted>"))
+            .field("email_verified", &self.email_verified)
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 struct GoogleTokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
     expires_in: Option<u64>,
-    id_token: String,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    id_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,7 +143,7 @@ struct GoogleTokenErrorResponse {
     error: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct GoogleIdTokenClaims {
     iss: String,
     sub: String,
@@ -115,6 +171,42 @@ struct GoogleJwk {
 struct CachedGoogleJwks {
     jwks: GoogleJwks,
     expires_at: Instant,
+}
+
+fn parse_google_scopes(raw: &str) -> Vec<String> {
+    merge_google_scopes(
+        &[],
+        &raw.split_whitespace()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn canonical_google_scope(scope: &str) -> &str {
+    match scope {
+        "https://www.googleapis.com/auth/userinfo.email" => "email",
+        "https://www.googleapis.com/auth/userinfo.profile" => "profile",
+        other => other,
+    }
+}
+
+/// Normalize and union Google scopes across incremental authorization responses.
+///
+/// Google combines grants when `include_granted_scopes=true`, but client libraries
+/// may resolve an omitted `scope` field to only the scopes requested by the latest
+/// authorization. Persisting the union prevents one Workspace MCP connection from
+/// erasing scopes already granted for another connection.
+pub(crate) fn merge_google_scopes(existing: &[String], returned: &[String]) -> Vec<String> {
+    let mut scopes: Vec<String> = existing
+        .iter()
+        .chain(returned.iter())
+        .map(|scope| canonical_google_scope(scope.trim()))
+        .filter(|scope| !scope.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    scopes.sort();
+    scopes.dedup();
+    scopes
 }
 
 struct GoogleRequestTrace<'a> {
@@ -329,11 +421,14 @@ impl GoogleProvider {
             .append_pair("redirect_uri", self.redirect_uri.as_str())
             .append_pair("response_type", "code")
             .append_pair("scope", &scope)
-            .append_pair("access_type", "offline")
-            .append_pair("include_granted_scopes", "true")
             .append_pair("state", &request.state)
             .append_pair("code_challenge", &request.code_challenge)
             .append_pair("code_challenge_method", &request.code_challenge_method);
+        if request.offline_access {
+            url.query_pairs_mut()
+                .append_pair("access_type", "offline")
+                .append_pair("include_granted_scopes", "true");
+        }
         if request.force_consent {
             url.query_pairs_mut().append_pair("prompt", "consent");
         }
@@ -380,7 +475,10 @@ impl GoogleProvider {
             },
         )
         .await?;
-        let claims = self.verify_id_token(&payload.id_token).await?;
+        let id_token = payload.id_token.as_deref().ok_or_else(|| {
+            AuthError::Decode("google code exchange response is missing id_token".to_string())
+        })?;
+        let claims = self.verify_id_token(id_token).await?;
         info!(
             provider = "google",
             subject_id = %fingerprint(&claims.sub),
@@ -395,11 +493,21 @@ impl GoogleProvider {
             access_token: payload.access_token,
             refresh_token: payload.refresh_token,
             expires_in: payload.expires_in,
+            granted_scopes: payload
+                .scope
+                .as_deref()
+                .map(parse_google_scopes)
+                .unwrap_or_else(|| self.scopes.clone()),
             id_token: payload.id_token,
         })
     }
 
-    pub async fn refresh(&self, refresh_token: &str) -> Result<GoogleExchange, AuthError> {
+    pub async fn refresh(
+        &self,
+        refresh_token: &str,
+        expected_subject: &str,
+        existing_email: Option<&str>,
+    ) -> Result<GoogleExchange, AuthError> {
         let trace = GoogleRequestTrace::start("refresh", "POST", &self.token_endpoint);
         info!(
             provider = "google",
@@ -425,22 +533,51 @@ impl GoogleProvider {
             },
         )
         .await?;
-        let claims = self.verify_id_token(&payload.id_token).await?;
+        let (subject, email, email_verified) = if let Some(id_token) = payload.id_token.as_deref() {
+            let claims = self.verify_id_token(id_token).await?;
+            (claims.sub, claims.email, claims.email_verified)
+        } else {
+            // Google refresh responses commonly omit `id_token`. The refresh token
+            // came from the encrypted row already bound to this verified subject
+            // and OAuth client, so preserve that identity instead of rejecting a
+            // healthy access-token rollover.
+            (
+                expected_subject.to_string(),
+                existing_email.map(ToOwned::to_owned),
+                existing_email.map(|_| true),
+            )
+        };
         info!(
             provider = "google",
-            subject_id = %fingerprint(&claims.sub),
+            subject_id = %fingerprint(&subject),
+            identity_reused = payload.id_token.is_none(),
             has_refresh_token = payload.refresh_token.is_some(),
             expires_in_secs = payload.expires_in,
             "oauth upstream refresh succeeded"
         );
         Ok(GoogleExchange {
-            subject: claims.sub,
-            email: claims.email,
-            email_verified: claims.email_verified,
+            subject,
+            email,
+            email_verified,
             access_token: payload.access_token,
             refresh_token: payload.refresh_token,
             expires_in: payload.expires_in,
+            granted_scopes: payload
+                .scope
+                .as_deref()
+                .map(parse_google_scopes)
+                .unwrap_or_default(),
             id_token: payload.id_token,
+        })
+    }
+
+    /// Verify a Google ID token and return its stable account identity.
+    pub async fn verify_identity(&self, id_token: &str) -> Result<GoogleIdentity, AuthError> {
+        let claims = self.verify_id_token(id_token).await?;
+        Ok(GoogleIdentity {
+            subject: claims.sub,
+            email: claims.email,
+            email_verified: claims.email_verified,
         })
     }
 
@@ -627,7 +764,74 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{AuthorizeUrlRequest, CachedGoogleJwks, GoogleJwk, GoogleJwks, GoogleProvider};
+    use super::{
+        AuthorizeUrlRequest, CachedGoogleJwks, GoogleExchange, GoogleIdentity, GoogleJwk,
+        GoogleJwks, GoogleProvider, merge_google_scopes,
+    };
+
+    #[test]
+    fn google_sensitive_debug_output_is_redacted() {
+        let request = sample_request();
+        let request_debug = format!("{request:?}");
+        assert!(!request_debug.contains("state-123"));
+        assert!(!request_debug.contains("\"challenge\""));
+
+        let exchange = GoogleExchange {
+            subject: "google-subject-secret".to_string(),
+            email: Some("admin@example.com".to_string()),
+            email_verified: Some(true),
+            access_token: "access-secret".to_string(),
+            refresh_token: Some("refresh-secret".to_string()),
+            expires_in: Some(3600),
+            granted_scopes: vec!["openid".to_string()],
+            id_token: Some("id-secret".to_string()),
+        };
+        let exchange_debug = format!("{exchange:?}");
+        for secret in [
+            "google-subject-secret",
+            "admin@example.com",
+            "access-secret",
+            "refresh-secret",
+            "id-secret",
+        ] {
+            assert!(!exchange_debug.contains(secret), "leaked {secret}");
+        }
+
+        let identity = GoogleIdentity {
+            subject: "google-subject-secret".to_string(),
+            email: Some("admin@example.com".to_string()),
+            email_verified: Some(true),
+        };
+        let identity_debug = format!("{identity:?}");
+        assert!(!identity_debug.contains("google-subject-secret"));
+        assert!(!identity_debug.contains("admin@example.com"));
+    }
+
+    #[test]
+    fn incremental_google_scopes_preserve_existing_grants() {
+        assert_eq!(
+            merge_google_scopes(
+                &["drive.readonly".to_string(), "openid".to_string()],
+                &["calendar.readonly".to_string(), "openid".to_string()],
+            ),
+            vec!["calendar.readonly", "drive.readonly", "openid"]
+        );
+    }
+
+    #[test]
+    fn google_scope_aliases_canonicalize_for_subset_checks() {
+        assert_eq!(
+            merge_google_scopes(
+                &[],
+                &[
+                    "https://www.googleapis.com/auth/userinfo.email".to_string(),
+                    "https://www.googleapis.com/auth/userinfo.profile".to_string(),
+                    "openid".to_string(),
+                ],
+            ),
+            vec!["email", "openid", "profile"]
+        );
+    }
 
     #[test]
     fn google_authorize_url_includes_offline_access_prompt_and_pkce() {
@@ -637,6 +841,18 @@ mod tests {
         assert!(url.as_str().contains("access_type=offline"));
         assert!(url.as_str().contains("prompt=consent"));
         assert!(url.as_str().contains("code_challenge="));
+    }
+
+    #[test]
+    fn browser_login_authorization_omits_offline_access_and_consent() {
+        let provider = test_google_provider();
+        let mut request = sample_request();
+        request.offline_access = false;
+        request.force_consent = false;
+        let url = provider.authorize_url(&request).unwrap();
+        assert!(!url.as_str().contains("access_type="));
+        assert!(!url.as_str().contains("include_granted_scopes="));
+        assert!(!url.as_str().contains("prompt="));
     }
 
     #[test]
@@ -673,9 +889,74 @@ mod tests {
             server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
         );
 
-        let error = provider.refresh("revoked-refresh-token").await.unwrap_err();
+        let error = provider
+            .refresh(
+                "revoked-refresh-token",
+                "google-subject-123",
+                Some("user@example.com"),
+            )
+            .await
+            .unwrap_err();
 
         assert_eq!(error.kind(), "oauth_needs_reauth");
+    }
+
+    #[tokio::test]
+    async fn google_refresh_reuses_verified_identity_when_id_token_is_omitted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "refreshed-google-access-token",
+                "expires_in": 3600,
+                "scope": "openid email profile",
+            })))
+            .mount(&server)
+            .await;
+        let provider = test_google_provider().with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        );
+
+        let exchange = provider
+            .refresh(
+                "existing-refresh-token",
+                "google-subject-123",
+                Some("user@example.com"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(exchange.subject, "google-subject-123");
+        assert_eq!(exchange.email.as_deref(), Some("user@example.com"));
+        assert_eq!(exchange.email_verified, Some(true));
+        assert!(exchange.id_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn google_code_exchange_requires_id_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "google-access-token",
+                "refresh_token": "refresh-token",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+        let provider = test_google_provider().with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        );
+
+        let error = provider
+            .exchange_code("code", "verifier")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), "decode_error");
+        assert!(error.to_string().contains("missing id_token"));
     }
 
     #[tokio::test]
@@ -872,6 +1153,7 @@ mod tests {
             scope: "lab".to_string(),
             code_challenge: "challenge".to_string(),
             code_challenge_method: "S256".to_string(),
+            offline_access: true,
             force_consent: true,
         }
     }
