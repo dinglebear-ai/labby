@@ -223,7 +223,11 @@ impl AuthState {
         let redirect_uri = config.google.callback_url.clone().unwrap_or_else(|| {
             build_google_redirect_uri(&public_url, &config.google.callback_path)
         });
-        let store = SqliteStore::open(config.sqlite_path.clone()).await?;
+        let store = SqliteStore::open_with_key(
+            config.sqlite_path.clone(),
+            config.token_encryption_key.clone(),
+        )
+        .await?;
         let signing_keys = SigningKeys::load_or_create(&config.key_path)?;
         let mut google = GoogleProvider::new(
             config.google.client_id.clone(),
