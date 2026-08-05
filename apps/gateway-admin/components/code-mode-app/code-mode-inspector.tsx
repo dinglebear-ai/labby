@@ -160,34 +160,80 @@ function initialExpansion(
   return expanded
 }
 
-function stateFromInitialTrace(initialTrace: unknown): InspectorState {
-  const trace = parseCodeModeTrace(initialTrace)
-  return trace ? applyTrace(emptyState(), trace) : emptyState()
-}
-
 export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
-  const [state, setState] = useState<InspectorState>(() => stateFromInitialTrace(initialTrace))
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
-    const trace = parseCodeModeTrace(initialTrace)
-    return trace?.kind === 'code_mode_execute_trace'
-      ? initialExpansion(trace.calls, trace.error !== undefined)
-      : {}
-  })
+  // Parse the initial payload once — initial state, initial expansion, and the
+  // accepted-payload identity below all derive from the same parse.
+  const [initialParsed] = useState(() => parseCodeModeTrace(initialTrace))
+  const [state, setState] = useState<InspectorState>(() =>
+    initialParsed ? applyTrace(emptyState(), initialParsed) : emptyState(),
+  )
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
+    initialParsed?.kind === 'code_mode_execute_trace'
+      ? initialExpansion(initialParsed.calls, initialParsed.error !== undefined)
+      : {},
+  )
   const [toolInput, setToolInput] = useState<unknown>(null)
   const [bridgeWarning, setBridgeWarning] = useState<string | null>(null)
   const [bridgeState, setBridgeState] = useState<'connecting' | 'connected' | 'fallback'>('fallback')
   const [resourceReader, setResourceReader] = useState<ResourceReader | null>(null)
   const [minimized, setMinimized] = useState(false)
 
+  // Serialized identity of the last accepted payload per trace kind. Hosts
+  // re-deliver unchanged traces — `openai:set_globals` fires for ANY global
+  // change and the sync handler falls back to the live snapshot — and
+  // re-accepting one would reset `selected` and wipe `expanded`, collapsing
+  // panels the operator has open. The parser output is deterministic, so
+  // JSON identity is a sound deep-equality proxy.
+  const [initialIdentity] = useState(() => ({
+    execute:
+      initialParsed?.kind === 'code_mode_execute_trace' ? JSON.stringify(initialParsed) : null,
+    history: initialParsed?.kind === 'code_mode_history' ? JSON.stringify(initialParsed) : null,
+  }))
+  const acceptedRef = useRef({ ...initialIdentity })
+  // Execution ids of live runs that a newer live trace has replaced. A late
+  // re-delivery of a superseded run (e.g. a stale failed trace arriving after
+  // its successful successor) must not repaint a red Recovery banner over the
+  // newer result. This guard is deliberately minimal: the wire carries no
+  // monotonic sequence number, so a stale run that was never rendered here
+  // cannot be detected — full ordering needs a host-side seq. Traces without
+  // an execution_id remain last-writer-wins.
+  const supersededRef = useRef<Set<string>>(new Set())
+  const liveExecutionIdRef = useRef(
+    initialParsed?.kind === 'code_mode_execute_trace' ? initialParsed.execution_id : undefined,
+  )
+
   const acceptTrace = useCallback((raw: unknown): boolean => {
     const trace = parseCodeModeTrace(raw)
     if (!trace) return false
+    const isExecute = trace.kind === 'code_mode_execute_trace'
+    const serialized = JSON.stringify(trace)
+    if (serialized === (isExecute ? acceptedRef.current.execute : acceptedRef.current.history)) {
+      // Unchanged re-delivery — keep the operator's expansion and selection.
+      setBridgeWarning(null)
+      return true
+    }
+    if (
+      isExecute &&
+      trace.execution_id !== undefined &&
+      supersededRef.current.has(trace.execution_id)
+    ) {
+      // Stale delivery of a run a newer live trace already replaced.
+      setBridgeWarning(null)
+      return true
+    }
+    if (isExecute) {
+      const previousId = liveExecutionIdRef.current
+      if (previousId !== undefined && previousId !== trace.execution_id) {
+        supersededRef.current.add(previousId)
+      }
+      liveExecutionIdRef.current = trace.execution_id
+      acceptedRef.current.execute = serialized
+    } else {
+      acceptedRef.current.history = serialized
+    }
     setState((previous) => applyTrace(previous, trace))
-    setExpanded(
-      trace.kind === 'code_mode_execute_trace'
-        ? initialExpansion(trace.calls, trace.error !== undefined)
-        : {},
-    )
+    // A genuinely new trace still gets the fresh auto-open-on-error expansion.
+    setExpanded(isExecute ? initialExpansion(trace.calls, trace.error !== undefined) : {})
     setBridgeWarning(null)
     return true
   }, [])
@@ -258,7 +304,11 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         // instead of silently dropping the host's payload.
         setBridgeWarning('Ignored malformed bridge payload.')
       } else if (hasKey) {
-        // Host explicitly cleared the result — drop the stale trace.
+        // Host explicitly cleared the result — drop the stale trace and its
+        // accepted identity so a later re-delivery of the same run renders.
+        acceptedRef.current.execute = null
+        acceptedRef.current.history = null
+        liveExecutionIdRef.current = undefined
         setState(emptyState())
         setExpanded({})
         setBridgeWarning(null)
@@ -1254,12 +1304,17 @@ function HistoryNote() {
 function CodeBlock({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(
-    () => () => {
+  // Cancelled-flag pattern (see McpUiResourcePanel): the clipboard promise can
+  // resolve after unmount, and its .then must neither set state nor schedule
+  // the feedback timer once cleanup has already run.
+  const cancelledRef = useRef(false)
+  useEffect(() => {
+    cancelledRef.current = false
+    return () => {
+      cancelledRef.current = true
       if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
-    },
-    [],
-  )
+    }
+  }, [])
   return (
     <div className="relative">
       <pre
@@ -1279,6 +1334,7 @@ function CodeBlock({ value }: { value: string }) {
           void navigator.clipboard
             ?.writeText(value)
             .then(() => {
+              if (cancelledRef.current) return
               setCopied(true)
               if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
               copiedTimer.current = setTimeout(() => {

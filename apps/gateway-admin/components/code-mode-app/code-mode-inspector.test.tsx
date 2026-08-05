@@ -808,6 +808,69 @@ test('restarts copy feedback and clears its timer on unmount', async () => {
   await new Promise((resolve) => setTimeout(resolve, 650))
 })
 
+test('unmounting while a copy is pending neither warns nor schedules feedback', async () => {
+  installTestDom()
+  let resolveWrite: (() => void) | undefined
+  Object.defineProperty(globalThis.navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: () =>
+        new Promise<void>((resolve) => {
+          resolveWrite = resolve
+        }),
+    },
+  })
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [
+          {
+            id: 'arcane::containers',
+            namespace: 'arcane',
+            tool: 'containers',
+            ok: true,
+            elapsed_ms: 96,
+            params: { action: 'list' },
+          },
+        ],
+      }}
+    />,
+  )
+
+  await clickButton(container, (text) => text.includes('containers'))
+  await clickButtonByLabel(container, 'Copy')
+  // Unmount before the clipboard write resolves — cleanup runs first, then the
+  // .then callback fires against the unmounted code block.
+  await unmount()
+
+  const scheduledDelays: (number | undefined)[] = []
+  const originalSetTimeout = globalThis.setTimeout
+  const errors: unknown[][] = []
+  const originalConsoleError = console.error
+  globalThis.setTimeout = ((handler: () => void, delay?: number) => {
+    scheduledDelays.push(delay)
+    return originalSetTimeout(handler, delay)
+  }) as typeof globalThis.setTimeout
+  console.error = (...args: unknown[]) => {
+    errors.push(args)
+  }
+  try {
+    resolveWrite?.()
+    await Promise.resolve()
+    await Promise.resolve()
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+    console.error = originalConsoleError
+  }
+  assert.deepEqual(errors, [], 'resolving the copy after unmount must not warn')
+  assert.ok(
+    !scheduledDelays.includes(1200),
+    'the copied-feedback timer must not be scheduled after unmount',
+  )
+})
+
 test('renders parser warnings for dropped history rows', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
@@ -1013,6 +1076,113 @@ test('clears the trace when openai:set_globals carries a null toolOutput', async
     // Host cleared the result — the stale trace is dropped, not left as "connected".
     assert.doesNotMatch(container.textContent ?? '', /axon/)
     assert.match(container.textContent ?? '', /Waiting for an MCP Apps tool result/)
+    await unmount()
+  } finally {
+    globalThis.window.openai = undefined
+  }
+})
+
+test('openai:set_globals with an unchanged toolOutput preserves expansion state', async () => {
+  installTestDom()
+  const trace = {
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    calls: [
+      {
+        id: 'arcane::containers',
+        namespace: 'arcane',
+        tool: 'containers',
+        ok: true,
+        elapsed_ms: 96,
+        params: { action: 'list' },
+      },
+    ],
+  }
+  globalThis.window.openai = { toolOutput: trace }
+  try {
+    const { container, unmount } = await renderClient(<CodeModeInspector />)
+    // Expand the call row — its redacted params become visible.
+    await clickButton(container, (text) => text.includes('containers'))
+    assert.match(container.textContent ?? '', /Redacted Params/)
+
+    // The host fires set_globals for ANY global change. A re-broadcast of the
+    // same toolOutput must not collapse the operator's open panel.
+    await act(async () => {
+      globalThis.window.dispatchEvent(
+        new globalThis.window.CustomEvent('openai:set_globals', {
+          detail: { globals: { toolOutput: trace } },
+        }),
+      )
+    })
+    assert.match(container.textContent ?? '', /Redacted Params/)
+
+    // Nor may an unrelated-key change, where the sync handler falls back to
+    // the unchanged live toolOutput snapshot.
+    await act(async () => {
+      globalThis.window.dispatchEvent(
+        new globalThis.window.CustomEvent('openai:set_globals', {
+          detail: { globals: { toolInput: { code: 'async () => 1' } } },
+        }),
+      )
+    })
+    assert.match(container.textContent ?? '', /Redacted Params/)
+    await unmount()
+  } finally {
+    globalThis.window.openai = undefined
+  }
+})
+
+test('ignores a stale re-delivery of a superseded execute trace', async () => {
+  installTestDom()
+  const failed = {
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    execution_id: 'exec-stale',
+    error_kind: 'timeout',
+    calls: [
+      {
+        id: 'arcane::containers',
+        namespace: 'arcane',
+        tool: 'containers',
+        ok: false,
+        elapsed_ms: 30012,
+        error_kind: 'timeout',
+      },
+    ],
+  }
+  const succeeded = {
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    execution_id: 'exec-next',
+    calls: [
+      { id: 'gotify::message.create', namespace: 'gotify', tool: 'message.create', ok: true, elapsed_ms: 40 },
+    ],
+  }
+  globalThis.window.openai = { toolOutput: failed }
+  try {
+    const { container, unmount } = await renderClient(<CodeModeInspector />)
+    assert.match(container.textContent ?? '', /timeout/)
+
+    const push = async (toolOutput: unknown) => {
+      await act(async () => {
+        globalThis.window.dispatchEvent(
+          new globalThis.window.CustomEvent('openai:set_globals', {
+            detail: { globals: { toolOutput } },
+          }),
+        )
+      })
+    }
+
+    await push(succeeded)
+    assert.match(container.textContent ?? '', /message.create/)
+    assert.doesNotMatch(container.textContent ?? '', /timeout/)
+
+    // The failed run arrives again after its successor. Without a host-side
+    // sequence number the inspector drops runs it already superseded instead
+    // of repainting a red banner over the successful result.
+    await push(failed)
+    assert.match(container.textContent ?? '', /message.create/)
+    assert.doesNotMatch(container.textContent ?? '', /timeout/)
     await unmount()
   } finally {
     globalThis.window.openai = undefined
