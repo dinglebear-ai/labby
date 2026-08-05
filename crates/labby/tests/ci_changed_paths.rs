@@ -140,7 +140,9 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
     assert_eq!(out["docker"], "false");
     assert_eq!(out["security"], "false");
     assert_eq!(out["release"], "false");
-    assert_eq!(out["docs_check"], "true");
+    // Prose docs cannot invalidate generated artifacts, so they must not
+    // trigger the docs-check build either.
+    assert_eq!(out["docs_check"], "false");
 }
 
 #[test]
@@ -224,26 +226,69 @@ fn palette_changes_route_to_dedicated_checks() {
 }
 
 #[test]
-fn workflow_changes_enable_everything() {
-    let out = classify("pull_request", &[".github/workflows/ci.yml"]);
-    for (key, value) in out {
-        assert_eq!(value, "true", "{key} should be true for workflow changes");
-    }
-}
-
-#[test]
-fn mcp_conformance_inputs_enable_the_full_gate() {
+fn ci_workflow_and_action_changes_enable_everything() {
     for path in [
-        "scripts/ci/mcp-conformance.sh",
-        "conformance/expected-failures-dated.yaml",
-        "conformance/expected-failures-extensions.yaml",
-        ".github/labeler.yml",
+        ".github/workflows/ci.yml",
+        ".github/actions/setup-rust-kache/action.yml",
+        "scripts/ci/changed_paths.py",
     ] {
         let out = classify("pull_request", &[path]);
         for (key, value) in out {
             assert_eq!(value, "true", "{path} must enable {key}");
         }
     }
+}
+
+#[test]
+fn secondary_workflow_changes_enable_only_their_own_categories() {
+    // Non-ci.yml workflow files enable the workflow gate (actionlint,
+    // mcp-conformance) without re-running the full Rust/web/palette suites.
+    for path in [
+        "conformance/expected-failures-dated.yaml",
+        "conformance/expected-failures-extensions.yaml",
+        ".github/labeler.yml",
+        ".github/actionlint.yaml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["workflow"], "true", "{path} must enable workflow");
+        assert_eq!(out["all"], "false", "{path} must not force everything");
+        assert_eq!(out["rust_compile"], "false", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+        assert_eq!(out["web"], "false", "{path}");
+        assert_eq!(out["palette"], "false", "{path}");
+        assert_eq!(out["release"], "false", "{path}");
+    }
+}
+
+#[test]
+fn release_workflow_changes_enable_the_release_contract() {
+    for path in [
+        ".github/workflows/release.yml",
+        ".github/workflows/build-incus-image.yml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["workflow"], "true", "{path}");
+        assert_eq!(out["release"], "true", "{path}");
+        assert_eq!(out["rust_compile"], "false", "{path}");
+    }
+}
+
+#[test]
+fn unraid_plugin_changes_route_to_the_unraid_check() {
+    for path in [
+        "unraid/labby.plg",
+        "unraid/source/usr/local/emhttp/plugins/labby/Labby.page",
+        "scripts/ci/unraid-plugin-checksums.sh",
+        "scripts/ci/unraid-runtime-tests.sh",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["unraid"], "true", "{path} must enable unraid");
+        assert_eq!(out["rust_compile"], "false", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+    }
+
+    let out = classify("pull_request", &["docs/runtime/UNRAID.md"]);
+    assert_eq!(out["unraid"], "false", "prose docs must not run the plugin check");
 }
 
 #[test]

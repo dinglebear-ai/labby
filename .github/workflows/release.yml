@@ -17,6 +17,9 @@ env:
   RUSTFLAGS: -D warnings
   KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
   KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
+  KACHE_S3_PREFIX: ${{ vars.KACHE_S3_PREFIX }}
   # Release jobs must not inherit a host-level compiler wrapper. Cache-enabled
   # jobs configure kache explicitly through setup-rust-kache (mirrors ci.yml).
   RUSTC_WRAPPER: ""
@@ -91,12 +94,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: '"ubuntu-24.04"'
-            use-cross: false
             binary: labby
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
           - target: x86_64-pc-windows-msvc
             runner: '"windows-latest"'
-            use-cross: false
             binary: labby.exe
             archive: lab-x86_64-pc-windows-msvc.zip
     steps:
@@ -114,17 +115,14 @@ jobs:
         if: runner.os == 'Windows'
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install cross
-        if: matrix.use-cross == true
-        uses: taiki-e/install-action@532bca59bd936483e3ece96e64da0d83ba0f744a
-
-      - name: Build with cross
-        if: matrix.use-cross == true
-        run: cross build --workspace --all-features --locked --release --target ${{ matrix.target }}
+      - name: Restore Windows Cargo cache
+        if: runner.os == 'Windows'
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          shared-key: labby-release-windows-v1
+          cache-on-failure: true
 
       - name: Build natively
-        if: matrix.use-cross != true
         run: cargo build --workspace --all-features --locked --release --target ${{ matrix.target }}
 
       - name: Package Unix artifact
@@ -208,6 +206,8 @@ jobs:
           push: false
           outputs: type=docker,dest=/tmp/lab-container-image.tar
           tags: lab:release-candidate
+          cache-from: type=gha,scope=labby-release-container
+          cache-to: type=gha,mode=min,scope=labby-release-container
       - name: Load private container candidate
         run: docker load --input /tmp/lab-container-image.tar
       - name: Smoke container Code Mode runner
