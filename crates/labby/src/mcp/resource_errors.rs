@@ -44,7 +44,10 @@ pub(crate) fn route_scope(uri: &str, service: &str, message: &str) -> ErrorData 
     let mut context = context(uri);
     context.origin = Some(AgentErrorOrigin::Policy);
     context.side_effects = Some(AgentSideEffectRisk::NoneExpected);
-    let extra = json!({ "service": service });
+    // `denied_service`, not `service`: the context's `service` field is
+    // "labby" (the surface that denied the read); this key names the service
+    // the caller asked for.
+    let extra = json!({ "denied_service": service });
     invalid_params_agent_error("route_scope_denied", message, Some(&extra), &context)
 }
 
@@ -74,5 +77,17 @@ mod tests {
         assert_eq!(data["resource"], "lab://missing");
         assert_eq!(data["recovery"]["action"], "rediscover");
         assert!(error.message.contains("resources/list"));
+    }
+
+    #[test]
+    fn route_scope_denial_names_denied_service_without_colliding() {
+        let error = route_scope("lab://gateway/actions", "gateway", "not exposed");
+        let data = error.data.expect("agent error data");
+        // The context service (the denying surface) stays "labby"; the
+        // requested service rides in `denied_service`.
+        assert_eq!(data["service"], "labby");
+        assert_eq!(data["denied_service"], "gateway");
+        assert_eq!(data["origin"], "policy");
+        assert_eq!(data["side_effects"], "none_expected");
     }
 }

@@ -225,6 +225,14 @@ impl From<String> for CodeModeRunnerError {
 /// frames when the rejection is uncaught, so locate the first/last braces and
 /// parse only that span. Minimal caller-authored `{kind,message}` objects remain
 /// valid and are upgraded to the current contract defaults.
+///
+/// One of three best-effort structured-error recovery seams — keep behavior
+/// aligned when changing any of them:
+/// - here (runner rejection text → `CodeModeCallError`),
+/// - `crates/labby/src/entrypoint.rs` `cli_error_value` (anyhow string → CLI
+///   JSON error),
+/// - `crates/labby-gateway/src/upstream/tool_error.rs` `parsed_error_object`
+///   (upstream MCP content → parsed error object).
 fn extract_structured_error(message: &str) -> Option<CodeModeCallError> {
     let start = message.find('{')?;
     let end = message.rfind('}')?;

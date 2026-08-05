@@ -264,7 +264,9 @@ impl LabMcpServer {
             let mut error_context = prompt_error_context(&request.name, None, None);
             error_context.origin = Some(AgentErrorOrigin::Policy);
             error_context.side_effects = Some(AgentSideEffectRisk::NoneExpected);
-            let extra = serde_json::json!({ "service": service_name });
+            // `denied_service`, not `service`: the error context's `service`
+            // stays "labby"; this key names the service the prompt targeted.
+            let extra = serde_json::json!({ "denied_service": service_name });
             return Err(invalid_params_agent_error(
                 "route_scope_denied",
                 format!("Service `{service_name}` is not exposed on this MCP route."),

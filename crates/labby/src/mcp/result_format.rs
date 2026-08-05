@@ -43,12 +43,23 @@ pub(crate) fn code_mode_error_envelope(
     action: &str,
     error: &CodeModeCallError,
 ) -> Value {
-    build_error_extra(
+    // Carry the CodeModeCallError's REFINED origin/recovery (including
+    // retry_after_ms)/side_effects into the envelope via the context so
+    // `build_agent_error_value` does not recompute-and-clobber them from the
+    // bare kind (mirrors `agent_error_for_completed_tool_result` in
+    // `labby_gateway::upstream::tool_error`).
+    let mut context =
+        labby_runtime::agent_error::AgentErrorContext::for_service_action(service, action);
+    context.origin = Some(error.origin);
+    context.recovery = Some(error.recovery.clone());
+    context.side_effects = Some(error.side_effects);
+    crate::mcp::envelope::build_error_with_context(
         service,
         action,
         error.kind(),
         error.user_message(),
-        &error.extra_fields(),
+        Some(&error.extra_fields()),
+        &context,
     )
 }
 

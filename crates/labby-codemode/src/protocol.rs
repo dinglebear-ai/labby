@@ -34,6 +34,12 @@ pub(crate) enum CodeModeRunnerInput {
     },
     ToolError {
         seq: u64,
+        // No `#[serde(default)]` needed on the flattened error:
+        // `CodeModeCallError`'s custom `Deserialize` back-fills
+        // `contract_version`/`origin`/`recovery`/`side_effects` from `kind`,
+        // so a legacy `{type, seq, kind, message}` wire message still
+        // deserializes (locked by `error_contract.rs`'s
+        // `legacy_kind_message_payload_upgrades_to_current_contract`).
         #[serde(flatten)]
         error: Box<CodeModeCallError>,
     },
@@ -108,6 +114,10 @@ pub(crate) enum CodeModeRunnerOutput {
         logs: Vec<String>,
     },
     Error {
+        // As with `CodeModeRunnerInput::ToolError`, no `#[serde(default)]`:
+        // the flattened `CodeModeCallError`'s custom `Deserialize` upgrades a
+        // bare `{type, kind, message}` message from an older runner binary to
+        // the current contract defaults.
         #[serde(flatten)]
         error: Box<CodeModeCallError>,
     },

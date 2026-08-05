@@ -158,7 +158,7 @@ impl CodeModeHost for GatewayManager {
             // a short label, so cap it on a char boundary BEFORE redacting so a
             // caller can't write a multi-MB step name into the durable DB (the
             // value path is bounded by `redact_journal_text`'s BoundedWriter).
-            name: labby_codemode::redact_secret_like_segments(cap_on_char_boundary(
+            name: labby_runtime::agent_error::redact_secret_like_segments(cap_on_char_boundary(
                 name,
                 JOURNAL_NAME_CAP_BYTES,
             )),

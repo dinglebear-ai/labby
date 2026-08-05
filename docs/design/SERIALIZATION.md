@@ -1,7 +1,7 @@
 ---
 title: "Serialization"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-05"
 ---
 
 # Serialization
@@ -14,6 +14,13 @@ It defines:
 - the stable envelope shapes for MCP and HTTP
 - output-format responsibilities
 - naming and serde expectations
+
+Error envelopes additionally carry the versioned agent recovery contract
+(`contract_version`, `origin`, `recovery`, `side_effects`). Its normative
+definition and published JSON Schemas live in
+[../contracts/agent-error-contract.md](../contracts/agent-error-contract.md)
+and [../contracts/code-mode-tool-errors.md](../contracts/code-mode-tool-errors.md);
+the kind vocabulary stays owned by [../dev/ERRORS.md](../dev/ERRORS.md).
 
 ## Goal
 

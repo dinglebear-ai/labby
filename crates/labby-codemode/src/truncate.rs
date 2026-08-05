@@ -9,25 +9,11 @@ use super::types::CodeModeExecutionResponse;
 /// to the caller: strips control / bidi-override characters and common
 /// prompt-injection markers, redacts secret-like segments, and caps length.
 ///
-/// Self-contained log hygiene so the kernel does not depend on the host's
-/// projection helpers.
-pub fn sanitize_log_text(input: &str, max_len: usize) -> String {
+/// Thin crate-local alias of the canonical `labby_runtime` helper so runner
+/// modules keep one import path. External consumers should depend on
+/// `labby_runtime::agent_error` directly.
+pub(crate) fn sanitize_log_text(input: &str, max_len: usize) -> String {
     labby_runtime::agent_error::sanitize_log_text(input, max_len)
-}
-
-/// Sanitize multiline model-facing diagnostics while preserving line breaks.
-/// Each line uses the same control-character, prompt-marker, and secret hygiene
-/// as runner logs; the final joined value is capped across the whole message.
-#[must_use]
-pub fn sanitize_error_text(input: &str, max_len: usize) -> String {
-    labby_runtime::agent_error::sanitize_error_text(input, max_len)
-}
-
-/// Redact secret-shaped whitespace-delimited segments (API keys, tokens, JWTs)
-/// from free text. Reused by the gateway step-journal store to redact
-/// caller-authored step names/values at rest.
-pub fn redact_secret_like_segments(input: &str) -> String {
-    labby_runtime::agent_error::redact_secret_like_segments(input)
 }
 
 pub(crate) fn truncate_execution_response(

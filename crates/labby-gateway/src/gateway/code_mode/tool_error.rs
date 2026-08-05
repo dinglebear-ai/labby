@@ -1,12 +1,15 @@
 //! Code Mode adapter over the shared upstream MCP tool-error analyzer.
 
-use labby_codemode::{CodeModeCallError, CodeModeErrorEvidence, CodeModeToolSafetyHints};
+use labby_codemode::{CodeModeCallError, CodeModeToolSafetyHints};
 use rmcp::model::CallToolResult;
 
-use crate::upstream::tool_error::{
-    McpToolErrorEvidence, McpToolSafetyHints, analyze_completed_tool_error,
-};
+use crate::upstream::tool_error::{analyze_completed_tool_error, safety_hints_from_annotations};
 use crate::upstream::types::UpstreamTool;
+
+// `CodeModeToolSafetyHints`/`CodeModeErrorEvidence` and the gateway's
+// `McpToolSafetyHints`/`McpToolErrorEvidence` are aliases of the same
+// canonical `labby_runtime::agent_error` types, so the analyzer's output
+// flows through without field-copy adapters.
 
 #[must_use]
 pub(super) fn completed_tool_error(
@@ -20,7 +23,7 @@ pub(super) fn completed_tool_error(
         analysis.kind,
         analysis.original_kind,
         analysis.cause,
-        code_mode_evidence(analysis.evidence),
+        analysis.evidence,
         safety,
         analysis.retry_after_ms,
     )
@@ -28,27 +31,7 @@ pub(super) fn completed_tool_error(
 
 #[must_use]
 pub(super) fn upstream_tool_safety(tool: &UpstreamTool) -> CodeModeToolSafetyHints {
-    code_mode_safety(McpToolSafetyHints::from_annotations(
-        tool.tool.annotations.as_ref(),
-    ))
-}
-
-fn code_mode_safety(safety: McpToolSafetyHints) -> CodeModeToolSafetyHints {
-    CodeModeToolSafetyHints {
-        read_only_hint: safety.read_only_hint,
-        destructive_hint: safety.destructive_hint,
-        idempotent_hint: safety.idempotent_hint,
-        open_world_hint: safety.open_world_hint,
-    }
-}
-
-fn code_mode_evidence(evidence: McpToolErrorEvidence) -> CodeModeErrorEvidence {
-    CodeModeErrorEvidence {
-        content: evidence.content,
-        structured_content: evidence.structured_content,
-        parsed_error: evidence.parsed_error,
-        omitted_content_blocks: evidence.omitted_content_blocks,
-    }
+    safety_hints_from_annotations(tool.tool.annotations.as_ref())
 }
 
 #[cfg(test)]

@@ -118,6 +118,12 @@ impl BridgeServerHandler {
     }
 }
 
+/// Error context for a bridged action: service is always `labby`, the action
+/// is namespaced under `bridge.`.
+fn bridge_context(action: &str) -> AgentErrorContext {
+    AgentErrorContext::for_service_action("labby", format!("bridge.{action}"))
+}
+
 fn bridge_error(action: &str, error: ServiceError) -> ErrorData {
     if let ServiceError::McpError(error) = error {
         tracing::warn!(
@@ -139,7 +145,7 @@ fn bridge_error(action: &str, error: ServiceError) -> ErrorData {
         error_kind = "bridge_transport_error",
         "bridged request to live daemon failed"
     );
-    let context = AgentErrorContext::for_service_action("labby", format!("bridge.{action}"));
+    let context = bridge_context(action);
     internal_agent_error(
         "bridge_transport_error",
         "The Labby MCP bridge could not reach the canonical daemon.",
@@ -162,7 +168,7 @@ fn unexpected_response(action: &str) -> ErrorData {
         error_kind = "unexpected_response",
         "live daemon returned an unexpected result type"
     );
-    let context = AgentErrorContext::for_service_action("labby", format!("bridge.{action}"));
+    let context = bridge_context(action);
     internal_agent_error(
         "unexpected_response",
         format!(
@@ -197,10 +203,7 @@ impl BridgeServerHandler {
                     .cancel(Some("downstream request cancelled".to_string()))
                     .await
                     .map_err(|error| bridge_error(action, error))?;
-                let context = AgentErrorContext::for_service_action(
-                    "labby",
-                    format!("bridge.{action}"),
-                );
+                let context = bridge_context(action);
                 Err(internal_agent_error(
                     "cancelled",
                     format!("Bridge request `{action}` was cancelled by the downstream caller."),
@@ -285,10 +288,7 @@ impl ServerHandler for BridgeServerHandler {
                             | ServerNotification::PromptListChangedNotification(_)
                             | ServerNotification::ResourceUpdatedNotification(_)
                         )) => sink.send(notification).await.map_err(|error| {
-                            let mut error_context = AgentErrorContext::for_service_action(
-                                "labby",
-                                "bridge.subscriptions.relay",
-                            );
+                            let mut error_context = bridge_context("subscriptions.relay");
                             error_context.cause = Some(
                                 labby_runtime::agent_error::sanitize_error_text(&error.to_string(), 4096),
                             );

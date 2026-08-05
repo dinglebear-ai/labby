@@ -75,11 +75,29 @@ pub fn build_error_extra(
     extra: &Value,
 ) -> Value {
     let context = AgentErrorContext::for_service_action(service, action);
+    build_error_with_context(service, action, kind, message, Some(extra), &context)
+}
+
+/// Build an error envelope with a fully-populated [`AgentErrorContext`].
+///
+/// Use this when the caller already holds REFINED `origin`/`recovery`/
+/// `side_effects` metadata (e.g. from a `CodeModeCallError`): context values
+/// win over the kind-derived recomputation inside `build_agent_error_value`,
+/// so the refinement is preserved instead of clobbered.
+#[must_use]
+pub fn build_error_with_context(
+    service: &str,
+    action: &str,
+    kind: &str,
+    message: &str,
+    extra: Option<&Value>,
+    context: &AgentErrorContext,
+) -> Value {
     json!({
         "ok": false,
         "service": service,
         "action": action,
-        "error": build_agent_error_value(kind, message, Some(extra), &context),
+        "error": build_agent_error_value(kind, message, extra, context),
     })
 }
 

@@ -412,11 +412,6 @@ impl CodeModeExecutionError {
     }
 
     #[must_use]
-    pub fn call_error(&self) -> &CodeModeCallError {
-        &self.error
-    }
-
-    #[must_use]
     pub fn calls(&self) -> &[CodeModeExecutedCall] {
         &self.calls
     }

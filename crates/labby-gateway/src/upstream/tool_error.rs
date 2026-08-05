@@ -3,7 +3,8 @@
 use labby_codemode::redact_trace_value;
 use labby_runtime::agent_error::{
     AgentErrorContext, AgentErrorOrigin, AgentSideEffectRisk, build_agent_error_value,
-    metadata_for_kind_with_retry_safety, sanitize_error_text,
+    metadata_for_kind_with_retry_safety, retry_after_ms_from_object, sanitize_error_text,
+    tool_execution_message,
 };
 use rmcp::model::{CallToolResult, ContentBlock, MetaObject, ToolAnnotations};
 use serde::{Deserialize, Serialize};
@@ -15,53 +16,38 @@ const MAX_ERROR_TEXT_CHARS: usize = 8 * 1024;
 const MAX_ERROR_CONTENT_BYTES: usize = 4 * 1024;
 const MAX_ERROR_STRUCTURED_BYTES: usize = 8 * 1024;
 const MAX_PARSED_ERROR_BYTES: usize = 4 * 1024;
+/// Text blocks larger than this are never candidates for structured-error
+/// JSON parsing — parsing multi-megabyte upstream payloads to maybe find a
+/// `{kind, message}` object is wasted work on the error path.
+const MAX_PARSE_CANDIDATE_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpToolSafetyHints {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub read_only_hint: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destructive_hint: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub idempotent_hint: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub open_world_hint: Option<bool>,
-}
+/// MCP tool annotations that informed retry and side-effect guidance.
+///
+/// Alias of the canonical `labby_runtime` definition shared with Code Mode's
+/// `CodeModeToolSafetyHints`.
+pub type McpToolSafetyHints = labby_runtime::agent_error::ToolSafetyHints;
 
-impl McpToolSafetyHints {
-    #[must_use]
-    pub fn from_annotations(annotations: Option<&ToolAnnotations>) -> Self {
-        let Some(annotations) = annotations else {
-            return Self::default();
-        };
-        Self {
-            read_only_hint: annotations.read_only_hint,
-            destructive_hint: annotations.destructive_hint,
-            idempotent_hint: annotations.idempotent_hint,
-            open_world_hint: annotations.open_world_hint,
-        }
+/// Sanitized evidence preserved from a completed upstream MCP tool result.
+///
+/// Alias of the canonical `labby_runtime` definition shared with Code Mode's
+/// `CodeModeErrorEvidence`.
+pub type McpToolErrorEvidence = labby_runtime::agent_error::ToolErrorEvidence;
+
+/// Build safety hints from rmcp tool annotations.
+///
+/// A free function (not an inherent method) because `McpToolSafetyHints` is an
+/// alias of the shared, rmcp-free `labby_runtime` type.
+#[must_use]
+pub fn safety_hints_from_annotations(annotations: Option<&ToolAnnotations>) -> McpToolSafetyHints {
+    let Some(annotations) = annotations else {
+        return McpToolSafetyHints::default();
+    };
+    McpToolSafetyHints {
+        read_only_hint: annotations.read_only_hint,
+        destructive_hint: annotations.destructive_hint,
+        idempotent_hint: annotations.idempotent_hint,
+        open_world_hint: annotations.open_world_hint,
     }
-
-    #[must_use]
-    pub fn exact_retry_is_hint_safe(&self) -> bool {
-        self.read_only_hint == Some(true) || self.idempotent_hint == Some(true)
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct McpToolErrorEvidence {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub content: Vec<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub structured_content: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parsed_error: Option<Value>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub omitted_content_blocks: usize,
-}
-
-const fn is_zero(value: &usize) -> bool {
-    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,7 +72,7 @@ pub fn analyze_completed_tool_error(result: &CallToolResult) -> CompletedToolErr
         .map(ToOwned::to_owned);
     let kind = raw_kind
         .as_deref()
-        .map(canonical_error_kind)
+        .map(canonicalize_untrusted_upstream_kind)
         .unwrap_or("tool_error")
         .to_string();
     let retry_after_ms = parsed_error
@@ -131,12 +117,21 @@ pub fn agent_error_for_completed_tool_result(
         &metadata.recovery.guidance,
         metadata.side_effects,
     );
-    let extra = json!({
-        "original_kind": analysis.original_kind,
-        "cause": analysis.cause,
-        "safety": safety,
-        "evidence": analysis.evidence,
-    });
+    // Omit `original_kind` when absent (the published schema types it as a
+    // string, never null) and skip empty safety/evidence objects to match the
+    // Code Mode side's `skip_serializing_if` behavior.
+    let mut extra = Map::new();
+    if let Some(original_kind) = analysis.original_kind.as_deref() {
+        extra.insert("original_kind".to_string(), json!(original_kind));
+    }
+    extra.insert("cause".to_string(), json!(analysis.cause));
+    if !safety.is_empty() {
+        extra.insert("safety".to_string(), json!(safety));
+    }
+    if !analysis.evidence.is_empty() {
+        extra.insert("evidence".to_string(), json!(analysis.evidence));
+    }
+    let extra = Value::Object(extra);
     let mut context = AgentErrorContext::for_service_action(service, action);
     context.tool = Some(tool.to_string());
     context.upstream = upstream.map(ToOwned::to_owned);
@@ -163,7 +158,7 @@ pub fn enrich_completed_tool_error_result(
     let kind = contract
         .get("kind")
         .and_then(Value::as_str)
-        .map(canonical_error_kind)
+        .map(canonicalize_untrusted_upstream_kind)
         .unwrap_or("tool_error");
     let original_content = std::mem::take(&mut result.content);
     let mut content = Vec::with_capacity(original_content.len().saturating_add(1));
@@ -184,8 +179,19 @@ pub fn enrich_completed_tool_error_result(
     (result, kind)
 }
 
+/// Map an UNTRUSTED upstream-supplied kind string onto Labby's stable kind
+/// vocabulary.
+///
+/// Not to be confused with `crate::mcp::error::canonical_kind` in the `labby`
+/// binary crate, which canonicalizes Labby's OWN `ToolError` kinds and falls
+/// back to `internal_error`. Here the input comes from an arbitrary upstream
+/// server, so infrastructure-looking kinds (`upstream_error`, `network_error`,
+/// `server_error`, …) and every unrecognized value collapse to `tool_error` —
+/// a completed `isError: true` result is a tool execution failure regardless
+/// of what the upstream called it. The raw value is preserved separately as
+/// `original_kind`.
 #[must_use]
-pub fn canonical_error_kind(kind: &str) -> &'static str {
+pub fn canonicalize_untrusted_upstream_kind(kind: &str) -> &'static str {
     match kind {
         "unknown_action" => "unknown_action",
         "unknown_subaction" => "unknown_subaction",
@@ -293,6 +299,13 @@ fn sanitized_content_block(content: &ContentBlock) -> Value {
     }
 }
 
+/// One of three best-effort structured-error recovery seams — keep behavior
+/// aligned when changing any of them:
+/// - here (upstream MCP content → parsed error object),
+/// - `crates/labby-codemode/src/runner.rs` `extract_structured_error` (runner
+///   rejection text → `CodeModeCallError`),
+/// - `crates/labby/src/entrypoint.rs` `cli_error_value` (anyhow string → CLI
+///   JSON error).
 fn parsed_error_object(result: &CallToolResult) -> Option<Value> {
     if let Some(structured) = result.structured_content.as_ref()
         && let Some(error) = normalize_error_object(structured)
@@ -303,8 +316,9 @@ fn parsed_error_object(result: &CallToolResult) -> Option<Value> {
         .content
         .iter()
         .filter_map(ContentBlock::as_text)
+        .filter(|content| content.text.len() <= MAX_PARSE_CANDIDATE_BYTES)
         .filter_map(|content| serde_json::from_str::<Value>(&content.text).ok())
-        .find_map(|value| normalize_error_object(&value))
+        .find_map(normalize_error_object_owned)
 }
 
 fn normalize_error_object(value: &Value) -> Option<Value> {
@@ -320,41 +334,26 @@ fn normalize_error_object(value: &Value) -> Option<Value> {
     }
 }
 
+/// Owned variant of [`normalize_error_object`] for values we just parsed —
+/// moves the recognized error object out instead of deep-cloning it.
+fn normalize_error_object_owned(value: Value) -> Option<Value> {
+    let Value::Object(mut object) = value else {
+        return None;
+    };
+    if let Some(Value::Object(inner)) = object.get("error") {
+        if inner.contains_key("kind") || inner.contains_key("message") {
+            return object.remove("error");
+        }
+        return None;
+    }
+    if object.contains_key("kind") || object.contains_key("message") {
+        return Some(Value::Object(object));
+    }
+    None
+}
+
 fn error_object(value: &Value) -> Option<&Map<String, Value>> {
     value.as_object()
-}
-
-fn retry_after_ms_from_object(object: &Map<String, Value>) -> Option<u64> {
-    object
-        .get("retry_after_ms")
-        .or_else(|| object.get("retryAfterMs"))
-        .and_then(Value::as_u64)
-}
-
-fn tool_execution_message(
-    tool: &str,
-    cause: &str,
-    guidance: &str,
-    side_effects: AgentSideEffectRisk,
-) -> String {
-    let mut message = format!(
-        "Tool `{tool}` ran but reported a failure. The MCP request completed successfully, so this is a tool execution failure rather than a gateway transport failure. {guidance}"
-    );
-    if side_effects == AgentSideEffectRisk::Possible {
-        message.push_str(
-            " Operations completed before the failure may already have changed the target system.",
-        );
-    }
-    if !cause.is_empty() {
-        message.push_str(
-            "
-
-Original tool error:
-",
-        );
-        message.push_str(cause);
-    }
-    message
 }
 
 #[cfg(test)]
@@ -404,6 +403,68 @@ mod tests {
             true
         );
         assert!(result.meta.unwrap().0.contains_key(LABBY_ERROR_META_KEY));
+    }
+
+    #[test]
+    fn empty_optional_fields_are_omitted_from_the_contract() {
+        // `original_kind: null` would violate the published schema (type
+        // string), and empty safety/evidence objects must be skipped to match
+        // the Code Mode envelope.
+        let result = CallToolResult::error(vec![]);
+        let contract = agent_error_for_completed_tool_result(
+            "demo",
+            "call_tool",
+            "alpha::demo",
+            Some("alpha"),
+            &result,
+            &McpToolSafetyHints::default(),
+        );
+        let object = contract.as_object().expect("contract object");
+        assert!(!object.contains_key("original_kind"));
+        assert!(!object.contains_key("safety"));
+        assert!(!object.contains_key("evidence"));
+        assert_eq!(contract["kind"], "tool_error");
+    }
+
+    #[test]
+    fn populated_safety_and_evidence_are_preserved() {
+        let result = CallToolResult::error(vec![ContentBlock::text("boom")]);
+        let contract = agent_error_for_completed_tool_result(
+            "demo",
+            "call_tool",
+            "alpha::demo",
+            Some("alpha"),
+            &result,
+            &McpToolSafetyHints {
+                read_only_hint: Some(true),
+                ..McpToolSafetyHints::default()
+            },
+        );
+        assert_eq!(contract["safety"]["read_only_hint"], true);
+        assert_eq!(contract["evidence"]["content"][0]["text"], "boom");
+        assert_eq!(contract["side_effects"], "none_expected");
+    }
+
+    #[test]
+    fn oversized_text_blocks_are_not_json_parse_candidates() {
+        // A structured error hidden inside a >64 KiB text block is skipped;
+        // classification falls back to `tool_error` without parsing it.
+        let huge = format!(
+            "{}{}",
+            " ".repeat(MAX_PARSE_CANDIDATE_BYTES),
+            r#"{"kind":"rate_limited","message":"slow down"}"#
+        );
+        let result = CallToolResult::error(vec![ContentBlock::text(huge)]);
+        let analysis = analyze_completed_tool_error(&result);
+        assert_eq!(analysis.kind, "tool_error");
+        assert!(analysis.evidence.parsed_error.is_none());
+
+        // The same payload under the threshold IS recovered.
+        let small = r#"{"kind":"rate_limited","message":"slow down"}"#;
+        let result = CallToolResult::error(vec![ContentBlock::text(small)]);
+        let analysis = analyze_completed_tool_error(&result);
+        assert_eq!(analysis.kind, "rate_limited");
+        assert_eq!(analysis.original_kind.as_deref(), Some("rate_limited"));
     }
 
     #[test]

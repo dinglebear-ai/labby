@@ -19,7 +19,7 @@
 
 use std::time::Instant;
 
-use labby_gateway::upstream::tool_error::McpToolSafetyHints;
+use labby_gateway::upstream::tool_error::safety_hints_from_annotations;
 use labby_runtime::agent_error::sanitize_error_text;
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
 use rmcp::ErrorData;
@@ -38,7 +38,7 @@ use crate::mcp::result_format::{
     tool_error_envelope,
 };
 use crate::mcp::server::{LabMcpServer, LabRequestCancellation};
-use crate::mcp::upstream::normalize_upstream_result;
+use crate::mcp::upstream::{normalize_upstream_result, qualified_upstream_tool};
 
 use crate::config::UpstreamConfig;
 use crate::dispatch::upstream::types::UpstreamTool;
@@ -72,30 +72,62 @@ fn relay_cancellation_token(
         .unwrap_or_else(|| context.ct.clone())
 }
 
-fn qualified_upstream_tool(upstream_name: &str, service: &str) -> String {
-    if service.contains("::") {
-        service.to_string()
-    } else {
-        format!("{upstream_name}::{service}")
+/// Bytes of the raw transport error inspected for classification. Auth
+/// signals appear at the front of real transport errors; lowercasing an
+/// unbounded upstream-controlled string would be wasted allocation.
+const MAX_CLASSIFY_BYTES: usize = 2048;
+
+/// True when `text` contains `401` as a standalone token (not embedded in a
+/// longer number or identifier such as `1401` or `x4012`). Covers the
+/// "http 401" / "status 401" / "HTTP/1.1 401" shapes without matching byte
+/// counts like "read 1401 bytes".
+fn contains_standalone_401(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut search_from = 0;
+    while let Some(position) = text[search_from..].find("401") {
+        let start = search_from + position;
+        let end = start + 3;
+        let boundary_before = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let boundary_after = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if boundary_before && boundary_after {
+            return true;
+        }
+        search_from = start + 1;
     }
+    false
 }
 
+/// Model-facing classification of a raw upstream transport failure on the
+/// live MCP call path.
+///
+/// `oauth_needs_reauth` is a DELIBERATE refinement of the breaker-side
+/// `auth_failed`: it carries reauthorization recovery guidance
+/// (`gateway.oauth.start`) instead of a generic auth failure. The breaker /
+/// operator-logging vocabulary lives in
+/// `labby_gateway::upstream::pool::helpers::classify_upstream_error` — keep
+/// the two classifiers' auth heuristics aligned when either changes. The
+/// relationship is documented in `docs/dev/ERRORS.md`.
 fn upstream_failure_kind(error: &str) -> &'static str {
-    let error = error.to_ascii_lowercase();
-    if [
-        "401",
-        "unauthorized",
-        "invalid_grant",
-        "invalid_token",
-        "token expired",
-        "oauth error",
-        "oauth authorization",
-        "oauth token",
-        "requires oauth",
-        "reauth",
-    ]
-    .iter()
-    .any(|needle| error.contains(needle))
+    // Lowercase only a bounded prefix — `error` is upstream-controlled.
+    let mut end = error.len().min(MAX_CLASSIFY_BYTES);
+    while end > 0 && !error.is_char_boundary(end) {
+        end -= 1;
+    }
+    let error = error[..end].to_ascii_lowercase();
+    if contains_standalone_401(&error)
+        || [
+            "unauthorized",
+            "invalid_grant",
+            "invalid_token",
+            "token expired",
+            "oauth error",
+            "oauth authorization",
+            "oauth token",
+            "requires oauth",
+            "reauth",
+        ]
+        .iter()
+        .any(|needle| error.contains(needle))
     {
         "oauth_needs_reauth"
     } else {
@@ -194,9 +226,7 @@ impl LabMcpServer {
         let pre_resolved_safety = raw_resolved
             .as_ref()
             .and_then(|resolved| resolved.as_ref().ok())
-            .map(|(_, tool, _)| {
-                McpToolSafetyHints::from_annotations(tool.tool.annotations.as_ref())
-            })
+            .map(|(_, tool, _)| safety_hints_from_annotations(tool.tool.annotations.as_ref()))
             .unwrap_or_default();
         if let Some(Err(err)) = &raw_resolved
             && !matches!(err.kind(), "unknown_tool" | "not_found")
@@ -231,8 +261,7 @@ impl LabMcpServer {
             && let Some(Ok((upstream_name, resolved_tool, route))) = raw_resolved
             && pre_resolved_oauth_config.is_none()
         {
-            let safety =
-                McpToolSafetyHints::from_annotations(resolved_tool.tool.annotations.as_ref());
+            let safety = safety_hints_from_annotations(resolved_tool.tool.annotations.as_ref());
             let before = self.snapshot_tool_catalog_for_request(context).await;
             tracing::info!(
                 surface = "mcp",
@@ -507,7 +536,7 @@ impl LabMcpServer {
                     .await
                 {
                     if let Some(tool) = tools.iter().find(|tool| tool.name.as_ref() == service) {
-                        safety = McpToolSafetyHints::from_annotations(tool.annotations.as_ref());
+                        safety = safety_hints_from_annotations(tool.annotations.as_ref());
                         owner = Some(upstream_name);
                         break;
                     }
@@ -827,6 +856,38 @@ mod tests {
             upstream_failure_kind("connection reset by peer"),
             "upstream_error"
         );
+    }
+
+    #[test]
+    fn embedded_401_digits_do_not_classify_as_oauth() {
+        assert_eq!(upstream_failure_kind("read 1401 bytes"), "upstream_error");
+        assert_eq!(
+            upstream_failure_kind("request id 84012 failed"),
+            "upstream_error"
+        );
+    }
+
+    #[test]
+    fn standalone_401_tokens_classify_as_oauth() {
+        assert_eq!(upstream_failure_kind("http 401"), "oauth_needs_reauth");
+        assert_eq!(upstream_failure_kind("status 401"), "oauth_needs_reauth");
+        assert_eq!(
+            upstream_failure_kind("HTTP/1.1 401 Unauthorized"),
+            "oauth_needs_reauth"
+        );
+        assert_eq!(
+            upstream_failure_kind("error 401: nope"),
+            "oauth_needs_reauth"
+        );
+    }
+
+    #[test]
+    fn classification_only_reads_a_bounded_prefix() {
+        // An auth marker buried megabytes deep is not worth a full-string
+        // lowercase; the bounded classifier treats it as a generic failure.
+        let mut error = "x".repeat(1024 * 1024);
+        error.push_str(" 401 unauthorized");
+        assert_eq!(upstream_failure_kind(&error), "upstream_error");
     }
 
     #[test]
