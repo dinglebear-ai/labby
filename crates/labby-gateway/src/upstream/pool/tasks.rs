@@ -591,25 +591,33 @@ mod tests {
         .await
         .expect("recovered upstream get_task succeeds");
 
-        // Usage writes are fire-and-forget (`tokio::spawn`); give them a beat.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let rows: Vec<(String, String)> = store
-            .with_conn(|conn| {
-                let mut statement = conn
-                    .prepare(
-                        "SELECT tool_name, outcome FROM upstream_calls \
-                         WHERE upstream_name = 'task-upstream' ORDER BY outcome",
-                    )
-                    .map_err(crate::usage::store::sqlite_error)?;
-                let rows = statement
-                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .map_err(crate::usage::store::sqlite_error)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(crate::usage::store::sqlite_error)?;
-                Ok(rows)
-            })
-            .await
-            .unwrap();
+        // Usage writes are fire-and-forget (`tokio::spawn`), so poll to a
+        // deadline rather than betting on a fixed sleep under CI load.
+        let read_rows = async || -> Vec<(String, String)> {
+            store
+                .with_conn(|conn| {
+                    let mut statement = conn
+                        .prepare(
+                            "SELECT tool_name, outcome FROM upstream_calls \
+                             WHERE upstream_name = 'task-upstream' ORDER BY outcome",
+                        )
+                        .map_err(crate::usage::store::sqlite_error)?;
+                    let rows = statement
+                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                        .map_err(crate::usage::store::sqlite_error)?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(crate::usage::store::sqlite_error)?;
+                    Ok(rows)
+                })
+                .await
+                .unwrap()
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut rows = read_rows().await;
+        while rows.len() < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            rows = read_rows().await;
+        }
         assert_eq!(
             rows,
             vec![

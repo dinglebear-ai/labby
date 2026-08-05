@@ -16,6 +16,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::capability_call::bounded_service_error_text;
 use super::connect::connect_upstream;
 use super::discover::routable_upstream_peers;
 use super::entries::health_str;
@@ -253,7 +254,7 @@ impl UpstreamPool {
                     );
                 }
                 Err(e) => {
-                    let error_text = e.to_string();
+                    let error_text = bounded_service_error_text(&e);
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Resources,
@@ -340,7 +341,7 @@ impl UpstreamPool {
                     );
                 }
                 Err(error) => {
-                    let error_text = error.to_string();
+                    let error_text = bounded_service_error_text(&error);
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Resources,
@@ -415,7 +416,7 @@ impl UpstreamPool {
                     }
                 }
                 Err(error) => {
-                    let error_text = error.to_string();
+                    let error_text = bounded_service_error_text(&error);
                     tracing::warn!(
                         upstream = %name,
                         kind = classify_upstream_error(&error_text),

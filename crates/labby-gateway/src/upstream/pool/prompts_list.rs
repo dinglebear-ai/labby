@@ -15,6 +15,7 @@ use rmcp::model::Prompt;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::capability_call::bounded_service_error_text;
 use super::discover::routable_upstream_peers;
 use super::helpers::{classify_upstream_error, merge_upstream_prompts};
 use super::logging::is_capability_unsupported;
@@ -89,7 +90,7 @@ impl UpstreamPool {
                     );
                 }
                 Err(e) => {
-                    let error_text = e.to_string();
+                    let error_text = bounded_service_error_text(&e);
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Prompts,
