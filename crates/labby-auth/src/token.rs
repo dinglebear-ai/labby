@@ -16,7 +16,7 @@ use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 use crate::error::AuthError;
-use crate::google::GoogleExchange;
+use crate::google::{GoogleExchange, merge_google_scopes};
 use crate::jwt::AccessClaims;
 use crate::state::AuthState;
 use crate::types::AuthorizationCodeRow;
@@ -836,6 +836,8 @@ async fn refresh_google_provider_credential(
     refresh_token_id: &str,
 ) -> Result<GoogleExchange, AuthError> {
     let subject_id = fingerprint(subject);
+    let refresh_lock = crate::google_refresh::lock(subject);
+    let _refresh_guard = refresh_lock.lock().await;
     let mut credential = state
         .store
         .find_google_provider_credential(subject)
@@ -853,7 +855,15 @@ async fn refresh_google_provider_credential(
         })?;
 
     for attempt in 0..2 {
-        match state.google.refresh(&credential.refresh_token).await {
+        match state
+            .google
+            .refresh(
+                &credential.refresh_token,
+                &credential.subject,
+                credential.email.as_deref(),
+            )
+            .await
+        {
             Ok(google) => {
                 if google.subject != subject {
                     let invalidation = state
@@ -876,12 +886,28 @@ async fn refresh_google_provider_credential(
                     .refresh_token
                     .as_deref()
                     .unwrap_or(&credential.refresh_token);
+                let granted_scopes =
+                    merge_google_scopes(&credential.granted_scopes, &google.granted_scopes);
+                let token_received_at = now_unix();
                 state
                     .store
-                    .upsert_google_provider_credential(
-                        &google.subject,
-                        google.email.as_deref(),
-                        next_provider_refresh_token,
+                    .upsert_google_provider_token_bundle(
+                        crate::types::GoogleProviderCredentialUpdate {
+                            subject: google.subject.clone(),
+                            email: google.email.clone(),
+                            client_id: state.google.client_id.clone(),
+                            granted_scopes,
+                            access_token: google.access_token.clone(),
+                            refresh_token: next_provider_refresh_token.to_string(),
+                            token_received_at,
+                            access_token_expires_at: token_received_at.saturating_add(
+                                i64::try_from(google.expires_in.unwrap_or(3600))
+                                    .unwrap_or(i64::MAX),
+                            ),
+                            issuer: Some("https://accounts.google.com".to_string()),
+                            refreshed: true,
+                            scope_upgraded: false,
+                        },
                     )
                     .await?;
                 return Ok(google);
@@ -2407,6 +2433,29 @@ mod tests {
     #[tokio::test]
     async fn refresh_grant_rotates_local_token_on_success() {
         let state = test_auth_state_with_refreshable_google().await;
+        let now = crate::util::now_unix();
+        state
+            .store
+            .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
+                subject: "google-subject-123".to_string(),
+                email: Some("admin@example.com".to_string()),
+                client_id: "client-id".to_string(),
+                granted_scopes: vec![
+                    "openid".to_string(),
+                    "email".to_string(),
+                    "profile".to_string(),
+                    "https://www.googleapis.com/auth/drive.readonly".to_string(),
+                ],
+                access_token: "pre-refresh-access".to_string(),
+                refresh_token: "provider-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2459,6 +2508,18 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "replacement refresh token must be usable"
+        );
+        let credential = state
+            .store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            credential
+                .granted_scopes
+                .contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()),
+            "refresh must preserve Workspace scopes granted by earlier incremental authorization"
         );
     }
 

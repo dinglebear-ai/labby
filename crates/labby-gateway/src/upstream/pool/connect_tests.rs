@@ -670,6 +670,7 @@ fn oauth_http_config() -> UpstreamConfig {
                 client_secret_env: None,
             },
             scopes: None,
+            credential: Default::default(),
             prefer_client_metadata_document: None,
         }),
         imported_from: None,

@@ -213,6 +213,18 @@ pub(super) async fn dispatch_command(
                     )
                     .await;
                 }
+                GatewayMcpAuthCommand::RevokeGoogle(args) => {
+                    return run_action_command(
+                        "gateway",
+                        "gateway.oauth.google_revoke".to_string(),
+                        json!({ "upstream": args.name, "confirm": args.confirm }),
+                        format,
+                        |action, params| async move {
+                            dispatch_gateway_action(manager, config, action, params).await
+                        },
+                    )
+                    .await;
+                }
             },
             GatewayMcpCommand::List => {
                 return run_action_command(

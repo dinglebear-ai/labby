@@ -9,6 +9,17 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Added
 
+- **auth/gateway:** add a central Google credential broker that reuses one
+  encrypted, subject-scoped provider credential across inbound Labby OAuth and
+  compatible Google Workspace MCP upstreams. Shared upstreams validate issuer,
+  client binding, account identity, and required scopes; support incremental
+  scope upgrades; serialize refreshes; expose redacted status; and require an
+  explicit confirmed action for shared revocation. Auth schema v8 adds encrypted
+  access-token metadata, granted scopes, client binding, issuer, and lifecycle
+  timestamps while preserving dedicated OAuth as the default.
+- **docs:** add the complete Google credential broker specification, security
+  contract, schema, API/CLI/UI contracts, rollout, rollback, and verification
+  guide.
 - **proxy:** `labby proxy <stdio-server>` now exposes one stdio MCP server
   faithfully over loopback or an owned Tailscale Serve HTTPS port. Zero-flag
   defaults support tailnet policy, while setup can persist separate bearer or

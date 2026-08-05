@@ -183,6 +183,41 @@
 # allowed_operations = ["findPetsByStatus", "getPetById"]   # deny-by-default; empty = nothing dispatchable
 # api_key_header = "X-API-Key"              # optional; header name for an OPENAPI_<LABEL>_API_KEY credential
 
+# ── Shared Google Credential Broker ───────────────────────────────────────────
+#
+# OAuth upstreams default to a dedicated encrypted token bundle per upstream.
+# Compatible Google Workspace MCP servers can instead reuse Labby's central,
+# subject-scoped Google provider credential. The preregistered client_id MUST be
+# the same Google OAuth client that owns the provider refresh token.
+#
+# [[upstream]]
+# name = "google-calendar"
+# url = "https://calendarmcp.googleapis.com/mcp/v1"
+#
+# [upstream.oauth]
+# mode = "authorization_code_pkce"
+# scopes = [
+#   "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+#   "https://www.googleapis.com/auth/calendar.events.freebusy",
+#   "https://www.googleapis.com/auth/calendar.events.readonly",
+# ]
+#
+# [upstream.oauth.credential]
+# source = "google_provider"              # default: dedicated
+# account = "admin@example.com"           # Google sub or verified email; omit only with one account
+#
+# [upstream.oauth.registration]
+# strategy = "preregistered"
+# client_id = "your-google-oauth-client-id"
+# client_secret_env = "LABBY_GOOGLE_CLIENT_SECRET"
+#
+# Shared mode also requires the auth provider token key in ~/.labby/.env:
+#   LABBY_TOKEN_ENCRYPTION_KEY=<64 hex digits or 43 base64url characters>
+# Reusable labby-auth consumers substitute their configured environment prefix.
+#
+# See docs/design/GOOGLE_CREDENTIAL_BROKER.md for schemas, security constraints,
+# scope profiles, migration, rollout, and explicit revocation.
+
 # ── OAuth Relay Machines ─────────────────────────────────────────────────────
 
 # Full callback base URL for a named remote OAuth listener.

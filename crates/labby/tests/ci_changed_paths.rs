@@ -288,7 +288,10 @@ fn unraid_plugin_changes_route_to_the_unraid_check() {
     }
 
     let out = classify("pull_request", &["docs/runtime/UNRAID.md"]);
-    assert_eq!(out["unraid"], "false", "prose docs must not run the plugin check");
+    assert_eq!(
+        out["unraid"], "false",
+        "prose docs must not run the plugin check"
+    );
 }
 
 #[test]
