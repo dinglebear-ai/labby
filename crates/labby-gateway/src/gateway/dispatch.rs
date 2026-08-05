@@ -763,6 +763,21 @@ async fn handle_oauth_actions(
             crate::gateway::oauth::clear(manager, &params.upstream, subject).await?;
             to_json(serde_json::json!({ "ok": true }))
         }
+        "gateway.oauth.google_revoke" => {
+            let confirmed = params_value
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "confirmation_required".to_string(),
+                    message: "set confirm=true to revoke the shared Google provider credential"
+                        .to_string(),
+                });
+            }
+            let params: GatewayOauthNameParams = parse_params(params_value)?;
+            to_json(crate::gateway::oauth::revoke_google(manager, &params.upstream).await?)
+        }
         // Q-H3: poll loop moved from cli/gateway.rs into shared dispatch so all
         // surfaces (CLI, API, MCP) share the same orchestration logic.
         "gateway.oauth.wait" => {

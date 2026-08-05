@@ -288,6 +288,7 @@ fn register_transient_manager(
             mode: UpstreamOauthMode::AuthorizationCodePkce,
             registration,
             scopes: metadata.scopes_supported.clone(),
+            credential: Default::default(),
             // Propagate the operator override so that if this transient
             // config is later persisted it retains the explicit setting.
             prefer_client_metadata_document: prefer_cimd,
