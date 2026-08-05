@@ -55,6 +55,9 @@ env:
   CARGO_INCREMENTAL: "0"
   KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
   KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
+  KACHE_S3_PREFIX: ${{ vars.KACHE_S3_PREFIX }}
 
 concurrency:
   group: release-please-main
@@ -151,7 +154,10 @@ jobs:
               json.dump(server, fh, indent=2)
               fh.write("\n")
           PY
-          cargo check --workspace --all-features
+          # Only Cargo.lock's workspace-member version entries need refreshing
+          # after the version bump — no compilation required. Offline first;
+          # fall back to a networked update if the lockfile needs anything new.
+          cargo update --workspace --offline || cargo update --workspace
           git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
 
       - name: Commit and push if changed

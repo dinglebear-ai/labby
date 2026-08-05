@@ -41,6 +41,11 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **stdio:** log child PID, connection generation, exit code or signal, redacted
   stderr tail, and the exact in-flight requests invalidated by child termination.
 
+
+### Licensing
+
+- Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
+
 ## [1.9.0](https://github.com/dinglebear-ai/labby/compare/v1.8.9...v1.9.0) (2026-08-05)
 
 
@@ -137,6 +142,7 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 
 ### Changed
+
 
 * remove retired media stack residue ([#284](https://github.com/dinglebear-ai/labby/issues/284)) ([83a6a21](https://github.com/dinglebear-ai/labby/commit/83a6a21674a1894983f0c53ff551ff4c3e4951f2))
 
@@ -908,8 +914,8 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **Removed `code_search` JS-against-JSON-catalog pattern** — the spec marked it
   dead; `CodeModeBroker::search`, `evaluate_code_search`, and the
   `gateway code search` CLI subcommand are all gone.
-- **Docs synced to implementation** — `CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md`
-  and `CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` now use snake_case examples and
+- **Docs synced to implementation** — `code-mode-agent-contract-legacy.md`
+  and `code-mode-spec-legacy.md` now use snake_case examples and
   `timeout_ms = 30000`, matching the code.
 
 ### Breaking changes
@@ -1184,7 +1190,6 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - Gateway admin package: `0.15.1 → 0.15.2`
 
 ---
-
 
 
 ## [0.15.1] — 2026-05-11
