@@ -530,9 +530,9 @@ impl GatewayManager {
                         ),
                     )
                     .with_tool(id),
-                    _ => CodeModeCallError::upstream_transport_classified(
-                        id, kind, message, safety,
-                    ),
+                    _ => {
+                        CodeModeCallError::upstream_transport_classified(id, kind, message, safety)
+                    }
                 })
             }
             None => {
