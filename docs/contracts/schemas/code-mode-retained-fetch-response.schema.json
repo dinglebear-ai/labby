@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dinglebear.ai/schemas/labby/code-mode-retained-fetch-response-v1.json",
+  "title": "Labby Code Mode Retained Fetch Response",
+  "description": "Successful return value of the sandbox helper `codemode.fetch(handle)`, dispatched host-side as `__lab_internal::codemode_result_fetch`. Metadata is ALWAYS present; the payload is inlined only when it fits the per-call result ceiling (`calltool_result_max_bytes`).",
+  "type": "object",
+  "required": [
+    "handle",
+    "size_bytes",
+    "token_estimate",
+    "value_type",
+    "created_at",
+    "expires_at",
+    "value_omitted"
+  ],
+  "properties": {
+    "handle": {
+      "type": "string",
+      "pattern": "^cmr_[0-9a-f]{32}$"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Serialized byte length of the complete retained value."
+    },
+    "token_estimate": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "ceil(size_bytes / token_estimate_divisor), floor 1. Same estimator as the response budget."
+    },
+    "value_type": {
+      "enum": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
+      "description": "JSON type of the retained root value, so the caller can choose a slice strategy without inlining the payload."
+    },
+    "array_length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Element count. Present only when `value_type` is `array`."
+    },
+    "string_length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Length in Unicode scalar values (chars), NOT bytes. Present only when `value_type` is `string`."
+    },
+    "object_keys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "description": "First 100 root keys in serialization order. Present only when `value_type` is `object`."
+    },
+    "object_key_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total root key count, which may exceed the length of `object_keys`. Present only when `value_type` is `object`."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "value_omitted": {
+      "type": "boolean",
+      "description": "True when the retained value exceeded the per-call result ceiling and was therefore not inlined. The caller must page with `codemode.slice`."
+    },
+    "value": {
+      "description": "The complete retained value. Present if and only if `value_omitted` is false.",
+      "$comment": "Any JSON type; deliberately unconstrained."
+    },
+    "guidance": {
+      "type": "string",
+      "description": "Human/model-facing next step. Present when `value_omitted` is true."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "value_omitted": {
+            "const": true
+          }
+        },
+        "required": [
+          "value_omitted"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        },
+        "required": [
+          "guidance"
+        ]
+      },
+      "else": {
+        "required": [
+          "value"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "value_type": {
+            "const": "array"
+          }
+        },
+        "required": [
+          "value_type"
+        ]
+      },
+      "then": {
+        "required": [
+          "array_length"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "value_type": {
+            "const": "object"
+          }
+        },
+        "required": [
+          "value_type"
+        ]
+      },
+      "then": {
+        "required": [
+          "object_keys",
+          "object_key_count"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "value_type": {
+            "const": "string"
+          }
+        },
+        "required": [
+          "value_type"
+        ]
+      },
+      "then": {
+        "required": [
+          "string_length"
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false
+}
