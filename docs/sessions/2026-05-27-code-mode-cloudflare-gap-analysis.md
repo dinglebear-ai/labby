@@ -164,8 +164,8 @@ resides in the worktree (not yet committed to the branch).
   up until the PR is merged.
 
 ### Stale Docs
-- `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` and
-  `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` — confirmed present at HEAD ba1b2ec4 (added
+- `docs/contracts/code-mode-agent-contract-legacy.md` and
+  `docs/specs/code-mode-spec-legacy.md` — confirmed present at HEAD ba1b2ec4 (added
   in commit 5487cbc3). Not stale for the main branch; the worktree versions may differ.
 - GAP-14 from the gap analysis: the agent contract does not document the camelCase divergence
   from Cloudflare's underscore naming. A one-sentence clarification is needed in the contract doc
@@ -258,8 +258,8 @@ resides in the worktree (not yet committed to the branch).
 
 - Cloudflare Code Mode API reference: https://developers.cloudflare.com/agents/api-reference/codemode/
 - Cloudflare Code Mode blog: https://blog.cloudflare.com/code-mode-mcp/
-- Internal spec: `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md`
-- Internal contract: `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md`
+- Internal spec: `docs/specs/code-mode-spec-legacy.md`
+- Internal contract: `docs/contracts/code-mode-agent-contract-legacy.md`
 - Epic markdown: `docs/epic-lab-y08q1-code-mode-cloudflare-parity.md` (worktree)
 - PR #78: `bd-work/code-mode-cloudflare-parity` branch
 
@@ -288,7 +288,7 @@ resides in the worktree (not yet committed to the branch).
 2. Fix GAP-2 — remove the zero-tool-call guard at `code_mode.rs:802-809`.
 3. Fix GAP-5 — map `code_mode_disabled` → `internal_error` and `code_execution_failed` →
    `internal_error` / `server_error` at `code_mode.rs:471,758,799,815`.
-4. Fix GAP-14 — add one sentence to `CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` noting that Lab
+4. Fix GAP-14 — add one sentence to `code-mode-agent-contract-legacy.md` noting that Lab
    uses camelCase naming vs Cloudflare's underscores.
 5. Commit the epic markdown file to the feature branch:
    ```bash

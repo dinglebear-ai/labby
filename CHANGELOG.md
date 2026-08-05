@@ -908,8 +908,8 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **Removed `code_search` JS-against-JSON-catalog pattern** — the spec marked it
   dead; `CodeModeBroker::search`, `evaluate_code_search`, and the
   `gateway code search` CLI subcommand are all gone.
-- **Docs synced to implementation** — `CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md`
-  and `CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` now use snake_case examples and
+- **Docs synced to implementation** — `code-mode-agent-contract-legacy.md`
+  and `code-mode-spec-legacy.md` now use snake_case examples and
   `timeout_ms = 30000`, matching the code.
 
 ### Breaking changes
