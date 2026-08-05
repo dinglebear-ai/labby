@@ -41,6 +41,11 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **stdio:** log child PID, connection generation, exit code or signal, redacted
   stderr tail, and the exact in-flight requests invalidated by child termination.
 
+
+### Licensing
+
+- Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
+
 ## [1.9.0](https://github.com/dinglebear-ai/labby/compare/v1.8.9...v1.9.0) (2026-08-05)
 
 
@@ -137,6 +142,7 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 
 ### Changed
+
 
 * remove retired media stack residue ([#284](https://github.com/dinglebear-ai/labby/issues/284)) ([83a6a21](https://github.com/dinglebear-ai/labby/commit/83a6a21674a1894983f0c53ff551ff4c3e4951f2))
 
@@ -1184,7 +1190,6 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - Gateway admin package: `0.15.1 → 0.15.2`
 
 ---
-
 
 
 ## [0.15.1] — 2026-05-11
