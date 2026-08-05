@@ -268,3 +268,22 @@ fn generate_tool_types_sanitizes_reserved_digits_empty_dollar_and_collision_adja
         assert!(!types.dts.contains(" (params:"), "{types:?}");
     }
 }
+
+#[test]
+fn json_schema_to_type_renders_openapi_nullable_as_null_union() {
+    // Pairs with `code_mode_schema_validator_honors_openapi_nullable`: the
+    // `.d.ts` advertises `T | null` for `nullable: true`, and the schema
+    // validator accepts the null the signature promises.
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "note": { "type": "string", "nullable": true },
+            "strict": { "type": "string" }
+        }
+    });
+
+    let ts = super::ts_signatures::json_schema_to_type(Some(&schema));
+
+    assert!(ts.contains("note?: string | null;"), "{ts}");
+    assert!(ts.contains("strict?: string;"), "{ts}");
+}

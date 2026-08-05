@@ -50,6 +50,18 @@ pub(crate) enum CapabilityCallError {
     Protocol {
         message: String,
     },
+    /// The upstream (or the local service layer) reported the request was
+    /// cancelled. Non-retryable: the caller asked for the cancellation or the
+    /// work was abandoned deliberately.
+    Cancelled {
+        message: String,
+    },
+    /// The upstream kept returning `input_required` past the MRTR round cap.
+    /// Surfaced as `confirmation_required` so agents know an interactive
+    /// confirmation loop, not infrastructure, blocked the call.
+    InputRequiredRoundsExceeded {
+        message: String,
+    },
     Other {
         message: String,
     },
@@ -64,6 +76,12 @@ impl CapabilityCallError {
             | rmcp::ServiceError::TransportClosed
             | rmcp::ServiceError::SubscriptionLagged { .. } => Self::Transport { message },
             rmcp::ServiceError::UnexpectedResponse => Self::Protocol { message },
+            rmcp::ServiceError::Cancelled { .. } => Self::Cancelled { message },
+            rmcp::ServiceError::InputRequiredRoundsExceeded { .. } => {
+                Self::InputRequiredRoundsExceeded { message }
+            }
+            // `ServiceError` is `#[non_exhaustive]`; future variants fall back
+            // to the generic upstream-error shape.
             _ => Self::Other { message },
         }
     }
@@ -76,6 +94,8 @@ impl CapabilityCallError {
             | Self::ResponseTooLarge { message }
             | Self::Transport { message }
             | Self::Protocol { message }
+            | Self::Cancelled { message }
+            | Self::InputRequiredRoundsExceeded { message }
             | Self::Other { message } => message,
         }
     }
@@ -191,7 +211,33 @@ where
     .await
     {
         Ok(Ok(permit)) => permit,
-        Ok(Err(error)) => return Err(CapabilityCallError::Other { message: error }),
+        Ok(Err(error)) => {
+            // The per-upstream concurrency gate itself failed (semaphore
+            // closed). Emit the same telemetry as the sibling saturation
+            // branches and surface it as `queue_saturated` — the caller-facing
+            // fact is identical: the local concurrency gate, not the upstream,
+            // refused the call.
+            log_upstream_request_error(
+                event,
+                start.elapsed().as_millis(),
+                "queue_saturated",
+                Some(&error),
+                None,
+                None,
+            );
+            record_usage_call(
+                pool,
+                event,
+                subject,
+                "queue_saturated",
+                start.elapsed().as_millis(),
+            );
+            return Err(CapabilityCallError::QueueSaturated {
+                message: format!(
+                    "upstream `{upstream_name}` concurrency gate unavailable: {error}"
+                ),
+            });
+        }
         Err(_) => {
             log_upstream_request_error(
                 event,
@@ -306,4 +352,46 @@ where
             })
         }
     }
+}
+
+/// String-error form of [`timed_capability_call`].
+///
+/// Accepted debt: the non-Code-Mode gateway surfaces (tool/prompt/resource/
+/// completion proxying) historically expose `Result<_, String>` and are
+/// intentionally string-preserving. This wrapper is the single place that
+/// collapses the typed [`CapabilityCallError`] into that string form so call
+/// sites do not each repeat `.map_err(|error| error.to_string())`. New
+/// consumers that need the failure *class* (Code Mode does) must call
+/// [`timed_capability_call`] directly instead of stringifying.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn timed_capability_call_str<R, Fut, SizeFn>(
+    pool: &UpstreamPool,
+    upstream_name: &str,
+    capability: UpstreamCapability,
+    event: UpstreamRequestLog<'_>,
+    start: Instant,
+    rpc_future: Fut,
+    size_fn: SizeFn,
+    subject: Option<&str>,
+    error_message_fn: impl Fn(&dyn std::fmt::Display) -> String,
+    timeout_message: String,
+) -> Result<R, String>
+where
+    Fut: Future<Output = Result<R, rmcp::ServiceError>>,
+    SizeFn: Fn(&R) -> usize,
+{
+    timed_capability_call(
+        pool,
+        upstream_name,
+        capability,
+        event,
+        start,
+        rpc_future,
+        size_fn,
+        subject,
+        error_message_fn,
+        timeout_message,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }

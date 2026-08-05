@@ -8,7 +8,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call;
+use super::capability_call::timed_capability_call_str;
 use super::helpers::{bare_upstream_prompt_name, upstream_transport};
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 
@@ -61,7 +61,7 @@ impl UpstreamPool {
         let timeout_ms = self.request_timeout.as_millis();
 
         Some(
-            timed_capability_call(
+            timed_capability_call_str(
                 self,
                 upstream_name,
                 capability,
@@ -73,8 +73,7 @@ impl UpstreamPool {
                 |error| format!("upstream completion failed: {error}"),
                 format!("upstream completion timed out after {timeout_ms}ms"),
             )
-            .await
-            .map_err(|error| error.to_string()),
+            .await,
         )
     }
 
@@ -117,7 +116,7 @@ impl UpstreamPool {
             }
         };
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call(
+        timed_capability_call_str(
             self,
             &config.name,
             capability,
@@ -130,7 +129,6 @@ impl UpstreamPool {
             format!("upstream completion timed out after {timeout_ms}ms"),
         )
         .await
-        .map_err(|error| error.to_string())
     }
 }
 

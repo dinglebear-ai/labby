@@ -268,6 +268,8 @@ Common error kinds:
 | `path_traversal` | Fix the workspace/artifact path. |
 | `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Reduce fan-out, workspace writes, or split the work. |
 | `result_too_large` / `artifact_too_large` | Reduce the upstream payload or write large data to a smaller artifact. |
+| `queue_saturated` | Labby's local per-upstream concurrency gate is saturated — not an upstream rate limit. Retry after a short delay or reduce parallel `callTool` fan-out. |
+| `response_too_large` | The gateway capped an oversized upstream response; narrow the query or paginate. Distinct from `result_too_large`/`artifact_too_large`, which cap Code Mode's own result/artifact output. |
 | `timeout` | Split work into smaller executions. |
 | `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry or operate the upstream service; unknown structured upstream-local kinds are returned as `upstream_error` without poisoning upstream health. |
 | `oauth_needs_reauth` | Check `labby gateway mcp auth status <upstream> --json`. |

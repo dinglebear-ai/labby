@@ -518,6 +518,172 @@ fn code_mode_schema_validator_enforces_boolean_schemas() {
     assert_eq!(error.kind(), "invalid_param");
 }
 
+fn schema_error_message(error: ToolError) -> String {
+    match error {
+        ToolError::Sdk { message, .. } => message,
+        other => panic!("expected sdk error, got {other:?}"),
+    }
+}
+
+#[test]
+fn code_mode_schema_validator_rejects_deep_ref_chain_bomb_quickly() {
+    // ~100 chained definitions, each fanning out through `oneOf` into the next.
+    // Without the depth/budget guard this explores ~2^100 schema paths (the
+    // per-branch `seen_refs` clone never sees a cycle on a linear chain).
+    let mut defs = serde_json::Map::new();
+    for i in 0..100 {
+        let next = format!("#/$defs/d{}", i + 1);
+        defs.insert(
+            format!("d{i}"),
+            json!({ "oneOf": [ { "$ref": next }, { "$ref": next } ] }),
+        );
+    }
+    defs.insert("d100".to_string(), json!({ "type": "string" }));
+    let schema = json!({ "$ref": "#/$defs/d0", "$defs": defs });
+
+    let start = std::time::Instant::now();
+    let error = validate_code_mode_params_against_schema(&json!(7), Some(&schema))
+        .expect_err("schema bomb must be rejected, not explored");
+    assert_eq!(error.kind(), "invalid_param");
+    let message = schema_error_message(error);
+    assert!(
+        message.contains("nesting depth") || message.contains("work budget"),
+        "expected a depth/budget rejection, got: {message}"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "rejection must be fast, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn code_mode_schema_validator_rejects_wide_fanout_bomb_via_visit_budget() {
+    // 12 levels of 4-way `anyOf` fan-out = 4^12 ≈ 16.7M schema paths, but only
+    // ~25 recursion frames deep — under the depth cap, so this proves the
+    // visit budget stops width-driven blowups the depth guard cannot see.
+    let mut defs = serde_json::Map::new();
+    for i in 0..12 {
+        let next = format!("#/$defs/d{}", i + 1);
+        defs.insert(
+            format!("d{i}"),
+            json!({ "anyOf": [
+                { "$ref": next }, { "$ref": next }, { "$ref": next }, { "$ref": next }
+            ] }),
+        );
+    }
+    // The leaf mismatches the value so every path is fully explored.
+    defs.insert("d12".to_string(), json!({ "type": "string" }));
+    let schema = json!({ "$ref": "#/$defs/d0", "$defs": defs });
+
+    let start = std::time::Instant::now();
+    let error = validate_code_mode_params_against_schema(&json!(7), Some(&schema))
+        .expect_err("fan-out bomb must exhaust the visit budget");
+    assert_eq!(error.kind(), "invalid_param");
+    let message = schema_error_message(error);
+    assert!(
+        message.contains("work budget"),
+        "expected a work-budget rejection, got: {message}"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "rejection must be fast, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn code_mode_schema_validator_fails_closed_on_defective_not_subschema() {
+    // A `not` wrapping an unsupported external $ref must be a structured
+    // rejection — never a silent accept (the defective subschema previously
+    // read as "did not match", satisfying `not`).
+    let schema = json!({ "not": { "$ref": "https://external.example/schema.json" } });
+    let error = validate_code_mode_params_against_schema(&json!({"x": 1}), Some(&schema))
+        .expect_err("defective not subschema must fail closed");
+    assert_eq!(error.kind(), "invalid_param");
+    assert!(schema_error_message(error).contains("non-local $ref"));
+}
+
+#[test]
+fn code_mode_schema_validator_fails_closed_on_defective_if_subschema() {
+    // A defective `if` condition must not silently route to `else`.
+    let schema = json!({
+        "if": { "$ref": "#/$defs/missing" },
+        "then": { "required": ["a"] },
+        "else": { "required": ["b"] }
+    });
+    let error = validate_code_mode_params_against_schema(&json!({"b": 1}), Some(&schema))
+        .expect_err("defective if subschema must fail closed");
+    assert_eq!(error.kind(), "invalid_param");
+    assert!(schema_error_message(error).contains("unresolved local $ref"));
+}
+
+#[test]
+fn code_mode_schema_validator_rejects_malformed_subschemas() {
+    // A schema position holding a non-object, non-boolean value is a schema
+    // defect, mirroring the false-boolean-schema treatment.
+    let nested = json!({ "properties": { "a": 42 } });
+    let error = validate_code_mode_params_against_schema(&json!({"a": 1}), Some(&nested))
+        .expect_err("malformed property subschema must fail closed");
+    assert_eq!(error.kind(), "invalid_param");
+    assert!(schema_error_message(error).contains("malformed"));
+
+    let top_level = json!("not a schema");
+    let error = validate_code_mode_params_against_schema(&json!({"a": 1}), Some(&top_level))
+        .expect_err("malformed top-level schema must fail closed");
+    assert_eq!(error.kind(), "invalid_param");
+    assert!(schema_error_message(error).contains("malformed"));
+}
+
+#[test]
+fn code_mode_schema_validator_honors_openapi_nullable() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "note": { "type": "string", "nullable": true },
+            "strict": { "type": "string" }
+        }
+    });
+
+    for params in [
+        json!({"note": null}),
+        json!({"note": "hello"}),
+        json!({"strict": "hello"}),
+    ] {
+        validate_code_mode_params_against_schema(&params, Some(&schema))
+            .expect("nullable widens the declared type to include null");
+    }
+
+    let error = validate_code_mode_params_against_schema(&json!({"strict": null}), Some(&schema))
+        .expect_err("null still fails a non-nullable typed property");
+    assert_eq!(error.kind(), "invalid_param");
+}
+
+#[test]
+fn code_mode_schema_validator_leaves_normal_schemas_unaffected_by_guards() {
+    // A representative real-world nested schema stays accepted under the new
+    // depth/budget guards.
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } },
+                    "required": ["name"]
+                }
+            }
+        },
+        "required": ["items"]
+    });
+    let params = json!({
+        "items": (0..500).map(|i| json!({"name": format!("n{i}")})).collect::<Vec<_>>()
+    });
+    validate_code_mode_params_against_schema(&params, Some(&schema))
+        .expect("large but ordinary params stay within the visit budget");
+}
+
 #[test]
 fn builds_catalog_entry_for_tool() {
     let candidate = ToolDescriptor::tool(

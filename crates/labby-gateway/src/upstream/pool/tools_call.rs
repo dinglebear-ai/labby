@@ -10,7 +10,9 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::{CapabilityCallError, timed_capability_call};
+use super::capability_call::{
+    CapabilityCallError, timed_capability_call, timed_capability_call_str,
+};
 use super::helpers::{
     estimate_call_tool_response_size, estimate_response_size, upstream_transport,
 };
@@ -34,7 +36,7 @@ impl UpstreamPool {
             .await
             .map_err(|error| error.to_string())?;
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call(
+        timed_capability_call_str(
             self,
             &config.name,
             UpstreamCapability::Tools,
@@ -47,7 +49,6 @@ impl UpstreamPool {
             format!("upstream call timed out after {timeout_ms}ms"),
         )
         .await
-        .map_err(|error| error.to_string())
     }
 
     /// Call a tool on an OAuth-subject-scoped upstream.
@@ -95,7 +96,7 @@ impl UpstreamPool {
             }
         };
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call(
+        timed_capability_call_str(
             self,
             &config.name,
             UpstreamCapability::Tools,
@@ -108,7 +109,6 @@ impl UpstreamPool {
             format!("upstream call timed out after {timeout_ms}ms"),
         )
         .await
-        .map_err(|error| error.to_string())
     }
 
     /// Call a tool on an upstream server.
@@ -185,7 +185,7 @@ impl UpstreamPool {
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
         Some(
-            timed_capability_call(
+            timed_capability_call_str(
                 self,
                 upstream_name,
                 UpstreamCapability::Tools,
@@ -197,8 +197,7 @@ impl UpstreamPool {
                 |error| format!("upstream call failed: {error}"),
                 format!("upstream call timed out after {timeout_ms}ms"),
             )
-            .await
-            .map_err(|error| error.to_string()),
+            .await,
         )
     }
 }

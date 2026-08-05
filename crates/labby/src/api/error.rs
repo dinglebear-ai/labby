@@ -58,7 +58,7 @@ impl IntoResponse for ApiError {
             "symlink_rejected" | "path_traversal" | "invalid_encoding" => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
-            "content_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+            "content_too_large" | "response_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
             "not_supported" => StatusCode::NOT_IMPLEMENTED,
             "install_timeout"
             | "timeout"
@@ -75,6 +75,7 @@ impl IntoResponse for ApiError {
             | "bad_gateway"
             | "server_error"
             | "upstream_error"
+            | "cancelled"
             | "oauth_resource_mismatch"
             | "oauth_issuer_mismatch"
             | "oauth_unsupported_method"
@@ -223,5 +224,20 @@ mod tests {
         })
         .into_response();
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn response_too_large_maps_to_413() {
+        // Gateway cap on upstream MCP response bytes.
+        assert_eq!(
+            status_for("response_too_large"),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[test]
+    fn cancelled_maps_to_bad_gateway() {
+        // The upstream reported the proxied call was cancelled.
+        assert_eq!(status_for("cancelled"), StatusCode::BAD_GATEWAY);
     }
 }

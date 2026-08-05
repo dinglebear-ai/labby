@@ -439,49 +439,25 @@ async fn mcp_tool_error_result_does_not_poison_upstream_connection_health() {
 
 #[tokio::test]
 async fn cortex_exact_schema_rejects_bad_fields_before_upstream_dispatch() {
+    // Minimal composed-schema fixture. This test proves the *wiring* facts:
+    // a cached upstream inputSchema is enforced before dispatch (invalid_param)
+    // and a pre-dispatch failure never touches upstream health. Full keyword
+    // regression coverage (the original ~65-line Cortex schema) lives in
+    // `labby-codemode`'s `tests_ids_schema.rs`.
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("cortex")]).await;
     let schema = json!({
         "type": "object",
-        "properties": {
-            "action": { "enum": ["project_context", "list_ai_projects", "sessions"] },
-            "project": { "type": "string" },
-            "tool": { "type": "string" },
-            "limit": { "type": "integer" },
-            "since": { "type": "string" },
-            "until": { "type": "string" }
-        },
-        "required": ["action"],
         "additionalProperties": false,
+        "required": ["action"],
+        "properties": {
+            "action": { "type": "string" },
+            "project": { "type": "string" }
+        },
         "oneOf": [
             {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "action": { "const": "project_context" },
-                    "project": { "type": "string" },
-                    "tool": { "type": "string" },
-                    "limit": { "type": "integer" }
-                },
+                "properties": { "action": { "const": "project_context" } },
                 "required": ["action", "project"]
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "action": { "const": "list_ai_projects" },
-                    "tool": { "type": "string" },
-                    "since": { "type": "string" },
-                    "until": { "type": "string" }
-                },
-                "required": ["action"]
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "action": { "enum": ["sessions"] }
-                },
-                "required": ["action"]
             }
         ]
     });
@@ -510,8 +486,10 @@ async fn cortex_exact_schema_rejects_bad_fields_before_upstream_dispatch() {
     .await;
 
     for params in [
-        json!({"action": "project_context", "project": "/repo", "since": "2026-08-01T00:00:00Z"}),
-        json!({"action": "list_ai_projects", "limit": 20}),
+        // additionalProperties: false rejects the unknown field.
+        json!({"action": "project_context", "project": "/repo", "since": "x"}),
+        // oneOf requires `project` alongside `project_context`.
+        json!({"action": "project_context"}),
     ] {
         let error = CodeModeHost::call_tool(
             &manager,

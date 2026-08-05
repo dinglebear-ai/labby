@@ -41,6 +41,8 @@ Supported code may emit additional stable kinds, including:
   `service_unavailable`, `timeout`;
 - validation/security: `validation_failed`, `ssrf_blocked`,
   `path_traversal`, `symlink_rejected`, `content_too_large`;
+- payload limits: `response_too_large` — gateway cap on upstream MCP response bytes (distinct from `content_too_large`'s request/content limits);
+- cancellation: `cancelled` — the upstream reported the proxied call was cancelled; not automatically retryable;
 - Code Mode: `code_mode_timeout`, `code_mode_fuel_exhausted`;
 - concurrency/state: `rate_limited`, `queue_saturated`,
   `restart_required`, `stale_suggestion`, `merge_write_conflict`,
