@@ -27,6 +27,7 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Fixed
 
+- **security:** pin patched npm dependencies across the root toolchain, Gateway Admin, and Palette to clear all open Dependabot alerts and current `brace-expansion` and Hono audit findings.
 - **auth:** replace per-client copies of Google refresh tokens with one encrypted, subject-scoped provider credential. Google `invalid_grant` responses now compare-and-delete the rejected credential, revoke every dependent local grant, and force the next authorization through fresh consent instead of trapping ChatGPT in an hourly reconnect loop.
 - **auth:** reuse the sole allowed Google account credential across DCR/CIMD clients, preventing dynamic client churn from minting hundreds of duplicate Google refresh tokens and evicting older credentials.
 - **agents:** expose one versioned, course-correcting error contract across MCP tools and protocol errors, direct upstream proxying, HTTP/OpenAPI, JSON CLI failures, Code Mode, and its trace inspector.
