@@ -22,20 +22,21 @@ env:
   RUSTFLAGS: -D warnings
   KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
   KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
+  KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
+  KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
+  KACHE_S3_PREFIX: ${{ vars.KACHE_S3_PREFIX }}
 
 jobs:
   fleet-policy:
     name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@befa67c7b7f976235bf3fbced6ede93293a7f405
     with:
       release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
 
-  fleet-contract:
-    name: Fleet repository contract
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
-    with:
-      profile: rust
-      implementation-ref: 98e40816bfab64ed9fcce82236e9ecb0c0055d7d
+  # The fleet repository contract runs once, from repository-contract.yml (the
+  # required "Repository Contract" gate with `secrets: inherit`). Do not add a
+  # second fleet-contract caller here — duplicate callers drift to different
+  # fleet revisions.
 
   changes:
     name: changes
@@ -52,6 +53,7 @@ jobs:
       # `all` keeps the first PR that introduces this category fail-closed
       # while the trusted base-branch classifier is still one revision behind.
       palette: ${{ steps.classify.outputs.palette == 'true' || steps.classify.outputs.all == 'true' }}
+      unraid: ${{ steps.classify.outputs.unraid == 'true' || steps.classify.outputs.all == 'true' }}
       npm: ${{ steps.classify.outputs.npm }}
       docker: ${{ steps.classify.outputs.docker }}
       security: ${{ steps.classify.outputs.security }}
@@ -72,7 +74,7 @@ jobs:
           #!/usr/bin/env python3
           import argparse
           from pathlib import Path
-          keys = "all docs docs_check workflow rust_compile rust_test web palette npm docker security release".split()
+          keys = "all docs docs_check workflow rust_compile rust_test web palette npm docker security release unraid".split()
           parser = argparse.ArgumentParser()
           parser.add_argument("--event", required=True)
           parser.add_argument("--output", type=Path, required=True)
@@ -106,6 +108,8 @@ jobs:
     name: Unraid plugin checksums
     runs-on: ci-pool-ops
     timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.unraid == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -195,6 +199,13 @@ jobs:
       - name: Install Playwright runtime libraries
         run: |
           set -euo pipefail
+          # Warm self-hosted runners already carry the Chromium runtime
+          # libraries; skip the 22-package apt transaction when the marker
+          # libraries are all installed.
+          if dpkg -s libasound2t64 libatk-bridge2.0-0t64 libgbm1 libnss3 libxkbcommon0 >/dev/null 2>&1; then
+            echo "Playwright runtime libraries already installed; skipping apt-get"
+            exit 0
+          fi
           if [ "$(id -u)" = "0" ]; then
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -289,9 +300,12 @@ jobs:
         run: bash scripts/check-rust-toolchain-sync.sh
       - name: Check persistent-host Kache action contract
         run: bash scripts/check-kache-persistent-host-action.sh
-      - name: Install Rust and kache
-        uses: ./.github/actions/setup-rust-kache
+      # cargo fmt never invokes rustc, so skip the full setup-rust-kache
+      # composite (apt preflight + cache wiring) and install only rustfmt.
+      - name: Install Rust toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
         with:
+          toolchain: "1.97.1"
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -330,38 +344,24 @@ jobs:
             --all-features \
             check
 
-  check:
-    name: Check
-    runs-on: ci-pool-rust
-    timeout-minutes: 30
-    needs: [changes, frontend-assets]
-    if: ${{ needs.changes.outputs.rust_compile == 'true' }}
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
-      - name: Install Rust and kache
-        uses: ./.github/actions/setup-rust-kache
-      - run: cargo check --workspace --all-features --locked
-
+  # The former `check` job (cargo check --workspace --all-features --locked)
+  # was strictly subsumed by `msrv`: the toolchain pin (1.97.1) IS the MSRV,
+  # and msrv additionally checks --all-targets.
   msrv:
     name: MSRV
     runs-on: ci-pool-rust
     timeout-minutes: 30
-    needs: [changes, frontend-assets]
+    needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
+      # Compile-only job: include_dir!("../../apps/gateway-admin/out") only
+      # needs the directory to exist, so stub it instead of waiting on the
+      # full pnpm+next frontend-assets build.
+      - name: Stub gateway-admin export for compile-only check
+        run: mkdir -p apps/gateway-admin/out && touch apps/gateway-admin/out/index.html
       - name: Install minimum supported Rust
         uses: ./.github/actions/setup-rust-kache
         with:
@@ -469,42 +469,40 @@ jobs:
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
 
   extracted-crate-slices:
-    name: Extracted crate slice (${{ matrix.name }})
+    name: Extracted crate slices
     runs-on: ci-pool-rust
-    timeout-minutes: 30
+    timeout-minutes: 60
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     env:
       RUSTFLAGS: ""
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: labby-auth-minimal
-            command: cargo check -p labby-auth --no-default-features --all-targets --locked
-          - name: labby-auth-http-axum
-            command: cargo check -p labby-auth --no-default-features --features http-axum --all-targets --locked
-          - name: labby-auth-upstream-oauth-rmcp
-            command: cargo check -p labby-auth --no-default-features --features upstream-oauth-rmcp --all-targets --locked
-          - name: labby-auth-all-runtime-features
-            command: cargo check -p labby-auth --no-default-features --features http-axum,upstream-oauth-rmcp --all-targets --locked
-          - name: labby-codemode
-            command: cargo check -p labby-codemode --all-targets --locked
-          - name: labby-gateway
-            command: cargo check -p labby-gateway --all-targets --locked
-          - name: labby-runtime
-            command: cargo check -p labby-runtime --no-default-features --all-targets --locked
-          - name: labby-web
-            command: cargo check -p labby-web --all-targets --locked
-          - name: labby-winjob
-            command: cargo check -p labby-winjob --all-targets --locked
+    # One warm runner slot checking the nine independent slices sequentially.
+    # The former 9-way matrix consumed 9 cold rust-pool slots for the same
+    # coverage.
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
-      - run: ${{ matrix.command }}
+      - name: labby-auth-minimal
+        run: cargo check -p labby-auth --no-default-features --all-targets --locked
+      - name: labby-auth-http-axum
+        run: cargo check -p labby-auth --no-default-features --features http-axum --all-targets --locked
+      - name: labby-auth-upstream-oauth-rmcp
+        run: cargo check -p labby-auth --no-default-features --features upstream-oauth-rmcp --all-targets --locked
+      - name: labby-auth-all-runtime-features
+        run: cargo check -p labby-auth --no-default-features --features http-axum,upstream-oauth-rmcp --all-targets --locked
+      - name: labby-codemode
+        run: cargo check -p labby-codemode --all-targets --locked
+      - name: labby-gateway
+        run: cargo check -p labby-gateway --all-targets --locked
+      - name: labby-runtime
+        run: cargo check -p labby-runtime --no-default-features --all-targets --locked
+      - name: labby-web
+        run: cargo check -p labby-web --all-targets --locked
+      - name: labby-winjob
+        run: cargo check -p labby-winjob --all-targets --locked
 
   docs-check:
     name: Generated docs
@@ -531,16 +529,16 @@ jobs:
     name: Clippy
     runs-on: ci-pool-rust
     timeout-minutes: 30
-    needs: [changes, frontend-assets]
+    needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
+      # Compile-only job: stub the embedded frontend export instead of
+      # waiting on the full frontend-assets build (see msrv).
+      - name: Stub gateway-admin export for compile-only check
+        run: mkdir -p apps/gateway-admin/out && touch apps/gateway-admin/out/index.html
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
         with:
@@ -705,9 +703,10 @@ jobs:
     name: Test (Windows advisory)
     runs-on: windows-latest
     needs: [changes, frontend-assets]
-    # GitHub-hosted isolation makes this safe for fork PRs. This remains a
-    # visible portability signal but is intentionally excluded from ci-gate.
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    # Advisory portability signal, intentionally excluded from ci-gate. Runs
+    # on main pushes and scheduled/manual runs only — not per-PR — to keep
+    # hosted Windows minutes off the PR critical path.
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -1007,7 +1006,9 @@ jobs:
     name: Palette Tauri (Windows advisory)
     runs-on: windows-latest
     needs: changes
-    if: ${{ needs.changes.outputs.palette == 'true' }}
+    # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
+    # only (see test-windows).
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.
@@ -1035,7 +1036,9 @@ jobs:
       CARGO_BUILD_JOBS: "1"
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    # The 90-minute instrumented re-run enforces a 15% floor; keep it off the
+    # PR critical path. ci-gate accepts the resulting `skipped` conclusion.
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.rust_test == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1082,7 +1085,6 @@ jobs:
     if: always()
     needs:
       - fleet-policy
-      - fleet-contract
       - changes
       - unraid-plugin-check
       - actionlint
@@ -1090,7 +1092,6 @@ jobs:
       - gateway-admin-browser
       - fmt
       - deny
-      - check
       - msrv
       - npm-launcher
       - feature-slices
@@ -1120,7 +1121,6 @@ jobs:
             esac
           }
           require_success_or_skipped fleet-policy "${{ needs.fleet-policy.result }}"
-          require_success_or_skipped fleet-contract "${{ needs.fleet-contract.result }}"
           require_success_or_skipped changes "${{ needs.changes.result }}"
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
@@ -1128,7 +1128,6 @@ jobs:
           require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
           require_success_or_skipped fmt "${{ needs.fmt.result }}"
           require_success_or_skipped deny "${{ needs.deny.result }}"
-          require_success_or_skipped check "${{ needs.check.result }}"
           require_success_or_skipped msrv "${{ needs.msrv.result }}"
           require_success_or_skipped npm-launcher "${{ needs.npm-launcher.result }}"
           require_success_or_skipped feature-slices "${{ needs.feature-slices.result }}"

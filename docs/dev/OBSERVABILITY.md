@@ -526,6 +526,23 @@ The outbound upstream OAuth flow (see [UPSTREAM.md](../services/UPSTREAM.md)) ad
 
 Credential and state row types implement `Debug` manually to enforce this; never `#[derive(Debug)]` on them.
 
+### Central Google Credential Broker
+
+Shared Google credential lifecycle events should include `upstream`,
+`credential_source`, `provider_generation`, fingerprinted `subject_id`, scope
+counts, stable `kind`, invalidation counts, and `elapsed_ms` when applicable.
+
+They must never include the raw Google `sub`, verified email, configured account
+selector, access token, refresh token, ID token, authorization URL, OAuth code,
+PKCE verifier, or client secret. Scope names are configuration metadata and may
+be emitted for a targeted diagnostic event, but routine events should prefer
+`required_scope_count`, `granted_scope_count`, and `missing_scope_count`.
+
+A terminal refresh failure must log whether compare-and-delete invalidation
+succeeded and the counts of dependent Labby refresh tokens and authorization
+codes revoked. It must not log the deleted row. Explicit shared revocation must
+log the same count-only audit shape.
+
 ## Level Rules
 
 Use these level conventions consistently:

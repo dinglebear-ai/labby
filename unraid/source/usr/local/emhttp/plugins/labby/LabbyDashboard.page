@@ -1,7 +1,7 @@
 Menu="Dashboard"
 Title="Labby"
-Icon="server"
-Tag="server"
+Icon="labby.png"
+Tag="labby.png"
 Cond="(preg_match('/DASHBOARD_WIDGET_ENABLE\s*=\s*[\x22\x27]false[\x22\x27]/', @file_get_contents('/boot/config/plugins/labby/labby.cfg') ?: '') !== 1)"
 ---
 <?php

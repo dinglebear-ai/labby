@@ -7,8 +7,8 @@
       "name": "jmagar"
     },
     "license": {
-      "name": "MIT OR Apache-2.0",
-      "identifier": "MIT OR Apache-2.0"
+      "name": "AGPL-3.0-only",
+      "identifier": "AGPL-3.0-only"
     },
     "version": "0.3.2"
   },
@@ -1739,6 +1739,7 @@
               "gateway.oauth.start",
               "gateway.oauth.status",
               "gateway.oauth.clear",
+              "gateway.oauth.google_revoke",
               "gateway.oauth.wait",
               "gateway.mcp.enable",
               "gateway.mcp.list",
@@ -2054,6 +2055,21 @@
         "properties": {
           "subject": {
             "type": "string"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayOauthGoogle_revokeParams": {
+        "type": "object",
+        "required": [
+          "upstream",
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "boolean"
           },
           "upstream": {
             "type": "string"

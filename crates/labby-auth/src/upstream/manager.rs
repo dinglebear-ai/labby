@@ -30,7 +30,9 @@
 
 use std::sync::Arc;
 
-use labby_runtime::gateway_config::{UpstreamConfig, UpstreamOauthRegistration};
+use labby_runtime::gateway_config::{
+    UpstreamConfig, UpstreamOauthCredentialSource, UpstreamOauthRegistration,
+};
 use rmcp::transport::auth::{AuthorizationMetadata, OAuthClientConfig};
 use rmcp::transport::streamable_http_client::StreamableHttpClient;
 use rmcp::transport::{AuthClient, AuthorizationManager};
@@ -39,12 +41,14 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 use tracing::info;
 
+use crate::google::GoogleProvider;
 use crate::sqlite::SqliteStore;
 use crate::types::UpstreamOauthCredentialRow;
 use crate::upstream::encryption::EncryptionKey;
+use crate::upstream::google_store::GoogleProviderCredentialStore;
 use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
-use crate::upstream::types::{BeginAuthorization, OauthError};
+use crate::upstream::types::{BeginAuthorization, GoogleCredentialBrokerStatus, OauthError};
 
 const TOKEN_EXPIRY_WARNING_SECS: i64 = 300;
 const PROACTIVE_REFRESH_WINDOW_SECS: i64 = 30;
@@ -97,11 +101,69 @@ impl UpstreamOauthManager {
         &self.upstream
     }
 
+    #[must_use]
+    pub fn credential_source_label(&self) -> &'static str {
+        match self.upstream.oauth.as_ref().map(|oauth| &oauth.credential) {
+            Some(UpstreamOauthCredentialSource::GoogleProvider { .. }) => "google_provider",
+            _ => "dedicated",
+        }
+    }
+
+    pub async fn google_credential_broker_status(
+        &self,
+    ) -> Result<Option<GoogleCredentialBrokerStatus>, OauthError> {
+        let Some(oauth) = self.upstream.oauth.as_ref() else {
+            return Ok(None);
+        };
+        let UpstreamOauthCredentialSource::GoogleProvider { account } = &oauth.credential else {
+            return Ok(None);
+        };
+        let required_scopes = self.effective_scopes()?;
+        let store = self.google_credential_store(required_scopes.clone())?;
+        let row = store.credential_row().await?;
+        let granted_scopes = row
+            .as_ref()
+            .map(|row| row.granted_scopes.clone())
+            .unwrap_or_default();
+        let missing_scopes =
+            crate::upstream::google_store::missing_scopes(&required_scopes, &granted_scopes);
+        Ok(Some(GoogleCredentialBrokerStatus {
+            account_selector_configured: account
+                .as_deref()
+                .is_some_and(|selector| !selector.trim().is_empty()),
+            provider_generation: row.as_ref().map(|row| row.generation),
+            client_bound: row.as_ref().is_some_and(|row| {
+                !row.client_id.is_empty()
+                    && self
+                        .oauth_config()
+                        .ok()
+                        .map(|config| match &config.registration {
+                            UpstreamOauthRegistration::Preregistered { client_id, .. } => {
+                                client_id == &row.client_id
+                            }
+                            UpstreamOauthRegistration::Dynamic
+                            | UpstreamOauthRegistration::ClientMetadataDocument { .. } => false,
+                        })
+                        .unwrap_or(false)
+            }),
+            required_scopes,
+            granted_scopes,
+            missing_scopes,
+        }))
+    }
+
     /// Return `true` if persisted credentials exist for `subject`.
     ///
     /// Does not check whether the credentials are still valid.
     #[allow(dead_code)]
     pub async fn has_credentials(&self, subject: &str) -> Result<bool, OauthError> {
+        if self.oauth_config()?.credential.is_google_provider() {
+            return self
+                .google_credential_store(self.effective_scopes()?)?
+                .credential_row()
+                .await
+                .map(|row| row.is_some());
+        }
         self.sqlite
             .find_upstream_oauth_credentials(&self.upstream.name, subject)
             .await
@@ -122,7 +184,13 @@ impl UpstreamOauthManager {
         subject: &str,
     ) -> Result<BeginAuthorization, OauthError> {
         let started = std::time::Instant::now();
-        let oauth_cfg = self.oauth_config()?;
+        let scopes_owned = self.effective_scopes()?;
+        if self.oauth_config()?.credential.is_google_provider() {
+            self.google_credential_store(scopes_owned.clone())?
+                .authorization_preflight()
+                .await?;
+        }
+        let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
         let upstream_url = self.upstream_url()?;
 
         // rmcp's AuthorizationManager builds its own internal reqwest client.
@@ -142,14 +210,8 @@ impl UpstreamOauthManager {
                 OauthError::Internal(format!("create auth manager: {e}"))
             })?;
 
-        let cred_store = SqliteCredentialStore::new(
-            self.sqlite.clone(),
-            self.key.clone(),
-            &self.upstream.name,
-            subject,
-        );
+        self.install_credential_store(&mut manager, subject, scopes_owned.clone())?;
         let state_store = SqliteStateStore::new(self.sqlite.clone(), &self.upstream.name, subject);
-        manager.set_credential_store(cred_store);
         manager.set_state_store(state_store);
 
         let metadata = self
@@ -173,6 +235,7 @@ impl UpstreamOauthManager {
             "upstream oauth: AS metadata ready"
         );
 
+        self.verify_google_provider_issuer(&metadata)?;
         self.verify_s256(&metadata.code_challenge_methods_supported)
             .inspect_err(|e| {
                 tracing::warn!(
@@ -183,14 +246,6 @@ impl UpstreamOauthManager {
                 );
             })?;
         manager.set_metadata(metadata);
-
-        let scopes: Vec<&str> = oauth_cfg
-            .scopes
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(String::as_str)
-            .collect();
 
         let client_cfg = self
             .resolve_client_config(
@@ -313,8 +368,45 @@ impl UpstreamOauthManager {
         Ok(())
     }
 
+    /// Explicitly revoke the central Google provider credential selected by this upstream.
+    ///
+    /// This is intentionally separate from per-upstream `clear_credentials`: one
+    /// provider credential can authorize several Google MCP servers and inbound Labby
+    /// grants, so removal must be an explicit destructive action.
+    pub async fn revoke_shared_google_credential(
+        &self,
+    ) -> Result<crate::types::GoogleProviderInvalidation, OauthError> {
+        let oauth = self.oauth_config()?;
+        let UpstreamOauthCredentialSource::GoogleProvider { account } = &oauth.credential else {
+            return Err(OauthError::SharedCredentialProtected(
+                "upstream does not use the central Google provider credential".to_string(),
+            ));
+        };
+        let lock = self.acquire_refresh_lock("<explicit-revoke>").await?;
+        let _guard = lock.lock().await;
+        let invalidation = self
+            .sqlite
+            .revoke_google_provider_credential(account.as_deref())
+            .await
+            .map_err(|error| OauthError::Internal(error.to_string()))?;
+        tracing::warn!(
+            upstream = %self.upstream.name,
+            invalidated = invalidation.invalidated,
+            revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+            revoked_authorization_codes = invalidation.revoked_authorization_codes,
+            "central Google provider credential explicitly revoked"
+        );
+        Ok(invalidation)
+    }
+
     /// Delete all stored credentials for `subject` and evict any cached state.
     pub async fn clear_credentials(&self, subject: &str) -> Result<(), OauthError> {
+        if self.oauth_config()?.credential.is_google_provider() {
+            return Err(OauthError::SharedCredentialProtected(
+                "use the explicit Google provider revoke action; per-upstream clear cannot remove a shared credential"
+                    .to_string(),
+            ));
+        }
         self.refresh_failures.clear(&self.upstream.name, subject);
         self.sqlite
             .delete_upstream_oauth_credentials(&self.upstream.name, subject)
@@ -365,8 +457,9 @@ impl UpstreamOauthManager {
         subject: &str,
     ) -> Result<AuthClient<reqwest::Client>, OauthError> {
         let started = std::time::Instant::now();
-        let lock = self.locks.acquire(&self.upstream.name, subject);
+        let lock = self.acquire_refresh_lock(subject).await?;
         let _guard = lock.lock().await;
+        self.preflight_shared_google_credential().await?;
 
         let mut manager = self
             .configured_authorization_manager(
@@ -453,8 +546,8 @@ impl UpstreamOauthManager {
             )));
         }
 
-        manager.get_access_token().await.map_err(|e| {
-            let mapped = map_auth_error(e);
+        if let Err(error) = manager.get_access_token().await {
+            let mapped = self.map_refresh_error_and_maybe_invalidate(error).await;
             if refresh_due {
                 self.refresh_failures
                     .record_failure(&self.upstream.name, subject);
@@ -469,8 +562,8 @@ impl UpstreamOauthManager {
                     "upstream oauth: token refresh failed"
                 );
             }
-            mapped
-        })?;
+            return Err(mapped);
+        }
 
         self.refresh_failures.clear(&self.upstream.name, subject);
         if refresh_due {
@@ -506,8 +599,9 @@ impl UpstreamOauthManager {
         C: StreamableHttpClient,
     {
         let started = std::time::Instant::now();
-        let lock = self.locks.acquire(&self.upstream.name, subject);
+        let lock = self.acquire_refresh_lock(subject).await?;
         let _guard = lock.lock().await;
+        self.preflight_shared_google_credential().await?;
 
         let mut manager = self
             .configured_authorization_manager(
@@ -594,8 +688,8 @@ impl UpstreamOauthManager {
             )));
         }
 
-        manager.get_access_token().await.map_err(|e| {
-            let mapped = map_auth_error(e);
+        if let Err(error) = manager.get_access_token().await {
+            let mapped = self.map_refresh_error_and_maybe_invalidate(error).await;
             if refresh_due {
                 self.refresh_failures
                     .record_failure(&self.upstream.name, subject);
@@ -610,8 +704,8 @@ impl UpstreamOauthManager {
                     "upstream oauth: token refresh failed (with_client)"
                 );
             }
-            mapped
-        })?;
+            return Err(mapped);
+        }
 
         self.refresh_failures.clear(&self.upstream.name, subject);
         if refresh_due {
@@ -636,8 +730,9 @@ impl UpstreamOauthManager {
     /// cannot report a stale credential row as connected.
     pub async fn refresh_auth_client(&self, subject: &str) -> Result<(), OauthError> {
         let started = std::time::Instant::now();
-        let lock = self.locks.acquire(&self.upstream.name, subject);
+        let lock = self.acquire_refresh_lock(subject).await?;
         let _guard = lock.lock().await;
+        self.preflight_shared_google_credential().await?;
 
         let mut manager = self
             .configured_authorization_manager(
@@ -681,7 +776,9 @@ impl UpstreamOauthManager {
         self.reconfigure_client_after_store_init(&mut manager, subject)
             .await?;
 
-        manager.refresh_token().await.map_err(map_auth_error)?;
+        if let Err(error) = manager.refresh_token().await {
+            return Err(self.map_refresh_error_and_maybe_invalidate(error).await);
+        }
         tracing::info!(
             upstream = %self.upstream.name,
             provider = %self.oauth_provider_label(),
@@ -697,6 +794,29 @@ impl UpstreamOauthManager {
         &self,
         subject: &str,
     ) -> Result<Option<UpstreamOauthCredentialRow>, OauthError> {
+        if self.oauth_config()?.credential.is_google_provider() {
+            let row = self
+                .google_credential_store(self.effective_scopes()?)?
+                .credential_row()
+                .await?;
+            return row
+                .map(|row| {
+                    let granted_scopes_json = serde_json::to_string(&row.granted_scopes)
+                        .map_err(|error| OauthError::Internal(error.to_string()))?;
+                    Ok(UpstreamOauthCredentialRow {
+                        upstream_name: self.upstream.name.clone(),
+                        subject: subject.to_string(),
+                        client_id: row.client_id,
+                        granted_scopes_json,
+                        token_blob: Vec::new(),
+                        token_blob_nonce: Vec::new(),
+                        token_received_at: row.token_received_at.unwrap_or(0),
+                        access_token_expires_at: row.access_token_expires_at.unwrap_or(0),
+                        refresh_token_present: true,
+                    })
+                })
+                .transpose();
+        }
         self.sqlite
             .find_upstream_oauth_credentials(&self.upstream.name, subject)
             .await
@@ -743,7 +863,7 @@ impl UpstreamOauthManager {
         manager: &mut AuthorizationManager,
         subject: &str,
     ) -> Result<(), OauthError> {
-        let scopes_owned = self.oauth_config()?.scopes.clone().unwrap_or_default();
+        let scopes_owned = self.effective_scopes()?;
         let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
         let client_cfg = self
             .resolve_client_config(
@@ -766,7 +886,8 @@ impl UpstreamOauthManager {
         dynamic_registration_use: DynamicClientRegistrationUse,
     ) -> Result<AuthorizationManager, OauthError> {
         let upstream_url = self.upstream_url()?;
-        let oauth_cfg = self.oauth_config()?;
+        let scopes_owned = self.effective_scopes()?;
+        let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
 
         // See begin_authorization above for why this call is needed under
         // "rustls-no-provider" -- idempotent, safe to ignore Err.
@@ -775,27 +896,15 @@ impl UpstreamOauthManager {
             .await
             .map_err(|e| OauthError::Internal(format!("create auth manager: {e}")))?;
 
-        let cred_store = SqliteCredentialStore::new(
-            self.sqlite.clone(),
-            self.key.clone(),
-            &self.upstream.name,
-            subject,
-        );
+        self.install_credential_store(&mut manager, subject, scopes_owned.clone())?;
         let state_store = SqliteStateStore::new(self.sqlite.clone(), &self.upstream.name, subject);
-        manager.set_credential_store(cred_store);
         manager.set_state_store(state_store);
 
         let metadata = self.get_or_discover_metadata(&mut manager).await?;
+        self.verify_google_provider_issuer(&metadata)?;
         self.verify_s256(&metadata.code_challenge_methods_supported)?;
         manager.set_metadata(metadata);
 
-        let scopes: Vec<&str> = oauth_cfg
-            .scopes
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(String::as_str)
-            .collect();
         let client_cfg = self
             .resolve_client_config(&mut manager, subject, &scopes, dynamic_registration_use)
             .await?;
@@ -803,6 +912,208 @@ impl UpstreamOauthManager {
             .configure_client(client_cfg)
             .map_err(|e| OauthError::Internal(format!("configure client: {e}")))?;
         Ok(manager)
+    }
+
+    fn verify_google_provider_issuer(
+        &self,
+        metadata: &AuthorizationMetadata,
+    ) -> Result<(), OauthError> {
+        if !self.oauth_config()?.credential.is_google_provider() {
+            return Ok(());
+        }
+        let issuer = metadata.issuer.as_deref().unwrap_or_default();
+        if issuer.trim_end_matches('/') != "https://accounts.google.com" {
+            return Err(OauthError::IssuerMismatch(format!(
+                "google_provider credential source requires issuer 'https://accounts.google.com', received '{issuer}'"
+            )));
+        }
+        Ok(())
+    }
+
+    fn effective_scopes(&self) -> Result<Vec<String>, OauthError> {
+        let oauth = self.oauth_config()?;
+        let mut scopes = oauth.scopes.clone().unwrap_or_default();
+        if oauth.credential.is_google_provider() {
+            for scope in ["openid", "email", "profile"] {
+                if !scopes.iter().any(|candidate| candidate == scope) {
+                    scopes.push(scope.to_string());
+                }
+            }
+        }
+        scopes.sort();
+        scopes.dedup();
+        Ok(scopes)
+    }
+
+    fn google_credential_store(
+        &self,
+        required_scopes: Vec<String>,
+    ) -> Result<GoogleProviderCredentialStore, OauthError> {
+        let oauth = self.oauth_config()?;
+        let UpstreamOauthCredentialSource::GoogleProvider { account } = &oauth.credential else {
+            return Err(OauthError::Internal(
+                "Google provider credential store requested for dedicated OAuth source".to_string(),
+            ));
+        };
+        let UpstreamOauthRegistration::Preregistered {
+            client_id,
+            client_secret_env,
+        } = &oauth.registration
+        else {
+            return Err(OauthError::ClientMismatch(
+                "google_provider credentials require preregistered OAuth client metadata"
+                    .to_string(),
+            ));
+        };
+        let client_secret = client_secret_env
+            .as_deref()
+            .map(std::env::var)
+            .transpose()
+            .map_err(|error| {
+                OauthError::Internal(format!(
+                    "read Google OAuth client secret environment variable: {error}"
+                ))
+            })?
+            .unwrap_or_default();
+        let redirect_uri = url::Url::parse(self.redirect_uri.as_str()).map_err(|error| {
+            OauthError::Internal(format!("parse upstream OAuth redirect URI: {error}"))
+        })?;
+        let provider = GoogleProvider::new(client_id.clone(), client_secret, redirect_uri)
+            .map_err(|error| OauthError::Internal(error.to_string()))?;
+        Ok(GoogleProviderCredentialStore::new(
+            self.sqlite.clone(),
+            Arc::new(provider),
+            account.clone(),
+            client_id.clone(),
+            required_scopes,
+        ))
+    }
+
+    fn install_credential_store(
+        &self,
+        manager: &mut AuthorizationManager,
+        subject: &str,
+        required_scopes: Vec<String>,
+    ) -> Result<(), OauthError> {
+        match &self.oauth_config()?.credential {
+            UpstreamOauthCredentialSource::Dedicated => {
+                manager.set_credential_store(SqliteCredentialStore::new(
+                    self.sqlite.clone(),
+                    self.key.clone(),
+                    &self.upstream.name,
+                    subject,
+                ))
+            }
+            UpstreamOauthCredentialSource::GoogleProvider { .. } => {
+                manager.set_credential_store(self.google_credential_store(required_scopes)?)
+            }
+        }
+        Ok(())
+    }
+
+    async fn acquire_refresh_lock(
+        &self,
+        subject: &str,
+    ) -> Result<Arc<tokio::sync::Mutex<()>>, OauthError> {
+        match self.upstream.oauth.as_ref().map(|oauth| &oauth.credential) {
+            Some(UpstreamOauthCredentialSource::GoogleProvider { account }) => {
+                let store = self.google_credential_store(self.effective_scopes()?)?;
+                let account_key = match store.credential_row().await? {
+                    Some(row) => row.subject,
+                    None => account
+                        .clone()
+                        .unwrap_or_else(|| "<unbound-google-provider>".to_string()),
+                };
+                Ok(crate::google_refresh::lock(&account_key))
+            }
+            _ => Ok(self.locks.acquire(&self.upstream.name, subject)),
+        }
+    }
+
+    async fn preflight_shared_google_credential(&self) -> Result<(), OauthError> {
+        if !self.oauth_config()?.credential.is_google_provider() {
+            return Ok(());
+        }
+        let store = self.google_credential_store(self.effective_scopes()?)?;
+        if store.validated_credential_row().await?.is_none() {
+            return Err(OauthError::NeedsReauth(
+                "no central Google provider credential is available".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn map_refresh_error_and_maybe_invalidate(
+        &self,
+        error: rmcp::transport::AuthError,
+    ) -> OauthError {
+        let terminal = match &error {
+            rmcp::transport::AuthError::AuthorizationRequired
+            | rmcp::transport::AuthError::TokenRefreshRejected(_) => true,
+            rmcp::transport::AuthError::TokenRefreshFailed(message) => {
+                let message = message.to_ascii_lowercase();
+                message.contains("invalid_grant")
+                    || message.contains("invalid refresh token")
+                    || message.contains("refresh token has been revoked")
+                    || message.contains("refresh token expired")
+            }
+            _ => false,
+        };
+        let mapped = map_auth_error(error);
+        if terminal
+            && self
+                .oauth_config()
+                .is_ok_and(|oauth| oauth.credential.is_google_provider())
+        {
+            let store = match self
+                .google_credential_store(self.effective_scopes().unwrap_or_default())
+            {
+                Ok(store) => store,
+                Err(build_error) => {
+                    tracing::warn!(
+                        upstream = %self.upstream.name,
+                        kind = build_error.kind(),
+                        "shared Google credential invalidation skipped because broker resolution failed"
+                    );
+                    return mapped;
+                }
+            };
+            match store.credential_row().await {
+                Ok(Some(row)) => {
+                    match self
+                        .sqlite
+                        .invalidate_google_provider_credential(&row.subject, row.generation)
+                        .await
+                    {
+                        Ok(invalidation) => tracing::warn!(
+                            upstream = %self.upstream.name,
+                            subject_id = %crate::util::fingerprint(&row.subject),
+                            provider_generation = row.generation,
+                            invalidated = invalidation.invalidated,
+                            revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+                            revoked_authorization_codes = invalidation.revoked_authorization_codes,
+                            kind = mapped.kind(),
+                            "terminal shared Google refresh failure invalidated provider credential"
+                        ),
+                        Err(invalidate_error) => tracing::warn!(
+                            upstream = %self.upstream.name,
+                            subject_id = %crate::util::fingerprint(&row.subject),
+                            provider_generation = row.generation,
+                            kind = "internal_error",
+                            error = %invalidate_error,
+                            "failed to invalidate terminal shared Google credential"
+                        ),
+                    }
+                }
+                Ok(None) => {}
+                Err(resolve_error) => tracing::warn!(
+                    upstream = %self.upstream.name,
+                    kind = resolve_error.kind(),
+                    "shared Google credential invalidation skipped because account resolution failed"
+                ),
+            }
+        }
+        mapped
     }
 
     fn oauth_config(
@@ -1368,13 +1679,24 @@ fn map_auth_error(e: rmcp::transport::AuthError) -> OauthError {
         rmcp::transport::AuthError::TokenRefreshFailed(msg) => {
             OauthError::NeedsReauth(format!("token refresh failed: {msg}"))
         }
+        rmcp::transport::AuthError::TokenRefreshRejected(msg) => {
+            OauthError::NeedsReauth(format!("refresh token rejected: {msg}"))
+        }
         other => OauthError::Internal(other.to_string()),
     }
 }
 
 #[cfg(test)]
 mod url_tests {
-    use super::google_offline_access_url;
+    use super::{google_offline_access_url, map_auth_error};
+
+    #[test]
+    fn rejected_refresh_token_maps_to_reauthorization() {
+        let error = map_auth_error(rmcp_client::transport::AuthError::TokenRefreshRejected(
+            "invalid_grant".to_string(),
+        ));
+        assert!(matches!(error, super::OauthError::NeedsReauth(_)));
+    }
 
     #[test]
     fn google_authorization_url_requests_offline_consent() {

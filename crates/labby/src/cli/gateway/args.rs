@@ -452,8 +452,10 @@ pub enum GatewayMcpAuthCommand {
     Open(GatewayOauthUpstreamArgs),
     /// Read upstream OAuth status for the shared gateway credential.
     Status(GatewayOauthUpstreamArgs),
-    /// Clear stored upstream OAuth credentials for the shared gateway credential.
+    /// Clear stored dedicated upstream OAuth credentials.
     Clear(GatewayOauthUpstreamArgs),
+    /// Revoke the central Google provider credential and all dependent Labby grants.
+    RevokeGoogle(GatewayOauthRevokeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -467,6 +469,14 @@ pub struct GatewayOauthUpstreamArgs {
     pub wait: bool,
     #[arg(long, default_value_t = 120)]
     pub wait_timeout_secs: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayOauthRevokeArgs {
+    pub name: String,
+    /// Confirm revocation of a credential shared by Google MCP servers and inbound grants.
+    #[arg(long, default_value_t = false)]
+    pub confirm: bool,
 }
 
 #[derive(Debug, Args)]

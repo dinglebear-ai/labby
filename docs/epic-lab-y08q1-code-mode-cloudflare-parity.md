@@ -86,7 +86,7 @@ One `code` tool. Typed TypeScript catalog injected into every execution. Model r
 - Gateway admin UI: `handleToggle` guard + SWR cross-revalidation
 - `GATEWAY.md`: two exclusive modes documented, no stale examples
 - `config.example.toml`: mutual exclusion warning
-- `CODE_MODE_SPEC` and `CODE_NODE_CONTRACT` match implementation
+- `code-mode-spec-legacy.md` and `code-mode-agent-contract-legacy.md` match implementation
 - Post-deploy smoke test documented
 
 ### Tests (full coverage)
@@ -104,8 +104,8 @@ One `code` tool. Typed TypeScript catalog injected into every execution. Model r
 
 ## Source of Truth Documents
 
-- `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` — implementation spec
-- `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` — agent contract
+- `docs/specs/code-mode-spec-legacy.md` — implementation spec
+- `docs/contracts/code-mode-agent-contract-legacy.md` — agent contract
 
 ---
 
@@ -518,7 +518,7 @@ Three transforms only (mirrors Cloudflare's `normalize.ts`):
 ### Docs Sync
 - `GATEWAY.md` — "Two exclusive modes" section, updated tool names, startup conflict behavior
 - `config.example.toml` — `[gateway.code_mode]` section with mutual exclusion comment
-- `CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` and `CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` — actual limits, tool names, preamble delivery confirmation
+- `code-mode-spec-legacy.md` and `code-mode-agent-contract-legacy.md` — actual limits, tool names, preamble delivery confirmation
 
 ### Files Changed
 - `crates/lab/src/dispatch/gateway/code_mode.rs` — `normalize_user_code()`, catalog truncation warn, `LABBY_ACTION_UNKNOWN_TOOL_HINT` fix
@@ -526,8 +526,8 @@ Three transforms only (mirrors Cloudflare's `normalize.ts`):
 - `apps/gateway-admin/components/gateway/code-mode-toggle.tsx` — handleToggle guard, SWR mutate
 - `docs/services/GATEWAY.md` — mutual exclusion docs, tool name updates
 - `config/config.example.toml` — mutual exclusion comments
-- `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` — fuel references, limits, tool names, preamble delivery
-- `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` — same updates
+- `docs/specs/code-mode-spec-legacy.md` — fuel references, limits, tool names, preamble delivery
+- `docs/contracts/code-mode-agent-contract-legacy.md` — same updates
 
 ---
 

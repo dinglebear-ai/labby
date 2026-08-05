@@ -347,6 +347,7 @@ fn fixture_oauth_upstream_config(name: &str) -> crate::config::UpstreamConfig {
             client_secret_env: None,
         },
         scopes: None,
+        credential: Default::default(),
         prefer_client_metadata_document: None,
     });
     config

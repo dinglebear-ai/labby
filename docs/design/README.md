@@ -5,6 +5,9 @@ artifacts.
 
 ## Active Contracts
 
+- [GOOGLE_CREDENTIAL_BROKER.md](./GOOGLE_CREDENTIAL_BROKER.md) — central Google
+  provider credential architecture, security model, schema v8, OAuth scope
+  lifecycle, product contracts, rollout, and verification.
 - [SERIALIZATION.md](./SERIALIZATION.md) — serde ownership, MCP/HTTP envelope
   rules, and CLI output boundaries.
 - [CLI_DESIGN_SYSTEM.md](./CLI_DESIGN_SYSTEM.md) — human-readable CLI visual

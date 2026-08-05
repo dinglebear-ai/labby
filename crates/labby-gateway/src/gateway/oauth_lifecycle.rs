@@ -187,6 +187,21 @@ impl GatewayManager {
             "upstream oauth callback: tokens stored"
         );
 
+        if manager.credential_source_label() == "google_provider" {
+            if let Some(cache) = &self.oauth_client_cache {
+                cache.evict_all();
+            }
+            tracing::info!(
+                service = "upstream_oauth",
+                action = "callback",
+                upstream,
+                credential_source = "google_provider",
+                "upstream oauth callback: evicted all cached clients after shared credential update"
+            );
+        } else {
+            self.evict_subject_client(upstream, subject);
+        }
+
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
             let _mutation_guard = self.config_mutation.lock().await;
             let mut cfg = self.config.read().await.clone();
@@ -221,6 +236,25 @@ impl GatewayManager {
     ) -> Result<UpstreamOauthStatusView, ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "status")?;
+        let credential_source = manager.credential_source_label().to_string();
+        let google_credential_broker =
+            manager
+                .google_credential_broker_status()
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        service = "upstream_oauth",
+                        action = "status",
+                        upstream,
+                        kind = error.kind(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "upstream oauth status: Google credential broker lookup failed"
+                    );
+                    tool_error_from_oauth(error)
+                })?;
+        let scope_upgrade_required = google_credential_broker
+            .as_ref()
+            .is_some_and(|status| !status.missing_scopes.is_empty());
 
         let mut row = manager.credential_row(subject).await.map_err(|e| {
             tracing::warn!(
@@ -240,12 +274,17 @@ impl GatewayManager {
             .as_secs() as i64;
         let mut refresh_attempted = false;
         let mut refreshed = false;
-        let mut refresh_error_kind = None;
-        let mut refresh_error = None;
+        let mut refresh_error_kind =
+            scope_upgrade_required.then(|| "oauth_scope_upgrade_required".to_string());
+        let mut refresh_error = scope_upgrade_required.then(|| {
+            "the shared Google credential lacks one or more scopes required by this MCP server"
+                .to_string()
+        });
 
-        if row
-            .as_ref()
-            .is_some_and(|row| row.access_token_expires_at - now <= 300)
+        if !scope_upgrade_required
+            && row
+                .as_ref()
+                .is_some_and(|row| row.access_token_expires_at - now <= 300)
         {
             refresh_attempted = true;
             match manager.refresh_auth_client(subject).await {
@@ -312,18 +351,24 @@ impl GatewayManager {
             })
             .unwrap_or((None, None, false));
         let expires_within_5m = seconds_until_expiry.is_some_and(|seconds| seconds <= 300);
-        let mut state = match (
-            row.is_some(),
-            refresh_error_kind.is_some(),
-            seconds_until_expiry,
-        ) {
-            (false, _, _) => UpstreamOauthConnectionState::Disconnected,
-            (true, true, _) => UpstreamOauthConnectionState::RefreshFailed,
-            (true, false, Some(seconds)) if seconds <= 0 => UpstreamOauthConnectionState::Expired,
-            (true, false, Some(seconds)) if seconds <= 300 => {
-                UpstreamOauthConnectionState::Expiring
+        let mut state = if scope_upgrade_required {
+            UpstreamOauthConnectionState::ScopeUpgradeRequired
+        } else {
+            match (
+                row.is_some(),
+                refresh_error_kind.is_some(),
+                seconds_until_expiry,
+            ) {
+                (false, _, _) => UpstreamOauthConnectionState::Disconnected,
+                (true, true, _) => UpstreamOauthConnectionState::RefreshFailed,
+                (true, false, Some(seconds)) if seconds <= 0 => {
+                    UpstreamOauthConnectionState::Expired
+                }
+                (true, false, Some(seconds)) if seconds <= 300 => {
+                    UpstreamOauthConnectionState::Expiring
+                }
+                (true, false, _) => UpstreamOauthConnectionState::Connected,
             }
-            (true, false, _) => UpstreamOauthConnectionState::Connected,
         };
         let authenticated = matches!(
             state,
@@ -385,6 +430,8 @@ impl GatewayManager {
         Ok(UpstreamOauthStatusView {
             authenticated,
             upstream: upstream.to_string(),
+            credential_source,
+            google_credential_broker,
             expires_within_5m,
             state,
             access_token_expires_at,
@@ -399,6 +446,42 @@ impl GatewayManager {
             exposed_tool_count,
             discovery_error,
         })
+    }
+
+    pub async fn revoke_google_provider_credential(
+        &self,
+        upstream: &str,
+    ) -> Result<labby_auth::types::GoogleProviderInvalidation, ToolError> {
+        let started = std::time::Instant::now();
+        let manager = self.require_oauth_manager(upstream, "google_revoke")?;
+        let invalidation = manager
+            .revoke_shared_google_credential()
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    service = "upstream_oauth",
+                    action = "google_revoke",
+                    upstream,
+                    kind = error.kind(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "Google provider credential revoke failed"
+                );
+                tool_error_from_oauth(error)
+            })?;
+        if let Some(cache) = &self.oauth_client_cache {
+            cache.evict_all();
+        }
+        tracing::warn!(
+            service = "upstream_oauth",
+            action = "google_revoke",
+            upstream,
+            invalidated = invalidation.invalidated,
+            revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+            revoked_authorization_codes = invalidation.revoked_authorization_codes,
+            elapsed_ms = started.elapsed().as_millis(),
+            "Google provider credential revoked and OAuth client cache evicted"
+        );
+        Ok(invalidation)
     }
 
     pub async fn clear_upstream_credentials(

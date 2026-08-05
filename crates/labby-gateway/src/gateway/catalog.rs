@@ -978,6 +978,27 @@ pub const ACTIONS: &[ActionSpec] = &[
         ],
     },
     ActionSpec {
+        name: "gateway.oauth.google_revoke",
+        description: "Explicitly revoke the central Google provider credential selected by an upstream. This also revokes dependent inbound Labby grants and evicts all cached OAuth clients.",
+        destructive: true,
+        requires_admin: true,
+        returns: "GoogleProviderInvalidation",
+        params: &[
+            ParamSpec {
+                name: "upstream",
+                ty: "string",
+                required: true,
+                description: "Configured upstream using credential.source=google_provider",
+            },
+            ParamSpec {
+                name: "confirm",
+                ty: "boolean",
+                required: true,
+                description: "Must be true because this revokes a shared credential",
+            },
+        ],
+    },
+    ActionSpec {
         name: "gateway.oauth.wait",
         description: "Poll gateway.oauth.status until the upstream is authenticated or timeout elapses. \
                        Returns {authenticated: bool, timed_out: bool}. \
@@ -1105,6 +1126,7 @@ mod tests {
             "gateway.import_tombstones.restore",
             "gateway.remove",
             "gateway.mcp.cleanup",
+            "gateway.oauth.google_revoke",
             "gateway.oauth.resource_lease.release",
         ]);
         let actual = ACTIONS
@@ -1206,6 +1228,20 @@ mod tests {
     }
 
     // ── Q-H3: gateway.oauth.wait catalog entry ─────────────────────────────
+
+    #[test]
+    fn gateway_oauth_google_revoke_is_destructive_and_confirmed() {
+        let spec = ACTIONS
+            .iter()
+            .find(|spec| spec.name == "gateway.oauth.google_revoke")
+            .expect("gateway.oauth.google_revoke should be in the catalog");
+        assert!(spec.destructive);
+        assert!(spec.requires_admin);
+        assert_eq!(spec.returns, "GoogleProviderInvalidation");
+        let param_names: Vec<&str> = spec.params.iter().map(|param| param.name).collect();
+        assert!(param_names.contains(&"upstream"));
+        assert!(param_names.contains(&"confirm"));
+    }
 
     #[test]
     fn gateway_oauth_wait_is_in_catalog() {
