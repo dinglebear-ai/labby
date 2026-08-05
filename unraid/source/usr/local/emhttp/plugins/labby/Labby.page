@@ -697,10 +697,11 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
 ?>
 <style>
 #labby-plugin-root, #labby-plugin-root * { box-sizing: border-box; }
+#displaybox .content > div.title { display:none !important; }
 #labby-plugin-root {
   --lb-bg:#f2f2f2; --lb-card:#fff; --lb-ink:#1c1b1b; --lb-muted:#737373;
   --lb-faint:#a3a3a3; --lb-line:#f0f0f0; --lb-orange:#ff8c2f; --lb-red:#e22828;
-  margin:-20px; min-height:calc(100vh - 120px); background:var(--lb-bg); color:var(--lb-ink);
+  margin:-20px; background:var(--lb-bg); color:var(--lb-ink);
   font-family:clear-sans,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 }
 #labby-plugin-root a { color:inherit; }
