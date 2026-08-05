@@ -50,7 +50,7 @@
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
   <!ENTITY incusEnvMD5     "bae86ad48f8f091e0708469f75b45aeb">
-  <!ENTITY incusInitMD5    "ddc5f14d5ca161f3e70946ccd238a436">
+  <!ENTITY incusInitMD5    "b1bab54a07130aebb8ceb32e33f1d924">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
