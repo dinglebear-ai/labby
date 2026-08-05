@@ -82,8 +82,14 @@ __pycache__/
 
 
 # ── Rust ─────────────────────────────────────────────────────────────────────
+# Slashless siblings matter: worktrees created by the worktree-setup sync engine
+# SYMLINK these caches to the main checkout, and git treats a symlink as a file,
+# so a trailing-slash pattern does not match it. Without both forms a `git add -A`
+# in a worktree commits symlinks pointing at absolute paths on one machine.
 /target/
+/target
 **/target/
+**/target
 **/*.rs.bk
 *.profraw
 *.profdata
@@ -94,8 +100,11 @@ __pycache__/
 
 
 # ── Node / TypeScript build artifacts ────────────────────────────────────────
+# Slashless siblings cover the worktree cache symlinks (see the Rust block above).
 node_modules/
+node_modules
 .next/
+.next
 *.tsbuildinfo
 packages/*/vendor/
 
@@ -104,6 +113,7 @@ data/
 proxies/
 outputs/
 /dist/
+/dist
 /.zcode/
 config.local.toml
 *.key
