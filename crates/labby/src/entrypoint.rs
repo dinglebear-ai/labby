@@ -640,7 +640,7 @@ pub async fn run() -> ExitCode {
 mod tests {
     use std::ffi::OsString;
 
-    use anyhow::{Context as _, anyhow};
+    use anyhow::anyhow;
 
     use super::{
         ClapErrorKind, argv_command_label, clap_error_value, cli_error_value, parse_cli_args,
