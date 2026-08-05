@@ -41,6 +41,22 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **stdio:** log child PID, connection generation, exit code or signal, redacted
   stderr tail, and the exact in-flight requests invalidated by child termination.
 
+## [1.9.0](https://github.com/dinglebear-ai/labby/compare/v1.8.9...v1.9.0) (2026-08-05)
+
+
+### Added
+
+* **errors:** unify agent-facing recovery contract ([#331](https://github.com/dinglebear-ai/labby/issues/331)) ([3e5ab3d](https://github.com/dinglebear-ai/labby/commit/3e5ab3dfbb09f538a0d09e8df90f6cfb2e6dab03))
+* **release:** publish canonical MCP Registry metadata ([#330](https://github.com/dinglebear-ai/labby/issues/330)) ([27c2bb8](https://github.com/dinglebear-ai/labby/commit/27c2bb89761f23018374c24eeac5c060aa9ca64a))
+* **unraid:** prepare Labby for Community Applications ([#338](https://github.com/dinglebear-ai/labby/issues/338)) ([b4625af](https://github.com/dinglebear-ai/labby/commit/b4625af12ef8abb701f571bd102cb48ffc75aa5a))
+
+
+### Fixed
+
+* **deps:** clear npm Dependabot alerts ([#340](https://github.com/dinglebear-ai/labby/issues/340)) ([a47d214](https://github.com/dinglebear-ai/labby/commit/a47d214ff36400fb455e7cec3229810e537f1457))
+* **gateway:** preserve MCP errors and schema fidelity ([#334](https://github.com/dinglebear-ai/labby/issues/334)) ([67a335a](https://github.com/dinglebear-ai/labby/commit/67a335ad49d42eefc18bf525247d2aede93ab177))
+* **incus:** raise gateway service resource limits ([#339](https://github.com/dinglebear-ai/labby/issues/339)) ([6d624ae](https://github.com/dinglebear-ai/labby/commit/6d624ae601e7b8f21c59aa0e9a48cd9840f6b219))
+
 ## [1.8.9](https://github.com/dinglebear-ai/labby/compare/v1.8.8...v1.8.9) (2026-08-04)
 
 
