@@ -19,6 +19,10 @@ INCUS="${INCUS:-/usr/local/incus/bin/incus}"
 READY_URL="http://127.0.0.1:8765/ready"
 PROVISION_SCHEMA_VERSION="1"
 PROVISION_SENTINEL="/var/lib/labby/provisioning-sentinel"
+LABBY_SERVICE_DROPIN_DIR="${LABBY_SERVICE_DROPIN_DIR:-/etc/systemd/system/labby.service.d}"
+LABBY_SERVICE_TASKS_MAX="4096"
+LABBY_SERVICE_MEMORY_HIGH="7G"
+LABBY_SERVICE_MEMORY_MAX="8G"
 TS_AUTHKEY_PATH="/run/labby-ts-authkey"
 TS_AUTHKEY_STORE="${PLUGIN_STATE_DIR}/incus-ts-authkey"
 IMAGE_PROP_VERSION="labby.image_version"
@@ -607,6 +611,35 @@ ensure_service_active() {
         || fail "labby.service is not active inside ${INCUS_CONTAINER_NAME}"
 }
 
+ensure_service_resource_limits() {
+    # shellcheck disable=SC2016 -- this script is intentionally evaluated inside the Incus guest.
+    incus_exec 30 sh -c '
+        set -eu
+        dropin_dir="$1"
+        dropin_path="${dropin_dir}/resource-limits.conf"
+        tmp_path="${dropin_path}.tmp"
+
+        install -d -m 0755 "$dropin_dir"
+        printf "%s\n" \
+            "[Service]" \
+            "TasksMax=$2" \
+            "MemoryHigh=$3" \
+            "MemoryMax=$4" > "$tmp_path"
+        chmod 0644 "$tmp_path"
+        if [ -f "$dropin_path" ] && cmp -s "$tmp_path" "$dropin_path"; then
+            rm -f "$tmp_path"
+        else
+            mv -f "$tmp_path" "$dropin_path"
+        fi
+        systemctl daemon-reload
+    ' sh \
+        "$LABBY_SERVICE_DROPIN_DIR" \
+        "$LABBY_SERVICE_TASKS_MAX" \
+        "$LABBY_SERVICE_MEMORY_HIGH" \
+        "$LABBY_SERVICE_MEMORY_MAX" \
+        || fail "failed to converge labby.service resource limits"
+}
+
 tailscale_has_ip() {
     incus_exec 20 tailscale ip -4 >/dev/null 2>&1
 }
@@ -760,6 +793,7 @@ write_sentinel() {
 converge_provisioning() {
     local labby_version
 
+    ensure_service_resource_limits
     labby_version="$(container_labby_version)"
     [ -n "$labby_version" ] || fail "could not determine baked labby binary version inside ${INCUS_CONTAINER_NAME}"
 
@@ -782,6 +816,7 @@ converge_provisioning() {
         log "running labby setup --provision --yes inside ${INCUS_CONTAINER_NAME}"
         incus_exec 900 labby setup --provision --yes \
             || fail "labby setup --provision --yes failed inside ${INCUS_CONTAINER_NAME}"
+        ensure_service_resource_limits
         incus_exec 120 systemctl enable --now labby.service \
             || fail "failed to enable/start labby.service inside ${INCUS_CONTAINER_NAME}"
         write_sentinel "$labby_version"

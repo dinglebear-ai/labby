@@ -429,6 +429,63 @@ test_incus_init_rejects_unsafe_existing_state() {
     assert_file_contains "$tmp/unsafe-start.out" "not safely startable"
 }
 
+test_incus_init_converges_service_resource_limits() {
+    local dropin_dir="$tmp/systemd/labby.service.d"
+    local dropin_path="$dropin_dir/resource-limits.conf"
+    local first_call_line
+    local second_call_line
+    local fast_path_line
+    local setup_line
+    local enable_line
+
+    write_cfg incus
+    : > "$tmp/ip-routes"
+    printf 'running\n' > "$tmp/incus-state"
+    cat > "$tmp/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${SYSTEMCTL_LOG:?}"
+EOF
+    chmod +x "$tmp/bin/systemctl"
+    : > "$tmp/systemctl.log"
+
+    (
+        set -euo pipefail
+        export LABBY_SERVICE_DROPIN_DIR="$dropin_dir"
+        export SYSTEMCTL_LOG="$tmp/systemctl.log"
+        source_init_library
+        # shellcheck disable=SC2329 -- ensure_service_resource_limits invokes this test double indirectly.
+        incus_exec() {
+            shift
+            "$@"
+        }
+        ensure_service_resource_limits
+        first_hash="$(sha256sum "$dropin_path" | awk '{ print $1 }')"
+        ensure_service_resource_limits
+        second_hash="$(sha256sum "$dropin_path" | awk '{ print $1 }')"
+        [ "$first_hash" = "$second_hash" ]
+    )
+
+    assert_file_contains "$dropin_path" "[Service]"
+    assert_file_contains "$dropin_path" "TasksMax=4096"
+    assert_file_contains "$dropin_path" "MemoryHigh=7G"
+    assert_file_contains "$dropin_path" "MemoryMax=8G"
+    [ ! -e "${dropin_path}.tmp" ] || fail "resource-limit convergence left a temporary file"
+    [ "$(grep -Fxc 'daemon-reload' "$tmp/systemctl.log")" -eq 2 ] \
+        || fail "resource-limit convergence did not reload systemd on both passes"
+
+    [ "$(grep -Ec '^[[:space:]]+ensure_service_resource_limits$' "$incus_init_script")" -eq 2 ] \
+        || fail "expected resource limits before the fast path and after first-time provisioning"
+    first_call_line="$(grep -nE '^[[:space:]]+ensure_service_resource_limits$' "$incus_init_script" | head -1 | cut -d: -f1)"
+    second_call_line="$(grep -nE '^[[:space:]]+ensure_service_resource_limits$' "$incus_init_script" | tail -1 | cut -d: -f1)"
+    fast_path_line="$(grep -nF '    if container_ready && sentinel_matches' "$incus_init_script" | cut -d: -f1)"
+    setup_line="$(grep -nF '        incus_exec 900 labby setup --provision --yes' "$incus_init_script" | cut -d: -f1)"
+    enable_line="$(grep -nF '        incus_exec 120 systemctl enable --now labby.service' "$incus_init_script" | cut -d: -f1)"
+    [ "$first_call_line" -lt "$fast_path_line" ] \
+        || fail "resource limits are not converged before the sentinel fast path"
+    [ "$setup_line" -lt "$second_call_line" ] && [ "$second_call_line" -lt "$enable_line" ] \
+        || fail "resource limits are not reapplied between setup and service enable"
+}
+
 test_bridge_collision_checks_whole_cidr() {
     write_cfg incus
     printf 'missing\n' > "$tmp/incus-state"
@@ -794,6 +851,7 @@ test_incus_stop_rejects_unsafe_state
 test_incus_status_preserves_stopped_and_unsafe_states
 test_incus_init_instance_query_failures_are_fatal
 test_incus_init_rejects_unsafe_existing_state
+test_incus_init_converges_service_resource_limits
 test_bridge_collision_checks_whole_cidr
 test_managed_bridge_validates_full_posture
 test_labby_dir_validator_rejects_non_array_paths
