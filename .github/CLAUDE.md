@@ -23,7 +23,21 @@ details there and keep this file focused on rules for editing `.github/`.
   Gateway Admin browser tests, Palette checks, npm launcher tests, security
   audits, and Unraid plugin validation.
 - `ci-gate` is the stable required aggregate. It accepts required jobs that
-  conclude `success` or are intentionally `skipped`.
+  conclude `success` or are intentionally `skipped`. `changes` and
+  `fleet-policy` are the exceptions: neither has an `if:`, so both must
+  conclude `success`. A skipped `changes` also empties every gate expression,
+  which would skip every gated job and leave the run vacuously green.
+- Changed-path routing fails open. On pull requests the trusted classifier
+  comes from the base commit while `ci.yml` comes from the merge ref, so a
+  gated key the classifier does not emit is forced to `true` and reported
+  through the `gate_key_drift` output — never left to skip silently. The
+  branch's own classifier is unioned in over the trusted changed-file list so
+  new path mappings route correctly, in the broadening direction only.
+- Pinning the classifier to the base commit is an accident guard, not a
+  security boundary: on a same-repo pull request the gate expressions and the
+  `changes` job's `outputs:` block come from the merge ref and are
+  branch-controlled. Do not describe it as preventing a branch from rerouting
+  its own CI.
 - Preserve the MSRV command exactly:
   `cargo +1.97.1 check --workspace --all-features --all-targets --locked`.
 
@@ -62,10 +76,29 @@ other architectures, emulation, cross-platform image matrices, or QEMU setup.
 
 ## Editing rules
 
+- Never set `CARGO_BUILD_JOBS` on a Rust job. Cargo forwards it to every build
+  script as `NUM_JOBS`, and `aws-lc-sys` compiles 414 C and 902 assembly
+  sources through the `cc` crate — work kache cannot cache, because it wraps
+  `rustc`, not `cc`. Measured in a cgroup matching the runner container
+  (7 GiB, no swap): a full workspace build linking all 15 test harnesses peaks
+  at 5.03 GiB and `nextest run --workspace --all-features` peaks at 2.44 GiB,
+  so the limit is not the binding constraint. Use lld to hold link memory down
+  instead.
 - Every local job needs a bounded `timeout-minutes`.
 - Keep `permissions` least-privileged at workflow and job scope.
 - Do not weaken immutable pins, checksum verification, provenance, signing,
   registry visibility checks, or release version lockstep.
+- A new routing key must be added to `OUTPUT_KEYS` in
+  `scripts/ci/changed_paths.py` **and** to the `changes` job's `outputs:` block,
+  forwarding the identically-named classify output, before anything gates on
+  it. A gate on an undeclared or misspelled key reads as the empty string and
+  skips the job; the classify step and
+  `crates/labby/tests/ci_changed_paths.rs` both fail the build on that.
+- Gates must use `needs.changes.outputs.<key>`. The bracket form is invisible
+  to the classify step's reconciler.
+- `ci-gate` must aggregate every non-advisory job in both its `needs:` list and
+  its `require_*` assertions; a job in one but not the other cannot fail the
+  build.
 - Update `scripts/ci/test_windows_ci_policy.py`,
   `crates/labby/tests/ci_changed_paths.rs`, and `docs/runtime/CICD.md` when a
   workflow contract changes.
