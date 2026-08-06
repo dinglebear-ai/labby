@@ -557,6 +557,8 @@ mod tests {
         assert_eq!(protected.recovery.action, AgentRecoveryAction::Confirm);
         assert_eq!(protected.side_effects, AgentSideEffectRisk::NoneExpected);
     }
+
+    #[test]
     fn context_fields_are_additive_and_reserved_fields_win() {
         let value = build_agent_error_value(
             "missing_param",
