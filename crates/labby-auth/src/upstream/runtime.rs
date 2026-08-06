@@ -79,6 +79,67 @@ pub async fn build_upstream_oauth_runtime(
     )))
 }
 
+/// Build the outbound OAuth runtime with a host-provided callback URI.
+///
+/// This is used by transports that cannot expose Labby's HTTP server, notably
+/// stdio. The host binds a loopback-only callback listener first, passes its
+/// URI here, and owns the browser/callback orchestration. Keeping SQLite/key
+/// setup here ensures the stdio path uses exactly the same encrypted stores
+/// and validation as the public HTTP path.
+pub async fn build_upstream_oauth_runtime_with_redirect(
+    upstreams: &[UpstreamConfig],
+    auth_config: &AuthConfig,
+    encryption_key_raw: Option<&str>,
+    redirect_uri: String,
+) -> Result<Option<UpstreamOauthRuntime>> {
+    if !upstreams.iter().any(|upstream| upstream.oauth.is_some()) {
+        return Ok(None);
+    }
+
+    let Some(encryption_key_raw) =
+        encryption_key_raw.and_then(|value| (!value.trim().is_empty()).then_some(value))
+    else {
+        anyhow::bail!(
+            "LABBY_OAUTH_ENCRYPTION_KEY is required when native stdio upstream OAuth is configured"
+        );
+    };
+
+    let redirect_url = url::Url::parse(&redirect_uri)
+        .with_context(|| format!("invalid upstream OAuth redirect URI: {redirect_uri}"))?;
+    anyhow::ensure!(
+        matches!(redirect_url.scheme(), "http" | "https"),
+        "upstream OAuth redirect URI must use http:// or https://"
+    );
+
+    let shared_google_enabled = upstreams.iter().any(|upstream| {
+        upstream
+            .oauth
+            .as_ref()
+            .is_some_and(|oauth| oauth.credential.is_google_provider())
+    });
+    anyhow::ensure!(
+        !shared_google_enabled || auth_config.token_encryption_key.is_some(),
+        "{prefix}_TOKEN_ENCRYPTION_KEY is required when an upstream uses credential.source=google_provider",
+        prefix = auth_config.env_prefix
+    );
+
+    let key = load_key(encryption_key_raw)
+        .map_err(|error| anyhow::anyhow!("invalid upstream OAuth encryption key: {error}"))?;
+    let sqlite = SqliteStore::open_with_key(
+        auth_config.sqlite_path.clone(),
+        auth_config.token_encryption_key.clone(),
+    )
+    .await
+    .context("open sqlite store for upstream oauth")?;
+
+    Ok(Some(build_upstream_oauth_runtime_from_parts(
+        upstreams,
+        sqlite,
+        key,
+        redirect_uri,
+    )))
+}
+
 /// Assemble the runtime from pre-loaded parts.
 ///
 /// `upstreams` is the upstream slice (decoupled from `LabConfig`); only the
