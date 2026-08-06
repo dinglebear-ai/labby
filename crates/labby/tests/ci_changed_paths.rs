@@ -518,6 +518,37 @@ fn github_actions_are_immutable_sha_pinned() {
 }
 
 #[test]
+fn draft_releases_are_surfaced_without_being_auto_published() {
+    let reminder =
+        fs::read_to_string(repo_root().join(".github/workflows/release-publish-reminder.yml"))
+            .expect("read release publish reminder workflow");
+
+    // The reminder exists because unpublished drafts ship no artifacts. It must
+    // never resolve that by publishing one itself — approval stays manual.
+    assert!(!reminder.contains("--draft=false"));
+    assert!(!reminder.contains("updateRelease"));
+    assert!(!reminder.contains("draft: false"));
+
+    assert!(!reminder.contains("createRelease"));
+    assert!(!reminder.contains("uploadReleaseAsset"));
+    assert!(!reminder.contains("deleteRelease"));
+
+    assert!(reminder.contains("issues: write"));
+    assert!(reminder.contains("listReleases"));
+    assert!(reminder.contains("schedule:"));
+
+    // `contents: write` is load-bearing: GitHub returns draft releases only to
+    // callers with push access, so a read-only token lists zero drafts and this
+    // workflow degrades to a silent no-op. It shipped that way in #350 and did
+    // nothing. The scope buys visibility; the assertions above are what keep it
+    // from being used to publish.
+    assert!(
+        reminder.contains("contents: write"),
+        "read-only token cannot see drafts; the reminder would silently do nothing"
+    );
+}
+
+#[test]
 fn release_tool_downloads_are_version_and_digest_pinned() {
     let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");

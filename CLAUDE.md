@@ -390,11 +390,16 @@ Releases: `release-please.yml` watches green CI runs on `main`, maintains a
 release PR that bumps `[workspace.package] version` in `Cargo.toml` (and the
 matching `Cargo.lock` entries) and updates `CHANGELOG.md` from Conventional
 Commits (`release-please-config.json` / `.release-please-manifest.json`).
-Merging that PR creates the `vX.Y.Z` tag and GitHub Release, which triggers
-`release.yml` to build the Linux/Windows archives, publish the release, and
-push the GHCR image. Requires the `RELEASE_PLEASE_TOKEN` repo secret (a PAT
-or GitHub App token with `contents: write` + `pull-requests: write` — the
-default `GITHUB_TOKEN` won't trigger the downstream tag-push workflow).
+Merging that PR creates the `vX.Y.Z` tag and a **draft** GitHub Release — it
+does not build anything yet. Publishing that draft is a deliberate manual gate
+(`"draft": true` in `release-please-config.json`, enforced by a test) because
+it triggers `release.yml`, `mcp-registry.yml`, and `build-incus-image.yml`,
+which publish to npm and the MCP Registry where a version can never be
+un-published. A release left in draft ships no artifacts at all, so
+`release-publish-reminder.yml` tracks pending drafts in an issue. Requires the
+`RELEASE_PLEASE_TOKEN` repo secret (a PAT or GitHub App token with
+`contents: write` + `pull-requests: write` — the default `GITHUB_TOKEN` won't
+trigger the downstream tag-push workflow).
 
 Default verification targets the all-features build. If you run a reduced feature set for a narrow task, treat any warning cleanup decisions from that mode as provisional until they are checked again with `--all-features`.
 
