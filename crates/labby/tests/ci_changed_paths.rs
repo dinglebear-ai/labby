@@ -518,6 +518,27 @@ fn github_actions_are_immutable_sha_pinned() {
 }
 
 #[test]
+fn draft_releases_are_surfaced_without_being_auto_published() {
+    let reminder =
+        fs::read_to_string(repo_root().join(".github/workflows/release-publish-reminder.yml"))
+            .expect("read release publish reminder workflow");
+
+    // The reminder exists because unpublished drafts ship no artifacts. It must
+    // never resolve that by publishing one itself — approval stays manual.
+    assert!(!reminder.contains("--draft=false"));
+    assert!(!reminder.contains("updateRelease"));
+    assert!(!reminder.contains("draft: false"));
+
+    assert!(reminder.contains("issues: write"));
+    assert!(reminder.contains("listReleases"));
+    assert!(reminder.contains("schedule:"));
+
+    // Least privilege: surfacing a draft needs to read releases, never write them.
+    assert!(reminder.contains("contents: read"));
+    assert!(!reminder.contains("contents: write"));
+}
+
+#[test]
 fn release_tool_downloads_are_version_and_digest_pinned() {
     let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");

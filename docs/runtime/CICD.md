@@ -18,7 +18,27 @@ That classifier maps the changed file list into stable routing categories:
 `docker`, `security`, and `release`. Scheduled and manual runs enable every
 category so periodic/manual validation stays broad.
 
-Branch protection should require the stable aggregate `ci-gate` check. The
+`ci-gate` is the aggregate that branch protection on `main` *should* require.
+As of 2026-08-05 it does not: the only required context is
+`Repository Contract`, so every Rust job — `Format`, `Clippy`, `Test`, `MSRV`,
+the feature slices — is advisory in practice. That is how #347 merged with
+`Format`, `Clippy`, and `ci-gate` all red, landing a rustfmt violation and a
+check script that failed against its own action.
+
+Requiring `ci-gate` was attempted on 2026-08-05 and reverted the same day. It
+is correct in principle but only viable when the shared `ci-pool-rust` farm can
+actually finish a run. While that pool is saturated by sibling repos, labby's
+Rust jobs never get a runner and the run is cancelled, so a required `ci-gate`
+can never turn green and *every* pull request becomes unmergeable. Re-enable it
+once pool capacity is reliable:
+
+```bash
+gh api -X PATCH repos/dinglebear-ai/labby/branches/main/protection/required_status_checks \
+  -f 'checks[][context]=Repository Contract' -f 'checks[][context]=ci-gate'
+```
+
+If you add a job that must block merges, wire it into `ci-gate` rather than
+adding another required context. The
 heavy jobs below may be skipped when their category is false; `ci-gate` treats
 `success` and intentionally `skipped` jobs as acceptable, and fails on failed or
 cancelled dependencies. Native Windows workspace and Palette jobs are advisory:
@@ -124,7 +144,13 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 1. Release Please prepares the version/changelog PR.
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
-3. Publishing the stable release triggers all heavy release workflows.
+3. Publishing the stable release triggers all heavy release workflows. This step
+   is manual on purpose: npm and the MCP Registry cannot delete an
+   already-published version, so a human approves before anything irreversible
+   ships. A release left in draft produces **no artifacts at all**.
+   `release-publish-reminder.yml` keeps a single open issue listing every
+   pending draft release so an unpublished one cannot go unnoticed; it never
+   publishes a release itself.
 4. Preflight requires strict stable SemVer, ancestry from `origin/main`, and exact Cargo/npm/MCP/release-manifest version lockstep.
 5. Binary, Incus, and container candidates are built and smoke-tested on GitHub-hosted x86_64 runners.
 6. The final gated job verifies checksums, emits an SPDX SBOM and GitHub provenance attestations, uploads assets to the published release, then publishes the exact tested image by digest and signs it keylessly with Cosign.
