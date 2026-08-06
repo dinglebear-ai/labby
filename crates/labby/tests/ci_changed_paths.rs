@@ -529,13 +529,23 @@ fn draft_releases_are_surfaced_without_being_auto_published() {
     assert!(!reminder.contains("updateRelease"));
     assert!(!reminder.contains("draft: false"));
 
+    assert!(!reminder.contains("createRelease"));
+    assert!(!reminder.contains("uploadReleaseAsset"));
+    assert!(!reminder.contains("deleteRelease"));
+
     assert!(reminder.contains("issues: write"));
     assert!(reminder.contains("listReleases"));
     assert!(reminder.contains("schedule:"));
 
-    // Least privilege: surfacing a draft needs to read releases, never write them.
-    assert!(reminder.contains("contents: read"));
-    assert!(!reminder.contains("contents: write"));
+    // `contents: write` is load-bearing: GitHub returns draft releases only to
+    // callers with push access, so a read-only token lists zero drafts and this
+    // workflow degrades to a silent no-op. It shipped that way in #350 and did
+    // nothing. The scope buys visibility; the assertions above are what keep it
+    // from being used to publish.
+    assert!(
+        reminder.contains("contents: write"),
+        "read-only token cannot see drafts; the reminder would silently do nothing"
+    );
 }
 
 #[test]
