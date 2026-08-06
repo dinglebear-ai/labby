@@ -129,8 +129,29 @@ cross-referencing comments.
 A completed MCP result with `isError: true` proves the upstream protocol
 connection worked. Such results are enriched for the model
 (`tool_execution` origin) but **never** count toward the upstream circuit
-breaker or health state. Only the absence of a completed result — a transport
-failure — records a breaker failure.
+breaker or health state. The same holds for a valid JSON-RPC/MCP `ErrorData`
+rejection (`CapabilityCallError::Mcp`): a well-formed protocol error proves the
+peer is reachable, so the pool records a breaker **success** for it. Only a
+transport-class failure — no completed result and no valid MCP error — records
+a breaker failure.
+
+**The upstream pool owns health accounting.** `timed_capability_call`
+(`crates/labby-gateway/src/upstream/pool/capability_call.rs`) and
+`call_tool_relayed` (`.../pool/relay.rs`) record success/failure for every call
+that reaches an upstream. Surfaces layered above them — notably the MCP
+upstream proxy in `crates/labby/src/mcp/call_tool_upstream.rs` — must **not**
+call `record_failure`/`record_success` for those outcomes: recording again
+double-counts transport failures (halving the effective
+`CIRCUIT_BREAKER_THRESHOLD`) and flaps a healthy upstream toward `Unhealthy` on
+a caller mistake. The one exception is the pooled not-connected (`None`) arm,
+where `acquire_peer` only logs and records nothing.
+
+`CapabilityCallError` is also the kind-fidelity carrier: Code Mode and the MCP
+proxy both classify a `Mcp` rejection through
+`labby_gateway::upstream::tool_error::mcp_error_data_kind`, so an upstream
+`invalid_params` surfaces as `invalid_param` on both surfaces rather than a
+generic `upstream_error`. Transport-shaped classes keep the string classifier
+so the `oauth_needs_reauth` refinement below is preserved.
 
 ## HTTP Mapping
 
