@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.4.0">
+  <!ENTITY version      "1.4.1">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -41,7 +41,7 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "a4852e705017f65505cc9069d870c695">
   <!ENTITY cfgMD5       "54ab819145fa4b327f2a763f718da04a">
-  <!ENTITY pageMD5      "e3422a644b52951cccee9b442868fd1b">
+  <!ENTITY pageMD5      "4740fe052993e2de5786fe7b717457f5">
   <!ENTITY dashboardMD5 "5ab4389ef0dd5743c5d295d07076ed26">
   <!ENTITY dashboardStatusMD5 "cc67612bc2e68d36dbfa991ffdbca8f9">
   <!ENTITY rcMD5        "6aabfdaf80dbcaadf72a6d47d85916e6">
@@ -74,6 +74,24 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="labby.png" support="&repoURL;/issues" min="7.0.0">
 
 <CHANGES>
+###1.4.1
+- Settings > Labby no longer stacks two headers. Unraid renders a native
+  page-title bar (the gray "Labby" strip) for any page with a Title, but
+  this plugin draws its own full header directly below the webGUI nav, so
+  the native bar was a redundant second header. It is now hidden via the
+  page's own scoped CSS; the Title still drives the Tools-menu label and
+  browser tab.
+- Fixes the page layout so it fills cleanly with no stray scrollbars. The
+  old `margin:-20px` breakout overshot Unraid's content padding and caused
+  a horizontal scrollbar, and a viewport-relative `min-height` forced the
+  page taller than its content. Both are replaced by zeroing the content
+  padding (so the page fills edge to edge without a negative-margin
+  overhang) and giving the page background to `html`, so the light
+  backdrop reaches the bottom with no white gap and no forced scrolling.
+  Verified on real hardware (tower, Unraid 7.3.2) by rendering the page
+  through Unraid's own Markdown/template pipeline and measuring scroll
+  extents in a headless browser.
+
 ###1.4.0
 - Bundles labby v1.8.9 (previously v1.3.0), the latest published release
   with a verified lab-x86_64-unknown-linux-gnu.tar.gz asset. Same glibc

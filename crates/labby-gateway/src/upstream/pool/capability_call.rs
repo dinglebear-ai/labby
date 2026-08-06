@@ -28,11 +28,14 @@ use super::usage_record::record_usage_call;
 /// Structured failure from an upstream capability call.
 ///
 /// Most gateway surfaces preserve their historical string errors by calling
-/// `to_string()`. Code Mode consumes this typed form so JSON-RPC/MCP error
-/// codes survive the pool boundary instead of collapsing into
-/// `upstream_error`.
+/// `to_string()`. Code Mode and the MCP upstream proxy
+/// (`crates/labby/src/mcp/call_tool_upstream.rs`) consume this typed form so
+/// JSON-RPC/MCP error codes survive the pool boundary instead of collapsing
+/// into `upstream_error` — and so callers can tell "the upstream rejected the
+/// request over a healthy connection" (`Mcp`) apart from transport-class
+/// failures the pool already recorded against the circuit breaker.
 #[derive(Debug)]
-pub(crate) enum CapabilityCallError {
+pub enum CapabilityCallError {
     Mcp {
         data: rmcp::model::ErrorData,
         message: String,

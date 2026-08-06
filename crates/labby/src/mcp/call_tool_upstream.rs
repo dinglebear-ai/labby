@@ -8,18 +8,30 @@
 //! the fallback must stay inside this method (do not signal "didn't match"
 //! via `Option`).
 //!
-//! Seam contract (Revision 2 finding #1): side effects preserved
-//! byte-identically — `record_failure` ×3, `record_success` ×1,
-//! `notify_catalog_changes` ×3 (raw arms only), `emit_dispatch_notification`
-//! at the resolution-fail, three raw arms, two subject-scoped arms, and the
-//! fallback. The subject-scoped branch intentionally has NO `record_*`.
+//! Health-accounting contract (bead `lab-ak0mh`): **the pool owns upstream
+//! health accounting for every call that reaches an upstream.** Both pooled
+//! paths (`call_tool_once_classified` / `subject_scoped_call_tool_once_classified`
+//! via `timed_capability_call`) and the relay path (`call_tool_relayed`,
+//! including `acquire_or_connect_relay` connect failures) record circuit-breaker
+//! success/failure themselves — success for completed results AND for valid
+//! JSON-RPC/MCP application errors (`CapabilityCallError::Mcp`, which prove the
+//! connection is alive), failure for transport-class errors. This file must not
+//! record on those outcomes: doing so double-counted transport failures
+//! (halving the effective `CIRCUIT_BREAKER_THRESHOLD`) and flapped healthy
+//! upstreams toward `Unhealthy` on caller mistakes. The ONE proxy-level record
+//! left is the pooled `None` (not-connected) arm, because `acquire_peer` only
+//! logs and records nothing.
 //!
-//! `normalize_upstream_result` lives in `upstream.rs` (Revision 2 / #2).
-//! No behavior change.
+//! Other side effects: `notify_catalog_changes` ×3 (raw arms only),
+//! `emit_dispatch_notification` at the resolution-fail, three raw arms, two
+//! subject-scoped arms, and the fallback.
+//!
+//! `normalize_upstream_result` lives in `upstream.rs`.
 
 use std::time::Instant;
 
-use labby_gateway::upstream::tool_error::safety_hints_from_annotations;
+use labby_gateway::upstream::pool::CapabilityCallError;
+use labby_gateway::upstream::tool_error::{mcp_error_data_kind, safety_hints_from_annotations};
 use labby_runtime::agent_error::sanitize_error_text;
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
 use rmcp::ErrorData;
@@ -167,6 +179,133 @@ fn upstream_transport_error_envelope(
     (envelope, kind)
 }
 
+/// A failed upstream tool call, keeping the failure class when the pooled
+/// path produced one.
+///
+/// The relay path (`call_tool_relayed`) is intentionally string-preserving, so
+/// its errors keep flowing through the string classifier
+/// (`upstream_transport_error_envelope`); the pooled paths surface the typed
+/// [`CapabilityCallError`] so kind fidelity survives the pool boundary.
+/// Either way the pool has already done all circuit-breaker recording for the
+/// call — see the module docs.
+///
+/// The classified error is boxed to keep the `Result` error arm small
+/// (`clippy::result_large_err` — `CapabilityCallError::Mcp` carries a full
+/// `ErrorData`).
+enum UpstreamCallFailure {
+    Classified(Box<CapabilityCallError>),
+    Relayed(String),
+}
+
+impl UpstreamCallFailure {
+    fn classified(error: CapabilityCallError) -> Self {
+        Self::Classified(Box::new(error))
+    }
+}
+
+fn upstream_call_failure_envelope(
+    service: &str,
+    action: &str,
+    upstream_name: &str,
+    failure: &UpstreamCallFailure,
+) -> (serde_json::Value, &'static str) {
+    match failure {
+        UpstreamCallFailure::Relayed(raw) => {
+            upstream_transport_error_envelope(service, action, upstream_name, raw)
+        }
+        UpstreamCallFailure::Classified(error) => {
+            upstream_classified_error_envelope(service, action, upstream_name, error)
+        }
+    }
+}
+
+/// Envelope for a typed [`CapabilityCallError`] from the pooled call path.
+///
+/// `Mcp` is an application-level rejection carried over a healthy connection:
+/// it surfaces with the shared `ErrorData`-derived stable kind
+/// (`mcp_error_data_kind`, same vocabulary as Code Mode) instead of the
+/// generic `upstream_error`. Timeout/queue/cap/cancel classes surface their
+/// own stable kinds (`docs/dev/ERRORS.md`). Transport-shaped classes keep the
+/// string classifier so the `oauth_needs_reauth` refinement (and its
+/// `gateway.oauth.start` recovery guidance) is preserved.
+fn upstream_classified_error_envelope(
+    service: &str,
+    action: &str,
+    upstream_name: &str,
+    error: &CapabilityCallError,
+) -> (serde_json::Value, &'static str) {
+    let tool = qualified_upstream_tool(upstream_name, service);
+    let (kind, message, cause) = match error {
+        CapabilityCallError::Mcp { data, .. } => {
+            let kind = mcp_error_data_kind(data);
+            let mut cause = sanitize_error_text(&data.message, 4096);
+            if kind == "upstream_error" {
+                // Keep the numeric JSON-RPC code visible when the class
+                // collapses to the generic kind, mirroring Code Mode.
+                cause = format!("{cause} (JSON-RPC code {})", data.code.0);
+            }
+            let message = format!(
+                "Tool `{tool}` was rejected by upstream `{upstream_name}` with an MCP `{kind}` error. The upstream connection is healthy — use the cause to decide whether to revise the request before retrying."
+            );
+            (kind, message, cause)
+        }
+        CapabilityCallError::Timeout { message } => (
+            "timeout",
+            format!(
+                "Tool `{tool}` did not return a completed MCP result because the call to upstream `{upstream_name}` timed out. Verify whether the previous call may have committed partial effects before retrying."
+            ),
+            sanitize_error_text(message, 4096),
+        ),
+        CapabilityCallError::QueueSaturated { message } => (
+            "queue_saturated",
+            format!(
+                "Tool `{tool}` was not sent because the gateway's concurrency queue for upstream `{upstream_name}` is saturated. The upstream was not called; retry later with the same arguments."
+            ),
+            sanitize_error_text(message, 4096),
+        ),
+        CapabilityCallError::ResponseTooLarge { message } => (
+            "response_too_large",
+            format!(
+                "Tool `{tool}` completed on upstream `{upstream_name}` but the response exceeded the gateway's response-size cap and was not forwarded. Reduce the requested output size before retrying."
+            ),
+            sanitize_error_text(message, 4096),
+        ),
+        CapabilityCallError::Cancelled { message } => (
+            "cancelled",
+            format!(
+                "Tool `{tool}` on upstream `{upstream_name}` was cancelled before completing. Do not retry automatically; verify whether partial effects occurred."
+            ),
+            sanitize_error_text(message, 4096),
+        ),
+        CapabilityCallError::InputRequiredRoundsExceeded { message } => (
+            "confirmation_required",
+            format!(
+                "Tool `{tool}` on upstream `{upstream_name}` kept requiring interactive input past the round cap. Complete the required confirmation before retrying."
+            ),
+            sanitize_error_text(message, 4096),
+        ),
+        // Transport/protocol/unknown failures: preserve the historical string
+        // classification (including the oauth_needs_reauth refinement).
+        CapabilityCallError::Transport { message }
+        | CapabilityCallError::Protocol { message }
+        | CapabilityCallError::Other { message } => {
+            return upstream_transport_error_envelope(service, action, upstream_name, message);
+        }
+    };
+    let envelope = build_error_extra(
+        service,
+        action,
+        kind,
+        &message,
+        &serde_json::json!({
+            "tool": tool,
+            "upstream": upstream_name,
+            "cause": cause,
+        }),
+    );
+    (envelope, kind)
+}
+
 impl LabMcpServer {
     /// Upstream-proxy tail. Reached by fall-through from `call_tool_impl`
     /// when `svc.is_none()`. Owns raw + subject-scoped proxy branches and
@@ -299,45 +438,54 @@ impl LabMcpServer {
             } else {
                 None
             };
-            // When relaying, `call_tool_relayed`/`acquire_or_connect_relay` own
-            // all circuit-breaker recording for this call (success, call failure,
-            // AND connect failure). The pooled `call_tool` path does NOT record a
-            // connect failure itself (`acquire_peer` only logs), so the `None`
-            // arm below records it — but only for the pooled path, else a relayed
-            // connect failure would be counted twice.
+            // Both call paths own ALL circuit-breaker recording for this call:
+            // `call_tool_relayed`/`acquire_or_connect_relay` for the relay path
+            // (success, call failure, AND connect failure), and
+            // `call_tool_once_classified` (via `timed_capability_call`) for the
+            // pooled path. The pooled path does NOT record a connect failure
+            // itself (`acquire_peer` only logs), so the `None` arm below records
+            // it — but only for the pooled path, else a relayed connect failure
+            // would be counted twice.
             let used_relay = relay_config.is_some();
-            let call_outcome = match (relay_config, relay_capabilities) {
-                (Some(config), Some(capabilities)) => {
-                    tracing::debug!(
-                        surface = "mcp",
-                        service,
-                        action = upstream_action,
-                        tool = %service,
-                        upstream = %upstream_name,
-                        route = "relayed",
-                        "proxying to upstream over relayed dedicated connection"
-                    );
-                    pool.call_tool_relayed(
-                        &config,
-                        None,
-                        upstream_params,
-                        context.peer.clone(),
-                        context.id.clone(),
-                        relay_cancellation_token(context),
-                        self.relay_session_id,
-                        capabilities,
-                        self.request_subject(context),
-                    )
-                    .await
-                }
-                _ => pool.call_tool_once(&upstream_name, upstream_params).await,
-            };
+            let call_outcome: Option<Result<CallToolResponse, UpstreamCallFailure>> =
+                match (relay_config, relay_capabilities) {
+                    (Some(config), Some(capabilities)) => {
+                        tracing::debug!(
+                            surface = "mcp",
+                            service,
+                            action = upstream_action,
+                            tool = %service,
+                            upstream = %upstream_name,
+                            route = "relayed",
+                            "proxying to upstream over relayed dedicated connection"
+                        );
+                        pool.call_tool_relayed(
+                            &config,
+                            None,
+                            upstream_params,
+                            context.peer.clone(),
+                            context.id.clone(),
+                            relay_cancellation_token(context),
+                            self.relay_session_id,
+                            capabilities,
+                            self.request_subject(context),
+                        )
+                        .await
+                        .map(|result| result.map_err(UpstreamCallFailure::Relayed))
+                    }
+                    _ => pool
+                        .call_tool_once_classified(&upstream_name, upstream_params)
+                        .await
+                        .map(|result| result.map_err(UpstreamCallFailure::classified)),
+                };
 
             match call_outcome {
                 Some(Ok(result)) => {
+                    // The pool already recorded circuit-breaker success for
+                    // every completed outcome on both call paths — no proxy-
+                    // level `record_success` here.
                     let CallToolResponse::Complete(result) = result else {
                         let elapsed_ms = start.elapsed().as_millis();
-                        pool.record_success(&upstream_name).await;
                         tracing::info!(
                             surface = "mcp",
                             service,
@@ -352,60 +500,36 @@ impl LabMcpServer {
                         return Ok(result);
                     };
                     let elapsed_ms = start.elapsed().as_millis();
-                    let (result, kind, counts_as_failure) = normalize_upstream_result(
+                    let (result, kind) = normalize_upstream_result(
                         service,
                         upstream_action,
                         &upstream_name,
                         result,
                         &safety,
                     );
-                    let outcome = if counts_as_failure || kind != "ok" {
+                    // A completed `isError: true` result is a tool-execution
+                    // failure for the model, never a health failure.
+                    let outcome = if kind == "ok" {
+                        DispatchLogOutcome::Success
+                    } else {
                         DispatchLogOutcome::Failure {
-                            level: if counts_as_failure {
-                                LoggingLevel::Error
-                            } else {
-                                LoggingLevel::Warning
-                            },
+                            level: LoggingLevel::Warning,
                             kind,
                         }
-                    } else {
-                        DispatchLogOutcome::Success
                     };
-                    if counts_as_failure {
-                        pool.record_failure(
-                            &upstream_name,
-                            format!("upstream `{upstream_name}` returned `{kind}`"),
-                        )
-                        .await;
-                        tracing::warn!(
-                            surface = "mcp",
-                            service,
-                            action = upstream_action,
-                            tool = %service,
-                            upstream = %upstream_name,
-                            capability = upstream_capability,
-                            operation = upstream_operation,
-                            subject_scoped = false,
-                            elapsed_ms,
-                            kind,
-                            "upstream proxy failed"
-                        );
-                    } else {
-                        pool.record_success(&upstream_name).await;
-                        tracing::info!(
-                            surface = "mcp",
-                            service,
-                            action = upstream_action,
-                            subject,
-                            tool = %service,
-                            upstream = %upstream_name,
-                            capability = upstream_capability,
-                            operation = upstream_operation,
-                            subject_scoped = false,
-                            elapsed_ms,
-                            "upstream proxy ok"
-                        );
-                    }
+                    tracing::info!(
+                        surface = "mcp",
+                        service,
+                        action = upstream_action,
+                        subject,
+                        tool = %service,
+                        upstream = %upstream_name,
+                        capability = upstream_capability,
+                        operation = upstream_operation,
+                        subject_scoped = false,
+                        elapsed_ms,
+                        "upstream proxy ok"
+                    );
                     self.emit_dispatch_notification(
                         context,
                         service,
@@ -422,8 +546,15 @@ impl LabMcpServer {
                     .await;
                     return Ok(result.into());
                 }
-                Some(Err(e)) => {
-                    pool.record_failure(&upstream_name, e.clone()).await;
+                Some(Err(failure)) => {
+                    // No proxy-level `record_failure` here: the pool owns
+                    // health accounting for both call paths. For a
+                    // `CapabilityCallError::Mcp` it recorded SUCCESS (a valid
+                    // JSON-RPC error proves the connection is alive — a caller
+                    // mistake must not flap a healthy upstream), and for
+                    // transport-class failures it already recorded the breaker
+                    // failure — recording again would double-count and halve
+                    // the effective `CIRCUIT_BREAKER_THRESHOLD`.
                     let after = self.snapshot_tool_catalog_for_request(context).await;
                     self.notify_catalog_changes(
                         after.changes_since(&before),
@@ -431,11 +562,11 @@ impl LabMcpServer {
                     )
                     .await;
                     let elapsed_ms = start.elapsed().as_millis();
-                    let (envelope, kind) = upstream_transport_error_envelope(
+                    let (envelope, kind) = upstream_call_failure_envelope(
                         service,
                         upstream_action,
                         &upstream_name,
-                        &e,
+                        &failure,
                     );
                     tracing::warn!(
                         surface = "mcp",
@@ -573,50 +704,55 @@ impl LabMcpServer {
                 // agent. The relay connect forwards `oauth_subject` so the
                 // dedicated connection authenticates as this caller.
                 let relay_capabilities = relay_capabilities_for_request(&upstream_params);
-                let call_result: Result<CallToolResponse, String> = if let Some(capabilities) =
-                    relay_capabilities
-                {
-                    tracing::debug!(
-                        surface = "mcp",
-                        service,
-                        action = upstream_action,
-                        tool = %service,
-                        upstream = %upstream_name,
-                        route = "subject_scoped_relayed",
-                        "proxying to upstream over relayed dedicated connection"
-                    );
-                    match pool
-                        .call_tool_relayed(
+                // Health accounting is owned by the callee on both paths
+                // (`call_tool_relayed` / `timed_capability_call`); this branch
+                // records nothing, as before.
+                let call_result: Result<CallToolResponse, UpstreamCallFailure> =
+                    if let Some(capabilities) = relay_capabilities {
+                        tracing::debug!(
+                            surface = "mcp",
+                            service,
+                            action = upstream_action,
+                            tool = %service,
+                            upstream = %upstream_name,
+                            route = "subject_scoped_relayed",
+                            "proxying to upstream over relayed dedicated connection"
+                        );
+                        match pool
+                            .call_tool_relayed(
+                                &config,
+                                Some(oauth_subject.as_ref()),
+                                upstream_params,
+                                context.peer.clone(),
+                                context.id.clone(),
+                                relay_cancellation_token(context),
+                                self.relay_session_id,
+                                capabilities,
+                                self.request_subject(context),
+                            )
+                            .await
+                        {
+                            Some(result) => result.map_err(UpstreamCallFailure::Relayed),
+                            None => Err(UpstreamCallFailure::Relayed(format!(
+                                "relayed upstream `{upstream_name}` connect failed"
+                            ))),
+                        }
+                    } else {
+                        pool.subject_scoped_call_tool_once_classified(
                             &config,
-                            Some(oauth_subject.as_ref()),
+                            oauth_subject.as_ref(),
                             upstream_params,
-                            context.peer.clone(),
-                            context.id.clone(),
-                            relay_cancellation_token(context),
-                            self.relay_session_id,
-                            capabilities,
-                            self.request_subject(context),
                         )
                         .await
-                    {
-                        Some(result) => result,
-                        None => Err(format!("relayed upstream `{upstream_name}` connect failed")),
-                    }
-                } else {
-                    pool.subject_scoped_call_tool_once(
-                        &config,
-                        oauth_subject.as_ref(),
-                        upstream_params,
-                    )
-                    .await
-                };
+                        .map_err(UpstreamCallFailure::classified)
+                    };
                 match call_result {
                     Ok(result) => {
                         let CallToolResponse::Complete(result) = result else {
                             return Ok(result);
                         };
                         let elapsed_ms = start.elapsed().as_millis();
-                        let (result, kind, counts_as_failure) = normalize_upstream_result(
+                        let (result, kind) = normalize_upstream_result(
                             service,
                             upstream_action,
                             &upstream_name,
@@ -626,7 +762,7 @@ impl LabMcpServer {
                         let output_tokens = serde_json::to_string(&result)
                             .map(|output| estimate_tokens(&output))
                             .unwrap_or(0);
-                        let outcome = if counts_as_failure || kind != "ok" {
+                        let outcome = if kind != "ok" {
                             tracing::warn!(
                                 surface = "mcp",
                                 service,
@@ -647,12 +783,11 @@ impl LabMcpServer {
                                 kind,
                                 "upstream dispatch error"
                             );
+                            // A completed `isError: true` result is a tool-
+                            // execution failure for the model, not an
+                            // infrastructure error.
                             DispatchLogOutcome::Failure {
-                                level: if counts_as_failure {
-                                    LoggingLevel::Error
-                                } else {
-                                    LoggingLevel::Warning
-                                },
+                                level: LoggingLevel::Warning,
                                 kind,
                             }
                         } else {
@@ -687,13 +822,13 @@ impl LabMcpServer {
                         .await;
                         return Ok(result.into());
                     }
-                    Err(e) => {
+                    Err(failure) => {
                         let elapsed_ms = start.elapsed().as_millis();
-                        let (envelope, kind) = upstream_transport_error_envelope(
+                        let (envelope, kind) = upstream_call_failure_envelope(
                             service,
                             upstream_action,
                             &upstream_name,
-                            &e,
+                            &failure,
                         );
                         tracing::warn!(
                             surface = "mcp",
@@ -765,8 +900,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        prepare_upstream_tool_request, redacted_oauth_subject_label,
-        relay_capabilities_for_request, upstream_failure_kind, upstream_transport_error_envelope,
+        CapabilityCallError, prepare_upstream_tool_request, redacted_oauth_subject_label,
+        relay_capabilities_for_request, upstream_classified_error_envelope, upstream_failure_kind,
+        upstream_transport_error_envelope,
     };
 
     fn interactive_request() -> CallToolRequestParams {
@@ -898,5 +1034,378 @@ mod tests {
 
         assert_ne!(label, raw_subject);
         assert!(!label.contains("user@example.com"));
+    }
+
+    // ── Classified envelope mapping ──────────────────────────────────────────
+
+    #[test]
+    fn classified_mcp_error_surfaces_structured_kind_not_upstream_error() {
+        let error = CapabilityCallError::Mcp {
+            data: rmcp::model::ErrorData::invalid_params(
+                "unknown field `since`, expected project, tool, limit",
+                None,
+            ),
+            message: "upstream call failed: unknown field `since`".to_string(),
+        };
+
+        let (envelope, kind) =
+            upstream_classified_error_envelope("project_context", "call_tool", "cortex", &error);
+
+        assert_eq!(kind, "invalid_param");
+        let error = &envelope["error"];
+        assert_eq!(error["kind"], "invalid_param");
+        assert_eq!(error["tool"], "cortex::project_context");
+        assert_eq!(error["upstream"], "cortex");
+        assert!(
+            error["cause"]
+                .as_str()
+                .expect("cause preserved")
+                .contains("unknown field `since`")
+        );
+    }
+
+    #[test]
+    fn classified_timeout_maps_to_timeout_kind() {
+        let error = CapabilityCallError::Timeout {
+            message: "upstream call timed out after 30000ms".to_string(),
+        };
+
+        let (envelope, kind) =
+            upstream_classified_error_envelope("slow_tool", "call_tool", "slowstream", &error);
+
+        assert_eq!(kind, "timeout");
+        assert_eq!(envelope["error"]["kind"], "timeout");
+        assert!(
+            envelope["error"]["cause"]
+                .as_str()
+                .expect("cause preserved")
+                .contains("timed out")
+        );
+    }
+
+    #[test]
+    fn classified_transport_error_keeps_oauth_refinement() {
+        let error = CapabilityCallError::Transport {
+            message: "http 401 unauthorized".to_string(),
+        };
+
+        let (_envelope, kind) =
+            upstream_classified_error_envelope("create_issue", "call_tool", "github", &error);
+
+        assert_eq!(kind, "oauth_needs_reauth");
+    }
+
+    // ── Proxy-path health accounting (bead lab-ak0mh) ────────────────────────
+    //
+    // These drive the REAL `call_tool_upstream_impl` proxy tail over an
+    // in-process upstream wired through the pool's registration seam, then
+    // read the pool's circuit-breaker state back out.
+
+    mod proxy_health {
+        use std::pin::Pin;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        use futures::future::BoxFuture;
+        use rmcp::model::{
+            CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, NumberOrString,
+            ServerCapabilities, ServerInfo, Tool,
+        };
+        use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
+        use serde_json::Value;
+
+        use crate::dispatch::upstream::pool::{
+            InProcessConnector, InProcessRegistration, UpstreamConnection, UpstreamPool,
+        };
+        use crate::dispatch::upstream::types::{
+            UpstreamHealth, UpstreamRuntimeMetadata, UpstreamTool,
+        };
+        use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
+        use crate::mcp::server::LabMcpServer;
+
+        const UPSTREAM_NAME: &str = "probe-upstream";
+        const TOOL_NAME: &str = "probe_tool";
+
+        /// Upstream whose tool call is rejected with a valid JSON-RPC error —
+        /// a caller mistake carried over a healthy connection.
+        struct McpRejectingServer;
+        impl ServerHandler for McpRejectingServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                Err(ErrorData::invalid_params(
+                    "unknown field `since`, expected project, tool, limit",
+                    None,
+                ))
+            }
+        }
+
+        /// Upstream whose tool call never completes — a genuine transport-class
+        /// failure (timeout) that the pool records against the breaker.
+        struct StallingServer;
+        impl ServerHandler for StallingServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                Ok(CallToolResult::success(vec![]).into())
+            }
+        }
+
+        async fn in_process_connection<S>(server: S) -> UpstreamConnection
+        where
+            S: ServerHandler + Send + 'static,
+        {
+            let (server_transport, client_transport) = tokio::io::duplex(4 * 1024 * 1024);
+            let server_task = tokio::spawn(async move {
+                let running = server
+                    .serve(server_transport)
+                    .await
+                    .expect("in-process upstream server starts");
+                running.waiting().await.ok();
+            });
+            let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+                .serve(client_transport)
+                .await
+                .expect("in-process upstream client starts");
+            let peer = client_service.peer().clone();
+            UpstreamConnection::new(
+                client_service,
+                Some(server_task),
+                peer,
+                UpstreamRuntimeMetadata::default(),
+            )
+        }
+
+        fn noop_dispatch(
+            _action: String,
+            _params: Value,
+        ) -> Pin<Box<dyn Future<Output = Result<Value, crate::dispatch::error::ToolError>> + Send>>
+        {
+            Box::pin(async { Ok(Value::Null) })
+        }
+
+        /// A one-service registry that only exists to drive the pool's
+        /// in-process registration seam (the sole public way to seed catalog
+        /// entry + live connection together from this crate).
+        fn seam_registry() -> crate::registry::ToolRegistry {
+            static ACTIONS: &[labby_primitives::action::ActionSpec] =
+                &[labby_primitives::action::ActionSpec {
+                    name: "probe.call",
+                    description: "Probe tool",
+                    destructive: false,
+                    requires_admin: false,
+                    params: &[],
+                    returns: "object",
+                }];
+            let mut registry = crate::registry::ToolRegistry::new();
+            registry.register(crate::registry::RegisteredService {
+                name: "probe_seed",
+                description: "Registration seam seed",
+                category: "test",
+                kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+                status: "available",
+                actions: ACTIONS,
+                dispatch: noop_dispatch,
+            });
+            registry
+        }
+
+        async fn pool_with_upstream(
+            connection: UpstreamConnection,
+            request_timeout: Option<Duration>,
+        ) -> Arc<UpstreamPool> {
+            let slot = Arc::new(std::sync::Mutex::new(Some(connection)));
+            let connector: InProcessConnector = Arc::new(move |_service| {
+                let slot = Arc::clone(&slot);
+                let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                    Box::pin(async move {
+                        let connection = slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        let entry_name: Arc<str> = Arc::from(UPSTREAM_NAME);
+                        Ok(InProcessRegistration {
+                            connection,
+                            tools: vec![Tool::new(
+                                TOOL_NAME,
+                                "Probe tool",
+                                Arc::new(serde_json::Map::new()),
+                            )],
+                            entry_name,
+                            upstream_name: UPSTREAM_NAME.to_string(),
+                        })
+                    });
+                future
+            });
+            let mut pool = UpstreamPool::new().with_in_process_connector(connector);
+            if let Some(timeout) = request_timeout {
+                pool = pool.with_request_timeout(timeout);
+            }
+            let pool = Arc::new(pool);
+            pool.register_in_process_service_peers(&seam_registry())
+                .await;
+            pool
+        }
+
+        /// A `LabMcpServer` whose gateway manager holds `pool` and an EMPTY
+        /// upstream config — so the raw proxy branch resolves via the
+        /// pre-resolved tool and takes the pooled (non-relay) call path.
+        async fn proxy_test_server(pool: Arc<UpstreamPool>) -> LabMcpServer {
+            let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+            runtime.swap(Some(pool)).await;
+            let manager = Arc::new(
+                crate::dispatch::gateway::config_store::test_gateway_manager(
+                    std::path::PathBuf::from("config.toml"),
+                    runtime,
+                ),
+            );
+            manager
+                .seed_config_unchecked_for_tests(
+                    crate::config::LabConfig::default().to_gateway_config(),
+                )
+                .await;
+            LabMcpServer {
+                registry: Arc::new(crate::registry::ToolRegistry::new()),
+                gateway_manager: Some(manager),
+                peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+                code_mode_app_state: Default::default(),
+                client_registry: Default::default(),
+                transport_label: "test",
+                logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
+                    crate::mcp::logging::logging_level_rank(
+                        crate::mcp::logging::LoggingLevel::Emergency,
+                    ),
+                )),
+                route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+                relay_session_id: 0,
+                code_mode_widget_callbacks_enabled_for_test: false,
+            }
+        }
+
+        /// Drive the real upstream-proxy tail and return the completed error
+        /// envelope (`structured_content`).
+        async fn call_through_proxy(server: LabMcpServer) -> Value {
+            let resolved = PreResolvedUpstreamTool {
+                upstream_name: UPSTREAM_NAME.to_string(),
+                tool: UpstreamTool {
+                    tool: Tool::new(TOOL_NAME, "Probe tool", Arc::new(serde_json::Map::new())),
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name: Arc::from(UPSTREAM_NAME),
+                    destructive: false,
+                },
+                route: "upstream",
+            };
+            let (transport, _client_half) = tokio::io::duplex(4 * 1024 * 1024);
+            let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+                server, transport, None,
+            );
+            let context = rmcp::service::RequestContext::new(
+                NumberOrString::String(Arc::from("proxy-health-test")),
+                running.peer().clone(),
+            );
+            let response = running
+                .service()
+                .call_tool_upstream_impl(
+                    TOOL_NAME,
+                    "call_tool",
+                    CallToolRequestParams::new(TOOL_NAME),
+                    Some(resolved),
+                    Instant::now(),
+                    "test-subject",
+                    None,
+                    &context,
+                )
+                .await
+                .expect("proxy tail returns a result envelope");
+            let CallToolResponse::Complete(result) = response else {
+                panic!("expected a completed result from the proxy tail");
+            };
+            assert_eq!(result.is_error, Some(true));
+            result
+                .structured_content
+                .expect("error envelope in structured_content")
+        }
+
+        /// (a) A valid MCP application error through the proxy must leave the
+        /// upstream routable with no last-error — the pool recorded SUCCESS
+        /// and the proxy must not record a failure on top (no false
+        /// disconnect). The envelope carries the structured `invalid_param`
+        /// kind instead of a generic `upstream_error`.
+        #[tokio::test]
+        async fn proxy_mcp_app_error_leaves_upstream_health_untouched() {
+            let pool =
+                pool_with_upstream(in_process_connection(McpRejectingServer).await, None).await;
+            let server = proxy_test_server(Arc::clone(&pool)).await;
+
+            let envelope = call_through_proxy(server).await;
+
+            assert_eq!(envelope["error"]["kind"], "invalid_param");
+            assert!(
+                envelope["error"]["cause"]
+                    .as_str()
+                    .expect("cause preserved")
+                    .contains("unknown field `since`")
+            );
+            assert_eq!(
+                pool.upstream_tool_last_error(UPSTREAM_NAME).await,
+                None,
+                "proxy must not set upstream_tool_last_error for a valid MCP error"
+            );
+            assert!(
+                matches!(
+                    pool.upstream_tool_health(UPSTREAM_NAME).await,
+                    Some(UpstreamHealth::Healthy)
+                ),
+                "valid MCP error response must leave the upstream Healthy"
+            );
+        }
+
+        /// (b) A genuine transport failure (timeout) is recorded EXACTLY once
+        /// — by the pool. Before the fix the proxy recorded a second failure
+        /// on top (`consecutive_failures: 2`), halving the effective
+        /// `CIRCUIT_BREAKER_THRESHOLD`.
+        #[tokio::test]
+        async fn proxy_transport_timeout_records_failure_exactly_once() {
+            let pool = pool_with_upstream(
+                in_process_connection(StallingServer).await,
+                Some(Duration::from_millis(100)),
+            )
+            .await;
+            let server = proxy_test_server(Arc::clone(&pool)).await;
+
+            let envelope = call_through_proxy(server).await;
+
+            assert_eq!(envelope["error"]["kind"], "timeout");
+            assert!(
+                matches!(
+                    pool.upstream_tool_health(UPSTREAM_NAME).await,
+                    Some(UpstreamHealth::Unhealthy {
+                        consecutive_failures: 1
+                    })
+                ),
+                "one transport failure must be recorded exactly once, got {:?}",
+                pool.upstream_tool_health(UPSTREAM_NAME).await
+            );
+            assert!(
+                pool.upstream_tool_last_error(UPSTREAM_NAME)
+                    .await
+                    .expect("pool records the timeout as last error")
+                    .contains("timed out")
+            );
+        }
     }
 }
