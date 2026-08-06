@@ -425,6 +425,15 @@ impl CodeModeExecutionError {
     pub fn into_tool_error(self) -> ToolError {
         self.error.into_tool_error()
     }
+
+    /// Contract-preserving collapse: keeps the inner [`CodeModeCallError`]'s
+    /// refined metadata and evidence via `ToolError::Contract`. The executed
+    /// `calls` trace stays dispatch-internal (it is not part of the error
+    /// contract) — read it via [`Self::calls`] before converting when needed.
+    #[must_use]
+    pub fn into_contract_tool_error(self) -> ToolError {
+        self.error.into_contract_tool_error()
+    }
 }
 
 impl std::fmt::Display for CodeModeExecutionError {

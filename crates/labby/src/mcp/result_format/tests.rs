@@ -286,3 +286,48 @@ fn tool_error_envelope_preserves_structured_extras() {
         Some(&Value::from("query"))
     );
 }
+
+#[cfg(feature = "gateway")]
+#[test]
+fn tool_error_envelope_preserves_contract_variant_metadata() {
+    use labby_codemode::{
+        CodeModeCallError, CodeModeErrorEvidence, CodeModeErrorOrigin, CodeModeToolSafetyHints,
+    };
+
+    // The snippets.run dispatch path collapses a CodeModeCallError into
+    // `ToolError::Contract`; the generic product envelope builder must render
+    // the refined metadata (not a kind-recomputed downgrade) plus evidence.
+    let error = CodeModeCallError::tool_execution(
+        "alpha::demo",
+        "rate_limited",
+        Some("429".to_string()),
+        "slow down",
+        CodeModeErrorEvidence {
+            content: vec![serde_json::json!({"type":"text","text":"slow down"})],
+            ..CodeModeErrorEvidence::default()
+        },
+        CodeModeToolSafetyHints {
+            read_only_hint: Some(true),
+            ..CodeModeToolSafetyHints::default()
+        },
+        Some(1500),
+    );
+    assert_eq!(error.origin, CodeModeErrorOrigin::ToolExecution);
+    let err = error.into_contract_tool_error();
+
+    let envelope = tool_error_envelope("snippets", "snippets.run", &err);
+
+    assert_eq!(envelope["service"], "snippets");
+    assert_eq!(envelope["action"], "snippets.run");
+    assert_eq!(envelope["error"]["kind"], "rate_limited");
+    assert_eq!(envelope["error"]["origin"], "tool_execution");
+    assert_eq!(envelope["error"]["side_effects"], "none_expected");
+    assert_eq!(envelope["error"]["recovery"]["retry_after_ms"], 1500);
+    assert_eq!(envelope["error"]["safety"]["read_only_hint"], true);
+    assert_eq!(envelope["error"]["tool"], "alpha::demo");
+    assert_eq!(envelope["error"]["original_kind"], "429");
+    assert_eq!(
+        envelope["error"]["evidence"]["content"][0]["text"],
+        "slow down"
+    );
+}

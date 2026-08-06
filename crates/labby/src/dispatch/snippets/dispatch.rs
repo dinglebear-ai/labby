@@ -327,7 +327,14 @@ async fn execute_snippet_outcome(
             None,
         )
         .await
-        .map_err(|error| error.into_tool_error())?;
+        // Contract-preserving path: `into_tool_error` collapses to bare
+        // kind + message, losing evidence/safety/original_kind and the refined
+        // recovery metadata. `into_contract_tool_error` carries the full
+        // CodeModeCallError contract through the dispatch ToolError so MCP,
+        // HTTP, and CLI envelopes render the same fidelity as the direct Code
+        // Mode MCP path (`code_mode_error_envelope`). The executed-calls trace
+        // remains dispatch-internal and is intentionally not serialized here.
+        .map_err(labby_codemode::CodeModeExecutionError::into_contract_tool_error)?;
     Ok(SnippetExecutionOutcome {
         raw_response: outcome.raw_response,
         display_response: outcome.display_response,

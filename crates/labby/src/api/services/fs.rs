@@ -90,7 +90,7 @@ async fn handle_list(
         Ok(_) => log_ok("fs.list", elapsed_ms, None, None, None),
         Err(err) => log_err("fs.list", elapsed_ms, err, None),
     }
-    result.map(Json).map_err(ApiError)
+    result.map(Json).map_err(ApiError::new)
 }
 
 /// `GET /v1/fs/preview` handler.

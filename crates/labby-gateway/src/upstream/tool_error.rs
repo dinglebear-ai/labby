@@ -1,11 +1,11 @@
 //! Analysis and model-facing enrichment for completed MCP tool failures.
 
-use labby_codemode::redact_trace_value;
 use labby_runtime::agent_error::{
     AgentErrorContext, AgentErrorOrigin, AgentSideEffectRisk, build_agent_error_value,
     metadata_for_kind_with_retry_safety, retry_after_ms_from_object, sanitize_error_text,
     tool_execution_message,
 };
+use labby_runtime::redact::redact_trace_value;
 use rmcp::model::{CallToolResult, ContentBlock, MetaObject, ToolAnnotations};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};

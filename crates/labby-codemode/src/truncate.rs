@@ -65,22 +65,19 @@ pub(crate) fn truncate_execution_response(
         let original = std::mem::take(&mut response.logs);
         let total = original.len();
 
-        // Binary-search for the drop point: find the smallest `start` index
-        // such that the response (with original[start..] as logs) is within
-        // budget. This reduces the worst-case serialization work from O(n²)
-        // to O(n log n) — for a 1 000-line log only ~10 budget checks instead
-        // of up to 1 000.
+        // Compute the drop point in a single pass: serialize the log-free base
+        // response ONCE, precompute each line's serialized JSON length, then
+        // walk candidate drop counts arithmetically. This replaces the earlier
+        // binary search, which cloned and fully re-serialized the response per
+        // probe (O(S log n) serialization work); the arithmetic scan does O(S)
+        // serialization total and picks the same cut byte-for-byte.
         //
-        // `start = 0` means keep all lines (we already know that's over budget).
-        // `start = total` means drop everything (sentinel-only); that is the
-        // fallback when even a single log line is too large.
-        //
-        // The predicate is monotone: once the response fits with `start` lines
-        // dropped it also fits with more dropped.
-        let drop_count = binary_search_drop_count(
+        // `drop_count = 0` means keep all lines (we already know that's over
+        // budget). `drop_count = total` means drop everything (sentinel-only);
+        // that is the fallback when even a single log line is too large.
+        let drop_count = logs_drop_count(
             &original,
             &response,
-            total,
             max_response_bytes,
             max_response_tokens,
             token_estimate_divisor,
@@ -100,53 +97,73 @@ pub(crate) fn truncate_execution_response(
     response
 }
 
-/// Binary-search for the minimum number of oldest log lines to drop so that
-/// the overall response fits within the byte/token budget.
+/// Compute the minimum number of oldest log lines to drop so that the overall
+/// response fits within the byte/token budget.
+///
+/// `response` must already have its `logs` emptied (the caller `take`s them
+/// into `original`). Contract: the returned drop count is the smallest `k`
+/// such that the response serialized with `original[k..]` as `logs` satisfies
+/// [`response_within_budget`] — identical to serializing each candidate, but
+/// derived arithmetically: `logs` is a mandatory `Vec<String>` field, so a
+/// response with `k` kept lines serializes to exactly
+/// `base_len + Σ len(line_i) + (k - 1)` bytes (`base_len` = the empty-logs
+/// serialization, `len` = the line's serialized JSON string length, `k - 1`
+/// commas; zero extra bytes when `k = 0`).
 ///
 /// Returns the drop count (0 = drop nothing, `total` = drop everything).
 /// The caller is responsible for prepending a sentinel when `drop_count > 0`.
-fn binary_search_drop_count(
+fn logs_drop_count(
     original: &[String],
     response: &CodeModeExecutionResponse,
-    total: usize,
     max_response_bytes: usize,
     max_response_tokens: usize,
     token_estimate_divisor: u32,
 ) -> usize {
-    // Fast path: dropping everything still over budget → return total.
-    let fits_with_all_dropped = {
-        let mut probe = response.clone();
-        probe.logs = Vec::new();
-        response_within_budget(
-            &probe,
-            max_response_bytes,
-            max_response_tokens,
-            token_estimate_divisor,
-        )
+    let total = original.len();
+    // Serialize the log-free base once. A serialization failure mirrors
+    // `response_within_budget`'s treat-as-over-budget behavior → drop all.
+    let Ok(base) = serde_json::to_vec(response) else {
+        return total;
     };
-    if !fits_with_all_dropped {
+    let base_len = base.len();
+
+    let fits = |len: usize| {
+        len <= max_response_bytes
+            && estimated_tokens(len, token_estimate_divisor) <= max_response_tokens.max(1)
+    };
+
+    // Fast path: dropping everything still over budget → return total.
+    if !fits(base_len) {
         return total;
     }
 
-    // Binary search: lo = 0 (known over-budget), hi = total (known fits).
-    let mut lo = 0usize;
-    let mut hi = total;
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        let mut probe = response.clone();
-        probe.logs = original[mid..].to_vec();
-        if response_within_budget(
-            &probe,
-            max_response_bytes,
-            max_response_tokens,
-            token_estimate_divisor,
-        ) {
-            hi = mid;
-        } else {
-            lo = mid + 1;
+    // Per-line serialized lengths (quotes + JSON escapes included), summed once.
+    let line_lens: Vec<usize> = original
+        .iter()
+        .map(|line| {
+            serde_json::to_string(line).map_or_else(
+                // Unreachable for valid UTF-8, but stay conservative: quote
+                // bytes only, matching the raw payload floor.
+                |_| line.len() + 2,
+                |serialized| serialized.len(),
+            )
+        })
+        .collect();
+    let mut kept_sum: usize = line_lens.iter().sum();
+
+    // Walk drop counts in ascending order, shrinking the running suffix sum;
+    // the serialized length is monotonically non-increasing, so the first fit
+    // is the minimal drop count.
+    for (drop_count, line_len) in line_lens.iter().enumerate() {
+        let kept = total - drop_count;
+        let commas = kept.saturating_sub(1);
+        if fits(base_len + kept_sum + commas) {
+            return drop_count;
         }
+        kept_sum -= line_len;
     }
-    lo
+    // Only the empty-logs shape fits (already verified above).
+    total
 }
 
 pub(crate) fn response_within_budget(
@@ -246,4 +263,117 @@ pub(crate) fn apply_log_caps(
     }
 
     logs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response_with_logs(result: Value, logs: Vec<String>) -> CodeModeExecutionResponse {
+        CodeModeExecutionResponse {
+            execution_id: None,
+            result: Some(result),
+            result_shaping: None,
+            ui: None,
+            calls: Vec::new(),
+            logs,
+            artifacts: Vec::new(),
+        }
+    }
+
+    /// Contract-derived expected cut: the smallest `k` such that the response
+    /// serialized with `original[k..]` as `logs` passes
+    /// [`response_within_budget`]. Probes real serde output per candidate, so
+    /// it is independent of the arithmetic implementation under test.
+    fn expected_drop_count(
+        original: &[String],
+        base: &CodeModeExecutionResponse,
+        max_bytes: usize,
+        max_tokens: usize,
+        divisor: u32,
+    ) -> usize {
+        (0..=original.len())
+            .find(|&k| {
+                let mut probe = base.clone();
+                probe.logs = original[k..].to_vec();
+                response_within_budget(&probe, max_bytes, max_tokens, divisor)
+            })
+            .unwrap_or(original.len())
+    }
+
+    #[test]
+    fn large_log_set_cut_matches_probe_serialized_contract() {
+        // Varied line lengths plus JSON-escaped and multibyte characters so the
+        // arithmetic length model is exercised against real serde output.
+        let logs: Vec<String> = (0..800)
+            .map(|i| {
+                format!(
+                    "line {i}: \"quoted\" \\ back {} — ünïcode",
+                    "x".repeat(i % 97)
+                )
+            })
+            .collect();
+        let response = response_with_logs(json!({"ok": true}), logs.clone());
+        let (max_bytes, max_tokens, divisor) = (16 * 1024, 100_000, 4);
+
+        let mut base = response.clone();
+        base.logs = Vec::new();
+        let expected = expected_drop_count(&logs, &base, max_bytes, max_tokens, divisor);
+        assert!(
+            expected > 0 && expected < logs.len(),
+            "cut must land mid-range for this fixture, got {expected}"
+        );
+
+        let truncated = truncate_execution_response(response, max_bytes, max_tokens, divisor);
+
+        // Logs-dominant response: the small result must survive untouched.
+        assert_eq!(truncated.result, Some(json!({"ok": true})));
+        let mut want = vec![format!(
+            "[logs truncated to fit response budget — {expected} line(s) dropped]"
+        )];
+        want.extend_from_slice(&logs[expected..]);
+        assert_eq!(truncated.logs, want);
+    }
+
+    #[test]
+    fn token_budget_alone_can_force_the_cut() {
+        let logs: Vec<String> = (0..300).map(|i| format!("log line number {i}")).collect();
+        let response = response_with_logs(json!({"ok": true}), logs.clone());
+        // Byte budget is generous; the estimated-token term must drive the cut.
+        let (max_bytes, max_tokens, divisor) = (1024 * 1024, 512, 4);
+
+        let mut base = response.clone();
+        base.logs = Vec::new();
+        let expected = expected_drop_count(&logs, &base, max_bytes, max_tokens, divisor);
+        assert!(
+            expected > 0 && expected < logs.len(),
+            "cut must land mid-range for this fixture, got {expected}"
+        );
+
+        let truncated = truncate_execution_response(response, max_bytes, max_tokens, divisor);
+        let mut want = vec![format!(
+            "[logs truncated to fit response budget — {expected} line(s) dropped]"
+        )];
+        want.extend_from_slice(&logs[expected..]);
+        assert_eq!(truncated.logs, want);
+    }
+
+    #[test]
+    fn oversized_single_line_drops_everything() {
+        let logs = vec!["z".repeat(64 * 1024)];
+        let response = response_with_logs(json!({"ok": true}), logs);
+        let truncated = truncate_execution_response(response, 4 * 1024, 100_000, 4);
+        assert_eq!(
+            truncated.logs,
+            vec!["[logs truncated to fit response budget — 1 line(s) dropped]".to_string()]
+        );
+    }
+
+    #[test]
+    fn within_budget_response_is_returned_unchanged() {
+        let logs: Vec<String> = (0..4).map(|i| format!("short {i}")).collect();
+        let response = response_with_logs(json!({"ok": true}), logs.clone());
+        let untouched = truncate_execution_response(response.clone(), 1024 * 1024, 100_000, 4);
+        assert_eq!(untouched, response);
+    }
 }

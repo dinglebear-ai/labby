@@ -67,9 +67,9 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             Err(err) => {
-                drop(runner_emit(CodeModeRunnerOutput::Error {
-                    error: err.error,
-                }));
+                // Emit failure is acceptable: if stdout is gone the parent has
+                // already dropped this runner and will evict it regardless.
+                runner_emit(CodeModeRunnerOutput::Error { error: err.error }).ok();
                 // Reset and continue: the per-execution javy runtime is dropped
                 // at the end of `run_code_mode_runner`, so a failed execution
                 // leaves no JS state behind. Whether to reuse or recycle this
@@ -130,8 +130,10 @@ fn reset_execution_jail() {
         // Remove the previous execution's jail (if any) so no file state from a
         // prior caller survives on this pooled process.
         if let Some(previous) = cell.take() {
-            drop(std::env::set_current_dir(&base));
-            drop(std::fs::remove_dir_all(&previous));
+            // Best-effort cleanup: the base TempDir is already an isolated cwd,
+            // and a leftover previous jail is removed again on runner drop.
+            std::env::set_current_dir(&base).ok();
+            std::fs::remove_dir_all(&previous).ok();
         }
         let unique = format!("exec-{}-{}", std::process::id(), next_jail_seq());
         let jail = base.join(unique);
@@ -139,17 +141,19 @@ fn reset_execution_jail() {
             // We already removed the previous jail above, so the process must not
             // be left `chdir`'d inside a now-deleted directory. Fall back to the
             // stable base (the per-runner spawn TempDir) so cwd stays valid and
-            // isolated. `*cell` is already `None` (taken above).
-            drop(std::env::set_current_dir(&base));
+            // isolated. `*cell` is already `None` (taken above). A chdir failure
+            // is acceptable: the process is still inside an isolated TempDir.
+            std::env::set_current_dir(&base).ok();
             return;
         }
         if std::env::set_current_dir(&jail).is_ok() {
             *cell = Some(jail);
         } else {
             // Could not enter the jail; clean it up and fall back to the stable
-            // base rather than the just-removed previous jail.
-            drop(std::fs::remove_dir_all(&jail));
-            drop(std::env::set_current_dir(&base));
+            // base rather than the just-removed previous jail. Both are
+            // best-effort: failure leaves the process in a still-isolated cwd.
+            std::fs::remove_dir_all(&jail).ok();
+            std::env::set_current_dir(&base).ok();
         }
     });
 }
@@ -174,16 +178,24 @@ fn cleanup_execution_jail(drop_base: bool) {
     EXECUTION_JAIL.with(|cell| {
         if let Some(jail) = cell.borrow_mut().take() {
             if let Some(base) = &base {
-                drop(std::env::set_current_dir(base));
+                // Best-effort: cwd stays inside the isolated TempDir on failure.
+                std::env::set_current_dir(base).ok();
             }
-            drop(std::fs::remove_dir_all(jail));
+            // Best-effort cleanup: the TempDir removal on drop sweeps leftovers.
+            std::fs::remove_dir_all(jail).ok();
         }
     });
 
     if drop_base {
-        drop(std::env::set_current_dir(std::env::temp_dir()));
+        // Leave the base before its TempDir is dropped; a failed chdir only
+        // risks a busy-directory removal, which TempDir tolerates silently.
+        std::env::set_current_dir(std::env::temp_dir()).ok();
         JAIL_BASE.with(|cell| {
-            drop(cell.borrow_mut().take());
+            // Clearing the slot drops the TempDir, which removes the base tree;
+            // removal errors are intentionally swallowed by TempDir's Drop
+            // (best-effort cleanup). This is a real destructor invocation, not
+            // a silenced fallible call.
+            *cell.borrow_mut() = None;
         });
     }
 }
