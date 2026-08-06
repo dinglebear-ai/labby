@@ -138,12 +138,20 @@ jobs:
             || { echo "::error::cannot read .github/workflows/ci.yml; refusing to route"; exit 1; }
           gated_keys="$(workflow_keys 'needs\.changes\.outputs' | grep -vx gate_key_drift || true)"
           forwarded_keys="$(workflow_keys 'steps\.classify\.outputs' || true)"
+          # Flatten to space-delimited strings and match with bash pattern
+          # tests from here on. Nothing below forks: a `grep` that fails to
+          # spawn under load returns non-zero, which membership checks would
+          # read as "absent" — a tool failure silently reinterpreted as a
+          # policy violation, which is the exact bug class this step exists
+          # to prevent.
+          gated_flat=" $(printf '%s' "$gated_keys" | tr '\n' ' ') "
+          forwarded_flat=" $(printf '%s' "$forwarded_keys" | tr '\n' ' ') "
           # `rust_test` gates most of the workspace, so its absence from either
           # set means enumeration broke rather than that the gate went away.
-          for set_name in gated_keys forwarded_keys; do
-            printf '%s\n' "${!set_name}" | grep -qx rust_test \
-              || { echo "::error::cannot enumerate $set_name from ci.yml (no 'rust_test'); refusing to route"; exit 1; }
-          done
+          [[ "$gated_flat" == *" rust_test "* ]] \
+            || { echo "::error::cannot enumerate ci.yml gate references (no 'rust_test'); refusing to route"; exit 1; }
+          [[ "$forwarded_flat" == *" rust_test "* ]] \
+            || { echo "::error::cannot enumerate the changes job outputs (no 'rust_test'); refusing to route"; exit 1; }
           # The trusted classifier is arbitrary base-branch code; do not assume
           # its output file ends in a newline before reading or appending.
           if [ -s classifier-outputs.txt ] && [ -n "$(tail -c1 classifier-outputs.txt)" ]; then
@@ -164,9 +172,10 @@ jobs:
                 --event "$EVENT_NAME" \
                 --changed-files changed-files.txt \
                 --output branch-outputs.txt > /dev/null; then
+              branch_true=" $(sed -n 's/=true$//p' branch-outputs.txt | tr '\n' ' ') "
               : > merged-outputs.txt
               while IFS='=' read -r key value; do
-                if [ "$value" = false ] && grep -Fqx "${key}=true" branch-outputs.txt; then
+                if [ "$value" = false ] && [[ "$branch_true" == *" $key "* ]]; then
                   value=true
                   broadened="${broadened:+$broadened,}$key"
                 fi
@@ -180,24 +189,36 @@ jobs:
               echo "::warning title=Changed-path routing::the branch's own classifier failed to run; routing falls back to the base commit's classifier alone, which may not know this branch's new path mappings."
             fi
           fi
+          classified="$(cat classifier-outputs.txt)"
           drift=""
           while read -r key; do
             [ -n "$key" ] || continue
-            if ! printf '%s\n' "$forwarded_keys" | grep -qx "$key"; then
-              echo "::error::ci.yml gates on needs.changes.outputs.$key but the changes job never forwards steps.classify.outputs.$key; that gate reads as an empty string and would silently skip the job"
+            if [[ "$forwarded_flat" != *" $key "* ]]; then
+              echo "::error::ci.yml gates on needs.changes.outputs.$key but the changes job never forwards steps.classify.outputs.$key; that gate reads as an empty string and would silently skip the job (forwarded:${forwarded_flat})"
               exit 1
             fi
             # Presence is not enough: a malformed value ('True', '1', '') also
             # fails the `== 'true'` comparison and skips the job.
-            if grep -qE "^${key}=(true|false)$" classifier-outputs.txt; then
-              continue
-            fi
-            grep -v "^${key}=" classifier-outputs.txt > classifier-outputs.tmp || true
-            mv classifier-outputs.tmp classifier-outputs.txt
-            printf '%s=true\n' "$key" >> classifier-outputs.txt
+            case $'\n'"$classified"$'\n' in
+              *$'\n'"$key=true"$'\n'*|*$'\n'"$key=false"$'\n'*) continue ;;
+            esac
             drift="${drift:+$drift,}$key"
             echo "::warning title=Changed-path routing drift::the trusted classifier did not emit a usable '$key'; defaulting it to true so the gated job runs."
           done <<< "$gated_keys"
+          if [ -n "$drift" ]; then
+            # One rewrite: drop every reconciled key's malformed line, then
+            # re-add it as true.
+            drift_flat=" ${drift//,/ } "
+            : > reconciled-outputs.txt
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              [[ "$drift_flat" == *" ${line%%=*} "* ]] || printf '%s\n' "$line" >> reconciled-outputs.txt
+            done <<< "$classified"
+            for key in ${drift//,/ }; do
+              printf '%s=true\n' "$key" >> reconciled-outputs.txt
+            done
+            mv reconciled-outputs.txt classifier-outputs.txt
+          fi
           printf 'gate_key_drift=%s\n' "$drift" >> classifier-outputs.txt
           cat classifier-outputs.txt >> "$GITHUB_OUTPUT"
           {
