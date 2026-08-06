@@ -84,6 +84,22 @@ impl<'a> UpstreamRequestLog<'a> {
         }
     }
 
+    /// A routed task RPC (`tasks/get` / `tasks/update` / `tasks/cancel`).
+    /// `operation` is one of `"task.get"`, `"task.update"`, `"task.cancel"`;
+    /// `task_id` is the gateway-owned handle (never the upstream-native id, so
+    /// logs cannot leak the upstream's task namespace).
+    pub(super) fn task(upstream: &'a str, task_id: &'a str, operation: &'static str) -> Self {
+        Self {
+            upstream,
+            capability: "tasks",
+            operation,
+            subject_scoped: false,
+            transport: None,
+            item_kind: Some("task"),
+            item: Some(task_id),
+        }
+    }
+
     pub(super) fn completion(upstream: &'a str, reference: &'a str, subject_scoped: bool) -> Self {
         Self {
             upstream,
