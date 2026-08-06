@@ -441,9 +441,14 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
             .nth(1)
             .and_then(|body| body.split(&format!("\n  {next_job}:")).next())
             .expect("memory-constrained Rust job body");
+        // These jobs must NOT pin CARGO_BUILD_JOBS=1. That throttle turned
+        // ~8-minute builds into 30+ and let the autoscaling runners reclaim
+        // them mid-link; with kache restoring most of the graph and lld
+        // keeping link memory down, parallel builds stay within the 8 GiB
+        // pool. If a future OOM forces a cap, use a bounded value, not 1.
         assert!(
-            section.contains("CARGO_BUILD_JOBS: \"1\""),
-            "{job} must serialize Cargo builds below the shared pool memory limit"
+            !section.contains("CARGO_BUILD_JOBS: \"1\""),
+            "{job} must not serialize Cargo to a single build job (see ci: drop CARGO_BUILD_JOBS=1)"
         );
         assert!(
             section.contains("RUSTFLAGS: \"-C linker=clang -C link-arg=-fuse-ld=lld\""),
