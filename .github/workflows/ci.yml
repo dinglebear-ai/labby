@@ -29,7 +29,7 @@ env:
 jobs:
   fleet-policy:
     name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@befa67c7b7f976235bf3fbced6ede93293a7f405
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@218eba19f15cc13554d26fa131309cfa8141fd67
     with:
       release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
 
