@@ -349,23 +349,53 @@ impl GatewayManager {
     }
 
     pub async fn gateway_servers_doc(&self) -> Result<serde_json::Value, ToolError> {
+        self.gateway_servers_doc_scoped(None).await
+    }
+
+    pub async fn gateway_servers_doc_scoped(
+        &self,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<serde_json::Value, ToolError> {
         let Some(pool) = self.runtime.current_pool().await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: "upstream pool not configured".to_string(),
             });
         };
-        Ok(pool.gateway_servers_doc().await)
+        Ok(pool.gateway_servers_doc_allowed(allowed).await)
     }
 
     pub async fn gateway_server_schema(&self, name: &str) -> Result<serde_json::Value, ToolError> {
+        self.gateway_server_schema_scoped(name, None, None).await
+    }
+
+    pub async fn gateway_server_schema_scoped(
+        &self,
+        name: &str,
+        oauth_subject: Option<&str>,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<serde_json::Value, ToolError> {
         let Some(pool) = self.runtime.current_pool().await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: "upstream pool not configured".to_string(),
             });
         };
-        pool.gateway_server_schema(name)
+        if allowed.is_some_and(|allowed| !allowed.contains(name)) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_upstream".to_string(),
+                message: format!("unknown gateway upstream `{name}`"),
+            });
+        }
+        if let Some(subject) = oauth_subject
+            && let Some(config) = self.oauth_upstream_config(name).await
+            && let Some(schema) = pool
+                .subject_scoped_gateway_server_schema(&config, subject)
+                .await
+        {
+            return Ok(schema);
+        }
+        pool.gateway_server_schema_allowed(name, allowed)
             .await
             .ok_or_else(|| ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),

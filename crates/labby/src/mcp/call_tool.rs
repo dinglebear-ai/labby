@@ -559,6 +559,11 @@ impl LabMcpServer {
                             inject_gateway_origin_param(params, self.request_subject(&context));
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
+                            oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
+                                auth_context_from_extensions(&context.extensions),
+                                self.request_subject(&context),
+                            )
+                            .map(|subject| subject.into_owned()),
                         };
                         crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
@@ -615,6 +620,11 @@ impl LabMcpServer {
                             .expect("availability requires a gateway manager");
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
+                            oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
+                                auth_context_from_extensions(&context.extensions),
+                                self.request_subject(&context),
+                            )
+                            .map(|subject| subject.into_owned()),
                         };
                         crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
@@ -859,6 +869,11 @@ impl LabMcpServer {
                         inject_gateway_origin_param(params, self.request_subject(&context));
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
+                        oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
+                            auth_context_from_extensions(&context.extensions),
+                            self.request_subject(&context),
+                        )
+                        .map(|subject| subject.into_owned()),
                     };
                     crate::dispatch::gateway::dispatch_with_manager_scoped(
                         manager,

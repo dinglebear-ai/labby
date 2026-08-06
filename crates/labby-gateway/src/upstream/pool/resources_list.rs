@@ -18,10 +18,11 @@ use super::super::types::{ToolExposurePolicy, UpstreamCapability};
 use super::UpstreamPool;
 use super::capability_call::bounded_service_error_text;
 use super::connect::connect_upstream;
-use super::discover::routable_upstream_peers;
 use super::entries::{
-    health_str, log_exposure_filter, resolve_request_resource_exposure_policy, resource_exposed,
+    health_str, log_exposure_filter, resolve_exposure_policy,
+    resolve_request_resource_exposure_policy, resource_exposed,
 };
+use super::discover::routable_upstream_peers;
 use super::helpers::{bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri};
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_RESOURCES;
@@ -116,6 +117,29 @@ impl UpstreamPool {
             "health": health_str(entry.tool_health),
             "last_error": entry.tool_last_error,
         }))
+    }
+
+    /// Render a gateway schema from a request-scoped OAuth discovery result.
+    ///
+    /// OAuth upstreams intentionally do not populate the subject-less catalog.
+    /// This path discovers the named upstream with the caller's isolated
+    /// subject connection and returns the same schema shape as the cached path.
+    pub async fn subject_scoped_gateway_server_schema(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> Option<Value> {
+        let (_, tools) = self
+            .subject_scoped_tools(std::slice::from_ref(config), subject)
+            .await
+            .into_iter()
+            .find(|(name, _)| name == &config.name)?;
+        let exposure_policy = resolve_exposure_policy(&config.name, config.expose_tools.clone());
+        Some(render_subject_scoped_gateway_schema(
+            &config.name,
+            &tools,
+            &exposure_policy,
+        ))
     }
 
     /// Synthetic gateway resources to emit from `list_resources`.
@@ -470,6 +494,32 @@ impl UpstreamPool {
     }
 }
 
+fn render_subject_scoped_gateway_schema(
+    name: &str,
+    tools: &[rmcp::model::Tool],
+    exposure_policy: &ToolExposurePolicy,
+) -> Value {
+    let mut tool_rows: Vec<Value> = tools
+        .iter()
+        .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool.name.as_ref(),
+                "description": tool.description.as_ref().map(|s| s.as_ref()),
+                "input_schema": tool.input_schema,
+                "meta": tool.meta,
+            })
+        })
+        .collect();
+    tool_rows.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    serde_json::json!({
+        "name": name,
+        "tools": tool_rows,
+        "health": "healthy",
+        "last_error": Value::Null,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
@@ -755,6 +805,28 @@ mod tests {
         assert_eq!(doc["health"], "healthy");
         assert!(doc["last_error"].is_null());
         assert_eq!(doc["name"], "alpha");
+    }
+
+    #[test]
+    fn subject_scoped_gateway_schema_renders_and_filters_tools() {
+        let tools = vec![
+            rmcp::model::Tool::new("hidden_tool", "hidden", Arc::new(serde_json::Map::new())),
+            rmcp::model::Tool::new(
+                "fill_linear_dev_handoff",
+                "prepare a Linear handoff",
+                Arc::new(serde_json::Map::new()),
+            ),
+        ];
+        let policy = ToolExposurePolicy::from_patterns(vec!["fill_*".to_string()]).expect("policy");
+
+        let doc =
+            render_subject_scoped_gateway_schema("notification_worker_linear", &tools, &policy);
+
+        assert_eq!(doc["name"], "notification_worker_linear");
+        assert_eq!(doc["health"], "healthy");
+        assert!(doc["last_error"].is_null());
+        assert_eq!(doc["tools"][0]["name"], "fill_linear_dev_handoff");
+        assert_eq!(doc["tools"].as_array().expect("tools array").len(), 1);
     }
 
     #[tokio::test]

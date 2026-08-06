@@ -109,10 +109,23 @@ pub async fn dispatch_with_manager_scoped(
         | "gateway.import_tombstones.restore" => {
             handle_import_tombstone_actions(manager, action, params_value).await
         }
-        "gateway.servers" => to_json(manager.gateway_servers_doc().await?),
+        "gateway.servers" => to_json(
+            manager
+                .gateway_servers_doc_scoped(enrichment_scope.route_visible_upstreams.as_ref())
+                .await?,
+        ),
         "gateway.schema" => {
-            let name = require_str(&params_value, "name")?;
-            to_json(manager.gateway_server_schema(&name).await?)
+            require_str(&params_value, "name")?;
+            let params: GatewayNameParams = parse_params(params_value)?;
+            to_json(
+                manager
+                    .gateway_server_schema_scoped(
+                        &params.name,
+                        enrichment_scope.oauth_subject.as_deref(),
+                        enrichment_scope.route_visible_upstreams.as_ref(),
+                    )
+                    .await?,
+            )
         }
         "gateway.list"
         | "gateway.server.get"

@@ -145,7 +145,7 @@ impl Drop for JobObjectGuard {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;

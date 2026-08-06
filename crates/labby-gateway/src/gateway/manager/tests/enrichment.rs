@@ -100,6 +100,7 @@ async fn enrich_preview_all_respects_route_visible_upstreams() {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
                     "github".to_string()
                 ])),
+                oauth_subject: None,
             },
         )
         .await
@@ -131,6 +132,7 @@ async fn enrich_preview_rejects_route_hidden_explicit_upstream() {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
                     "gateway-alpha".to_string()
                 ])),
+                oauth_subject: None,
             },
         )
         .await
@@ -477,6 +479,7 @@ async fn enrich_apply_rejects_route_hidden_upstream_before_hint_validation() {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
                     "gateway-alpha".to_string()
                 ])),
+                oauth_subject: None,
             },
         )
         .await
@@ -524,6 +527,7 @@ async fn add_suppresses_enrichment_suggestion_for_route_hidden_upstream() {
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
                     "gateway-alpha".to_string()
                 ])),
+                oauth_subject: None,
             },
         )
         .await
@@ -589,6 +593,7 @@ async fn pending_import_approve_suppresses_suggestion_for_route_hidden_upstream(
                 route_visible_upstreams: Some(std::collections::BTreeSet::from([
                     "gateway-alpha".to_string()
                 ])),
+                oauth_subject: None,
             },
         )
         .await

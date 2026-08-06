@@ -377,6 +377,7 @@ async fn gateway_usage_metrics_rejects_route_hidden_explicit_upstream() {
             route_visible_upstreams: Some(std::collections::BTreeSet::from([
                 "gateway-alpha".to_string()
             ])),
+            oauth_subject: None,
         },
     )
     .await
@@ -410,6 +411,7 @@ async fn gateway_usage_calls_rejects_route_hidden_explicit_upstream() {
             route_visible_upstreams: Some(std::collections::BTreeSet::from([
                 "gateway-alpha".to_string()
             ])),
+            oauth_subject: None,
         },
     )
     .await
@@ -472,6 +474,7 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
         json!({}),
         GatewayEnrichmentScope {
             route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
         },
     )
     .await
