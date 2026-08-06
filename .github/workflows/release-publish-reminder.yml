@@ -11,6 +11,13 @@ name: Release publish reminder
 # was waiting. This workflow keeps exactly one open issue describing every
 # pending draft release, and closes it once none remain. It never publishes a
 # release itself — approval stays manual by design.
+#
+# `contents: write` is REQUIRED and must not be tightened to `read`. GitHub's
+# REST API returns draft releases only to callers with push access, so a
+# read-only token lists zero drafts and this workflow silently becomes a no-op
+# — which is exactly how it shipped in #350 and did nothing. The write scope is
+# for *visibility*, never for publishing: nothing here mutates a release, and
+# `draft_releases_are_surfaced_without_being_auto_published` enforces that.
 
 on:
   schedule:
@@ -25,7 +32,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # contents: write is required to *see* drafts, not to change them. See above.
+  contents: write
   issues: write
 
 jobs:
@@ -83,7 +91,12 @@ jobs:
               const age = ageHours < 24
                 ? `${ageHours}h`
                 : `${Math.floor(ageHours / 24)}d`;
-              return `| [\`${release.tag_name}\`](${release.html_url}) | ${age} | ${release.assets.length} |`;
+              // A draft's `html_url` is a `/releases/tag/untagged-<hash>`
+              // placeholder that 404s — the draft has no public tag page yet.
+              // `/releases/edit/<id>` is the page where a draft is reviewed and
+              // published, so link that instead.
+              const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/releases/edit/${release.id}`;
+              return `| [\`${release.tag_name}\`](${url}) | ${age} | ${release.assets.length} |`;
             });
 
             const body = [
