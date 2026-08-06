@@ -17,12 +17,13 @@ use labby_codemode::{
 };
 use std::sync::Arc;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorCode, ErrorData};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::{Map, Value};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::manager::GatewayManager;
 use crate::upstream::pool::CapabilityCallError;
+use crate::upstream::tool_error::mcp_error_data_kind;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
@@ -655,7 +656,7 @@ const MAX_UPSTREAM_MCP_MESSAGE_CHARS: usize = 4096;
 fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str, String) {
     match error {
         CapabilityCallError::Mcp { data, .. } => {
-            let kind = code_mode_mcp_error_kind(data);
+            let kind = mcp_error_data_kind(data);
             let mut message = data.message.to_string();
             // Preserve the structured payload (param/valid/hint/retry_after_ms/
             // required_scopes/…) the old stringified Display used to carry.
@@ -695,75 +696,17 @@ fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str
     }
 }
 
-/// The shared allowlist of stable caller-facing error kinds an upstream may
-/// assert about its own tool dispatch via JSON-RPC `ErrorData.data.kind`
-/// ([`code_mode_mcp_error_kind`]); anything not listed falls back to the
-/// `ErrorCode`-derived classification instead of passing verbatim. The
-/// tool-level `isError` payload path applies the equivalent clamp in
-/// `crate::upstream::tool_error::canonicalize_untrusted_upstream_kind`.
-fn known_stable_kind(kind: &str) -> Option<&'static str> {
-    Some(match kind {
-        "unknown_action" => "unknown_action",
-        "unknown_subaction" => "unknown_subaction",
-        "missing_param" => "missing_param",
-        "invalid_param" | "invalid_params" => "invalid_param",
-        "unknown_instance" => "unknown_instance",
-        "confirmation_required" => "confirmation_required",
-        "conflict" => "conflict",
-        "forbidden" => "forbidden",
-        "unknown_tool" => "unknown_tool",
-        "route_scope_denied" => "route_scope_denied",
-        "path_traversal" => "path_traversal",
-        "permission_denied" => "permission_denied",
-        "auth_failed" => "auth_failed",
-        "not_found" => "not_found",
-        "rate_limited" => "rate_limited",
-        "validation_failed" => "validation_failed",
-        _ => return None,
-    })
-}
-
-fn code_mode_mcp_error_kind(error: &ErrorData) -> &'static str {
-    // An upstream-supplied `data.kind` is only trusted when it is in the shared
-    // allowlist; unknown or invented kinds fall through to the ErrorCode-derived
-    // classification below instead of passing verbatim.
-    if let Some(kind) = error
-        .data
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|data| data.get("kind"))
-        .and_then(Value::as_str)
-        .and_then(known_stable_kind)
-    {
-        return kind;
-    }
-
-    if error.code == ErrorCode::INVALID_PARAMS {
-        "invalid_param"
-    } else if error.code == ErrorCode::METHOD_NOT_FOUND {
-        "unknown_tool"
-    } else if error.code == ErrorCode::RESOURCE_NOT_FOUND {
-        "not_found"
-    } else if error.code == ErrorCode::PARSE_ERROR {
-        "decode_error"
-    } else if error.code == ErrorCode::INTERNAL_ERROR {
-        "server_error"
-    } else if error.code == ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
-        || error.code == ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
-        || error.code == ErrorCode::HEADER_MISMATCH
-    {
-        "validation_failed"
-    } else {
-        "upstream_error"
-    }
-}
+// The JSON-RPC `ErrorData` → stable-kind classification (allowlisted
+// `data.kind`, else `ErrorCode`-derived) lives in
+// `crate::upstream::tool_error::mcp_error_data_kind` — shared with the MCP
+// upstream proxy so both surfaces emit the same model-facing kind.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gateway::runtime::GatewayRuntimeHandle;
     use labby_codemode::ExecCtx;
-    use rmcp::model::MetaObject;
+    use rmcp::model::{ErrorCode, ErrorData, MetaObject};
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
     /// tempdir is intentionally leaked so the DB file outlives the store's open
@@ -1032,7 +975,7 @@ mod tests {
         ];
 
         for (error, expected) in cases {
-            assert_eq!(code_mode_mcp_error_kind(&error), expected);
+            assert_eq!(mcp_error_data_kind(&error), expected);
         }
     }
 
@@ -1043,7 +986,7 @@ mod tests {
             Some(serde_json::json!({"kind": "forbidden"})),
         );
 
-        assert_eq!(code_mode_mcp_error_kind(&error), "forbidden");
+        assert_eq!(mcp_error_data_kind(&error), "forbidden");
     }
 
     #[test]
@@ -1055,7 +998,7 @@ mod tests {
             Some(serde_json::json!({"kind": "totally_made_up"})),
         );
 
-        assert_eq!(code_mode_mcp_error_kind(&error), "server_error");
+        assert_eq!(mcp_error_data_kind(&error), "server_error");
     }
 
     #[test]

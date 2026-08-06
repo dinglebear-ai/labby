@@ -223,6 +223,13 @@ impl UpstreamPool {
             discovery_jobs.push((config, subject));
         }
 
+        // Deliberate bulkhead exception: discovery is the startup/refresh
+        // fan-out that *creates* the connections (there is nothing to bulkhead
+        // yet) and is bounded by `upstream_discovery_concurrency` plus a
+        // per-upstream discovery timeout instead of the per-call
+        // `timed_capability_call` permit. Failures are classified
+        // (`classify_upstream_error`), logged with `kind`, and recorded on the
+        // catalog entry as `*_last_error` + unhealthy state.
         let discovery_concurrency = upstream_discovery_concurrency(None);
         let mut futures = futures::stream::iter(discovery_jobs)
             .map(|(config, subject)| {

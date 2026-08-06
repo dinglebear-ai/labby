@@ -26,6 +26,24 @@ impl UpstreamPool {
         subject: &str,
         params: CallToolRequestParams,
     ) -> Result<CallToolResponse, String> {
+        self.subject_scoped_call_tool_once_classified(config, subject, params)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// [`Self::subject_scoped_call_tool_once`] while preserving the upstream
+    /// failure class for the MCP proxy.
+    ///
+    /// A connect failure surfaces as [`CapabilityCallError::Transport`]; like
+    /// the string variant it is NOT recorded against the circuit breaker here
+    /// (subject-scoped connects are per-caller credentials, and the pooled
+    /// upstream connection may be perfectly healthy).
+    pub async fn subject_scoped_call_tool_once_classified(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        params: CallToolRequestParams,
+    ) -> Result<CallToolResponse, CapabilityCallError> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
@@ -34,9 +52,11 @@ impl UpstreamPool {
         let (peer, _tools) = self
             .acquire_or_connect_subject(config, subject)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| CapabilityCallError::Transport {
+                message: error.to_string(),
+            })?;
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call_str(
+        timed_capability_call(
             self,
             &config.name,
             UpstreamCapability::Tools,
@@ -176,6 +196,24 @@ impl UpstreamPool {
         upstream_name: &str,
         params: CallToolRequestParams,
     ) -> Option<Result<CallToolResponse, String>> {
+        self.call_tool_once_classified(upstream_name, params)
+            .await
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// [`Self::call_tool_once`] while preserving the upstream failure class
+    /// for the MCP proxy (mirrors [`Self::call_tool_classified`]).
+    ///
+    /// Health accounting is owned entirely by `timed_capability_call`: a
+    /// [`CapabilityCallError::Mcp`] means the pool recorded SUCCESS (a valid
+    /// JSON-RPC error proves the connection is alive); transport-class
+    /// failures were already recorded as breaker failures. Callers must NOT
+    /// call `record_failure`/`record_success` again for these outcomes.
+    pub async fn call_tool_once_classified(
+        &self,
+        upstream_name: &str,
+        params: CallToolRequestParams,
+    ) -> Option<Result<CallToolResponse, CapabilityCallError>> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
         let event = UpstreamRequestLog::tool(upstream_name, &tool_name, false);
@@ -185,7 +223,7 @@ impl UpstreamPool {
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
         Some(
-            timed_capability_call_str(
+            timed_capability_call(
                 self,
                 upstream_name,
                 UpstreamCapability::Tools,
@@ -214,12 +252,13 @@ mod tests {
     };
     use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
-    use super::super::super::types::UpstreamRuntimeMetadata;
+    use super::super::super::types::{UpstreamHealth, UpstreamRuntimeMetadata};
     use super::super::SubjectScopedConnection;
     use super::super::entries::healthy_in_process_entry;
     use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
     use super::super::testsupport::*;
     use super::super::{UpstreamConnection, UpstreamPool};
+    use super::CapabilityCallError;
 
     #[tokio::test]
     async fn call_tool_times_out_slow_upstream_response() {
@@ -232,6 +271,73 @@ mod tests {
             .expect_err("slow tool call should time out");
 
         assert!(result.contains("timed out"));
+    }
+
+    /// The classified once-variant (the MCP proxy's pooled path) records a
+    /// transport-class failure EXACTLY once. The proxy layer must not record
+    /// again on top of this — a double count would halve the effective
+    /// `CIRCUIT_BREAKER_THRESHOLD` (bead `lab-ak0mh`).
+    #[tokio::test]
+    async fn call_tool_once_classified_timeout_records_exactly_one_failure() {
+        let pool = slow_response_pool("slow").await;
+
+        let error = pool
+            .call_tool_once_classified("slow", CallToolRequestParams::new("slow.tool"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("slow tool call should time out");
+
+        assert!(
+            matches!(error, CapabilityCallError::Timeout { .. }),
+            "expected Timeout class, got {error:?}"
+        );
+        assert!(
+            matches!(
+                pool.upstream_tool_health("slow").await,
+                Some(UpstreamHealth::Unhealthy {
+                    consecutive_failures: 1
+                })
+            ),
+            "one transport failure must be recorded exactly once"
+        );
+        assert!(
+            pool.upstream_tool_last_error("slow")
+                .await
+                .expect("timeout recorded as last error")
+                .contains("timed out")
+        );
+    }
+
+    /// The classified once-variant preserves the MCP application-error class
+    /// and the pool records SUCCESS for it: a valid JSON-RPC error proves the
+    /// connection is alive, so health stays `Healthy` and no last-error is set.
+    #[tokio::test]
+    async fn call_tool_once_classified_mcp_error_keeps_health_and_class() {
+        let pool = UpstreamPool::new();
+        pool.insert_mcp_error_server_for_tests(
+            "rejecting",
+            ErrorData::invalid_params("unknown field `since`", None),
+        )
+        .await;
+
+        let error = pool
+            .call_tool_once_classified("rejecting", CallToolRequestParams::new("reject.tool"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("application error should reach the caller");
+
+        assert!(
+            matches!(error, CapabilityCallError::Mcp { .. }),
+            "expected Mcp class, got {error:?}"
+        );
+        assert_eq!(pool.upstream_tool_last_error("rejecting").await, None);
+        assert!(
+            matches!(
+                pool.upstream_tool_health("rejecting").await,
+                Some(UpstreamHealth::Healthy)
+            ),
+            "valid MCP error response must not poison connection health"
+        );
     }
 
     #[tokio::test]
@@ -313,6 +419,106 @@ mod tests {
                 .expect("health entry")
                 .is_routable(),
             "valid MCP error response must not poison connection health"
+        );
+    }
+
+    /// A multi-MB JSON-RPC error payload (message + data) is bounded at the
+    /// pool boundary: the retained `CapabilityCallError::Mcp` never carries
+    /// the unbounded upstream payload, and the stringified error stays small.
+    #[tokio::test]
+    async fn call_tool_huge_mcp_error_payload_is_bounded() {
+        struct HugeErrorServer;
+        impl ServerHandler for HugeErrorServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "huge.error",
+                        "returns a multi-MB error payload",
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                let huge = "e".repeat(3 * 1024 * 1024);
+                Err(ErrorData::internal_error(
+                    format!("upstream exploded: {huge}"),
+                    Some(serde_json::json!({ "detail": huge })),
+                ))
+            }
+        }
+
+        let upstream_name = "huge-error";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = HugeErrorServer
+                .serve(server_transport)
+                .await
+                .expect("huge error server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("huge error client starts");
+        let peer = client_service.peer().clone();
+
+        let pool = Arc::new(UpstreamPool::new());
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        let error = pool
+            .call_tool_classified(upstream_name, CallToolRequestParams::new("huge.error"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("huge error payload should surface as an error");
+
+        let CapabilityCallError::Mcp { data, message } = &error else {
+            panic!("expected Mcp error variant, got: {error:?}");
+        };
+        assert!(
+            message.len() < 32 * 1024,
+            "stringified message must be bounded, got {} bytes",
+            message.len()
+        );
+        assert!(
+            message.contains("upstream exploded"),
+            "the leading upstream message must survive bounding"
+        );
+        assert!(
+            data.message.len() < 32 * 1024,
+            "retained ErrorData message must be bounded, got {} bytes",
+            data.message.len()
+        );
+        let serialized_data = serde_json::to_vec(&data.data).expect("bounded data serializes");
+        assert!(
+            serialized_data.len() < 8 * 1024,
+            "retained ErrorData data payload must be bounded, got {} bytes",
+            serialized_data.len()
         );
     }
 

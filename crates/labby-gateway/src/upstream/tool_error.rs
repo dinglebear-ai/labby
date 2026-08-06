@@ -223,6 +223,78 @@ pub fn canonicalize_untrusted_upstream_kind(kind: &str) -> &'static str {
     }
 }
 
+/// The shared allowlist of stable caller-facing error kinds an upstream may
+/// assert about its own tool dispatch via JSON-RPC `ErrorData.data.kind`
+/// ([`mcp_error_data_kind`]); anything not listed falls back to the
+/// `ErrorCode`-derived classification instead of passing verbatim. The
+/// tool-level `isError` payload path applies the equivalent clamp in
+/// [`canonicalize_untrusted_upstream_kind`].
+fn known_stable_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "unknown_action" => "unknown_action",
+        "unknown_subaction" => "unknown_subaction",
+        "missing_param" => "missing_param",
+        "invalid_param" | "invalid_params" => "invalid_param",
+        "unknown_instance" => "unknown_instance",
+        "confirmation_required" => "confirmation_required",
+        "conflict" => "conflict",
+        "forbidden" => "forbidden",
+        "unknown_tool" => "unknown_tool",
+        "route_scope_denied" => "route_scope_denied",
+        "path_traversal" => "path_traversal",
+        "permission_denied" => "permission_denied",
+        "auth_failed" => "auth_failed",
+        "not_found" => "not_found",
+        "rate_limited" => "rate_limited",
+        "validation_failed" => "validation_failed",
+        _ => return None,
+    })
+}
+
+/// Classify an upstream JSON-RPC `ErrorData` into Labby's stable kind
+/// vocabulary.
+///
+/// Shared by Code Mode (`code_mode_capability_error_info`) and the MCP
+/// upstream proxy (`crates/labby/src/mcp/call_tool_upstream.rs`) so a
+/// `CapabilityCallError::Mcp` rejection surfaces the same model-facing kind on
+/// both paths. An upstream-supplied `data.kind` is only trusted when it is in
+/// the shared allowlist; unknown or invented kinds fall through to the
+/// `ErrorCode`-derived classification instead of passing verbatim.
+#[must_use]
+pub fn mcp_error_data_kind(error: &rmcp::model::ErrorData) -> &'static str {
+    use rmcp::model::ErrorCode;
+
+    if let Some(kind) = error
+        .data
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|data| data.get("kind"))
+        .and_then(Value::as_str)
+        .and_then(known_stable_kind)
+    {
+        return kind;
+    }
+
+    if error.code == ErrorCode::INVALID_PARAMS {
+        "invalid_param"
+    } else if error.code == ErrorCode::METHOD_NOT_FOUND {
+        "unknown_tool"
+    } else if error.code == ErrorCode::RESOURCE_NOT_FOUND {
+        "not_found"
+    } else if error.code == ErrorCode::PARSE_ERROR {
+        "decode_error"
+    } else if error.code == ErrorCode::INTERNAL_ERROR {
+        "server_error"
+    } else if error.code == ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+        || error.code == ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+        || error.code == ErrorCode::HEADER_MISMATCH
+    {
+        "validation_failed"
+    } else {
+        "upstream_error"
+    }
+}
+
 fn error_cause(result: &CallToolResult, parsed_error: Option<&Value>) -> String {
     if let Some(message) = parsed_error
         .and_then(error_object)
