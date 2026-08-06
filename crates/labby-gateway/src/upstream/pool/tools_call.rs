@@ -497,7 +497,7 @@ mod tests {
             .expect("upstream is connected")
             .expect_err("huge error payload should surface as an error");
 
-        let super::super::CapabilityCallError::Mcp { data, message } = &error else {
+        let CapabilityCallError::Mcp { data, message } = &error else {
             panic!("expected Mcp error variant, got: {error:?}");
         };
         assert!(
