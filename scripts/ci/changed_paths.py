@@ -23,6 +23,7 @@ OUTPUT_KEYS = [
     "docker",
     "security",
     "release",
+    "unraid",
 ]
 
 
@@ -63,7 +64,11 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         lambda p: starts(p, "docs/")
         or p in {"README.md", "CHANGELOG.md", "CLAUDE.md", "AGENTS.md", "GEMINI.md"},
     )
-    docs_check = docs or any_match(
+    # Prose docs (docs/**, README.md, CLAUDE.md, ...) cannot invalidate the
+    # generated artifacts, so they do not trigger docs_check: only the
+    # generated outputs themselves, the classifier files, the Justfile, and
+    # Rust sources (added below) can make `just docs-check` go stale.
+    docs_check = any_match(
         paths,
         lambda p: starts(p, "docs/generated/")
         or p
@@ -123,6 +128,15 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     )
     docker = rust_compile or web or docker_inputs
     release = rust_compile or web or any_match(paths, lambda p: starts(p, "release/"))
+    unraid = any_match(
+        paths,
+        lambda p: starts(p, "unraid/")
+        or p
+        in {
+            "scripts/ci/unraid-plugin-checksums.sh",
+            "scripts/ci/unraid-runtime-tests.sh",
+        },
+    )
 
     result = {
         "all": False,
@@ -137,11 +151,36 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "docker": docker,
         "security": security,
         "release": release,
+        "unraid": unraid,
     }
 
     if workflow:
-        for key in OUTPUT_KEYS:
-            result[key] = True
+        # ci.yml, the composite actions, and this classifier can affect every
+        # job, so those fail closed and enable everything. Other
+        # workflow-adjacent files enable only `workflow` plus the categories
+        # their own workflows exercise (the release workflows map to the
+        # release source contract).
+        fail_closed = any_match(
+            paths,
+            lambda p: starts(p, ".github/actions/")
+            or p
+            in {
+                ".github/workflows/ci.yml",
+                "scripts/ci/changed_paths.py",
+            },
+        )
+        if fail_closed:
+            for key in OUTPUT_KEYS:
+                result[key] = True
+        elif any_match(
+            paths,
+            lambda p: p
+            in {
+                ".github/workflows/release.yml",
+                ".github/workflows/build-incus-image.yml",
+            },
+        ):
+            result["release"] = True
 
     return result
 

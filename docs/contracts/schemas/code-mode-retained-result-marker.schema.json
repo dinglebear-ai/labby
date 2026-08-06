@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dinglebear.ai/schemas/labby/code-mode-retained-result-marker-v1.json",
+  "title": "Labby Code Mode Retained Result Marker",
+  "description": "The JSON truncation marker emitted by `truncate_execution_response` when a Code Mode final result exceeds the response envelope budget. Fields `truncated`, `original_size`, `original_tokens`, `preview`, `artifacts`, and `next_action` are the pre-existing shape (labby-codemode/src/truncate.rs::truncation_marker); `result_handle` and `retained_until` are additive and present ONLY when the value was admitted to the retained-result store.",
+  "type": "object",
+  "required": [
+    "truncated",
+    "original_size",
+    "original_tokens",
+    "preview",
+    "next_action"
+  ],
+  "properties": {
+    "truncated": {
+      "const": true
+    },
+    "original_size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Serialized byte length of the pre-truncation result."
+    },
+    "original_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Estimated tokens: ceil(original_size / token_estimate_divisor), floor 1."
+    },
+    "preview": {
+      "type": "string",
+      "description": "UTF-8-boundary-safe prefix of the serialized result, capped at 1024 bytes."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "description": "Artifact receipts carried through unchanged from the execution response."
+    },
+    "next_action": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model-facing guidance, and self-contained: when `result_handle` is present this text names that field explicitly, so a caller reading only `next_action` can act. Reduce-before-return remains the leading instruction; paging is mentioned second and qualified to expensive or rate-limited calls."
+    },
+    "result_handle": {
+      "$ref": "#/$defs/handle"
+    },
+    "retained_until": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC instant after which the handle is guaranteed unusable. Fixed at creation; never extended by access."
+    },
+    "retained_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Serialized byte length actually retained. Equals `original_size` in v1."
+    }
+  },
+  "dependentRequired": {
+    "result_handle": [
+      "retained_until"
+    ],
+    "retained_until": [
+      "result_handle"
+    ]
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "handle": {
+      "type": "string",
+      "pattern": "^cmr_[0-9a-f]{32}$",
+      "description": "Opaque retained-result handle: the literal prefix `cmr_` followed by 32 lowercase hex characters (UUID v4, hyphens stripped). Carries no encoded ownership, path, or secret material — it is an unguessable lookup key only.",
+      "examples": [
+        "cmr_9f2c41d8a7b04e6ab1c35d90e7f26a48"
+      ]
+    }
+  }
+}

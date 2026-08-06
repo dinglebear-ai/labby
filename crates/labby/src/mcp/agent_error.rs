@@ -61,8 +61,10 @@ mod tests {
 
     #[test]
     fn protocol_error_contains_recovery_and_context() {
-        let mut context = AgentErrorContext::default();
-        context.prompt = Some("missing-prompt".to_string());
+        let context = AgentErrorContext {
+            prompt: Some("missing-prompt".to_string()),
+            ..Default::default()
+        };
         let error = invalid_params(
             "not_found",
             "unknown prompt: missing-prompt",

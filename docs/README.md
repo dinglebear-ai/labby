@@ -13,10 +13,14 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [SERVICES.md](./dev/SERVICES.md), [CLI.md](./surfaces/CLI.md), and [MCP.md](./surfaces/MCP.md) for current surface-specific behavior. [MCP_CONFORMANCE.md](./surfaces/MCP_CONFORMANCE.md) records the rmcp 3.1.0 and MCP 2026-07-28 conformance contract. [TUI.md](./surfaces/TUI.md) records deferred TUI status.
 - Use [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md) for the human-readable CLI output language and shared color policy.
 - Use [design/component-development.md](./design/component-development.md) and [design/design-system-contract.md](./design/design-system-contract.md) when building or revising Labby web UI components.
+- Use [assets/brand/README.md](./assets/brand/README.md) for the brand mark system, the rendered brand assets and how to regenerate them, and the manual GitHub social-preview upload step.
 - Use [CONFIG.md](./runtime/CONFIG.md), [INCUS.md](./runtime/INCUS.md), [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md), and [OPERATIONS.md](./OPERATIONS.md) for setup, recommended Incus deployment, gateway runtime choices, and operator workflows.
 - Use [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) to expose one
   stdio MCP server directly over loopback or an owned Tailscale Serve port.
 - Refer to [OAUTH.md](./runtime/OAUTH.md) for bearer vs OAuth mode selection, Google-backed authorization flow, lab-issued JWT behavior, and callback-forwarding constraints.
+- Use [design/GOOGLE_CREDENTIAL_BROKER.md](./design/GOOGLE_CREDENTIAL_BROKER.md)
+  for the shared inbound/outbound Google credential architecture, schema, scope
+  upgrades, API/CLI contracts, migration, rollout, and security model.
 - Use [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
 - Use [GATEWAY.md](./services/GATEWAY.md) when managing upstream MCP gateways over CLI, MCP, `/v1/gateway`, or Gateway-managed OAuth protected MCP routes.
 - Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.

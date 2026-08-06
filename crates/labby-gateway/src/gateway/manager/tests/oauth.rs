@@ -40,6 +40,7 @@ async fn reload_evicts_removed_upstream_oauth_clients() {
         mode: UpstreamOauthMode::AuthorizationCodePkce,
         registration: UpstreamOauthRegistration::Dynamic,
         scopes: None,
+        credential: Default::default(),
         prefer_client_metadata_document: None,
     });
     manager

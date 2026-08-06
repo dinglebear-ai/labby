@@ -2227,11 +2227,12 @@ Manage upstream MCP server OAuth credentials
 Usage: auth [OPTIONS] <COMMAND>
 
 Commands:
-  start   Start the upstream OAuth flow and print the browser authorization URL
-  open    Start the upstream OAuth flow and open the authorization URL in a browser
-  status  Read upstream OAuth status for the shared gateway credential
-  clear   Clear stored upstream OAuth credentials for the shared gateway credential
-  help    Print this message or the help of the given subcommand(s)
+  start          Start the upstream OAuth flow and print the browser authorization URL
+  open           Start the upstream OAuth flow and open the authorization URL in a browser
+  status         Read upstream OAuth status for the shared gateway credential
+  clear          Clear stored dedicated upstream OAuth credentials
+  revoke-google  Revoke the central Google provider credential and all dependent Labby grants
+  help           Print this message or the help of the given subcommand(s)
 
 Options:
       --json
@@ -2361,7 +2362,7 @@ Options:
 ## `labby gateway mcp auth clear`
 
 ```text
-Clear stored upstream OAuth credentials for the shared gateway credential
+Clear stored dedicated upstream OAuth credentials
 
 Usage: clear [OPTIONS] <NAME>
 
@@ -2390,6 +2391,34 @@ Options:
 
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway mcp auth revoke-google`
+
+```text
+Revoke the central Google provider credential and all dependent Labby grants
+
+Usage: revoke-google [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --confirm
+          Confirm revocation of a credential shared by Google MCP servers and inbound grants
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
 
   -h, --help
           Print help

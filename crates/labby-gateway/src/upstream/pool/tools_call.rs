@@ -26,6 +26,24 @@ impl UpstreamPool {
         subject: &str,
         params: CallToolRequestParams,
     ) -> Result<CallToolResponse, String> {
+        self.subject_scoped_call_tool_once_classified(config, subject, params)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// [`Self::subject_scoped_call_tool_once`] while preserving the upstream
+    /// failure class for the MCP proxy.
+    ///
+    /// A connect failure surfaces as [`CapabilityCallError::Transport`]; like
+    /// the string variant it is NOT recorded against the circuit breaker here
+    /// (subject-scoped connects are per-caller credentials, and the pooled
+    /// upstream connection may be perfectly healthy).
+    pub async fn subject_scoped_call_tool_once_classified(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        params: CallToolRequestParams,
+    ) -> Result<CallToolResponse, CapabilityCallError> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
@@ -34,9 +52,11 @@ impl UpstreamPool {
         let (peer, _tools) = self
             .acquire_or_connect_subject(config, subject)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| CapabilityCallError::Transport {
+                message: error.to_string(),
+            })?;
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call_str(
+        timed_capability_call(
             self,
             &config.name,
             UpstreamCapability::Tools,
@@ -176,6 +196,24 @@ impl UpstreamPool {
         upstream_name: &str,
         params: CallToolRequestParams,
     ) -> Option<Result<CallToolResponse, String>> {
+        self.call_tool_once_classified(upstream_name, params)
+            .await
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+
+    /// [`Self::call_tool_once`] while preserving the upstream failure class
+    /// for the MCP proxy (mirrors [`Self::call_tool_classified`]).
+    ///
+    /// Health accounting is owned entirely by `timed_capability_call`: a
+    /// [`CapabilityCallError::Mcp`] means the pool recorded SUCCESS (a valid
+    /// JSON-RPC error proves the connection is alive); transport-class
+    /// failures were already recorded as breaker failures. Callers must NOT
+    /// call `record_failure`/`record_success` again for these outcomes.
+    pub async fn call_tool_once_classified(
+        &self,
+        upstream_name: &str,
+        params: CallToolRequestParams,
+    ) -> Option<Result<CallToolResponse, CapabilityCallError>> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
         let event = UpstreamRequestLog::tool(upstream_name, &tool_name, false);
@@ -185,7 +223,7 @@ impl UpstreamPool {
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
         Some(
-            timed_capability_call_str(
+            timed_capability_call(
                 self,
                 upstream_name,
                 UpstreamCapability::Tools,
@@ -214,12 +252,13 @@ mod tests {
     };
     use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
-    use super::super::super::types::UpstreamRuntimeMetadata;
+    use super::super::super::types::{UpstreamHealth, UpstreamRuntimeMetadata};
     use super::super::SubjectScopedConnection;
     use super::super::entries::healthy_in_process_entry;
     use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
     use super::super::testsupport::*;
     use super::super::{UpstreamConnection, UpstreamPool};
+    use super::CapabilityCallError;
 
     #[tokio::test]
     async fn call_tool_times_out_slow_upstream_response() {
@@ -232,6 +271,73 @@ mod tests {
             .expect_err("slow tool call should time out");
 
         assert!(result.contains("timed out"));
+    }
+
+    /// The classified once-variant (the MCP proxy's pooled path) records a
+    /// transport-class failure EXACTLY once. The proxy layer must not record
+    /// again on top of this — a double count would halve the effective
+    /// `CIRCUIT_BREAKER_THRESHOLD` (bead `lab-ak0mh`).
+    #[tokio::test]
+    async fn call_tool_once_classified_timeout_records_exactly_one_failure() {
+        let pool = slow_response_pool("slow").await;
+
+        let error = pool
+            .call_tool_once_classified("slow", CallToolRequestParams::new("slow.tool"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("slow tool call should time out");
+
+        assert!(
+            matches!(error, CapabilityCallError::Timeout { .. }),
+            "expected Timeout class, got {error:?}"
+        );
+        assert!(
+            matches!(
+                pool.upstream_tool_health("slow").await,
+                Some(UpstreamHealth::Unhealthy {
+                    consecutive_failures: 1
+                })
+            ),
+            "one transport failure must be recorded exactly once"
+        );
+        assert!(
+            pool.upstream_tool_last_error("slow")
+                .await
+                .expect("timeout recorded as last error")
+                .contains("timed out")
+        );
+    }
+
+    /// The classified once-variant preserves the MCP application-error class
+    /// and the pool records SUCCESS for it: a valid JSON-RPC error proves the
+    /// connection is alive, so health stays `Healthy` and no last-error is set.
+    #[tokio::test]
+    async fn call_tool_once_classified_mcp_error_keeps_health_and_class() {
+        let pool = UpstreamPool::new();
+        pool.insert_mcp_error_server_for_tests(
+            "rejecting",
+            ErrorData::invalid_params("unknown field `since`", None),
+        )
+        .await;
+
+        let error = pool
+            .call_tool_once_classified("rejecting", CallToolRequestParams::new("reject.tool"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("application error should reach the caller");
+
+        assert!(
+            matches!(error, CapabilityCallError::Mcp { .. }),
+            "expected Mcp class, got {error:?}"
+        );
+        assert_eq!(pool.upstream_tool_last_error("rejecting").await, None);
+        assert!(
+            matches!(
+                pool.upstream_tool_health("rejecting").await,
+                Some(UpstreamHealth::Healthy)
+            ),
+            "valid MCP error response must not poison connection health"
+        );
     }
 
     #[tokio::test]

@@ -1,11 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Plugin>
   <Name>Labby</Name>
-  <PluginURL>https://raw.githubusercontent.com/dinglebear-ai/labby/main/unraid/labby.plg</PluginURL>
+  <!-- Must match labby.plg's pluginURL entity BYTE-FOR-BYTE, not merely
+       resolve to the same content. The github.com/OWNER/REPO/raw/... and
+       raw.githubusercontent.com/OWNER/REPO/... forms serve identical bytes
+       but are different strings, and CA compares strings — enforced by
+       scripts/ci/unraid-plugin-checksums.sh. -->
+  <PluginURL>https://github.com/dinglebear-ai/labby/raw/main/unraid/labby.plg</PluginURL>
+  <PluginAuthor>jmagar</PluginAuthor>
   <Support>https://github.com/dinglebear-ai/labby/issues</Support>
   <Project>https://github.com/dinglebear-ai/labby</Project>
-  <Overview>Labby is a Rust homelab control plane with MCP gateway, CLI, HTTP API, dashboard, registry, and native Unraid integration.</Overview>
+  <Overview>Labby is a Rust homelab control plane with MCP gateway, CLI, HTTP API, dashboard, and native Unraid integration. Runs the gateway natively via rc.d (no Docker required) with an optional Incus-backed mode for stdio MCP server workloads. State persists to appdata; config lives on flash.</Overview>
   <Category>Tools:System</Category>
-  <Icon>https://raw.githubusercontent.com/dinglebear-ai/labby/main/icon.svg</Icon>
+  <!-- No <MinVer> here on purpose: labby.plg carries min="7.0.0" on its
+       PLUGIN tag, which CA gives precedence to and which the plugin manager
+       additionally enforces on direct Install-Plugin-URL installs. One
+       source of truth for the version floor — see docs/runtime/UNRAID.md. -->
+  <!-- Must track Cargo.toml's `license` field and LICENSING.md. The project
+       moved from MIT to AGPL-3.0-only (with separate commercial terms) in
+       #346; AGPL-3.0 is OSI-approved, which is what CA requires. Do not
+       advertise the commercial option here — CA's field describes the
+       open-source license the listing is distributed under. -->
+  <License>AGPL-3.0-only</License>
+  <Icon>https://raw.githubusercontent.com/dinglebear-ai/labby/main/unraid/source/usr/local/emhttp/plugins/labby/images/labby.png</Icon>
   <ReadMe>https://raw.githubusercontent.com/dinglebear-ai/labby/main/README.md</ReadMe>
 </Plugin>

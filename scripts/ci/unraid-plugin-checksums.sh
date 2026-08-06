@@ -8,7 +8,7 @@
 # Usage:
 #   scripts/ci/unraid-plugin-checksums.sh [--fix] [--tag vX.Y.Z] [--tarball PATH]
 #
-# --tag and --tarball are optional: without them, only the eleven
+# --tag and --tarball are optional: without them, only the thirteen
 # unraid/source/ companion-file checksums are checked (cheap, safe to run
 # on every PR — this is what ci.yml's always-on unraid-plugin-check job
 # runs). --tag/--tarball are a MANUAL tool, not wired into any CI job:
@@ -28,6 +28,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 plg="$repo_root/unraid/labby.plg"
 src="$repo_root/unraid/source/usr/local/emhttp/plugins/labby"
+ca="$repo_root/unraid/ca/labby.xml"
 
 fix=0
 tag=""
@@ -96,6 +97,38 @@ check_or_fix unmountingMD5 "$(md5_of "$src/event/unmounting_disks")" "unraid/sou
 check_or_fix incusProfileMD5 "$(md5_of "$src/incus/labby-gateway-profile.yaml")" "unraid/source/.../incus/labby-gateway-profile.yaml"
 check_or_fix incusEnvMD5 "$(md5_of "$src/scripts/labby-incus-env.sh")" "unraid/source/.../scripts/labby-incus-env.sh"
 check_or_fix incusInitMD5 "$(md5_of "$src/scripts/labby-incus-init.sh")" "unraid/source/.../scripts/labby-incus-init.sh"
+check_or_fix iconMD5 "$(md5_of "$src/images/labby.png")" "unraid/source/.../images/labby.png"
+check_or_fix tabIconMD5 "$(md5_of "$src/icons/labby.png")" "unraid/source/.../icons/labby.png"
+
+# The Community Applications plugin template's <PluginURL> must resolve to
+# byte-identical the same URL as labby.plg's pluginURL entity. CA uses it to
+# fetch the .plg for version/changelog display and to wire the Apps-page
+# install button; a mismatch silently breaks that button with no error on
+# either side, which is why this is checked rather than trusted. --fix does
+# not apply here: which of the two is wrong is a judgement call (the repo
+# could have moved, or the CA entry could be stale), so this always reports
+# and never rewrites.
+expand_plugin_url() {
+    # Resolve pluginURL through the two entities it is composed from
+    # (pluginURL -> rawURL -> repoURL) rather than assuming a flat literal.
+    local repo raw plugin_url
+    repo="$(entity_value repoURL)"
+    raw="$(entity_value rawURL)"
+    plugin_url="$(entity_value pluginURL)"
+    raw="${raw//&repoURL;/$repo}"
+    plugin_url="${plugin_url//&rawURL;/$raw}"
+    plugin_url="${plugin_url//&repoURL;/$repo}"
+    printf '%s' "$plugin_url"
+}
+
+if [ -f "$ca" ]; then
+    plg_plugin_url="$(expand_plugin_url)"
+    ca_plugin_url="$(grep -oP '(?<=<PluginURL>)[^<]+' "$ca" || true)"
+    if [ "$plg_plugin_url" != "$ca_plugin_url" ]; then
+        echo "::error::unraid/ca/labby.xml <PluginURL> is '$ca_plugin_url' but unraid/labby.plg's pluginURL entity resolves to '$plg_plugin_url'. Community Applications requires these to match exactly; fix whichever is wrong by hand." >&2
+        mismatch=1
+    fi
+fi
 
 if [ -n "$tag" ]; then
     # labbyVersion tracks the bundled labby release tag; the top-level
