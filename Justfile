@@ -53,7 +53,8 @@ build:
 # NOT ship a binary — hosts install labby via scripts/install.sh or cargo.
 build-release:
     cargo build --workspace --all-features --release
-    install -D -m 755 target/release/labby bin/labby
+    mkdir -p bin
+    install -m 755 target/release/labby bin/labby
     just link-bin
 
 # Copy the compiled binary into PATH.
@@ -85,7 +86,7 @@ _install-labby-bin profile:
     if [ -x ~/.local/bin/labby ]; then
       cp -f ~/.local/bin/labby ~/.local/bin/labby.prev
     fi
-    install -D -m 755 "$LABBY_BIN" ~/.local/bin/labby.new
+    install -m 755 "$LABBY_BIN" ~/.local/bin/labby.new
     mv ~/.local/bin/labby.new ~/.local/bin/labby
     echo "labby → $LABBY_BIN"
 
@@ -101,7 +102,7 @@ host-sync:
     fi
     cargo build --workspace --all-features --profile "$profile" --bin labby
     LABBY_BIN="target/$profile/labby"
-    sudo install -D -m 755 "$LABBY_BIN" /usr/local/bin/labby
+    sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     if systemctl is-active --quiet labby.service; then
       sudo /usr/local/bin/labby setup host-service restart -y
       sudo /usr/local/bin/labby setup host-service status --json
@@ -134,7 +135,7 @@ host-service-install:
       /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
       *)  LABBY_BIN="$(pwd)/$LABBY_TARGET_DIR/$profile/labby" ;;
     esac
-    sudo install -D -m 755 "$LABBY_BIN" /usr/local/bin/labby
+    sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     sudo /usr/local/bin/labby setup host-service install -y
 
 host-service-restart:
@@ -156,7 +157,8 @@ dev-container-debug:
     nightly_rustc=$(rustup which --toolchain nightly rustc)
     RUSTC="$nightly_rustc" RUSTC_WRAPPER="" RUSTFLAGS="-C link-arg=-fuse-ld=mold -Z codegen-backend=cranelift" \
         cargo build -p labby --all-features
-    install -D -m 755 target/debug/labby bin/labby
+    mkdir -p bin
+    install -m 755 target/debug/labby bin/labby
     docker compose -f docker-compose.yml restart
 
 # Explicit container sync path. The normal gateway workflow is host-sync.
@@ -193,7 +195,8 @@ sync-container:
       echo "$profile binary is current: $LABBY_BIN"
     fi
 
-    install -D -m 755 "$LABBY_BIN" bin/labby
+    mkdir -p bin
+    install -m 755 "$LABBY_BIN" bin/labby
     mkdir -p ~/.local/bin
     ln -sf "$LABBY_BIN" ~/.local/bin/labby
     echo "labby → $LABBY_BIN"
