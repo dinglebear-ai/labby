@@ -29,7 +29,7 @@ Dependency direction:
 |--------|---------|
 | `pool/helpers.rs` | Leaf knobs + constants (`DISCOVERY_TIMEOUT`, `DEFAULT_MAX_RESPONSE_BYTES`, …), error classification, naming, redaction, `UpstreamCachedSummary`, prompt/resource merge/rewrite/`cached_upstream_tool`, `max_response_bytes()`, `estimate_response_size`. |
 | `pool/logging.rs` | `UpstreamRequestLog` + `log_upstream_request_{start,finish,error}`, `capability_name`, `is_capability_unsupported`. |
-| `pool/entries.rs` | `UpstreamEntry` constructors, `resolve_exposure_policy`, `health_str`. |
+| `pool/entries.rs` | `UpstreamEntry` constructors, `health_str`, and the **single** fail-closed exposure-policy compiler (`resolve_named_exposure_policy`) that `expose_tools`/`expose_resources`/`expose_prompts` all resolve through, plus the `prompt_exposed`/`resource_exposed` matchers and the shared `log_exposure_filter` debug event. Never add a second policy implementation. |
 | `pool/validate.rs` | `validate_upstream_config` + the `validate_*` tests. |
 | `pool/connect.rs` | `connect_upstream` / `_http` / `_websocket`, `runtime_origin_label`, jitter/oauth-log helpers (reads env). All transport fns are generic over the client handler `H: ClientHandler`; `connect_upstream_with_client` passes `()` (the default for pooled connections), while `connect_upstream_with_handler` is the seam the relay path uses to install a `RelayClientHandler`. |
 | `pool/http_cancellation.rs` | Builds the bounded HTTP/Unix-socket cancellation side channel, serializes relay-token requests and standard cancellation notifications, and requires an acknowledged relay-token response before treating delivery as correlated. |
@@ -51,10 +51,13 @@ Dependency direction:
 | `pool/tools_exposure_tests.rs` | Focused regressions for `expose_tools` parity between the catalog-backed and OAuth subject-scoped paths: symmetry, fail-closed on a malformed or empty allowlist, per-upstream policy isolation, and hidden-means-uncallable. |
 | `pool/usage_record.rs` | `record_usage_call` — fire-and-forget usage-telemetry write after every tool/resource/prompt call outcome, bounded by `UsageStore`'s write semaphore. |
 | `pool/health.rs` | Circuit breaker: `record_*`, `should_reprobe*`, `*_last_error`, `filter_collisions`, `upstream_status`/`upstream_count`. |
+| `pool/resources_exposure_tests.rs` | Regressions pinning `expose_resources` on both the listing and the read (list-only filtering is a bypass). |
+| `pool/prompts_exposure_tests.rs` | Regressions pinning `expose_prompts` on the listing, `prompts/get`, and subject-scoped owner lookup. |
 | `pool/resources_list.rs` | Resource listing + synthetic `gateway_*` documents. Native `ui://` (mcp-ui) resources skip the `lab://upstream/{name}/…` rewrite so they stay addressable by the same URI a tool's `_meta.ui.resourceUri` references. |
 | `pool/resources_read.rs` | `read_upstream_resource` + `subject_scoped_read_resource` + `read_upstream_ui_resource` (reverse-looks-up the owning upstream by cached native `ui://` `resource_uris`, forwards the read, preserves the native URI — **no** `lab://upstream/` rewrite — for mcp-ui widget resources). |
 | `pool/prompts_list.rs` | Prompt listing + ownership lookup (`collect_upstream_prompts`, `find_prompt_owner`, …). |
 | `pool/prompts_get.rs` | `subject_scoped_prompts`, `get_prompt`, `subject_scoped_get_prompt`. |
+| `pool/prompts_exposure.rs` | `retain_exposed_prompts` — applies the compiled `expose_prompts` policy to an already-merged prompt list. |
 | `pool/testsupport.rs` | `#[cfg(test)]` shared fixtures + mock servers (`pub(super)`). |
 
 **The 500-LOC limit (tests included) remains the target and the rule for new
@@ -99,4 +102,15 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 - The pool is constructed in `cli/serve.rs` and injected into `AppState` and `LabMcpServer`.
 - Circuit breaker state is internal to the pool. Surfaces call `record_failure()` and `record_success()`. Open circuits use exponential quarantine, and every failed reprobe resets the quarantine clock.
 - Every caller-attributed upstream RPC must pass through the per-upstream bulkhead. Do not bypass `timed_capability_call` or the relay generation registration when adding tool, prompt, resource, or task paths. The documented exceptions are the fan-out aggregation passes — discovery (`pool/discover.rs`) and prompt/resource listing (`pool/prompts_list.rs`, `pool/resources_list.rs`) — which run under their own discovery concurrency/timeout bounds, keep deliberate partial-result semantics, and record per-upstream failures via the circuit breaker, `*_last_error`, and classified `warn!` logs instead.
+- **Exposure is enforced on discovery *and* on access.** `expose_tools`,
+  `expose_resources`, and `expose_prompts` must each gate the listing path and
+  the direct-access path (`tools/call`, `resources/read`, `prompts/get`,
+  `completion/complete`) on every routing variant — catalog-backed, OAuth
+  subject-scoped, and MRTR relay. Filtering only the list leaves the item
+  reachable by name/URI, which is a bypass, not a restriction. Catalog-backed
+  paths read the compiled policy off `UpstreamEntry`; subject-scoped and relay
+  paths have no catalog entry and resolve it from the live `UpstreamConfig`
+  through the same `pool/entries.rs` helpers. The cached
+  `prompt_names`/`resource_uris` inspection snapshots stay deliberately
+  unfiltered so the admin exposure editor can still see excluded entries.
 - Stdio lifecycle ownership lives in `pool/stdio_transport.rs`; it is the single waiter for child exit so PID, generation, exit status, stderr tail, and invalidated requests remain correlated.

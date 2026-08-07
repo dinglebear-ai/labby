@@ -3,6 +3,13 @@
 //! Both acquire/connect the upstream peer, read the resource with a request
 //! timeout, normalize the returned URIs to the gateway form, enforce the
 //! response-size cap, and emit structured request logs.
+//!
+//! Both also enforce `expose_resources`. Filtering only `resources/list` would
+//! be a bypass, not a restriction: an excluded resource would stay directly
+//! readable by anyone who knows (or guesses) its URI. The read is the gate that
+//! actually matters, so it is applied at the single choke point every read
+//! funnels through (`read_resource_request_from_peer`) and, for the OAuth path,
+//! on the live config in `subject_scoped_read_resource_request`.
 
 use std::time::Instant;
 
@@ -13,6 +20,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::timed_capability_call_str;
+use super::entries::{resolve_request_resource_exposure_policy, resource_exposed};
 use super::helpers::{
     estimate_resource_response_size, normalize_resource_result_uri,
     redact_resource_uri_for_logging, upstream_transport,
@@ -189,6 +197,29 @@ impl UpstreamPool {
         normalize_uri: &str,
         start: Instant,
     ) -> Option<Result<ReadResourceResult, String>> {
+        // Single choke point for `expose_resources` on the catalog-backed read
+        // path: both callers have already reduced `params.uri` to the bare,
+        // upstream-native URI (the gateway prefix stripped, or a native `ui://`
+        // URI passed through), which is the form the allowlist is written in.
+        // Fail closed when the upstream has no catalog entry — an unknown
+        // policy is not permission to read.
+        if !self
+            .resource_uri_is_exposed(upstream_name, &params.uri)
+            .await
+        {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "resource.read",
+                capability = "resources",
+                upstream = %upstream_name,
+                resource_uri = %redact_resource_uri_for_logging(&params.uri),
+                kind = "resource_not_exposed",
+                "upstream resource read blocked by exposure policy"
+            );
+            return None;
+        }
+
         let peer = self
             .acquire_peer(
                 upstream_name,
@@ -260,6 +291,18 @@ impl UpstreamPool {
         .await
     }
 
+    /// Whether `resource_uri` (bare, upstream-native) is exposed by the cached
+    /// `expose_resources` policy for `upstream_name`.
+    ///
+    /// Returns `false` when the upstream has no catalog entry: without a known
+    /// policy there is nothing authorizing the read.
+    async fn resource_uri_is_exposed(&self, upstream_name: &str, resource_uri: &str) -> bool {
+        let catalog = self.catalog.read().await;
+        catalog
+            .get(upstream_name)
+            .is_some_and(|entry| resource_exposed(&entry.resource_exposure_policy, resource_uri))
+    }
+
     pub async fn subject_scoped_read_resource_request(
         &self,
         config: &UpstreamConfig,
@@ -273,6 +316,32 @@ impl UpstreamPool {
             .strip_prefix(&prefix)
             .ok_or_else(|| "resource uri does not match upstream".to_string())?
             .to_string();
+        // OAuth reads never touch the catalog, so resolve the same fail-closed
+        // policy from the live config. Without this the list filter above would
+        // be cosmetic: the URI stays readable by anyone who knows it.
+        if !resource_exposed(
+            &resolve_request_resource_exposure_policy(
+                &config.name,
+                config.expose_resources.clone(),
+            ),
+            &params.uri,
+        ) {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "resource.read",
+                capability = "resources",
+                upstream = %config.name,
+                subject_scoped = true,
+                resource_uri = %redact_resource_uri_for_logging(&gateway_uri),
+                kind = "resource_not_exposed",
+                "upstream resource read blocked by exposure policy"
+            );
+            return Err(format!(
+                "resource is not exposed by upstream `{}`",
+                config.name
+            ));
+        }
         let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
         let event = UpstreamRequestLog::resource(&config.name, redacted_uri, true)
             .with_transport(upstream_transport(config));

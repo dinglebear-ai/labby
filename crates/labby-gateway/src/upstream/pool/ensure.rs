@@ -19,7 +19,7 @@ use super::super::types::{UpstreamCapability, UpstreamRuntimeOwner};
 use super::TestUpstreamConnector;
 use super::UpstreamPool;
 use super::connect::connect_upstream_with_client;
-use super::entries::{lazy_upstream_entry, resolve_exposure_policy};
+use super::entries::{lazy_upstream_entry, resolve_upstream_exposure_policies};
 use super::helpers::{
     cached_upstream_tool, upstream_discovery_timeout, upstream_name_is_uri_safe,
     upstream_target_redacted, upstream_transport,
@@ -320,7 +320,7 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         tools: Vec<rmcp::model::Tool>,
     ) {
-        let exposure_policy = resolve_exposure_policy(&config.name, config.expose_tools.clone());
+        let exposure_policies = resolve_upstream_exposure_policies(config);
         let upstream_name: Arc<str> = Arc::from(config.name.as_str());
         let tools = tools
             .into_iter()
@@ -330,7 +330,9 @@ impl UpstreamPool {
         let mut catalog = self.catalog.write().await;
         if let Some(entry) = catalog.get_mut(&config.name) {
             entry.tools = tools;
-            entry.exposure_policy = exposure_policy;
+            entry.exposure_policy = exposure_policies.tools;
+            entry.resource_exposure_policy = exposure_policies.resources;
+            entry.prompt_exposure_policy = exposure_policies.prompts;
         }
     }
 

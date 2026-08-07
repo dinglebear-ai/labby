@@ -835,6 +835,8 @@ mod tests {
                 },
             )]),
             exposure_policy: ToolExposurePolicy::All,
+            resource_exposure_policy: ToolExposurePolicy::All,
+            prompt_exposure_policy: ToolExposurePolicy::All,
             proxy_resources: false,
             prompt_count: 0,
             resource_count: 0,

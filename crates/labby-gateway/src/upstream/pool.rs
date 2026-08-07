@@ -46,6 +46,9 @@ mod notifications;
 #[cfg(test)]
 mod notifications_tests;
 mod probe;
+mod prompts_exposure;
+#[cfg(test)]
+mod prompts_exposure_tests;
 mod prompts_get;
 mod prompts_list;
 mod registration;
@@ -53,6 +56,8 @@ mod relay;
 mod relay_cancellation;
 #[cfg(test)]
 mod relay_cancellation_tests;
+#[cfg(test)]
+mod resources_exposure_tests;
 mod resources_list;
 mod resources_read;
 mod spawn_lock;

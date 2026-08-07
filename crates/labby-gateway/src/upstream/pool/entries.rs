@@ -4,6 +4,12 @@
 //! lazy, healthy in-process, and failed upstreams, plus the `health_str`
 //! classifier and the `resolve_exposure_policy` fail-closed helper. They are
 //! `pub(super)` so the pool module and its descendants can call them.
+//!
+//! All three operator allowlists — `expose_tools`, `expose_resources`, and
+//! `expose_prompts` — compile through the *same* fail-closed resolver
+//! ([`resolve_named_exposure_policy`]). There is deliberately no second policy
+//! implementation: an unparseable allowlist hides everything for that
+//! capability rather than silently degrading to "expose all".
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,6 +35,14 @@ pub(super) fn lazy_upstream_entry(config: &UpstreamConfig, name: Arc<str>) -> Up
         name,
         tools: HashMap::new(),
         exposure_policy: resolve_exposure_policy(&config.name, config.expose_tools.clone()),
+        resource_exposure_policy: resolve_resource_exposure_policy(
+            &config.name,
+            config.expose_resources.clone(),
+        ),
+        prompt_exposure_policy: resolve_prompt_exposure_policy(
+            &config.name,
+            config.expose_prompts.clone(),
+        ),
         proxy_resources: config.proxy_resources,
         prompt_count: 0,
         resource_count: 0,
@@ -54,6 +68,8 @@ pub(super) fn healthy_in_process_entry(
         name,
         tools,
         exposure_policy: ToolExposurePolicy::All,
+        resource_exposure_policy: ToolExposurePolicy::All,
+        prompt_exposure_policy: ToolExposurePolicy::All,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
@@ -76,6 +92,8 @@ pub(super) fn failed_in_process_entry(name: Arc<str>, error_message: String) -> 
         name,
         tools: HashMap::new(),
         exposure_policy: ToolExposurePolicy::All,
+        resource_exposure_policy: ToolExposurePolicy::All,
+        prompt_exposure_policy: ToolExposurePolicy::All,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
@@ -133,7 +151,7 @@ pub(super) fn resolve_exposure_policy(
     upstream_name: &str,
     expose_tools: Option<Vec<String>>,
 ) -> ToolExposurePolicy {
-    resolve_exposure_policy_inner(upstream_name, expose_tools, true)
+    resolve_named_exposure_policy(upstream_name, "expose_tools", "tools", expose_tools)
 }
 
 /// [`resolve_exposure_policy`] for paths that run once per request.
@@ -148,33 +166,201 @@ pub(super) fn resolve_request_exposure_policy(
     upstream_name: &str,
     expose_tools: Option<Vec<String>>,
 ) -> ToolExposurePolicy {
-    resolve_exposure_policy_inner(upstream_name, expose_tools, false)
+    resolve_request_named_exposure_policy(upstream_name, "expose_tools", "tools", expose_tools)
 }
 
-fn resolve_exposure_policy_inner(
+/// All three compiled allowlists for one upstream.
+///
+/// Resolved together from a single `UpstreamConfig` so a catalog entry can
+/// never be built with one capability's policy applied and another's dropped —
+/// the exact drift that left `expose_resources`/`expose_prompts` unenforced.
+pub(super) struct UpstreamExposurePolicies {
+    pub(super) tools: ToolExposurePolicy,
+    pub(super) resources: ToolExposurePolicy,
+    pub(super) prompts: ToolExposurePolicy,
+}
+
+pub(super) fn resolve_upstream_exposure_policies(
+    config: &UpstreamConfig,
+) -> UpstreamExposurePolicies {
+    UpstreamExposurePolicies {
+        tools: resolve_exposure_policy(&config.name, config.expose_tools.clone()),
+        resources: resolve_resource_exposure_policy(&config.name, config.expose_resources.clone()),
+        prompts: resolve_prompt_exposure_policy(&config.name, config.expose_prompts.clone()),
+    }
+}
+
+/// Compile `expose_resources` into the shared exposure policy (catalog-build).
+pub(super) fn resolve_resource_exposure_policy(
     upstream_name: &str,
-    expose_tools: Option<Vec<String>>,
+    expose_resources: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_named_exposure_policy(
+        upstream_name,
+        "expose_resources",
+        "resources",
+        expose_resources,
+    )
+}
+
+/// [`resolve_resource_exposure_policy`] for paths that run once per request.
+///
+/// Resource listing, direct reads, MRTR-relayed reads, and completion all
+/// resolve from live config per request, so they need the same WARN-suppression
+/// the tools request path has.
+pub(super) fn resolve_request_resource_exposure_policy(
+    upstream_name: &str,
+    expose_resources: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_request_named_exposure_policy(
+        upstream_name,
+        "expose_resources",
+        "resources",
+        expose_resources,
+    )
+}
+
+/// Compile `expose_prompts` into the shared exposure policy (catalog-build).
+pub(super) fn resolve_prompt_exposure_policy(
+    upstream_name: &str,
+    expose_prompts: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_named_exposure_policy(upstream_name, "expose_prompts", "prompts", expose_prompts)
+}
+
+/// [`resolve_prompt_exposure_policy`] for paths that run once per request.
+pub(super) fn resolve_request_prompt_exposure_policy(
+    upstream_name: &str,
+    expose_prompts: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_request_named_exposure_policy(
+        upstream_name,
+        "expose_prompts",
+        "prompts",
+        expose_prompts,
+    )
+}
+
+/// The one fail-closed allowlist compiler shared by all three capabilities.
+///
+/// `field` names the operator-facing config key and `capability` names what
+/// gets hidden — both are log-only. An invalid allowlist collapses to an empty
+/// `AllowList`, i.e. *nothing* is exposed. Falling back to `All` here would
+/// turn a typo into a silent, total loss of the restriction the operator asked
+/// for, which is exactly the failure mode this helper exists to prevent.
+///
+/// Use this from **catalog-build** paths (seeding, discovery, reprobe), which run
+/// once per config change. On request paths use
+/// [`resolve_request_named_exposure_policy`] instead.
+pub(super) fn resolve_named_exposure_policy(
+    upstream_name: &str,
+    field: &str,
+    capability: &str,
+    patterns: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_named_exposure_policy_inner(upstream_name, field, capability, patterns, true)
+}
+
+fn resolve_request_named_exposure_policy(
+    upstream_name: &str,
+    field: &str,
+    capability: &str,
+    patterns: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_named_exposure_policy_inner(upstream_name, field, capability, patterns, false)
+}
+
+fn resolve_named_exposure_policy_inner(
+    upstream_name: &str,
+    field: &str,
+    capability: &str,
+    patterns: Option<Vec<String>>,
     warn: bool,
 ) -> ToolExposurePolicy {
-    match ToolExposurePolicy::from_optional(expose_tools) {
+    match ToolExposurePolicy::from_optional(patterns) {
         Ok(policy) => policy,
         Err(error) => {
             if warn {
                 tracing::warn!(
                     upstream = %upstream_name,
+                    field,
+                    capability,
                     error = %error,
-                    "invalid upstream exposure policy; hiding all upstream tools"
+                    "invalid upstream exposure policy; hiding all upstream {capability}"
                 );
             } else {
                 tracing::debug!(
                     upstream = %upstream_name,
+                    field,
+                    capability,
                     error = %error,
-                    "invalid upstream exposure policy; hiding all upstream tools"
+                    "invalid upstream exposure policy; hiding all upstream {capability}"
                 );
             }
             ToolExposurePolicy::AllowList(Vec::new())
         }
     }
+}
+
+/// Whether one upstream prompt is exposed by `policy`.
+///
+/// `prompt_name` may arrive in either spelling: the bare name the upstream
+/// itself advertises (`summarize`), or the `{upstream}/{name}` namespaced form
+/// the gateway publishes downstream and shows in `gateway.discovered_prompts`
+/// (`github/summarize`). Operators copy allowlist entries from either surface,
+/// so both are accepted. This is a spelling accommodation, not a widening: the
+/// pattern still has to match one of the two names for this one upstream.
+pub(super) fn prompt_exposed(
+    policy: &ToolExposurePolicy,
+    upstream_name: &str,
+    prompt_name: &str,
+) -> bool {
+    if matches!(policy, ToolExposurePolicy::All) {
+        return true;
+    }
+    let bare = super::helpers::bare_upstream_prompt_name(upstream_name, prompt_name);
+    policy.matches(bare)
+        || policy.matches(&super::helpers::prefixed_upstream_prompt_name(
+            upstream_name,
+            bare,
+        ))
+}
+
+/// Whether one upstream resource is exposed by `policy`.
+///
+/// `resource_uri` must be the bare, upstream-native URI — the caller strips any
+/// `lab://upstream/{name}/` gateway prefix first, so a `ui://` MCP App URI and
+/// a plain `file:///…` URI are both matched in the form the operator sees in
+/// `gateway.discovered_resources`.
+pub(super) fn resource_exposed(policy: &ToolExposurePolicy, resource_uri: &str) -> bool {
+    policy.matches(resource_uri)
+}
+
+/// Emit the one-line exposure-filter observation shared by every filtered path.
+///
+/// Kept at `debug` (not `info`) because it fires on ordinary list traffic; the
+/// point is that the filter is never silent when an operator is trying to work
+/// out why an item disappeared. Mirrors the shape used for `expose_tools`.
+pub(super) fn log_exposure_filter(
+    upstream_name: &str,
+    capability: &str,
+    hidden_count: usize,
+    exposed_count: usize,
+    subject_scoped: bool,
+) {
+    if hidden_count == 0 {
+        return;
+    }
+    tracing::debug!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        upstream = %upstream_name,
+        capability,
+        subject_scoped,
+        hidden_count,
+        exposed_count,
+        "upstream {capability} hidden by exposure policy"
+    );
 }
 
 #[cfg(test)]

@@ -409,6 +409,8 @@ fn fixture_upstream_entry(upstream: &str, tools: HashMap<String, UpstreamTool>) 
         name: Arc::from(upstream),
         tools,
         exposure_policy: ToolExposurePolicy::All,
+        resource_exposure_policy: ToolExposurePolicy::All,
+        prompt_exposure_policy: ToolExposurePolicy::All,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
