@@ -143,6 +143,9 @@ impl UpstreamPool {
     ) -> Result<CallToolResult, CapabilityCallError> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
+        if !subject_scoped_tool_is_exposed(config, &tool_name) {
+            return Err(hidden_tool_call_error(config, &tool_name));
+        }
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
