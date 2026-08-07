@@ -9,9 +9,6 @@
 //!   `call_tool*`/resource helpers can call them — visibility change only,
 //!   no logic change).
 
-#[cfg(feature = "gateway")]
-use std::borrow::Cow;
-
 use axum::http::request::Parts;
 use labby_auth::auth_context::AuthContext;
 use rmcp::RoleServer;
@@ -19,12 +16,13 @@ use rmcp::service::RequestContext;
 use sha2::{Digest, Sha256};
 
 #[cfg(feature = "gateway")]
-use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
-#[cfg(feature = "gateway")]
 use crate::dispatch::gateway::code_mode::CodeModeSurface;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 use crate::mcp::server::LabMcpServer;
+
+#[cfg(feature = "gateway")]
+pub(crate) use crate::api::oauth::oauth_upstream_subject_for_request;
 
 pub(crate) fn redact_subject_for_logging(subject: &str) -> String {
     let digest = Sha256::digest(subject.as_bytes());
@@ -128,20 +126,6 @@ pub(crate) fn auth_context_from_extensions(
 ) -> Option<&AuthContext> {
     let parts = extensions.get::<Parts>()?;
     parts.extensions.get::<AuthContext>()
-}
-
-#[cfg(feature = "gateway")]
-pub(crate) fn oauth_upstream_subject_for_request<'a>(
-    auth: Option<&AuthContext>,
-    request_subject: Option<&'a str>,
-) -> Option<Cow<'a, str>> {
-    match auth {
-        None => Some(Cow::Borrowed(SHARED_GATEWAY_OAUTH_SUBJECT)),
-        Some(ctx) if ctx.scopes.iter().any(|scope| scope == "lab:admin") => {
-            Some(Cow::Borrowed(SHARED_GATEWAY_OAUTH_SUBJECT))
-        }
-        Some(_) => request_subject.map(Cow::Borrowed),
-    }
 }
 
 pub(crate) fn tool_execute_scope_allowed(auth: Option<&AuthContext>) -> bool {

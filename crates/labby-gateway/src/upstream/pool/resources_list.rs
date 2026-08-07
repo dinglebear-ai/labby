@@ -6,25 +6,32 @@
 //! resources. `cached_upstream_resource_uris` exposes the cached snapshot.
 
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use rmcp::model::{Resource, ResourceTemplate};
 use serde_json::Value;
 
+use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::{ToolExposurePolicy, UpstreamCapability};
 use super::UpstreamPool;
-use super::capability_call::bounded_service_error_text;
+use super::capability_call::{
+    CapabilityCallError, bounded_service_error_text, timed_capability_call,
+};
 use super::connect::connect_upstream;
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
 };
 use super::discover::routable_upstream_peers;
-use super::helpers::{bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri};
-use super::logging::is_capability_unsupported;
+use super::helpers::{
+    bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri,
+    upstream_discovery_timeout, upstream_transport,
+};
+use super::logging::{UpstreamRequestLog, is_capability_unsupported, log_upstream_request_start};
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
@@ -101,14 +108,7 @@ impl UpstreamPool {
             .tools
             .values()
             .filter(|t| entry.exposure_policy.matches(&t.tool.name))
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.tool.name.as_ref(),
-                    "description": t.tool.description.as_ref().map(|s| s.as_ref()),
-                    "input_schema": t.input_schema,
-                    "meta": t.tool.meta,
-                })
-            })
+            .map(|t| render_gateway_tool_row(&t.tool, t.input_schema.clone()))
             .collect();
         tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         Some(serde_json::json!({
@@ -116,6 +116,7 @@ impl UpstreamPool {
             "tools": tools,
             "health": health_str(entry.tool_health),
             "last_error": entry.tool_last_error,
+            "catalog_source": "shared_cache",
         }))
     }
 
@@ -128,14 +129,43 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: &str,
-    ) -> Option<Value> {
-        let (_, tools) = self
-            .subject_scoped_tools(std::slice::from_ref(config), subject)
-            .await
-            .into_iter()
-            .find(|(name, _)| name == &config.name)?;
+    ) -> Result<Value, ToolError> {
+        let started = Instant::now();
+        let connect_timeout = upstream_discovery_timeout(config, self.request_timeout);
+        let (peer, _) = tokio::time::timeout(
+            connect_timeout,
+            self.acquire_or_connect_subject(config, subject),
+        )
+        .await
+        .map_err(|_| ToolError::Sdk {
+            sdk_kind: "timeout".to_string(),
+            message: format!(
+                "subject-scoped discovery for upstream `{}` timed out after {}s",
+                config.name,
+                connect_timeout.as_secs()
+            ),
+        })?
+        .map_err(|error| classified_schema_error(&config.name, &error.to_string()))?;
+
+        let event = UpstreamRequestLog::tools_list(&config.name, true)
+            .with_transport(upstream_transport(config));
+        log_upstream_request_start(event);
+        let tools = timed_capability_call(
+            self,
+            &config.name,
+            UpstreamCapability::Tools,
+            event,
+            started,
+            peer.list_all_tools(),
+            |tools| serde_json::to_vec(tools).map_or(usize::MAX, |body| body.len()),
+            Some(subject),
+            |error| format!("upstream `{}` tools/list failed: {error}", config.name),
+            format!("upstream `{}` tools/list timed out", config.name),
+        )
+        .await
+        .map_err(|error| capability_schema_error(&config.name, &error))?;
         let exposure_policy = resolve_exposure_policy(&config.name, config.expose_tools.clone());
-        Some(render_subject_scoped_gateway_schema(
+        Ok(render_subject_scoped_gateway_schema(
             &config.name,
             &tools,
             &exposure_policy,
@@ -503,12 +533,9 @@ fn render_subject_scoped_gateway_schema(
         .iter()
         .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
         .map(|tool| {
-            serde_json::json!({
-                "name": tool.name.as_ref(),
-                "description": tool.description.as_ref().map(|s| s.as_ref()),
-                "input_schema": tool.input_schema,
-                "meta": tool.meta,
-            })
+            let input_schema = (!tool.input_schema.is_empty())
+                .then(|| Value::Object((*tool.input_schema).clone()));
+            render_gateway_tool_row(tool, input_schema)
         })
         .collect();
     tool_rows.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
@@ -517,7 +544,46 @@ fn render_subject_scoped_gateway_schema(
         "tools": tool_rows,
         "health": "healthy",
         "last_error": Value::Null,
+        "catalog_source": "subject_scoped_live",
     })
+}
+
+fn render_gateway_tool_row(tool: &rmcp::model::Tool, input_schema: Option<Value>) -> Value {
+    serde_json::json!({
+        "name": tool.name.as_ref(),
+        "description": tool.description.as_ref().map(|description| description.as_ref()),
+        "input_schema": input_schema,
+        "meta": tool.meta,
+    })
+}
+
+fn classified_schema_error(upstream: &str, message: &str) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: classify_upstream_error(message).to_string(),
+        message: format!("subject-scoped discovery for upstream `{upstream}` failed: {message}"),
+    }
+}
+
+fn capability_schema_error(upstream: &str, error: &CapabilityCallError) -> ToolError {
+    let sdk_kind = match error {
+        CapabilityCallError::Timeout { .. } => "timeout",
+        CapabilityCallError::QueueSaturated { .. } => "queue_saturated",
+        CapabilityCallError::ResponseTooLarge { .. } => "response_too_large",
+        CapabilityCallError::Protocol { .. } => "decode_error",
+        CapabilityCallError::Cancelled { .. } => "cancelled",
+        CapabilityCallError::InputRequiredRoundsExceeded { .. } => "confirmation_required",
+        CapabilityCallError::Mcp { .. } | CapabilityCallError::Other { .. } => {
+            match classify_upstream_error(&error.to_string()) {
+                kind @ ("auth_failed" | "auth_required") => kind,
+                _ => "upstream_error",
+            }
+        }
+        CapabilityCallError::Transport { .. } => classify_upstream_error(&error.to_string()),
+    };
+    ToolError::Sdk {
+        sdk_kind: sdk_kind.to_string(),
+        message: format!("subject-scoped discovery for upstream `{upstream}` failed: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -525,19 +591,82 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
 
     use rmcp::model::{
-        ErrorData, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
-        ReadResourceResult, ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo,
+        ErrorData, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+        PaginatedRequestParams, ReadResourceResult, ResourceContents, ResourceTemplate,
+        ServerCapabilities, ServerInfo, Tool,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
 
+    use labby_runtime::gateway_config::{
+        UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+    };
+
     use super::super::super::types::{ToolExposurePolicy, UpstreamTool};
+    use super::super::SubjectScopedConnection;
     use super::super::entries::healthy_in_process_entry;
     use super::super::helpers::normalize_resource_result_uri;
     use super::super::testsupport::catalog_pool_with_server;
     use super::*;
+
+    #[derive(Clone)]
+    struct SchemaToolServer {
+        tool_name: &'static str,
+    }
+
+    impl ServerHandler for SchemaToolServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            Ok(ListToolsResult::with_all_items(vec![Tool::new(
+                self.tool_name,
+                "subject-specific tool",
+                Arc::new(serde_json::Map::new()),
+            )]))
+        }
+    }
+
+    fn oauth_schema_config(name: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            enabled: true,
+            name: name.to_string(),
+            url: Some("http://127.0.0.1:1/mcp".to_string()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: Some(UpstreamOauthConfig {
+                mode: UpstreamOauthMode::AuthorizationCodePkce,
+                registration: UpstreamOauthRegistration::Preregistered {
+                    client_id: "test-client".to_string(),
+                    client_secret_env: None,
+                },
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            }),
+            imported_from: None,
+            priority: 1.0,
+        }
+    }
 
     #[derive(Clone, Default)]
     struct PaginatedResourceTemplateServer {
@@ -738,7 +867,7 @@ mod tests {
         tools.insert(
             "search".to_string(),
             UpstreamTool {
-                tool: rmcp::model::Tool::new(
+                tool: Tool::new(
                     "search",
                     "search the index",
                     Arc::new(serde_json::Map::new()),
@@ -773,7 +902,7 @@ mod tests {
     #[tokio::test]
     async fn gateway_server_schema_respects_exposure_policy() {
         let make_tool = |name: &'static str| UpstreamTool {
-            tool: rmcp::model::Tool::new(name, "desc", Arc::new(serde_json::Map::new())),
+            tool: Tool::new(name, "desc", Arc::new(serde_json::Map::new())),
             input_schema: Some(serde_json::json!({"type": "object"})),
             output_schema: None,
             upstream_name: Arc::from("alpha"),
@@ -810,8 +939,8 @@ mod tests {
     #[test]
     fn subject_scoped_gateway_schema_renders_and_filters_tools() {
         let tools = vec![
-            rmcp::model::Tool::new("hidden_tool", "hidden", Arc::new(serde_json::Map::new())),
-            rmcp::model::Tool::new(
+            Tool::new("hidden_tool", "hidden", Arc::new(serde_json::Map::new())),
+            Tool::new(
                 "fill_linear_dev_handoff",
                 "prepare a Linear handoff",
                 Arc::new(serde_json::Map::new()),
@@ -825,8 +954,60 @@ mod tests {
         assert_eq!(doc["name"], "notification_worker_linear");
         assert_eq!(doc["health"], "healthy");
         assert!(doc["last_error"].is_null());
+        assert_eq!(doc["catalog_source"], "subject_scoped_live");
         assert_eq!(doc["tools"][0]["name"], "fill_linear_dev_handoff");
+        assert!(doc["tools"][0]["input_schema"].is_null());
         assert_eq!(doc["tools"].as_array().expect("tools array").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_gateway_schema_uses_only_the_requested_subject_connection() {
+        let pool = catalog_pool_with_server(
+            "linear",
+            SchemaToolServer {
+                tool_name: "alice_tool",
+            },
+        )
+        .await;
+        let peer = pool
+            .connections
+            .read()
+            .await
+            .get("linear")
+            .expect("linear connection")
+            .peer
+            .clone();
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("linear")
+            .expect("move connection into subject cache");
+        pool.subject_connections.write().await.insert(
+            ("linear".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+        let config = oauth_schema_config("linear");
+
+        let alice = pool
+            .subject_scoped_gateway_server_schema(&config, "alice")
+            .await
+            .expect("alice uses her cached peer");
+        assert_eq!(alice["tools"][0]["name"], "alice_tool");
+
+        let bob = pool
+            .subject_scoped_gateway_server_schema(&config, "bob")
+            .await
+            .expect_err("bob must not reuse alice's subject connection");
+        assert!(
+            matches!(bob, ToolError::Sdk { .. }),
+            "failure should stay classified: {bob:?}"
+        );
     }
 
     #[tokio::test]

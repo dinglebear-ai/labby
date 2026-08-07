@@ -111,19 +111,18 @@ pub async fn dispatch_with_manager_scoped(
         }
         "gateway.servers" => to_json(
             manager
-                .gateway_servers_doc_scoped(enrichment_scope.route_visible_upstreams.as_ref())
+                .gateway_servers_doc_scoped(&enrichment_scope)
                 .await?,
         ),
         "gateway.schema" => {
+            // Keep the established missing-parameter envelope stable before
+            // typed deserialization; `GatewayNameParams` alone reports a
+            // serde-shaped message that differs across dispatch surfaces.
             require_str(&params_value, "name")?;
             let params: GatewayNameParams = parse_params(params_value)?;
             to_json(
                 manager
-                    .gateway_server_schema_scoped(
-                        &params.name,
-                        enrichment_scope.oauth_subject.as_deref(),
-                        enrichment_scope.route_visible_upstreams.as_ref(),
-                    )
+                    .gateway_server_schema_scoped(&params.name, &enrichment_scope)
                     .await?,
             )
         }

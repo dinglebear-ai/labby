@@ -49,6 +49,13 @@ fn has_admin_scope(auth: Option<&Extension<AuthContext>>) -> bool {
     auth.is_some_and(|ctx| ctx.0.scopes.iter().any(|scope| scope == "lab:admin"))
 }
 
+fn http_oauth_subject(auth: Option<&AuthContext>, request_subject: Option<&str>) -> Option<String> {
+    auth.and_then(|auth| {
+        crate::api::oauth::oauth_upstream_subject_for_request(Some(auth), request_subject)
+            .map(|subject| subject.into_owned())
+    })
+}
+
 fn require_gateway_admin(
     action: &str,
     request_id: Option<&str>,
@@ -107,11 +114,10 @@ async fn handle(
             let auth = auth_for_dispatch.clone();
             async move {
                 let params = inject_gateway_owner(params, subject.as_deref(), request_id);
-                let oauth_subject = crate::mcp::context::oauth_upstream_subject_for_request(
-                    auth.as_ref().map(|value| &value.0),
-                    subject.as_deref(),
-                )
-                .map(|subject| subject.into_owned());
+                // Unlike trusted stdio MCP, an unauthenticated HTTP request
+                // must never inherit the shared gateway OAuth credential.
+                let oauth_subject =
+                    http_oauth_subject(auth.as_ref().map(|value| &value.0), subject.as_deref());
                 crate::dispatch::gateway::dispatch_with_manager_scoped(
                     &manager,
                     &action,
@@ -164,6 +170,8 @@ mod tests {
     };
     use serde_json::json;
     use tower::ServiceExt;
+
+    use super::http_oauth_subject;
 
     use crate::api::oauth::AuthContext;
     use crate::api::{
@@ -272,6 +280,24 @@ mod tests {
             csrf_token: None,
             email: Some("reader@example.com".to_string()),
         }
+    }
+
+    #[test]
+    fn http_oauth_subject_fails_closed_without_verified_auth_context() {
+        assert!(http_oauth_subject(None, None).is_none());
+        assert!(http_oauth_subject(None, Some("forged-subject")).is_none());
+
+        let admin = admin_auth_context();
+        assert_eq!(
+            http_oauth_subject(Some(&admin), Some("admin-user")).as_deref(),
+            Some(crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT)
+        );
+
+        let reader = read_only_auth_context();
+        assert_eq!(
+            http_oauth_subject(Some(&reader), Some("read-only-user")).as_deref(),
+            Some("read-only-user")
+        );
     }
 
     // ── Request helpers ──────────────────────────────────────────────────────

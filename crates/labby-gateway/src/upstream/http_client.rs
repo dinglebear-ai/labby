@@ -25,13 +25,14 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use reqwest::header::{ACCEPT, HeaderName, HeaderValue, WWW_AUTHENTICATE};
 use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage, ServerJsonRpcMessage};
 use rmcp::transport::common::http_header::{
-    EVENT_STREAM_MIME_TYPE, HEADER_LAST_EVENT_ID, HEADER_MCP_METHOD, HEADER_SESSION_ID,
-    JSON_MIME_TYPE,
+    BASE64_HEADER_PREFIX, BASE64_HEADER_SUFFIX, EVENT_STREAM_MIME_TYPE, HEADER_LAST_EVENT_ID,
+    HEADER_MCP_METHOD, HEADER_MCP_NAME, HEADER_SESSION_ID, JSON_MIME_TYPE,
 };
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient, StreamableHttpError,
@@ -45,6 +46,7 @@ const RESERVED_HEADERS: &[&str] = &[
     "accept",
     HEADER_SESSION_ID,
     HEADER_MCP_METHOD, // allowed through; the adapter overwrites it from the body
+    HEADER_MCP_NAME,   // allowed through; the adapter overwrites it from the body
     "MCP-Protocol-Version", // allowed through; worker injects post-init
     HEADER_LAST_EVENT_ID,
 ];
@@ -56,6 +58,7 @@ fn validate_custom_header(name: &HeaderName) -> Result<(), String> {
     {
         if name.as_str().eq_ignore_ascii_case("MCP-Protocol-Version")
             || name.as_str().eq_ignore_ascii_case(HEADER_MCP_METHOD)
+            || name.as_str().eq_ignore_ascii_case(HEADER_MCP_NAME)
         {
             return Ok(());
         }
@@ -136,6 +139,42 @@ fn jsonrpc_method_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> 
     let value = serde_json::to_value(message).ok()?;
     let method = value.get("method").and_then(serde_json::Value::as_str)?;
     HeaderValue::from_str(method).ok()
+}
+
+/// Return the SEP-2243 name header derived from the JSON-RPC body.
+///
+/// `Mcp-Name` is required for named methods such as `tools/call`. Deriving it
+/// here, at the final wire boundary, keeps strict upstreams working even when
+/// the SDK did not populate its negotiated custom-header map. Values use the
+/// SEP-2243 Base64 sentinel when they cannot be represented safely as a plain
+/// HTTP field value.
+fn jsonrpc_name_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> {
+    let value = serde_json::to_value(message).ok()?;
+    let method = value.get("method").and_then(serde_json::Value::as_str)?;
+    let params = value.get("params")?;
+    let key = match method {
+        "tools/call" | "prompts/get" => "name",
+        "resources/read" | "resources/subscribe" | "resources/unsubscribe" => "uri",
+        "tasks/get" | "tasks/update" | "tasks/cancel" => "taskId",
+        _ => return None,
+    };
+    let raw = params.get(key).and_then(serde_json::Value::as_str)?;
+    let requires_base64 = !raw.is_empty()
+        && (matches!(raw.as_bytes().first(), Some(b' ' | b'\t'))
+            || matches!(raw.as_bytes().last(), Some(b' ' | b'\t'))
+            || raw
+                .chars()
+                .any(|ch| (ch as u32) < 0x20 || (ch as u32) > 0x7e)
+            || (raw.starts_with(BASE64_HEADER_PREFIX) && raw.ends_with(BASE64_HEADER_SUFFIX)));
+    let encoded = if requires_base64 {
+        format!(
+            "{BASE64_HEADER_PREFIX}{}{BASE64_HEADER_SUFFIX}",
+            BASE64_STANDARD.encode(raw)
+        )
+    } else {
+        raw.to_owned()
+    };
+    HeaderValue::from_str(&encoded).ok()
 }
 
 /// Read a reqwest response body fully into a `Vec<u8>` while enforcing
@@ -433,10 +472,16 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         // map for negotiated modern peers. Remove that copy before applying
         // headers because reqwest's `header` appends repeated values; the
         // strict SEP-2243 contract requires exactly one body-derived value.
-        custom_headers.retain(|name, _| !name.as_str().eq_ignore_ascii_case(HEADER_MCP_METHOD));
+        custom_headers.retain(|name, _| {
+            !name.as_str().eq_ignore_ascii_case(HEADER_MCP_METHOD)
+                && !name.as_str().eq_ignore_ascii_case(HEADER_MCP_NAME)
+        });
         request = apply_custom_headers(request, custom_headers)?;
         if let Some(method) = jsonrpc_method_header(&message) {
             request = request.header(HEADER_MCP_METHOD, method);
+        }
+        if let Some(name) = jsonrpc_name_header(&message) {
+            request = request.header(HEADER_MCP_NAME, name);
         }
         let session_was_attached = session_id.is_some();
         if let Some(session_id) = session_id {
@@ -653,6 +698,82 @@ mod tests {
         assert!(
             strict_contract_matched.load(std::sync::atomic::Ordering::SeqCst),
             "request must carry exactly one body-derived Mcp-Method header"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_message_injects_exactly_one_mcp_name_from_jsonrpc_body() {
+        let server = MockServer::start().await;
+        let strict_contract_matched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let strict_contract_matched_for_response = Arc::clone(&strict_contract_matched);
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC");
+                let expected = body
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .expect("tools/call params.name");
+                let actual = request
+                    .headers
+                    .get(HEADER_MCP_NAME)
+                    .and_then(|value| value.to_str().ok());
+                let value_count = request.headers.get_all(HEADER_MCP_NAME).iter().count();
+
+                if actual != Some(expected) || value_count != 1 {
+                    return ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": {
+                            "code": -32020,
+                            "message": "the request headers and body disagree"
+                        }
+                    }));
+                }
+                strict_contract_matched_for_response
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": -32601, "message": "test response"}
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let message: ClientJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_issue",
+                "arguments": {"id": "U8-477"}
+            }
+        }))
+        .expect("valid tools/call request");
+        let mut custom_headers = HashMap::new();
+        custom_headers.insert(
+            HeaderName::from_static("mcp-name"),
+            HeaderValue::from_static("incorrect-name"),
+        );
+        let result = build(1024 * 1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                message,
+                None,
+                None,
+                custom_headers,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "strict MCP endpoint should accept request: {result:?}"
+        );
+        assert!(
+            strict_contract_matched.load(std::sync::atomic::Ordering::SeqCst),
+            "request must carry exactly one body-derived Mcp-Name header"
         );
     }
 

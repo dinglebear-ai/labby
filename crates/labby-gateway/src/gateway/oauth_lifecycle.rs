@@ -53,7 +53,7 @@ impl GatewayManager {
             .await
             .upstream
             .iter()
-            .filter(|upstream| upstream.oauth.is_some())
+            .filter(|upstream| upstream.enabled && upstream.oauth.is_some())
             .cloned()
             .collect()
     }
@@ -64,7 +64,9 @@ impl GatewayManager {
             .await
             .upstream
             .iter()
-            .find(|upstream| upstream.name == upstream_name && upstream.oauth.is_some())
+            .find(|upstream| {
+                upstream.name == upstream_name && upstream.enabled && upstream.oauth.is_some()
+            })
             .cloned()
     }
 

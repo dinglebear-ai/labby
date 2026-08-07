@@ -4,7 +4,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, UpstreamConfig};
+use labby_runtime::gateway_config::{
+    ProtectedMcpRouteConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
+    UpstreamOauthRegistration,
+};
 
 use super::super::discovery::DiscoveredServer;
 use super::super::manager::GatewayRuntimeHandle;
@@ -647,6 +650,39 @@ fn test_manager() -> GatewayManager {
         .with_builtin_service_registry(std::sync::Arc::new(DeployTestRegistry))
 }
 
+fn oauth_upstream_fixture(name: &str, enabled: bool) -> UpstreamConfig {
+    UpstreamConfig {
+        enabled,
+        name: name.to_string(),
+        url: Some("http://127.0.0.1:1/mcp".to_string()),
+        transport: None,
+        socket_path: None,
+        headers: Default::default(),
+        bearer_token_env: None,
+        command: None,
+        args: Vec::new(),
+        env: Default::default(),
+        proxy_resources: false,
+        proxy_prompts: false,
+        expose_tools: None,
+        expose_resources: None,
+        expose_prompts: None,
+        code_mode_hint: None,
+        oauth: Some(UpstreamOauthConfig {
+            mode: UpstreamOauthMode::AuthorizationCodePkce,
+            registration: UpstreamOauthRegistration::Preregistered {
+                client_id: "test-client".to_string(),
+                client_secret_env: None,
+            },
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        }),
+        imported_from: None,
+        priority: 1.0,
+    }
+}
+
 #[tokio::test]
 async fn gateway_code_mode_set_accepts_all_public_config_fields() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -783,6 +819,113 @@ async fn gateway_schema_unknown_upstream_returns_not_found_envelope() {
         body["kind"], "not_found",
         "sdk_kind must be promoted to kind"
     );
+}
+
+#[tokio::test]
+async fn gateway_schema_known_oauth_upstream_without_subject_fails_auth_instead_of_falling_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", true)])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let error = dispatch_with_manager(&manager, "gateway.schema", json!({"name": "linear"}))
+        .await
+        .expect_err("known OAuth upstream requires a verified subject");
+
+    assert_eq!(error.kind(), "auth_failed");
+}
+
+#[tokio::test]
+async fn gateway_schema_route_scope_rejects_hidden_oauth_upstream_before_connecting() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", true)])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.schema",
+        json!({"name": "linear"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "featureos".to_string()
+            ])),
+            oauth_subject: Some("alice".to_string()),
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail before outbound discovery");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn disabled_oauth_upstream_is_not_eligible_for_subject_discovery() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", false)])
+        .await;
+
+    assert!(manager.oauth_upstream_config("linear").await.is_none());
+    assert!(manager.oauth_upstream_configs().await.is_empty());
+}
+
+#[tokio::test]
+async fn gateway_servers_marks_oauth_catalog_rows_as_request_scoped_not_healthy_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", true)])
+        .await;
+    let pool = crate::upstream::pool::UpstreamPool::new();
+    let name: std::sync::Arc<str> = std::sync::Arc::from("linear");
+    pool.insert_entry_for_tests(
+        "linear",
+        crate::upstream::types::UpstreamEntry {
+            name,
+            tools: Default::default(),
+            exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            proxy_resources: false,
+            prompt_count: 0,
+            resource_count: 0,
+            prompt_names: Vec::new(),
+            resource_uris: Vec::new(),
+            tool_health: crate::upstream::types::UpstreamHealth::Healthy,
+            prompt_health: crate::upstream::types::UpstreamHealth::Healthy,
+            resource_health: crate::upstream::types::UpstreamHealth::Healthy,
+            tool_unhealthy_since: None,
+            prompt_unhealthy_since: None,
+            resource_unhealthy_since: None,
+            tool_last_error: None,
+            prompt_last_error: None,
+            resource_last_error: None,
+        },
+    )
+    .await;
+    runtime.swap(Some(std::sync::Arc::new(pool))).await;
+
+    let value = dispatch_with_manager(&manager, "gateway.servers", json!({}))
+        .await
+        .expect("server listing");
+    let row = &value["servers"][0];
+    assert!(row["tool_count"].is_null());
+    assert_eq!(row["tool_health"], "not_probed");
+    assert_eq!(row["discovery_mode"], "request_scoped");
 }
 
 #[tokio::test]

@@ -48,6 +48,18 @@ pub(super) struct UpstreamRequestLog<'a> {
 }
 
 impl<'a> UpstreamRequestLog<'a> {
+    pub(super) fn tools_list(upstream: &'a str, subject_scoped: bool) -> Self {
+        Self {
+            upstream,
+            capability: "tools",
+            operation: "tools.list",
+            subject_scoped,
+            transport: None,
+            item_kind: None,
+            item: None,
+        }
+    }
+
     pub(super) fn tool(upstream: &'a str, tool: &'a str, subject_scoped: bool) -> Self {
         Self {
             upstream,
