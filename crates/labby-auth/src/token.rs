@@ -577,13 +577,33 @@ async fn validate_client_assertion(
     client_id: &str,
     keys: ClientKeySource<'_>,
 ) -> Result<(), AuthError> {
-    let header = decode_header(assertion)
-        .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?;
-    ensure_allowed_algorithm(header.alg)?;
-    let kid = header
-        .kid
-        .as_deref()
-        .ok_or_else(|| AuthError::AuthFailed("client assertion is missing kid".to_string()))?;
+    let header = decode_header(assertion).map_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            reason = "undecodable_header",
+            "oauth token rejected: client assertion header could not be decoded"
+        );
+        AuthError::AuthFailed("invalid client assertion".to_string())
+    })?;
+    ensure_allowed_algorithm(header.alg).inspect_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            alg = ?header.alg,
+            reason = "disallowed_algorithm",
+            "oauth token rejected: client assertion uses an unsupported signing algorithm"
+        );
+    })?;
+    let kid = header.kid.as_deref().ok_or_else(|| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            reason = "missing_kid",
+            "oauth token rejected: client assertion header has no kid"
+        );
+        AuthError::AuthFailed("client assertion is missing kid".to_string())
+    })?;
     let fetched;
     let jwks = match keys {
         ClientKeySource::Inline(jwks) => jwks,
@@ -592,19 +612,53 @@ async fn validate_client_assertion(
             &fetched
         }
     };
-    let jwk = jwks
-        .find(kid)
-        .ok_or_else(|| AuthError::AuthFailed("unknown client assertion key".to_string()))?;
-    ensure_jwk_algorithm(jwk, header.alg)?;
-    let key = DecodingKey::from_jwk(jwk)
-        .map_err(|_| AuthError::AuthFailed("invalid client assertion key".to_string()))?;
+    let jwk = jwks.find(kid).ok_or_else(|| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            key_count = jwks.keys.len(),
+            reason = "unknown_kid",
+            "oauth token rejected: client assertion kid is absent from the client key set"
+        );
+        AuthError::AuthFailed("unknown client assertion key".to_string())
+    })?;
+    ensure_jwk_algorithm(jwk, header.alg).inspect_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            reason = "key_algorithm_mismatch",
+            "oauth token rejected: client assertion key algorithm does not match its header"
+        );
+    })?;
+    let key = DecodingKey::from_jwk(jwk).map_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            reason = "unusable_key",
+            "oauth token rejected: client assertion key could not be parsed"
+        );
+        AuthError::AuthFailed("invalid client assertion key".to_string())
+    })?;
     let audience = format!("{}/token", crate::metadata::public_base_url(state));
     let mut validation = Validation::new(header.alg);
     validation.set_audience(&[audience.as_str()]);
     validation.set_issuer(&[client_id]);
     validation.set_required_spec_claims(&["exp", "iat", "iss", "sub", "aud", "jti"]);
     let claims = decode::<ClientAssertionClaims>(assertion, &key, &validation)
-        .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?
+        .map_err(|error| {
+            warn!(
+                kind = "auth_failed",
+                client_id = %client_id,
+                kid = %kid,
+                reason = "signature_or_claims_rejected",
+                error = %error,
+                "oauth token rejected: client assertion failed signature or claim validation"
+            );
+            AuthError::AuthFailed("invalid client assertion".to_string())
+        })?
         .claims;
     let now = now_unix();
     if claims.iss != client_id
@@ -613,6 +667,13 @@ async fn validate_client_assertion(
         || claims.iat > now + 60
         || claims.exp <= now
     {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            reason = "claim_mismatch_or_expired",
+            "oauth token rejected: client assertion issuer, subject, audience, or lifetime is invalid"
+        );
         return Err(AuthError::AuthFailed(
             "invalid or replayed client assertion".to_string(),
         ));

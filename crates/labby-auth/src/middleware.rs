@@ -385,11 +385,24 @@ async fn authenticate(
                     return Ok(request);
                 }
                 Err(error) => {
-                    tracing::debug!(error = %error, "lab-auth JWT validation failed");
+                    // `debug!` here is invisible under the default
+                    // `LABBY_LOG=labby=info`, which is why a client that could
+                    // not authenticate left no trace at all. `auth_failed` is
+                    // a caller error, and the root CLAUDE.md level conventions
+                    // put those at WARN.
+                    tracing::warn!(
+                        kind = "auth_failed",
+                        error = %error,
+                        "bearer token rejected: JWT validation failed"
+                    );
                 }
             }
         }
 
+        tracing::warn!(
+            kind = "auth_failed",
+            "request rejected: bearer token matched no static token and no valid JWT"
+        );
         return Err(auth_error_response("invalid bearer token", layer));
     }
 

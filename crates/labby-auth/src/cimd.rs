@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::error::AuthError;
 use crate::state::AuthState;
@@ -133,11 +134,23 @@ fn validate_document(
     allowed_redirect_patterns: &[String],
 ) -> Result<RegisteredClient, AuthError> {
     if document.client_id != expected_client_id {
+        warn!(
+            kind = "invalid_grant",
+            client_id = %expected_client_id,
+            "cimd rejected: document client_id does not match the URL it was fetched from"
+        );
         return Err(AuthError::InvalidGrant(
             "client metadata client_id does not match document URL".to_string(),
         ));
     }
     if document.client_name.trim().is_empty() || document.redirect_uris.is_empty() {
+        warn!(
+            kind = "validation_failed",
+            client_id = %expected_client_id,
+            has_client_name = !document.client_name.trim().is_empty(),
+            redirect_uri_count = document.redirect_uris.len(),
+            "cimd rejected: document is missing client_name or redirect_uris"
+        );
         return Err(AuthError::Validation(
             "client metadata requires client_name and redirect_uris".to_string(),
         ));
@@ -147,6 +160,12 @@ fn validate_document(
         .iter()
         .any(|uri| !crate::authorize::is_allowed_redirect_uri(uri, allowed_redirect_patterns))
     {
+        warn!(
+            kind = "validation_failed",
+            client_id = %expected_client_id,
+            redirect_uri_count = document.redirect_uris.len(),
+            "cimd rejected: document contains a redirect URI outside the allowlist"
+        );
         return Err(AuthError::Validation(
             "client metadata contains an unsafe redirect URI".to_string(),
         ));
@@ -167,6 +186,12 @@ fn validate_document(
         .iter()
         .find(|method| !matches!(method.as_str(), "none" | "private_key_jwt"))
     {
+        warn!(
+            kind = "validation_failed",
+            client_id = %expected_client_id,
+            unsupported_auth_method = %unsupported,
+            "cimd rejected: document publishes an unimplemented token_endpoint_auth_method"
+        );
         return Err(AuthError::Validation(format!(
             "client metadata token_endpoint_auth_method `{unsupported}` must be none or private_key_jwt"
         )));
@@ -184,6 +209,11 @@ fn validate_document(
         && document.jwks.is_none()
         && jwks_uri.is_none()
     {
+        warn!(
+            kind = "validation_failed",
+            client_id = %expected_client_id,
+            "cimd rejected: private_key_jwt document publishes neither jwks nor jwks_uri"
+        );
         return Err(AuthError::Validation(
             "private_key_jwt client metadata requires jwks or jwks_uri".to_string(),
         ));
@@ -208,6 +238,11 @@ fn validate_jwks_uri(uri: &str) -> Result<String, AuthError> {
     labby_primitives::ssrf::parse_validated_https_url(uri)
         .map(|url| url.to_string())
         .map_err(|error| {
+            warn!(
+                kind = "validation_failed",
+                error = %error,
+                "cimd rejected: jwks_uri failed the SSRF preflight"
+            );
             AuthError::Validation(format!("client metadata jwks_uri is not usable: {error}"))
         })
 }
