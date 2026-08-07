@@ -159,6 +159,12 @@ pub struct RegisteredClient {
     pub token_endpoint_auth_method: String,
     #[serde(default)]
     pub jwks: Option<serde_json::Value>,
+    /// HTTPS location of the client's public key set, used when the client
+    /// publishes `jwks_uri` instead of an inline `jwks`. Only ever populated
+    /// from a Client ID Metadata Document, and only after the URL passes the
+    /// shared SSRF preflight.
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
 }
 
 fn default_token_endpoint_auth_method() -> String {

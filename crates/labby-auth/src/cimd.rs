@@ -16,6 +16,8 @@ struct ClientMetadataDocument {
     token_endpoint_auth_method: String,
     #[serde(default)]
     jwks: Option<serde_json::Value>,
+    #[serde(default)]
+    jwks_uri: Option<String>,
 }
 
 fn default_token_endpoint_auth_method() -> String {
@@ -148,9 +150,21 @@ fn validate_document(
                 .to_string(),
         ));
     }
-    if document.token_endpoint_auth_method == "private_key_jwt" && document.jwks.is_none() {
+    // draft-ietf-oauth-client-id-metadata-document section 8.2 lets a
+    // `private_key_jwt` client publish its public keys either inline (`jwks`)
+    // or by reference (`jwks_uri`) — the draft's own worked example uses
+    // `jwks_uri`, and ChatGPT's connector metadata does too. Inline keys win
+    // when both are present so we never make an avoidable outbound fetch.
+    let jwks_uri = match document.jwks_uri.as_deref() {
+        Some(uri) if document.jwks.is_none() => Some(validate_jwks_uri(uri)?),
+        _ => None,
+    };
+    if document.token_endpoint_auth_method == "private_key_jwt"
+        && document.jwks.is_none()
+        && jwks_uri.is_none()
+    {
         return Err(AuthError::Validation(
-            "private_key_jwt client metadata requires inline jwks".to_string(),
+            "private_key_jwt client metadata requires jwks or jwks_uri".to_string(),
         ));
     }
     Ok(RegisteredClient {
@@ -159,7 +173,21 @@ fn validate_document(
         created_at: now_unix(),
         token_endpoint_auth_method: document.token_endpoint_auth_method,
         jwks: document.jwks,
+        jwks_uri,
     })
+}
+
+/// Reject a `jwks_uri` we would otherwise fetch on the client's behalf.
+///
+/// The fetch itself re-validates through [`crate::remote::secure_get`], but
+/// failing here keeps an unfetchable or internal-network URL out of the CIMD
+/// cache and surfaces the problem at `/authorize` rather than at `/token`.
+fn validate_jwks_uri(uri: &str) -> Result<String, AuthError> {
+    labby_primitives::ssrf::parse_validated_https_url(uri)
+        .map(|url| url.to_string())
+        .map_err(|error| {
+            AuthError::Validation(format!("client metadata jwks_uri is not usable: {error}"))
+        })
 }
 
 #[cfg(test)]
@@ -179,6 +207,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:3000/callback".to_string()],
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             },
             &[],
         )
@@ -201,11 +230,128 @@ mod tests {
                     redirect_uris: vec![redirect_uri.to_string()],
                     token_endpoint_auth_method: "none".to_string(),
                     jwks: None,
+                    jwks_uri: None,
                 },
                 &[],
             )
             .unwrap_err();
             assert!(error.to_string().contains("unsafe"));
+        }
+    }
+
+    /// Shape of the real ChatGPT connector document, which publishes its keys
+    /// by reference. Rejecting this form broke `/authorize` with a 422.
+    fn chatgpt_shaped_document(
+        jwks: Option<serde_json::Value>,
+        jwks_uri: Option<&str>,
+    ) -> ClientMetadataDocument {
+        ClientMetadataDocument {
+            client_id: "https://chatgpt.com/oauth/test-client/client.json".to_string(),
+            client_name: "ChatGPT".to_string(),
+            redirect_uris: vec!["https://chatgpt.com/connector/oauth/test-client".to_string()],
+            token_endpoint_auth_method: "private_key_jwt".to_string(),
+            jwks,
+            jwks_uri: jwks_uri.map(str::to_string),
+        }
+    }
+
+    fn chatgpt_redirect_patterns() -> Vec<String> {
+        vec!["https://chatgpt.com/connector/oauth/*".to_string()]
+    }
+
+    #[test]
+    fn accepts_private_key_jwt_documents_that_publish_keys_by_reference() {
+        let client = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            chatgpt_shaped_document(None, Some("https://chatgpt.com/oauth/jwks.json")),
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap();
+        assert_eq!(client.token_endpoint_auth_method, "private_key_jwt");
+        assert!(client.jwks.is_none());
+        assert_eq!(
+            client.jwks_uri.as_deref(),
+            Some("https://chatgpt.com/oauth/jwks.json")
+        );
+    }
+
+    /// Byte-for-byte capture of `https://chatgpt.com/oauth/<id>/client.json`
+    /// (2026-08-06), with the connector id replaced. Requiring an inline
+    /// `jwks` rejected exactly this document, so `/authorize` answered
+    /// `422 validation_failed` before the Google redirect.
+    #[test]
+    fn accepts_the_real_chatgpt_connector_metadata_document() {
+        let raw = r#"{
+            "client_id": "https://chatgpt.com/oauth/test-client/client.json",
+            "client_uri": "https://chatgpt.com/",
+            "redirect_uris": ["https://chatgpt.com/connector/oauth/test-client"],
+            "token_endpoint_auth_method": "private_key_jwt",
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "client_name": "ChatGPT",
+            "logo_uri": "https://persistent.oaistatic.com/sonic/misc/openai-logo.png",
+            "token_endpoint_auth_signing_alg": "RS256",
+            "jwks_uri": "https://chatgpt.com/oauth/jwks.json"
+        }"#;
+        let document: ClientMetadataDocument = serde_json::from_str(raw).unwrap();
+        let client = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            document,
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap();
+        assert_eq!(
+            client.jwks_uri.as_deref(),
+            Some("https://chatgpt.com/oauth/jwks.json")
+        );
+    }
+
+    #[test]
+    fn inline_keys_win_over_a_jwks_uri_so_no_fetch_is_needed() {
+        let client = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            chatgpt_shaped_document(
+                Some(serde_json::json!({"keys": []})),
+                Some("https://chatgpt.com/oauth/jwks.json"),
+            ),
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap();
+        assert!(client.jwks.is_some());
+        assert!(client.jwks_uri.is_none());
+    }
+
+    #[test]
+    fn rejects_private_key_jwt_documents_that_publish_no_keys_at_all() {
+        let error = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            chatgpt_shaped_document(None, None),
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires jwks or jwks_uri"));
+    }
+
+    #[test]
+    fn rejects_a_jwks_uri_that_would_reach_into_the_private_network() {
+        for uri in [
+            "https://127.0.0.1/jwks.json",
+            "https://10.0.0.5/jwks.json",
+            "https://gateway.internal/jwks.json",
+            "http://chatgpt.com/oauth/jwks.json",
+            "not-a-url",
+        ] {
+            let error = validate_document(
+                "https://chatgpt.com/oauth/test-client/client.json",
+                chatgpt_shaped_document(None, Some(uri)),
+                &chatgpt_redirect_patterns(),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("jwks_uri is not usable"),
+                "expected `{uri}` to be refused, got: {error}"
+            );
         }
     }
 
@@ -223,6 +369,7 @@ mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -237,6 +384,7 @@ mod tests {
                     created_at: now_unix(),
                     token_endpoint_auth_method: "private_key_jwt".to_string(),
                     jwks: Some(serde_json::json!({"keys": []})),
+                    jwks_uri: None,
                 },
                 now_unix() + 60,
             ),
