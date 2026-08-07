@@ -37,7 +37,7 @@ use url::Url;
 
 const CALLBACK_PATH: &str = "/auth/upstream/callback";
 const DEFAULT_CALLBACK_PORT: u16 = 0;
-const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(300);
+const AUTHORIZATION_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Build a native OAuth runtime for `labby mcp`.
 ///
