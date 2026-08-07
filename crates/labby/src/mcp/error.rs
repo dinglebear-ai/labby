@@ -212,6 +212,16 @@ impl From<ToolError> for DispatchError {
                 param: None,
                 hint: None,
             },
+            // DispatchError is the anyhow-survivable serve-boundary shape; it
+            // has no channel for the refined contract payload, so only the
+            // canonical kind + message cross this seam.
+            ToolError::Contract { kind, payload } => Self {
+                kind: canonical_kind(&kind),
+                message: payload.message,
+                valid: None,
+                param: None,
+                hint: None,
+            },
         }
     }
 }

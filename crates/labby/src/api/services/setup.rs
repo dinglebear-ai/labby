@@ -39,7 +39,7 @@ async fn handle(
     let has_local_capability = request_has_local_capability(peer_addr, &headers);
     require_setup_admin(&req.action, request_id, auth.as_ref(), has_local_capability)?;
     if local_only_action(&req.action) && !has_local_capability {
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "forbidden".into(),
             message: format!("setup action `{}` is only available locally", req.action),
         }));
@@ -52,7 +52,7 @@ async fn handle(
             bind_host = state.http_bind_host.as_deref().map(String::as_str).unwrap_or("<unknown>"),
             "setup plugin lifecycle action skipped because HTTP bind is non-loopback"
         );
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "not_found".into(),
             message: "setup plugin lifecycle actions are only available over loopback HTTP".into(),
         }));

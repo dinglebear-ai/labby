@@ -455,7 +455,7 @@ async fn execute_labby_action(
     request: PaletteExecuteRequest,
 ) -> Result<Json<PaletteExecuteResponse>, ApiError> {
     let Some(auth) = auth else {
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "auth_failed".to_string(),
             message: "palette routes require authenticated API context".to_string(),
         }));
@@ -477,7 +477,7 @@ async fn execute_labby_action(
             message: format!("launcher entry `{}` was not found", request.id),
         })?;
     if !labby_action_visible(&state, service_name, action, Some(auth)) {
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{}` was not found", request.id),
         }));
@@ -487,20 +487,20 @@ async fn execute_labby_action(
             .surface_enabled_for_service(service_name, "api")
             .await
         {
-            return Err(ApiError(ToolError::Sdk {
+            return Err(ApiError::new(ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: format!("service `{service_name}` is not enabled on the api surface"),
             }));
         }
     }
     if action_requires_admin(action) && !has_admin_scope(auth) {
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
             message: format!("action `{service_name}.{action_name}` requires admin scope"),
         }));
     }
     if action.destructive && !request.confirm_destructive {
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "confirmation_required".to_string(),
             message: format!("action `{service_name}.{action_name}` is destructive"),
         }));

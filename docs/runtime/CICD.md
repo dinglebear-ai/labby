@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-05"
 ---
 
 # CI/CD
 
-Last updated: 2026-07-30
+Last updated: 2026-08-05
 
 This document is the authoritative contract for CI, release, and artifact delivery in `lab`. All pipeline implementations must conform to this spec.
 
@@ -14,9 +14,89 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 That classifier maps the changed file list into stable routing categories:
-`docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`, `palette`,
-`docker`, `security`, and `release`. Scheduled and manual runs enable every
-category so periodic/manual validation stays broad.
+`all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
+`palette`, `npm`, `docker`, `security`, `release`, and `unraid`. Scheduled and
+manual runs enable every category so periodic/manual validation stays broad.
+
+On pull requests the `changes` job runs the classifier from the pull request's
+**base commit** rather than the branch's own copy. Be precise about what that
+buys. GitHub runs the workflow file itself from the merge ref, so on a
+same-repo pull request the gate expressions, this job's `outputs:` block, and
+the tests that police them are all branch-controlled. Pinning the classifier
+stops a branch from *accidentally* rerouting its own CI while editing path
+rules; it is not a control against a branch that sets out to. The controls for
+that are branch protection and review on `.github/**` and `scripts/ci/**`.
+
+Moving `changes` into a pinned reusable workflow (the `fleet-policy` pattern
+above) would put the classifier *and* its `outputs:` block on a trusted ref.
+It would not remove the reconciliation below: the `if:` gates still come from
+the caller's merge-ref `ci.yml`, so a caller gating on a key the pinned version
+does not export lands in exactly the same window, just versioned by the pin
+instead of by the base branch.
+
+That window: `ci.yml` always comes from the merge ref, so a pull request that
+adds a routing key gates on a key the trusted classifier cannot emit, and every
+already-open pull request against an older base hits it too.
+
+That window must fail **open**. An unknown output evaluates to the empty
+string, and `'' == 'true'` is false — so without reconciliation the gated job
+skips, and `ci-gate` accepts the skip as intentional. The `classify` step
+therefore reconciles what the classifier emitted against two key sets it reads
+back out of `ci.yml`:
+
+- `needs.changes.outputs.<key>` — what other jobs gate on.
+- `steps.classify.outputs.<key>` — what the `changes` job forwards as a job
+  output.
+
+A gated key the trusted classifier did not emit — or emitted with a value other
+than `true`/`false`, which fails `== 'true'` just as an absent key does — is
+forced to `true`, so the job runs. Those keys are annotated as warnings and
+exported as the `gate_key_drift` output, which `ci-gate` reports. Drift clears
+on its own once the base branch carries the new key.
+
+Everything else in that step fails **closed**, because it cannot be repaired by
+running more jobs:
+
+- A gate with no matching `steps.classify.outputs.<key>` forward reads as the
+  empty string no matter what the classifier emits. That is an authoring bug,
+  so the step fails the build and names the key.
+- If key enumeration itself fails — `ci.yml` unreadable, moved, or no longer
+  matching the expression form — the step fails rather than quietly
+  reconciling nothing and reporting an all-clear.
+- `ci-gate` turns drift into an **error** on non-`pull_request` events, where
+  the classifier comes from the same commit as `ci.yml`: there, drift means the
+  two genuinely disagree.
+
+Three rules keep this contract honest:
+
+- Never gate a job on a key that is not declared in the `changes` job's
+  `outputs:` block, and keep each declaration forwarding the identically-named
+  classify output (`unraid: ${{ steps.classify.outputs.unraid }}`). A typo on
+  either side reads as the empty string.
+  `crates/labby/tests/ci_changed_paths.rs` and the classify step itself both
+  fail the build on that mistake.
+- Every declared `changes` output must be emitted by `changed_paths.py`, except
+  the runtime-only `gate_key_drift`.
+- `ci-gate` requires `changes` to conclude `success`. A skipped or cancelled
+  `changes` job leaves every gate expression empty, which would skip every
+  gated job and turn the whole run vacuously green.
+
+Pinning the classifier also pins its path → category **mappings**, which lag
+the same way key names do: a branch that routes a new directory into an
+existing category gets a well-formed `false` from the base commit's classifier,
+and the gated job skips for real — no empty string, nothing for the drift
+reconciliation to notice. The classify step therefore re-runs the branch's own
+`scripts/ci/changed_paths.py` over the **trusted changed-file list** and unions
+the result: a `false` the branch raises to `true` is taken, and nothing else is.
+A value it lowers, a key it invents, and the changed-file list itself are all
+ignored, so a branch can broaden its own CI but never narrow it. Broadened keys
+are annotated on the run. If the branch classifier cannot run, routing degrades
+to the trusted classifier alone with a warning rather than failing.
+
+`scripts/ci/changed_paths.py` is the only place the routing key list lives. The
+fallback classifier used when the base commit predates that script emits no
+keys at all and lets reconciliation force every gated key to `true`, so it is
+not a second copy of the list.
 
 `ci-gate` is the aggregate that branch protection on `main` *should* require.
 As of 2026-08-05 it does not: the only required context is
@@ -51,7 +131,7 @@ jobs when their changed-path category is enabled:
 
 | Check | Category | Command |
 |-------|----------|---------|
-| Unraid plugin checksums | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
+| Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
@@ -101,7 +181,7 @@ land the required code/tests and the baseline update together.
 - **Scheduled runs:** `CI` runs weekly on Monday at 09:23 UTC to keep
   dependency/advisory visibility fresh even when no PR is active
 - **Job split:**
-  - `changes` classifies paths first and exports category booleans
+  - `changes` classifies paths first and exports category booleans, forcing any gated key the trusted base-branch classifier cannot emit to `true`
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
   - Required fast jobs run only when their category is enabled; `ci-gate` is the stable required check for branch protection
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; they report portability regressions without blocking `ci-gate`

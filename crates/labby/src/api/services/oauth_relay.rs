@@ -446,7 +446,7 @@ async fn list_machines(
     let started = Instant::now();
     let result = admin_list_machines(&state).await;
     log_admin_read(action, request_id, started, &result);
-    result.map(Json).map_err(ApiError)
+    result.map(Json).map_err(ApiError::new)
 }
 
 async fn admin_list_machines(state: &AppState) -> Result<serde_json::Value, ToolError> {
@@ -466,7 +466,7 @@ async fn get_machine(
     let started = Instant::now();
     let result = admin_get_machine(&state, &machine_id).await;
     log_admin_read(action, request_id, started, &result);
-    result.map(Json).map_err(ApiError)
+    result.map(Json).map_err(ApiError::new)
 }
 
 async fn admin_get_machine(
@@ -805,7 +805,7 @@ where
             "oauth relay admin mutation failed"
         ),
     }
-    result.map_err(ApiError)
+    result.map_err(ApiError::new)
 }
 
 fn mutation_response(outcome: RegistryWriteOutcome) -> Json<MutationReport> {

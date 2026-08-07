@@ -69,7 +69,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
 
 use super::super::types::UpstreamCapability;
-use super::capability_call::service_error_affects_connection_health;
+use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
 use super::connect::connect_upstream_with_handler;
 use super::helpers::{
     SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
@@ -926,7 +926,10 @@ impl UpstreamPool {
                 } else {
                     "upstream_error"
                 };
-                let message = format!("relayed upstream call failed: {error}");
+                let message = format!(
+                    "relayed upstream call failed: {}",
+                    bounded_service_error_text(&error)
+                );
                 if service_error_affects_connection_health(&error) {
                     // Transport/protocol failures may mean the cached connection
                     // is dead, so trip the breaker and force a reconnect.
@@ -1045,7 +1048,10 @@ impl UpstreamPool {
                 } else {
                     "upstream_error"
                 };
-                let message = format!("relayed upstream prompt get failed: {error}");
+                let message = format!(
+                    "relayed upstream prompt get failed: {}",
+                    bounded_service_error_text(&error)
+                );
                 self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone())
                     .await;
                 self.evict_relay_connection(&config.name, session_id, subject)
@@ -1206,7 +1212,10 @@ impl UpstreamPool {
                 } else {
                     "upstream_error"
                 };
-                let message = format!("relayed upstream resource read failed: {error}");
+                let message = format!(
+                    "relayed upstream resource read failed: {}",
+                    bounded_service_error_text(&error)
+                );
                 self.record_failure_for(
                     &config.name,
                     UpstreamCapability::Resources,

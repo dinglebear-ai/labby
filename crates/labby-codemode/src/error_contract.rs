@@ -335,6 +335,40 @@ Upstream transport error:
             message: self.message,
         }
     }
+
+    /// Collapse into the canonical [`ToolError`] WITHOUT losing the contract.
+    ///
+    /// Unlike [`Self::into_tool_error`], this preserves the refined
+    /// `origin`/`recovery` (including `retry_after_ms`)/`side_effects` plus
+    /// the `tool`/`cause`/`original_kind`/`safety`/`evidence` extras via
+    /// `ToolError::Contract`, so dispatch-layer surfaces (MCP envelope, HTTP
+    /// body, CLI JSON) render the same fidelity `code_mode_error_envelope`
+    /// gives the direct MCP Code Mode path.
+    #[must_use]
+    pub fn into_contract_tool_error(self) -> ToolError {
+        let origin = self.origin;
+        let recovery = self.recovery.clone();
+        let side_effects = self.side_effects;
+        let extra = match self.extra_fields() {
+            Value::Object(mut map) => {
+                // The refined metadata rides the contract channel; keep it out
+                // of the additive extras so it is sourced exactly once.
+                map.remove("origin");
+                map.remove("recovery");
+                map.remove("side_effects");
+                map
+            }
+            _ => Map::new(),
+        };
+        ToolError::contract(
+            self.kind,
+            self.message,
+            extra,
+            Some(origin),
+            Some(recovery),
+            Some(side_effects),
+        )
+    }
 }
 
 impl From<ToolError> for CodeModeCallError {
@@ -498,6 +532,42 @@ mod tests {
         assert_eq!(error.origin, CodeModeErrorOrigin::CodeMode);
         assert_eq!(error.side_effects, CodeModeSideEffectRisk::NoneExpected);
         assert_eq!(error.recovery.action, CodeModeRecoveryAction::Rediscover);
+    }
+
+    #[test]
+    fn into_contract_tool_error_preserves_refined_metadata_and_evidence() {
+        let error = CodeModeCallError::tool_execution(
+            "alpha::demo",
+            "rate_limited",
+            Some("429".to_string()),
+            "slow down",
+            CodeModeErrorEvidence {
+                content: vec![serde_json::json!({"type":"text","text":"slow down"})],
+                ..CodeModeErrorEvidence::default()
+            },
+            CodeModeToolSafetyHints {
+                read_only_hint: Some(true),
+                ..CodeModeToolSafetyHints::default()
+            },
+            Some(1500),
+        );
+        assert_eq!(error.origin, CodeModeErrorOrigin::ToolExecution);
+
+        let tool_error = error.into_contract_tool_error();
+        assert_eq!(tool_error.kind(), "rate_limited");
+
+        // The default serialization must carry the refined contract, not the
+        // kind-recomputed metadata (`rate_limited` alone would classify as
+        // origin `budget` with no retry hint).
+        let value = serde_json::to_value(&tool_error).expect("serialize");
+        assert_eq!(value["kind"], "rate_limited");
+        assert_eq!(value["origin"], "tool_execution");
+        assert_eq!(value["side_effects"], "none_expected");
+        assert_eq!(value["recovery"]["retry_after_ms"], 1500);
+        assert_eq!(value["tool"], "alpha::demo");
+        assert_eq!(value["original_kind"], "429");
+        assert_eq!(value["safety"]["read_only_hint"], true);
+        assert_eq!(value["evidence"]["content"][0]["text"], "slow down");
     }
 
     #[test]

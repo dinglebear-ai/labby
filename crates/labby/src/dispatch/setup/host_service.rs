@@ -828,33 +828,14 @@ fn redact_command_output(output: &str) -> String {
             } else if line.contains("TS_AUTHKEY=") {
                 "TS_AUTHKEY=[redacted]".to_string()
             } else {
-                redact_secret_like_segments(line)
+                // Canonical helper; the retired local copy's `tskey-` prefix
+                // was folded into it, so Tailscale keys stay covered (the
+                // shared marker is `[REDACTED]` rather than `[redacted]`).
+                labby_runtime::redact::redact_secret_like_segments(line)
             }
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn redact_secret_like_segments(input: &str) -> String {
-    input
-        .split_whitespace()
-        .map(|segment| {
-            let looks_secret = segment.starts_with("sk-")
-                || segment.starts_with("ghp_")
-                || segment.starts_with("github_pat_")
-                || segment.starts_with("glpat-")
-                || segment.starts_with("xoxb-")
-                || segment.starts_with("xoxp-")
-                || segment.starts_with("tskey-")
-                || segment.starts_with("eyJ");
-            if looks_secret {
-                "[redacted]".to_string()
-            } else {
-                segment.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn path_to_str(path: &Path) -> Result<&str, ToolError> {

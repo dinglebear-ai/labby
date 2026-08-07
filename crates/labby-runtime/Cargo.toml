@@ -16,7 +16,7 @@ publish = false
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-regex = "1"
+regex.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

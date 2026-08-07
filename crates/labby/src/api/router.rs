@@ -288,7 +288,7 @@ fn auth_error_response(
         sdk_kind: "auth_failed".into(),
         message: message.into(),
     };
-    let mut response = ApiError(err).into_response();
+    let mut response = ApiError::new(err).into_response();
     if let Some(url) = resource_url {
         let scope = scopes.join(" ");
         let www_auth = format!(
@@ -314,7 +314,7 @@ fn auth_error_response_with_challenge(
         sdk_kind: "auth_failed".into(),
         message: message.into(),
     };
-    let mut response = ApiError(err).into_response();
+    let mut response = ApiError::new(err).into_response();
     let scope = scopes
         .iter()
         .map(String::as_str)
@@ -438,7 +438,7 @@ async fn authenticate_protected_route_request(
             granted_scopes = ?granted,
             "protected MCP route auth failed: insufficient scope"
         );
-        let mut response = ApiError(ToolError::Sdk {
+        let mut response = ApiError::new(ToolError::Sdk {
             sdk_kind: "forbidden".into(),
             message: "insufficient OAuth scope for protected MCP route".into(),
         })
@@ -526,7 +526,7 @@ async fn proxy_protected_mcp_route(
                 error = %error,
                 "protected MCP route proxy failed: request body read error"
             );
-            return ApiError(ToolError::Sdk {
+            return ApiError::new(ToolError::Sdk {
                 sdk_kind: "bad_request".into(),
                 message: format!("failed to read MCP request body: {error}"),
             })
@@ -572,7 +572,7 @@ async fn proxy_protected_mcp_route(
                 error = %error,
                 "protected MCP route proxy failed: backend request failed"
             );
-            return ApiError(ToolError::Sdk {
+            return ApiError::new(ToolError::Sdk {
                 sdk_kind: "bad_gateway".into(),
                 message: format!("protected MCP backend request failed: {error}"),
             })
@@ -612,7 +612,7 @@ async fn proxy_protected_mcp_route(
                 error = %error,
                 "protected MCP route proxy failed: response build failed"
             );
-            ApiError(ToolError::Sdk {
+            ApiError::new(ToolError::Sdk {
                 sdk_kind: "bad_gateway".into(),
                 message: format!("failed to build protected MCP response: {error}"),
             })
@@ -634,7 +634,7 @@ async fn protected_route_upstream_target(
                     error = %error,
                     "protected MCP route proxy failed: invalid backend_url"
                 );
-                ApiError(ToolError::Sdk {
+                ApiError::new(ToolError::Sdk {
                     sdk_kind: "bad_gateway".into(),
                     message: format!("protected MCP route backend_url is invalid: {error}"),
                 })
@@ -649,7 +649,7 @@ async fn protected_route_upstream_target(
                 resource = %route.public_resource(),
                 "protected MCP gateway subset reached legacy proxy path"
             );
-            return Err(ApiError(ToolError::Sdk {
+            return Err(ApiError::new(ToolError::Sdk {
                 sdk_kind: "bad_gateway".into(),
                 message: "gateway_subset routes must be served by the scoped MCP service".into(),
             })
@@ -664,7 +664,7 @@ async fn protected_route_upstream_target(
             upstream = %upstream_name,
             "protected MCP route proxy failed: gateway manager missing"
         );
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "bad_gateway".into(),
             message: "gateway manager is not available for upstream protected route".into(),
         })
@@ -677,7 +677,7 @@ async fn protected_route_upstream_target(
             upstream = %upstream_name,
             "protected MCP route proxy failed: configured upstream not found"
         );
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "not_found".into(),
             message: format!("upstream `{upstream_name}` not found for protected MCP route"),
         })
@@ -690,7 +690,7 @@ async fn protected_route_upstream_target(
             upstream = %upstream_name,
             "protected MCP route proxy failed: upstream has no HTTP URL"
         );
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "bad_gateway".into(),
             message: format!("upstream `{upstream_name}` does not have an HTTP MCP URL"),
         })
@@ -716,7 +716,7 @@ async fn protected_route_upstream_target(
                 subject = %SHARED_GATEWAY_OAUTH_SUBJECT,
                 "protected MCP route proxy failed: upstream oauth manager missing"
             );
-            return Err(ApiError(ToolError::Sdk {
+            return Err(ApiError::new(ToolError::Sdk {
                 sdk_kind: "oauth_needs_reauth".into(),
                 message: format!("upstream `{upstream_name}` is not connected with OAuth"),
             })
@@ -735,7 +735,7 @@ async fn protected_route_upstream_target(
                     error = %error,
                     "protected MCP route proxy failed: upstream oauth auth client unavailable"
                 );
-                ApiError(ToolError::Sdk {
+                ApiError::new(ToolError::Sdk {
                     sdk_kind: error.kind().to_string(),
                     message: format!(
                         "upstream `{upstream_name}` OAuth authorization required: {error}"
@@ -752,7 +752,7 @@ async fn protected_route_upstream_target(
                 error = %error,
                 "protected MCP route proxy failed: upstream oauth token unavailable"
             );
-            ApiError(ToolError::Sdk {
+            ApiError::new(ToolError::Sdk {
                 sdk_kind: "oauth_needs_reauth".into(),
                 message: format!("upstream `{upstream_name}` OAuth token unavailable: {error}"),
             })
@@ -820,7 +820,7 @@ async fn protected_mcp_route_entry(
                 resource = %route.public_resource(),
                 "protected MCP gateway subset failed: scoped router missing"
             );
-            return ApiError(ToolError::Sdk {
+            return ApiError::new(ToolError::Sdk {
                 sdk_kind: "bad_gateway".into(),
                 message: "protected MCP gateway subset service is not mounted".into(),
             })
@@ -838,7 +838,7 @@ async fn protected_mcp_route_entry(
                     error = %error,
                     "protected MCP gateway subset failed: scoped service error"
                 );
-                ApiError(ToolError::Sdk {
+                ApiError::new(ToolError::Sdk {
                     sdk_kind: "bad_gateway".into(),
                     message: format!("protected MCP gateway subset service failed: {error}"),
                 })
@@ -884,7 +884,7 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 }
 
 fn csrf_error_response(message: &str) -> axum::response::Response {
-    ApiError(ToolError::Sdk {
+    ApiError::new(ToolError::Sdk {
         sdk_kind: "validation_failed".into(),
         message: message.into(),
     })
