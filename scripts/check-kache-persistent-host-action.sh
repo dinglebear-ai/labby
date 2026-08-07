@@ -13,12 +13,20 @@ grep -Fq 'run: "$GITHUB_ACTION_PATH/detect-persistent-host.sh"' "$action"
 grep -Fq "steps.kache-host.outputs.managed == 'true'" "$action"
 grep -Fq "steps.kache-host.outputs.managed != 'true'" "$action"
 grep -Fq 'uses: kunobi-ninja/kache-action@a257c055543c2840700a9bbca8f9c3094a421b1b' "$action"
-# These two are env-overridable with the previous hardcoded values as the
+# `s3-prefix` is env-overridable with the previous hardcoded value as the
 # fallback (see #347). Assert the default still resolves to the intended
 # value without pinning the literal, so parameterizing the input again does
 # not silently break this guard the way asserting `s3-prefix: rust` did.
 grep -Fq "s3-prefix: \${{ env.KACHE_S3_PREFIX || 'rust' }}" "$action"
-grep -Fq "s3-endpoint: \${{ env.KACHE_S3_ENDPOINT || 'https://s3.tootie.tv' }}" "$action"
+# `s3-endpoint` deliberately has NO literal fallback: this repository is
+# public (see #377). Assert the bare env form, and separately assert that no
+# endpoint literal has crept back in — that second check is the actual
+# security property, and it is what #377 was for.
+grep -Fq "s3-endpoint: \${{ env.KACHE_S3_ENDPOINT }}" "$action"
+if grep -Eq 'https://s3\.[A-Za-z0-9.-]+' "$action"; then
+  echo "FAIL: $action contains a literal S3 endpoint; this repository is public (see #377)" >&2
+  exit 1
+fi
 grep -Fq 'binary="${{ steps.kache-host.outputs.binary }}"' "$action"
 grep -Fq 'echo "RUSTC_WRAPPER=$binary"' "$action"
 grep -Fq 'echo "CARGO_BUILD_RUSTC_WRAPPER=$binary"' "$action"
