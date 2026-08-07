@@ -385,24 +385,19 @@ async fn authenticate(
                     return Ok(request);
                 }
                 Err(error) => {
-                    // `debug!` here is invisible under the default
-                    // `LABBY_LOG=labby=info`, which is why a client that could
-                    // not authenticate left no trace at all. `auth_failed` is
-                    // a caller error, and the root CLAUDE.md level conventions
-                    // put those at WARN.
-                    tracing::warn!(
-                        kind = "auth_failed",
-                        error = %error,
-                        "bearer token rejected: JWT validation failed"
-                    );
+                    // `jwt.rs` already emits one WARN naming the reason this
+                    // token was refused. Repeating it here would triple the
+                    // log volume of a single unauthenticated request — and
+                    // this path runs *before* authn with no rate limiter, so
+                    // an attacker could use the amplification to push genuine
+                    // security events out of journald's rate-limit burst.
+                    // Keep the extra context at debug.
+                    tracing::debug!(error = %error, "bearer token rejected: JWT validation failed");
                 }
             }
         }
 
-        tracing::warn!(
-            kind = "auth_failed",
-            "request rejected: bearer token matched no static token and no valid JWT"
-        );
+        tracing::debug!("request rejected: bearer token matched no static token and no valid JWT");
         return Err(auth_error_response("invalid bearer token", layer));
     }
 

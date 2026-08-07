@@ -135,7 +135,7 @@ fn validate_document(
 ) -> Result<RegisteredClient, AuthError> {
     if document.client_id != expected_client_id {
         warn!(
-            kind = "invalid_grant",
+            kind = "validation_failed",
             client_id = %expected_client_id,
             "cimd rejected: document client_id does not match the URL it was fetched from"
         );
@@ -329,6 +329,33 @@ mod tests {
         .unwrap();
         assert_eq!(client.token_endpoint_auth_method, "private_key_jwt");
         assert!(client.jwks.is_none());
+        assert_eq!(
+            client.jwks_uri.as_deref(),
+            Some("https://chatgpt.com/oauth/jwks.json")
+        );
+    }
+
+    /// The live document, captured from
+    /// `https://chatgpt.com/oauth/<id>/client.json` on 2026-08-07 with only
+    /// the connector id neutralised. Kept as a recorded artifact rather than
+    /// a hand-written string so the premise of this whole change — that a
+    /// real client publishes `token_endpoint_auth_methods_supported` in a
+    /// *client* document, which is an AS-metadata field name — stays
+    /// evidenced rather than asserted.
+    #[test]
+    fn the_recorded_chatgpt_document_publishes_both_auth_methods() {
+        let raw = include_str!("../tests/fixtures/chatgpt-client-metadata.json");
+        let document: ClientMetadataDocument = serde_json::from_str(raw).unwrap();
+        let client = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            document,
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap();
+        assert_eq!(
+            client.token_endpoint_auth_methods,
+            vec!["private_key_jwt".to_string(), "none".to_string()]
+        );
         assert_eq!(
             client.jwks_uri.as_deref(),
             Some("https://chatgpt.com/oauth/jwks.json")

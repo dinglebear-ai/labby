@@ -94,7 +94,17 @@ Document (CIMD) — an HTTPS URL as the `client_id`, per
 - `client_id` in the document must exactly equal the URL it was fetched from
 - `client_name` and at least one `redirect_uris` entry are required, and every
   redirect URI is held to the same allowlist as DCR registration
-- `token_endpoint_auth_method` must be `none` or `private_key_jwt`
+- `token_endpoint_auth_method` names the client's preferred method and must be
+  `none` or `private_key_jwt`. A client that can authenticate more than one way
+  may also publish `token_endpoint_auth_methods_supported`; Labby accepts any
+  method in that set, and every listed method must also be one of the two.
+  Omitting the field means the preference is the only accepted method. Note
+  that `token_endpoint_auth_methods_supported` is an RFC 8414 *authorization
+  server* metadata name; ChatGPT's connector publishes it in its **client**
+  document, and Labby honours it there rather than rejecting a client for
+  using a method it advertises
+- a set containing `private_key_jwt` still requires keys, even when the
+  declared preference is `none`
 - a `private_key_jwt` document must publish its public keys, either inline as
   `jwks` or by reference as `jwks_uri` (the form ChatGPT's connector uses).
   Inline keys take precedence and suppress the `jwks_uri` fetch

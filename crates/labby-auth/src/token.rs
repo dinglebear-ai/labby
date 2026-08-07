@@ -486,7 +486,19 @@ async fn authenticate_oauth_client(
                 .any(|m| m == method)
         }
     };
-    let presented = if client_assertion.is_some() || client_assertion_type.is_some() {
+    // Treat only *non-empty* fields as presented credentials. `axum::Form`
+    // deserializes a present-but-empty field (`client_assertion_type=`) to
+    // `Some("")`, and SDKs that serialize every optional field emit exactly
+    // that. Counting it as a credential classifies an ordinary public client
+    // as `private_key_jwt` and rejects it — a client that authenticates fine
+    // today would start failing for sending an empty string.
+    let client_secret = client_secret.filter(|value| !value.is_empty());
+    let client_assertion = client_assertion.filter(|value| !value.is_empty());
+    let client_assertion_type = client_assertion_type.filter(|value| !value.is_empty());
+    // Proof of possession is the assertion itself; a bare type is not a
+    // credential. Requiring the assertion here keeps a stray
+    // `client_assertion_type=` from diverting a public client.
+    let presented = if client_assertion.is_some() {
         "private_key_jwt"
     } else if client_secret.is_some() {
         "client_secret"
@@ -532,7 +544,24 @@ async fn authenticate_oauth_client(
             )
             .await
         }
-        _ => Err(invalid_client()),
+        _ => {
+            // Reachable when the presented method is published but its
+            // preconditions fail — e.g. `private_key_jwt` accompanied by a
+            // client_secret, or an assertion carrying the wrong
+            // `client_assertion_type`. This is the arm the silent-401 bug
+            // came through; it must never be quiet again.
+            warn!(
+                kind = "auth_failed",
+                client_id = %client_id,
+                presented_auth_method = presented,
+                has_client_secret = client_secret.is_some(),
+                has_client_assertion = client_assertion.is_some(),
+                assertion_type_matches = client_assertion_type
+                    == Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+                "oauth token rejected: client authentication preconditions not met"
+            );
+            Err(invalid_client())
+        }
     }
 }
 
