@@ -16,7 +16,7 @@ use super::super::types::{
     UpstreamTool, UpstreamToolExposureRow,
 };
 use super::UpstreamPool;
-use super::entries::resolve_exposure_policy;
+use super::entries::resolve_request_exposure_policy;
 use super::helpers::UpstreamCachedSummary;
 
 /// Hard cap on the total number of tools returned by a single `healthy_tools()` call.
@@ -252,9 +252,21 @@ impl UpstreamPool {
     /// never lands in `self.catalog`, so there is no `UpstreamEntry` to consult;
     /// the policy is resolved per request from the live `UpstreamConfig` with
     /// the same fail-closed `resolve_exposure_policy` helper the catalog path
-    /// uses. This is the single choke point for OAuth tool exposure — both
-    /// `list_tools` discovery and upstream-owner resolution for `call_tool` go
-    /// through it, so a hidden tool is neither advertised nor callable.
+    /// uses.
+    ///
+    /// This covers **discovery** for every subject-scoped consumer: `list_tools`
+    /// (`crates/labby/src/mcp/handlers_tools.rs`), the `tools/list_changed`
+    /// contract diff (`crates/labby/src/mcp/peer_contract.rs`), and the
+    /// owner-resolution scan in `crates/labby/src/mcp/call_tool_upstream.rs`.
+    ///
+    /// It is **not** the only place exposure has to hold. That same
+    /// `call_tool_upstream.rs` has a `pre_resolved_oauth_config` branch that
+    /// short-circuits owner resolution and never calls this function, so
+    /// "hidden implies uncallable" is enforced independently at the OAuth
+    /// execution primitives themselves — `subject_scoped_call_tool*`
+    /// (`pool/tools_call.rs`) and the subject-scoped arm of `call_tool_relayed`
+    /// (`pool/relay.rs`) — via `subject_scoped_tool_is_exposed`. Do not delete
+    /// either guard on the assumption that the other one covers it.
     pub async fn subject_scoped_tools(
         &self,
         configs: &[UpstreamConfig],
@@ -267,7 +279,7 @@ impl UpstreamPool {
             let pool = self.clone();
             futures.push(async move {
                 let exposure_policy =
-                    resolve_exposure_policy(&config.name, config.expose_tools.clone());
+                    resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
                 let result = pool.acquire_or_connect_subject(&config, &subject).await;
                 (config.name.clone(), exposure_policy, result)
             });

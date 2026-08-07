@@ -13,10 +13,68 @@ use super::UpstreamPool;
 use super::capability_call::{
     CapabilityCallError, timed_capability_call, timed_capability_call_str,
 };
+use super::entries::resolve_request_exposure_policy;
 use super::helpers::{
     estimate_call_tool_response_size, estimate_response_size, upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+
+/// Fail-closed `expose_tools` check for the OAuth subject-scoped call paths.
+///
+/// The catalog-backed (non-OAuth) path gets this for free: a hidden tool is
+/// absent from `find_tool*` / `healthy_tools_for_upstream`, so no upstream owner
+/// resolves and the call is never routed. The subject-scoped path has no catalog
+/// entry, so the equivalent guarantee has to be enforced from the live
+/// `UpstreamConfig` — here, at the execution primitive itself rather than only in
+/// the caller that resolves the owner. Keeping it here means the pool API is safe
+/// for every caller, including the `pre_resolved_oauth_config` branch in
+/// `crates/labby/src/mcp/call_tool_upstream.rs` that resolves its owner from the
+/// catalog and therefore never passes through `subject_scoped_tools`.
+///
+/// Uses the same fail-closed policy helper as every other exposure decision, so
+/// an unparseable allowlist blocks the call.
+pub(super) fn subject_scoped_tool_is_exposed(config: &UpstreamConfig, tool_name: &str) -> bool {
+    resolve_request_exposure_policy(&config.name, config.expose_tools.clone()).matches(tool_name)
+}
+
+/// Error returned when `expose_tools` hides the requested tool.
+///
+/// Deliberately identical in shape to a missing tool: an excluded tool must not
+/// be distinguishable from one the upstream never advertised.
+pub(super) fn hidden_tool_error(config: &UpstreamConfig, tool_name: &str) -> String {
+    tracing::warn!(
+        upstream = %config.name,
+        "refusing subject-scoped call to a tool hidden by the upstream exposure policy"
+    );
+    format!(
+        "upstream `{}` does not expose tool `{tool_name}`",
+        config.name
+    )
+}
+
+/// [`hidden_tool_error`] as a classified failure.
+///
+/// `Mcp` + `METHOD_NOT_FOUND`, not `Transport`: this is a permanent policy
+/// decision, and `mcp_error_data_kind` maps `METHOD_NOT_FOUND` to the
+/// `unknown_tool` stable kind (`upstream/tool_error.rs`). A `Transport` class
+/// would instead fall through the string classifier to `upstream_error`, whose
+/// recovery contract tells the agent to retry — a retry loop against a denial
+/// that can never succeed. `unknown_tool` also keeps the response
+/// indistinguishable from a tool the upstream never advertised.
+pub(super) fn hidden_tool_call_error(
+    config: &UpstreamConfig,
+    tool_name: &str,
+) -> CapabilityCallError {
+    let message = hidden_tool_error(config, tool_name);
+    CapabilityCallError::Mcp {
+        data: rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            message.clone(),
+            None,
+        ),
+        message: message.clone(),
+    }
+}
 
 impl UpstreamPool {
     /// Call an OAuth-subject-scoped tool once, preserving MRTR/task outcomes.
@@ -46,6 +104,9 @@ impl UpstreamPool {
     ) -> Result<CallToolResponse, CapabilityCallError> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
+        if !subject_scoped_tool_is_exposed(config, &tool_name) {
+            return Err(hidden_tool_call_error(config, &tool_name));
+        }
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
@@ -84,6 +145,9 @@ impl UpstreamPool {
     ) -> Result<CallToolResult, String> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
+        if !subject_scoped_tool_is_exposed(config, &tool_name) {
+            return Err(hidden_tool_error(config, &tool_name));
+        }
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);

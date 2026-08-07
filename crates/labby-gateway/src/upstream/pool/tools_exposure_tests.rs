@@ -14,9 +14,8 @@ use labby_runtime::gateway_config::{
     UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
 };
 
-use super::super::types::ToolExposurePolicy;
 use super::SubjectScopedConnection;
-use super::entries::healthy_in_process_entry;
+use super::entries::{healthy_in_process_entry, resolve_exposure_policy};
 use super::testsupport::*;
 
 /// The tools every fixture upstream advertises, and the allowlist applied to it.
@@ -45,22 +44,47 @@ fn oauth_upstream_config(name: &str, expose_tools: &[&str]) -> UpstreamConfig {
 /// * the `(upstream, subject)` connection cache is pre-populated with the same
 ///   unfiltered tool list, so `subject_scoped_tools()` takes the
 ///   `acquire_or_connect_subject` fast path and never touches the network.
+///
+/// The catalog policy is compiled by the same production helper
+/// (`resolve_exposure_policy`) that `lazy_upstream_entry` and
+/// `replace_catalog_tools` use, not by the test — otherwise the "both paths
+/// agree" assertion would only be comparing two things the *test* compiled.
 async fn pool_with_both_exposure_paths(upstream: &str, subject: &str) -> Arc<super::UpstreamPool> {
     let pool = static_catalog_pool(upstream).await;
-    let upstream_name: Arc<str> = Arc::from(upstream);
+    seed_catalog_entry(&pool, upstream, &EXPOSE_TOOLS).await;
+    move_connection_to_subject_cache(&pool, upstream, subject).await;
+    pool
+}
 
+/// Insert a catalog entry advertising [`DISCOVERED_TOOLS`] with `expose_tools`
+/// resolved through the production policy helper.
+async fn seed_catalog_entry(pool: &super::UpstreamPool, upstream: &str, expose_tools: &[&str]) {
+    let upstream_name: Arc<str> = Arc::from(upstream);
     let mut entry = healthy_in_process_entry(
         Arc::clone(&upstream_name),
         test_upstream_tools(&upstream_name, &DISCOVERED_TOOLS),
     );
-    entry.exposure_policy =
-        ToolExposurePolicy::from_patterns(EXPOSE_TOOLS.iter().map(|s| (*s).to_string()).collect())
-            .expect("policy compiles");
+    entry.exposure_policy = resolve_exposure_policy(
+        upstream,
+        Some(expose_tools.iter().map(|s| (*s).to_string()).collect()),
+    );
     pool.catalog
         .write()
         .await
         .insert(upstream.to_string(), entry);
+}
 
+/// Re-home the fixture's pooled connection into the `(upstream, subject)` cache
+/// so `subject_scoped_tools` hits the `acquire_or_connect_subject` fast path.
+///
+/// The cached tool list is deliberately the **unfiltered** [`DISCOVERED_TOOLS`]:
+/// the cache stores what the upstream advertised, and the filter under test runs
+/// after the cache read. Seeding it pre-filtered would make every test vacuous.
+async fn move_connection_to_subject_cache(
+    pool: &super::UpstreamPool,
+    upstream: &str,
+    subject: &str,
+) {
     // `UpstreamConnection` implements `Drop`, so the whole value has to be moved
     // out of the pool rather than having its fields taken individually.
     let peer = pool
@@ -86,8 +110,6 @@ async fn pool_with_both_exposure_paths(upstream: &str, subject: &str) -> Arc<sup
             last_used: Instant::now(),
         },
     );
-
-    pool
 }
 
 fn sorted(mut names: Vec<String>) -> Vec<String> {
@@ -184,5 +206,212 @@ async fn absent_expose_tools_leaves_subject_scoped_tools_untouched() {
         sorted(subject_scoped),
         sorted(DISCOVERED_TOOLS.map(String::from).to_vec()),
         "an upstream with no allowlist must keep exposing every discovered tool"
+    );
+}
+
+/// An explicitly empty `expose_tools = []` hides everything.
+///
+/// Distinct from both siblings above: `None` (no allowlist) and `Some([])` are a
+/// single serde `default` slip apart and mean the *opposite* thing, while the
+/// malformed-entry test reaches the same `AllowList(vec![])` value through the
+/// error path. Only this test pins `from_optional`'s empty-vec branch.
+#[tokio::test]
+async fn empty_expose_tools_hides_every_subject_scoped_tool() {
+    let pool = pool_with_both_exposure_paths("github", "alice").await;
+    let config = oauth_upstream_config("github", &[]);
+
+    let subject_scoped = pool
+        .subject_scoped_tools(std::slice::from_ref(&config), "alice")
+        .await;
+
+    assert_eq!(subject_scoped.len(), 1, "the upstream is still discovered");
+    assert!(
+        subject_scoped[0].1.is_empty(),
+        "an explicitly empty allowlist means expose nothing, not expose everything"
+    );
+}
+
+/// Each upstream must be filtered by *its own* policy.
+///
+/// `subject_scoped_tools` fans out over `FuturesUnordered`, so results arrive in
+/// nondeterministic order. The current code is correct by construction — the
+/// policy travels through the result tuple alongside its own config — but that
+/// is exactly the invariant a refactor breaks (hoisting the resolve out of the
+/// loop, or collecting policies into a `Vec` indexed by completion order). A
+/// single-upstream test cannot detect cross-contamination; this one can.
+///
+/// It also pins the `config.oauth.is_some()` filter: the non-OAuth upstream in
+/// the slice must be skipped entirely rather than double-listed alongside the
+/// catalog path.
+#[tokio::test]
+async fn each_upstream_is_filtered_by_its_own_expose_tools() {
+    let pool = pool_with_both_exposure_paths("strict", "alice").await;
+    seed_catalog_entry(&pool, "open", &["*"]).await;
+    let open_pool = static_catalog_pool("open").await;
+    {
+        let mut connections = pool.connections.write().await;
+        let mut source = open_pool.connections.write().await;
+        if let Some(connection) = source.remove("open") {
+            connections.insert("open".to_string(), connection);
+        }
+    }
+    move_connection_to_subject_cache(&pool, "open", "alice").await;
+
+    let configs = vec![
+        oauth_upstream_config("strict", &EXPOSE_TOOLS),
+        UpstreamConfig {
+            expose_tools: None,
+            ..oauth_upstream_config("open", &EXPOSE_TOOLS)
+        },
+        // No `oauth` block — must be skipped, not listed.
+        named_test_upstream_config("plain"),
+    ];
+
+    let by_upstream: std::collections::BTreeMap<String, Vec<String>> = pool
+        .subject_scoped_tools(&configs, "alice")
+        .await
+        .into_iter()
+        .map(|(name, tools)| {
+            (
+                name,
+                sorted(
+                    tools
+                        .into_iter()
+                        .map(|tool| tool.name.to_string())
+                        .collect(),
+                ),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        by_upstream.get("strict").map(Vec::as_slice),
+        Some(EXPECTED_EXPOSED.map(String::from).to_vec().as_slice()),
+        "the restricted upstream keeps its own allowlist"
+    );
+    assert_eq!(
+        by_upstream.get("open").cloned(),
+        Some(sorted(DISCOVERED_TOOLS.map(String::from).to_vec())),
+        "an unrestricted sibling must not inherit the restricted upstream's allowlist"
+    );
+    assert!(
+        !by_upstream.contains_key("plain"),
+        "a non-OAuth upstream must not be listed by the subject-scoped path"
+    );
+}
+
+/// Hidden means uncallable, not merely unadvertised.
+///
+/// This is the OAuth twin of `hidden_upstream_tools_cannot_be_called_directly`
+/// (`pool/tools.rs`), which pins the same property for the catalog path. It
+/// covers both halves of the guarantee:
+///
+/// 1. **Routing** — the owner-resolution scan that
+///    `crates/labby/src/mcp/call_tool_upstream.rs` performs over
+///    `subject_scoped_tools` finds no owner for a hidden tool.
+/// 2. **Execution** — the pool's own subject-scoped call primitive refuses the
+///    call outright, so the guarantee does not depend on that one caller. This
+///    half is what closes the `pre_resolved_oauth_config` branch, which resolves
+///    its owner from the catalog and never consults `subject_scoped_tools`.
+#[tokio::test]
+async fn hidden_subject_scoped_tools_cannot_be_called() {
+    let pool = pool_with_both_exposure_paths("github", "alice").await;
+    let config = oauth_upstream_config("github", &EXPOSE_TOOLS);
+
+    // 1. Routing: mirrors the owner-resolution loop in call_tool_upstream.rs.
+    let owner_of = |tool_name: &'static str| {
+        let pool = Arc::clone(&pool);
+        let config = config.clone();
+        async move {
+            pool.subject_scoped_tools(std::slice::from_ref(&config), "alice")
+                .await
+                .into_iter()
+                .find(|(_, tools)| tools.iter().any(|tool| tool.name.as_ref() == tool_name))
+                .map(|(upstream, _)| upstream)
+        }
+    };
+    assert_eq!(
+        owner_of("search_repos").await.as_deref(),
+        Some("github"),
+        "an exposed tool must still resolve to its owning upstream"
+    );
+    assert_eq!(
+        owner_of("delete_repo").await,
+        None,
+        "a hidden tool must resolve to no upstream, so the proxy never routes it"
+    );
+
+    // 2. Execution: the pool primitive refuses regardless of how it was reached.
+    let call = |tool_name: &'static str| {
+        let pool = Arc::clone(&pool);
+        let config = config.clone();
+        async move {
+            pool.subject_scoped_call_tool(
+                &config,
+                "alice",
+                rmcp::model::CallToolRequestParams::new(tool_name),
+            )
+            .await
+        }
+    };
+    let hidden = call("delete_repo").await;
+    assert!(
+        hidden
+            .as_ref()
+            .is_err_and(|error| error.contains("does not expose tool `delete_repo`")),
+        "a hidden tool must be refused by the pool itself, got {hidden:?}"
+    );
+    // The exposed tool must get *past* the guard. Whether the fixture upstream
+    // then answers it is not this test's business — asserting `is_ok()` would
+    // couple the exposure guard to the mock server's tool table.
+    let exposed = call("search_repos").await;
+    assert!(
+        !exposed
+            .as_ref()
+            .is_err_and(|error| error.contains("does not expose tool")),
+        "an exposed tool must not be blocked by the exposure guard, got {exposed:?}"
+    );
+}
+
+/// A refused call must surface as `unknown_tool`, not as a retryable error.
+///
+/// The classified call path is what the MCP proxy actually uses
+/// (`call_tool_upstream.rs` → `subject_scoped_call_tool_once_classified`), and
+/// the failure *class* is load-bearing: `mcp_error_data_kind` maps
+/// `METHOD_NOT_FOUND` to the `unknown_tool` stable kind, whose recovery contract
+/// tells the agent to rediscover. A `Transport`-class refusal would instead
+/// surface as `upstream_error` and instruct the agent to retry a denial that can
+/// never succeed.
+#[tokio::test]
+async fn a_hidden_tool_is_refused_as_unknown_tool_not_as_a_retryable_error() {
+    use super::super::tool_error::mcp_error_data_kind;
+    use super::capability_call::CapabilityCallError;
+
+    let pool = pool_with_both_exposure_paths("github", "alice").await;
+    let config = oauth_upstream_config("github", &EXPOSE_TOOLS);
+
+    let error = pool
+        .subject_scoped_call_tool_once_classified(
+            &config,
+            "alice",
+            rmcp::model::CallToolRequestParams::new("delete_repo"),
+        )
+        .await
+        .expect_err("a hidden tool must not be callable");
+
+    let CapabilityCallError::Mcp { data, message } = &error else {
+        panic!("expected an Mcp-class refusal, got {error:?}");
+    };
+    // Pin that the refusal came from the exposure guard specifically. Without
+    // this the test would also pass if the guard were removed and the fixture
+    // upstream simply answered "no such tool" — a false green.
+    assert!(
+        message.contains("does not expose tool `delete_repo`"),
+        "the refusal must come from the exposure guard, got {message:?}"
+    );
+    assert_eq!(
+        mcp_error_data_kind(data),
+        "unknown_tool",
+        "a hidden tool must be indistinguishable from one the upstream never advertised"
     );
 }
