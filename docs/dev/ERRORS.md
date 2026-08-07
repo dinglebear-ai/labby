@@ -80,7 +80,9 @@ Supported code may emit additional stable kinds, including:
   `oauth_client_mismatch`, `oauth_shared_credential_protected`;
 - routing/upstreams: `not_found`, `unknown_upstream`, `unknown_tool`,
   `upstream_error`, `bad_gateway`, `network_error`,
-  `service_unavailable`, `not_connected`, `connection_error`, `timeout`,
+  `service_unavailable`, `not_connected`, `connection_error`, `dns_error`,
+  `connection_refused` (the latter three come from `classify_upstream_error`'s
+  upstream-health classification; see the classifier note below), `timeout`,
   `cancelled` (the upstream reported the proxied call was cancelled; not
   automatically retryable), `unexpected_response`;
 - relay/bridge: `bridge_transport_error` (the stdio bridge could not reach the

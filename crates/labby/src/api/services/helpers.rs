@@ -119,10 +119,11 @@ where
                     kind = "not_found",
                     "service rejected by gateway surface policy"
                 );
-                return Err(ApiError(ToolError::Sdk {
+                return Err(ApiError::new(ToolError::Sdk {
                     sdk_kind: "not_found".to_string(),
                     message: format!("service `{service}` is not enabled on the {surface} surface"),
-                }));
+                })
+                .with_service_action(service, &action));
             }
         }
     }
@@ -147,11 +148,12 @@ where
         let mut valid: Vec<String> = actions.iter().map(|s| s.name.to_string()).collect();
         valid.push("help".to_string());
         valid.push("schema".to_string());
-        return Err(ApiError(ToolError::UnknownAction {
+        return Err(ApiError::new(ToolError::UnknownAction {
             message: format!("unknown action: `{action}`"),
             valid,
             hint: None,
-        }));
+        })
+        .with_service_action(service, &action));
     };
     let is_destructive = spec.is_some_and(|s| s.destructive);
     let requires_admin = spec.is_some_and(|s| s.requires_admin);
@@ -175,10 +177,11 @@ where
             kind,
             "admin action rejected at API gate"
         );
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: kind.to_string(),
             message,
-        }));
+        })
+        .with_service_action(service, &action));
     }
     let instance = params
         .get("instance")
@@ -273,7 +276,11 @@ where
         ),
     }
 
-    result.map(Json).map_err(ApiError)
+    // Attach the dispatch context so the HTTP error body carries the same
+    // `service`/`action` fields the MCP envelope does.
+    result
+        .map(Json)
+        .map_err(|error| ApiError::new(error).with_service_action(service, &action_log))
 }
 
 #[cfg(test)]
@@ -419,8 +426,34 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
-        let err = result.unwrap_err().0;
+        let err = result.unwrap_err().error;
         assert_eq!(err.kind(), "missing_param");
+    }
+
+    // ── Error body carries dispatch context (matches MCP envelopes) ──────────
+
+    #[tokio::test]
+    async fn error_body_carries_service_and_action_context() {
+        let req = make_req("safe.read", json!({}));
+        let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
+            err_dispatch(a, p)
+        })
+        .await;
+        let body = result.unwrap_err().body();
+        assert_eq!(body["kind"], "missing_param");
+        assert_eq!(body["service"], "testsvc");
+        assert_eq!(body["action"], "safe.read");
+
+        // The unknown-action gate rejection carries the context too.
+        let req = make_req("nonexistent.action", json!({}));
+        let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
+            ok_dispatch(a, p)
+        })
+        .await;
+        let body = result.unwrap_err().body();
+        assert_eq!(body["kind"], "unknown_action");
+        assert_eq!(body["service"], "testsvc");
+        assert_eq!(body["action"], "nonexistent.action");
     }
 
     // ── Destructive actions dispatch immediately over HTTP (no confirm gate) ──
@@ -494,7 +527,7 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "unknown action must be rejected");
-        let err = result.unwrap_err().0;
+        let err = result.unwrap_err().error;
         assert_eq!(
             err.kind(),
             "unknown_action",
@@ -540,7 +573,7 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
-        let err = result.unwrap_err().0;
+        let err = result.unwrap_err().error;
         assert_eq!(err.kind(), "missing_param");
     }
 
@@ -554,7 +587,7 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().0.kind(), "unknown_action");
+        assert_eq!(result.unwrap_err().error.kind(), "unknown_action");
     }
 
     #[test]

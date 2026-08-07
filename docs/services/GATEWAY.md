@@ -819,8 +819,16 @@ Expected:
 For upstreams configured with `[upstream.oauth]` (see
 [CONFIG.md](../runtime/CONFIG.md#upstream-oauth-authorization_code--pkce) and
 [UPSTREAM.md](./UPSTREAM.md#upstream-oauth-authorization_code--pkce)), the
-gateway mounts four master-only HTTP routes. All four require an authenticated
+hosted HTTP gateway mounts four master-only HTTP routes. All four require an authenticated
 session and the master-only middleware; non-master sessions get `403`.
+
+The `labby mcp` stdio surface uses the same managers and encrypted credential
+store without requiring the hosted HTTP server. It starts a loopback-only
+callback listener on `127.0.0.1`, opens the browser lazily on the first
+reauthorization, and retries the waiting upstream connection after the callback.
+Set `LABBY_OAUTH_ENCRYPTION_KEY` and, if a provider requires a stable registered
+port, `LABBY_STDIO_OAUTH_CALLBACK_PORT`; otherwise Labby asks the OS for an
+ephemeral port. Stdio OAuth always uses the trusted shared subject `gateway`.
 
 | Method | Path | Purpose |
 |--------|------|---------|

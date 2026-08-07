@@ -79,6 +79,32 @@ credentials stay in `bearer_token_env` or `[upstream.oauth]`.
 Use `labby gateway add`, `update`, `remove`, `reload`, and related
 commands rather than editing active gateway state concurrently by hand.
 
+### Upstream OAuth (authorization_code + PKCE)
+
+OAuth upstreams use the encrypted credential store and the shared gateway
+subject. The upstream remains an HTTP MCP endpoint; Labby's stdio mode is the
+downstream transport to the MCP client.
+
+```toml
+[[upstream]]
+name = "example"
+transport = "http"
+url = "https://mcp.example.com/mcp"
+
+[upstream.oauth]
+mode = "authorization_code_pkce"
+
+[upstream.oauth.registration]
+strategy = "dynamic"
+```
+
+For `labby mcp`, configure `LABBY_OAUTH_ENCRYPTION_KEY` in `~/.labby/.env`.
+The first request that needs the upstream opens the browser and completes the
+provider callback on a listener bound only to `127.0.0.1`. Set
+`LABBY_STDIO_OAUTH_CALLBACK_PORT` only when the provider requires a fixed
+loopback port; `0` (the default) uses an ephemeral port. Do not put OAuth
+tokens, authorization codes, or client secrets in TOML.
+
 ## Direct Stdio Proxy
 
 `labby setup proxy` writes all ten non-secret `[proxy]` keys to

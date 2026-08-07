@@ -192,8 +192,11 @@ Operator browser flow lives in [GATEWAY.md](./GATEWAY.md).
 
 ### Scope
 
-- HTTP upstream transport only. Stdio upstreams cannot use OAuth in this phase
-  because stdio sessions do not carry a stable authenticated subject.
+- HTTP upstream transport only at the wire level. `labby mcp` stdio mode now
+  supports native upstream OAuth with the shared trusted subject `gateway`.
+  It binds a callback listener to `127.0.0.1`, opens the authorization URL in
+  the default browser on first use, and waits for the loopback callback. The
+  hosted HTTP mode continues to use the public callback route.
 - Subject-less discovery skips OAuth upstreams. Hosted gateway startup and
   `gateway.reload` only seed configured upstream names; live discovery happens
   later from a lazy path with an explicit subject. Shared background refresh and
@@ -203,7 +206,27 @@ Operator browser flow lives in [GATEWAY.md](./GATEWAY.md).
   discovered capabilities until authorization succeeds.
   The authorization initiation flow (`POST /v1/gateway/oauth/start`) requires
   an authenticated HTTP session.
-- `/mcp` over HTTP and the hosted web UI are the supported call surfaces.
+- `/mcp` over HTTP, the hosted web UI, and `labby mcp` stdio are supported call
+  surfaces. Stdio native OAuth requires `LABBY_OAUTH_ENCRYPTION_KEY` and uses
+  `LABBY_STDIO_OAUTH_CALLBACK_PORT` when a fixed loopback port is required by
+  an authorization-server registration; the default `0` selects an ephemeral
+  port.
+
+### Stdio Flow
+
+1. Configure the upstream with an HTTP `url` and `[upstream.oauth]`; do not
+   wrap it in `mcp-remote`.
+2. Start `labby mcp`. The first connection that needs the upstream opens the
+   provider authorization URL in the default browser.
+3. The provider redirects to the process-local loopback listener. Labby
+   validates the state against the encrypted SQLite store, exchanges the code,
+   and retries the waiting MCP connection.
+4. Later calls reuse the encrypted per-upstream credential and refresh it under
+   the existing manager locks. Concurrent first calls share one browser flow.
+
+The loopback listener is not exposed on the LAN, accepts callbacks only for a
+pending state created by the current process, and never prints the callback
+query or authorization code.
 
 ### Flow
 

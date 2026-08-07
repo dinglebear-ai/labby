@@ -87,15 +87,16 @@ desktop.
 The app reads Labby connection settings from environment defaults first:
 
 - `LABBY_API_URL` (preferred; API origin that serves `/v1/palette/*`)
-- `LABBY_PUBLIC_URL`
 - `LABBY_MCP_HTTP_TOKEN`
 
-`LABBY_PUBLIC_URL` remains a compatibility fallback, but deployments with
-separate web UI and API origins should set `LABBY_API_URL`. If the configured
-origin returns HTML for `/v1/palette/catalog`, the bridge reports a wrong-host
-configuration error instead of treating the web UI page as catalog data. If the
-origin exposes `/.well-known/labby.json`, the bridge can discover `apiBaseUrl`
-and retry palette catalog/execute calls against the advertised API origin.
+`LABBY_PUBLIC_URL` is intentionally not used as a palette endpoint: it is the
+OAuth issuer/callback base for the Labby server, not an API origin. Configure
+`LABBY_API_URL` explicitly when the palette API is not on the local default. If
+the configured origin returns HTML for `/v1/palette/catalog`, the bridge reports
+a wrong-host configuration error instead of treating the web UI page as
+catalog data. If the origin exposes `/.well-known/labby.json`, the bridge can
+discover `apiBaseUrl` and retry palette catalog/execute calls against the
+advertised API origin.
 
 Runtime palette preferences are stored in the platform app config directory as
 `settings.json`. The settings panel can override the server URL, static bearer

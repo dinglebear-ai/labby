@@ -84,6 +84,23 @@ runs:
         ! grep -q "not running" <<<"$status"
         stats="$("$binary" stats 2>&1)"
         grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
+        # Every writer to the shared prefix must agree on how cache keys are
+        # computed. kache 0.13.0 fixed a key-soundness hole (env vars a proc
+        # macro reads during expansion were unkeyed, so a byte-identical
+        # command line could restore a stale expansion). A host still on an
+        # older kache would write into the same bucket under the old key
+        # regime, so refuse to reuse it rather than fail open into a
+        # silently-wrong hit.
+        host_version="$("$binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        echo "Persistent host kache version: $host_version"
+        case "$host_version" in
+          0.1[3-9].*|0.[2-9][0-9].*|[1-9]*)
+            ;;
+          *)
+            echo "::error::persistent host kache $host_version predates the 0.13.0 cache-key fix; refusing to share the s3://kache/rust prefix" >&2
+            exit 1
+            ;;
+        esac
 
     - name: Check action tool cache writability
       id: tool-cache
@@ -121,7 +138,7 @@ runs:
         env.KACHE_S3_SECRET_KEY != ''
       uses: kunobi-ninja/kache-action@a257c055543c2840700a9bbca8f9c3094a421b1b
       with:
-        version: "0.12.0"
+        version: "0.13.0"
         s3-bucket: ${{ env.KACHE_S3_BUCKET || 'kache' }}
         s3-region: us-east-1
         s3-prefix: ${{ env.KACHE_S3_PREFIX || 'rust' }}

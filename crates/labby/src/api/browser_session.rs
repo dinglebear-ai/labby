@@ -92,7 +92,7 @@ async fn load_browser_session(
 }
 
 fn internal_error_response(message: &'static str) -> Response {
-    let mut response = ApiError(ToolError::internal_message(message)).into_response();
+    let mut response = ApiError::new(ToolError::internal_message(message)).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("private, no-store"),

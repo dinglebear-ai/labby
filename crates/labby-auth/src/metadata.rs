@@ -19,12 +19,13 @@ pub async fn authorization_server_metadata(
     if has_enterprise_issuers {
         grant_types_supported.push("urn:ietf:params:oauth:grant-type:jwt-bearer".to_string());
     }
-    let mut token_auth_methods = vec!["none".to_string()];
+    // `private_key_jwt` is unconditional: any CIMD client may declare it in its
+    // metadata document, and `/token` honours that declaration whether or not
+    // preregistered machine clients exist. Only `client_secret_basic` depends
+    // on machine clients.
+    let mut token_auth_methods = vec!["none".to_string(), "private_key_jwt".to_string()];
     if has_machine_clients {
-        token_auth_methods.extend([
-            "client_secret_basic".to_string(),
-            "private_key_jwt".to_string(),
-        ]);
+        token_auth_methods.push("client_secret_basic".to_string());
     }
     Json(AuthorizationServerMetadata {
         issuer: base.clone(),
@@ -40,15 +41,14 @@ pub async fn authorization_server_metadata(
         grant_types_supported,
         code_challenge_methods_supported: vec!["S256".to_string()],
         token_endpoint_auth_methods_supported: token_auth_methods,
-        token_endpoint_auth_signing_alg_values_supported: if has_machine_clients {
-            vec![
-                "EdDSA".to_string(),
-                "RS256".to_string(),
-                "ES256".to_string(),
-            ]
-        } else {
-            Vec::new()
-        },
+        // RFC 8414 requires this whenever `private_key_jwt` is advertised, and
+        // it now always is. The list mirrors `ensure_allowed_algorithm` in
+        // `token.rs`.
+        token_endpoint_auth_signing_alg_values_supported: vec![
+            "EdDSA".to_string(),
+            "RS256".to_string(),
+            "ES256".to_string(),
+        ],
         // Codex 0.144.3 drops `iss` from its local callback before handing the
         // response to rmcp (openai/codex#34684). Operators may explicitly
         // disable RFC 9207 response-issuer binding until that client defect is
@@ -147,6 +147,43 @@ mod tests {
         assert_eq!(
             json["revocation_endpoint"],
             "https://lab.example.com/revoke"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorization_server_metadata_advertises_private_key_jwt_without_machine_clients() {
+        // CIMD clients declare `private_key_jwt` in their own metadata document
+        // and `/token` honours it, so the advertisement cannot be conditional on
+        // preregistered machine clients.
+        let app = router(test_auth_state().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let methods = json["token_endpoint_auth_methods_supported"]
+            .as_array()
+            .unwrap();
+        assert!(methods.contains(&serde_json::json!("none")));
+        assert!(methods.contains(&serde_json::json!("private_key_jwt")));
+        assert!(
+            !methods.contains(&serde_json::json!("client_secret_basic")),
+            "client_secret_basic still requires configured machine clients"
+        );
+        assert!(
+            json["token_endpoint_auth_signing_alg_values_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("RS256")),
+            "RFC 8414 requires signing algs whenever private_key_jwt is advertised"
         );
     }
 
