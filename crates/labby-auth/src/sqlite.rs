@@ -160,6 +160,7 @@ impl SqliteStore {
                         created_at: row.get(2)?,
                         token_endpoint_auth_method: "none".to_string(),
                         jwks: None,
+                        jwks_uri: None,
                     })
                 },
             )
@@ -1974,6 +1975,7 @@ mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();

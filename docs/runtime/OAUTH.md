@@ -86,6 +86,25 @@ Registration rules in the initial launch:
 - `POST /register`, `/authorize`, and hosted browser-login initiation are process-locally rate limited
 - new login/authorization state is rejected once the pending non-expired state cap is reached
 
+Clients may skip `POST /register` entirely and use a Client ID Metadata
+Document (CIMD) — an HTTPS URL as the `client_id`, per
+`draft-ietf-oauth-client-id-metadata-document`. Labby advertises this with
+`client_id_metadata_document_supported: true`. Document rules:
+
+- `client_id` in the document must exactly equal the URL it was fetched from
+- `client_name` and at least one `redirect_uris` entry are required, and every
+  redirect URI is held to the same allowlist as DCR registration
+- `token_endpoint_auth_method` must be `none` or `private_key_jwt`
+- a `private_key_jwt` document must publish its public keys, either inline as
+  `jwks` or by reference as `jwks_uri` (the form ChatGPT's connector uses).
+  Inline keys take precedence and suppress the `jwks_uri` fetch
+- a `jwks_uri` must pass the shared SSRF preflight (HTTPS, no private,
+  loopback, link-local, CGNAT, or private-TLD host); an unusable one is
+  rejected at `/authorize` rather than deferred to `/token`
+- the referenced key set is fetched lazily at client-assertion validation and
+  cached by URL; a `kid` that is absent from the cached set forces a refetch,
+  so client key rotation does not have to wait out the cache TTL
+
 Flow summary:
 
 1. A client registers a loopback redirect URI, a native-app URI, a product-default callback URI, or one that matches the configured allowlist.
@@ -369,7 +388,9 @@ Example machine-client configuration:
 ```
 
 For `private_key_jwt`, omit `client_secret` and provide a standard `jwks`
-document. Enterprise issuer entries use `issuer`, either `jwks_uri` (HTTPS) or
+document — machine clients are preregistered, so they carry inline keys only,
+unlike CIMD clients which may also publish `jwks_uri`. Enterprise issuer
+entries use `issuer`, either `jwks_uri` (HTTPS) or
 an inline `jwks`, and an optional `allowed_client_ids` list. Remote CIMD and
 JWKS reads reject redirects, non-HTTPS URLs, private/loopback DNS results, and
 oversized CIMD responses; successful documents are cached according to

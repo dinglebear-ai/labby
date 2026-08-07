@@ -159,6 +159,7 @@ pub async fn register_client(
         created_at: now_unix(),
         token_endpoint_auth_method: "none".to_string(),
         jwks: None,
+        jwks_uri: None,
     };
     state.store.register_client(client.clone()).await?;
     info!(
@@ -1573,6 +1574,7 @@ pub mod tests {
                     created_at: now_unix(),
                     token_endpoint_auth_method: "none".to_string(),
                     jwks: None,
+                    jwks_uri: None,
                 },
                 now_unix() + 60,
             ),
@@ -1655,6 +1657,7 @@ pub mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -1760,6 +1763,7 @@ pub mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2054,6 +2058,7 @@ pub mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2159,6 +2164,7 @@ pub mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2439,6 +2445,7 @@ pub mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2514,6 +2521,7 @@ pub mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2785,6 +2793,7 @@ pub mod tests {
                     created_at: now_unix(),
                     token_endpoint_auth_method: "none".to_string(),
                     jwks: None,
+                    jwks_uri: None,
                 })
                 .await
                 .unwrap();
