@@ -42,6 +42,24 @@ const LAB_INTERNAL_NAMESPACE: &str = "__lab_internal";
 /// pattern (FAIL-OPEN invariant).
 const MAX_SEMANTIC_QUERY_BYTES: usize = 8 * 1024;
 
+/// Reserve time for the host to serialize and return the final MCP result.
+///
+/// Downstream MCP clients commonly use a timeout close to Code Mode's
+/// configured wall-clock budget. If the sandbox is allowed to consume the
+/// entire budget, runner teardown and response assembly can close the bridge
+/// before the canonical timeout error reaches the caller. The configured
+/// timeout remains the total request budget; this margin is the response
+/// delivery portion of that budget.
+const CODE_MODE_RESPONSE_RESERVE_MS: u64 = 500;
+
+fn execution_timeout(timeout_ms: u64) -> Duration {
+    let timeout_ms = timeout_ms.max(1);
+    let reserve = (timeout_ms >= CODE_MODE_RESPONSE_RESERVE_MS.saturating_mul(2))
+        .then_some(CODE_MODE_RESPONSE_RESERVE_MS)
+        .unwrap_or(0);
+    Duration::from_millis(timeout_ms - reserve)
+}
+
 impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     pub async fn execute(
         &self,
@@ -80,7 +98,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let mut response = self
             .execute_sandboxed(
                 code,
-                Duration::from_millis(config.timeout_ms.max(1)),
+                execution_timeout(config.timeout_ms),
                 caller,
                 surface,
                 config.max_log_entries,
@@ -760,6 +778,13 @@ mod tests {
                 .and_then(|metadata| metadata.warning.as_deref())
                 .is_some_and(|warning| warning.contains("large result"))
         );
+    }
+
+    #[test]
+    fn execution_timeout_reserves_response_delivery_margin() {
+        assert_eq!(execution_timeout(30_000), Duration::from_millis(29_500));
+        assert_eq!(execution_timeout(500), Duration::from_millis(500));
+        assert_eq!(execution_timeout(1), Duration::from_millis(1));
     }
 
     #[test]
