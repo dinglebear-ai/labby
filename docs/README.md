@@ -147,7 +147,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - [CONFIG.md](./runtime/CONFIG.md)
   Env and TOML config ownership, load order, secrets handling, and instance naming.
 - [INCUS.md](./runtime/INCUS.md)
-  Recommended amd64 Ubuntu 24.04 Incus gateway deployment, bare-metal variant, in-box provisioning, Tailscale TUN passthrough, rollback, and dependency diagnostics.
+  Recommended amd64 Ubuntu 26.04 Incus gateway deployment, bare-metal variant, in-box provisioning, Tailscale TUN passthrough, rollback, and dependency diagnostics.
 - [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md)
   Gateway runtime choice overview: Incus recommended, bare metal secondary, Docker explicit smoke/dev path.
 - [ENV.md](./runtime/ENV.md)

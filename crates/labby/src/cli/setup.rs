@@ -33,7 +33,7 @@ const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
 
 #[derive(Debug, Args)]
 pub struct SetupArgs {
-    /// Provision this Ubuntu 24.04/Incus box for the Labby gateway.
+    /// Provision this Ubuntu 26.04/Incus box for the Labby gateway.
     #[arg(long)]
     pub provision: bool,
 

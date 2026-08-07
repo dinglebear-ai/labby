@@ -17,7 +17,7 @@ user caches, and runtime-managed tools. Incus gives Labby that shape while still
 keeping the gateway inside a container boundary.
 
 The supported Incus substrate is amd64 / x86_64.
-- Ubuntu 24.04 (`images:ubuntu/24.04`)
+- Ubuntu 26.04 (`images:ubuntu/26.04`)
 - Incus system container
 - `config/incus/labby-gateway-profile.yaml` applied as the `labby-gateway`
   Incus profile
@@ -89,7 +89,7 @@ The declarative Incus shape lives in
 in `config/incus/labby-backup.yaml`. `labby setup` embeds those vetted artifacts
 in the binary, materializes them into a temporary workspace, and runs the same
 host bootstrap logic from there. The bootstrap creates or updates the profile,
-launches `images:ubuntu/24.04` with it, then applies the snapshot policy with
+launches `images:ubuntu/26.04` with it, then applies the snapshot policy with
 Incus instance config. The profile owns
 `security.privileged=false`, `security.nesting=false`, a root disk on the
 selected storage pool, `/dev/net/tun` access through a raw LXC bind mount, and
@@ -103,7 +103,7 @@ of trying to replace the immutable root disk. The derived profile defaults to
 `labby-gateway-runtime` and can be renamed with `--runtime-profile-name`.
 
 The script is idempotent. It creates or reuses the `labby` container, validates
-that the container is amd64 Ubuntu 24.04, verifies the expanded profile-provided
+that the container is amd64 Ubuntu 26.04, verifies the expanded profile-provided
 TUN device, installs `/usr/local/bin/labby`, then runs:
 
 ```bash

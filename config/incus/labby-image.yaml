@@ -1,6 +1,6 @@
 image:
   distribution: ubuntu
-  release: noble
+  release: resolute
   architecture: amd64
   variant: default
   name: labby-incus

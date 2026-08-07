@@ -178,7 +178,7 @@ checkout.
 
 ### Self-Host The Gateway
 
-The recommended self-hosted gateway substrate is an amd64 Ubuntu 24.04 Incus
+The recommended self-hosted gateway substrate is an amd64 Ubuntu 26.04 Incus
 system container. Bare metal is the secondary supported shape for a dedicated
 gateway host or VM. Docker is retained for explicit development/image smoke,
 but it is not the recommended production boundary for Labby because stdio MCP
