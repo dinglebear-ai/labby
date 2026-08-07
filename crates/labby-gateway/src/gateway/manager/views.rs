@@ -52,6 +52,13 @@ impl GatewayManager {
         let (cfg_guard, pool) = tokio::join!(self.config.read(), self.runtime.current_pool(),);
         let cfg = cfg_guard.clone();
         drop(cfg_guard);
+        // `gateway.list` backs both the CLI and dashboard. Warm lazy, non-OAuth
+        // upstreams before projecting the snapshot so a freshly started daemon
+        // does not report zero capabilities for healthy servers until another
+        // command happens to trigger discovery. OAuth upstreams remain
+        // request-scoped and are intentionally skipped by the shared warmer.
+        self.warm_mcp_runtime_catalog_bounded(&cfg, pool.as_deref(), "gateway.list")
+            .await;
         let mut views = Vec::with_capacity(cfg.upstream.len() + cfg.virtual_servers.len());
         for upstream in &cfg.upstream {
             views.push(server_view_from_upstream(pool.as_deref(), upstream).await);

@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use serde_json::json;
+use serde_json::{Value, json};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, UpstreamConfig};
 
@@ -9,6 +11,53 @@ use super::super::manager::GatewayRuntimeHandle;
 use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
+
+#[derive(Clone, Default)]
+struct DashboardCatalogResponder {
+    discover_requests: std::sync::Arc<AtomicUsize>,
+}
+
+impl Respond for DashboardCatalogResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .expect("JSON-RPC method");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+
+        match method {
+            "server/discover" => {
+                self.discover_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "resultType": "complete",
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "dashboard-test", "version": "1.0.0"},
+                        "ttlMs": 0,
+                        "cacheScope": "private"
+                    }
+                }))
+            }
+            "tools/list" => ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "tools": [{
+                        "name": "dashboard_echo",
+                        "description": "dashboard discovery proof",
+                        "inputSchema": {"type": "object"}
+                    }]
+                }
+            })),
+            other => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected MCP method: {other}")),
+        }
+    }
+}
 
 #[test]
 fn gateway_actions_include_management_surface() {
@@ -1014,6 +1063,63 @@ async fn gateway_server_get_returns_custom_gateway_row() {
 
     assert_eq!(value["id"], "fixture-http");
     assert_eq!(value["source"], "custom_gateway");
+}
+
+#[tokio::test]
+async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
+    let server = MockServer::start().await;
+    let responder = DashboardCatalogResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![UpstreamConfig {
+            enabled: true,
+            name: "dashboard-http".to_string(),
+            url: Some(format!("{}/mcp", server.uri())),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let value = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("list");
+    let row = value
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+
+    assert_eq!(row["discovered_tool_count"], 1);
+    assert_eq!(row["exposed_tool_count"], 1);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -250,22 +250,8 @@ impl GatewayManager {
     ) -> Result<Vec<super::types::GatewayMcpRuntimeView>, ToolError> {
         let cfg = self.config.read().await.clone();
         let pool = self.runtime.current_pool().await;
-        let warm_timeout = mcp_runtime_warm_timeout(&cfg);
-        if tokio::time::timeout(
-            warm_timeout,
-            self.warm_mcp_runtime_catalog(&cfg, pool.as_deref()),
-        )
-        .await
-        .is_err()
-        {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "gateway",
-                action = "gateway.mcp.list",
-                timeout_ms = warm_timeout.as_millis(),
-                "gateway MCP runtime catalog warm timed out; returning current snapshot"
-            );
-        }
+        self.warm_mcp_runtime_catalog_bounded(&cfg, pool.as_deref(), "gateway.mcp.list")
+            .await;
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
         for upstream in &cfg.upstream {
@@ -372,6 +358,27 @@ impl GatewayManager {
             });
         }
         Ok(rows)
+    }
+
+    pub(super) async fn warm_mcp_runtime_catalog_bounded(
+        &self,
+        cfg: &GatewayConfig,
+        pool: Option<&UpstreamPool>,
+        action: &'static str,
+    ) {
+        let timeout = mcp_runtime_warm_timeout(cfg);
+        if tokio::time::timeout(timeout, self.warm_mcp_runtime_catalog(cfg, pool))
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action,
+                timeout_ms = timeout.as_millis(),
+                "gateway MCP runtime catalog warm timed out; returning current snapshot"
+            );
+        }
     }
 
     async fn warm_mcp_runtime_catalog(&self, cfg: &GatewayConfig, pool: Option<&UpstreamPool>) {
