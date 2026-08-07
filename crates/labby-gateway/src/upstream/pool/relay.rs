@@ -812,6 +812,18 @@ impl UpstreamPool {
     ) -> Option<Result<CallToolResponse, String>> {
         let started = Instant::now();
         let tool_name = params.name.to_string();
+        // Subject-scoped relay is the second OAuth execution entry point (the
+        // first being `subject_scoped_call_tool*`), so it carries the same
+        // fail-closed `expose_tools` guard. The raw (`subject == None`) branch is
+        // deliberately left alone: its owner resolution already went through the
+        // catalog, whose entries are exposure-filtered.
+        if subject.is_some()
+            && !super::tools_call::subject_scoped_tool_is_exposed(config, &tool_name)
+        {
+            return Some(Err(super::tools_call::hidden_tool_error(
+                config, &tool_name,
+            )));
+        }
         let relay_key = (config.name.clone(), session_id, subject.map(str::to_owned));
         let request_meta = params.meta.clone();
         let (peer, routes, cancellation_sender, generation) = self

@@ -16,6 +16,7 @@ use super::super::types::{
     UpstreamTool, UpstreamToolExposureRow,
 };
 use super::UpstreamPool;
+use super::entries::resolve_request_exposure_policy;
 use super::helpers::UpstreamCachedSummary;
 
 /// Hard cap on the total number of tools returned by a single `healthy_tools()` call.
@@ -243,6 +244,29 @@ impl UpstreamPool {
     /// P-C1 fix: uses `acquire_or_connect_subject` so the per-(upstream,subject)
     /// connection and tool list are cached — the expensive TLS + initialize +
     /// tools/list is paid at most once per idle-TTL window, not on every call.
+    ///
+    /// The upstream's `expose_tools` allowlist is enforced here, so exposure is
+    /// symmetric with the catalog-backed path (`healthy_tools_allowed` and
+    /// friends, which read `UpstreamEntry::exposure_policy`). A subject-scoped
+    /// tool list is discovered on a per-`(upstream, subject)` connection and
+    /// never lands in `self.catalog`, so there is no `UpstreamEntry` to consult;
+    /// the policy is resolved per request from the live `UpstreamConfig` with
+    /// the same fail-closed `resolve_exposure_policy` helper the catalog path
+    /// uses.
+    ///
+    /// This covers **discovery** for every subject-scoped consumer: `list_tools`
+    /// (`crates/labby/src/mcp/handlers_tools.rs`), the `tools/list_changed`
+    /// contract diff (`crates/labby/src/mcp/peer_contract.rs`), and the
+    /// owner-resolution scan in `crates/labby/src/mcp/call_tool_upstream.rs`.
+    ///
+    /// It is **not** the only place exposure has to hold. That same
+    /// `call_tool_upstream.rs` has a `pre_resolved_oauth_config` branch that
+    /// short-circuits owner resolution and never calls this function, so
+    /// "hidden implies uncallable" is enforced independently at the OAuth
+    /// execution primitives themselves — `subject_scoped_call_tool*`
+    /// (`pool/tools_call.rs`) and the subject-scoped arm of `call_tool_relayed`
+    /// (`pool/relay.rs`) — via `subject_scoped_tool_is_exposed`. Do not delete
+    /// either guard on the assumption that the other one covers it.
     pub async fn subject_scoped_tools(
         &self,
         configs: &[UpstreamConfig],
@@ -254,15 +278,33 @@ impl UpstreamPool {
             let subject = subject.to_string();
             let pool = self.clone();
             futures.push(async move {
+                let exposure_policy =
+                    resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
                 let result = pool.acquire_or_connect_subject(&config, &subject).await;
-                (config.name.clone(), result)
+                (config.name.clone(), exposure_policy, result)
             });
         }
 
         let mut discovered = Vec::new();
-        while let Some((name, result)) = futures.next().await {
+        while let Some((name, exposure_policy, result)) = futures.next().await {
             match result {
-                Ok((_peer, tools)) => discovered.push((name, tools)),
+                Ok((_peer, tools)) => {
+                    let discovered_count = tools.len();
+                    let exposed: Vec<rmcp::model::Tool> = tools
+                        .into_iter()
+                        .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
+                        .collect();
+                    let hidden_count = discovered_count - exposed.len();
+                    if hidden_count > 0 {
+                        tracing::debug!(
+                            upstream = %name,
+                            hidden_count,
+                            exposed_count = exposed.len(),
+                            "subject-scoped upstream tools hidden by exposure policy"
+                        );
+                    }
+                    discovered.push((name, exposed));
+                }
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,

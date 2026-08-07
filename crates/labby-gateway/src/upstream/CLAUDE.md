@@ -46,8 +46,9 @@ Dependency direction:
 | `pool/relay_cancellation_tests.rs` | Focused regressions for early false acknowledgements, blocked relay sends, and stalled request-handle cleanup. |
 | `pool/notifications.rs` | Owns the normalized notification event bus plus generation-guarded `subscriptions/listen` acknowledgment snapshots, retry tasks, concurrent refresh batching, and exact-upstream tool re-listing before downstream catalog publication. |
 | `pool/notifications_tests.rs` | Focused regressions for acknowledgement visibility, stale-generation isolation, concurrent refresh deadlines, and retry after initial failure. |
-| `pool/tools.rs` | Tool queries (`healthy_tools*`, `find_tool*`, `tool_schema`, exposure rows, summaries, runtime metadata, health). |
-| `pool/tools_call.rs` | `call_tool` + `subject_scoped_call_tool`. |
+| `pool/tools.rs` | Tool queries (`healthy_tools*`, `find_tool*`, `tool_schema`, exposure rows, summaries, runtime metadata, health). `subject_scoped_tools` applies `expose_tools` from the live `UpstreamConfig`, since a subject-scoped tool list never reaches the catalog and so has no `UpstreamEntry::exposure_policy` to read. |
+| `pool/tools_call.rs` | `call_tool` + `subject_scoped_call_tool`. Owns `subject_scoped_tool_is_exposed` — the fail-closed `expose_tools` guard the OAuth execution primitives (here and the subject-scoped arm of `call_tool_relayed`) apply so a hidden tool is uncallable independently of which caller resolved the owner. |
+| `pool/tools_exposure_tests.rs` | Focused regressions for `expose_tools` parity between the catalog-backed and OAuth subject-scoped paths: symmetry, fail-closed on a malformed or empty allowlist, per-upstream policy isolation, and hidden-means-uncallable. |
 | `pool/usage_record.rs` | `record_usage_call` — fire-and-forget usage-telemetry write after every tool/resource/prompt call outcome, bounded by `UsageStore`'s write semaphore. |
 | `pool/health.rs` | Circuit breaker: `record_*`, `should_reprobe*`, `*_last_error`, `filter_collisions`, `upstream_status`/`upstream_count`. |
 | `pool/resources_list.rs` | Resource listing + synthetic `gateway_*` documents. Native `ui://` (mcp-ui) resources skip the `lab://upstream/{name}/…` rewrite so they stay addressable by the same URI a tool's `_meta.ui.resourceUri` references. |

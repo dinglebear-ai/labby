@@ -121,18 +121,57 @@ pub(super) fn failed_in_process_entry_from_existing(
     existing
 }
 
+/// Compile an upstream's `expose_tools` allowlist, failing closed.
+///
+/// A malformed allowlist hides every tool rather than exposing every tool: an
+/// operator who mistyped a restriction must not silently get no restriction.
+///
+/// Use this from **catalog-build** paths (seeding, discovery, reprobe), which run
+/// once per config change — the `warn!` is a per-config-defect event there. On
+/// request paths use [`resolve_request_exposure_policy`] instead.
 pub(super) fn resolve_exposure_policy(
     upstream_name: &str,
     expose_tools: Option<Vec<String>>,
 ) -> ToolExposurePolicy {
+    resolve_exposure_policy_inner(upstream_name, expose_tools, true)
+}
+
+/// [`resolve_exposure_policy`] for paths that run once per request.
+///
+/// The OAuth subject-scoped paths have no cached `UpstreamEntry::exposure_policy`
+/// to read, so they resolve the allowlist from live config on every `list_tools`,
+/// every `tools/list_changed` diff, and every call. Warning there would turn one
+/// static config typo into an unbounded WARN stream, and a config defect is not a
+/// per-request caller error (see the level conventions in the root `CLAUDE.md`).
+/// The fail-closed behavior is identical; only the log level differs.
+pub(super) fn resolve_request_exposure_policy(
+    upstream_name: &str,
+    expose_tools: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_exposure_policy_inner(upstream_name, expose_tools, false)
+}
+
+fn resolve_exposure_policy_inner(
+    upstream_name: &str,
+    expose_tools: Option<Vec<String>>,
+    warn: bool,
+) -> ToolExposurePolicy {
     match ToolExposurePolicy::from_optional(expose_tools) {
         Ok(policy) => policy,
         Err(error) => {
-            tracing::warn!(
-                upstream = %upstream_name,
-                error = %error,
-                "invalid upstream exposure policy; hiding all upstream tools"
-            );
+            if warn {
+                tracing::warn!(
+                    upstream = %upstream_name,
+                    error = %error,
+                    "invalid upstream exposure policy; hiding all upstream tools"
+                );
+            } else {
+                tracing::debug!(
+                    upstream = %upstream_name,
+                    error = %error,
+                    "invalid upstream exposure policy; hiding all upstream tools"
+                );
+            }
             ToolExposurePolicy::AllowList(Vec::new())
         }
     }

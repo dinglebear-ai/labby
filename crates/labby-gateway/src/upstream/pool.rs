@@ -63,6 +63,8 @@ mod tasks;
 mod testsupport;
 mod tools;
 mod tools_call;
+#[cfg(test)]
+mod tools_exposure_tests;
 mod usage_record;
 mod validate;
 
