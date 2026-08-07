@@ -433,7 +433,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         // map for negotiated modern peers. Remove that copy before applying
         // headers because reqwest's `header` appends repeated values; the
         // strict SEP-2243 contract requires exactly one body-derived value.
-        custom_headers.remove(HEADER_MCP_METHOD);
+        custom_headers.retain(|name, _| !name.as_str().eq_ignore_ascii_case(HEADER_MCP_METHOD));
         request = apply_custom_headers(request, custom_headers)?;
         if let Some(method) = jsonrpc_method_header(&message) {
             request = request.header(HEADER_MCP_METHOD, method);
@@ -591,9 +591,11 @@ mod tests {
     #[tokio::test]
     async fn post_message_injects_mcp_method_from_jsonrpc_body() {
         let server = MockServer::start().await;
+        let strict_contract_matched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let strict_contract_matched_for_response = Arc::clone(&strict_contract_matched);
         Mock::given(method("POST"))
             .and(path("/mcp"))
-            .respond_with(|request: &wiremock::Request| {
+            .respond_with(move |request: &wiremock::Request| {
                 let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC");
                 let expected = body
                     .get("method")
@@ -615,6 +617,8 @@ mod tests {
                         }
                     }));
                 }
+                strict_contract_matched_for_response
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
 
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "jsonrpc": "2.0",
@@ -645,6 +649,10 @@ mod tests {
         assert!(
             result.is_ok(),
             "strict MCP endpoint should accept request: {result:?}"
+        );
+        assert!(
+            strict_contract_matched.load(std::sync::atomic::Ordering::SeqCst),
+            "request must carry exactly one body-derived Mcp-Method header"
         );
     }
 
