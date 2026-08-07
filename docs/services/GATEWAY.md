@@ -68,14 +68,24 @@ The guard applies only to stdio upstreams. HTTP upstreams are never checked.
 See [`docs/runtime/CONFIG.md`](../runtime/CONFIG.md) for the full `[gateway]`
 config reference.
 
-## Tool Exposure
+## Tool, Resource, and Prompt Exposure
 
-Gateway config can optionally restrict which discovered upstream tools are republished by `lab`.
+Gateway config can optionally restrict which discovered upstream primitives are
+republished by `lab`, via `expose_tools`, `expose_resources`, and
+`expose_prompts`.
 
-- when `expose_tools` is unset, all discovered upstream tools remain exposed
-- `expose_tools` accepts exact tool names and simple `*` wildcards
+- when an allowlist is unset, everything discovered for that capability remains exposed
+- allowlists accept exact names and simple `*` wildcards
 - an empty allowlist is treated as "clear the filter" rather than "block everything"
-- filtered tools disappear from merged MCP `list_tools()` results and cannot be called directly through the proxy
+- filtered items disappear from the merged MCP listing **and** cannot be reached
+  directly through the proxy — `tools/call`, `resources/read`, `prompts/get`, and
+  `completion/complete` all re-check the allowlist, on the shared, OAuth
+  subject-scoped, and relay paths alike
+
+`expose_resources` matches the bare upstream resource URI (not the
+`lab://upstream/{name}/…` rewrite); `expose_prompts` matches either the bare
+prompt name or the `{upstream}/{name}` form the admin UI displays. See
+[`docs/services/UPSTREAM.md`](UPSTREAM.md#exposure-filtering) for details.
 
 Example:
 
@@ -86,6 +96,8 @@ url = "https://github.example.com/mcp"
 bearer_token_env = "GITHUB_MCP_TOKEN"
 proxy_resources = false
 expose_tools = ["search_repos", "github_*"]
+expose_resources = ["repo://github/readme"]
+expose_prompts = ["review_pr"]
 ```
 
 Typical patch payloads:

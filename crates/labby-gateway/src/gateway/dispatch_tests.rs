@@ -1070,6 +1070,8 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
                 "scrape".to_string(),
             ])
             .expect("policy"),
+            resource_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            prompt_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             proxy_resources: true,
             prompt_count: 3,
             resource_count: 4,

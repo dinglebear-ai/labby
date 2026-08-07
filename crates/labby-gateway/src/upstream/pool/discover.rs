@@ -24,7 +24,7 @@ use super::super::types::{
 use super::UpstreamPool;
 use super::capability::discover_capability_counts;
 use super::connect::connect_upstream;
-use super::entries::resolve_exposure_policy;
+use super::entries::resolve_upstream_exposure_policies;
 use super::helpers::{
     cached_upstream_tool, classify_upstream_error, upstream_discovery_concurrency,
     upstream_discovery_timeout, upstream_name_is_uri_safe, upstream_target_redacted,
@@ -277,7 +277,7 @@ impl UpstreamPool {
                             );
                             Ok((
                                 name,
-                                config.expose_tools.clone(),
+                                resolve_upstream_exposure_policies(&config),
                                 config.proxy_resources,
                                 conn,
                                 tools,
@@ -332,7 +332,7 @@ impl UpstreamPool {
             match result {
                 Ok((
                     name,
-                    expose_tools,
+                    exposure_policies,
                     proxy_resources,
                     conn,
                     tools,
@@ -362,12 +362,12 @@ impl UpstreamPool {
                         tool_map.insert(tool_name, upstream_tool);
                     }
 
-                    let exposure_policy = resolve_exposure_policy(&name, expose_tools);
-
                     let entry = UpstreamEntry {
                         name: Arc::clone(&upstream_name),
                         tools: tool_map,
-                        exposure_policy,
+                        exposure_policy: exposure_policies.tools,
+                        resource_exposure_policy: exposure_policies.resources,
+                        prompt_exposure_policy: exposure_policies.prompts,
                         proxy_resources,
                         prompt_count,
                         resource_count,
@@ -394,6 +394,8 @@ impl UpstreamPool {
                         name: Arc::from(name.as_str()),
                         tools: HashMap::new(),
                         exposure_policy: ToolExposurePolicy::All,
+                        resource_exposure_policy: ToolExposurePolicy::All,
+                        prompt_exposure_policy: ToolExposurePolicy::All,
                         proxy_resources: true,
                         prompt_count: 0,
                         resource_count: 0,

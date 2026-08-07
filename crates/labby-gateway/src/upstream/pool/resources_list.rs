@@ -14,12 +14,14 @@ use serde_json::Value;
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
-use super::super::types::UpstreamCapability;
+use super::super::types::{ToolExposurePolicy, UpstreamCapability};
 use super::UpstreamPool;
 use super::capability_call::bounded_service_error_text;
 use super::connect::connect_upstream;
 use super::discover::routable_upstream_peers;
-use super::entries::health_str;
+use super::entries::{
+    health_str, log_exposure_filter, resolve_request_resource_exposure_policy, resource_exposed,
+};
 use super::helpers::{bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri};
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_RESOURCES;
@@ -204,15 +206,33 @@ impl UpstreamPool {
                         .iter()
                         .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
                         .collect();
-                    {
+                    // The cached snapshot deliberately stays *unfiltered*: it is
+                    // what `gateway.discovered_resources` shows the operator who
+                    // is editing `expose_resources`, and hiding excluded URIs
+                    // there would make the allowlist un-editable. Enforcement
+                    // happens on what leaves this function, and on every read.
+                    let policy = {
                         let mut catalog = self.catalog.write().await;
-                        if let Some(entry) = catalog.get_mut(&name) {
-                            entry.resource_count = upstream_resources.len();
-                            entry.resource_uris = resource_uris;
+                        match catalog.get_mut(&name) {
+                            Some(entry) => {
+                                entry.resource_count = upstream_resources.len();
+                                entry.resource_uris = resource_uris;
+                                entry.resource_exposure_policy.clone()
+                            }
+                            // Unreachable in practice — the peer list came from
+                            // the catalog — but an upstream that vanished
+                            // mid-listing has no known policy, so hide it.
+                            None => ToolExposurePolicy::AllowList(Vec::new()),
                         }
-                    }
+                    };
                     subscription_refreshes.push(name.clone());
+                    let mut hidden_count = 0usize;
+                    let mut exposed_count = 0usize;
                     for mut resource in upstream_resources {
+                        if !resource_exposed(&policy, bare_upstream_resource_uri(&resource.uri)) {
+                            hidden_count += 1;
+                            continue;
+                        }
                         if resources.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
                                 upstream = %name,
@@ -231,7 +251,9 @@ impl UpstreamPool {
                             rewrite_resource_uri(&mut resource, &name);
                         }
                         resources.push(resource);
+                        exposed_count += 1;
                     }
+                    log_exposure_filter(&name, "resources", hidden_count, exposed_count, false);
                 }
                 Err(e) if is_capability_unsupported(&e) => {
                     // The upstream simply doesn't implement `resources/list`
@@ -376,6 +398,15 @@ impl UpstreamPool {
             let subject = subject.to_string();
             let oauth_client_cache = oauth_client_cache.clone();
             futures.push(async move {
+                // Subject-scoped resources are discovered over a per-(upstream,
+                // subject) connection and never land in `self.catalog`, so
+                // there is no `UpstreamEntry::resource_exposure_policy` to
+                // read. Resolve the same fail-closed policy from the live
+                // config instead — the seam `subject_scoped_tools` uses.
+                let policy = resolve_request_resource_exposure_policy(
+                    &config.name,
+                    config.expose_resources.clone(),
+                );
                 let result = connect_upstream(
                     &config,
                     Some(subject.as_str()),
@@ -385,7 +416,7 @@ impl UpstreamPool {
                 )
                 .await
                 .map(|(conn, _)| conn);
-                (config.name.clone(), result)
+                (config.name.clone(), policy, result)
             });
         }
 
@@ -394,7 +425,7 @@ impl UpstreamPool {
         // per-subject connections, so failures are surfaced via the classified
         // `warn!`s below rather than the shared circuit breaker.
         let mut resources = Vec::new();
-        while let Some((name, result)) = futures.next().await {
+        while let Some((name, policy, result)) = futures.next().await {
             let conn = match result {
                 Ok(conn) => conn,
                 Err(error) => {
@@ -410,10 +441,18 @@ impl UpstreamPool {
             };
             match conn.peer.list_all_resources().await {
                 Ok(upstream_resources) => {
+                    let mut hidden_count = 0usize;
+                    let mut exposed_count = 0usize;
                     for mut resource in upstream_resources {
+                        if !resource_exposed(&policy, bare_upstream_resource_uri(&resource.uri)) {
+                            hidden_count += 1;
+                            continue;
+                        }
                         rewrite_resource_uri(&mut resource, &name);
                         resources.push(resource);
+                        exposed_count += 1;
                     }
+                    log_exposure_filter(&name, "resources", hidden_count, exposed_count, true);
                 }
                 Err(error) => {
                     let error_text = bounded_service_error_text(&error);

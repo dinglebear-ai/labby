@@ -163,7 +163,7 @@ impl ToolExposurePolicy {
         for pattern in patterns {
             let trimmed = pattern.trim();
             if trimmed.is_empty() {
-                return Err("expose_tools entries must not be empty".to_string());
+                return Err("exposure allowlist entries must not be empty".to_string());
             }
             if trimmed.contains('*') {
                 compiled.push(ToolPattern::Wildcard(trimmed.to_string()));
@@ -314,6 +314,18 @@ pub struct UpstreamEntry {
     pub tools: HashMap<String, UpstreamTool>,
     /// Exposure policy for discovered tools from this upstream.
     pub exposure_policy: ToolExposurePolicy,
+    /// Exposure policy for this upstream's resources (`expose_resources`).
+    ///
+    /// Matched against the **bare, upstream-native** resource URI — the form
+    /// cached in `resource_uris` and shown by `gateway.discovered_resources` —
+    /// never the `lab://upstream/{name}/…` gateway rewrite.
+    pub resource_exposure_policy: ToolExposurePolicy,
+    /// Exposure policy for this upstream's prompts (`expose_prompts`).
+    ///
+    /// Matched against either the bare upstream prompt name or the
+    /// `{upstream}/{name}` gateway-namespaced form — see
+    /// `pool::entries::prompt_exposed`.
+    pub prompt_exposure_policy: ToolExposurePolicy,
     /// Whether this upstream's resources are allowed to be proxied downstream.
     ///
     /// MCP App tools depend on their `ui://` resources being readable through the

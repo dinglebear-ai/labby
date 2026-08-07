@@ -3,6 +3,13 @@
 //! `subject_scoped_prompts`/`subject_scoped_prompt_owner` discover prompts for
 //! OAuth upstreams under a subject; `get_prompt`/`subject_scoped_get_prompt`
 //! fetch a single prompt with a request timeout and structured logging.
+//!
+//! Every one of them enforces `expose_prompts`. Filtering only `prompts/list`
+//! would leave an excluded prompt directly fetchable by name — the prompt-side
+//! twin of the `resources/read` bypass. The subject-scoped variants resolve the
+//! policy from the live `UpstreamConfig` (their prompt lists never reach
+//! `self.catalog`); `get_prompt` reads the cached
+//! `UpstreamEntry::prompt_exposure_policy`.
 
 use std::time::Instant;
 
@@ -15,6 +22,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::timed_capability_call_str;
+use super::entries::{log_exposure_filter, prompt_exposed, resolve_request_prompt_exposure_policy};
 use super::helpers::{
     bare_upstream_prompt_name, merge_upstream_prompts, prefixed_upstream_prompt_name,
     upstream_transport,
@@ -39,21 +47,42 @@ impl UpstreamPool {
             let subject = subject.to_string();
             let pool = self.clone();
             futures.push(async move {
+                // No catalog entry backs a subject-scoped prompt list, so the
+                // policy comes from the live config — the same fail-closed
+                // resolver the catalog path compiles into the entry.
+                let policy = resolve_request_prompt_exposure_policy(
+                    &config.name,
+                    config.expose_prompts.clone(),
+                );
                 let result = pool
                     .acquire_or_connect_subject(&config, &subject)
                     .await
                     .map(|(peer, _tools)| peer);
-                (config.name.clone(), result)
+                (config.name.clone(), policy, result)
             });
         }
 
         let mut upstream_prompts = Vec::new();
-        while let Some((name, result)) = futures.next().await {
+        while let Some((name, policy, result)) = futures.next().await {
             let Ok(peer) = result else {
                 continue;
             };
             match peer.list_all_prompts().await {
-                Ok(prompts) => upstream_prompts.push((name, prompts)),
+                Ok(prompts) => {
+                    let discovered_count = prompts.len();
+                    let exposed: Vec<Prompt> = prompts
+                        .into_iter()
+                        .filter(|prompt| prompt_exposed(&policy, &name, &prompt.name))
+                        .collect();
+                    log_exposure_filter(
+                        &name,
+                        "prompts",
+                        discovered_count - exposed.len(),
+                        exposed.len(),
+                        true,
+                    );
+                    upstream_prompts.push((name, exposed));
+                }
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
@@ -84,15 +113,19 @@ impl UpstreamPool {
             let pool = self.clone();
             let target_prompt = prompt_name.to_string();
             futures.push(async move {
+                let policy = resolve_request_prompt_exposure_policy(
+                    &config.name,
+                    config.expose_prompts.clone(),
+                );
                 let result = pool
                     .acquire_or_connect_subject(&config, &subject)
                     .await
                     .map(|(peer, _tools)| peer);
-                (config.name.clone(), target_prompt, result)
+                (config.name.clone(), policy, target_prompt, result)
             });
         }
 
-        while let Some((name, target_prompt, result)) = futures.next().await {
+        while let Some((name, policy, target_prompt, result)) = futures.next().await {
             let Ok(peer) = result else {
                 continue;
             };
@@ -100,14 +133,26 @@ impl UpstreamPool {
                 && prompts.iter().any(|prompt| {
                     // The requested name is namespaced as `{upstream}/{name}`;
                     // the upstream advertises the bare name, so compare against
-                    // the prefixed form.
+                    // the prefixed form. A prompt `expose_prompts` hides must not
+                    // resolve an owner either, or the caller would route a fetch
+                    // at a prompt it is not allowed to see.
                     prefixed_upstream_prompt_name(&name, &prompt.name) == target_prompt
+                        && prompt_exposed(&policy, &name, &prompt.name)
                 })
             {
                 return Some(name);
             }
         }
         None
+    }
+
+    /// Whether `prompt_name` is exposed by the cached `expose_prompts` policy
+    /// for `upstream_name`. Fails closed when the upstream has no catalog entry.
+    pub(super) async fn prompt_is_exposed(&self, upstream_name: &str, prompt_name: &str) -> bool {
+        let catalog = self.catalog.read().await;
+        catalog.get(upstream_name).is_some_and(|entry| {
+            prompt_exposed(&entry.prompt_exposure_policy, upstream_name, prompt_name)
+        })
     }
 
     /// Proxy a get-prompt request to a specific upstream.
@@ -122,6 +167,25 @@ impl UpstreamPool {
         // forwarding (mirrors `read_upstream_resource` stripping the URI prefix).
         params.name = bare_upstream_prompt_name(upstream_name, &params.name).to_string();
         let prompt_name = params.name.to_string();
+        // Enforce `expose_prompts` before forwarding. The cached ownership
+        // snapshot is deliberately unfiltered (it backs the admin exposure
+        // editor), so this is the gate that stops a hidden prompt from being
+        // fetched by name.
+        if !self.prompt_is_exposed(upstream_name, &prompt_name).await {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "prompt.get",
+                capability = "prompts",
+                upstream = %upstream_name,
+                prompt = %prompt_name,
+                kind = "prompt_not_exposed",
+                "upstream prompt get blocked by exposure policy"
+            );
+            return Some(Err(format!(
+                "prompt `{prompt_name}` is not exposed by upstream `{upstream_name}`"
+            )));
+        }
         let event = UpstreamRequestLog::prompt(upstream_name, &prompt_name, false);
         let peer = self
             .acquire_peer(upstream_name, UpstreamCapability::Prompts, "prompt.get")
@@ -161,6 +225,27 @@ impl UpstreamPool {
         // Strip the `{upstream}/` namespace before forwarding the bare name.
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
         let prompt_name = params.name.to_string();
+        if !prompt_exposed(
+            &resolve_request_prompt_exposure_policy(&config.name, config.expose_prompts.clone()),
+            &config.name,
+            &prompt_name,
+        ) {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "prompt.get",
+                capability = "prompts",
+                upstream = %config.name,
+                subject_scoped = true,
+                prompt = %prompt_name,
+                kind = "prompt_not_exposed",
+                "upstream prompt get blocked by exposure policy"
+            );
+            return Err(format!(
+                "prompt `{prompt_name}` is not exposed by upstream `{}`",
+                config.name
+            ));
+        }
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);

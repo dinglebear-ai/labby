@@ -137,6 +137,15 @@ impl UpstreamPool {
             }
         }
 
+        // Filter *after* the cache write, not before: the cached `prompt_names`
+        // snapshot deliberately stays unfiltered because it is what
+        // `gateway.discovered_prompts` shows the operator who is editing
+        // `expose_prompts`, and hiding excluded prompts there would make the
+        // allowlist un-editable. The cache is only an ownership hint — routing a
+        // hidden prompt through it still fails, because `get_prompt` re-checks
+        // the policy before forwarding.
+        let prompts = self.retain_exposed_prompts(prompts, &owners).await;
+
         (prompts, owners)
     }
 

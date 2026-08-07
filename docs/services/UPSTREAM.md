@@ -115,6 +115,8 @@ clients without elicitation run without a parameter gate. See
 | `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. |
 | `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
 | `expose_tools` | string[] | no | Optional allowlist of tool names/patterns to expose from this upstream. Supports exact names and `*` wildcards. |
+| `expose_resources` | string[] | no | Optional allowlist of bare upstream resource URIs/patterns to expose. Same matching rules as `expose_tools`. |
+| `expose_prompts` | string[] | no | Optional allowlist of prompt names/patterns to expose. Accepts the bare or `{upstream}/{name}` spelling. |
 
 When `transport` is omitted, an HTTP/WebSocket `url` or stdio `command` preserves legacy inference. `unix_socket` must be explicit and requires both `socket_path` and an HTTP(S) `url`; it cannot also configure `command`.
 
@@ -404,19 +406,49 @@ When upstream tools are merged into the lab tool catalog:
 
 Upstream tools appear alongside built-in tools in `list_tools()`. Callers do not need to know whether a tool is built-in or proxied.
 
-## Tool Exposure Filtering
+## Exposure Filtering
 
-Each upstream may optionally set `expose_tools` to restrict which discovered tools become visible downstream.
+Each upstream may optionally restrict which discovered primitives become visible
+downstream: `expose_tools`, `expose_resources`, and `expose_prompts`. All three
+compile through the same allowlist matcher and behave identically.
 
-- unset `expose_tools` means "expose all discovered tools"
-- exact entries match one tool name
+- an unset allowlist means "expose everything discovered for that capability"
+- exact entries match one name/URI
 - entries containing `*` use simple wildcard matching
-- malformed exposure policies fail closed: the upstream stays connected, but no discovered tools from that upstream are exposed until the config is fixed
+- malformed allowlists fail closed: the upstream stays connected, but nothing
+  from that capability is exposed until the config is fixed
 
-The exposure policy applies in two places:
+What each allowlist matches:
 
-1. merged tool discovery, so filtered tools are absent from `list_tools()`
-2. direct proxied tool calls, so filtered tools behave as if they were never exposed
+| Field | Matched against |
+|-------|-----------------|
+| `expose_tools` | the tool name the upstream advertises |
+| `expose_resources` | the bare, upstream-native resource URI — the form reported by `gateway.discovered_resources`, **not** the `lab://upstream/{name}/…` rewrite |
+| `expose_prompts` | the bare prompt name the upstream advertises, or the `{upstream}/{name}` namespaced form reported by `gateway.discovered_prompts` — either spelling works |
+
+Every allowlist applies to both discovery and direct access, on the shared
+catalog path, the OAuth subject-scoped path, and the MRTR relay path:
+
+1. listing (`list_tools`, `resources/list`, `prompts/list`), so filtered items
+   are never advertised
+2. direct access (`tools/call`, `resources/read`, `prompts/get`) and
+   `completion/complete`, so a filtered item cannot be reached by name or URI
+   even by a caller that already knows it
+
+Filtering only the listing would be a bypass rather than a restriction, so the
+direct-access gate is the load-bearing half.
+
+The cached inspection snapshots (`gateway.discovered_resources` /
+`gateway.discovered_prompts`) deliberately stay **unfiltered** — they are what
+the admin UI shows while an operator edits the allowlist, and hiding excluded
+entries there would make the allowlist un-editable.
+
+Resource *templates* (`resources/templates/list`) are not filtered by
+`expose_resources`, and neither is `completion/complete` for a
+`Reference::Resource`: a template is a URI pattern, not a concrete URI, so there
+is nothing well-defined to match. Reads of any URI a template expands to are
+still gated by `expose_resources`. `completion/complete` for a
+`Reference::Prompt` *is* gated, because a prompt reference is an exact name.
 
 ## Circuit Breaker
 

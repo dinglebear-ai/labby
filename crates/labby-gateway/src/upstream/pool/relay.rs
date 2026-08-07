@@ -71,6 +71,10 @@ use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
 use super::super::types::UpstreamCapability;
 use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
 use super::connect::connect_upstream_with_handler;
+use super::entries::{
+    prompt_exposed, resolve_request_prompt_exposure_policy,
+    resolve_request_resource_exposure_policy, resource_exposed,
+};
 use super::helpers::{
     SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, bare_upstream_prompt_name,
     estimate_call_tool_response_size, estimate_resource_response_size, max_response_bytes,
@@ -987,6 +991,30 @@ impl UpstreamPool {
         let started = Instant::now();
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
         let prompt_name = params.name.to_string();
+        // The relay path is a third way to fetch a prompt (selected whenever the
+        // downstream advertises an MRTR input capability), so it needs the same
+        // `expose_prompts` gate as `get_prompt` and `subject_scoped_get_prompt`.
+        if !prompt_exposed(
+            &resolve_request_prompt_exposure_policy(&config.name, config.expose_prompts.clone()),
+            &config.name,
+            &prompt_name,
+        ) {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "prompt.get",
+                capability = "prompts",
+                upstream = %config.name,
+                prompt = %prompt_name,
+                relayed = true,
+                kind = "prompt_not_exposed",
+                "relayed upstream prompt get blocked by exposure policy"
+            );
+            return Some(Err(format!(
+                "prompt `{prompt_name}` is not exposed by upstream `{}`",
+                config.name
+            )));
+        }
         let request_meta = params.meta.clone();
         let (peer, routes, cancellation_sender, generation) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
@@ -1107,6 +1135,31 @@ impl UpstreamPool {
             }
         };
         params.uri = original_uri;
+        // Same gate as `read_upstream_resource` / `subject_scoped_read_resource`
+        // — the relay branch must not become the way around `expose_resources`.
+        if !resource_exposed(
+            &resolve_request_resource_exposure_policy(
+                &config.name,
+                config.expose_resources.clone(),
+            ),
+            &params.uri,
+        ) {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "resource.read",
+                capability = "resources",
+                upstream = %config.name,
+                resource_uri = %redact_resource_uri_for_logging(&gateway_uri),
+                relayed = true,
+                kind = "resource_not_exposed",
+                "relayed upstream resource read blocked by exposure policy"
+            );
+            return Some(Err(format!(
+                "resource is not exposed by upstream `{}`",
+                config.name
+            )));
+        }
         let request_meta = params.meta.clone();
         let (peer, routes, cancellation_sender, generation) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)

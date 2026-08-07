@@ -9,6 +9,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::timed_capability_call_str;
+use super::entries::{prompt_exposed, resolve_request_prompt_exposure_policy};
 use super::helpers::{bare_upstream_prompt_name, upstream_transport};
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 
@@ -35,6 +36,27 @@ fn estimate_complete_result_size(result: &CompleteResult) -> usize {
 }
 
 impl UpstreamPool {
+    /// Whether a rewritten completion reference is exposed by the cached policy.
+    ///
+    /// Only prompt references are gated. A `Reference::Resource` completion
+    /// carries a resource *template* URI (`file:///{path}`), and
+    /// `expose_resources` lists concrete URIs — there is nothing well-defined to
+    /// match, and gating on it would break template completion for every
+    /// upstream that sets an allowlist. Templates are unfiltered for the same
+    /// reason (see `docs/services/UPSTREAM.md`); reads of the concrete URIs a
+    /// template expands to are still gated by `expose_resources`.
+    async fn completion_reference_is_exposed(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+        reference: &str,
+    ) -> bool {
+        match capability {
+            UpstreamCapability::Prompts => self.prompt_is_exposed(upstream_name, reference).await,
+            UpstreamCapability::Resources | UpstreamCapability::Tools => true,
+        }
+    }
+
     /// Proxy a completion request to a connected upstream, rewriting only the
     /// gateway-owned prompt/resource namespace while preserving request metadata
     /// and completion context.
@@ -53,6 +75,18 @@ impl UpstreamPool {
                 )));
             }
         };
+        // Completions are argument autocomplete *for* a prompt or resource
+        // template. Answering for a reference the operator excluded would leak
+        // the hidden item's shape, so gate on the same cached policy the list
+        // and fetch paths use.
+        if !self
+            .completion_reference_is_exposed(upstream_name, capability, &reference)
+            .await
+        {
+            return Some(Err(format!(
+                "completion reference is not exposed by upstream `{upstream_name}`"
+            )));
+        }
         let peer = self
             .acquire_peer(upstream_name, capability, "completion.complete")
             .await?;
@@ -92,6 +126,24 @@ impl UpstreamPool {
                     config.name
                 )
             })?;
+        // Prompt references only — see `completion_reference_is_exposed`.
+        let exposed = match capability {
+            UpstreamCapability::Prompts => prompt_exposed(
+                &resolve_request_prompt_exposure_policy(
+                    &config.name,
+                    config.expose_prompts.clone(),
+                ),
+                &config.name,
+                &reference,
+            ),
+            UpstreamCapability::Resources | UpstreamCapability::Tools => true,
+        };
+        if !exposed {
+            return Err(format!(
+                "completion reference is not exposed by upstream `{}`",
+                config.name
+            ));
+        }
         let event = UpstreamRequestLog::completion(&config.name, &reference, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
