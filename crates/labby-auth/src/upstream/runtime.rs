@@ -28,13 +28,14 @@ pub async fn build_upstream_oauth_runtime(
     auth_config: &AuthConfig,
     encryption_key_raw: Option<&str>,
 ) -> Result<Option<UpstreamOauthRuntime>> {
-    let Some(public_url) = auth_config.public_url.as_ref() else {
-        tracing::info!(
-            subsystem = "gateway_client",
-            phase = "oauth.runtime.disabled",
-            "upstream oauth runtime disabled because no public url is configured"
-        );
+    if !upstreams.iter().any(|upstream| upstream.oauth.is_some()) {
         return Ok(None);
+    }
+
+    let Some(public_url) = auth_config.public_url.as_ref() else {
+        anyhow::bail!(
+            "LABBY_PUBLIC_URL is required when upstream OAuth is configured; it must be the explicit public callback base"
+        );
     };
     let Some(encryption_key_raw) =
         encryption_key_raw.and_then(|value| (!value.trim().is_empty()).then_some(value))
@@ -139,17 +140,11 @@ mod tests {
         UpstreamOauthRegistration,
     };
 
-    #[tokio::test]
-    async fn shared_google_runtime_requires_provider_token_encryption_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut auth = AuthConfig::default();
-        auth.public_url = Some(url::Url::parse("https://lab.example.com").unwrap());
-        auth.sqlite_path = dir.path().join("auth.db");
-        auth.token_encryption_key = None;
-        let upstream = UpstreamConfig {
+    fn test_oauth_upstream(credential: UpstreamOauthCredentialSource) -> UpstreamConfig {
+        UpstreamConfig {
             enabled: true,
-            name: "google-calendar".to_string(),
-            url: Some("https://calendarmcp.googleapis.com/mcp/v1".to_string()),
+            name: "calendar".to_string(),
+            url: Some("https://calendar.example.com/mcp".to_string()),
             transport: None,
             socket_path: None,
             headers: Default::default(),
@@ -165,17 +160,52 @@ mod tests {
             code_mode_hint: None,
             oauth: Some(UpstreamOauthConfig {
                 mode: UpstreamOauthMode::AuthorizationCodePkce,
-                registration: UpstreamOauthRegistration::Preregistered {
-                    client_id: "google-client".to_string(),
-                    client_secret_env: Some("GOOGLE_SECRET".to_string()),
-                },
-                scopes: Some(vec!["calendar".to_string()]),
-                credential: UpstreamOauthCredentialSource::GoogleProvider { account: None },
+                registration: UpstreamOauthRegistration::Dynamic,
+                scopes: None,
+                credential,
                 prefer_client_metadata_document: None,
             }),
             imported_from: None,
             priority: 1.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_upstream_oauth_requires_explicit_public_callback_base() {
+        let auth = AuthConfig::default();
+        let error = match build_upstream_oauth_runtime(
+            &[test_oauth_upstream(
+                UpstreamOauthCredentialSource::Dedicated,
+            )],
+            &auth,
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+        )
+        .await
+        {
+            Ok(_) => panic!("upstream OAuth without a callback base must fail closed"),
+            Err(error) => error,
         };
+
+        assert!(error.to_string().contains("LABBY_PUBLIC_URL"));
+        assert!(error.to_string().contains("public callback base"));
+    }
+
+    #[tokio::test]
+    async fn shared_google_runtime_requires_provider_token_encryption_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut auth = AuthConfig::default();
+        auth.public_url = Some(url::Url::parse("https://lab.example.com").unwrap());
+        auth.sqlite_path = dir.path().join("auth.db");
+        auth.token_encryption_key = None;
+        let mut upstream =
+            test_oauth_upstream(UpstreamOauthCredentialSource::GoogleProvider { account: None });
+        upstream.name = "google-calendar".to_string();
+        upstream.url = Some("https://calendarmcp.googleapis.com/mcp/v1".to_string());
+        upstream.oauth.as_mut().unwrap().registration = UpstreamOauthRegistration::Preregistered {
+            client_id: "google-client".to_string(),
+            client_secret_env: Some("GOOGLE_SECRET".to_string()),
+        };
+        upstream.oauth.as_mut().unwrap().scopes = Some(vec!["calendar".to_string()]);
 
         let error = match build_upstream_oauth_runtime(
             &[upstream],

@@ -26,9 +26,9 @@ The script downloads the latest GitHub release for this platform
 (sha256-verified) into `~/.local/bin/labby`, falling back to
 `cargo install --git https://github.com/dinglebear-ai/labby --bin labby --all-features`
 when no release asset exists. Everything after install — config, credentials,
-connectivity checks, repair — is owned by `labby setup`.
-The web app also serves the same script at `https://labby.tootie.tv/install.sh`
-for convenience, but GitHub is the canonical installer source.
+connectivity checks, repair — is owned by `labby setup`. Configure the plugin
+with the URL of the Labby server you intend to trust; the plugin never selects
+a shared hosted gateway for you.
 
 ## Configuration
 
@@ -36,3 +36,8 @@ Plugin settings (server URL, auth mode, token, …) are declared in
 `.claude-plugin/plugin.json` `userConfig`. Sync them into `~/.labby/.env` by
 running `labby setup plugin-hook` manually after changing settings — this is no
 longer triggered automatically by a ConfigChange hook.
+
+When upstream OAuth is configured, set `public_url` to the explicit public base
+URL for the Labby server. Labby derives the upstream browser callback from that
+value and refuses to initialize the HTTP OAuth runtime when it is missing; the
+plugin does not provide a shared hosted callback.

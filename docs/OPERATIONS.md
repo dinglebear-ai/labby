@@ -155,7 +155,7 @@ Use Labby's public callback relay when a remote, headless, or cross-namespace
 MCP client needs a stable HTTPS callback:
 
 ```toml
-mcp_oauth_callback_url = "https://callback.tootie.tv/callback/<machine>"
+mcp_oauth_callback_url = "https://callback.example.com/callback/<machine>"
 ```
 
 Regular desktop clients should keep local loopback callbacks. The public relay
@@ -167,7 +167,7 @@ Operational commands:
 ```bash
 labby oauth relay-registry list --json
 labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
-curl -fsS --max-time 5 https://callback.tootie.tv/healthz
+curl -fsS --max-time 5 https://callback.example.com/healthz
 ```
 
 For the full cutover and rollback runbook, see
