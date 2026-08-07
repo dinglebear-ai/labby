@@ -9,7 +9,8 @@ details there and keep this file focused on rules for editing `.github/`.
 - Fast Linux jobs run on the self-hosted runner farm and include exactly one
   `ci-pool-*` routing label.
 - Rust compilation uses `.github/actions/setup-rust-kache`, which connects
-  trusted jobs to the shared MinIO cache at `s3.tootie.tv`. Jobs without cache
+  trusted jobs to the shared MinIO cache identified by the org variable
+  `KACHE_S3_ENDPOINT`. Jobs without cache
   credentials fail open to bare Cargo.
 - Release builds, container images, Incus images, publishing, signing, and
   attestations run only from `release.published` events on GitHub-hosted

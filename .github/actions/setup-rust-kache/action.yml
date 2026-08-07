@@ -142,7 +142,11 @@ runs:
         s3-bucket: ${{ env.KACHE_S3_BUCKET || 'kache' }}
         s3-region: us-east-1
         s3-prefix: ${{ env.KACHE_S3_PREFIX || 'rust' }}
-        s3-endpoint: ${{ env.KACHE_S3_ENDPOINT || 'https://s3.tootie.tv' }}
+        # No literal fallback: this repository is public. The endpoint lives in
+        # the org variable KACHE_S3_ENDPOINT, which every calling workflow puts
+        # on `env`. If it were ever empty this step is already skipped, because
+        # its `if` requires the S3 credentials that accompany it.
+        s3-endpoint: ${{ env.KACHE_S3_ENDPOINT }}
         s3-access-key-id: ${{ env.KACHE_S3_ACCESS_KEY }}
         s3-secret-access-key: ${{ env.KACHE_S3_SECRET_KEY }}
         manifest-key: labby-fast-rust
