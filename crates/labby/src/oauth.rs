@@ -6,3 +6,4 @@ pub mod local_relay;
 pub mod public_relay;
 pub mod target;
 pub mod upstream;
+pub mod upstream_stdio;

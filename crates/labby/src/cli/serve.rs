@@ -1296,12 +1296,21 @@ async fn build_gateway_runtime(
         None
     } else {
         let upstream_oauth_key = std::env::var("LABBY_OAUTH_ENCRYPTION_KEY").ok();
-        crate::oauth::upstream::runtime::build_upstream_oauth_runtime(
-            &config.upstream,
-            auth_config,
-            upstream_oauth_key.as_deref(),
-        )
-        .await?
+        if matches!(transport, Transport::Stdio) {
+            crate::oauth::upstream_stdio::build_stdio_upstream_oauth_runtime(
+                &config.upstream,
+                auth_config,
+                upstream_oauth_key.as_deref(),
+            )
+            .await?
+        } else {
+            crate::oauth::upstream::runtime::build_upstream_oauth_runtime(
+                &config.upstream,
+                auth_config,
+                upstream_oauth_key.as_deref(),
+            )
+            .await?
+        }
     };
     tracing::info!(
         subsystem = "gateway_client",
