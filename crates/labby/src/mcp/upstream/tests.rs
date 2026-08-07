@@ -18,7 +18,7 @@ fn completed_user_error_is_enriched_without_poisoning_health() {
         .to_string(),
     )]);
 
-    let (normalized, kind, counts_as_failure) = normalize_upstream_result(
+    let (normalized, kind) = normalize_upstream_result(
         "status",
         "call_tool",
         "gateway-alpha",
@@ -27,7 +27,6 @@ fn completed_user_error_is_enriched_without_poisoning_health() {
     );
 
     assert_eq!(kind, "missing_param");
-    assert!(!counts_as_failure);
     let diagnostic = normalized.content[0].as_text().expect("diagnostic text");
     let value: Value = serde_json::from_str(&diagnostic.text).expect("agent error json");
     assert_eq!(value["origin"], "tool_execution");
@@ -59,7 +58,7 @@ fn completed_error_retains_every_upstream_payload_channel() {
     ];
     let original_content = upstream.content.clone();
 
-    let (normalized, kind, counts_as_failure) = normalize_upstream_result(
+    let (normalized, kind) = normalize_upstream_result(
         "status",
         "call_tool",
         "gateway-alpha",
@@ -68,7 +67,6 @@ fn completed_error_retains_every_upstream_payload_channel() {
     );
 
     assert_eq!(kind, "tool_error");
-    assert!(!counts_as_failure);
     assert_eq!(&normalized.content[1..], original_content.as_slice());
     assert_eq!(
         normalized.structured_content.as_ref().unwrap()["upstream_structured_content"],

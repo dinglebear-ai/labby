@@ -16,10 +16,10 @@ jobs:
   contract:
     permissions:
       contents: read
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@d1a41a7af9c41189e0f1062234364f5814bda99d # fleet-2026-07-31
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@218eba19f15cc13554d26fa131309cfa8141fd67 # fleet-2026-08-04
     with:
       profile: rust
-      implementation-ref: d1a41a7af9c41189e0f1062234364f5814bda99d
+      implementation-ref: 218eba19f15cc13554d26fa131309cfa8141fd67
     secrets: inherit
 
   repository-contract:

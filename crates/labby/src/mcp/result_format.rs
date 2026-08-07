@@ -33,7 +33,20 @@ pub(crate) fn tool_error_envelope(service: &str, action: &str, err: &DispatchToo
     if serialized.is_empty() {
         build_error(service, action, &kind, &message)
     } else {
-        build_error_extra(service, action, &kind, &message, &Value::Object(serialized))
+        // Carry refined `ToolError::Contract` metadata via the context so
+        // `build_agent_error_value` does not recompute-and-clobber it from the
+        // bare kind. No-op for every other variant (identical envelope).
+        let mut context =
+            labby_runtime::agent_error::AgentErrorContext::for_service_action(service, action);
+        err.merge_contract_context(&mut context);
+        crate::mcp::envelope::build_error_with_context(
+            service,
+            action,
+            &kind,
+            &message,
+            Some(&Value::Object(serialized)),
+            &context,
+        )
     }
 }
 

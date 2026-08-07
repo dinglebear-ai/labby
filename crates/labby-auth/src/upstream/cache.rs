@@ -15,6 +15,7 @@
 //! not need to know how the pool uses the clients.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -26,6 +27,17 @@ use tokio::sync::Mutex;
 
 use crate::upstream::manager::UpstreamOauthManager;
 use crate::upstream::types::OauthError;
+
+/// Callback used by a host surface that can drive an interactive OAuth flow.
+///
+/// The reusable auth crate does not know how to open a browser or receive a
+/// redirect. A host (for example Labby's stdio transport) can install this
+/// hook to turn a `NeedsReauth` result into a completed authorization flow and
+/// then let the cache retry the original connection once.
+pub type OauthReauthHandler = Arc<dyn Fn(String, String) -> OauthReauthFuture + Send + Sync>;
+
+/// Future returned by [`OauthReauthHandler`].
+pub type OauthReauthFuture = Pin<Box<dyn Future<Output = Result<(), OauthError>> + Send>>;
 
 /// A cached `AuthClient` plus the OAuth-registration fingerprint it was
 /// built from. When the current config's fingerprint differs, the entry
@@ -49,6 +61,8 @@ pub struct OauthClientCache {
     /// Per-`(upstream, subject)` build lock so concurrent first-request
     /// tasks don't issue duplicate token exchanges against the AS.
     build_locks: Arc<DashMap<(String, String), Arc<Mutex<()>>>>,
+    /// Optional host-owned interactive reauthorization hook.
+    reauth_handler: Option<OauthReauthHandler>,
 }
 
 impl OauthClientCache {
@@ -59,7 +73,19 @@ impl OauthClientCache {
             clients: Arc::new(DashMap::new()),
             managers,
             build_locks: Arc::new(DashMap::new()),
+            reauth_handler: None,
         }
+    }
+
+    /// Install a host-owned interactive reauthorization hook.
+    ///
+    /// The hook is invoked only after the normal credential load/refresh path
+    /// returns [`OauthError::NeedsReauth`]. It runs while the per-key build
+    /// lock is held, so concurrent first requests share one browser flow.
+    #[must_use]
+    pub fn with_reauth_handler(mut self, handler: OauthReauthHandler) -> Self {
+        self.reauth_handler = Some(handler);
+        self
     }
 
     /// Return a cached `AuthClient<reqwest::Client>` for `(upstream, subject)`,
@@ -107,20 +133,37 @@ impl OauthClientCache {
             None
         };
 
-        self.get_or_insert_with(config, subject, dynamic_client_id.as_deref(), || async {
-            let manager = self
-                .managers
-                .get(&config.name)
-                .map(|r| r.clone())
-                .ok_or_else(|| {
-                    OauthError::Internal(format!(
-                        "no oauth manager registered for upstream '{}'",
-                        config.name
-                    ))
-                })?;
-            let auth_client = manager.build_auth_client(subject).await?;
-            Ok(Arc::new(auth_client))
-        })
+        let reauth_handler = self.reauth_handler.clone();
+        let upstream_name = config.name.clone();
+        let subject_owned = subject.to_string();
+        self.get_or_insert_with(
+            config,
+            subject,
+            dynamic_client_id.as_deref(),
+            || async move {
+                let manager = self
+                    .managers
+                    .get(&upstream_name)
+                    .map(|r| r.clone())
+                    .ok_or_else(|| {
+                        OauthError::Internal(format!(
+                            "no oauth manager registered for upstream '{}'",
+                            upstream_name
+                        ))
+                    })?;
+                let auth_client = match manager.build_auth_client(&subject_owned).await {
+                    Err(OauthError::NeedsReauth(reason)) => {
+                        let Some(handler) = reauth_handler else {
+                            return Err(OauthError::NeedsReauth(reason));
+                        };
+                        handler(upstream_name.clone(), subject_owned.clone()).await?;
+                        manager.build_auth_client(&subject_owned).await?
+                    }
+                    result => result?,
+                };
+                Ok(Arc::new(auth_client))
+            },
+        )
         .await
     }
 
@@ -142,6 +185,18 @@ impl OauthClientCache {
     where
         C: StreamableHttpClient + Clone,
     {
+        // The capped path does not retain the resulting AuthClient, but it
+        // still shares this single-flight gate with `get_or_build`. Without
+        // the gate, two cold connections could both observe a revoked refresh
+        // token and open duplicate interactive browser flows.
+        let key = (config.name.clone(), subject.to_string());
+        let lock = self
+            .build_locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+
         let manager = self
             .managers
             .get(&config.name)
@@ -152,7 +207,18 @@ impl OauthClientCache {
                     config.name
                 ))
             })?;
-        manager.build_auth_client_with(subject, http_client).await
+        let Some(handler) = self.reauth_handler.clone() else {
+            return manager.build_auth_client_with(subject, http_client).await;
+        };
+
+        let retry_client = http_client.clone();
+        match manager.build_auth_client_with(subject, http_client).await {
+            Err(OauthError::NeedsReauth(_)) => {
+                handler(config.name.clone(), subject.to_string()).await?;
+                manager.build_auth_client_with(subject, retry_client).await
+            }
+            result => result,
+        }
     }
 
     #[allow(dead_code)]
@@ -227,6 +293,14 @@ impl OauthClientCache {
     pub fn evict_upstream(&self, upstream: &str) {
         self.clients.retain(|(name, _), _| name != upstream);
         // build_locks intentionally preserved — see comment in evict_subject.
+    }
+
+    /// Evict all cached OAuth clients.
+    ///
+    /// Used when a shared provider credential is explicitly revoked because the
+    /// credential may back several upstream names. Build locks are preserved.
+    pub fn evict_all(&self) {
+        self.clients.clear();
     }
 
     /// Evict every entry whose upstream is not in `known`.
@@ -314,6 +388,8 @@ mod tests {
     use labby_runtime::gateway_config::{UpstreamOauthConfig, UpstreamOauthMode};
     use rmcp_client::transport::AuthorizationManager;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn cfg(name: &str, client_id: &str) -> UpstreamConfig {
         UpstreamConfig {
@@ -340,6 +416,7 @@ mod tests {
                     client_secret_env: None,
                 },
                 scopes: None,
+                credential: Default::default(),
                 prefer_client_metadata_document: None,
             }),
             imported_from: None,
@@ -425,6 +502,85 @@ mod tests {
 
         assert_eq!(builds.load(Ordering::SeqCst), 1);
         assert!(Arc::ptr_eq(&left, &right));
+    }
+
+    #[tokio::test]
+    async fn reauth_handler_runs_on_missing_credentials() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sqlite = crate::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+            .await
+            .expect("sqlite store");
+        let key = crate::upstream::encryption::load_key(&base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [0u8; 32],
+        ))
+        .expect("encryption key");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": server.uri(),
+                "authorization_endpoint": format!("{}/authorize", server.uri()),
+                "token_endpoint": format!("{}/token", server.uri()),
+                "code_challenge_methods_supported": ["S256"]
+            })))
+            .mount(&server)
+            .await;
+        let mut config = cfg("acme", "id-1");
+        config.url = Some(format!("{}/mcp", server.uri()));
+        let managers = Arc::new(DashMap::new());
+        managers.insert(
+            config.name.clone(),
+            UpstreamOauthManager::new(
+                sqlite,
+                key,
+                config.clone(),
+                "http://127.0.0.1:12345/auth/upstream/callback".to_string(),
+            ),
+        );
+        let called = Arc::new(AtomicUsize::new(0));
+        let called_for_handler = Arc::clone(&called);
+        let handler: OauthReauthHandler = Arc::new(move |_, _| {
+            called_for_handler.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err(OauthError::Internal(
+                    "test reauthorization failure".to_string(),
+                ))
+            })
+        });
+        let cache = OauthClientCache::new(Arc::clone(&managers)).with_reauth_handler(handler);
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let error = cache
+            .get_or_build_capped(&config, "gateway", reqwest::Client::new())
+            .await
+            .expect_err("missing credentials should require reauth");
+
+        assert!(
+            matches!(error, OauthError::Internal(message) if message == "test reauthorization failure")
+        );
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn evict_all_removes_clients_for_every_google_upstream() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        cache.insert_for_tests(
+            "google-calendar",
+            "gateway",
+            "preregistered:google-client",
+            dummy_auth_client().await,
+        );
+        cache.insert_for_tests(
+            "google-drive",
+            "gateway",
+            "preregistered:google-client",
+            dummy_auth_client().await,
+        );
+        assert_eq!(cache.len(), 2);
+
+        cache.evict_all();
+
+        assert!(cache.is_empty());
     }
 
     #[tokio::test]

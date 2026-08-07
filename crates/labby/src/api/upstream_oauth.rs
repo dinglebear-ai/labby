@@ -21,6 +21,7 @@ pub fn gateway_routes(_state: AppState) -> Router<AppState> {
         .route("/start", post(start))
         .route("/status", get(status))
         .route("/clear", post(clear))
+        .route("/google/revoke", post(revoke_google))
 }
 
 pub fn browser_routes(_state: AppState) -> Router<AppState> {
@@ -100,6 +101,12 @@ struct StatusQuery {
 #[derive(Debug, Deserialize)]
 struct ClearQuery {
     upstream: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleRevokeRequest {
+    upstream: String,
+    confirm: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,7 +252,7 @@ async fn probe(
     require_master(&state)?;
     require_admin_scope(&auth, "probe")?;
     if body.confirm != Some(true) {
-        return Err(ApiError(ToolError::Sdk {
+        return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "confirmation_required".to_string(),
             message: "set confirm=true to probe and prepare upstream oauth".to_string(),
         }));
@@ -301,7 +308,7 @@ async fn start(
     // sends the user off-site only to fail at the callback with "oauth sqlite
     // not configured" — after the user has already left the page.
     if manager.oauth_sqlite().is_none() {
-        return Err(ApiError(ToolError::internal_message(
+        return Err(ApiError::new(ToolError::internal_message(
             "upstream OAuth not configured (missing SQLite store)",
         )));
     }
@@ -388,15 +395,15 @@ async fn clear(
 ) -> impl IntoResponse {
     let started = std::time::Instant::now();
     if let Err(error) = require_master(&state) {
-        return ApiError(error).into_response();
+        return ApiError::new(error).into_response();
     }
     if let Err(error) = require_admin_scope(&auth, "clear") {
-        return ApiError(error).into_response();
+        return ApiError::new(error).into_response();
     }
     let manager = match state.gateway_manager.clone() {
         Some(manager) => manager,
         None => {
-            return ApiError(ToolError::internal_message("gateway manager not wired"))
+            return ApiError::new(ToolError::internal_message("gateway manager not wired"))
                 .into_response();
         }
     };
@@ -417,7 +424,7 @@ async fn clear(
             kind = error.kind(),
             "upstream oauth clear failed"
         );
-        return ApiError(error).into_response();
+        return ApiError::new(error).into_response();
     }
     info!(
         surface = "api",
@@ -432,6 +439,52 @@ async fn clear(
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
 }
 
+async fn revoke_google(
+    State(state): State<AppState>,
+    Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    Json(body): Json<GoogleRevokeRequest>,
+) -> Result<Json<labby_auth::types::GoogleProviderInvalidation>, ApiError> {
+    let started = std::time::Instant::now();
+    require_master(&state)?;
+    require_admin_scope(&auth, "google_revoke")?;
+    if body.confirm != Some(true) {
+        return Err(ApiError::new(ToolError::Sdk {
+            sdk_kind: "confirmation_required".to_string(),
+            message: "set confirm=true to revoke the shared Google provider credential".to_string(),
+        }));
+    }
+    let manager = state
+        .gateway_manager
+        .clone()
+        .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
+    let invalidation = crate::dispatch::gateway::oauth::revoke_google(&manager, &body.upstream)
+        .await
+        .inspect_err(|error| {
+            warn!(
+                surface = "api",
+                service = "upstream_oauth",
+                action = "google_revoke",
+                subject = %auth.sub,
+                elapsed_ms = started.elapsed().as_millis(),
+                kind = error.kind(),
+                "Google provider credential revoke failed"
+            );
+        })?;
+    warn!(
+        surface = "api",
+        service = "upstream_oauth",
+        action = "google_revoke",
+        subject = %auth.sub,
+        upstream = %body.upstream,
+        invalidated = invalidation.invalidated,
+        revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+        revoked_authorization_codes = invalidation.revoked_authorization_codes,
+        elapsed_ms = started.elapsed().as_millis(),
+        "Google provider credential explicitly revoked"
+    );
+    Ok(Json(invalidation))
+}
+
 async fn callback(
     State(state): State<AppState>,
     Query(query): Query<CallbackQuery>,
@@ -440,23 +493,23 @@ async fn callback(
 ) -> impl IntoResponse {
     let started = std::time::Instant::now();
     if let Err(error) = require_master(&state) {
-        return ApiError(error).into_response();
+        return ApiError::new(error).into_response();
     }
 
     let manager = match state.gateway_manager.clone() {
         Some(manager) => manager,
         None => {
-            return ApiError(ToolError::internal_message("gateway manager not wired"))
+            return ApiError::new(ToolError::internal_message("gateway manager not wired"))
                 .into_response();
         }
     };
     let base = match public_url(&state) {
         Ok(url) => url.clone(),
-        Err(error) => return ApiError(error).into_response(),
+        Err(error) => return ApiError::new(error).into_response(),
     };
     let mut redirect_url = match append_public_path(&base, "/gateway/oauth/result") {
         Ok(url) => url,
-        Err(error) => return ApiError(error).into_response(),
+        Err(error) => return ApiError::new(error).into_response(),
     };
 
     // Recover (upstream, subject) from the state token — the AS only sends back
@@ -464,7 +517,7 @@ async fn callback(
     let sqlite = match manager.oauth_sqlite() {
         Some(s) => s,
         None => {
-            return ApiError(ToolError::internal_message("oauth sqlite not configured"))
+            return ApiError::new(ToolError::internal_message("oauth sqlite not configured"))
                 .into_response();
         }
     };
@@ -484,14 +537,14 @@ async fn callback(
                 action = "callback",
                 "upstream oauth callback: state token not found or expired"
             );
-            return ApiError(ToolError::Sdk {
+            return ApiError::new(ToolError::Sdk {
                 sdk_kind: "auth_failed".to_string(),
                 message: "OAuth state token not found or expired".to_string(),
             })
             .into_response();
         }
         Err(e) => {
-            return ApiError(ToolError::internal_message(format!(
+            return ApiError::new(ToolError::internal_message(format!(
                 "state lookup failed: {e}"
             )))
             .into_response();
@@ -508,7 +561,7 @@ async fn callback(
             expected_subject = SHARED_GATEWAY_OAUTH_SUBJECT,
             "upstream oauth callback rejected: state subject mismatch"
         );
-        return ApiError(ToolError::Sdk {
+        return ApiError::new(ToolError::Sdk {
             sdk_kind: "auth_failed".to_string(),
             message: "OAuth state subject mismatch".to_string(),
         })
@@ -573,7 +626,7 @@ async fn callback(
                     "failed to revoke oauth state token after malformed callback: {revoke_err}"
                 );
             }
-            return ApiError(ToolError::InvalidParam {
+            return ApiError::new(ToolError::InvalidParam {
                 message: "Callback missing code parameter".to_string(),
                 param: "code".to_string(),
             })

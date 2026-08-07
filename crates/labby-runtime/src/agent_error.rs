@@ -4,143 +4,18 @@
 //! additive contract fields every surface can compute from a stable error kind:
 //! origin, recovery advice, unchanged-retry safety, and partial-side-effect risk.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 pub const AGENT_ERROR_CONTRACT_VERSION: u32 = 1;
 
-/// Best-effort patterns for common secret shapes: provider API keys, JWTs,
-/// `Bearer` authorization values, PEM private-key blocks, and URL-embedded
-/// credentials (`scheme://user:pass@`).
-///
-/// This is defense-in-depth, not a guarantee. Novel or provider-specific token
-/// formats pass through unrecognized, and a PEM body split across lines is only
-/// caught from its `-----BEGIN` header onward. Never treat text that survived
-/// this filter as safe to echo verbatim; avoid placing secrets in error text in
-/// the first place.
-static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|xox[bp]-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?i:bearer)[ \t]+[A-Za-z0-9._~+/-]{8,}=*|-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z ]*PRIVATE KEY-----|$)|[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@)",
-    )
-    .expect("agent error secret regex is valid")
-});
-
-/// Marker appended by [`sanitize_error_text`] when the length cap or the
-/// bounded inspection window dropped input.
-pub const SANITIZE_TRUNCATION_MARKER: &str = " …[truncated]";
-
-/// Slice `input` to a bounded inspection window BEFORE the retain / replace /
-/// redact passes run, so a multi-megabyte upstream payload cannot force
-/// several full-string passes whose output is then discarded by the final
-/// character cap (amplification DoS). A `char` is at most four bytes, so a
-/// window of `max_len * 4` bytes always contains at least `max_len` characters
-/// when the input has them. The cut respects UTF-8 char boundaries.
-fn bounded_window(input: &str, max_len: usize) -> &str {
-    let cap = max_len.saturating_mul(4);
-    if input.len() <= cap {
-        return input;
-    }
-    let mut end = cap;
-    while end > 0 && !input.is_char_boundary(end) {
-        end -= 1;
-    }
-    &input[..end]
-}
-
-#[must_use]
-pub fn sanitize_log_text(input: &str, max_len: usize) -> String {
-    sanitize_log_line(input, max_len).0
-}
-
-/// Shared single-line sanitizer. Returns the sanitized text plus whether the
-/// window or the character cap dropped input, so multi-line callers can append
-/// a truncation marker without recounting characters.
-fn sanitize_log_line(input: &str, max_len: usize) -> (String, bool) {
-    let window = bounded_window(input, max_len);
-    let mut sanitized = window.to_string();
-    sanitized.retain(|ch| {
-        !matches!(
-            ch,
-            '\u{0000}'..='\u{001F}'
-                | '\u{007F}'..='\u{009F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2066}'..='\u{2069}'
-        )
-    });
-    for marker in ["<system>", "[INST]", "###", "<<"] {
-        sanitized = sanitized.replace(marker, "");
-    }
-    let redacted = redact_secret_like_segments(&sanitized);
-    let mut chars = redacted.chars();
-    let output: String = chars.by_ref().take(max_len).collect();
-    let capped = chars.next().is_some() || window.len() < input.len();
-    (output, capped)
-}
-
-/// Sanitize multiline model-facing diagnostics while preserving line breaks.
-///
-/// When the character cap (or the bounded inspection window) drops input, the
-/// output ends with [`SANITIZE_TRUNCATION_MARKER`] so downstream readers know
-/// evidence was cut rather than complete.
-#[must_use]
-pub fn sanitize_error_text(input: &str, max_len: usize) -> String {
-    let window = bounded_window(input, max_len);
-    let mut truncated = window.len() < input.len();
-    let mut output = String::new();
-    // Running character count instead of an O(n²) `output.chars().count()`
-    // recount per line.
-    let mut output_chars = 0usize;
-    let mut lines = window.lines().peekable();
-    let mut first = true;
-    while let Some(line) = lines.next() {
-        if !first {
-            output.push('\n');
-            output_chars += 1;
-        }
-        first = false;
-        let (sanitized, capped) = sanitize_log_line(line, max_len);
-        truncated |= capped;
-        output_chars += sanitized.chars().count();
-        output.push_str(&sanitized);
-        if output_chars >= max_len {
-            truncated |= output_chars > max_len || lines.peek().is_some();
-            break;
-        }
-    }
-    let mut output: String = output.chars().take(max_len).collect();
-    if truncated {
-        output.push_str(SANITIZE_TRUNCATION_MARKER);
-    }
-    output
-}
-
-#[must_use]
-pub fn redact_secret_like_segments(input: &str) -> String {
-    let after_split = input
-        .split_whitespace()
-        .map(|segment| {
-            let looks_secret = segment.starts_with("sk-")
-                || segment.starts_with("ghp_")
-                || segment.starts_with("github_pat_")
-                || segment.starts_with("glpat-")
-                || segment.starts_with("xoxb-")
-                || segment.starts_with("xoxp-")
-                || segment.starts_with("eyJ");
-            if looks_secret {
-                "[REDACTED]".to_string()
-            } else {
-                segment.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    SECRET_REGEX
-        .replace_all(&after_split, "[REDACTED]")
-        .into_owned()
-}
+// The sanitize/secret helpers moved to `crate::redact` (the charter home for
+// redaction). Re-exported here so existing `agent_error::…` imports keep
+// working. Pure module-placement move — zero behavior change beyond the
+// documented `tskey-` broadening.
+pub use crate::redact::{
+    SANITIZE_TRUNCATION_MARKER, redact_secret_like_segments, sanitize_error_text, sanitize_log_text,
+};
 
 /// MCP tool annotations that informed retry and side-effect guidance.
 ///
@@ -428,6 +303,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "validation_failed"
         | "invalid_hint"
         | "conflict"
+        | "oauth_account_ambiguous"
+        | "oauth_client_mismatch"
         | "path_traversal"
         | "symlink_rejected"
         | "invalid_encoding"
@@ -441,6 +318,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "auth_failed"
         | "auth_required"
         | "oauth_needs_reauth"
+        | "oauth_scope_upgrade_required"
+        | "oauth_shared_credential_protected"
         | "route_scope_denied" => AgentErrorOrigin::Policy,
         "rate_limited"
         | "queue_saturated"
@@ -539,6 +418,24 @@ pub fn recovery_for_kind(
             guidance: "Repair or refresh authentication before retrying. For an upstream OAuth server, use the gateway OAuth start action for that upstream.".to_string(),
             retry_after_ms: None,
         },
+        "oauth_scope_upgrade_required" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Reauthenticate,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Start the gateway OAuth flow for this upstream and grant the reported missing Google scopes before retrying.".to_string(),
+            retry_after_ms: None,
+        },
+        "oauth_account_ambiguous" | "oauth_client_mismatch" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReviseAndRetry,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Correct the shared Google credential account selector or OAuth client binding, then retry with the updated configuration.".to_string(),
+            retry_after_ms: None,
+        },
+        "oauth_shared_credential_protected" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Confirm,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Do not clear this credential through a single upstream. Use gateway.oauth.google_revoke and obtain explicit confirmation because the credential is shared.".to_string(),
+            retry_after_ms: None,
+        },
         "confirmation_required" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::Confirm,
             same_arguments: AgentSameArgumentsRetry::Never,
@@ -634,52 +531,31 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_small_input_is_unchanged() {
-        let input = "line one\nline two: all clear";
-        assert_eq!(sanitize_error_text(input, 4096), input);
-        assert_eq!(sanitize_log_text("plain text", 4096), "plain text");
-    }
+    fn google_broker_errors_have_actionable_recovery_metadata() {
+        let scope = metadata_for_kind("oauth_scope_upgrade_required", None);
+        assert_eq!(scope.origin, AgentErrorOrigin::Policy);
+        assert_eq!(scope.recovery.action, AgentRecoveryAction::Reauthenticate);
+        assert_eq!(scope.side_effects, AgentSideEffectRisk::NoneExpected);
 
-    #[test]
-    fn sanitize_error_text_caps_multi_megabyte_input_and_marks_truncation() {
-        // 5 MiB of secret-free text; before the bounded window landed this ran
-        // ~8 full passes over the whole payload before the 8 KiB cap applied.
-        let input = "x".repeat(5 * 1024 * 1024);
-        let output = sanitize_error_text(&input, 8 * 1024);
-        assert!(output.ends_with(SANITIZE_TRUNCATION_MARKER));
-        let body = output.trim_end_matches(SANITIZE_TRUNCATION_MARKER);
-        assert_eq!(body.chars().count(), 8 * 1024);
+        for kind in ["oauth_account_ambiguous", "oauth_client_mismatch"] {
+            let metadata = metadata_for_kind(kind, None);
+            assert_eq!(metadata.origin, AgentErrorOrigin::Validation, "kind={kind}");
+            assert_eq!(
+                metadata.recovery.action,
+                AgentRecoveryAction::ReviseAndRetry,
+                "kind={kind}"
+            );
+            assert_eq!(
+                metadata.recovery.same_arguments,
+                AgentSameArgumentsRetry::Never,
+                "kind={kind}"
+            );
+        }
 
-        // Multi-line variant: many lines, each within cap, total far above it.
-        let input = "line of text\n".repeat(1024 * 1024);
-        let output = sanitize_error_text(&input, 8 * 1024);
-        assert!(output.ends_with(SANITIZE_TRUNCATION_MARKER));
-        assert!(output.chars().count() <= 8 * 1024 + SANITIZE_TRUNCATION_MARKER.chars().count());
-    }
-
-    #[test]
-    fn sanitize_exact_cap_input_gets_no_marker() {
-        let input = "y".repeat(4096);
-        let output = sanitize_error_text(&input, 4096);
-        assert_eq!(output, input);
-    }
-
-    #[test]
-    fn redacts_bearer_pem_and_url_credentials() {
-        let bearer = redact_secret_like_segments("Authorization: Bearer abcdef1234567890");
-        assert!(!bearer.contains("abcdef1234567890"), "{bearer}");
-        assert!(bearer.contains("[REDACTED]"));
-
-        let pem = redact_secret_like_segments(
-            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7\n-----END RSA PRIVATE KEY-----",
-        );
-        assert!(!pem.contains("MIIEowIBAAKCAQEA7"), "{pem}");
-        assert!(pem.contains("[REDACTED]"));
-
-        let url = redact_secret_like_segments("connect postgres://admin:hunter2@db.local:5432/app");
-        assert!(!url.contains("hunter2"), "{url}");
-        assert!(url.contains("[REDACTED]"));
-        assert!(url.contains("db.local"));
+        let protected = metadata_for_kind("oauth_shared_credential_protected", None);
+        assert_eq!(protected.origin, AgentErrorOrigin::Policy);
+        assert_eq!(protected.recovery.action, AgentRecoveryAction::Confirm);
+        assert_eq!(protected.side_effects, AgentSideEffectRisk::NoneExpected);
     }
 
     #[test]

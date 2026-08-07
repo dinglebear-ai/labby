@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 mod assertions;
+mod google_credentials;
 mod migrations;
 mod rows;
 mod tokens;
@@ -26,7 +27,7 @@ use crate::types::{
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-pub(super) const SCHEMA_VERSION: i64 = 7;
+pub(super) const SCHEMA_VERSION: i64 = 8;
 
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
@@ -81,6 +82,13 @@ impl SqliteStore {
         })?;
 
         store.cleanup_expired().await?;
+        let encrypted_legacy_rows = store.encrypt_legacy_google_provider_credentials().await?;
+        if encrypted_legacy_rows > 0 {
+            warn!(
+                encrypted_legacy_rows,
+                "encrypted legacy plaintext Google provider credentials"
+            );
+        }
         Ok(store)
     }
 
@@ -152,6 +160,7 @@ impl SqliteStore {
                         created_at: row.get(2)?,
                         token_endpoint_auth_method: "none".to_string(),
                         jwks: None,
+                        jwks_uri: None,
                     })
                 },
             )
@@ -1013,7 +1022,15 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         CREATE TABLE IF NOT EXISTS google_provider_credentials (
             subject TEXT PRIMARY KEY,
             email TEXT,
+            client_id TEXT NOT NULL DEFAULT '',
+            granted_scopes_json TEXT NOT NULL DEFAULT '[\"email\",\"openid\",\"profile\"]',
+            access_token TEXT,
             refresh_token TEXT NOT NULL,
+            token_received_at INTEGER,
+            access_token_expires_at INTEGER,
+            issuer TEXT,
+            last_refresh_at INTEGER,
+            last_scope_upgrade_at INTEGER,
             generation INTEGER NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
@@ -1187,14 +1204,15 @@ mod tests {
 
     use rusqlite::Connection;
 
+    use crate::at_rest::TokenEncryptionKey;
     use crate::types::{
-        AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, RefreshTokenRow, RegisteredClient,
-        UpstreamOauthCredentialRow, UpstreamOauthStateRow,
+        AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, GoogleProviderCredentialUpdate,
+        RefreshTokenRow, RegisteredClient, UpstreamOauthCredentialRow, UpstreamOauthStateRow,
     };
 
     use crate::util::now_unix;
 
-    use super::{SQLITE_POOL_SIZE, SqliteStore, hash_token};
+    use super::{SQLITE_POOL_SIZE, SqliteStore, hash_token, sqlite_error};
 
     #[tokio::test]
     async fn sqlite_store_enables_wal_and_busy_timeout() {
@@ -1354,6 +1372,206 @@ mod tests {
                 .has_google_provider_credential_for_email("other@example.com")
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn google_provider_token_bundle_round_trips_scopes_access_token_and_metadata() {
+        let store = temp_store().await;
+        let now = now_unix();
+        store
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "google-subject-123".to_string(),
+                email: Some("Admin@Example.com".to_string()),
+                client_id: "google-client".to_string(),
+                granted_scopes: vec![
+                    "profile".to_string(),
+                    "openid".to_string(),
+                    "profile".to_string(),
+                ],
+                access_token: "provider-access".to_string(),
+                refresh_token: "provider-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
+
+        let row = store
+            .find_google_provider_credential_by_selector(Some("ADMIN@example.com"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.subject, "google-subject-123");
+        assert_eq!(row.email.as_deref(), Some("admin@example.com"));
+        assert_eq!(row.client_id, "google-client");
+        assert_eq!(row.granted_scopes, vec!["openid", "profile"]);
+        assert_eq!(row.access_token.as_deref(), Some("provider-access"));
+        assert_eq!(row.refresh_token, "provider-refresh");
+        assert_eq!(row.token_received_at, Some(now));
+        assert_eq!(row.access_token_expires_at, Some(now + 3600));
+        assert_eq!(row.issuer.as_deref(), Some("https://accounts.google.com"));
+        assert_eq!(row.last_scope_upgrade_at, Some(now));
+    }
+
+    #[tokio::test]
+    async fn google_provider_bundle_is_encrypted_at_rest_and_readable_after_reopen() {
+        let path = temp_db_path();
+        let key = TokenEncryptionKey::from_passphrase("google-broker-test-key");
+        let store = SqliteStore::open_with_key(path.clone(), Some(key.clone()))
+            .await
+            .unwrap();
+        let now = now_unix();
+        store
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "google-subject-encrypted".to_string(),
+                email: Some("admin@example.com".to_string()),
+                client_id: "google-client".to_string(),
+                granted_scopes: vec!["openid".to_string()],
+                access_token: "sensitive-access-token".to_string(),
+                refresh_token: "sensitive-refresh-token".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
+        drop(store);
+
+        let conn = Connection::open(&path).unwrap();
+        let (stored_access, stored_refresh): (String, String) = conn
+            .query_row(
+                "SELECT access_token, refresh_token FROM google_provider_credentials WHERE subject = ?1",
+                ["google-subject-encrypted"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(stored_access.starts_with("enc:"));
+        assert!(stored_refresh.starts_with("enc:"));
+        assert!(!stored_access.contains("sensitive-access-token"));
+        assert!(!stored_refresh.contains("sensitive-refresh-token"));
+        drop(conn);
+        crate::util::set_restrictive_permissions(&path).unwrap();
+
+        let reopened = SqliteStore::open_with_key(path, Some(key)).await.unwrap();
+        let row = reopened
+            .find_google_provider_credential("google-subject-encrypted")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.access_token.as_deref(), Some("sensitive-access-token"));
+        assert_eq!(row.refresh_token, "sensitive-refresh-token");
+    }
+
+    #[tokio::test]
+    async fn opening_with_a_key_encrypts_legacy_plaintext_provider_tokens() {
+        let path = temp_db_path();
+        let plaintext_store = SqliteStore::open(path.clone()).await.unwrap();
+        let now = now_unix();
+        plaintext_store
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "legacy-google-subject".to_string(),
+                email: Some("legacy@example.com".to_string()),
+                client_id: "google-client".to_string(),
+                granted_scopes: vec!["openid".to_string()],
+                access_token: "legacy-access".to_string(),
+                refresh_token: "legacy-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
+        drop(plaintext_store);
+
+        let conn = Connection::open(&path).unwrap();
+        let before: (String, String) = conn
+            .query_row(
+                "SELECT access_token, refresh_token FROM google_provider_credentials WHERE subject = ?1",
+                ["legacy-google-subject"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            before,
+            ("legacy-access".to_string(), "legacy-refresh".to_string())
+        );
+        drop(conn);
+        crate::util::set_restrictive_permissions(&path).unwrap();
+
+        let key = TokenEncryptionKey::from_passphrase("legacy-upgrade-key");
+        let encrypted_store = SqliteStore::open_with_key(path.clone(), Some(key))
+            .await
+            .unwrap();
+        let row = encrypted_store
+            .find_google_provider_credential("legacy-google-subject")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.access_token.as_deref(), Some("legacy-access"));
+        assert_eq!(row.refresh_token, "legacy-refresh");
+        drop(encrypted_store);
+
+        let conn = Connection::open(path).unwrap();
+        let after: (String, String) = conn
+            .query_row(
+                "SELECT access_token, refresh_token FROM google_provider_credentials WHERE subject = ?1",
+                ["legacy-google-subject"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(after.0.starts_with("enc:"));
+        assert!(after.1.starts_with("enc:"));
+    }
+
+    #[tokio::test]
+    async fn google_provider_selector_requires_account_when_multiple_rows_exist() {
+        let store = temp_store().await;
+        for (subject, email) in [
+            ("google-subject-a", "a@example.com"),
+            ("google-subject-b", "b@example.com"),
+            ("google-subject-c", "google-subject-b"),
+        ] {
+            store
+                .upsert_google_provider_credential(subject, Some(email), "provider-refresh")
+                .await
+                .unwrap();
+        }
+
+        let error = store
+            .find_google_provider_credential_by_selector(None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("multiple Google provider credentials")
+        );
+        assert_eq!(
+            store
+                .find_google_provider_credential_by_selector(Some("b@example.com"))
+                .await
+                .unwrap()
+                .unwrap()
+                .subject,
+            "google-subject-b"
+        );
+        assert_eq!(
+            store
+                .find_google_provider_credential_by_selector(Some("google-subject-b"))
+                .await
+                .unwrap()
+                .unwrap()
+                .subject,
+            "google-subject-b",
+            "an exact stable subject must win over another row whose email has the same text"
         );
     }
 
@@ -1575,6 +1793,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker_metadata() {
+        let path = temp_db_path();
+        let store = SqliteStore::open(path.clone()).await.unwrap();
+        drop(store);
+
+        let created_at = now_unix() - 120;
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "DROP TABLE google_provider_credentials;
+                 CREATE TABLE google_provider_credentials (
+                   subject TEXT PRIMARY KEY,
+                   email TEXT,
+                   refresh_token TEXT NOT NULL,
+                   generation INTEGER NOT NULL,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX idx_google_provider_credentials_email
+                   ON google_provider_credentials(email COLLATE NOCASE);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO google_provider_credentials (
+                   subject, email, refresh_token, generation, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, 7, ?4, ?4)",
+                rusqlite::params![
+                    "google-subject-v7",
+                    "admin@example.com",
+                    "v7-provider-refresh",
+                    created_at,
+                ],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA user_version = 7;").unwrap();
+        }
+        crate::util::set_restrictive_permissions(&path).unwrap();
+
+        let migrated = SqliteStore::open(path).await.unwrap();
+        let schema_version = migrated
+            .with_conn(|conn| {
+                conn.query_row("PRAGMA user_version;", [], |row| row.get::<_, i64>(0))
+                    .map_err(sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(schema_version, 8);
+        let row = migrated
+            .find_google_provider_credential("google-subject-v7")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.refresh_token, "v7-provider-refresh");
+        assert_eq!(row.generation, 7);
+        assert_eq!(row.client_id, "");
+        assert_eq!(row.granted_scopes, vec!["email", "openid", "profile"]);
+        assert!(row.access_token.is_none());
+        assert!(row.token_received_at.is_none());
+        assert!(row.access_token_expires_at.is_none());
+        assert!(row.issuer.is_none());
+        assert!(row.last_refresh_at.is_none());
+        assert!(row.last_scope_upgrade_at.is_none());
+        assert_eq!(row.created_at, created_at);
+    }
+
+    #[tokio::test]
     async fn sqlite_store_cleanup_expired_removes_stale_rows() {
         let store = temp_store().await;
         let now = now_unix();
@@ -1691,6 +1975,7 @@ mod tests {
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();

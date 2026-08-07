@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.97.1"
 keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
 description = "Rust MCP gateway with Code Mode, authentication, setup, logs, CLI, HTTP API, and operator web UI."
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 homepage = "https://github.com/dinglebear-ai/labby#readme"
 repository = "https://github.com/dinglebear-ai/labby"
 authors = ["jmagar"]
@@ -55,6 +55,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 anyhow = "1"
+regex = "1"
 
 # time
 jiff = { version = "0.2", features = ["serde"] }

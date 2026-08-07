@@ -16,7 +16,7 @@ use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 use crate::error::AuthError;
-use crate::google::GoogleExchange;
+use crate::google::{GoogleExchange, merge_google_scopes};
 use crate::jwt::AccessClaims;
 use crate::state::AuthState;
 use crate::types::AuthorizationCodeRow;
@@ -272,6 +272,20 @@ async fn load_enterprise_jwks(
         .ok_or_else(|| AuthError::Config("enterprise issuer has no JWKS".to_string()))?;
     labby_primitives::ssrf::parse_validated_https_url(uri.as_str())
         .map_err(|error| AuthError::Config(error.to_string()))?;
+    load_remote_jwks(state, uri, required_kid, "enterprise JWKS").await
+}
+
+/// Fetch (or reuse a cached) remote JWK set, keyed by URL.
+///
+/// `required_kid` participates in the cache-hit test so a key rotation the
+/// client already signs with forces a refetch instead of failing for the
+/// remainder of the cached document's lifetime.
+async fn load_remote_jwks(
+    state: &AuthState,
+    uri: &url::Url,
+    required_kid: &str,
+    document_name: &str,
+) -> Result<JwkSet, AuthError> {
     let cache_key = uri.as_str();
     let now = now_unix();
     if let Some(entry) = state.jwks_cache.get(cache_key)
@@ -302,15 +316,14 @@ async fn load_enterprise_jwks(
         .acquire()
         .await
         .map_err(|_| AuthError::Server("remote metadata fetch limiter closed".to_string()))?;
-    let (jwks, cache_policy) =
-        match crate::remote::fetch_json::<JwkSet>(uri, "enterprise JWKS").await {
-            Ok(value) => value,
-            Err(error) => {
-                drop(_guard);
-                state.remote_fetch_locks.remove(&lock_key);
-                return Err(error);
-            }
-        };
+    let (jwks, cache_policy) = match crate::remote::fetch_json::<JwkSet>(uri, document_name).await {
+        Ok(value) => value,
+        Err(error) => {
+            drop(_guard);
+            state.remote_fetch_locks.remove(&lock_key);
+            return Err(error);
+        }
+    };
     if cache_policy.cacheable {
         state
             .jwks_cache
@@ -419,7 +432,13 @@ async fn authenticate_machine_client(
                 client.jwks.clone().ok_or_else(invalid_client)?,
             )
             .map_err(|error| AuthError::Config(format!("invalid machine client JWKS: {error}")))?;
-            validate_client_assertion(state, assertion, &client.client_id, &jwks).await?;
+            validate_client_assertion(
+                state,
+                assertion,
+                &client.client_id,
+                ClientKeySource::Inline(&jwks),
+            )
+            .await?;
         }
         _ => return Err(invalid_client()),
     }
@@ -458,18 +477,40 @@ async fn authenticate_oauth_client(
                 && client_assertion_type
                     == Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer") =>
         {
-            let jwks: JwkSet = serde_json::from_value(client.jwks.ok_or_else(invalid_client)?)
-                .map_err(|_| invalid_client())?;
+            let inline = client
+                .jwks
+                .map(|value| serde_json::from_value::<JwkSet>(value).map_err(|_| invalid_client()))
+                .transpose()?;
+            let remote = client
+                .jwks_uri
+                .as_deref()
+                .map(|uri| url::Url::parse(uri).map_err(|_| invalid_client()))
+                .transpose()?;
+            let source = match (&inline, &remote) {
+                (Some(jwks), _) => ClientKeySource::Inline(jwks),
+                (None, Some(uri)) => ClientKeySource::Remote(uri),
+                (None, None) => return Err(invalid_client()),
+            };
             validate_client_assertion(
                 state,
                 client_assertion.ok_or_else(invalid_client)?,
                 client_id,
-                &jwks,
+                source,
             )
             .await
         }
         _ => Err(invalid_client()),
     }
+}
+
+/// Where a client's public keys come from when verifying its assertion.
+///
+/// Resolution is deferred until the assertion's `kid` is known so a remote
+/// key set can be cache-checked (and refetched on rotation) against that
+/// exact key id.
+enum ClientKeySource<'a> {
+    Inline(&'a JwkSet),
+    Remote(&'a url::Url),
 }
 
 fn invalid_client() -> AuthError {
@@ -501,7 +542,7 @@ async fn validate_client_assertion(
     state: &AuthState,
     assertion: &str,
     client_id: &str,
-    jwks: &JwkSet,
+    keys: ClientKeySource<'_>,
 ) -> Result<(), AuthError> {
     let header = decode_header(assertion)
         .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?;
@@ -510,6 +551,14 @@ async fn validate_client_assertion(
         .kid
         .as_deref()
         .ok_or_else(|| AuthError::AuthFailed("client assertion is missing kid".to_string()))?;
+    let fetched;
+    let jwks = match keys {
+        ClientKeySource::Inline(jwks) => jwks,
+        ClientKeySource::Remote(uri) => {
+            fetched = load_remote_jwks(state, uri, kid, "client JWKS").await?;
+            &fetched
+        }
+    };
     let jwk = jwks
         .find(kid)
         .ok_or_else(|| AuthError::AuthFailed("unknown client assertion key".to_string()))?;
@@ -836,6 +885,8 @@ async fn refresh_google_provider_credential(
     refresh_token_id: &str,
 ) -> Result<GoogleExchange, AuthError> {
     let subject_id = fingerprint(subject);
+    let refresh_lock = crate::google_refresh::lock(subject);
+    let _refresh_guard = refresh_lock.lock().await;
     let mut credential = state
         .store
         .find_google_provider_credential(subject)
@@ -853,7 +904,15 @@ async fn refresh_google_provider_credential(
         })?;
 
     for attempt in 0..2 {
-        match state.google.refresh(&credential.refresh_token).await {
+        match state
+            .google
+            .refresh(
+                &credential.refresh_token,
+                &credential.subject,
+                credential.email.as_deref(),
+            )
+            .await
+        {
             Ok(google) => {
                 if google.subject != subject {
                     let invalidation = state
@@ -876,12 +935,28 @@ async fn refresh_google_provider_credential(
                     .refresh_token
                     .as_deref()
                     .unwrap_or(&credential.refresh_token);
+                let granted_scopes =
+                    merge_google_scopes(&credential.granted_scopes, &google.granted_scopes);
+                let token_received_at = now_unix();
                 state
                     .store
-                    .upsert_google_provider_credential(
-                        &google.subject,
-                        google.email.as_deref(),
-                        next_provider_refresh_token,
+                    .upsert_google_provider_token_bundle(
+                        crate::types::GoogleProviderCredentialUpdate {
+                            subject: google.subject.clone(),
+                            email: google.email.clone(),
+                            client_id: state.google.client_id.clone(),
+                            granted_scopes,
+                            access_token: google.access_token.clone(),
+                            refresh_token: next_provider_refresh_token.to_string(),
+                            token_received_at,
+                            access_token_expires_at: token_received_at.saturating_add(
+                                i64::try_from(google.expires_in.unwrap_or(3600))
+                                    .unwrap_or(i64::MAX),
+                            ),
+                            issuer: Some("https://accounts.google.com".to_string()),
+                            refreshed: true,
+                            scope_upgraded: false,
+                        },
                     )
                     .await?;
                 return Ok(google);
@@ -1659,6 +1734,7 @@ mod tests {
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "private_key_jwt".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2249,6 +2325,7 @@ mod tests {
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2260,6 +2337,7 @@ mod tests {
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
                 jwks: None,
+                jwks_uri: None,
             })
             .await
             .unwrap();
@@ -2407,6 +2485,29 @@ mod tests {
     #[tokio::test]
     async fn refresh_grant_rotates_local_token_on_success() {
         let state = test_auth_state_with_refreshable_google().await;
+        let now = crate::util::now_unix();
+        state
+            .store
+            .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
+                subject: "google-subject-123".to_string(),
+                email: Some("admin@example.com".to_string()),
+                client_id: "client-id".to_string(),
+                granted_scopes: vec![
+                    "openid".to_string(),
+                    "email".to_string(),
+                    "profile".to_string(),
+                    "https://www.googleapis.com/auth/drive.readonly".to_string(),
+                ],
+                access_token: "pre-refresh-access".to_string(),
+                refresh_token: "provider-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2459,6 +2560,18 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "replacement refresh token must be usable"
+        );
+        let credential = state
+            .store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            credential
+                .granted_scopes
+                .contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()),
+            "refresh must preserve Workspace scopes granted by earlier incremental authorization"
         );
     }
 

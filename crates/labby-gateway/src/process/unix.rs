@@ -76,11 +76,15 @@ pub fn read_cmdline(pid: u32) -> Option<String> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn process_group_id(pid: u32) -> Option<u32> {
-    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = raw.rsplit_once(") ")?.1;
-    after_comm.split_whitespace().nth(2)?.parse().ok()
+    if pid == 0 {
+        return None;
+    }
+
+    let raw_pid = i32::try_from(pid).ok()?;
+    let pgid = nix::unistd::getpgid(Some(Pid::from_raw(raw_pid))).ok()?;
+    u32::try_from(pgid.as_raw()).ok()
 }
 
 #[cfg(target_os = "linux")]

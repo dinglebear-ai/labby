@@ -113,7 +113,7 @@ require_absent() {
 
 require_present 'io\.modelcontextprotocol\.registry/publisher-provided' server.json \
   'server.json no longer publishes Labby to the official MCP Registry'
-require_present 'dinglebear-ai/workflows/\.github/workflows/mcp-registry-publish\.yml@befa67c7b7f976235bf3fbced6ede93293a7f405' .github/workflows/mcp-registry.yml 'MCP Registry publication must use the canonical pinned shared workflow'
+require_present 'dinglebear-ai/workflows/\.github/workflows/mcp-registry-publish\.yml@218eba19f15cc13554d26fa131309cfa8141fd67' .github/workflows/mcp-registry.yml 'MCP Registry publication must use the canonical pinned shared workflow'
 require_absent 'auth-method:' .github/workflows/mcp-registry.yml 'MCP Registry caller must not pass the retired auth-method input'
 require_present 'MCP_PRIVATE_KEY:.*secrets\.MCP_PRIVATE_KEY' .github/workflows/mcp-registry.yml 'MCP Registry publication must pass the DNS signing key to the shared workflow'
 require_absent 'mcp-publisher|registry\.modelcontextprotocol\.io|MCP_REGISTRY_DOMAIN' .github/workflows/release.yml 'release.yml must not duplicate the shared MCP Registry publisher'

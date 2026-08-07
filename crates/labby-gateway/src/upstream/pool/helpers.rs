@@ -161,6 +161,15 @@ pub(super) fn estimate_resource_response_size(result: &ReadResourceResult) -> us
     serde_json::to_writer(&mut counter, result).map_or(0, |()| counter.0)
 }
 
+/// Estimate the serialized size of a `tasks/get` result.
+///
+/// Mirrors `estimate_response_size` for the routed task path — avoids
+/// allocating the full JSON string just to measure it.
+pub(super) fn estimate_task_response_size(result: &rmcp::model::GetTaskResult) -> usize {
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, result).map_or(0, |()| counter.0)
+}
+
 /// Cached max response size (resolved once from env on first call).
 ///
 /// `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` is read at most once per process.

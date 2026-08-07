@@ -6,9 +6,29 @@
 //! recovery and side-effect guidance.
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::agent_error::{AgentErrorContext, build_agent_error_value};
+use crate::agent_error::{
+    AgentErrorContext, AgentErrorOrigin, AgentRecoveryAdvice, AgentSideEffectRisk,
+    build_agent_error_value,
+};
+
+/// Refined agent-error payload carried by [`ToolError::Contract`].
+///
+/// Boxed inside the variant so the enum stays small; `kind` stays inline on
+/// the variant so [`ToolError::kind`] remains a `const fn`.
+#[derive(Debug, Clone)]
+pub struct AgentContractPayload {
+    pub message: String,
+    /// Extra envelope fields beyond `kind`/`message` and the refined metadata
+    /// below — e.g. `tool`, `cause`, `original_kind`, `safety`, `evidence`,
+    /// `retry_after_ms`. Serialized additively into every surface envelope.
+    pub extra: Map<String, Value>,
+    /// Refined metadata that must override the kind-derived recomputation.
+    pub origin: Option<AgentErrorOrigin>,
+    pub recovery: Option<AgentRecoveryAdvice>,
+    pub side_effects: Option<AgentSideEffectRisk>,
+}
 
 #[derive(Debug, Clone)]
 pub enum ToolError {
@@ -49,6 +69,17 @@ pub enum ToolError {
         sdk_kind: String,
         message: String,
     },
+    /// Pre-computed agent-error contract from a producing subsystem (e.g. a
+    /// Code Mode `CodeModeCallError`). Unlike [`ToolError::Sdk`], which keeps
+    /// only `kind` + `message` and lets every envelope builder recompute lossy
+    /// metadata from the bare kind, this variant carries the full contract:
+    /// the payload's extras survive into every surface envelope and its
+    /// refined `origin`/`recovery` (including `retry_after_ms`)/`side_effects`
+    /// win over the kind-derived recomputation.
+    Contract {
+        kind: String,
+        payload: Box<AgentContractPayload>,
+    },
 }
 
 impl Serialize for ToolError {
@@ -81,6 +112,7 @@ impl ToolError {
             Self::Conflict { .. } => "conflict",
             Self::Forbidden { .. } => "forbidden",
             Self::Sdk { sdk_kind, .. } => sdk_kind.as_str(),
+            Self::Contract { kind, .. } => kind.as_str(),
         }
     }
 
@@ -96,6 +128,7 @@ impl ToolError {
             | Self::Conflict { message, .. }
             | Self::Forbidden { message, .. }
             | Self::Sdk { message, .. } => message.as_str(),
+            Self::Contract { payload, .. } => payload.message.as_str(),
         }
     }
 
@@ -117,6 +150,45 @@ impl ToolError {
             Self::Forbidden {
                 required_scopes, ..
             } => json!({ "required_scopes": required_scopes }),
+            Self::Contract { payload, .. } => Value::Object(payload.extra.clone()),
+        }
+    }
+
+    /// Build a contract-preserving error from a pre-computed agent-error
+    /// object. `extra` carries the additive fields; `origin`/`recovery`/
+    /// `side_effects` are the refined metadata that must survive envelope
+    /// construction instead of being recomputed from the bare `kind`.
+    #[must_use]
+    pub fn contract(
+        kind: impl Into<String>,
+        message: impl Into<String>,
+        extra: Map<String, Value>,
+        origin: Option<AgentErrorOrigin>,
+        recovery: Option<AgentRecoveryAdvice>,
+        side_effects: Option<AgentSideEffectRisk>,
+    ) -> Self {
+        Self::Contract {
+            kind: kind.into(),
+            payload: Box::new(AgentContractPayload {
+                message: message.into(),
+                extra,
+                origin,
+                recovery,
+                side_effects,
+            }),
+        }
+    }
+
+    /// Fill `context` with this error's refined contract metadata (when
+    /// carried by [`ToolError::Contract`]) without overriding values the
+    /// caller already set. No-op for every other variant.
+    pub fn merge_contract_context(&self, context: &mut AgentErrorContext) {
+        if let Self::Contract { payload, .. } = self {
+            context.origin = context.origin.or(payload.origin);
+            if context.recovery.is_none() {
+                context.recovery.clone_from(&payload.recovery);
+            }
+            context.side_effects = context.side_effects.or(payload.side_effects);
         }
     }
 
@@ -128,7 +200,9 @@ impl ToolError {
     #[must_use]
     pub fn to_agent_value_with_context(&self, context: &AgentErrorContext) -> Value {
         let extra = self.extra_fields();
-        build_agent_error_value(self.kind(), self.user_message(), Some(&extra), context)
+        let mut context = context.clone();
+        self.merge_contract_context(&mut context);
+        build_agent_error_value(self.kind(), self.user_message(), Some(&extra), &context)
     }
 
     #[must_use]
@@ -192,6 +266,51 @@ mod tests {
         let value = err.to_agent_value();
         assert_eq!(value["side_effects"], "possible");
         assert_eq!(value["recovery"]["same_arguments"], "conditional");
+    }
+
+    #[test]
+    fn contract_variant_preserves_refined_metadata_and_extras() {
+        use crate::agent_error::{
+            AgentErrorOrigin, AgentRecoveryAction, AgentRecoveryAdvice, AgentSameArgumentsRetry,
+        };
+
+        // `rate_limited` recomputed from the bare kind classifies as origin
+        // `budget`; a producing subsystem refined it to `tool_execution` with
+        // a retry hint. The envelope must carry the refined values plus the
+        // additive extras (evidence-style fields) instead of recomputing.
+        let mut extra = serde_json::Map::new();
+        extra.insert("tool".to_string(), serde_json::json!("alpha::demo"));
+        extra.insert("original_kind".to_string(), serde_json::json!("429"));
+        let err = ToolError::contract(
+            "rate_limited",
+            "slow down",
+            extra,
+            Some(AgentErrorOrigin::ToolExecution),
+            Some(AgentRecoveryAdvice {
+                action: AgentRecoveryAction::RetryLater,
+                same_arguments: AgentSameArgumentsRetry::Conditional,
+                guidance: "wait for the interval".to_string(),
+                retry_after_ms: Some(1500),
+            }),
+            Some(AgentSideEffectRisk::NoneExpected),
+        );
+
+        let value = err
+            .to_agent_value_with_context(&AgentErrorContext::for_service_action("snippets", "run"));
+        assert_eq!(value["kind"], "rate_limited");
+        assert_eq!(value["message"], "slow down");
+        assert_eq!(value["origin"], "tool_execution");
+        assert_eq!(value["side_effects"], "none_expected");
+        assert_eq!(value["recovery"]["retry_after_ms"], 1500);
+        assert_eq!(value["tool"], "alpha::demo");
+        assert_eq!(value["original_kind"], "429");
+        assert_eq!(value["service"], "snippets");
+        assert_eq!(value["action"], "run");
+
+        // The default-context path (plain serialization) preserves it too.
+        let serialized = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(serialized["origin"], "tool_execution");
+        assert_eq!(serialized["recovery"]["retry_after_ms"], 1500);
     }
 
     #[test]

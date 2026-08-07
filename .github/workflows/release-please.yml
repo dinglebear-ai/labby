@@ -154,7 +154,10 @@ jobs:
               json.dump(server, fh, indent=2)
               fh.write("\n")
           PY
-          cargo check --workspace --all-features
+          # Only Cargo.lock's workspace-member version entries need refreshing
+          # after the version bump — no compilation required. Offline first;
+          # fall back to a networked update if the lockfile needs anything new.
+          cargo update --workspace --offline || cargo update --workspace
           git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
 
       - name: Commit and push if changed

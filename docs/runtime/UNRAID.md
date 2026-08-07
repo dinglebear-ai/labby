@@ -91,15 +91,30 @@ after `tailscale up`, and is cleared/redacted from both `labby.cfg` and
 blank when saving also clears any previously stored key, which is how to
 recover from an expired or failed preauth key.
 
-The Incus image pin is independent of the plugin package version and the
-bundled native `labbyVersion`. `INCUS_IMAGE_VERSION` defaults to `"1.2.0"`
-because that tag currently publishes
-`labby-incus-x86_64-unknown-linux-gnu.tar.xz`; `v1.3.0` does not. The
-known-good `v1.2.0` SHA256 from the published `.sha256` asset is:
+The Incus image pin is a separate config value from the plugin package
+version and the bundled native `labbyVersion`, but it is **not** meant to
+drift far from `labbyVersion` — both should run the same labby so native and
+incus mode behave identically. They diverged only because the incus image
+stopped publishing after `v1.8.5` (the `publish-image` CI bug below). With
+that fixed, bump `INCUS_IMAGE_VERSION` toward `labbyVersion` whenever a
+release publishes a matching image (see "Keeping the incus pin current").
+
+`INCUS_IMAGE_VERSION` defaults to `"1.8.5"`, the newest release whose
+`labby-incus-x86_64-unknown-linux-gnu.tar.xz` asset both exists and was
+verified to contain the expected labby. Its published `.sha256` is shipped
+as the default `INCUS_IMAGE_SHA256`:
 
 ```text
-dfb57f59b52a84db5b14ac71588b676d7135d4b24916628006aaaed8f022c25d
+851f5bae716834307ae0f65a592c2d733afdd8864f98bd700509cc5c10e887f6
 ```
+
+**Image tags do not reliably indicate the labby version inside the image.**
+The `v1.2.0` image, for example, actually runs labby `1.3.0` (confirmed from
+a live container), because that asset was rebuilt from later source and
+re-uploaded to the old release. The `1.8.5` default above was checked the
+only reliable way — by extracting `rootfs/usr/local/bin/labby` from the
+image and running `labby --version` (it reported `1.8.5`). Always verify the
+binary, never trust the tag, before pinning a new image.
 
 `INCUS_IMAGE_SHA256` must be set to the digest for the configured
 `INCUS_IMAGE_VERSION` before `incus` mode can start. Cached image bytes live
@@ -111,20 +126,46 @@ configured image version and SHA256; if an existing alias or container does not
 match the configured pin, startup fails with explicit delete/recreate guidance
 instead of silently reusing stale runtime bytes.
 
-Known release gap: the `labby-incus-x86_64-unknown-linux-gnu.tar.xz` release
-asset has not published successfully since `v1.2.0` (`gh release view v1.3.0
---repo dinglebear-ai/labby --json assets` shows only the plain binary archives and
-`SHA256SUMS`). Confirm the latest tag before assuming a newer
-`INCUS_IMAGE_VERSION` will work, and bump both `INCUS_IMAGE_VERSION` and
-`INCUS_IMAGE_SHA256` together once the release-asset CI gap is fixed.
+Keeping the incus pin current: the
+`labby-incus-x86_64-unknown-linux-gnu.tar.xz` asset stopped publishing after
+`v1.8.5`. `build-incus-image.yml`'s `publish-image` job had no
+`actions/checkout` step, and `gh` resolves its target repository from git
+remotes — so every `gh release` call aborted with `failed to run git: fatal:
+not a git repository` *before uploading anything*. The image itself built
+and checksum-verified fine every time, which is why this looked like a
+mysterious "asset gap" rather than an outright build failure, and why
+nothing downstream flagged it: a missing asset only surfaces when someone
+tries to pin a newer `INCUS_IMAGE_VERSION`. That job now checks out first
+(ordered *before* `download-artifact`, since `actions/checkout` cleans the
+workspace and would otherwise delete `dist/`) and pins `GH_REPO`;
+`incus_publish_job_checks_out_before_downloading_artifacts` in
+`crates/labby/tests/ci_changed_paths.rs` guards both halves.
+
+So going forward, every stable release publishes both the native tarball
+*and* the incus image. When bumping the plugin to bundle a newer labby,
+bump the two versions **together**: set `labbyVersion` and
+`tarballMD5` (native, per "Keeping the `.plg` in sync") and
+`INCUS_IMAGE_VERSION` and `INCUS_IMAGE_SHA256` (incus) to the same release,
+so both modes run the same labby. Never bump one without the other, and
+always confirm the image's `labby --version` (not its tag) before pinning.
+The current default is `1.8.5` for incus against `1.8.9` native only because
+`1.8.9` predates the publishing fix and has no image yet; the next release
+built with the fix should land both at the same version. Tracked as
+`lab-26zqj`.
 
 ## Layout
 
 ```text
+icon.svg                                       repo-root brand mark (dinglebear-ai mark system) — the CA repository icon
+                                               ca_profile.xml points at, and the vector source for both PNGs below
+ca_profile.xml                                 repo-root Community Applications repository profile
 unraid/
   labby.plg                                    plugin manifest (installed via Unraid's Plugins tab)
+  ca/labby.xml                                 Community Applications plugin template (see "Community Applications" below)
   source/usr/local/emhttp/plugins/labby/
     labby.cfg                                  default config template (flash-persisted copy is the source of truth once installed)
+    images/labby.png                            460px brand avatar — Plugins page (PLUGIN icon attr), Settings panel grid (Icon=), and the CA <Icon> URL
+    icons/labby.png                             64px favicon cut — webGUI tab_title() renders Tag=".png" from icons/ at 18px
     Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT/RUNTIME_MODE/INCUS_IMAGE_SHA256/...) plus native gateway reload/upstream controls
     LabbyDashboard.page                         dependency-free Main/Dashboard tile for live aggregate gateway health
     include/dashboard-status.php                authenticated native/Incus status endpoint used only by the dashboard tile
@@ -168,9 +209,13 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 
 `Labby.page` is the complete Labby-for-Unraid control plane, rendered
 directly inside Settings > Labby. Its Overview, Gateway, and Settings tabs
-match the supplied Labby-for-Unraid design while remaining a native `.page`;
-there is no iframe, separate route, mock dataset, or standalone settings
-application. Status cards and counts come from `rc.labby` plus the live
+match the original Labby-for-Unraid design mock while remaining a native
+`.page`; there is no iframe, separate route, mock dataset, or standalone
+settings application. (That mock — `Labby for Unraid.html` — and its
+fidelity-QA record `design-qa.md` were removed from the repo root once the
+implementation matched them. Both are still retrievable from git history —
+`git show 59699f459:"Labby for Unraid.html"` — if the visual source is ever
+needed again.) Status cards and counts come from `rc.labby` plus the live
 gateway catalog. Gateway controls expose reload, filter,
 add-HTTP/add-stdio, enable/disable, remove, and stale-process cleanup
 actions. Settings owns SERVICE, LABBY_DIR, HTTP_HOST, HTTP_PORT,
@@ -221,11 +266,19 @@ though its Tailwind/Vue tokens aren't directly usable from a classic
 - **Buttons**: bare `<input type="submit">` — no `.btn`-style class exists
   in any genuine first-party `.page`; the core stylesheet styles submit/
   button inputs automatically.
-- **Icon**: `Icon="server"` — a bare, unprefixed FontAwesome name. Unraid's
-  icon resolver (`DefaultPageLayout.php`) auto-prepends `fa-` for any
-  `Icon=` value that isn't `icon-*` (Unraid's own reserved webfont family)
-  or a `.png` filename — this is the correct zero-asset choice until a real
-  `labby.png` exists under `source/.../icons/`.
+- **Icon**: `Icon="labby.png"` + `Tag="labby.png"` — the real Labby brand
+  mark (dinglebear-ai mark system, generated from the repo-root `icon.svg`).
+  Verified against a live 7.3.x install's core code: these are **two
+  different resolution paths**. `Icon=".png"` (Settings panel grid, via
+  `MainContent.php`'s `process_icon()`) and the plugin manager's `icon`
+  attribute (`ShowPlugins.php`) both resolve from `plugins/labby/images/`,
+  while `Tag=".png"` (the 18px tab-title icon, via `PageBuilder.php`'s
+  `tab_title()`) resolves from `plugins/labby/icons/`. Hence two shipped
+  assets: `images/labby.png` (460px avatar, dark background) and
+  `icons/labby.png` (64px transparent favicon cut — the brand system's
+  designated below-20px variant). A bare FontAwesome name (the pre-1.4.0
+  `Icon="server"` interim) remains the fallback pattern if the PNGs are
+  ever missing.
 
 **Persistence stays custom, deliberately**: settings do *not* go through
 Unraid's generic `Dispatcher.php` (`POST /update.htm` with a `#cfg` field),
@@ -313,10 +366,11 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
 
 ### Required step: tag every commit that touches `labby.plg` or `unraid/source/`
 
-`srcURL` (companion-file downloads: `labby.cfg`, `Labby.page`,
+`srcURL` (all thirteen companion-file downloads: `labby.cfg`, `Labby.page`,
 `LabbyDashboard.page`, its aggregate status endpoint, `rc.labby`,
 `labby-preflight.sh`, `labby-incus-env.sh`, `labby-incus-init.sh`, the
-vendored Incus profile, and both event hooks) is pinned to an immutable tag —
+vendored Incus profile, both event hooks, and both brand PNGs) is pinned to
+an immutable tag —
 `unraid-v&version;` — not to `main`. This is deliberate: every file under
 `srcURL` is MD5-verified against a value baked into whatever `version` is
 cached on flash, and Unraid's classic `.plg` model re-downloads and
@@ -345,18 +399,82 @@ mean the NEXT commit that touches these files will retroactively break any
 install that adopted the untagged version — tag every round, not just when
 something feels risky.
 
+## Community Applications
+
+Two files describe this repo to Community Applications, and CA reads both
+from `main` — neither is covered by the `srcRef` tag pinning above, because
+CA is not the plugin's own boot-time download path:
+
+- **`ca_profile.xml`** (repo root, required there — CA looks for it at the
+  root of a submitted repository, not in a subdirectory) — the *repository*
+  profile: one-line overview, project page, and the repo icon. Its `<Icon>`
+  points at the repo-root `icon.svg`.
+- **`unraid/ca/labby.xml`** — the *plugin* entry. Its `<PluginURL>` must
+  match `labby.plg`'s `pluginURL` entity **byte-for-byte**, or the Apps-page
+  install button breaks silently. Both are
+  `https://github.com/dinglebear-ai/labby/raw/main/unraid/labby.plg`.
+
+  "Byte-for-byte" is not pedantry. GitHub serves the identical `.plg` from
+  both `github.com/OWNER/REPO/raw/REF/PATH` and
+  `raw.githubusercontent.com/OWNER/REPO/REF/PATH`, so a mismatch here is
+  invisible to every check that merely fetches the URL — but CA compares
+  the two as strings. `labby.xml` used the `raw.githubusercontent.com` form
+  against the `.plg`'s `github.com/.../raw/` form right up until `1.4.0`.
+  `scripts/ci/unraid-plugin-checksums.sh` now expands the `.plg`'s entity
+  chain (`pluginURL` → `rawURL` → `repoURL`) and string-compares the
+  result, failing the `unraid-plugin-check` CI job on any drift. It
+  deliberately has no `--fix` for this one: which side is wrong depends on
+  whether the repo moved or the CA entry went stale, and that is a call a
+  human has to make.
+
+The Unraid version floor lives on `labby.plg`'s `PLUGIN` tag as
+`min="7.0.0"`, **not** as `<MinVer>` in `labby.xml` — CA gives the `.plg`
+attribute precedence and ignores the XML element when both exist, and the
+attribute additionally covers direct Install-Plugin-URL installs, which CA
+metadata never sees. `dynamix.plugin.manager/scripts/plugin` checks it with
+`version_compare` and aborts with "installed Unraid version is too low,
+require at least version 7.0.0".
+
+The number is not arbitrary: the release binary's highest required symbol
+version is `GLIBC_2.39` (confirmed with `objdump -T`), and Unraid 7.0.0 is
+the first release shipping a new enough glibc — 7.0.0 has 2.40, 7.2.0 has
+2.42, 7.3.x has 2.43. Unraid 6.x is below the floor and would otherwise
+fail `labby-preflight.sh` at *start* time rather than install time.
+Revisit this if the release build's glibc floor ever moves.
+
+`<Support>` in `labby.xml` is redundant with the `support` attribute now
+set on `labby.plg`'s `PLUGIN` tag — per the CA starter template, the `.plg`
+attribute wins and the XML element is ignored when both exist. Both are set
+to the same issues URL, so they cannot disagree.
+
+Submission itself is a manual, one-time step and has **not** been done yet:
+push the repo, then run **Validate** and **Scan** in the Community Apps
+submit flow (`/submit`) per the
+[starter template](https://github.com/unraid/unraid-community-apps-starter).
+CA requires an OSI-approved license in the repo. `LICENSE` (AGPL-3.0-only,
+adopted in #346 alongside separate commercial terms) satisfies this, and
+`labby.xml` declares `<License>AGPL-3.0-only</License>` to match. Keep that
+element in sync with `Cargo.toml`'s `license` field and `LICENSING.md` — it
+is a public claim about how the listing is distributed, and nothing checks
+it automatically. Do not advertise the commercial option in that element;
+CA's field describes the open-source license only.
+
 ## Known gaps
 
-- No `labby.png` icon asset yet — `Icon="server"` (a bare FontAwesome name)
-  is the interim zero-asset choice, not a broken/missing reference.
-- Not distributed via Community Applications; install via the Plugins tab's
-  "Install Plugin" URL field pointed at the raw `labby.plg` URL.
+- Community Applications submission has not been run — the templates are
+  in place and valid, but until the `/submit` Validate+Scan flow is
+  completed, install via the Plugins tab's "Install Plugin" URL field
+  pointed at the raw `labby.plg` URL.
 - `RUNTIME_MODE="incus"` now has its architecture, image/version pinning,
   Tailscale behavior, bridge, and egress defaults wired into the plugin
-  package, but the Incus path still depends on a known release-asset CI gap:
-  only `v1.2.0` currently publishes the `labby-incus-*.tar.xz` image asset.
-  Newer Incus images require fixing that CI path first, then bumping both
-  `INCUS_IMAGE_VERSION` and `INCUS_IMAGE_SHA256`. Tracked as `lab-26zqj`.
+  package, and the CI defect that stopped publishing `labby-incus-*.tar.xz`
+  after `v1.8.5` is fixed (missing `actions/checkout` in `publish-image` —
+  see "Keeping the incus pin current" above). The default is now pinned to
+  the `v1.8.5` image (verified to contain labby 1.8.5), up from the old
+  `v1.2.0` image (which ran labby 1.3.0). No release built *with the
+  publishing fix* has shipped yet, so `1.8.5` remains the newest verified
+  image and native (`1.8.9`) is still a step ahead; the next release should
+  land both at the same version. Tracked as `lab-26zqj`.
 - `RUNTIME_MODE="incus"` has not yet been exercised across a real Unraid
   reboot or a real incus-unraid uninstall/reinstall cycle. The current
   implementation is designed for array-start/stop and plugin

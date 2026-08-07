@@ -6,12 +6,12 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.15">
+  <!ENTITY version      "1.4.2">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
        whose binary asset doesn't exist. -->
-  <!ENTITY labbyVersion "1.3.0">
+  <!ENTITY labbyVersion "1.8.9">
   <!ENTITY launch       "Settings/Labby">
   <!ENTITY repoURL      "https://github.com/dinglebear-ai/labby">
   <!-- Update-check URL. This MUST stay pointed at `main` (the moving
@@ -39,10 +39,10 @@
   <!ENTITY srcURL       "&repoURL;/raw/&srcRef;/unraid/source/usr/local/emhttp/plugins/&name;">
   <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
-  <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
-  <!ENTITY cfgMD5       "54ab819145fa4b327f2a763f718da04a">
-  <!ENTITY pageMD5      "3722c442a16c7d0321b61155b2877db6">
-  <!ENTITY dashboardMD5 "1dffc3d2eb9578072527927ef03c0e18">
+  <!ENTITY tarballMD5   "a4852e705017f65505cc9069d870c695">
+  <!ENTITY cfgMD5       "5b6c59610bde7ed647ae7360372fd504">
+  <!ENTITY pageMD5      "4740fe052993e2de5786fe7b717457f5">
+  <!ENTITY dashboardMD5 "5ab4389ef0dd5743c5d295d07076ed26">
   <!ENTITY dashboardStatusMD5 "cc67612bc2e68d36dbfa991ffdbca8f9">
   <!ENTITY rcMD5        "6aabfdaf80dbcaadf72a6d47d85916e6">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
@@ -51,13 +51,82 @@
   <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
   <!ENTITY incusEnvMD5     "bae86ad48f8f091e0708469f75b45aeb">
   <!ENTITY incusInitMD5    "b1bab54a07130aebb8ceb32e33f1d924">
+  <!-- Brand icons (dinglebear-ai mark system). images/labby.png is the
+       460px avatar used by the Plugins page, the Settings panel grid, and
+       Community Applications; icons/labby.png is the 64px favicon cut the
+       webGUI's tab_title() renders at 18px (Tag=".png" resolves from
+       icons/, Icon=".png" and the plugin-manager icon attribute resolve
+       from images/ — two different core code paths, hence two files). -->
+  <!ENTITY iconMD5      "f07197b6ca5dab02b83fe5921b6d25ea">
+  <!ENTITY tabIconMD5   "27573ecc40fe792fe85881c221487243">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
 
-<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
+<!-- min="7.0.0": the release binary's highest required symbol version is
+     GLIBC_2.39 (objdump -T). Unraid 7.0.0 is the first release shipping a
+     new enough glibc (2.40; 7.2.0 has 2.42, 7.3.x has 2.43) — 6.x is below
+     the floor. The plugin manager enforces this itself with an explicit
+     "installed Unraid version is too low" error, so it covers direct
+     Install-Plugin-URL installs, not just the Community Applications
+     listing. Because this attribute is present, CA ignores any <MinVer> in
+     unraid/ca/labby.xml — keep the floor here, not there. -->
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="labby.png" support="&repoURL;/issues" min="7.0.0">
 
 <CHANGES>
+###1.4.2
+- Incus mode: bump the default INCUS_IMAGE_VERSION from 1.2.0 to 1.8.5 and
+  ship its verified SHA256 in the default config (it was previously blank,
+  so a fresh incus install could not start until the operator supplied one).
+  The old 1.2.0 image actually runs labby 1.3.0; the 1.8.5 image was
+  confirmed — by extracting and running its binary — to contain labby 1.8.5,
+  much closer to the bundled native labbyVersion (1.8.9). Image tags do not
+  reliably match the labby version inside them, so the version was verified
+  from the binary, not trusted from the tag.
+- Existing installs keep their own flash-persisted labby.cfg and are not
+  changed by this; only fresh installs pick up the new default. To move an
+  existing incus deployment to 1.8.5, edit INCUS_IMAGE_VERSION and
+  INCUS_IMAGE_SHA256 in Settings > Labby (or labby.cfg) and restart.
+
+###1.4.1
+- Settings > Labby no longer stacks two headers. Unraid renders a native
+  page-title bar (the gray "Labby" strip) for any page with a Title, but
+  this plugin draws its own full header directly below the webGUI nav, so
+  the native bar was a redundant second header. It is now hidden via the
+  page's own scoped CSS; the Title still drives the Tools-menu label and
+  browser tab.
+- Fixes the page layout so it fills cleanly with no stray scrollbars. The
+  old `margin:-20px` breakout overshot Unraid's content padding and caused
+  a horizontal scrollbar, and a viewport-relative `min-height` forced the
+  page taller than its content. Both are replaced by zeroing the content
+  padding (so the page fills edge to edge without a negative-margin
+  overhang) and giving the page background to `html`, so the light
+  backdrop reaches the bottom with no white gap and no forced scrolling.
+  Verified on real hardware (tower, Unraid 7.3.2) by rendering the page
+  through Unraid's own Markdown/template pipeline and measuring scroll
+  extents in a headless browser.
+
+###1.4.0
+- Bundles labby v1.8.9 (previously v1.3.0), the latest published release
+  with a verified lab-x86_64-unknown-linux-gnu.tar.gz asset. Same glibc
+  floor (2.39) and dependency set; labby-preflight.sh is unchanged.
+- Ships the real Labby brand icons (dinglebear-ai mark system):
+  images/labby.png (460px avatar — Plugins page, Settings panel, CA) and
+  icons/labby.png (64px favicon cut — 18px tab titles), replacing the
+  interim FontAwesome "server" glyph everywhere. The PLUGIN tag also gains
+  icon and support attributes for the Plugins page.
+- Declares min="7.0.0" on the PLUGIN tag. Unraid 7.0.0 is the first release
+  whose glibc (2.40) clears the release binary's GLIBC_2.39 floor, and the
+  plugin manager enforces this attribute itself, so 6.x now fails at
+  install time with an explicit message instead of at first start.
+- Community Applications readiness: unraid/ca/labby.xml gains the required
+  PluginAuthor and License fields and a working Icon URL, and its
+  PluginURL is corrected to match labby.plg's pluginURL byte-for-byte
+  (it had been using the equivalent-but-different raw.githubusercontent.com
+  spelling, which CA compares as a string). The repo-root icon.svg that
+  ca_profile.xml references now actually exists. scripts/ci/unraid-plugin-
+  checksums.sh gained a PluginURL cross-check so this cannot drift again.
+
 ###1.3.15
 - Uses the provisioned Labby user's numeric UID/GID for Incus exec calls so
   Settings actions and Dashboard aggregates work with Incus' numeric-only
@@ -357,6 +426,16 @@
 <FILE Name="&emhttp;/scripts/labby-incus-init.sh">
 <URL>&srcURL;/scripts/labby-incus-init.sh</URL>
 <MD5>&incusInitMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/images/labby.png">
+<URL>&srcURL;/images/labby.png</URL>
+<MD5>&iconMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/icons/labby.png">
+<URL>&srcURL;/icons/labby.png</URL>
+<MD5>&tabIconMD5;</MD5>
 </FILE>
 
 <!-- extract the binary, wire up permissions + rc.d symlink, seed default

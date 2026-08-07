@@ -84,6 +84,23 @@ runs:
         ! grep -q "not running" <<<"$status"
         stats="$("$binary" stats 2>&1)"
         grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
+        # Every writer to the shared prefix must agree on how cache keys are
+        # computed. kache 0.13.0 fixed a key-soundness hole (env vars a proc
+        # macro reads during expansion were unkeyed, so a byte-identical
+        # command line could restore a stale expansion). A host still on an
+        # older kache would write into the same bucket under the old key
+        # regime, so refuse to reuse it rather than fail open into a
+        # silently-wrong hit.
+        host_version="$("$binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        echo "Persistent host kache version: $host_version"
+        case "$host_version" in
+          0.1[3-9].*|0.[2-9][0-9].*|[1-9]*)
+            ;;
+          *)
+            echo "::error::persistent host kache $host_version predates the 0.13.0 cache-key fix; refusing to share the s3://kache/rust prefix" >&2
+            exit 1
+            ;;
+        esac
 
     - name: Check action tool cache writability
       id: tool-cache
@@ -133,6 +150,24 @@ runs:
         warm: "true"
         sync: "false"
         pr-comment: "false"
+
+    # Fork PRs (and any run without shared MinIO credentials) get the GitHub
+    # Actions cache instead of building fully cold. Trusted paths above are
+    # untouched: this step only fires when kache cannot be used.
+    - name: Restore GitHub Actions Cargo cache without shared credentials
+      if: >-
+        inputs.enable-cache == 'true' &&
+        runner.os == 'Linux' &&
+        steps.kache-host.outputs.managed != 'true' &&
+        (
+          env.KACHE_S3_ACCESS_KEY == '' ||
+          env.KACHE_S3_SECRET_KEY == '' ||
+          steps.tool-cache.outputs.usable != 'true'
+        )
+      uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      with:
+        shared-key: labby-credentialless-fallback
+        cache-on-failure: true
 
     - name: Use bare Cargo when shared credentials are unavailable
       if: >-

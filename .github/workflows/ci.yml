@@ -29,22 +29,24 @@ env:
 jobs:
   fleet-policy:
     name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@218eba19f15cc13554d26fa131309cfa8141fd67
     with:
       release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
 
-  fleet-contract:
-    name: Fleet repository contract
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@98e40816bfab64ed9fcce82236e9ecb0c0055d7d
-    with:
-      profile: rust
-      implementation-ref: 98e40816bfab64ed9fcce82236e9ecb0c0055d7d
+  # The fleet repository contract runs once, from repository-contract.yml (the
+  # required "Repository Contract" gate with `secrets: inherit`). Do not add a
+  # second fleet-contract caller here — duplicate callers drift to different
+  # fleet revisions.
 
   changes:
     name: changes
     runs-on: ci-pool-ops
     timeout-minutes: 10
     outputs:
+      # `all` and `docs` are exported for the run summary only — no job gates
+      # on them. Every other key below is read by an `if:` somewhere in this
+      # file, and the classify step fails the build if a gate has no matching
+      # entry here.
       all: ${{ steps.classify.outputs.all }}
       docs: ${{ steps.classify.outputs.docs }}
       docs_check: ${{ steps.classify.outputs.docs_check }}
@@ -52,13 +54,16 @@ jobs:
       rust_compile: ${{ steps.classify.outputs.rust_compile }}
       rust_test: ${{ steps.classify.outputs.rust_test }}
       web: ${{ steps.classify.outputs.web }}
-      # `all` keeps the first PR that introduces this category fail-closed
-      # while the trusted base-branch classifier is still one revision behind.
-      palette: ${{ steps.classify.outputs.palette == 'true' || steps.classify.outputs.all == 'true' }}
+      palette: ${{ steps.classify.outputs.palette }}
+      unraid: ${{ steps.classify.outputs.unraid }}
       npm: ${{ steps.classify.outputs.npm }}
       docker: ${{ steps.classify.outputs.docker }}
       security: ${{ steps.classify.outputs.security }}
       release: ${{ steps.classify.outputs.release }}
+      # Comma-separated routing keys this workflow gates on that the trusted
+      # base-branch classifier could not emit. The classify step already forced
+      # them to `true`; this output only reports the drift to `ci-gate`.
+      gate_key_drift: ${{ steps.classify.outputs.gate_key_drift }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -71,11 +76,14 @@ jobs:
           trusted="/tmp/lab-changed-paths.py"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             if ! git show "${{ github.event.pull_request.base.sha }}:$classifier" > "$trusted" 2>/dev/null; then
+              # The base commit predates the classifier entirely. Emit no keys:
+              # the reconciliation in the next step forces every key ci.yml
+              # gates on to `true`, so this still fails closed to running
+              # everything without keeping a second copy of the key list here.
               cat > "$trusted" <<'PY'
           #!/usr/bin/env python3
           import argparse
           from pathlib import Path
-          keys = "all docs docs_check workflow rust_compile rust_test web palette npm docker security release".split()
           parser = argparse.ArgumentParser()
           parser.add_argument("--event", required=True)
           parser.add_argument("--output", type=Path, required=True)
@@ -83,9 +91,7 @@ jobs:
           args, _ = parser.parse_known_args()
           if args.write_changed_files:
               args.write_changed_files.write_text("")
-          args.output.write_text("".join(f"{key}=true\n" for key in keys))
-          for key in keys:
-              print(f"{key}=true")
+          args.output.write_text("")
           PY
             fi
           else
@@ -101,7 +107,126 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
-        run: python3 "$LABBY_CHANGED_PATHS" --event "$EVENT_NAME" --output "$GITHUB_OUTPUT" --write-changed-files changed-files.txt
+        run: |
+          set -euo pipefail
+          python3 "$LABBY_CHANGED_PATHS" \
+            --event "$EVENT_NAME" \
+            --output classifier-outputs.txt \
+            --write-changed-files changed-files.txt
+          # The classifier is trusted (base commit) but ci.yml is the merge ref,
+          # so a pull request that adds a routing key gates on a key the base
+          # classifier cannot emit. An unknown output is the empty string, and
+          # `'' == 'true'` is false — the gated job would skip silently and
+          # still satisfy ci-gate. Missing keys therefore fail OPEN: the job
+          # runs, and the drift is reported instead of hidden.
+          #
+          # Both key sets are derived from ci.yml so they cannot drift from the
+          # gates they describe. `needs.changes.outputs.<key>` is what other
+          # jobs gate on; `steps.classify.outputs.<key>` is what this job
+          # forwards as a job output. A gate with no matching forward always
+          # reads as the empty string no matter what the classifier emits, so
+          # that is an authoring bug and fails the build instead of failing
+          # open. Enumeration failing at all is fatal too: a silent no-op here
+          # would reinstate the very bug this reconciliation exists to close.
+          workflow_keys() {
+            grep -v '^[[:space:]]*#' .github/workflows/ci.yml \
+              | grep -oE "$1\.[A-Za-z_][A-Za-z0-9_]*" \
+              | sed "s/^$1\.//" \
+              | sort -u
+          }
+          [ -r .github/workflows/ci.yml ] \
+            || { echo "::error::cannot read .github/workflows/ci.yml; refusing to route"; exit 1; }
+          gated_keys="$(workflow_keys 'needs\.changes\.outputs' | grep -vx gate_key_drift || true)"
+          forwarded_keys="$(workflow_keys 'steps\.classify\.outputs' || true)"
+          # Flatten to space-delimited strings and match with bash pattern
+          # tests from here on. Nothing below forks: a `grep` that fails to
+          # spawn under load returns non-zero, which membership checks would
+          # read as "absent" — a tool failure silently reinterpreted as a
+          # policy violation, which is the exact bug class this step exists
+          # to prevent.
+          gated_flat=" $(printf '%s' "$gated_keys" | tr '\n' ' ') "
+          forwarded_flat=" $(printf '%s' "$forwarded_keys" | tr '\n' ' ') "
+          # `rust_test` gates most of the workspace, so its absence from either
+          # set means enumeration broke rather than that the gate went away.
+          [[ "$gated_flat" == *" rust_test "* ]] \
+            || { echo "::error::cannot enumerate ci.yml gate references (no 'rust_test'); refusing to route"; exit 1; }
+          [[ "$forwarded_flat" == *" rust_test "* ]] \
+            || { echo "::error::cannot enumerate the changes job outputs (no 'rust_test'); refusing to route"; exit 1; }
+          # The trusted classifier is arbitrary base-branch code; do not assume
+          # its output file ends in a newline before reading or appending.
+          if [ -s classifier-outputs.txt ] && [ -n "$(tail -c1 classifier-outputs.txt)" ]; then
+            printf '\n' >> classifier-outputs.txt
+          fi
+          # Being pinned to the base commit also makes the trusted classifier
+          # lag on path -> category MAPPINGS, not just on key names: a pull
+          # request that routes a new directory into an existing category gets a
+          # well-formed `false` for it, and the gated job skips for real. So
+          # re-run the branch's own classifier over the SAME trusted file list
+          # and take the union. It can only raise a `false` to `true`: a value
+          # it lowers, a key it invents, and the changed-file list itself are
+          # all ignored. A branch can therefore broaden its own CI, never
+          # narrow it.
+          broadened=""
+          if [ "$EVENT_NAME" = pull_request ] && [ -f scripts/ci/changed_paths.py ]; then
+            if python3 scripts/ci/changed_paths.py \
+                --event "$EVENT_NAME" \
+                --changed-files changed-files.txt \
+                --output branch-outputs.txt > /dev/null; then
+              branch_true=" $(sed -n 's/=true$//p' branch-outputs.txt | tr '\n' ' ') "
+              : > merged-outputs.txt
+              while IFS='=' read -r key value; do
+                if [ "$value" = false ] && [[ "$branch_true" == *" $key "* ]]; then
+                  value=true
+                  broadened="${broadened:+$broadened,}$key"
+                fi
+                printf '%s=%s\n' "$key" "$value" >> merged-outputs.txt
+              done < classifier-outputs.txt
+              mv merged-outputs.txt classifier-outputs.txt
+              if [ -n "$broadened" ]; then
+                echo "::notice title=Changed-path routing broadened::the branch classifier routes more work than the base commit's: ${broadened}. Those jobs run."
+              fi
+            else
+              echo "::warning title=Changed-path routing::the branch's own classifier failed to run; routing falls back to the base commit's classifier alone, which may not know this branch's new path mappings."
+            fi
+          fi
+          classified="$(cat classifier-outputs.txt)"
+          drift=""
+          while read -r key; do
+            [ -n "$key" ] || continue
+            if [[ "$forwarded_flat" != *" $key "* ]]; then
+              echo "::error::ci.yml gates on needs.changes.outputs.$key but the changes job never forwards steps.classify.outputs.$key; that gate reads as an empty string and would silently skip the job (forwarded:${forwarded_flat})"
+              exit 1
+            fi
+            # Presence is not enough: a malformed value ('True', '1', '') also
+            # fails the `== 'true'` comparison and skips the job.
+            case $'\n'"$classified"$'\n' in
+              *$'\n'"$key=true"$'\n'*|*$'\n'"$key=false"$'\n'*) continue ;;
+            esac
+            drift="${drift:+$drift,}$key"
+            echo "::warning title=Changed-path routing drift::the trusted classifier did not emit a usable '$key'; defaulting it to true so the gated job runs."
+          done <<< "$gated_keys"
+          if [ -n "$drift" ]; then
+            # One rewrite: drop every reconciled key's malformed line, then
+            # re-add it as true.
+            drift_flat=" ${drift//,/ } "
+            : > reconciled-outputs.txt
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              [[ "$drift_flat" == *" ${line%%=*} "* ]] || printf '%s\n' "$line" >> reconciled-outputs.txt
+            done <<< "$classified"
+            for key in ${drift//,/ }; do
+              printf '%s=true\n' "$key" >> reconciled-outputs.txt
+            done
+            mv reconciled-outputs.txt classifier-outputs.txt
+          fi
+          printf 'gate_key_drift=%s\n' "$drift" >> classifier-outputs.txt
+          cat classifier-outputs.txt >> "$GITHUB_OUTPUT"
+          {
+            echo '### Changed-path routing'
+            echo '```'
+            cat classifier-outputs.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Enforce retired feature boundary
         run: scripts/check-retired-features.sh
 
@@ -109,6 +234,8 @@ jobs:
     name: Unraid plugin checksums
     runs-on: ci-pool-ops
     timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.unraid == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -198,6 +325,13 @@ jobs:
       - name: Install Playwright runtime libraries
         run: |
           set -euo pipefail
+          # Warm self-hosted runners already carry the Chromium runtime
+          # libraries; skip the 22-package apt transaction when the marker
+          # libraries are all installed.
+          if dpkg -s libasound2t64 libatk-bridge2.0-0t64 libgbm1 libnss3 libxkbcommon0 >/dev/null 2>&1; then
+            echo "Playwright runtime libraries already installed; skipping apt-get"
+            exit 0
+          fi
           if [ "$(id -u)" = "0" ]; then
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -292,9 +426,12 @@ jobs:
         run: bash scripts/check-rust-toolchain-sync.sh
       - name: Check persistent-host Kache action contract
         run: bash scripts/check-kache-persistent-host-action.sh
-      - name: Install Rust and kache
-        uses: ./.github/actions/setup-rust-kache
+      # cargo fmt never invokes rustc, so skip the full setup-rust-kache
+      # composite (apt preflight + cache wiring) and install only rustfmt.
+      - name: Install Rust toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
         with:
+          toolchain: "1.97.1"
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -333,38 +470,24 @@ jobs:
             --all-features \
             check
 
-  check:
-    name: Check
-    runs-on: ci-pool-rust
-    timeout-minutes: 30
-    needs: [changes, frontend-assets]
-    if: ${{ needs.changes.outputs.rust_compile == 'true' }}
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
-      - name: Install Rust and kache
-        uses: ./.github/actions/setup-rust-kache
-      - run: cargo check --workspace --all-features --locked
-
+  # The former `check` job (cargo check --workspace --all-features --locked)
+  # was strictly subsumed by `msrv`: the toolchain pin (1.97.1) IS the MSRV,
+  # and msrv additionally checks --all-targets.
   msrv:
     name: MSRV
     runs-on: ci-pool-rust
     timeout-minutes: 30
-    needs: [changes, frontend-assets]
+    needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
+      # Compile-only job: include_dir!("../../apps/gateway-admin/out") only
+      # needs the directory to exist, so stub it instead of waiting on the
+      # full pnpm+next frontend-assets build.
+      - name: Stub gateway-admin export for compile-only check
+        run: mkdir -p apps/gateway-admin/out && touch apps/gateway-admin/out/index.html
       - name: Install minimum supported Rust
         uses: ./.github/actions/setup-rust-kache
         with:
@@ -438,9 +561,7 @@ jobs:
     # execute somewhere in CI instead of only ever being compiled. The fs
     # slice also executes its focused no-gateway proxy preflight regression.
     env:
-      # The gateway slice links the same large test harnesses as the full test
-      # graph, so keep its peak memory below the 8 GiB pool limit too.
-      CARGO_BUILD_JOBS: "1"
+      # lld only; see the `test` job for why CARGO_BUILD_JOBS must stay unset.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     strategy:
       fail-fast: false
@@ -472,42 +593,40 @@ jobs:
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
 
   extracted-crate-slices:
-    name: Extracted crate slice (${{ matrix.name }})
+    name: Extracted crate slices
     runs-on: ci-pool-rust
-    timeout-minutes: 30
+    timeout-minutes: 60
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     env:
       RUSTFLAGS: ""
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: labby-auth-minimal
-            command: cargo check -p labby-auth --no-default-features --all-targets --locked
-          - name: labby-auth-http-axum
-            command: cargo check -p labby-auth --no-default-features --features http-axum --all-targets --locked
-          - name: labby-auth-upstream-oauth-rmcp
-            command: cargo check -p labby-auth --no-default-features --features upstream-oauth-rmcp --all-targets --locked
-          - name: labby-auth-all-runtime-features
-            command: cargo check -p labby-auth --no-default-features --features http-axum,upstream-oauth-rmcp --all-targets --locked
-          - name: labby-codemode
-            command: cargo check -p labby-codemode --all-targets --locked
-          - name: labby-gateway
-            command: cargo check -p labby-gateway --all-targets --locked
-          - name: labby-runtime
-            command: cargo check -p labby-runtime --no-default-features --all-targets --locked
-          - name: labby-web
-            command: cargo check -p labby-web --all-targets --locked
-          - name: labby-winjob
-            command: cargo check -p labby-winjob --all-targets --locked
+    # One warm runner slot checking the nine independent slices sequentially.
+    # The former 9-way matrix consumed 9 cold rust-pool slots for the same
+    # coverage.
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
-      - run: ${{ matrix.command }}
+      - name: labby-auth-minimal
+        run: cargo check -p labby-auth --no-default-features --all-targets --locked
+      - name: labby-auth-http-axum
+        run: cargo check -p labby-auth --no-default-features --features http-axum --all-targets --locked
+      - name: labby-auth-upstream-oauth-rmcp
+        run: cargo check -p labby-auth --no-default-features --features upstream-oauth-rmcp --all-targets --locked
+      - name: labby-auth-all-runtime-features
+        run: cargo check -p labby-auth --no-default-features --features http-axum,upstream-oauth-rmcp --all-targets --locked
+      - name: labby-codemode
+        run: cargo check -p labby-codemode --all-targets --locked
+      - name: labby-gateway
+        run: cargo check -p labby-gateway --all-targets --locked
+      - name: labby-runtime
+        run: cargo check -p labby-runtime --no-default-features --all-targets --locked
+      - name: labby-web
+        run: cargo check -p labby-web --all-targets --locked
+      - name: labby-winjob
+        run: cargo check -p labby-winjob --all-targets --locked
 
   docs-check:
     name: Generated docs
@@ -534,16 +653,16 @@ jobs:
     name: Clippy
     runs-on: ci-pool-rust
     timeout-minutes: 30
-    needs: [changes, frontend-assets]
+    needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: gateway-admin-out
-          path: apps/gateway-admin/out
+      # Compile-only job: stub the embedded frontend export instead of
+      # waiting on the full frontend-assets build (see msrv).
+      - name: Stub gateway-admin export for compile-only check
+        run: mkdir -p apps/gateway-admin/out && touch apps/gateway-admin/out/index.html
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
         with:
@@ -555,7 +674,6 @@ jobs:
     runs-on: ci-pool-rust
     timeout-minutes: 60
     env:
-      CARGO_BUILD_JOBS: "1"
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
@@ -628,9 +746,17 @@ jobs:
     runs-on: ci-pool-rust
     timeout-minutes: 60
     env:
-      # The all-features test graph links multiple large harnesses. Serializing
-      # Cargo builds and using lld keeps peak memory below the 8 GiB pool limit.
-      CARGO_BUILD_JOBS: "1"
+      # lld keeps the link step cheap. Do NOT reintroduce CARGO_BUILD_JOBS
+      # here: Cargo also passes it to every build script as NUM_JOBS, and
+      # aws-lc-sys compiles 414 C and 902 assembly sources through the cc
+      # crate. kache cannot cache any of that -- it wraps rustc, not cc -- so
+      # the throttle serialized ~1300 uncached source files on every run,
+      # turning ~8-minute builds into 30+ and letting the autoscaling runners
+      # reclaim them mid-link. Measured in a 7 GiB/no-swap cgroup matching the
+      # runner container: a full workspace build linking all 15 test harnesses
+      # peaks at 5.03 GiB, and `nextest run --workspace --all-features` peaks
+      # at 2.44 GiB. The limit was never the binding constraint; the
+      # serialization was.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -671,7 +797,6 @@ jobs:
     timeout-minutes: 60
     env:
       # Match the internal-PR test job resource profile on the shared pool.
-      CARGO_BUILD_JOBS: "1"
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: >-
@@ -708,9 +833,10 @@ jobs:
     name: Test (Windows advisory)
     runs-on: windows-latest
     needs: [changes, frontend-assets]
-    # GitHub-hosted isolation makes this safe for fork PRs. This remains a
-    # visible portability signal but is intentionally excluded from ci-gate.
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    # Advisory portability signal, intentionally excluded from ci-gate. Runs
+    # on main pushes and scheduled/manual runs only — not per-PR — to keep
+    # hosted Windows minutes off the PR critical path.
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -1010,7 +1136,9 @@ jobs:
     name: Palette Tauri (Windows advisory)
     runs-on: windows-latest
     needs: changes
-    if: ${{ needs.changes.outputs.palette == 'true' }}
+    # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
+    # only (see test-windows).
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.
@@ -1035,10 +1163,11 @@ jobs:
     runs-on: ci-pool-rust
     timeout-minutes: 90
     env:
-      CARGO_BUILD_JOBS: "1"
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
-    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    # The 90-minute instrumented re-run enforces a 15% floor; keep it off the
+    # PR critical path. ci-gate accepts the resulting `skipped` conclusion.
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.rust_test == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1085,7 +1214,6 @@ jobs:
     if: always()
     needs:
       - fleet-policy
-      - fleet-contract
       - changes
       - unraid-plugin-check
       - actionlint
@@ -1093,7 +1221,6 @@ jobs:
       - gateway-admin-browser
       - fmt
       - deny
-      - check
       - msrv
       - npm-launcher
       - feature-slices
@@ -1111,6 +1238,22 @@ jobs:
       - palette-rust
       - rust-coverage
     steps:
+      - name: report changed-path routing drift
+        if: ${{ needs.changes.outputs.gate_key_drift != '' }}
+        env:
+          GATE_KEY_DRIFT: ${{ needs.changes.outputs.gate_key_drift }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # Outside a pull request the classifier comes from this same commit,
+          # so drift means ci.yml and changed_paths.py genuinely disagree. That
+          # is a defect on main, not the transitional base-branch window.
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "::error::changed-path routing drift outside a pull request: ${GATE_KEY_DRIFT}. ci.yml gates on keys scripts/ci/changed_paths.py does not emit."
+            exit 1
+          fi
+          echo "::warning title=Changed-path routing drift::the trusted base-branch classifier does not emit: ${GATE_KEY_DRIFT}. Jobs gated on those keys ran fail-open. The drift clears once the base branch carries a scripts/ci/changed_paths.py that emits them."
+          printf 'Changed-path routing drift (ran fail-open): %s\n' "$GATE_KEY_DRIFT" >> "$GITHUB_STEP_SUMMARY"
       - name: verify required jobs passed or were intentionally skipped
         run: |
           set -euo pipefail
@@ -1122,16 +1265,27 @@ jobs:
               *) echo "::error::$name concluded $result" >&2; exit 1 ;;
             esac
           }
-          require_success_or_skipped fleet-policy "${{ needs.fleet-policy.result }}"
-          require_success_or_skipped fleet-contract "${{ needs.fleet-contract.result }}"
-          require_success_or_skipped changes "${{ needs.changes.result }}"
+          # `changes` owns every routing decision: if it does not run, every
+          # gate expression is empty, every gated job skips, and the whole run
+          # is vacuously green. `fleet-policy` is an unconditional single-job
+          # reusable workflow. Neither has an `if:`, so a skip is never a
+          # legitimate conclusion for either.
+          require_success() {
+            local name="$1"
+            local result="$2"
+            case "$result" in
+              success) printf '%s=%s\n' "$name" "$result" ;;
+              *) echo "::error::$name concluded $result; it must run for path routing to be meaningful" >&2; exit 1 ;;
+            esac
+          }
+          require_success fleet-policy "${{ needs.fleet-policy.result }}"
+          require_success changes "${{ needs.changes.result }}"
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
           require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
           require_success_or_skipped fmt "${{ needs.fmt.result }}"
           require_success_or_skipped deny "${{ needs.deny.result }}"
-          require_success_or_skipped check "${{ needs.check.result }}"
           require_success_or_skipped msrv "${{ needs.msrv.result }}"
           require_success_or_skipped npm-launcher "${{ needs.npm-launcher.result }}"
           require_success_or_skipped feature-slices "${{ needs.feature-slices.result }}"

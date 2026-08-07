@@ -149,20 +149,23 @@ impl Drop for JobObjectGuard {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-    use std::process::{Command as StdCommand, Stdio};
+    use process_wrap::tokio::{ChildWrapper, CommandWrap, ProcessGroup};
+    use std::process::Stdio;
     use std::time::Duration;
 
-    /// Helper: spawn a long-lived child in its own session/process group via
-    /// `setsid -w sleep 30`. Returns `None` if `setsid` is unavailable
-    /// (minimal container images) — tests that depend on it bail out.
-    fn spawn_setsid_sleep() -> Option<std::process::Child> {
-        StdCommand::new("setsid")
-            .args(["-w", "sleep", "30"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()
+    /// Helper: spawn a long-lived child in its own process group using the same
+    /// process-wrap integration as the gateway. Returns `None` when `sleep` is
+    /// unavailable in a minimal test environment.
+    fn spawn_process_group_sleep() -> Option<Box<dyn ChildWrapper>> {
+        let mut command = CommandWrap::with_new("sleep", |command| {
+            command
+                .arg("30")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        });
+        command.wrap(ProcessGroup::leader());
+        command.spawn().ok()
     }
 
     /// Spawn a real long-lived child in its own process group; drop an armed
@@ -171,19 +174,19 @@ mod tests {
     /// We poll `try_wait()` rather than `pid_is_alive(pid)` because a process
     /// killed-but-not-reaped is a zombie, and `kill -0` against a zombie
     /// returns success on Linux — so a strict pid_is_alive check is racy.
-    #[test]
-    fn drop_kills_unarmed_process_group() {
-        let Some(mut child) = spawn_setsid_sleep() else {
+    #[tokio::test]
+    async fn drop_kills_unarmed_process_group() {
+        let Some(mut child) = spawn_process_group_sleep() else {
             return;
         };
-        let pid = child.id();
+        let pid = child.id().expect("spawned process has a PID");
         // Verify the child landed in its own process group with pgid==pid.
-        // If not, setsid didn't behave as expected on this platform — skip.
+        // If not, process-wrap didn't behave as expected on this platform — skip.
         let observed_pgid = crate::process::unix::process_group_id(pid);
         if observed_pgid != Some(pid) {
             eprintln!("process_guard test skip: pid {pid} pgid {observed_pgid:?} (expected {pid})");
-            drop(child.kill());
-            drop(child.wait());
+            drop(child.start_kill());
+            drop(child.wait().await);
             return;
         }
         let guard = ProcessGroupGuard::arm(pid);
@@ -196,13 +199,13 @@ mod tests {
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let still_alive = crate::process::unix::pid_is_alive(pid);
-                        drop(child.kill());
-                        drop(child.wait());
+                        drop(child.start_kill());
+                        drop(child.wait().await);
                         panic!(
                             "guard drop did not exit pgid {pid} within 2s (pid_is_alive={still_alive})"
                         );
                     }
-                    std::thread::sleep(Duration::from_millis(25));
+                    tokio::time::sleep(Duration::from_millis(25)).await;
                 }
                 Err(e) => panic!("try_wait failed: {e}"),
             }
@@ -211,19 +214,19 @@ mod tests {
 
     /// Disarm the guard, drop, then verify the child is still alive.
     /// Caller is responsible for cleanup.
-    #[test]
-    fn disarm_prevents_kill() {
-        let Some(mut child) = spawn_setsid_sleep() else {
+    #[tokio::test]
+    async fn disarm_prevents_kill() {
+        let Some(mut child) = spawn_process_group_sleep() else {
             return;
         };
-        let pid = child.id();
+        let pid = child.id().expect("spawned process has a PID");
         let guard = ProcessGroupGuard::arm(pid);
         let disarmed = guard.disarm();
         assert_eq!(disarmed, Some(pid), "disarm returns the armed pgid");
 
         // The child should NOT have exited yet — give the scheduler 50 ms
         // and confirm try_wait returns None.
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
         match child.try_wait() {
             Ok(None) => (), // still running, expected
             Ok(Some(s)) => panic!("disarmed guard let child exit: {s:?}"),
@@ -231,8 +234,7 @@ mod tests {
         }
 
         // Cleanup.
-        let _ = crate::process::unix::terminate_process_group_sigkill(pid);
-        drop(child.kill());
-        drop(child.wait());
+        drop(child.start_kill());
+        drop(child.wait().await);
     }
 }

@@ -16,10 +16,11 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::capability_call::bounded_service_error_text;
 use super::connect::connect_upstream;
 use super::discover::routable_upstream_peers;
 use super::entries::health_str;
-use super::helpers::{bare_upstream_resource_uri, rewrite_resource_uri};
+use super::helpers::{bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri};
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
@@ -167,6 +168,16 @@ impl UpstreamPool {
             return Vec::new();
         }
 
+        // Deliberate bulkhead exception: fan-out aggregation over every
+        // routable upstream (catalog listing/refresh), not a caller-attributed
+        // RPC, so it skips the per-upstream `timed_capability_call` permit.
+        // Per-upstream failures deliberately degrade the merged result to
+        // partial data — the MCP `resources/list` wire shape carries no
+        // per-upstream error field (do not invent one). Failure visibility
+        // lives in the circuit breaker + `resource_last_error` recorded below
+        // (surfaced via `gateway.status`) and the classified `warn!` per
+        // failing upstream.
+        //
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
@@ -243,10 +254,11 @@ impl UpstreamPool {
                     );
                 }
                 Err(e) => {
+                    let error_text = bounded_service_error_text(&e);
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Resources,
-                        format!("failed to list resources from upstream: {e}"),
+                        format!("failed to list resources from upstream: {error_text}"),
                     )
                     .await;
                     {
@@ -258,7 +270,8 @@ impl UpstreamPool {
                     }
                     tracing::warn!(
                         upstream = %name,
-                        error = %e,
+                        kind = classify_upstream_error(&error_text),
+                        error = %error_text,
                         "failed to list resources from upstream"
                     );
                 }
@@ -283,6 +296,8 @@ impl UpstreamPool {
             return Vec::new();
         }
 
+        // Deliberate bulkhead exception + partial-result semantics — same
+        // contract as `list_upstream_resources_allowed` above.
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
             futures.push(async move {
@@ -326,15 +341,17 @@ impl UpstreamPool {
                     );
                 }
                 Err(error) => {
+                    let error_text = bounded_service_error_text(&error);
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Resources,
-                        format!("failed to list resource templates from upstream: {error}"),
+                        format!("failed to list resource templates from upstream: {error_text}"),
                     )
                     .await;
                     tracing::warn!(
                         upstream = %name,
-                        error = %error,
+                        kind = classify_upstream_error(&error_text),
+                        error = %error_text,
                         "failed to list resource templates from upstream"
                     );
                 }
@@ -372,10 +389,24 @@ impl UpstreamPool {
             });
         }
 
+        // Deliberate bulkhead exception + partial-result semantics — same
+        // contract as `list_upstream_resources_allowed`. These are ephemeral
+        // per-subject connections, so failures are surfaced via the classified
+        // `warn!`s below rather than the shared circuit breaker.
         let mut resources = Vec::new();
         while let Some((name, result)) = futures.next().await {
-            let Ok(conn) = result else {
-                continue;
+            let conn = match result {
+                Ok(conn) => conn,
+                Err(error) => {
+                    let error_text = error.to_string();
+                    tracing::warn!(
+                        upstream = %name,
+                        kind = classify_upstream_error(&error_text),
+                        error = %error_text,
+                        "subject-scoped upstream resource connect failed"
+                    );
+                    continue;
+                }
             };
             match conn.peer.list_all_resources().await {
                 Ok(upstream_resources) => {
@@ -385,9 +416,11 @@ impl UpstreamPool {
                     }
                 }
                 Err(error) => {
+                    let error_text = bounded_service_error_text(&error);
                     tracing::warn!(
                         upstream = %name,
-                        error = %error,
+                        kind = classify_upstream_error(&error_text),
+                        error = %error_text,
                         "subject-scoped upstream resource discovery failed"
                     );
                 }

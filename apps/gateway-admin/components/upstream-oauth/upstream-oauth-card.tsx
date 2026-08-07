@@ -41,10 +41,23 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
     }
   }
 
+  const isSharedGoogle = status?.credential_source === 'google_provider'
+  const hasSharedCredential = isSharedGoogle
+    && status?.google_credential_broker?.provider_generation !== undefined
+  const missingScopes = status?.google_credential_broker?.missing_scopes ?? []
+
   async function handleDisconnect() {
     setError(null)
     try {
-      await upstreamOauthApi.clear(name)
+      if (isSharedGoogle) {
+        const confirmed = window.confirm(
+          'Revoke shared Google access? This disconnects every Google MCP server and dependent Labby session using this account.',
+        )
+        if (!confirmed) return
+        await upstreamOauthApi.revokeGoogle(name)
+      } else {
+        await upstreamOauthApi.clear(name)
+      }
       await mutate()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to disconnect')
@@ -62,6 +75,8 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
         return <Badge variant="outline" className="border-aurora-error/40 text-aurora-error">Expired</Badge>
       case 'refresh_failed':
         return <Badge variant="outline" className="border-aurora-error/40 text-aurora-error">Refresh failed</Badge>
+      case 'scope_upgrade_required':
+        return <Badge variant="outline" className="border-aurora-warn/40 text-aurora-warn">Scope upgrade required</Badge>
       case 'discovery_failed':
         return <Badge variant="outline" className="border-aurora-error/40 text-aurora-error">Unavailable</Badge>
       case 'disconnected':
@@ -77,6 +92,11 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
 
   const statusDetail = (() => {
     if (!status) return null
+    if (status.state === 'scope_upgrade_required') {
+      return missingScopes.length > 0
+        ? `Grant ${missingScopes.length} missing Google scope${missingScopes.length === 1 ? '' : 's'}`
+        : 'Grant the Google scopes required by this server'
+    }
     if (status.refresh_error) return status.refresh_error
     if (status.discovery_error) return status.discovery_error
     if (status.refreshed) return 'Token refreshed'
@@ -90,21 +110,45 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm font-medium">{name}</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-sm font-medium">{name}</CardTitle>
+            {isSharedGoogle && <Badge variant="secondary">Shared Google</Badge>}
+          </div>
           {badge}
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-2 pt-0">
         {error && <p className="text-xs text-destructive">{error}</p>}
         {statusDetail && <p className="text-xs text-aurora-text-muted">{statusDetail}</p>}
+        {missingScopes.length > 0 && (
+          <details className="text-xs text-aurora-text-muted">
+            <summary className="cursor-pointer">Missing Google scopes</summary>
+            <ul className="mt-1 list-disc space-y-1 pl-5">
+              {missingScopes.map((scope) => <li key={scope} className="break-all">{scope}</li>)}
+            </ul>
+          </details>
+        )}
         <div className="flex items-center gap-2">
           {status?.authenticated ? (
-            <Button variant="outline" size="sm" onClick={handleDisconnect}>
-              Disconnect
+            <Button
+              variant={isSharedGoogle ? "destructive" : "outline"}
+              size="sm"
+              onClick={handleDisconnect}
+            >
+              {isSharedGoogle ? 'Revoke shared access' : 'Disconnect'}
             </Button>
           ) : (
             <Button size="sm" onClick={handleConnect} disabled={connecting}>
-              {connecting ? 'Waiting…' : 'Connect'}
+              {connecting
+                ? 'Waiting…'
+                : status?.state === 'scope_upgrade_required'
+                  ? 'Grant scopes'
+                  : 'Connect'}
+            </Button>
+          )}
+          {!status?.authenticated && hasSharedCredential && (
+            <Button variant="destructive" size="sm" onClick={handleDisconnect}>
+              Revoke shared access
             </Button>
           )}
           {connecting && (

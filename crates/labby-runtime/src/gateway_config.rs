@@ -675,6 +675,55 @@ impl UpstreamConfig {
                 name: self.name.clone(),
             });
         }
+        if let Some(oauth) = self.oauth.as_ref()
+            && oauth.credential.is_google_provider()
+        {
+            let invalid_oauth = |reason: &str| ConfigError::InvalidOauth {
+                name: self.name.clone(),
+                reason: reason.to_string(),
+            };
+            if !self
+                .url
+                .as_deref()
+                .is_some_and(|url| url.starts_with("https://"))
+            {
+                return Err(invalid_oauth(
+                    "google_provider requires an https:// Google MCP endpoint",
+                ));
+            }
+            let UpstreamOauthRegistration::Preregistered {
+                client_id,
+                client_secret_env,
+            } = &oauth.registration
+            else {
+                return Err(invalid_oauth(
+                    "google_provider requires registration.strategy = preregistered",
+                ));
+            };
+            if client_id.trim().is_empty() {
+                return Err(invalid_oauth(
+                    "google_provider requires a non-empty preregistered client_id",
+                ));
+            }
+            if client_secret_env
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(str::is_empty)
+            {
+                return Err(invalid_oauth(
+                    "google_provider requires client_secret_env for the Google OAuth client",
+                ));
+            }
+            if oauth
+                .scopes
+                .as_ref()
+                .is_none_or(|scopes| scopes.iter().all(|scope| scope.trim().is_empty()))
+            {
+                return Err(invalid_oauth(
+                    "google_provider requires at least one Google Workspace application scope",
+                ));
+            }
+        }
         if let Some(raw) = self.url.as_deref() {
             let canonical =
                 canonicalize_upstream_url(raw).map_err(|_| ConfigError::InvalidUrl {
@@ -1003,6 +1052,8 @@ pub enum ConfigError {
     InvalidUrl { name: String, url: String },
     #[error("upstream '{name}' has oauth configured but no url — oauth requires an HTTP url")]
     MissingOauthUrl { name: String },
+    #[error("upstream '{name}' has invalid oauth configuration: {reason}")]
+    InvalidOauth { name: String, reason: String },
     #[error("upstream '{name}' has invalid transport configuration: {reason}")]
     InvalidTransport { name: String, reason: String },
     #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
@@ -1071,6 +1122,13 @@ pub struct UpstreamOauthConfig {
     pub registration: UpstreamOauthRegistration,
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    /// Selects where OAuth credentials for this upstream are persisted.
+    ///
+    /// `dedicated` preserves the original per-`(upstream, subject)` token store.
+    /// `google_provider` reuses Labby's encrypted, subject-scoped Google provider
+    /// credential and never copies its refresh token into an upstream row.
+    #[serde(default)]
+    pub credential: UpstreamOauthCredentialSource,
     /// When `true`, always use the Client ID Metadata Document (CIMD) strategy
     /// regardless of whether the upstream advertises a `registration_endpoint`.
     /// When `false`, always use dynamic registration (RFC 7591) when the upstream
@@ -1090,6 +1148,51 @@ pub struct UpstreamOauthConfig {
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamOauthMode {
     AuthorizationCodePkce,
+}
+
+/// Persistence source for an upstream OAuth credential.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum UpstreamOauthCredentialSource {
+    /// Keep an encrypted token bundle per `(upstream, subject)`.
+    #[default]
+    Dedicated,
+    /// Reuse the central Google provider credential.
+    ///
+    /// `account` accepts either a Google `sub` or a verified email address. When
+    /// omitted, resolution succeeds only when exactly one provider credential
+    /// exists.
+    GoogleProvider {
+        #[serde(default)]
+        account: Option<String>,
+    },
+}
+
+impl std::fmt::Debug for UpstreamOauthCredentialSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dedicated => f.write_str("Dedicated"),
+            Self::GoogleProvider { account } => f
+                .debug_struct("GoogleProvider")
+                .field("account", &account.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
+}
+
+impl UpstreamOauthCredentialSource {
+    #[must_use]
+    pub const fn is_google_provider(&self) -> bool {
+        matches!(self, Self::GoogleProvider { .. })
+    }
+
+    #[must_use]
+    pub fn account(&self) -> Option<&str> {
+        match self {
+            Self::GoogleProvider { account } => account.as_deref(),
+            Self::Dedicated => None,
+        }
+    }
 }
 
 /// Outbound OAuth client-registration strategy.
@@ -1521,6 +1624,95 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn google_provider_oauth_requires_https_preregistered_secret_and_scopes() {
+        let valid: UpstreamConfig = toml::from_str(
+            r#"
+name = "google-calendar"
+url = "https://calendarmcp.googleapis.com/mcp/v1"
+[oauth]
+mode = "authorization_code_pkce"
+scopes = ["https://www.googleapis.com/auth/calendar.events.readonly"]
+[oauth.credential]
+source = "google_provider"
+account = "admin@example.com"
+[oauth.registration]
+strategy = "preregistered"
+client_id = "google-client"
+client_secret_env = "LABBY_GOOGLE_CLIENT_SECRET"
+"#,
+        )
+        .unwrap();
+        assert!(valid.validate().is_ok());
+
+        for invalid_toml in [
+            r#"
+name = "google-calendar"
+url = "http://calendarmcp.googleapis.com/mcp/v1"
+[oauth]
+mode = "authorization_code_pkce"
+scopes = ["calendar"]
+[oauth.credential]
+source = "google_provider"
+[oauth.registration]
+strategy = "preregistered"
+client_id = "google-client"
+client_secret_env = "SECRET"
+"#,
+            r#"
+name = "google-calendar"
+url = "https://calendarmcp.googleapis.com/mcp/v1"
+[oauth]
+mode = "authorization_code_pkce"
+scopes = ["calendar"]
+[oauth.credential]
+source = "google_provider"
+[oauth.registration]
+strategy = "dynamic"
+"#,
+            r#"
+name = "google-calendar"
+url = "https://calendarmcp.googleapis.com/mcp/v1"
+[oauth]
+mode = "authorization_code_pkce"
+scopes = ["calendar"]
+[oauth.credential]
+source = "google_provider"
+[oauth.registration]
+strategy = "preregistered"
+client_id = "google-client"
+"#,
+            r#"
+name = "google-calendar"
+url = "https://calendarmcp.googleapis.com/mcp/v1"
+[oauth]
+mode = "authorization_code_pkce"
+[oauth.credential]
+source = "google_provider"
+[oauth.registration]
+strategy = "preregistered"
+client_id = "google-client"
+client_secret_env = "SECRET"
+"#,
+        ] {
+            let config: UpstreamConfig = toml::from_str(invalid_toml).unwrap();
+            assert!(matches!(
+                config.validate(),
+                Err(ConfigError::InvalidOauth { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn google_provider_credential_debug_redacts_account_selector() {
+        let source = UpstreamOauthCredentialSource::GoogleProvider {
+            account: Some("admin@example.com".to_string()),
+        };
+        let debug = format!("{source:?}");
+        assert!(!debug.contains("admin@example.com"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]

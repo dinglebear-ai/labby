@@ -1,5 +1,9 @@
+# Slashless siblings cover the worktree cache symlinks the sync engine creates —
+# git treats a symlink as a file, so `dist/` alone does not match a `dist` symlink.
 node_modules/
+node_modules
 dist/
+dist
 coverage/
 src-tauri/target/
 src-tauri/gen/

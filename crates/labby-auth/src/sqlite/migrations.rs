@@ -126,5 +126,47 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
         )
         .map_err(sqlite_error)?;
     }
+    if current < 8 {
+        add_column_if_missing(
+            conn,
+            "google_provider_credentials",
+            "client_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        add_column_if_missing(
+            conn,
+            "google_provider_credentials",
+            "granted_scopes_json",
+            "TEXT NOT NULL DEFAULT '[\"email\",\"openid\",\"profile\"]'",
+        )?;
+        add_column_if_missing(conn, "google_provider_credentials", "access_token", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "google_provider_credentials",
+            "token_received_at",
+            "INTEGER",
+        )?;
+        add_column_if_missing(
+            conn,
+            "google_provider_credentials",
+            "access_token_expires_at",
+            "INTEGER",
+        )?;
+        add_column_if_missing(conn, "google_provider_credentials", "issuer", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "google_provider_credentials",
+            "last_refresh_at",
+            "INTEGER",
+        )?;
+        add_column_if_missing(
+            conn,
+            "google_provider_credentials",
+            "last_scope_upgrade_at",
+            "INTEGER",
+        )?;
+        conn.execute_batch("PRAGMA user_version = 8;")
+            .map_err(sqlite_error)?;
+    }
     Ok(())
 }
