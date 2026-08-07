@@ -137,8 +137,8 @@ Important constraints:
 Labby can also serve the public Codex MCP OAuth callback relay at:
 
 ```text
-https://callback.tootie.tv/callback/<machine>
-https://callback.tootie.tv/callback/<machine>/<suffix>
+https://callback.example.com/callback/<machine>
+https://callback.example.com/callback/<machine>/<suffix>
 ```
 
 This is for remote, headless, or cross-namespace clients whose browser cannot
@@ -148,7 +148,7 @@ desktop clients should keep local loopback callbacks where possible.
 Client configuration example:
 
 ```toml
-mcp_oauth_callback_url = "https://callback.tootie.tv/callback/dookie"
+mcp_oauth_callback_url = "https://callback.example.com/callback/dookie"
 ```
 
 The public relay is transport-only. It forwards the final callback request to
