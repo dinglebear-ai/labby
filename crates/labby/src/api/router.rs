@@ -3140,6 +3140,7 @@ mod tests {
         let backend = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/mcp"))
+            .and(wiremock::matchers::header("mcp-method", "server/discover"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
