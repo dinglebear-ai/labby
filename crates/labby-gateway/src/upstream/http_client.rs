@@ -30,7 +30,8 @@ use futures::stream::BoxStream;
 use reqwest::header::{ACCEPT, HeaderName, HeaderValue, WWW_AUTHENTICATE};
 use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage, ServerJsonRpcMessage};
 use rmcp::transport::common::http_header::{
-    EVENT_STREAM_MIME_TYPE, HEADER_LAST_EVENT_ID, HEADER_SESSION_ID, JSON_MIME_TYPE,
+    EVENT_STREAM_MIME_TYPE, HEADER_LAST_EVENT_ID, HEADER_MCP_METHOD, HEADER_SESSION_ID,
+    JSON_MIME_TYPE,
 };
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient, StreamableHttpError,
@@ -43,6 +44,7 @@ use sse_stream::{Sse, SseStream};
 const RESERVED_HEADERS: &[&str] = &[
     "accept",
     HEADER_SESSION_ID,
+    HEADER_MCP_METHOD, // allowed through; the adapter overwrites it from the body
     "MCP-Protocol-Version", // allowed through; worker injects post-init
     HEADER_LAST_EVENT_ID,
 ];
@@ -52,7 +54,9 @@ fn validate_custom_header(name: &HeaderName) -> Result<(), String> {
         .iter()
         .any(|&r| name.as_str().eq_ignore_ascii_case(r))
     {
-        if name.as_str().eq_ignore_ascii_case("MCP-Protocol-Version") {
+        if name.as_str().eq_ignore_ascii_case("MCP-Protocol-Version")
+            || name.as_str().eq_ignore_ascii_case(HEADER_MCP_METHOD)
+        {
             return Ok(());
         }
         return Err(name.to_string());
@@ -120,6 +124,18 @@ fn parse_json_rpc_error(body: &str) -> Option<ServerJsonRpcMessage> {
         Ok(message @ JsonRpcMessage::Error(_)) => Some(message),
         _ => None,
     }
+}
+
+/// Return the method header required by SEP-2243 from the JSON-RPC body.
+///
+/// The rmcp worker normally supplies this header for modern protocol
+/// versions. Keep the adapter defensive because it is the final wire boundary
+/// for both OAuth and non-OAuth upstream clients, and strict peers reject a
+/// body/header mismatch before dispatching the request.
+fn jsonrpc_method_header(message: &ClientJsonRpcMessage) -> Option<HeaderValue> {
+    let value = serde_json::to_value(message).ok()?;
+    let method = value.get("method").and_then(serde_json::Value::as_str)?;
+    HeaderValue::from_str(method).ok()
 }
 
 /// Read a reqwest response body fully into a `Vec<u8>` while enforcing
@@ -404,7 +420,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         message: ClientJsonRpcMessage,
         session_id: Option<Arc<str>>,
         auth_token: Option<String>,
-        custom_headers: HashMap<HeaderName, HeaderValue>,
+        mut custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
         let mut request = self
             .inner
@@ -413,7 +429,15 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         if let Some(auth_header) = auth_token {
             request = request.bearer_auth(auth_header);
         }
+        // rmcp 3.x already adds Mcp-Method to the per-request custom-header
+        // map for negotiated modern peers. Remove that copy before applying
+        // headers because reqwest's `header` appends repeated values; the
+        // strict SEP-2243 contract requires exactly one body-derived value.
+        custom_headers.remove(HEADER_MCP_METHOD);
         request = apply_custom_headers(request, custom_headers)?;
+        if let Some(method) = jsonrpc_method_header(&message) {
+            request = request.header(HEADER_MCP_METHOD, method);
+        }
         let session_was_attached = session_id.is_some();
         if let Some(session_id) = session_id {
             request = request.header(HEADER_SESSION_ID, session_id.as_ref());
@@ -535,6 +559,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -550,8 +575,77 @@ mod tests {
     }
 
     fn jsonrpc_request() -> ClientJsonRpcMessage {
-        serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
-            .expect("valid jsonrpc")
+        jsonrpc_request_with_method("tools/list")
+    }
+
+    fn jsonrpc_request_with_method(method: &str) -> ClientJsonRpcMessage {
+        serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": {}
+        }))
+        .expect("valid jsonrpc")
+    }
+
+    #[tokio::test]
+    async fn post_message_injects_mcp_method_from_jsonrpc_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC");
+                let expected = body
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .expect("JSON-RPC method");
+                let actual = request
+                    .headers
+                    .get(HEADER_MCP_METHOD)
+                    .and_then(|value| value.to_str().ok());
+                let value_count = request.headers.get_all(HEADER_MCP_METHOD).iter().count();
+
+                if actual != Some(expected) || value_count != 1 {
+                    return ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": {
+                            "code": -32020,
+                            "message": "the request headers and body disagree"
+                        }
+                    }));
+                }
+
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": -32601, "message": "test response"}
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client = build(1024 * 1024);
+        let uri: Arc<str> = format!("{}/mcp", server.uri()).into();
+        let mut custom_headers = HashMap::new();
+        custom_headers.insert(
+            HeaderName::from_static("mcp-method"),
+            HeaderValue::from_static("incorrect-method"),
+        );
+        let result = client
+            .post_message(
+                uri,
+                jsonrpc_request_with_method("server/discover"),
+                None,
+                None,
+                custom_headers,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "strict MCP endpoint should accept request: {result:?}"
+        );
     }
 
     #[tokio::test]

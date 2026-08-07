@@ -533,6 +533,12 @@ async fn proxy_protected_mcp_route(
             .into_response();
         }
     };
+    let body_method = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|value| {
+            let method = value.get("method")?.as_str()?;
+            HeaderValue::from_str(method).ok()
+        });
     tracing::info!(
         route = %route.name,
         resource = %route.public_resource(),
@@ -558,6 +564,9 @@ async fn proxy_protected_mcp_route(
         if let Some(value) = headers.get(&header_name) {
             builder = builder.header(&header_name, value);
         }
+    }
+    if let Some(method) = body_method {
+        builder = builder.header(HeaderName::from_static("mcp-method"), method);
     }
     let upstream_response = match builder.body(body).send().await {
         Ok(response) => response,
