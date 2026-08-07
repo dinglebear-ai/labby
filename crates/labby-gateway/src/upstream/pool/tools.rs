@@ -16,6 +16,7 @@ use super::super::types::{
     UpstreamTool, UpstreamToolExposureRow,
 };
 use super::UpstreamPool;
+use super::entries::resolve_exposure_policy;
 use super::helpers::UpstreamCachedSummary;
 
 /// Hard cap on the total number of tools returned by a single `healthy_tools()` call.
@@ -243,6 +244,17 @@ impl UpstreamPool {
     /// P-C1 fix: uses `acquire_or_connect_subject` so the per-(upstream,subject)
     /// connection and tool list are cached — the expensive TLS + initialize +
     /// tools/list is paid at most once per idle-TTL window, not on every call.
+    ///
+    /// The upstream's `expose_tools` allowlist is enforced here, so exposure is
+    /// symmetric with the catalog-backed path (`healthy_tools_allowed` and
+    /// friends, which read `UpstreamEntry::exposure_policy`). A subject-scoped
+    /// tool list is discovered on a per-`(upstream, subject)` connection and
+    /// never lands in `self.catalog`, so there is no `UpstreamEntry` to consult;
+    /// the policy is resolved per request from the live `UpstreamConfig` with
+    /// the same fail-closed `resolve_exposure_policy` helper the catalog path
+    /// uses. This is the single choke point for OAuth tool exposure — both
+    /// `list_tools` discovery and upstream-owner resolution for `call_tool` go
+    /// through it, so a hidden tool is neither advertised nor callable.
     pub async fn subject_scoped_tools(
         &self,
         configs: &[UpstreamConfig],
@@ -254,15 +266,33 @@ impl UpstreamPool {
             let subject = subject.to_string();
             let pool = self.clone();
             futures.push(async move {
+                let exposure_policy =
+                    resolve_exposure_policy(&config.name, config.expose_tools.clone());
                 let result = pool.acquire_or_connect_subject(&config, &subject).await;
-                (config.name.clone(), result)
+                (config.name.clone(), exposure_policy, result)
             });
         }
 
         let mut discovered = Vec::new();
-        while let Some((name, result)) = futures.next().await {
+        while let Some((name, exposure_policy, result)) = futures.next().await {
             match result {
-                Ok((_peer, tools)) => discovered.push((name, tools)),
+                Ok((_peer, tools)) => {
+                    let discovered_count = tools.len();
+                    let exposed: Vec<rmcp::model::Tool> = tools
+                        .into_iter()
+                        .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
+                        .collect();
+                    let hidden_count = discovered_count - exposed.len();
+                    if hidden_count > 0 {
+                        tracing::debug!(
+                            upstream = %name,
+                            hidden_count,
+                            exposed_count = exposed.len(),
+                            "subject-scoped upstream tools hidden by exposure policy"
+                        );
+                    }
+                    discovered.push((name, exposed));
+                }
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
