@@ -159,6 +159,7 @@ impl SqliteStore {
                         redirect_uris,
                         created_at: row.get(2)?,
                         token_endpoint_auth_method: "none".to_string(),
+                        token_endpoint_auth_methods: Vec::new(),
                         jwks: None,
                         jwks_uri: None,
                     })
@@ -1974,6 +1975,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })

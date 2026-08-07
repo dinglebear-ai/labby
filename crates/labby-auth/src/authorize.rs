@@ -158,6 +158,7 @@ pub async fn register_client(
         redirect_uris: request.redirect_uris,
         created_at: now_unix(),
         token_endpoint_auth_method: "none".to_string(),
+        token_endpoint_auth_methods: Vec::new(),
         jwks: None,
         jwks_uri: None,
     };
@@ -1573,6 +1574,7 @@ pub mod tests {
                     ],
                     created_at: now_unix(),
                     token_endpoint_auth_method: "none".to_string(),
+                    token_endpoint_auth_methods: Vec::new(),
                     jwks: None,
                     jwks_uri: None,
                 },
@@ -1656,6 +1658,7 @@ pub mod tests {
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -1762,6 +1765,7 @@ pub mod tests {
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2057,6 +2061,7 @@ pub mod tests {
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2163,6 +2168,7 @@ pub mod tests {
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2444,6 +2450,7 @@ pub mod tests {
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2520,6 +2527,7 @@ pub mod tests {
                 redirect_uris: vec![native_callback_endpoint.clone()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2792,6 +2800,7 @@ pub mod tests {
                     redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                     created_at: now_unix(),
                     token_endpoint_auth_method: "none".to_string(),
+                    token_endpoint_auth_methods: Vec::new(),
                     jwks: None,
                     jwks_uri: None,
                 })

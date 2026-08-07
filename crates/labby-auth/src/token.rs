@@ -470,8 +470,41 @@ async fn authenticate_oauth_client(
     let client = crate::cimd::resolve_client(state, client_id)
         .await?
         .ok_or_else(invalid_client)?;
-    match client.token_endpoint_auth_method.as_str() {
-        "none" if client_secret.is_none() && client_assertion.is_none() => Ok(()),
+    // Match on the method the client actually presents, then check that the
+    // client published it. A client that declares `private_key_jwt` as its
+    // preference but also lists `none` in
+    // `token_endpoint_auth_methods_supported` may legitimately use either;
+    // keying off the singular preference alone rejects it for doing exactly
+    // what its own metadata document advertises.
+    let published = |method: &str| {
+        if client.token_endpoint_auth_methods.is_empty() {
+            client.token_endpoint_auth_method == method
+        } else {
+            client
+                .token_endpoint_auth_methods
+                .iter()
+                .any(|m| m == method)
+        }
+    };
+    let presented = if client_assertion.is_some() || client_assertion_type.is_some() {
+        "private_key_jwt"
+    } else if client_secret.is_some() {
+        "client_secret"
+    } else {
+        "none"
+    };
+    if !published(presented) {
+        warn!(
+            client_id = %client_id,
+            presented_auth_method = presented,
+            declared_auth_method = %client.token_endpoint_auth_method,
+            published_auth_methods = ?client.token_endpoint_auth_methods,
+            "oauth token rejected: client authenticated with a method it did not publish"
+        );
+        return Err(invalid_client());
+    }
+    match presented {
+        "none" => Ok(()),
         "private_key_jwt"
             if client_secret.is_none()
                 && client_assertion_type
@@ -1733,6 +1766,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "private_key_jwt".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2324,6 +2358,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2336,6 +2371,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })

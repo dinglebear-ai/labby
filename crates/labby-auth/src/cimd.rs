@@ -14,6 +14,16 @@ struct ClientMetadataDocument {
     redirect_uris: Vec<String>,
     #[serde(default = "default_token_endpoint_auth_method")]
     token_endpoint_auth_method: String,
+    /// Every method the client is willing to authenticate with.
+    ///
+    /// `token_endpoint_auth_method` names the client's *preference*; a client
+    /// that can also fall back publishes the full set here. ChatGPT's connector
+    /// declares `private_key_jwt` as its preference and
+    /// `["none", "private_key_jwt"]` as its set, then authenticates with
+    /// `none` — reading only the singular field rejects a client for using a
+    /// method it published.
+    #[serde(default)]
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
     #[serde(default)]
     jwks: Option<serde_json::Value>,
     #[serde(default)]
@@ -141,14 +151,25 @@ fn validate_document(
             "client metadata contains an unsafe redirect URI".to_string(),
         ));
     }
-    if !matches!(
-        document.token_endpoint_auth_method.as_str(),
-        "none" | "private_key_jwt"
-    ) {
-        return Err(AuthError::Validation(
-            "client metadata token_endpoint_auth_method must be none or private_key_jwt"
-                .to_string(),
-        ));
+    // The client may authenticate with its declared preference or with any
+    // method it additionally published. Both must be methods we implement.
+    let mut accepted_methods = vec![document.token_endpoint_auth_method.clone()];
+    for method in document
+        .token_endpoint_auth_methods_supported
+        .iter()
+        .flatten()
+    {
+        if !accepted_methods.contains(method) {
+            accepted_methods.push(method.clone());
+        }
+    }
+    if let Some(unsupported) = accepted_methods
+        .iter()
+        .find(|method| !matches!(method.as_str(), "none" | "private_key_jwt"))
+    {
+        return Err(AuthError::Validation(format!(
+            "client metadata token_endpoint_auth_method `{unsupported}` must be none or private_key_jwt"
+        )));
     }
     // draft-ietf-oauth-client-id-metadata-document section 8.2 lets a
     // `private_key_jwt` client publish its public keys either inline (`jwks`)
@@ -159,7 +180,7 @@ fn validate_document(
         Some(uri) if document.jwks.is_none() => Some(validate_jwks_uri(uri)?),
         _ => None,
     };
-    if document.token_endpoint_auth_method == "private_key_jwt"
+    if accepted_methods.iter().any(|m| m == "private_key_jwt")
         && document.jwks.is_none()
         && jwks_uri.is_none()
     {
@@ -172,6 +193,7 @@ fn validate_document(
         redirect_uris: document.redirect_uris,
         created_at: now_unix(),
         token_endpoint_auth_method: document.token_endpoint_auth_method,
+        token_endpoint_auth_methods: accepted_methods,
         jwks: document.jwks,
         jwks_uri,
     })
@@ -206,6 +228,7 @@ mod tests {
                 client_name: "Client".to_string(),
                 redirect_uris: vec!["http://127.0.0.1:3000/callback".to_string()],
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods_supported: None,
                 jwks: None,
                 jwks_uri: None,
             },
@@ -229,6 +252,7 @@ mod tests {
                     client_name: "Client".to_string(),
                     redirect_uris: vec![redirect_uri.to_string()],
                     token_endpoint_auth_method: "none".to_string(),
+                    token_endpoint_auth_methods_supported: None,
                     jwks: None,
                     jwks_uri: None,
                 },
@@ -250,6 +274,7 @@ mod tests {
             client_name: "ChatGPT".to_string(),
             redirect_uris: vec!["https://chatgpt.com/connector/oauth/test-client".to_string()],
             token_endpoint_auth_method: "private_key_jwt".to_string(),
+            token_endpoint_auth_methods_supported: None,
             jwks,
             jwks_uri: jwks_uri.map(str::to_string),
         }
@@ -305,6 +330,70 @@ mod tests {
             client.jwks_uri.as_deref(),
             Some("https://chatgpt.com/oauth/jwks.json")
         );
+    }
+
+    /// ChatGPT declares `private_key_jwt` as its preference *and* publishes
+    /// `["none", "private_key_jwt"]` as the set it supports — then
+    /// authenticates with `none`. Reading only the singular field rejected it
+    /// with `invalid_client` at `/token`, after `/authorize` had already
+    /// succeeded, so the connector failed at the last step with no log line.
+    #[test]
+    fn honours_every_auth_method_the_client_publishes() {
+        let raw = r#"{
+            "client_id": "https://chatgpt.com/oauth/test-client/client.json",
+            "redirect_uris": ["https://chatgpt.com/connector/oauth/test-client"],
+            "token_endpoint_auth_method": "private_key_jwt",
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            "client_name": "ChatGPT",
+            "jwks_uri": "https://chatgpt.com/oauth/jwks.json"
+        }"#;
+        let document: ClientMetadataDocument = serde_json::from_str(raw).unwrap();
+        let client = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            document,
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap();
+        assert_eq!(client.token_endpoint_auth_method, "private_key_jwt");
+        assert_eq!(
+            client.token_endpoint_auth_methods,
+            vec!["private_key_jwt".to_string(), "none".to_string()],
+            "the declared preference comes first, then everything else published"
+        );
+    }
+
+    #[test]
+    fn a_client_publishing_only_its_preference_accepts_only_that() {
+        let client = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            chatgpt_shaped_document(None, Some("https://chatgpt.com/oauth/jwks.json")),
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap();
+        assert_eq!(
+            client.token_endpoint_auth_methods,
+            vec!["private_key_jwt".to_string()],
+            "absent `token_endpoint_auth_methods_supported` must not widen anything"
+        );
+    }
+
+    #[test]
+    fn rejects_a_published_auth_method_we_do_not_implement() {
+        let raw = r#"{
+            "client_id": "https://chatgpt.com/oauth/test-client/client.json",
+            "redirect_uris": ["https://chatgpt.com/connector/oauth/test-client"],
+            "token_endpoint_auth_method": "none",
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"],
+            "client_name": "ChatGPT"
+        }"#;
+        let document: ClientMetadataDocument = serde_json::from_str(raw).unwrap();
+        let error = validate_document(
+            "https://chatgpt.com/oauth/test-client/client.json",
+            document,
+            &chatgpt_redirect_patterns(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("client_secret_basic"));
     }
 
     #[test]
@@ -368,6 +457,7 @@ mod tests {
                 redirect_uris: vec!["https://chatgpt.com/connector/oauth/test-client".to_string()],
                 created_at: now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -383,6 +473,7 @@ mod tests {
                     ],
                     created_at: now_unix(),
                     token_endpoint_auth_method: "private_key_jwt".to_string(),
+                    token_endpoint_auth_methods: Vec::new(),
                     jwks: Some(serde_json::json!({"keys": []})),
                     jwks_uri: None,
                 },
