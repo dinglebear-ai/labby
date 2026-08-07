@@ -338,7 +338,10 @@ impl StdioOauthCoordinator {
                     message: result.as_ref().err().cloned().unwrap_or_default(),
                 },
             );
-            pending.notify.notify_waiters();
+            // Retain a permit when the waiter has not reached `notified()` yet;
+            // `notify_waiters()` can lose the wakeup in that race and make a
+            // completed browser flow appear to time out.
+            pending.notify.notify_one();
         }
         if result.is_ok() {
             callback_response(
@@ -391,15 +394,10 @@ async fn open_in_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     let mut command = Command::new("xdg-open");
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
-        command
-    };
+    let mut command = Command::new("explorer.exe");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     anyhow::bail!("automatic browser launch is not supported on this platform");
 
-    #[cfg(not(target_os = "windows"))]
     command.arg(url);
     let status = command.status().await.context("launch browser command")?;
     anyhow::ensure!(status.success(), "browser command exited with {status}");
