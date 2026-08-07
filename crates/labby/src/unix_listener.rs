@@ -445,6 +445,9 @@ fn validate_trusted_directory(
     metadata: &fs::Metadata,
     effective_uid: u32,
 ) -> Result<fs::Metadata> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = path;
+
     if metadata.file_type().is_symlink() {
         #[cfg(target_os = "macos")]
         {
