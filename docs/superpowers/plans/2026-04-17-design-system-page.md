@@ -442,7 +442,7 @@ cd apps/gateway-admin && pnpm dev --hostname 0.0.0.0 --port 4101
 
 Then verify in browser:
 
-- `http://10.1.0.6:4101/design-system` loads correctly
+- `http://192.0.2.6:4101/design-system` loads correctly
 - the page renders inside the admin shell
 - `AppSidebar` does not show a `Design System` nav item
 - local demo controls respond without backend dependency

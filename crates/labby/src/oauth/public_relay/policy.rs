@@ -115,13 +115,13 @@ mod tests {
     #[test]
     fn machine_id_accepts_live_names() {
         for value in [
-            "dookie",
-            "shart",
-            "squirts",
-            "steamy",
-            "steamy-wsl",
-            "tootie",
-            "vivobook-wsl",
+            "devhost",
+            "backuphost",
+            "edgehost",
+            "winhost",
+            "winhost-wsl",
+            "nashost",
+            "laptophost-wsl",
         ] {
             assert_eq!(MachineId::parse(value).unwrap().as_str(), value);
         }
@@ -140,17 +140,17 @@ mod tests {
     fn suffix_path_rejects_traversal_and_encoded_slash() {
         for value in [
             "/callback2/x",
-            "/callback/dookie/../x",
-            "/callback/dookie/%2e%2e/secret",
-            "/callback/dookie/%2E/secret",
-            "/callback/dookie/%2fsecret",
-            "/callback/dookie/%5csecret",
+            "/callback/devhost/../x",
+            "/callback/devhost/%2e%2e/secret",
+            "/callback/devhost/%2E/secret",
+            "/callback/devhost/%2fsecret",
+            "/callback/devhost/%5csecret",
             // Double-encoded traversal: `%252e%252e` never contains the
             // literal substring `%2e`, so a naive single-pattern check
             // misses it even though a downstream single-decode turns it
             // into `%2e%2e`.
-            "/callback/dookie/%252e%252e/secret",
-            "/callback/dookie/%2561secret",
+            "/callback/devhost/%252e%252e/secret",
+            "/callback/devhost/%2561secret",
         ] {
             assert!(
                 validate_suffix_path(value).is_err(),

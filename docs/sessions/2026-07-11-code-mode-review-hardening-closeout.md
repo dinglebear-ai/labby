@@ -17,7 +17,7 @@ The session began with a request to remove `.full-review/`, run `comprehensive-r
 
 ## Session Overview
 
-The Code Mode review-hardening branch was merged through PR 221, and live GitHub checks confirmed the post-merge CI, Incus image build, and release-please workflow succeeded. The Labby MCP Tailscale endpoint was also verified as `http://100.88.16.79:40100/mcp`.
+The Code Mode review-hardening branch was merged through PR 221, and live GitHub checks confirmed the post-merge CI, Incus image build, and release-please workflow succeeded. The Labby MCP Tailscale endpoint was also verified as `http://100.99.0.1:40100/mcp`.
 
 For this save pass, I used a clean session-log branch from `origin/main` because the canonical worktree at `/home/jmagar/workspace/lab` is currently on `codex/land-stranded-work` with unresolved merge entries. That stranded-work branch is real follow-up work; it was not touched by this artifact commit.
 
@@ -32,7 +32,7 @@ For this save pass, I used a clean session-log branch from `origin/main` because
 ## Key Findings
 
 - PR 221 is merged at `edb2e89ff027b25df3d959a6fb07b3041a88d7d1`.
-- Current `origin/main` HEAD is `5dc9861b0e6fbfc54b10864066ea2ee73cd92fc2`, which includes `ci: use tootie Tailscale endpoint for OpenWiki`.
+- Current `origin/main` HEAD is `5dc9861b0e6fbfc54b10864066ea2ee73cd92fc2`, which includes `ci: use nashost Tailscale endpoint for OpenWiki`.
 - The canonical worktree `/home/jmagar/workspace/lab` is on `codex/land-stranded-work`, ahead of `origin/main` by 9 commits, with unresolved entries in Palette files and one modified MCP resource handler.
 - The attached Codex worktree originally sat on deleted branch `codex/code-mode-review-hardening`; it was moved to `codex/save-session-2026-07-11` from `origin/main` for this artifact commit.
 - No transcript file was found under `/home/jmagar/.claude/projects/*3605403a-59f6-451d-9fb5-23425aeffe47-lab/*.jsonl`.
@@ -51,7 +51,7 @@ For this save pass, I used a clean session-log branch from `origin/main` because
 | modified | `.github/CLAUDE.md` |  | OpenWiki runner guidance | `5dc9861b` |
 | modified | `.github/actions/build-gateway-admin/action.yml` |  | Gateway admin build hardening | `edb2e89f` |
 | modified | `.github/workflows/ci.yml` |  | CI hardening for review fixes | `edb2e89f` |
-| modified | `.github/workflows/openwiki-update.yml` |  | Use tootie Tailscale endpoint for OpenWiki | `5dc9861b` |
+| modified | `.github/workflows/openwiki-update.yml` |  | Use nashost Tailscale endpoint for OpenWiki | `5dc9861b` |
 | modified | `.github/workflows/release.yml` |  | Release workflow hardening | `edb2e89f` |
 | modified | `apps/gateway-admin/components/allowed-users-panel.tsx` |  | Frontend review fix | `edb2e89f` |
 | modified | `apps/gateway-admin/lib/tooling-contract.test.ts` |  | Gateway admin tooling contract coverage | `edb2e89f` |
@@ -105,7 +105,7 @@ For this save pass, I used a clean session-log branch from `origin/main` because
 - Skills: used `superpowers:dispatching-parallel-agents`, `lavra:lavra-review`, and `vibin:save-to-md`.
 - Subagents: parallel agents were used for review issue implementation and review follow-up work.
 - GitHub CLI: verified PR 221 and workflow runs.
-- Labby/runtime probes: verified `http://100.88.16.79:40100/health` and `/mcp` auth behavior for the Tailscale endpoint.
+- Labby/runtime probes: verified `http://100.99.0.1:40100/health` and `/mcp` auth behavior for the Tailscale endpoint.
 
 ## Commands Executed
 
@@ -132,7 +132,7 @@ For this save pass, I used a clean session-log branch from `origin/main` because
 | --- | --- | --- |
 | Code Mode review hardening | Review findings and follow-up suggestions were not fully landed. | PR 221 merged the fixes and post-merge workflows passed. |
 | Incus SSH setup | Timeout, unsafe alias, Include reporting, and docs issues existed in review scope. | Fixes and documentation landed in `edb2e89f`. |
-| Labby MCP endpoint knowledge | The reachable Tailscale MCP endpoint was unclear. | Verified endpoint is `http://100.88.16.79:40100/mcp`. |
+| Labby MCP endpoint knowledge | The reachable Tailscale MCP endpoint was unclear. | Verified endpoint is `http://100.99.0.1:40100/mcp`. |
 | Review tracker | Parent bead `lab-mgeis` remained open after child fixes. | Parent bead is closed. |
 
 ## Verification Evidence
@@ -143,8 +143,8 @@ For this save pass, I used a clean session-log branch from `origin/main` because
 | `gh run view 29153607666 --json conclusion,headSha` | Latest main CI succeeds | `conclusion=success`, `headSha=5dc9861b` | pass |
 | `gh run view 29152908596 --json conclusion,headSha` | Incus image build succeeds | `conclusion=success`, `headSha=edb2e89f` | pass |
 | `gh run view 29153258197 --json conclusion,headSha` | release-please succeeds | `conclusion=success`, `headSha=edb2e89f` | pass |
-| `curl http://100.88.16.79:40100/health` | Labby gateway health responds | Returned `{"status":"ok","mode":"gateway-host",...}` | pass |
-| `curl -I http://100.88.16.79:40100/mcp` | MCP endpoint reachable and protected | Returned `401 Unauthorized` with OAuth protected-resource challenge | pass |
+| `curl http://100.99.0.1:40100/health` | Labby gateway health responds | Returned `{"status":"ok","mode":"gateway-host",...}` | pass |
+| `curl -I http://100.99.0.1:40100/mcp` | MCP endpoint reachable and protected | Returned `401 Unauthorized` with OAuth protected-resource challenge | pass |
 
 ## Risks and Rollback
 

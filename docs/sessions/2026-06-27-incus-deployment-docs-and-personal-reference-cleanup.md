@@ -128,8 +128,8 @@ The implementation was already committed before this save-session run. The obser
 | modified | `docs/generated/action-catalog.json`, `docs/generated/cli-help.md`, `docs/generated/mcp-help.json` | - | Regenerated docs from source after CLI/catalog changes | `340cd6c7` |
 | modified | `docs/sessions/**/*.md`, `docs/superpowers/**/*.md`, `docs/references/swag/repo.md`, and service/runtime docs | - | Scrubbed personal machine names/domains/IPs from historical and active docs | `340cd6c7` |
 | renamed | `docs/sessions/2026-05-31-agent-workstation-skill-overhaul-and-plugin.md` | `docs/sessions/2026-05-31-agent-os-skill-overhaul-and-plugin.md` | Neutralized archive filename | `340cd6c7` |
-| renamed | `docs/superpowers/plans/2026-04-12-backup-node-live-test-services.md` | `docs/superpowers/plans/2026-04-12-shart-live-test-services.md` | Neutralized archive filename | `340cd6c7` |
-| renamed | `docs/superpowers/specs/2026-04-12-backup-node-live-test-services-design.md` | `docs/superpowers/specs/2026-04-12-shart-live-test-services-design.md` | Neutralized archive filename | `340cd6c7` |
+| renamed | `docs/superpowers/plans/2026-04-12-backup-node-live-test-services.md` | `docs/superpowers/plans/2026-04-12-backuphost-live-test-services.md` | Neutralized archive filename | `340cd6c7` |
+| renamed | `docs/superpowers/specs/2026-04-12-backup-node-live-test-services-design.md` | `docs/superpowers/specs/2026-04-12-backuphost-live-test-services-design.md` | Neutralized archive filename | `340cd6c7` |
 | modified | `plugins/labby/skills/using-labby/SKILL.md` | - | Neutralized Code Mode upstream examples | `340cd6c7` |
 | modified | `plugins/labby/skills/using-labby/references/code-mode.md` | - | Neutralized Code Mode upstream examples | `340cd6c7` |
 | modified | `scripts/incus-bootstrap.sh` | - | Added Incus container/TUN/Tailscale bootstrap hardening | `340cd6c7`, `047042ed`, `f2ccb832` |

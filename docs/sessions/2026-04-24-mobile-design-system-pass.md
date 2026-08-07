@@ -163,7 +163,7 @@ Backend/resource-prompt exposure work:
 
 Critical shell commands observed during the session:
 
-- `cd /home/jmagar/workspace/lab/apps/gateway-admin && NEXT_PUBLIC_MOCK_DATA=true LAB_ALLOWED_DEV_ORIGINS=10.1.0.6 npx next dev --webpack -H 0.0.0.0 -p 3200`
+- `cd /home/jmagar/workspace/lab/apps/gateway-admin && NEXT_PUBLIC_MOCK_DATA=true LAB_ALLOWED_DEV_ORIGINS=192.0.2.6 npx next dev --webpack -H 0.0.0.0 -p 3200`
   - Result: dev server started on `0.0.0.0:3200` and was used for all live Chrome DevTools verification.
 
 - `rm -rf /home/jmagar/workspace/lab/apps/gateway-admin/.next`
@@ -297,7 +297,7 @@ Chrome DevTools MCP actions were used extensively instead of shell commands for 
 
 - [docs/design/design-system-contract.md](/home/jmagar/workspace/lab/docs/design/design-system-contract.md)
 - PR `#29`: `https://github.com/jmagar/lab/pull/29`
-- Live dev server used for verification: `http://10.1.0.6:3200`
+- Live dev server used for verification: `http://192.0.2.6:3200`
 
 # Open Questions
 

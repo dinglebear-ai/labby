@@ -29,7 +29,7 @@ Implemented explicit upstream disambiguation for gateway `invoke`, improved stru
 
 ## Key Findings
 
-- `invoke` previously sent the requested name directly to the upstream pool; qualified names like `steamy-windows-mcp::PowerShell` would not route correctly without stripping the upstream selector before upstream execution.
+- `invoke` previously sent the requested name directly to the upstream pool; qualified names like `winhost-windows-mcp::PowerShell` would not route correctly without stripping the upstream selector before upstream execution.
 - `ambiguous_tool` is part of the stable dispatcher error vocabulary, documented in `docs/dev/ERRORS.md`.
 - Logs already existed around upstream dispatch, but resolver failure logs did not include the caller's requested upstream selector.
 - Running the focused test without `--lib` compiled the `labby` binary test harness and rustc hit OOM; the lib test target passed and covered the new server test.

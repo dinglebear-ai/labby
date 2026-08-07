@@ -22,7 +22,7 @@
 | **ZFS version** | zfs-2.3.4-1 |
 | **Docker** | 27.5.1, Compose v2.40.3 |
 | **jq** | 1.6 |
-| **Network** | LAN 10.1.0.3/24, Tailscale 100.64.0.50, Docker 172.17.0.1/16 |
+| **Network** | LAN 192.0.2.3/24, Tailscale 100.64.0.50, Docker 172.17.0.1/16 |
 | **PATH** | `/usr/local/sbin:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:/bin` — `~/.local/bin` exists and IS in PATH |
 | **Existing containers** | arcane-agent, dockersocket, portainer_agent only |
 | **Existing backups** | syncoid backups from `node-b` and `controller` (production data — do NOT use for testing) |

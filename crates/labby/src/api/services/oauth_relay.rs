@@ -982,7 +982,7 @@ mod tests {
     async fn oauth_relay_admin_imports_valid_registry() {
         let (_dir, state) = test_state().await;
         let body = json!({
-            "dookie": "http://100.88.16.79:38935/callback/dookie"
+            "devhost": "http://100.99.0.1:38935/callback/devhost"
         });
         let response = admin_routes(state.clone())
             .layer(Extension(admin_auth_context()))
@@ -1007,15 +1007,15 @@ mod tests {
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
             .upsert(PublicRelayEntry::new(
-                MachineId::parse("squirts").unwrap(),
-                "http://100.75.111.118:38935/callback/squirts",
+                MachineId::parse("edgehost").unwrap(),
+                "http://100.99.0.3:38935/callback/edgehost",
                 None,
                 false,
             ))
             .await
             .unwrap();
         let body = json!({
-            "dookie": "http://100.88.16.79:38935/callback/dookie",
+            "devhost": "http://100.99.0.1:38935/callback/devhost",
             "bad": "http://127.0.0.1:38935/callback/bad"
         });
         let response = admin_routes(state.clone())
@@ -1035,13 +1035,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert!(
             manager
-                .entry(&MachineId::parse("squirts").unwrap())
+                .entry(&MachineId::parse("edgehost").unwrap())
                 .await
                 .is_some()
         );
         assert!(
             manager
-                .entry(&MachineId::parse("dookie").unwrap())
+                .entry(&MachineId::parse("devhost").unwrap())
                 .await
                 .is_none()
         );
@@ -1082,7 +1082,7 @@ mod tests {
                     .uri("/machines")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        r#"{"machine_id":"dookie","target_url":"http://100.88.16.79:38935/callback/dookie"}"#,
+                        r#"{"machine_id":"devhost","target_url":"http://100.99.0.1:38935/callback/devhost"}"#,
                     ))
                     .unwrap(),
             )
@@ -1095,7 +1095,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/machines/dookie")
+                    .uri("/machines/devhost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1108,7 +1108,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/machines/dookie/disable")
+                    .uri("/machines/devhost/disable")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1121,7 +1121,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/callback/dookie")
+                    .uri("/callback/devhost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1134,7 +1134,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/machines/dookie/enable")
+                    .uri("/machines/devhost/enable")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1147,7 +1147,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/machines/dookie")
+                    .uri("/machines/devhost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1159,7 +1159,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/machines/dookie")
+                    .uri("/machines/devhost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1176,7 +1176,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/callback/dookie?code=abc&state=secret-state")
+                    .uri("/callback/devhost?code=abc&state=secret-state")
                     .header("x-forwarded-host", "callback.tootie.tv")
                     .body(Body::empty())
                     .unwrap(),
@@ -1198,7 +1198,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/callback2/dookie")
+                    .uri("/callback2/devhost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1232,8 +1232,8 @@ mod tests {
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
             .upsert(PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+                MachineId::parse("devhost").unwrap(),
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 false,
             ))
@@ -1290,7 +1290,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/callback/dookie")
+                    .uri("/callback/devhost")
                     .header(header::CONTENT_LENGTH, "65537")
                     .body(Body::empty())
                     .unwrap(),
@@ -1307,8 +1307,8 @@ mod tests {
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
             .upsert(PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+                MachineId::parse("devhost").unwrap(),
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 true,
             ))
@@ -1320,7 +1320,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/callback/squirts")
+                    .uri("/callback/edgehost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1332,7 +1332,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/callback/dookie")
+                    .uri("/callback/devhost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1344,7 +1344,7 @@ mod tests {
         let too_large = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/callback/dookie?{large_query}"))
+                    .uri(format!("/callback/devhost?{large_query}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1369,8 +1369,8 @@ mod tests {
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
             .upsert(PublicRelayEntry::new(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
+                MachineId::parse("devhost").unwrap(),
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 false,
             ))
@@ -1385,7 +1385,7 @@ mod tests {
         );
         let request = Request::builder()
             .method("POST")
-            .uri("/callback/dookie")
+            .uri("/callback/devhost")
             .body(Body::from_stream(body_stream))
             .unwrap();
         assert!(
@@ -1402,11 +1402,11 @@ mod tests {
     async fn public_callback_returns_429_when_machine_forward_permits_are_exhausted() {
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
-        let machine = MachineId::parse("dookie").unwrap();
+        let machine = MachineId::parse("devhost").unwrap();
         manager
             .upsert(PublicRelayEntry::new(
                 machine.clone(),
-                "http://100.88.16.79:38935/callback/dookie",
+                "http://100.99.0.1:38935/callback/devhost",
                 None,
                 false,
             ))
@@ -1419,7 +1419,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/callback/dookie")
+                    .uri("/callback/devhost")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1519,8 +1519,8 @@ mod tests {
             let manager = state.public_relay.as_ref().unwrap().clone();
             manager
                 .upsert(PublicRelayEntry::new(
-                    MachineId::parse("dookie").unwrap(),
-                    "http://100.88.16.79:38935/callback/dookie",
+                    MachineId::parse("devhost").unwrap(),
+                    "http://100.99.0.1:38935/callback/devhost",
                     None,
                     false,
                 ))
@@ -1535,7 +1535,7 @@ mod tests {
                 app.clone().oneshot(
                     Request::builder()
                         .uri(
-                            "/callback/dookie?code=abc&state=secret-state&iss=https%3A%2F%2Fdinglebear.ai",
+                            "/callback/devhost?code=abc&state=secret-state&iss=https%3A%2F%2Fdinglebear.ai",
                         )
                         .header("x-request-id", "issuer-callback")
                         .body(Body::empty())
@@ -1548,7 +1548,7 @@ mod tests {
             let oversized = app
                 .oneshot(
                     Request::builder()
-                        .uri(format!("/callback/dookie?{oversized_query}"))
+                        .uri(format!("/callback/devhost?{oversized_query}"))
                         .header("x-request-id", "oversized-query")
                         .body(Body::empty())
                         .unwrap(),
@@ -1564,7 +1564,7 @@ mod tests {
         assert!(!logs.contains("secret-state"), "{logs}");
         assert!(!logs.contains("dinglebear.ai"), "{logs}");
         assert!(
-            !logs.contains("http://100.88.16.79:38935/callback/dookie"),
+            !logs.contains("http://100.99.0.1:38935/callback/devhost"),
             "{logs}"
         );
         for expected in [
@@ -1676,8 +1676,8 @@ mod tests {
             let manager = state.public_relay.as_ref().unwrap().clone();
             manager
                 .upsert(PublicRelayEntry::new(
-                    MachineId::parse("dookie").unwrap(),
-                    "http://100.88.16.79:38935/callback/dookie",
+                    MachineId::parse("devhost").unwrap(),
+                    "http://100.99.0.1:38935/callback/devhost",
                     None,
                     false,
                 ))
@@ -1702,7 +1702,7 @@ mod tests {
             let get = app
                 .oneshot(
                     Request::builder()
-                        .uri("/machines/dookie")
+                        .uri("/machines/devhost")
                         .body(Body::empty())
                         .unwrap(),
                 )

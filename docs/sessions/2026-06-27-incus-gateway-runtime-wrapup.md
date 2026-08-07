@@ -58,8 +58,8 @@ The working tree contained 160 dirty paths before this session's save file was a
 | modified | `apps/gateway-admin/components/gateway/gateway-table.tsx` | gateway disable confirmation UI | diff showed `ActionConfirmationDialog` |
 | modified | many docs/session/plan files | broad hostname/wording cleanup already present in the checkout | status and representative diffs showed renames and anonymized names |
 | renamed | `docs/sessions/2026-05-31-agent-os-skill-overhaul-and-plugin.md` | rename to workstation wording | `git status --short` showed `RM` |
-| renamed | `docs/superpowers/plans/2026-04-12-shart-live-test-services.md` | rename to backup-node wording | `git status --short` showed `RM` |
-| renamed | `docs/superpowers/specs/2026-04-12-shart-live-test-services-design.md` | rename to backup-node wording | `git status --short` showed `RM` |
+| renamed | `docs/superpowers/plans/2026-04-12-backuphost-live-test-services.md` | rename to backup-node wording | `git status --short` showed `RM` |
+| renamed | `docs/superpowers/specs/2026-04-12-backuphost-live-test-services-design.md` | rename to backup-node wording | `git status --short` showed `RM` |
 
 ## Beads Activity
 

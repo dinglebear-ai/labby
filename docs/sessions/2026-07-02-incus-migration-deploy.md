@@ -41,7 +41,7 @@ Feature-gated `stash`/`acp`/`nodes` behind cargo features for a lean gateway-onl
 
 - Merged (not rebased/squashed) main into the clean-break branch to preserve every commit on both sides; resolved conflicts keeping main's `#[cfg(feature = "nodes")]` gating **with** the branch's `.labby` paths.
 - Chose full bootstrap re-provision (once the `.labby` migration was merging into main, the earlier revert-collision risk dissolved).
-- TEI URL = `http://100.64.0.79:52000` (dookie Tailscale IP; verified 200 from container; `127.0.0.1` confirmed unreachable from the container).
+- TEI URL = `http://100.64.0.79:52000` (devhost Tailscale IP; verified 200 from container; `127.0.0.1` confirmed unreachable from the container).
 - Fixed uv centrally in the provision action (`cd $HOME` + `UV_NO_CONFIG=1`); siblings use absolute `$HOME` paths so no CWD fix needed there.
 
 ## Files Changed

@@ -44,7 +44,7 @@ Confirmed labby healthy in the `labby` Incus container; proved the Desktop conne
 
 ## Technical Decisions
 
-- Deploy method matched the observed convention (no deploy script exists): release build on dookie → `incus file push` to a temp name → stop/swap/start (avoids ETXTBSY on the running binary) → lightweight `labby-incus-<sha12>` tag.
+- Deploy method matched the observed convention (no deploy script exists): release build on devhost → `incus file push` to a temp name → stop/swap/start (avoids ETXTBSY on the running binary) → lightweight `labby-incus-<sha12>` tag.
 - Branch cut from origin/main at the v1.5.0 release commit so `CARGO_PKG_VERSION` embeds 1.5.0 rather than stale 1.4.1.
 - Second session doc created instead of amending the first — the first was already merged via PR #249, and post-push amendment is out of contract; this doc links it.
 
@@ -81,7 +81,7 @@ Observed but not touched: in-progress beads lab-0j6i8 (P1, gateway.reload Timeou
 
 ## Tools and Skills Used
 
-- **Shell (Bash)**: git/gh (branch, PR #249, squash-merge, tags), cargo (nextest, check, release build), incus (exec, file push/pull), journalctl pipelines, curl MCP handshakes, bd. Issues: none new this segment; dolt auto-backup i/o timeout warnings persist on every `bd` call (known squirts flakiness).
+- **Shell (Bash)**: git/gh (branch, PR #249, squash-merge, tags), cargo (nextest, check, release build), incus (exec, file push/pull), journalctl pipelines, curl MCP handshakes, bd. Issues: none new this segment; dolt auto-backup i/o timeout warnings persist on every `bd` call (known edgehost flakiness).
 - **File tools (Read/Write/Edit)**: fix + tests, session docs, agent memory.
 - **Skills**: `vibin:quick-push` (full flow), `vibin:save-to-md` (twice — constrained mid-session, standalone now).
 - **Background tasks**: release build ran backgrounded (`bpooaa7z0`), completed exit 0.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move the public Codex MCP OAuth callback relay from the standalone Python service on `squirts` into Labby while preserving `https://callback.tootie.tv/callback/{machine_id}[/{suffix}]`.
+**Goal:** Move the public Codex MCP OAuth callback relay from the standalone Python service on `edgehost` into Labby while preserving `https://callback.tootie.tv/callback/{machine_id}[/{suffix}]`.
 
 **Architecture:** Add a Labby product-domain module under `crates/labby/src/oauth/public_relay/` that owns target validation, registry persistence, live snapshots, forwarding policy, and public error mapping. API routes, CLI commands, and doctor checks are thin adapters over that domain layer. Public callback routes are unauthenticated but registry mutation is handler-level `lab:admin` and fails closed.
 
@@ -69,13 +69,13 @@ mod tests {
     #[test]
     fn machine_id_accepts_live_names() {
         for value in [
-            "dookie",
-            "shart",
-            "squirts",
-            "steamy",
-            "steamy-wsl",
-            "tootie",
-            "vivobook-wsl",
+            "devhost",
+            "backuphost",
+            "edgehost",
+            "winhost",
+            "winhost-wsl",
+            "nashost",
+            "laptophost-wsl",
         ] {
             assert_eq!(MachineId::parse(value).unwrap().as_str(), value);
         }
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn suffix_path_rejects_traversal_and_encoded_slash() {
-        for value in ["/callback2/x", "/callback/dookie/../x", "/callback/dookie/%2fsecret", "/callback/dookie/%5csecret"] {
+        for value in ["/callback2/x", "/callback/devhost/../x", "/callback/devhost/%2fsecret", "/callback/devhost/%5csecret"] {
             assert!(validate_suffix_path(value).is_err(), "{value:?} should reject");
         }
     }
@@ -300,25 +300,25 @@ Add to `types.rs` test module:
 ```rust
 #[test]
 fn relay_target_accepts_live_tailscale_shape() {
-    let machine = MachineId::parse("dookie").unwrap();
-    let target = RelayTarget::parse(machine, "http://100.88.16.79:38935/callback/dookie").unwrap();
-    assert_eq!(target.url.as_str(), "http://100.88.16.79:38935/callback/dookie");
+    let machine = MachineId::parse("devhost").unwrap();
+    let target = RelayTarget::parse(machine, "http://100.99.0.1:38935/callback/devhost").unwrap();
+    assert_eq!(target.url.as_str(), "http://100.99.0.1:38935/callback/devhost");
 }
 
 #[test]
 fn relay_target_rejects_unsafe_shapes() {
     let cases = [
-        "https://100.88.16.79:38935/callback/dookie",
-        "http://100.88.16.79:80/callback/dookie",
-        "http://127.0.0.1:38935/callback/dookie",
-        "http://169.254.169.254:38935/callback/dookie",
-        "http://100.88.16.79:38935/callback/other",
-        "http://user@100.88.16.79:38935/callback/dookie",
-        "http://100.88.16.79:38935/callback/dookie?code=abc",
-        "http://100.88.16.79:38935/callback/dookie#frag",
+        "https://100.99.0.1:38935/callback/devhost",
+        "http://100.99.0.1:80/callback/devhost",
+        "http://127.0.0.1:38935/callback/devhost",
+        "http://169.254.169.254:38935/callback/devhost",
+        "http://100.99.0.1:38935/callback/other",
+        "http://user@100.99.0.1:38935/callback/devhost",
+        "http://100.99.0.1:38935/callback/devhost?code=abc",
+        "http://100.99.0.1:38935/callback/devhost#frag",
     ];
     for value in cases {
-        let machine = MachineId::parse("dookie").unwrap();
+        let machine = MachineId::parse("devhost").unwrap();
         assert!(RelayTarget::parse(machine, value).is_err(), "{value} should reject");
     }
 }
@@ -432,13 +432,13 @@ Use this JSON fixture:
 
 ```rust
 const LIVE_REGISTRY_JSON: &str = r#"{
-  "dookie": "http://100.88.16.79:38935/callback/dookie",
-  "shart": "http://100.118.209.1:38935/callback/shart",
-  "squirts": "http://100.75.111.118:38935/callback/squirts",
-  "steamy": "http://100.119.83.39:38935/callback/steamy",
-  "steamy-wsl": "http://100.74.16.82:38935/callback/steamy-wsl",
-  "tootie": "http://100.120.242.29:38935/callback/tootie",
-  "vivobook-wsl": "http://100.104.50.17:38935/callback/vivobook-wsl"
+  "devhost": "http://100.99.0.1:38935/callback/devhost",
+  "backuphost": "http://100.99.0.4:38935/callback/backuphost",
+  "edgehost": "http://100.99.0.3:38935/callback/edgehost",
+  "winhost": "http://100.99.0.5:38935/callback/winhost",
+  "winhost-wsl": "http://100.99.0.6:38935/callback/winhost-wsl",
+  "nashost": "http://100.99.0.2:38935/callback/nashost",
+  "laptophost-wsl": "http://100.99.0.7:38935/callback/laptophost-wsl"
 }"#;
 ```
 
@@ -664,7 +664,7 @@ Add integration tests that build a router with auth enabled and protected routes
 async fn public_callback_bypasses_bearer_auth_and_protected_intercept() {
     let response = app
         .oneshot(Request::builder()
-            .uri("/callback/dookie?code=abc&state=secret-state")
+            .uri("/callback/devhost?code=abc&state=secret-state")
             .header("x-forwarded-host", "callback.tootie.tv")
             .body(Body::empty())
             .unwrap())
@@ -675,7 +675,7 @@ async fn public_callback_bypasses_bearer_auth_and_protected_intercept() {
 }
 ```
 
-Also test `/callback2/dookie` does not match and `/healthz` returns JSON.
+Also test `/callback2/devhost` does not match and `/healthz` returns JSON.
 
 - [ ] **Step 2: Run failing tests**
 
@@ -905,8 +905,8 @@ git commit -m "feat(oauth): add relay health and observability"
 Include these commands:
 
 ```bash
-ssh squirts 'docker exec swag curl -fsS --max-time 5 http://100.88.16.79:40100/health'
-ssh squirts 'docker exec callback-relay cat /app/.cache/callback-relay/registry.json' > /tmp/callback-relay-registry.json
+ssh edgehost 'docker exec swag curl -fsS --max-time 5 http://100.99.0.1:40100/health'
+ssh edgehost 'docker exec callback-relay cat /app/.cache/callback-relay/registry.json' > /tmp/callback-relay-registry.json
 labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
 curl -fsS --max-time 5 https://callback.tootie.tv/healthz
 ```
@@ -914,8 +914,8 @@ curl -fsS --max-time 5 https://callback.tootie.tv/healthz
 Include rollback:
 
 ```bash
-ssh squirts 'docker exec swag nginx -t'
-ssh squirts 'docker exec swag nginx -s reload'
+ssh edgehost 'docker exec swag nginx -t'
+ssh edgehost 'docker exec swag nginx -s reload'
 ```
 
 Describe restoring SWAG upstream to `callback-relay:39001`.

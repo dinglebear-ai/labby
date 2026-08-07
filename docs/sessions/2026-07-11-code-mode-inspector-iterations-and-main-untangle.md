@@ -18,7 +18,7 @@ Iterative asks against the deployed inline inspector: "I need to click the tools
 
 ## Session Overview
 
-Shipped four more inspector rounds (expandable tool-detail rows + host-delivered Input row; redundant status indicators removed; 300px body cap with internal scroll; a nine-item enrichment batch spanning Rust emitters and both widget surfaces). Diagnosed a "server unreachable" report as a squirts (SWAG edge) machine outage, not a labby fault. A repo-status audit then revealed the enrichment batch had been merged into `codex/palette-production-hardening` instead of main — because the primary checkout's branch was switched by a concurrent codex session mid-deploy. Recovered without losing any work: landed the batch on main via a verified merge (full 1813-test suite green first), normalized PR #223 with a content-no-op merge, rebuilt from real main, and redeployed. PR #223 subsequently merged cleanly.
+Shipped four more inspector rounds (expandable tool-detail rows + host-delivered Input row; redundant status indicators removed; 300px body cap with internal scroll; a nine-item enrichment batch spanning Rust emitters and both widget surfaces). Diagnosed a "server unreachable" report as a edgehost (SWAG edge) machine outage, not a labby fault. A repo-status audit then revealed the enrichment batch had been merged into `codex/palette-production-hardening` instead of main — because the primary checkout's branch was switched by a concurrent codex session mid-deploy. Recovered without losing any work: landed the batch on main via a verified merge (full 1813-test suite green first), normalized PR #223 with a content-no-op merge, rebuilt from real main, and redeployed. PR #223 subsequently merged cleanly.
 
 ## Sequence of Events
 
@@ -26,7 +26,7 @@ Shipped four more inspector rounds (expandable tool-detail rows + host-delivered
 2. **Redundancy cut (`018ce79f`).** From a live screenshot: header ok-dot + CONNECTED badge + lone "live" session pill all said nothing. Bridge-state badge now renders only while the card is empty (connecting/waiting/read only/malformed); session chips render only with 2+ runs. Found and fixed the asset's `.badge{display:inline-flex}` defeating the `hidden` attribute (`[hidden]{display:none!important}`).
 3. **Height cap (`80176d7e`).** Body region capped at 300px (~10 rows) with internal Aurora-thin scroll; header/footer pinned. Verified with a 20-call payload: card tops out at 368px (content scrollHeight 585).
 4. **Enrichment batch (`bf75ed4a`).** All nine suggestions: (server) failed executes now return a structured trace as `structuredContent` on the error result; trace-level `elapsed_ms` injected by the handler; per-call `start_ms` recorded at dispatch in `runner_drive.rs`; (widget) true waterfall bars, trace-level error kind/elapsed in the header, auto-expand of the first failed call, Artifacts disclosure row, `truncated` chip on Result, copy buttons on code blocks, describe markdown rendered as markdown, and light-theme support in the asset via host context / `openai.theme`.
-5. **Squirts outage diagnosis.** "Server isn't up" traced through: gateway healthy on container loopback → Incus proxy device `public-lab` (dookie `0.0.0.0:40100` → container `127.0.0.1:8765`) works → `lab.tootie.tv` and every tootie.tv subdomain return Cloudflare 523 → squirts off the tailnet (rx 0), no LAN ping, ARP INCOMPLETE, absent from UniFi clients. Machine-level outage on the SWAG edge; labby unaffected; direct URL `http://100.64.0.79:40100` given as workaround.
+5. **edgehost outage diagnosis.** "Server isn't up" traced through: gateway healthy on container loopback → Incus proxy device `public-lab` (devhost `0.0.0.0:40100` → container `127.0.0.1:8765`) works → `lab.tootie.tv` and every tootie.tv subdomain return Cloudflare 523 → edgehost off the tailnet (rx 0), no LAN ping, ARP INCOMPLETE, absent from UniFi clients. Machine-level outage on the SWAG edge; labby unaffected; direct URL `http://100.64.0.79:40100` given as workaround.
 6. **Repo status audit (vibin:repo-status).** Discovered `bf75ed4a` + merge `9a151abd` were NOT on main: the earlier "merge to main" ran against the primary checkout after a codex session had switched it to `codex/palette-production-hardening` — main's reflog never saw the merge, and PR #223 (draft, CI failing) carried the foreign commits.
 7. **The untangle (bead `lab-fl16e`).** Verified PR #223's CI failure came from the palette commit's own test (`crates/labby/src/cli/gateway/dispatch.rs:523`), not the batch. Created a temp main worktree, merged the inspector branch (`0f510ee0`), ran the FULL workspace suite on the merged tree (1813/1813 pass) plus a release build, pushed main. Merged main into the palette branch (verified empty content diff vs first parent) and pushed — GitHub dropped the foreign commits from PR #223's diff. The one remaining code-mode file in #223 (`trace.rs`, +39/−10) was the codex session's own legitimate review fix (drops `absolute_path` from emitted artifact receipts). Redeployed the container from the main-built binary; refreshed `~/.local/bin/labby` (found stale at 1.0.1 — a real file, not the assumed symlink) and `bin/labby`.
 8. **Aftermath (verified at save time).** `bf75ed4a` and `0f510ee0` are ancestors of `origin/main`; PR #223 merged at 06:32Z; main advanced further via PR #226; PRs #220 (release-please) and #221 remain open.
@@ -38,7 +38,7 @@ Shipped four more inspector rounds (expandable tool-detail rows + host-delivered
 - **Content-no-op merges untangle PRs without rewrites**: after the batch landed on main, merging main into the palette branch (empty diff vs first parent) updated the merge-base so GitHub dropped the foreign commits from #223's commit list and diff. No force pushes; the codex session's in-flight commit (`6f239a10`) and dirty files survived untouched.
 - **Turbopack rejects symlinked `node_modules` crossing filesystem roots** ("Symlink … points out of the filesystem root") — the temp-worktree web build had to reuse the primary checkout's export instead (tree hashes for `apps/gateway-admin` verified identical: `43ab5885…`).
 - **`~/.local/bin/labby` was a stale 1.0.1 copy**, not a symlink into `target/release` — PATH binary drift can silently survive `just build-release` cycles.
-- **The Incus proxy device is the reachability contract**: labby binds container-loopback `127.0.0.1:8765` by config; external access is dookie `:40100` via the `public-lab` proxy device; public HTTPS is Cloudflare → SWAG (squirts) → dookie. A 523 means the squirts hop, not the gateway.
+- **The Incus proxy device is the reachability contract**: labby binds container-loopback `127.0.0.1:8765` by config; external access is devhost `:40100` via the `public-lab` proxy device; public HTTPS is Cloudflare → SWAG (edgehost) → devhost. A 523 means the edgehost hop, not the gateway.
 - **In-sandbox search-hit entries carry `signature`/`path`/`kind`/`score`** (preamble closure) and MCP Apps hosts deliver tool-call arguments to widgets — both enabled "show the tool" and "show the input" without server changes.
 
 ## Technical Decisions
@@ -94,9 +94,9 @@ Merge commits created outside this branch: `0f510ee0` (batch → main, pushed), 
 - **Frontend**: `tsx --test` (node test runner + happy-dom), `tsc --noEmit`, `eslint`, `pnpm build` (Next/Turbopack).
 - **agent-browser CLI** (via `npx`; mise shim broken all session): screenshot/interaction verification of every widget round, including a preview-harness quoting bug (shell heredoc collapsing `\\n`) that briefly masqueraded as a widget failure.
 - **incus**: file push / exec / systemctl for three container deploys; config inspection (proxy device) during the outage diagnosis.
-- **runifi CLI + tailscale**: UniFi client-table and tailnet evidence for the squirts outage.
+- **runifi CLI + tailscale**: UniFi client-table and tailnet evidence for the edgehost outage.
 - **beads (`bd`)**: create/claim/close per round.
-- Degraded/unavailable: squirts-hosted services (SWAG edge down); the session's labby MCP connection dropped when squirts died.
+- Degraded/unavailable: edgehost-hosted services (SWAG edge down); the session's labby MCP connection dropped when edgehost died.
 
 ## Commands Executed
 
@@ -113,7 +113,7 @@ Merge commits created outside this branch: `0f510ee0` (batch → main, pushed), 
 - **First rebuild raced the same divergence** — the `--ff-only` failure was swallowed by a pipe (`| tail -1`) and the build proceeded against pre-merge sources; caught and rebuilt after the real merge. Lesson: don't chain `… | tail && build`.
 - **Turbopack symlinked-node_modules rejection** in the temp worktree — worked around by building the export in the primary checkout (tree-hash-verified identical) and copying `out/`.
 - **mise trust** required for the temp worktree; **`[hidden]` vs explicit `display`** CSS gotcha in the asset; **stale `~/.local/bin/labby`** (1.0.1 real file) refreshed; **preview-harness heredoc quoting** produced a JS SyntaxError unrelated to the widget.
-- **squirts hard down** (external): no L2/L3/tailnet/UniFi presence — needs a physical power cycle; not resolved from this session.
+- **edgehost hard down** (external): no L2/L3/tailnet/UniFi presence — needs a physical power cycle; not resolved from this session.
 
 ## Behavior Changes (Before/After)
 
@@ -151,7 +151,7 @@ Merge commits created outside this branch: `0f510ee0` (batch → main, pushed), 
 
 - **Rebasing the foreign commits out of the palette branch** — rejected: history rewrite + force push on a branch actively worked by another session, against the "lose no work" constraint.
 - **Cherry-picking the codex `trace.rs` privacy fix (drops `absolute_path`) onto main** — left to land via PR #223 (it did) rather than duplicating the hunk.
-- **`tailscale serve` inside the labby container** as an HTTPS fallback during the squirts outage — offered, not executed.
+- **`tailscale serve` inside the labby container** as an HTTPS fallback during the edgehost outage — offered, not executed.
 
 ## References
 
@@ -168,7 +168,7 @@ Merge commits created outside this branch: `0f510ee0` (batch → main, pushed), 
 
 ## Next Steps
 
-1. Power-cycle **squirts** — the SWAG edge is still hard down; until then use `http://100.64.0.79:40100` for the gateway.
+1. Power-cycle **edgehost** — the SWAG edge is still hard down; until then use `http://100.64.0.79:40100` for the gateway.
 2. Exercise the enriched inspector from a real host (failed run, waterfall, artifacts, Input row) — everything verified in-browser but not yet on-device post-batch.
 3. After this log lands on main (rides this branch's next merge), remove this worktree/branch: `git worktree remove .claude/worktrees/code-inspector-redesign-57a0f0 && git branch -d claude/code-inspector-redesign-57a0f0`.
 4. Open follow-ups: `lab-hth45` (pre-existing test failure), `lab-bbzs3` (legacy search/execute compat tool removal), PR #220 (release timing — the next release now includes all inspector work), PR #221 (rebase against the redesigned inspector).

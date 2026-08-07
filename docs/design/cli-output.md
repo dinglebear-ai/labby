@@ -76,7 +76,7 @@ Host         Address              ZFS Dataset
 controller       controller:29229         cache/appdata
 backup-node        backup-node:22             backup/appdata
 node-b      node-b:22           rpool/appdata
-vivobook-wsl vivobook-wsl:22      -
+laptophost-wsl laptophost-wsl:22      -
 ```
 
 Style rules:

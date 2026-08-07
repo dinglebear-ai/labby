@@ -24,11 +24,11 @@ A multi-phase session covering: (1) debugging and fixing 3 separate root causes 
 
 ## Sequence of Events
 
-1. Investigated why only `vivobook` was checking in despite 5 nodes being deployed — found 3 distinct bugs
+1. Investigated why only `laptophost` was checking in despite 5 nodes being deployed — found 3 distinct bugs
 2. Fixed `serve.rs` reading wrong config key (`device.master` vs `node.controller`)
 3. Fixed `identity.rs` not reading `/etc/HOSTNAME` (uppercase) on Unraid systems
 4. Manually corrected stale `node-token` on `controller` and deployed fixed binary to all nodes
-5. Started `lab serve` on each node; confirmed node-b, controller, workstation, vivobook all checking in
+5. Started `lab serve` on each node; confirmed node-b, controller, workstation, laptophost all checking in
 6. Investigated why `/nodes` page showed all `—` for metrics — found `send_status_update_async` hardcoded `Value::Null` for all fields
 7. Implemented `sysmetrics.rs` using `sysinfo` crate for CPU, memory, disk, IPs, uptime, CPU temp
 8. Extended `NodeStatus` with `health`, `version`, `uptime_seconds`, `cores`, `cpu_clock_mhz`, `cpu_temp_c`, `total_memory_bytes`, `total_storage_bytes`
@@ -98,7 +98,7 @@ LAB_TOKEN=$(grep LAB_MCP_HTTP_TOKEN ~/.labby/.env | cut -d= -f2)
 curl -s -H "Authorization: Bearer $LAB_TOKEN" http://localhost:8765/v1/nodes/node-b
 
 # Deploy after each fix
-target/release/lab deploy run --yes node-b controller workstation-wsl vivobook-wsl
+target/release/lab deploy run --yes node-b controller workstation-wsl laptophost-wsl
 
 # Verify log endpoint
 curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json" \
@@ -125,7 +125,7 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 
 | Area | Before | After |
 |------|--------|-------|
-| Node connectivity | Only `vivobook` connected; others resolved as `Master` | All 4 nodes (node-b, controller, workstation, vivobook) connected as `NonMaster` |
+| Node connectivity | Only `laptophost` connected; others resolved as `Master` | All 4 nodes (node-b, controller, workstation, laptophost) connected as `NonMaster` |
 | Nodes page metrics | All metric cards showed `—` | Real CPU%, memory, disk, uptime, temp, cores, IPs per node |
 | Node status | All nodes showed `UNKNOWN`, healthy count = 0 | All nodes show `HEALTHY`, healthy count = 4 |
 | Log viewer | Full-screen inline `NodeLogConsole` with filters/pills embedded in each card | Compact "Logs" button per card; dialog opens terminal-style stream |
@@ -138,7 +138,7 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 
 | Command | Expected | Actual | Status |
 |---------|----------|--------|--------|
-| `target/release/lab nodes list --json` | 4 connected nodes | node-b, workstation, controller, vivobook all `connected: true` | ✓ |
+| `target/release/lab nodes list --json` | 4 connected nodes | node-b, workstation, controller, laptophost all `connected: true` | ✓ |
 | `GET /v1/nodes/node-b` (with auth) | `cpu_percent` non-null | `cpu_percent: 7.97, memory_used_bytes: 9400700928, health: "healthy"` | ✓ |
 | `cd apps/gateway-admin && pnpm build` | `✓ Compiled successfully` | `✓ Compiled successfully in 2.3s` | ✓ |
 | `cargo build --release --all-features` | No errors | `(1 crates compiled)` / success | ✓ |

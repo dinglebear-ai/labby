@@ -7,7 +7,7 @@ updated: "2026-07-30"
 # Public OAuth Callback Relay Cutover
 
 This runbook moves `https://callback.tootie.tv/callback/{machine_id}[/{suffix}]`
-from the standalone Python `callback-relay` container on `squirts` into Labby.
+from the standalone Python `callback-relay` container on `edgehost` into Labby.
 
 The Labby relay is transport-only. It forwards the final OAuth callback request
 to the registered machine target. Codex or the MCP client still owns PKCE,
@@ -26,7 +26,7 @@ mcp_oauth_callback_url = "https://callback.tootie.tv/callback/<machine>"
 Valid Labby public relay targets look like:
 
 ```text
-http://100.88.16.79:38935/callback/<machine>
+http://100.99.0.1:38935/callback/<machine>
 ```
 
 The host must be a concrete Tailscale CGNAT address in `100.64.0.0/10` (that
@@ -39,13 +39,13 @@ loopback, link-local, or non-Tailscale IPs are rejected.
 Verify Labby is reachable through SWAG:
 
 ```bash
-ssh squirts 'docker exec swag curl -fsS --max-time 5 http://100.88.16.79:40100/health'
+ssh edgehost 'docker exec swag curl -fsS --max-time 5 http://100.99.0.1:40100/health'
 ```
 
 Export the current standalone relay registry:
 
 ```bash
-ssh squirts 'docker exec callback-relay cat /app/.cache/callback-relay/registry.json' > /tmp/callback-relay-registry.json
+ssh edgehost 'docker exec callback-relay cat /app/.cache/callback-relay/registry.json' > /tmp/callback-relay-registry.json
 ```
 
 Import it into Labby's sidecar registry:
@@ -64,13 +64,13 @@ its in-memory snapshot.
 ## Cutover
 
 Update the SWAG `callback.tootie.tv` upstream from `callback-relay:39001` to the
-Labby HTTP service on dookie.
+Labby HTTP service on devhost.
 
 Validate the SWAG config and reload:
 
 ```bash
-ssh squirts 'docker exec swag nginx -t'
-ssh squirts 'docker exec swag nginx -s reload'
+ssh edgehost 'docker exec swag nginx -t'
+ssh edgehost 'docker exec swag nginx -s reload'
 ```
 
 Verify the public shallow health endpoint:
@@ -103,8 +103,8 @@ callback-relay:39001
 Then validate and reload SWAG:
 
 ```bash
-ssh squirts 'docker exec swag nginx -t'
-ssh squirts 'docker exec swag nginx -s reload'
+ssh edgehost 'docker exec swag nginx -t'
+ssh edgehost 'docker exec swag nginx -s reload'
 ```
 
 Recheck the public endpoint after rollback:

@@ -13,7 +13,7 @@ pr: "#25 — fix(auth): gateway admin auth, upstream OAuth, and dispatch fixes �
 
 ## User Request
 
-Fix phone-home 401 auth failures and deploy the `lab` binary to `workstation-wsl`, `vivobook-wsl`, `backup-node`, `node-b`, and `controller`. Deployed hosts should self-register with the master (`node-a:8765`) after successful install.
+Fix phone-home 401 auth failures and deploy the `lab` binary to `workstation-wsl`, `laptophost-wsl`, `backup-node`, `node-b`, and `controller`. Deployed hosts should self-register with the master (`node-a:8765`) after successful install.
 
 ## Session Overview
 
@@ -31,7 +31,7 @@ The prior session had wired up a phone-home stage in the deploy pipeline that ru
 8. Copied new binary to node-a (`/usr/local/bin/lab`), killed old debug master process (PID 745988), restarted with new release binary
 9. Tested from node-b: `lab device hello --master http://node-a:8765` — succeeded (no error output)
 10. Verified `lab device list` — node-b appeared in the fleet store
-11. Ran full 5-host deploy: `lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller`
+11. Ran full 5-host deploy: `lab deploy run -y workstation-wsl laptophost-wsl backup-node node-b controller`
 12. All 5 hosts reached `phone_home` stage with `succeeded: ✓`; 3 devices visible in fleet store post-deploy
 
 ## Key Findings
@@ -79,9 +79,9 @@ lab device list
 # → node-b  ✓  non-master  0  0
 
 # Full 5-host deploy
-lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller
+lab deploy run -y workstation-wsl laptophost-wsl backup-node node-b controller
 # → all 5: reached_stage=phone_home  succeeded=✓
-# → device list shows: localhost, node-b, vivobook
+# → device list shows: localhost, node-b, laptophost
 ```
 
 ## Errors Encountered
@@ -112,8 +112,8 @@ lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller
 | `cargo build --release --all-features` | success | success | ✓ |
 | `ssh node-b 'lab device hello --master http://node-a:8765 2>&1'` | no output (success) | no output | ✓ |
 | `lab device list` (after node-b phone-home) | node-b in list | node-b ✓ non-master | ✓ |
-| `lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller` | 5/5 succeeded | 5/5 succeeded | ✓ |
-| `lab device list` (after full deploy) | devices registered | localhost, node-b, vivobook | ✓ (partial) |
+| `lab deploy run -y workstation-wsl laptophost-wsl backup-node node-b controller` | 5/5 succeeded | 5/5 succeeded | ✓ |
+| `lab device list` (after full deploy) | devices registered | localhost, node-b, laptophost | ✓ (partial) |
 
 ## Risks and Rollback
 
@@ -123,7 +123,7 @@ lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller
 ## Open Questions
 
 - `workstation-wsl` phone-home reported `deploy.phone_home.failed` with `error=verify_failed`. The binary deployed successfully (reached `phone_home` stage), but the phone-home SSH command itself failed. Possible cause: `workstation-wsl` may not have TCP connectivity to `node-a:8765` (different WSL network namespace), or the binary ran on a version that couldn't read the config. Not investigated.
-- Only 3 devices appeared in the fleet store after deploying 5 hosts. Some hosts may have registered under unexpected short hostnames (e.g., `vivobook` instead of `vivobook-wsl`). `resolve_local_hostname()` returns the OS hostname, not the SSH alias.
+- Only 3 devices appeared in the fleet store after deploying 5 hosts. Some hosts may have registered under unexpected short hostnames (e.g., `laptophost` instead of `laptophost-wsl`). `resolve_local_hostname()` returns the OS hostname, not the SSH alias.
 - The master on node-a is running as a manually-started process (not systemd). If node-a reboots, the device fleet store is lost and the master does not auto-restart. No systemd unit exists for it.
 
 ## Next Steps

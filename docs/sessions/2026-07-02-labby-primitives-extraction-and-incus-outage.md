@@ -23,7 +23,7 @@ Diagnosed and fixed a split-brain MCP gateway (two `labby serve` processes compe
 
 ## Sequence of Events
 
-1. Investigated "disconnected MCP servers" complaint — found two `labby serve` processes running simultaneously on the `dookie` host (one bare-metal, one inside an Incus container), each with its own independent upstream connection pool, causing inconsistent connected/disconnected counts depending on which one answered a query.
+1. Investigated "disconnected MCP servers" complaint — found two `labby serve` processes running simultaneously on the `devhost` host (one bare-metal, one inside an Incus container), each with its own independent upstream connection pool, causing inconsistent connected/disconnected counts depending on which one answered a query.
 2. Killed the orphaned bare-metal `labby serve` process after confirming SWAG's active proxy config routed production traffic to the Incus container, not to it.
 3. Found and removed a stale, duplicate SWAG reverse-proxy config (`lab.subdomain.conf`) that was superseded by a newer `labby.subdomain.conf` pointing at the same backend under a different hostname; backed up before deleting.
 4. Discussed and scoped a plan to extract `labby-gateway`/`labby-auth`/`labby-codemode`'s common vocabulary types out of the heavy `labby-apis` SDK crate, after tracing exactly which types were used where and confirming `labby-apis`'s remaining ~20 "product SDK" framing was stale (those services had already been removed; the real remaining coupling was `HttpClient`/SSH/4 leftover service clients).
@@ -42,7 +42,7 @@ Diagnosed and fixed a split-brain MCP gateway (two `labby serve` processes compe
 
 ## Key Findings
 
-- **Split-brain gateway root cause**: `crates/labby/src/dispatch/setup/incus.rs`'s bootstrap logic and a manually-started bare-metal process on `dookie` were both alive; SWAG's active proxy config (`lab.subdomain.conf`, since removed) pointed at the Incus container via a host port-forward, so the two processes maintained independent, inconsistent upstream connection state.
+- **Split-brain gateway root cause**: `crates/labby/src/dispatch/setup/incus.rs`'s bootstrap logic and a manually-started bare-metal process on `devhost` were both alive; SWAG's active proxy config (`lab.subdomain.conf`, since removed) pointed at the Incus container via a host port-forward, so the two processes maintained independent, inconsistent upstream connection state.
 - **Critical security bug found in review, not by me first**: `crates/labby-primitives/src/ssrf.rs` — `Url::host_str()` serializes IPv6 hosts with brackets (`"[::1]"`), which matches neither the bare `"::1"` string the code denylisted nor `IpAddr::from_str` (brackets aren't valid IP-address grammar), so `check_ip_not_private` never ran for bracketed IPv6 literals. Verified empirically with a standalone probe before fixing. Fixed by matching on the typed `Url::host()` enum instead of manual string parsing (`crates/labby-primitives/src/ssrf.rs:181-197` after the fix).
 - **Production outage root cause**: `crates/labby/src/node/log_store.rs`/`crates/labby/src/node/enrollment/store.rs` still resolve their home directory as `~/.lab/` — a stale, pre-"lab→labby"-rename path. The systemd unit's sandbox (`ProtectHome=read-only` + an explicit `ReadWritePaths=` allowlist) only allowlists `~/.labby`, not `~/.lab`, so on a fresh service start (triggered by my restart) that subsystem's writes are blocked by the sandbox and the whole process exits(1), which then hits `StartLimitBurst=5` and lands in `failed`. Confirmed via `journalctl -u labby`: `ERROR open node enrollment store: write /home/labby/.lab/node-enrollments.tmp: Read-only file system (os error 30)`.
 - **Compounding self-inflicted issue during diagnosis**: while testing, I ran `mkdir -p /home/labby/.lab` as root (outside the sandboxed service context), which created that directory owned by `root:root` (0755) — even less accessible to the `labby`-user-run service than before my test. Caught and fixed with `chown labby:labby`, but the underlying `.lab`-vs-`.labby` code bug remains unfixed.
@@ -89,7 +89,7 @@ Diagnosed and fixed a split-brain MCP gateway (two `labby serve` processes compe
 
 ## Tools and Skills Used
 
-- **Shell (`Bash`)**: git, cargo (check/test/clippy/fmt/build), `incus`/`incus exec`, `gh` (PR/CI/issue/API), `systemctl`/`journalctl` inside the container, `bd` (beads CLI), `ssh` to `squirts` for SWAG config. No failures beyond the two safety-classifier blocks (both correct, not tool failures) and the one accidental-wrong-directory mistake (self-corrected).
+- **Shell (`Bash`)**: git, cargo (check/test/clippy/fmt/build), `incus`/`incus exec`, `gh` (PR/CI/issue/API), `systemctl`/`journalctl` inside the container, `bd` (beads CLI), `ssh` to `edgehost` for SWAG config. No failures beyond the two safety-classifier blocks (both correct, not tool failures) and the one accidental-wrong-directory mistake (self-corrected).
 - **File tools (`Read`/`Edit`/`Write`)**: used throughout for code, docs, and the two long documents produced (plan + this session log). No issues.
 - **`Agent` tool**: 3 parallel review subagents (`pr-review-toolkit:code-reviewer`, `pr-review-toolkit:pr-test-analyzer`, `pr-review-toolkit:comment-analyzer`) against PR #170 — all completed successfully and returned independently useful, non-overlapping findings.
 - **Skills**: `pr-review-toolkit:review-pr` (drove the 3-agent review); `vibin:repo-status` (worktree/branch audit — required a `bash <script>` workaround since the script wasn't executable via direct invocation); `superpowers:systematic-debugging` (early split-brain investigation); `superpowers:writing-plans` (the codemode-pauses plan); `vibin:save-to-md` (this document).
@@ -128,7 +128,7 @@ Diagnosed and fixed a split-brain MCP gateway (two `labby serve` processes compe
 |---|---|---|
 | `labby-gateway`/`labby-auth`/`labby-codemode` dependency graph | Depended on the full `labby-apis` SDK crate (HTTP client, SSH, service clients) | Depend on `labby-primitives` (zero-dep leaf) and `labby-runtime` only; `labby-apis` is gone from their graphs |
 | SSRF validation | Bracketed IPv6 literals (`https://[::1]/...`) silently bypassed both host- and IP-based private-address checks | Routed through the typed `Url::host()` enum; all IPv6 forms correctly checked |
-| `dookie` MCP gateway topology | Two independent `labby serve` processes (bare-metal + Incus) both alive, causing inconsistent connection state | Bare-metal process killed; single Incus-hosted gateway is the only one running |
+| `devhost` MCP gateway topology | Two independent `labby serve` processes (bare-metal + Incus) both alive, causing inconsistent connection state | Bare-metal process killed; single Incus-hosted gateway is the only one running |
 | `lab.tootie.tv` | Served by a stale, duplicate SWAG proxy config | Config removed; `labby.tootie.tv` is the sole route to the same backend |
 | Production `labby.service` | Running continuously for hours, serving traffic normally | **`failed` state, 502 on the public endpoint** — this session's restart exposed a latent path bug that is not yet fixed |
 

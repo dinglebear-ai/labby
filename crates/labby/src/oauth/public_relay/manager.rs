@@ -271,19 +271,19 @@ mod tests {
         let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
         store
             .save_entries(vec![live_entry(
-                "dookie",
-                "http://100.88.16.79:38935/callback/dookie",
+                "devhost",
+                "http://100.99.0.1:38935/callback/devhost",
             )])
             .await
             .unwrap();
         let manager = PublicRelayRegistryManager::load(store).await.unwrap();
 
         let target = manager
-            .resolve(&MachineId::parse("dookie").unwrap())
+            .resolve(&MachineId::parse("devhost").unwrap())
             .await
             .unwrap();
 
-        assert_eq!(target.redacted_label(), "dookie@100.88.16.79");
+        assert_eq!(target.redacted_label(), "devhost@100.99.0.1");
     }
 
     #[tokio::test]
@@ -293,8 +293,8 @@ mod tests {
         let manager = PublicRelayRegistryManager::load(store).await.unwrap();
         let report = super::super::store::parse_registry_value(
             serde_json::to_value(vec![live_entry(
-                "tootie",
-                "http://100.120.242.29:38935/callback/tootie",
+                "nashost",
+                "http://100.99.0.2:38935/callback/nashost",
             )])
             .unwrap(),
         )
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(manager.count().await, 1);
         assert!(
             manager
-                .resolve(&MachineId::parse("tootie").unwrap())
+                .resolve(&MachineId::parse("nashost").unwrap())
                 .await
                 .is_ok()
         );
@@ -335,7 +335,7 @@ mod tests {
                 manager
                     .upsert(live_entry(
                         &format!("m{i}"),
-                        &format!("http://100.88.16.79:38935/callback/m{i}"),
+                        &format!("http://100.99.0.1:38935/callback/m{i}"),
                     ))
                     .await
                     .expect("concurrent upsert should succeed")
@@ -378,7 +378,7 @@ mod tests {
         store
             .save_entries(vec![live_entry(
                 "seed",
-                "http://100.88.16.79:38935/callback/seed",
+                "http://100.99.0.1:38935/callback/seed",
             )])
             .await
             .unwrap();
@@ -401,7 +401,7 @@ mod tests {
                 manager
                     .upsert(live_entry(
                         &format!("c{i}"),
-                        &format!("http://100.88.16.79:38935/callback/c{i}"),
+                        &format!("http://100.99.0.1:38935/callback/c{i}"),
                     ))
                     .await
                     .expect("concurrent upsert should succeed");

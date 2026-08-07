@@ -106,7 +106,7 @@ The session included live bootstrap work against the operator's environment. A t
 | `cargo check -p labby --all-features` | Passed after implementation and after rebase. |
 | `cargo run -p labby --all-features -- --json setup incus-ssh bootstrap --dry-run --include ...` | Verified filtered dry-run behavior and config-install defaults. |
 | `cargo run -p labby --all-features -- --json setup incus-ssh bootstrap --dry-run --include ... --install-config` | Verified explicit config-install dry-run behavior. |
-| `grep -RInE 'agent-os|dookie|squirts|tootie|shart|vivobook|steamy|100\\.109|100\\.120|10\\.1\\.0\\.1|tower' ...` | Returned no output after neutralizing tests and removing personal-specific code. |
+| `grep -RInE 'agent-os|devhost|edgehost|nashost|backuphost|laptophost|winhost|100\\.109|100\\.120|10\\.1\\.0\\.1|tower' ...` | Returned no output after neutralizing tests and removing personal-specific code. |
 | `git pull --rebase origin main` | Rebased the feature commit successfully. |
 | `git push` | Pushed `main` with feature commit `c9d8e42c`. |
 | `bd comment lab-s449d ... --json` | Added a correction note documenting the final removal of personal-device-specific behavior. |

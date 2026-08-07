@@ -52,7 +52,7 @@ mod tests {
             "partial": true,
         }));
         let error = completed_tool_error(
-            "claude-dookie::Bash",
+            "claude-devhost::Bash",
             &result,
             CodeModeToolSafetyHints::default(),
         );
