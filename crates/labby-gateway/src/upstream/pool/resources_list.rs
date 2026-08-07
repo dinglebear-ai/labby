@@ -22,11 +22,11 @@ use super::capability_call::{
     CapabilityCallError, bounded_service_error_text, timed_capability_call,
 };
 use super::connect::connect_upstream;
+use super::discover::routable_upstream_peers;
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
 };
-use super::discover::routable_upstream_peers;
 use super::helpers::{
     bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri,
     upstream_discovery_timeout, upstream_transport,
