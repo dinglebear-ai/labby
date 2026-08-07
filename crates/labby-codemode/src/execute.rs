@@ -54,9 +54,11 @@ const CODE_MODE_RESPONSE_RESERVE_MS: u64 = 500;
 
 fn execution_timeout(timeout_ms: u64) -> Duration {
     let timeout_ms = timeout_ms.max(1);
-    let reserve = (timeout_ms >= CODE_MODE_RESPONSE_RESERVE_MS.saturating_mul(2))
-        .then_some(CODE_MODE_RESPONSE_RESERVE_MS)
-        .unwrap_or(0);
+    let reserve = if timeout_ms >= CODE_MODE_RESPONSE_RESERVE_MS.saturating_mul(2) {
+        CODE_MODE_RESPONSE_RESERVE_MS
+    } else {
+        0
+    };
     Duration::from_millis(timeout_ms - reserve)
 }
 

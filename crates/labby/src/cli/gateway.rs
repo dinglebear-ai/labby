@@ -184,7 +184,10 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
     // default signal disposition kills the process before the drain and
     // orphans spawned stdio upstream children.
     let result = tokio::select! {
-        result = dispatch_command(&lazy_manager, config, args, format) => result,
+        // GatewayCommand contains large clap subcommands. Keep the parsed
+        // command on the heap while the async dispatcher runs so one-shot CLI
+        // invocations do not reserve a large stack frame.
+        result = dispatch_command(&lazy_manager, config, Box::new(args), format) => result,
         code = shutdown_signal() => Ok(ExitCode::from(code)),
     };
     // INVARIANT: drain the upstream pool before the one-shot CLI exits, but

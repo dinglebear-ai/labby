@@ -900,6 +900,8 @@ async fn gateway_servers_marks_oauth_catalog_rows_as_request_scoped_not_healthy_
             name,
             tools: Default::default(),
             exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            resource_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            prompt_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             proxy_resources: false,
             prompt_count: 0,
             resource_count: 0,

@@ -408,8 +408,8 @@ impl Connected<IncomingStream<'_, AuthorizedUnixListener>> for UnixConnectInfo {
     }
 }
 
-fn validate_trusted_directory(metadata: &fs::Metadata, effective_uid: u32) -> Result<()> {
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+fn validate_real_directory(metadata: &fs::Metadata, effective_uid: u32) -> Result<()> {
+    if !metadata.is_dir() {
         anyhow::bail!(
             "Unix socket directory chain must contain only real directories, not symlinks or special files"
         );
@@ -429,8 +429,46 @@ fn validate_trusted_directory(metadata: &fs::Metadata, effective_uid: u32) -> Re
     Ok(())
 }
 
-fn validate_final_parent(metadata: &fs::Metadata, effective_uid: u32) -> Result<()> {
-    validate_trusted_directory(metadata, effective_uid)?;
+#[cfg(target_os = "macos")]
+fn macos_system_alias_target(path: &Path) -> Option<&'static Path> {
+    if path == Path::new("/var") {
+        Some(Path::new("/private/var"))
+    } else if path == Path::new("/tmp") {
+        Some(Path::new("/private/tmp"))
+    } else {
+        None
+    }
+}
+
+fn validate_trusted_directory(
+    path: &Path,
+    metadata: &fs::Metadata,
+    effective_uid: u32,
+) -> Result<fs::Metadata> {
+    if metadata.file_type().is_symlink() {
+        #[cfg(target_os = "macos")]
+        {
+            if metadata.uid() == 0
+                && macos_system_alias_target(path).is_some_and(|expected_target| {
+                    fs::read_link(path).is_ok_and(|target| target == expected_target)
+                })
+            {
+                let target_metadata = fs::metadata(path)
+                    .context("inspect macOS system Unix socket directory alias")?;
+                validate_real_directory(&target_metadata, effective_uid)?;
+                return Ok(target_metadata);
+            }
+        }
+        anyhow::bail!(
+            "Unix socket directory chain must contain only real directories, not symlinks or special files"
+        );
+    }
+    validate_real_directory(metadata, effective_uid)?;
+    Ok(metadata.clone())
+}
+
+fn validate_final_parent(path: &Path, metadata: &fs::Metadata, effective_uid: u32) -> Result<()> {
+    let metadata = validate_trusted_directory(path, metadata, effective_uid)?;
     if metadata.permissions().mode() & 0o022 != 0 {
         anyhow::bail!(
             "Unix socket final parent directory must not be writable by group or other users"
@@ -482,12 +520,12 @@ fn prepare_trusted_parent(path: &Path) -> Result<()> {
                 return Err(error).context("inspect Unix socket directory chain");
             }
         };
-        validate_trusted_directory(&metadata, effective_uid)?;
+        validate_trusted_directory(&current, &metadata, effective_uid)?;
     }
 
     let metadata =
         fs::symlink_metadata(parent).context("reinspect Unix socket final parent directory")?;
-    validate_final_parent(&metadata, effective_uid)
+    validate_final_parent(parent, &metadata, effective_uid)
 }
 
 fn publish_socket_no_replace(staging_path: &Path, path: &Path) -> Result<()> {
@@ -657,19 +695,24 @@ mod tests {
     use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::io::Write as _;
+    #[cfg(target_os = "linux")]
     use std::sync::{Arc, Mutex};
 
-    use axum::serve::Listener as _;
+    #[cfg(target_os = "linux")]
     use tokio::time::timeout;
+    #[cfg(target_os = "linux")]
     use tracing::instrument::WithSubscriber as _;
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[derive(Clone, Default)]
     struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
 
+    #[cfg(target_os = "linux")]
     struct CapturedLogWriter(Arc<Mutex<Vec<u8>>>);
 
+    #[cfg(target_os = "linux")]
     impl io::Write for CapturedLogWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.0
@@ -684,6 +727,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
         type Writer = CapturedLogWriter;
 
@@ -692,6 +736,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl CapturedLogs {
         fn text(&self) -> String {
             String::from_utf8(self.0.lock().expect("capture log lock").clone())
@@ -743,8 +788,8 @@ mod tests {
             socket_mode: Some("0600".to_string()),
             socket_uid: Some(100),
             socket_gid: Some(200),
-            peer_uid: Some(300),
-            peer_gid: Some(400),
+            peer_uid: cfg!(target_os = "linux").then_some(300),
+            peer_gid: cfg!(target_os = "linux").then_some(400),
             ..McpPreferences::default()
         };
         let env = HashMap::from([
@@ -760,8 +805,14 @@ mod tests {
         assert_eq!(resolved.mode, Some(0o660));
         assert_eq!(resolved.owner_uid, Some(101));
         assert_eq!(resolved.owner_gid, Some(200));
-        assert_eq!(resolved.peer_policy.uid, Some(300));
-        assert_eq!(resolved.peer_policy.gid, Some(400));
+        assert_eq!(
+            resolved.peer_policy.uid,
+            cfg!(target_os = "linux").then_some(300)
+        );
+        assert_eq!(
+            resolved.peer_policy.gid,
+            cfg!(target_os = "linux").then_some(400)
+        );
 
         let relative = McpPreferences {
             socket_path: Some(PathBuf::from("relative.sock")),
