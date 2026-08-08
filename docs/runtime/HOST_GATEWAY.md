@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Labby Gateway Runtime
 
-The recommended self-hosted Labby gateway deployment is the **amd64 Ubuntu 24.04
+The recommended self-hosted Labby gateway deployment is the **amd64 Ubuntu 26.04
 Incus system container** described in [INCUS.md](./INCUS.md). Bare metal is the
 secondary supported shape when Labby owns a dedicated host or VM. Docker remains
 available for development, compatibility, and image-smoke work, but it is no

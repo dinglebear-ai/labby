@@ -143,6 +143,23 @@ labby serve --host 127.0.0.1 --port 8765
 `just install` builds the all-features release binary and symlinks it to
 `~/.local/bin/labby`.
 
+On macOS, install the gateway as a persistent per-user service instead of
+running `labby serve` in a terminal:
+
+```bash
+just macos-service-install
+just macos-service-status
+```
+
+This installs a `launchd` LaunchAgent that keeps Labby listening on
+`127.0.0.1:8765`, restarts it after login or exit, and writes logs under
+`~/.labby/`. Use `just macos-service-restart` after changing service settings
+or `just macos-service-uninstall` to remove it. The cross-platform
+`just service-install`, `just service-status`, `just service-restart`, and
+`just service-uninstall` bindings select launchd on macOS and systemd on
+Linux. This is suitable for a Tailscale Serve/Funnel route whose OAuth
+callback targets the local gateway.
+
 ### First Run
 
 For loopback development, `labby serve` can bootstrap a missing bearer token for
@@ -178,7 +195,7 @@ checkout.
 
 ### Self-Host The Gateway
 
-The recommended self-hosted gateway substrate is an amd64 Ubuntu 24.04 Incus
+The recommended self-hosted gateway substrate is an amd64 Ubuntu 26.04 Incus
 system container. Bare metal is the secondary supported shape for a dedicated
 gateway host or VM. Docker is retained for explicit development/image smoke,
 but it is not the recommended production boundary for Labby because stdio MCP
@@ -467,6 +484,8 @@ just lint             # skill drift + cargo wrapper smoke + clippy -D warnings +
 just deny             # cargo deny check
 just build            # cargo build --workspace --all-features
 just build-release    # release build, bin/labby install, ~/.local/bin symlink
+just service-install  # build and install the native persistent gateway service
+just service-status   # inspect the native service manager state
 labby setup host-service install --install-self -y # install current binary + start system service
 labby setup host-service restart --install-self -y # reinstall current binary + restart service
 labby setup host-service status --json # inspect the host Labby gateway service

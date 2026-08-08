@@ -28,7 +28,7 @@ pub struct IncusSetupArgs {
     /// Container name (default: labby).
     #[arg(long)]
     pub name: Option<String>,
-    /// Incus image alias (default: images:ubuntu/24.04).
+    /// Incus image alias (default: images:ubuntu/26.04).
     #[arg(long)]
     pub image: Option<String>,
     /// Incus profile name (default: labby-gateway).

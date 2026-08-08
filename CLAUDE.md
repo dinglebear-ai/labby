@@ -414,7 +414,7 @@ Default verification targets the all-features build. If you run a reduced featur
 
 ### Labby gateway runtime
 
-The recommended self-hosted Labby gateway runtime is an amd64 Ubuntu 24.04
+The recommended self-hosted Labby gateway runtime is an amd64 Ubuntu 26.04
 Incus system container, with bare metal as the secondary supported shape for a
 dedicated gateway host or VM. The host-side Incus entrypoint is
 `scripts/incus-bootstrap.sh --version vX.Y.Z`; the in-box converger is

@@ -447,7 +447,7 @@ Options:
           Emit JSON instead of human-readable tables
 
       --provision
-          Provision this Ubuntu 24.04/Incus box for the Labby gateway
+          Provision this Ubuntu 26.04/Incus box for the Labby gateway
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -1381,7 +1381,7 @@ Options:
           [possible values: auto, plain, color]
 
       --image <IMAGE>
-          Incus image alias (default: images:ubuntu/24.04)
+          Incus image alias (default: images:ubuntu/26.04)
 
       --profile-name <PROFILE_NAME>
           Incus profile name (default: labby-gateway)

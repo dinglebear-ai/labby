@@ -1,10 +1,10 @@
 #!/bin/sh
-# Bootstrap Labby into an Incus Ubuntu 24.04 system container.
+# Bootstrap Labby into an Incus Ubuntu 26.04 system container.
 
 set -eu
 
 NAME="labby"
-IMAGE="images:ubuntu/24.04"
+IMAGE="images:ubuntu/26.04"
 PROFILE_NAME="labby-gateway"
 PROFILE_FILE="config/incus/labby-gateway-profile.yaml"
 BACKUP_CONFIG_FILE="${LABBY_INCUS_BACKUP_CONFIG:-config/incus/labby-backup.yaml}"
@@ -31,7 +31,7 @@ Usage: scripts/incus-bootstrap.sh --version vX.Y.Z [options]
 
 Options:
   --name NAME                 Container name (default: labby)
-  --image IMAGE               Incus image alias (default: images:ubuntu/24.04)
+  --image IMAGE               Incus image alias (default: images:ubuntu/26.04)
   --profile-name NAME          Incus profile name (default: labby-gateway)
   --profile-file PATH          Incus profile YAML (default: config/incus/labby-gateway-profile.yaml)
   --backup-config PATH         Incus snapshot policy YAML (default: config/incus/labby-backup.yaml)
@@ -96,8 +96,8 @@ verify_container_substrate() {
     esac
 
     os_release="$(incus exec "$NAME" -- sh -c ". /etc/os-release; printf '%s %s' \"\$ID\" \"\$VERSION_ID\"")"
-    [ "$os_release" = "ubuntu 24.04" ] \
-        || fail "$NAME must be Ubuntu 24.04 for the supported Labby runtime; found: $os_release"
+    [ "$os_release" = "ubuntu 26.04" ] \
+        || fail "$NAME must be Ubuntu 26.04 for the supported Labby runtime; found: $os_release"
 }
 
 ensure_tun_device() {
