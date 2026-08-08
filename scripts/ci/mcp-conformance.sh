@@ -87,7 +87,11 @@ run_direct_proxy() {
   local direct_home="${work_dir}/direct-home"
   mkdir -p "$direct_home"
 
-  RUSTFLAGS="" cargo build -p labby --all-features --features proxy-testkit --bins --locked
+  # Identical to the top-level build below so the second invocation is a
+  # no-op rather than a third distinct fingerprint.
+  cargo build -p labby --all-features --features proxy-testkit --locked \
+    --bins \
+    --example mcp_multihop_conformance
   HOME="$direct_home" LABBY_HOME="$direct_home" LABBY_LOG="labby=warn" \
     "${cargo_target_dir}/debug/labby" --json proxy --local --auth none \
     --port "$MCP_CONFORMANCE_DIRECT_PROXY_PORT" \
@@ -180,15 +184,15 @@ npm_config_cache="${work_dir}/npm-cache" npm install \
 
 conformance="${work_dir}/js/node_modules/.bin/conformance"
 
-RUSTFLAGS="" cargo build \
+cargo build \
   --manifest-path "${work_dir}/rust-sdk/Cargo.toml" \
   -p mcp-conformance
-RUSTFLAGS="" cargo test \
+cargo test \
   --manifest-path "${work_dir}/rust-sdk/Cargo.toml" \
   -p mcp-conformance \
   --bin conformance-server
-RUSTFLAGS="" cargo build -p labby --all-features --locked \
-  --bin labby \
+cargo build -p labby --all-features --features proxy-testkit --locked \
+  --bins \
   --example mcp_multihop_conformance
 
 # Exercise a real client -> root Labby -> middle Labby -> leaf chain. The
