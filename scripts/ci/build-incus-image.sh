@@ -54,9 +54,6 @@ sudo env "${env_unset_args[@]}" "$distrobuilder_bin" build-incus \
     --type=unified \
     "$work_dir/labby-image.yaml" \
     "$work_dir/rootfs" \
-    -o image.release=noble \
-    -o image.architecture=amd64 \
-    -o image.variant=default \
     -o image.serial="$version"
 
 built_image="$(find "$work_dir/rootfs" -maxdepth 1 -type f -name '*.tar.xz' -print -quit)"
