@@ -1434,7 +1434,7 @@ pub(crate) fn build_router_with_external_auth(
         );
     if let Some(auth_state) = auth_state.as_ref() {
         let _ = auth_state;
-        router = router
+        let auth_routes = Router::new()
             .route(
                 "/.well-known/oauth-authorization-server",
                 get(auth_authorization_server_metadata),
@@ -1455,7 +1455,11 @@ pub(crate) fn build_router_with_external_auth(
             .route("/native/callback", get(auth_native_callback))
             .route("/native/poll", get(auth_native_poll))
             .route("/token", post(auth_token))
-            .route("/revoke", post(auth_revoke));
+            .route("/revoke", post(auth_revoke))
+            .layer(axum::middleware::from_fn(
+                labby_auth::routes::auth_dispatch_observability,
+            ));
+        router = router.merge(auth_routes);
         #[cfg(feature = "gateway")]
         {
             router = router.route(
@@ -1675,6 +1679,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use tower::ServiceExt;
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2912,6 +2917,98 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["issuer"], "https://lab.example.com");
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
+    }
+
+    #[test]
+    fn product_token_route_emits_one_canonical_auth_dispatch_error() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let buf = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("labby=info,labby_auth=info"))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .without_time(),
+            );
+        let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_support::rebuild_tracing_interest_cache();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let auth_state = test_lab_auth_state().await;
+            auth_state
+                .store
+                .register_client(labby_auth::types::RegisteredClient {
+                    client_id: "stale-client".to_string(),
+                    redirect_uris: vec!["http://127.0.0.1/callback".to_string()],
+                    created_at: 1,
+                    token_endpoint_auth_method: "none".to_string(),
+                    token_endpoint_auth_methods: Vec::new(),
+                    jwks: None,
+                    jwks_uri: None,
+                })
+                .await
+                .unwrap();
+            let app = build_router(AppState::new(), None, Some(auth_state), None, &[]).layer(
+                axum::extract::connect_info::MockConnectInfo(SocketAddr::from((
+                    [127, 0, 0, 1],
+                    9001,
+                ))),
+            );
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/token")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .header("x-request-id", "req-stale-refresh")
+                        .body(Body::from(
+                            "grant_type=refresh_token&client_id=stale-client&refresh_token=dead",
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        });
+
+        drop(_guard);
+        let logs = crate::test_support::captured_logs(&buf);
+        let dispatch_events = logs
+            .lines()
+            .filter(|line| {
+                line.contains("\"service\":\"auth\"") && line.contains("\"action\":\"oauth.token\"")
+            })
+            .count();
+        assert_eq!(
+            dispatch_events, 1,
+            "expected one auth dispatch event:\n{logs}"
+        );
+        for expected in [
+            "\"request_id\":\"req-stale-refresh\"",
+            "\"kind\":\"invalid_grant\"",
+            "\"status\":400",
+            "dispatch.error",
+        ] {
+            assert!(logs.contains(expected), "missing `{expected}` in:\n{logs}");
+        }
+        for duplicate in [
+            "oauth token request received",
+            "oauth refresh_token grant received",
+            "oauth token rejected: unknown or expired refresh token",
+        ] {
+            assert!(
+                !logs.contains(duplicate),
+                "duplicate INFO/WARN event `{duplicate}` remained:\n{logs}"
+            );
+        }
     }
 
     #[cfg(feature = "gateway")]

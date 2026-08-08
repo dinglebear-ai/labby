@@ -107,7 +107,11 @@ pub const BEARER_ONLY_ROUTER_FORBIDDEN_PATHS: &[(&str, &str)] = &[
     ("GET", "/native/poll"),
 ];
 
-async fn auth_dispatch_observability(request: Request, next: Next) -> Response {
+/// Emit the canonical API dispatch event for an inbound OAuth endpoint.
+///
+/// Product binaries that mount the auth handlers through adapter functions
+/// must apply this middleware to their auth route group as well.
+pub async fn auth_dispatch_observability(request: Request, next: Next) -> Response {
     let action = auth_dispatch_action(request.uri().path());
     let request_id = request_id(request.headers()).map(ToOwned::to_owned);
     let start = Instant::now();

@@ -13,7 +13,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::AuthError;
 use crate::google::{GoogleExchange, merge_google_scopes};
@@ -64,7 +64,7 @@ pub async fn token(
     {
         request.client_id = Some(data.claims.sub);
     }
-    info!(
+    debug!(
         grant_type = %request.grant_type,
         client_id = request.client_id.as_deref().unwrap_or("<missing>"),
         requested_resource = request.resource.as_deref().unwrap_or("<default>"),
@@ -962,7 +962,7 @@ async fn refresh_token_grant(
     )
     .await?;
     let refresh_token_id = fingerprint(&refresh_token);
-    info!(
+    debug!(
         grant_type = "refresh_token",
         client_id = %client_id,
         refresh_token_id = %refresh_token_id,
@@ -976,7 +976,7 @@ async fn refresh_token_grant(
         .claim_refresh_token(&refresh_token, &claim_id, claim_expires_at)
         .await?
         .ok_or_else(|| {
-            warn!(
+            debug!(
                 refresh_token_id = %refresh_token_id,
                 client_id = %client_id,
                 "oauth token rejected: unknown or expired refresh token"
