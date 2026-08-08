@@ -713,6 +713,14 @@ jobs:
     runs-on: ci-pool-rust
     timeout-minutes: 20
     needs: changes
+    env:
+      # Overrides the workflow-level `RUSTFLAGS: -D warnings`, which the
+      # vendored `mcp-conformance` SDK checkout cannot build under. The script
+      # used to clear RUSTFLAGS entirely, which also discarded the fleet's lld
+      # linker AND gave every build here a fingerprint no other job shares —
+      # so this job always compiled `labby` from scratch. Matching `test`'s
+      # value byte-for-byte lets kache reuse its artifacts.
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       ${{
         needs.changes.outputs.rust_test == 'true' ||
