@@ -132,6 +132,45 @@ impl UpstreamPool {
         .await
     }
 
+    /// Call an OAuth-subject-scoped tool for Code Mode while preserving the
+    /// same complete-result and classified-error contract as
+    /// [`Self::call_tool_classified`].
+    pub(crate) async fn subject_scoped_call_tool_classified(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        params: CallToolRequestParams,
+    ) -> Result<CallToolResult, CapabilityCallError> {
+        let start = Instant::now();
+        let tool_name = params.name.to_string();
+        if !subject_scoped_tool_is_exposed(config, &tool_name) {
+            return Err(hidden_tool_call_error(config, &tool_name));
+        }
+        let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
+            .with_transport(upstream_transport(config));
+        log_upstream_request_start(event);
+        let (peer, _tools) = self
+            .acquire_or_connect_subject(config, subject)
+            .await
+            .map_err(|error| CapabilityCallError::Transport {
+                message: error.to_string(),
+            })?;
+        let timeout_ms = self.request_timeout.as_millis();
+        timed_capability_call(
+            self,
+            &config.name,
+            UpstreamCapability::Tools,
+            event,
+            start,
+            peer.call_tool(params),
+            estimate_response_size,
+            Some(subject),
+            |error| format!("upstream call failed: {error}"),
+            format!("upstream call timed out after {timeout_ms}ms"),
+        )
+        .await
+    }
+
     /// Call a tool on an OAuth-subject-scoped upstream.
     ///
     /// P-C1 fix: uses `acquire_or_connect_subject` so the per-(upstream,subject)
@@ -674,13 +713,8 @@ mod tests {
         );
     }
 
-    /// T6/T8: two sequential calls for the same (upstream, subject) should reuse
-    /// the cached connection — the peer is re-used without a new initialize handshake.
-    ///
-    /// We verify by pre-seeding the subject_connections cache with a live in-process
-    /// peer, then making two `call_tool` calls through the normal pool path (which
-    /// shares the same underlying peer).  The `get_info` counter on the server
-    /// measures how many discovery handshakes occurred.
+    /// T6/T8: two sequential Code Mode calls for the same (upstream, subject)
+    /// reuse the subject cache instead of falling back to the shared peer.
     #[tokio::test]
     async fn subject_connection_cache_reuse_no_new_discovery() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -772,51 +806,32 @@ mod tests {
                     last_used: Instant::now(),
                 },
             );
-            // Put a fresh stub back so call_tool can still route.
-            let (srv_t, cli_t) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
-            let srv = CountingServer {
-                init_count: Arc::clone(&init_count),
-            };
-            let _t = tokio::spawn(async move {
-                let r = srv.serve(srv_t).await.expect("stub starts");
-                r.waiting().await.ok();
-            });
-            let cli: rmcp::service::RunningService<RoleClient, ()> =
-                ().serve(cli_t).await.expect("stub client");
-            let p2 = cli.peer().clone();
-            pool.connections.write().await.insert(
-                upstream_name.to_string(),
-                UpstreamConnection {
-                    _client_service: cli.into(),
-                    _server_task: None,
-                    peer: p2,
-                    runtime: UpstreamRuntimeMetadata::default(),
-                },
-            );
         }
 
         let before = init_count.load(Ordering::SeqCst);
+        let mut config = test_upstream_config();
+        config.name = upstream_name.to_string();
 
-        // Two sequential calls through the normal path — same peer, no new handshake.
-        let r1: Option<Result<CallToolResult, String>> = pool
-            .call_tool(upstream_name, CallToolRequestParams::new("echo"))
+        let r1 = pool
+            .subject_scoped_call_tool_classified(
+                &config,
+                subject,
+                CallToolRequestParams::new("echo"),
+            )
             .await;
-        let r2: Option<Result<CallToolResult, String>> = pool
-            .call_tool(upstream_name, CallToolRequestParams::new("echo"))
+        let r2 = pool
+            .subject_scoped_call_tool_classified(
+                &config,
+                subject,
+                CallToolRequestParams::new("echo"),
+            )
             .await;
 
-        assert!(r1.is_some(), "first call should reach upstream");
-        assert!(r2.is_some(), "second call should reach upstream");
+        assert!(r1.is_ok(), "first call should reach subject peer: {r1:?}");
+        assert!(r2.is_ok(), "second call should reach subject peer: {r2:?}");
 
         let after = init_count.load(Ordering::SeqCst);
-        // At most 1 new initialize (for the stub connection we inserted); both
-        // call_tool calls must use the already-initialized peer — no fan-out of
-        // initialize handshakes.
-        assert!(
-            after - before <= 1,
-            "expected at most 1 new initialize; got {} (before={before}, after={after})",
-            after - before
-        );
+        assert_eq!(after, before, "subject calls must reuse the cached peer");
     }
 
     /// Usage telemetry: a successful `call_tool` through the pool writes one

@@ -810,8 +810,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.servers",
-        description: "List upstream MCP servers connected to the gateway, with cached \
-                       tool/prompt/resource counts and tools-capability health.",
+        description: "List upstream MCP servers known to the gateway. Shared upstreams include \
+                       cached capability counts and health; OAuth subject-scoped upstreams are \
+                       marked request_scoped/not_probed until queried by an authenticated subject.",
         destructive: false,
         requires_admin: true,
         returns: "GatewayServersDoc",
@@ -819,8 +820,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.schema",
-        description: "Return the cached tool schemas (input_schema + meta) for one upstream \
-                       MCP server, filtered by its exposure policy.",
+        description: "Return tool schemas (input_schema + meta) for one upstream MCP server, \
+                       filtered by its exposure policy. OAuth upstreams are discovered live with \
+                       the authenticated subject; other upstreams use the shared cache.",
         destructive: false,
         requires_admin: false,
         returns: "GatewayServerSchema",

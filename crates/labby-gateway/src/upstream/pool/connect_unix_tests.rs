@@ -3,6 +3,7 @@ use std::ffi::OsString;
 use std::io;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt as _;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -23,6 +24,7 @@ struct RequestSignals {
     expected_host: Arc<AtomicBool>,
     bearer_header: Arc<AtomicBool>,
     custom_header: Arc<AtomicBool>,
+    mcp_name_header: Arc<AtomicBool>,
     tool_call: Arc<AtomicBool>,
 }
 
@@ -32,6 +34,7 @@ impl RequestSignals {
             expected_host: Arc::new(AtomicBool::new(false)),
             bearer_header: Arc::new(AtomicBool::new(false)),
             custom_header: Arc::new(AtomicBool::new(false)),
+            mcp_name_header: Arc::new(AtomicBool::new(false)),
             tool_call: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -51,6 +54,8 @@ impl RequestSignals {
                 self.bearer_header.store(true, Ordering::SeqCst);
             } else if name.eq_ignore_ascii_case("x-labby-test") && value == "present" {
                 self.custom_header.store(true, Ordering::SeqCst);
+            } else if name.eq_ignore_ascii_case("mcp-name") && value == "unix_echo" {
+                self.mcp_name_header.store(true, Ordering::SeqCst);
             }
         }
     }
@@ -59,6 +64,7 @@ impl RequestSignals {
         assert!(self.expected_host.load(Ordering::SeqCst));
         assert!(self.bearer_header.load(Ordering::SeqCst));
         assert!(self.custom_header.load(Ordering::SeqCst));
+        assert!(self.mcp_name_header.load(Ordering::SeqCst));
         assert!(self.tool_call.load(Ordering::SeqCst));
     }
 }

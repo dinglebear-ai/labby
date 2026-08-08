@@ -31,6 +31,7 @@ use crate::dispatch::gateway::code_mode::{
     CodeModeBroker, CodeModeCaller, CodeModeCallerCapabilities, CodeModeExecutionSource,
     CodeModeHistoryEntry, CodeModeHistoryKind, JournalOwner, ToolScope, code_mode_execute_trace,
 };
+use crate::dispatch::gateway::manager::GatewayManager;
 use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::result_format::{
@@ -141,16 +142,40 @@ impl Drop for CodeModeInflightLeader {
 }
 
 struct StepBufferDropGuard {
-    manager: Arc<labby_gateway::gateway::manager::GatewayManager>,
+    manager: Arc<GatewayManager>,
     execution_id: String,
     armed: bool,
 }
 
+/// Persist non-critical Code Mode telemetry after the MCP response path has
+/// been released.
+///
+/// Step journaling, execution history, and source retention are deliberately
+/// fail-open. Awaiting them after a run has already reached its wall-clock
+/// deadline can make a valid Code Mode timeout indistinguishable from a
+/// disconnected daemon to a downstream MCP client. Drain/persist in one
+/// background task so the caller receives the execution result promptly.
+fn spawn_code_mode_persistence(
+    manager: &Arc<GatewayManager>,
+    execution_id: String,
+    journal_owner: JournalOwner,
+    history: CodeModeHistoryEntry,
+    source: Option<CodeModeExecutionSource>,
+) {
+    let manager = Arc::clone(manager);
+    tokio::spawn(async move {
+        manager
+            .flush_step_journal(&execution_id, &journal_owner)
+            .await;
+        manager.record_code_mode_history(history).await;
+        if let Some(source) = source {
+            manager.record_code_mode_source(source).await;
+        }
+    });
+}
+
 impl StepBufferDropGuard {
-    fn new(
-        manager: Arc<labby_gateway::gateway::manager::GatewayManager>,
-        execution_id: String,
-    ) -> Self {
+    fn new(manager: Arc<GatewayManager>, execution_id: String) -> Self {
         Self {
             manager,
             execution_id,
@@ -223,6 +248,11 @@ it resolves to `{ ok: [{ i, value }], failed: [{ i, error }], all_ok }` once \
 every job has settled. Prefer it over `Promise.all([...])` for fan-out — \
 `Promise.all` rejects on the first failure and discards every other in-flight \
 result; `codemode.batch` never does.
+
+Code Mode has a bounded wall-clock budget. For workflows with many mutating \
+calls, use small bounded batches, preserve stable idempotency keys, and inspect \
+completed results before retrying a timed-out batch; earlier calls may already \
+have committed.
 
 `codemode.step(name, fn)` wraps side-effectful or nondeterministic work (e.g. \
 anything not already a `callTool`/`codemode.<upstream>.<tool>` call) so it runs \
@@ -630,15 +660,12 @@ impl LabMcpServer {
                     kind = error_kind.as_str(),
                     "gateway codemode failed"
                 );
-                // Flush the durable step journal at the run boundary regardless
-                // of run success/failure (fail-open — a flush failure only logs).
-                manager
-                    .flush_step_journal(&execution_id, &journal_owner)
-                    .await;
-                step_buffer_guard.disarm();
                 let call_error = err.into_call_error();
-                manager
-                    .record_code_mode_history(CodeModeHistoryEntry {
+                spawn_code_mode_persistence(
+                    manager,
+                    execution_id.clone(),
+                    journal_owner.clone(),
+                    CodeModeHistoryEntry {
                         execution_id: Some(execution_id.clone()),
                         seq: 0,
                         route_scope: self.route_scope.label(),
@@ -650,8 +677,10 @@ impl LabMcpServer {
                         error_kind: Some(error_kind.clone()),
                         calls: calls.clone(),
                         match_count: None,
-                    })
-                    .await;
+                    },
+                    None,
+                );
+                step_buffer_guard.disarm();
                 let env = code_mode_error_envelope(service, "call_tool", &call_error);
                 // Failures carry a structured trace too — otherwise the inline
                 // inspector renders nothing for a failed run (the error text
@@ -673,10 +702,6 @@ impl LabMcpServer {
                 return Ok(result);
             }
         };
-        // Flush the durable step journal at the run boundary (success path).
-        manager
-            .flush_step_journal(&execution_id, &journal_owner)
-            .await;
         step_buffer_guard.disarm();
         response.execution_id = Some(execution_id.clone());
 
@@ -704,8 +729,29 @@ impl LabMcpServer {
         }
         let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
         let output_tokens = estimate_tokens(&output);
-        manager
-            .record_code_mode_history(CodeModeHistoryEntry {
+        let is_admin = auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
+        let source = if is_admin && code.len() <= MAX_SOURCE_BYTES {
+            Some(CodeModeExecutionSource {
+                execution_id: execution_id.clone(),
+                created_at_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as i64)
+                    .unwrap_or_default(),
+                actor_key: actor_key.map(ToOwned::to_owned),
+                is_admin,
+                route_scope: self.route_scope.label(),
+                surface: self.code_mode_surface(),
+                capability_filter_fingerprint,
+                code: code.to_string(),
+            })
+        } else {
+            None
+        };
+        spawn_code_mode_persistence(
+            manager,
+            execution_id.clone(),
+            journal_owner,
+            CodeModeHistoryEntry {
                 execution_id: Some(execution_id.clone()),
                 seq: 0,
                 route_scope: self.route_scope.label(),
@@ -717,26 +763,9 @@ impl LabMcpServer {
                 error_kind: None,
                 calls: response.calls.clone(),
                 match_count: None,
-            })
-            .await;
-        let is_admin = auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
-        if is_admin && code.len() <= MAX_SOURCE_BYTES {
-            manager
-                .record_code_mode_source(CodeModeExecutionSource {
-                    execution_id: execution_id.clone(),
-                    created_at_ms: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|duration| duration.as_millis() as i64)
-                        .unwrap_or_default(),
-                    actor_key: actor_key.map(ToOwned::to_owned),
-                    is_admin,
-                    route_scope: self.route_scope.label(),
-                    surface: self.code_mode_surface(),
-                    capability_filter_fingerprint,
-                    code: code.to_string(),
-                })
-                .await;
-        }
+            },
+            source,
+        );
         let mut structured = code_mode_execute_trace(&response);
         if let Some(object) = structured.as_object_mut() {
             object.insert(

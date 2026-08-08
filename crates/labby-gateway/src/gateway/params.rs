@@ -187,6 +187,10 @@ pub struct GatewayUsageCallsParams {
 #[derive(Debug, Clone, Default)]
 pub struct GatewayEnrichmentScope {
     pub route_visible_upstreams: Option<BTreeSet<String>>,
+    /// The authenticated OAuth subject resolved by the transport layer.
+    /// This is intentionally carried out-of-band from action params so a
+    /// caller cannot forge another subject through the `owner` field.
+    pub oauth_subject: Option<String>,
 }
 
 impl GatewayEnrichmentScope {

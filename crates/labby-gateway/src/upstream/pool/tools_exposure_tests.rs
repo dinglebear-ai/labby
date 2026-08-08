@@ -390,7 +390,7 @@ async fn a_hidden_tool_is_refused_as_unknown_tool_not_as_a_retryable_error() {
     let pool = pool_with_both_exposure_paths("github", "alice").await;
     let config = oauth_upstream_config("github", &EXPOSE_TOOLS);
 
-    let error = pool
+    let proxy_error = pool
         .subject_scoped_call_tool_once_classified(
             &config,
             "alice",
@@ -398,20 +398,30 @@ async fn a_hidden_tool_is_refused_as_unknown_tool_not_as_a_retryable_error() {
         )
         .await
         .expect_err("a hidden tool must not be callable");
+    let code_mode_error = pool
+        .subject_scoped_call_tool_classified(
+            &config,
+            "alice",
+            rmcp::model::CallToolRequestParams::new("delete_repo"),
+        )
+        .await
+        .expect_err("Code Mode must enforce the same exposure policy");
 
-    let CapabilityCallError::Mcp { data, message } = &error else {
-        panic!("expected an Mcp-class refusal, got {error:?}");
-    };
-    // Pin that the refusal came from the exposure guard specifically. Without
-    // this the test would also pass if the guard were removed and the fixture
-    // upstream simply answered "no such tool" — a false green.
-    assert!(
-        message.contains("does not expose tool `delete_repo`"),
-        "the refusal must come from the exposure guard, got {message:?}"
-    );
-    assert_eq!(
-        mcp_error_data_kind(data),
-        "unknown_tool",
-        "a hidden tool must be indistinguishable from one the upstream never advertised"
-    );
+    for error in [proxy_error, code_mode_error] {
+        let CapabilityCallError::Mcp { data, message } = &error else {
+            panic!("expected an Mcp-class refusal, got {error:?}");
+        };
+        // Pin that the refusal came from the exposure guard specifically.
+        // Without this the test would also pass if the guard were removed and
+        // the fixture upstream simply answered "no such tool" — a false green.
+        assert!(
+            message.contains("does not expose tool `delete_repo`"),
+            "the refusal must come from the exposure guard, got {message:?}"
+        );
+        assert_eq!(
+            mcp_error_data_kind(data),
+            "unknown_tool",
+            "a hidden tool must be indistinguishable from one the upstream never advertised"
+        );
+    }
 }

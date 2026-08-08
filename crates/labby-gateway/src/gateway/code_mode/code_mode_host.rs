@@ -111,7 +111,7 @@ impl CodeModeHost for GatewayManager {
         let tool_ui = extract_tool_ui_link(&upstream_tool);
         let safety = upstream_tool_safety(&upstream_tool);
         let mut outcome = self
-            .execute_upstream_tool_with_contract(upstream, tool, params, safety)
+            .execute_upstream_tool_with_contract(upstream, tool, params, safety, oauth_subject)
             .await?;
         if outcome.ui.is_none()
             && let Some(ui) = tool_ui
@@ -459,6 +459,7 @@ impl GatewayManager {
             tool,
             params,
             CodeModeToolSafetyHints::default(),
+            Some(SHARED_GATEWAY_OAUTH_SUBJECT),
         )
         .await
         .map_err(CodeModeCallError::into_tool_error)
@@ -470,6 +471,7 @@ impl GatewayManager {
         tool: &str,
         params: Value,
         safety: CodeModeToolSafetyHints,
+        oauth_subject: Option<&str>,
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
         let id = format!("{upstream}::{tool}");
         let arguments =
@@ -485,7 +487,32 @@ impl GatewayManager {
         };
         let mut upstream_params = CallToolRequestParams::new(tool.to_string());
         upstream_params.arguments = Some(arguments);
-        match pool.call_tool_classified(upstream, upstream_params).await {
+        let oauth_config = self
+            .config
+            .read()
+            .await
+            .upstream
+            .iter()
+            .find(|config| config.enabled && config.name == upstream && config.oauth.is_some())
+            .cloned();
+        let call_result = if let Some(config) = oauth_config {
+            let subject = oauth_subject.ok_or_else(|| {
+                CodeModeCallError::new(
+                    "auth_failed",
+                    format!(
+                        "upstream `{upstream}` requires an authenticated subject for tool execution"
+                    ),
+                )
+                .with_tool(id.clone())
+            })?;
+            Some(
+                pool.subject_scoped_call_tool_classified(&config, subject, upstream_params)
+                    .await,
+            )
+        } else {
+            pool.call_tool_classified(upstream, upstream_params).await
+        };
+        match call_result {
             Some(Ok(result)) => {
                 // `is_error=true` is an MCP tool-level failure carried inside
                 // a successful protocol response. Reaching this branch proves

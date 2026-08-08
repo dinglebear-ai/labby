@@ -137,21 +137,30 @@ fn bridge_error(action: &str, error: ServiceError) -> ErrorData {
         return error;
     }
 
+    let transport_error = labby_runtime::agent_error::sanitize_error_text(&error.to_string(), 4096);
+    let (message, kind) = if matches!(error, ServiceError::TransportClosed) {
+        (
+            "The canonical Labby daemon closed the bridge before returning a response. The request may have been accepted or may still be finishing; inspect the daemon trace before retrying.",
+            "bridge_transport_closed",
+        )
+    } else {
+        (
+            "The Labby MCP bridge could not complete the request against the canonical daemon.",
+            "bridge_transport_error",
+        )
+    };
     tracing::warn!(
         surface = "mcp",
         service = "labby",
         action = format!("bridge.{action}"),
         subsystem = "mcp_bridge",
-        error_kind = "bridge_transport_error",
+        error_kind = kind,
+        cause = %transport_error,
         "bridged request to live daemon failed"
     );
-    let context = bridge_context(action);
-    internal_agent_error(
-        "bridge_transport_error",
-        "The Labby MCP bridge could not reach the canonical daemon.",
-        None,
-        &context,
-    )
+    let mut context = bridge_context(action);
+    context.cause = Some(transport_error);
+    internal_agent_error("bridge_transport_error", message, None, &context)
 }
 
 /// The live daemon replied to a raw `send_request` with a `ServerResult`
@@ -684,6 +693,21 @@ mod tests {
         assert_eq!(bridged.code, daemon_error.code);
         assert_eq!(bridged.message, daemon_error.message);
         assert_eq!(bridged.data, daemon_error.data);
+    }
+
+    #[test]
+    fn bridge_error_explains_closed_daemon_connection_and_partial_side_effects() {
+        let bridged = bridge_error("call_tool", ServiceError::TransportClosed);
+
+        assert_eq!(bridged.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(bridged.message.contains("may have been accepted"));
+        let data = bridged.data.expect("bridge errors carry agent metadata");
+        assert_eq!(data["kind"], "bridge_transport_error");
+        assert!(
+            data["cause"]
+                .as_str()
+                .is_some_and(|cause| { cause.to_ascii_lowercase().contains("transport") })
+        );
     }
 
     fn fake_task() -> Task {

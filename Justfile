@@ -82,12 +82,13 @@ _install-labby-bin profile:
       echo "$profile binary not found at $LABBY_BIN — run the matching build first" >&2
       exit 1
     fi
-    mkdir -p ~/.local/bin
-    if [ -x ~/.local/bin/labby ]; then
-      cp -f ~/.local/bin/labby ~/.local/bin/labby.prev
+    local_bin_dir="${HOME}/.local/bin"
+    mkdir -p "$local_bin_dir"
+    if [ -x "$local_bin_dir/labby" ]; then
+      cp -f "$local_bin_dir/labby" "$local_bin_dir/labby.prev"
     fi
-    install -m 755 "$LABBY_BIN" ~/.local/bin/labby.new
-    mv ~/.local/bin/labby.new ~/.local/bin/labby
+    install -m 755 "$LABBY_BIN" "$local_bin_dir/labby.new"
+    mv "$local_bin_dir/labby.new" "$local_bin_dir/labby"
     echo "labby → $LABBY_BIN"
 
 # Build release-fast binary, copy it to the system service path, and restart the
@@ -102,6 +103,7 @@ host-sync:
     fi
     cargo build --workspace --all-features --profile "$profile" --bin labby
     LABBY_BIN="target/$profile/labby"
+    sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     if systemctl is-active --quiet labby.service; then
       sudo /usr/local/bin/labby setup host-service restart -y
@@ -135,6 +137,7 @@ host-service-install:
       /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
       *)  LABBY_BIN="$(pwd)/$LABBY_TARGET_DIR/$profile/labby" ;;
     esac
+    sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     sudo /usr/local/bin/labby setup host-service install -y
 
@@ -144,6 +147,9 @@ host-service-restart:
 
 host-service-status:
     sudo /usr/local/bin/labby setup host-service status --json
+
+host-service-uninstall:
+    sudo /usr/local/bin/labby setup host-service uninstall -y
 
 # Explicit container compatibility path. Prefer host-sync for normal gateway
 # development; this remains useful for prod-like image smoke and Docker-specific
@@ -232,6 +238,64 @@ container-sync: sync-container
 # Install release binary to ~/.local/bin/labby (updates the host CLI)
 install: build-release
     just link-bin
+
+# Build, install, and keep the local macOS gateway alive through launchd.
+# This is the recommended setup when Tailscale Serve or Funnel forwards an
+# OAuth callback to the local Labby HTTP listener.
+macos-service-install: build
+    just _install-labby-bin "{{local_release_profile}}"
+    scripts/install-macos-service.sh install
+
+# Restart the installed macOS LaunchAgent without rebuilding Labby.
+macos-service-restart:
+    scripts/install-macos-service.sh restart
+
+# Show the installed macOS LaunchAgent state.
+macos-service-status:
+    scripts/install-macos-service.sh status
+
+# Stop and remove the per-user macOS LaunchAgent.
+macos-service-uninstall:
+    scripts/install-macos-service.sh uninstall
+
+# Use the native service manager for the current OS: launchd on macOS and
+# systemd on Linux. Other operating systems fail explicitly rather than
+# claiming that a process is supervised when it is not.
+service-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+      Darwin) just macos-service-install ;;
+      Linux) just host-service-install ;;
+      *) echo "error: service-install supports macOS (launchd) and Linux (systemd)" >&2; exit 1 ;;
+    esac
+
+service-restart:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+      Darwin) just macos-service-restart ;;
+      Linux) just host-service-restart ;;
+      *) echo "error: service-restart supports macOS (launchd) and Linux (systemd)" >&2; exit 1 ;;
+    esac
+
+service-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+      Darwin) just macos-service-status ;;
+      Linux) just host-service-status ;;
+      *) echo "error: service-status supports macOS (launchd) and Linux (systemd)" >&2; exit 1 ;;
+    esac
+
+service-uninstall:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+      Darwin) just macos-service-uninstall ;;
+      Linux) just host-service-uninstall ;;
+      *) echo "error: service-uninstall supports macOS (launchd) and Linux (systemd)" >&2; exit 1 ;;
+    esac
 
 # Ensure host-side runtime directories are owned by the current user before
 # Docker can claim them as root during bind-mount creation.

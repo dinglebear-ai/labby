@@ -2,6 +2,7 @@
 //! tool/resource/prompt views, surface gating checks, and client config export.
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
+use crate::gateway::params::GatewayEnrichmentScope;
 use crate::gateway::projection::*;
 use crate::gateway::types::{
     GatewayRuntimeView, GatewayToolExposureRowView, GatewayView, McpClientConfigView,
@@ -52,6 +53,13 @@ impl GatewayManager {
         let (cfg_guard, pool) = tokio::join!(self.config.read(), self.runtime.current_pool(),);
         let cfg = cfg_guard.clone();
         drop(cfg_guard);
+        // `gateway.list` backs both the CLI and dashboard. Warm lazy, non-OAuth
+        // upstreams before projecting the snapshot so a freshly started daemon
+        // does not report zero capabilities for healthy servers until another
+        // command happens to trigger discovery. OAuth upstreams remain
+        // request-scoped and are intentionally skipped by the shared warmer.
+        self.warm_mcp_runtime_catalog_bounded(&cfg, pool.as_deref(), "gateway.list")
+            .await;
         let mut views = Vec::with_capacity(cfg.upstream.len() + cfg.virtual_servers.len());
         for upstream in &cfg.upstream {
             views.push(server_view_from_upstream(pool.as_deref(), upstream).await);
@@ -349,23 +357,91 @@ impl GatewayManager {
     }
 
     pub async fn gateway_servers_doc(&self) -> Result<serde_json::Value, ToolError> {
+        self.gateway_servers_doc_scoped(&GatewayEnrichmentScope::default())
+            .await
+    }
+
+    pub async fn gateway_servers_doc_scoped(
+        &self,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<serde_json::Value, ToolError> {
         let Some(pool) = self.runtime.current_pool().await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: "upstream pool not configured".to_string(),
             });
         };
-        Ok(pool.gateway_servers_doc().await)
+        let mut document = pool
+            .gateway_servers_doc_allowed(scope.route_visible_upstreams.as_ref())
+            .await;
+        let oauth_upstreams: std::collections::BTreeSet<String> = self
+            .oauth_upstream_configs()
+            .await
+            .into_iter()
+            .map(|config| config.name)
+            .collect();
+        if let Some(servers) = document
+            .get_mut("servers")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for server in servers {
+                let Some(name) = server.get("name").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                if oauth_upstreams.contains(name)
+                    && let Some(row) = server.as_object_mut()
+                {
+                    // OAuth tools are intentionally absent from the shared
+                    // catalog. A zero/healthy row is therefore misleading:
+                    // discovery must use gateway.schema with this request's
+                    // verified subject.
+                    row.insert("tool_count".to_string(), serde_json::Value::Null);
+                    row.insert(
+                        "tool_health".to_string(),
+                        serde_json::Value::String("not_probed".to_string()),
+                    );
+                    row.insert(
+                        "discovery_mode".to_string(),
+                        serde_json::Value::String("request_scoped".to_string()),
+                    );
+                }
+            }
+        }
+        Ok(document)
     }
 
     pub async fn gateway_server_schema(&self, name: &str) -> Result<serde_json::Value, ToolError> {
+        self.gateway_server_schema_scoped(name, &GatewayEnrichmentScope::default())
+            .await
+    }
+
+    pub async fn gateway_server_schema_scoped(
+        &self,
+        name: &str,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<serde_json::Value, ToolError> {
         let Some(pool) = self.runtime.current_pool().await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: "upstream pool not configured".to_string(),
             });
         };
-        pool.gateway_server_schema(name)
+        scope.ensure_visible(name)?;
+        if let Some(config) = self.oauth_upstream_config(name).await {
+            let subject = scope
+                .oauth_subject
+                .as_deref()
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "auth_failed".to_string(),
+                    message: format!(
+                        "upstream `{name}` requires an authenticated subject for schema discovery"
+                    ),
+                })?;
+            return pool
+                .subject_scoped_gateway_server_schema(&config, subject)
+                .await;
+        }
+        pool.gateway_server_schema_allowed(name, scope.route_visible_upstreams.as_ref())
             .await
             .ok_or_else(|| ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),

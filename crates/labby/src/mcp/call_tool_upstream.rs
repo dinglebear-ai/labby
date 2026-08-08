@@ -1159,7 +1159,7 @@ mod tests {
                 _: CallToolRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
             ) -> Result<CallToolResponse, ErrorData> {
-                tokio::time::sleep(Duration::from_secs(600)).await;
+                tokio::time::sleep(Duration::from_mins(10)).await;
                 Ok(CallToolResult::success(vec![]).into())
             }
         }

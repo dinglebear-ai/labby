@@ -25,8 +25,12 @@ use rmcp::service::RequestContext;
 
 use crate::config::UpstreamConfig;
 use crate::dispatch::upstream::pool::{UpstreamPool, redact_resource_uri_for_logging};
-use crate::mcp::context::{forwardable_client_capabilities, redacted_oauth_subject_label};
+use crate::mcp::context::{
+    auth_context_from_extensions, forwardable_client_capabilities,
+    oauth_upstream_subject_for_request, redacted_oauth_subject_label,
+};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
+use crate::mcp::resource_errors::render as resource_render_error;
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {
@@ -49,7 +53,7 @@ impl LabMcpServer {
             route = "gateway",
             "dispatch route selected"
         );
-        let Some(pool) = self.current_upstream_pool().await else {
+        let Some(manager) = &self.gateway_manager else {
             let elapsed_ms = start.elapsed().as_millis();
             tracing::warn!(
                 surface = "mcp",
@@ -79,20 +83,59 @@ impl LabMcpServer {
             ));
         };
 
+        let auth = auth_context_from_extensions(&context.extensions);
+        let scope = crate::dispatch::gateway::GatewayEnrichmentScope {
+            route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
+            oauth_subject: oauth_upstream_subject_for_request(auth, self.request_subject(context))
+                .map(|subject| subject.into_owned()),
+        };
         let json = if uri == "lab://gateway/servers" {
-            Some(
-                pool.gateway_servers_doc_allowed(self.route_scope.allowed_upstreams())
-                    .await,
-            )
+            manager.gateway_servers_doc_scoped(&scope).await.map(Some)
         } else if let Some(name) = uri
             .strip_prefix("lab://gateway/")
             .and_then(|rest| rest.strip_suffix("/schema"))
             .filter(|name| !name.is_empty() && !name.contains('/'))
         {
-            pool.gateway_server_schema_allowed(name, self.route_scope.allowed_upstreams())
+            manager
+                .gateway_server_schema_scoped(name, &scope)
                 .await
+                .map(Some)
         } else {
-            None
+            Ok(None)
+        };
+        let json = match json {
+            Ok(json) => json,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let error_kind = match &error {
+                    labby_runtime::error::ToolError::Sdk { sdk_kind, .. } => sdk_kind.as_str(),
+                    _ => "internal_error",
+                };
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "read_resource",
+                    subject,
+                    resource_uri = redact_resource_uri_for_logging(&uri),
+                    route = "gateway",
+                    elapsed_ms,
+                    kind = error_kind,
+                    error = %error,
+                    "synthetic gateway resource discovery failed"
+                );
+                self.emit_dispatch_notification(
+                    context,
+                    "lab",
+                    "read_resource",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "upstream_error",
+                    },
+                )
+                .await;
+                return Err(resource_render_error(uri, error.to_string()));
+            }
         };
 
         let elapsed_ms = start.elapsed().as_millis();

@@ -1,14 +1,66 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use serde_json::json;
+use serde_json::{Value, json};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, UpstreamConfig};
+use labby_runtime::gateway_config::{
+    ProtectedMcpRouteConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
+    UpstreamOauthRegistration,
+};
 
 use super::super::discovery::DiscoveredServer;
 use super::super::manager::GatewayRuntimeHandle;
 use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
+
+#[derive(Clone, Default)]
+struct DashboardCatalogResponder {
+    discover_requests: std::sync::Arc<AtomicUsize>,
+}
+
+impl Respond for DashboardCatalogResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .expect("JSON-RPC method");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+
+        match method {
+            "server/discover" => {
+                self.discover_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "resultType": "complete",
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "dashboard-test", "version": "1.0.0"},
+                        "ttlMs": 0,
+                        "cacheScope": "private"
+                    }
+                }))
+            }
+            "tools/list" => ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "tools": [{
+                        "name": "dashboard_echo",
+                        "description": "dashboard discovery proof",
+                        "inputSchema": {"type": "object"}
+                    }]
+                }
+            })),
+            other => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected MCP method: {other}")),
+        }
+    }
+}
 
 #[test]
 fn gateway_actions_include_management_surface() {
@@ -377,6 +429,7 @@ async fn gateway_usage_metrics_rejects_route_hidden_explicit_upstream() {
             route_visible_upstreams: Some(std::collections::BTreeSet::from([
                 "gateway-alpha".to_string()
             ])),
+            oauth_subject: None,
         },
     )
     .await
@@ -410,6 +463,7 @@ async fn gateway_usage_calls_rejects_route_hidden_explicit_upstream() {
             route_visible_upstreams: Some(std::collections::BTreeSet::from([
                 "gateway-alpha".to_string()
             ])),
+            oauth_subject: None,
         },
     )
     .await
@@ -472,6 +526,7 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
         json!({}),
         GatewayEnrichmentScope {
             route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
         },
     )
     .await
@@ -593,6 +648,39 @@ fn test_manager() -> GatewayManager {
     let path = dir.path().join("config.toml");
     GatewayManager::new(path, GatewayRuntimeHandle::default())
         .with_builtin_service_registry(std::sync::Arc::new(DeployTestRegistry))
+}
+
+fn oauth_upstream_fixture(name: &str, enabled: bool) -> UpstreamConfig {
+    UpstreamConfig {
+        enabled,
+        name: name.to_string(),
+        url: Some("http://127.0.0.1:1/mcp".to_string()),
+        transport: None,
+        socket_path: None,
+        headers: Default::default(),
+        bearer_token_env: None,
+        command: None,
+        args: Vec::new(),
+        env: Default::default(),
+        proxy_resources: false,
+        proxy_prompts: false,
+        expose_tools: None,
+        expose_resources: None,
+        expose_prompts: None,
+        code_mode_hint: None,
+        oauth: Some(UpstreamOauthConfig {
+            mode: UpstreamOauthMode::AuthorizationCodePkce,
+            registration: UpstreamOauthRegistration::Preregistered {
+                client_id: "test-client".to_string(),
+                client_secret_env: None,
+            },
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        }),
+        imported_from: None,
+        priority: 1.0,
+    }
 }
 
 #[tokio::test]
@@ -731,6 +819,115 @@ async fn gateway_schema_unknown_upstream_returns_not_found_envelope() {
         body["kind"], "not_found",
         "sdk_kind must be promoted to kind"
     );
+}
+
+#[tokio::test]
+async fn gateway_schema_known_oauth_upstream_without_subject_fails_auth_instead_of_falling_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", true)])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let error = dispatch_with_manager(&manager, "gateway.schema", json!({"name": "linear"}))
+        .await
+        .expect_err("known OAuth upstream requires a verified subject");
+
+    assert_eq!(error.kind(), "auth_failed");
+}
+
+#[tokio::test]
+async fn gateway_schema_route_scope_rejects_hidden_oauth_upstream_before_connecting() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", true)])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.schema",
+        json!({"name": "linear"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "featureos".to_string()
+            ])),
+            oauth_subject: Some("alice".to_string()),
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail before outbound discovery");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn disabled_oauth_upstream_is_not_eligible_for_subject_discovery() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", false)])
+        .await;
+
+    assert!(manager.oauth_upstream_config("linear").await.is_none());
+    assert!(manager.oauth_upstream_configs().await.is_empty());
+}
+
+#[tokio::test]
+async fn gateway_servers_marks_oauth_catalog_rows_as_request_scoped_not_healthy_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![oauth_upstream_fixture("linear", true)])
+        .await;
+    let pool = crate::upstream::pool::UpstreamPool::new();
+    let name: std::sync::Arc<str> = std::sync::Arc::from("linear");
+    pool.insert_entry_for_tests(
+        "linear",
+        crate::upstream::types::UpstreamEntry {
+            name,
+            tools: Default::default(),
+            exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            resource_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            prompt_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            proxy_resources: false,
+            prompt_count: 0,
+            resource_count: 0,
+            prompt_names: Vec::new(),
+            resource_uris: Vec::new(),
+            tool_health: crate::upstream::types::UpstreamHealth::Healthy,
+            prompt_health: crate::upstream::types::UpstreamHealth::Healthy,
+            resource_health: crate::upstream::types::UpstreamHealth::Healthy,
+            tool_unhealthy_since: None,
+            prompt_unhealthy_since: None,
+            resource_unhealthy_since: None,
+            tool_last_error: None,
+            prompt_last_error: None,
+            resource_last_error: None,
+        },
+    )
+    .await;
+    runtime.swap(Some(std::sync::Arc::new(pool))).await;
+
+    let value = dispatch_with_manager(&manager, "gateway.servers", json!({}))
+        .await
+        .expect("server listing");
+    let row = &value["servers"][0];
+    assert!(row["tool_count"].is_null());
+    assert_eq!(row["tool_health"], "not_probed");
+    assert_eq!(row["discovery_mode"], "request_scoped");
 }
 
 #[tokio::test]
@@ -1011,6 +1208,63 @@ async fn gateway_server_get_returns_custom_gateway_row() {
 
     assert_eq!(value["id"], "fixture-http");
     assert_eq!(value["source"], "custom_gateway");
+}
+
+#[tokio::test]
+async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
+    let server = MockServer::start().await;
+    let responder = DashboardCatalogResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![UpstreamConfig {
+            enabled: true,
+            name: "dashboard-http".to_string(),
+            url: Some(format!("{}/mcp", server.uri())),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let value = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("list");
+    let row = value
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+
+    assert_eq!(row["discovered_tool_count"], 1);
+    assert_eq!(row["exposed_tool_count"], 1);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

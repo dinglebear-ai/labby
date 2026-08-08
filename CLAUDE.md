@@ -365,6 +365,9 @@ just deny           # cargo deny check
 just build          # cargo build --workspace --all-features --profile release-fast
 just build-release  # release build + install to bin/labby + symlink ~/.local/bin/labby
 just install        # build-release + symlink
+just service-install # build + install launchd (macOS) or systemd (Linux)
+just service-status  # inspect the native service manager
+just service-restart # restart without rebuilding
 just docs-generate  # labby docs generate — refresh docs/generated/*
 just docs-check     # labby docs check — fail if generated artifacts are stale
 just web-build      # cd apps/gateway-admin && pnpm build
