@@ -470,8 +470,53 @@ async fn authenticate_oauth_client(
     let client = crate::cimd::resolve_client(state, client_id)
         .await?
         .ok_or_else(invalid_client)?;
-    match client.token_endpoint_auth_method.as_str() {
-        "none" if client_secret.is_none() && client_assertion.is_none() => Ok(()),
+    // Match on the method the client actually presents, then check that the
+    // client published it. A client that declares `private_key_jwt` as its
+    // preference but also lists `none` in
+    // `token_endpoint_auth_methods_supported` may legitimately use either;
+    // keying off the singular preference alone rejects it for doing exactly
+    // what its own metadata document advertises.
+    let published = |method: &str| {
+        if client.token_endpoint_auth_methods.is_empty() {
+            client.token_endpoint_auth_method == method
+        } else {
+            client
+                .token_endpoint_auth_methods
+                .iter()
+                .any(|m| m == method)
+        }
+    };
+    // Treat only *non-empty* fields as presented credentials. `axum::Form`
+    // deserializes a present-but-empty field (`client_assertion_type=`) to
+    // `Some("")`, and SDKs that serialize every optional field emit exactly
+    // that. Counting it as a credential classifies an ordinary public client
+    // as `private_key_jwt` and rejects it — a client that authenticates fine
+    // today would start failing for sending an empty string.
+    let client_secret = client_secret.filter(|value| !value.is_empty());
+    let client_assertion = client_assertion.filter(|value| !value.is_empty());
+    let client_assertion_type = client_assertion_type.filter(|value| !value.is_empty());
+    // Proof of possession is the assertion itself; a bare type is not a
+    // credential. Requiring the assertion here keeps a stray
+    // `client_assertion_type=` from diverting a public client.
+    let presented = if client_assertion.is_some() {
+        "private_key_jwt"
+    } else if client_secret.is_some() {
+        "client_secret"
+    } else {
+        "none"
+    };
+    if !published(presented) {
+        warn!(
+            client_id = %client_id,
+            presented_auth_method = presented,
+            declared_auth_method = %client.token_endpoint_auth_method,
+            published_auth_methods = ?client.token_endpoint_auth_methods,
+            "oauth token rejected: client authenticated with a method it did not publish"
+        );
+        return Err(invalid_client());
+    }
+    match presented {
+        "none" => Ok(()),
         "private_key_jwt"
             if client_secret.is_none()
                 && client_assertion_type
@@ -499,7 +544,24 @@ async fn authenticate_oauth_client(
             )
             .await
         }
-        _ => Err(invalid_client()),
+        _ => {
+            // Reachable when the presented method is published but its
+            // preconditions fail — e.g. `private_key_jwt` accompanied by a
+            // client_secret, or an assertion carrying the wrong
+            // `client_assertion_type`. This is the arm the silent-401 bug
+            // came through; it must never be quiet again.
+            warn!(
+                kind = "auth_failed",
+                client_id = %client_id,
+                presented_auth_method = presented,
+                has_client_secret = client_secret.is_some(),
+                has_client_assertion = client_assertion.is_some(),
+                assertion_type_matches = client_assertion_type
+                    == Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+                "oauth token rejected: client authentication preconditions not met"
+            );
+            Err(invalid_client())
+        }
     }
 }
 
@@ -544,13 +606,33 @@ async fn validate_client_assertion(
     client_id: &str,
     keys: ClientKeySource<'_>,
 ) -> Result<(), AuthError> {
-    let header = decode_header(assertion)
-        .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?;
-    ensure_allowed_algorithm(header.alg)?;
-    let kid = header
-        .kid
-        .as_deref()
-        .ok_or_else(|| AuthError::AuthFailed("client assertion is missing kid".to_string()))?;
+    let header = decode_header(assertion).map_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            reason = "undecodable_header",
+            "oauth token rejected: client assertion header could not be decoded"
+        );
+        AuthError::AuthFailed("invalid client assertion".to_string())
+    })?;
+    ensure_allowed_algorithm(header.alg).inspect_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            alg = ?header.alg,
+            reason = "disallowed_algorithm",
+            "oauth token rejected: client assertion uses an unsupported signing algorithm"
+        );
+    })?;
+    let kid = header.kid.as_deref().ok_or_else(|| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            reason = "missing_kid",
+            "oauth token rejected: client assertion header has no kid"
+        );
+        AuthError::AuthFailed("client assertion is missing kid".to_string())
+    })?;
     let fetched;
     let jwks = match keys {
         ClientKeySource::Inline(jwks) => jwks,
@@ -559,19 +641,53 @@ async fn validate_client_assertion(
             &fetched
         }
     };
-    let jwk = jwks
-        .find(kid)
-        .ok_or_else(|| AuthError::AuthFailed("unknown client assertion key".to_string()))?;
-    ensure_jwk_algorithm(jwk, header.alg)?;
-    let key = DecodingKey::from_jwk(jwk)
-        .map_err(|_| AuthError::AuthFailed("invalid client assertion key".to_string()))?;
+    let jwk = jwks.find(kid).ok_or_else(|| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            key_count = jwks.keys.len(),
+            reason = "unknown_kid",
+            "oauth token rejected: client assertion kid is absent from the client key set"
+        );
+        AuthError::AuthFailed("unknown client assertion key".to_string())
+    })?;
+    ensure_jwk_algorithm(jwk, header.alg).inspect_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            reason = "key_algorithm_mismatch",
+            "oauth token rejected: client assertion key algorithm does not match its header"
+        );
+    })?;
+    let key = DecodingKey::from_jwk(jwk).map_err(|_| {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            reason = "unusable_key",
+            "oauth token rejected: client assertion key could not be parsed"
+        );
+        AuthError::AuthFailed("invalid client assertion key".to_string())
+    })?;
     let audience = format!("{}/token", crate::metadata::public_base_url(state));
     let mut validation = Validation::new(header.alg);
     validation.set_audience(&[audience.as_str()]);
     validation.set_issuer(&[client_id]);
     validation.set_required_spec_claims(&["exp", "iat", "iss", "sub", "aud", "jti"]);
     let claims = decode::<ClientAssertionClaims>(assertion, &key, &validation)
-        .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?
+        .map_err(|error| {
+            warn!(
+                kind = "auth_failed",
+                client_id = %client_id,
+                kid = %kid,
+                reason = "signature_or_claims_rejected",
+                error = %error,
+                "oauth token rejected: client assertion failed signature or claim validation"
+            );
+            AuthError::AuthFailed("invalid client assertion".to_string())
+        })?
         .claims;
     let now = now_unix();
     if claims.iss != client_id
@@ -580,6 +696,13 @@ async fn validate_client_assertion(
         || claims.iat > now + 60
         || claims.exp <= now
     {
+        warn!(
+            kind = "auth_failed",
+            client_id = %client_id,
+            kid = %kid,
+            reason = "claim_mismatch_or_expired",
+            "oauth token rejected: client assertion issuer, subject, audience, or lifetime is invalid"
+        );
         return Err(AuthError::AuthFailed(
             "invalid or replayed client assertion".to_string(),
         ));
@@ -1733,6 +1856,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "private_key_jwt".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2324,6 +2448,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })
@@ -2336,6 +2461,7 @@ mod tests {
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
                 jwks: None,
                 jwks_uri: None,
             })

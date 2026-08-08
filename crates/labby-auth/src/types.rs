@@ -155,8 +155,17 @@ pub struct RegisteredClient {
     pub client_id: String,
     pub redirect_uris: Vec<String>,
     pub created_at: i64,
+    /// The client's *preferred* token-endpoint authentication method.
     #[serde(default = "default_token_endpoint_auth_method")]
     pub token_endpoint_auth_method: String,
+    /// Every method this client may authenticate with, preference first.
+    ///
+    /// Populated from a CIMD document's `token_endpoint_auth_methods_supported`
+    /// unioned with its `token_endpoint_auth_method`. Empty means "fall back to
+    /// `token_endpoint_auth_method`" — which is what every non-CIMD row does,
+    /// since the SQLite store does not persist either field.
+    #[serde(default)]
+    pub token_endpoint_auth_methods: Vec<String>,
     #[serde(default)]
     pub jwks: Option<serde_json::Value>,
     /// HTTPS location of the client's public key set, used when the client

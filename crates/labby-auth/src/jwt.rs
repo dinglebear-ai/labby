@@ -9,6 +9,8 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, deco
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use tracing::warn;
+
 use crate::error::AuthError;
 use crate::util::{
     ensure_restrictive_permissions, set_restrictive_permissions, write_secret_file_atomically,
@@ -133,7 +135,19 @@ impl SigningKeys {
         validation.validate_nbf = true;
         decode::<AccessClaims>(token, &self.decoding_key, &validation)
             .map(|data| data.claims)
-            .map_err(|_| AuthError::InvalidAccessToken)
+            .map_err(|error| {
+                // `AuthError::InvalidAccessToken` renders as a single opaque
+                // string, so without this the reason a token was refused —
+                // expired, bad signature, wrong audience — is unrecoverable
+                // from the logs. The jsonwebtoken error names the kind and
+                // never embeds the token itself.
+                warn!(
+                    kind = "auth_failed",
+                    reason = ?error.kind(),
+                    "access token rejected"
+                );
+                AuthError::InvalidAccessToken
+            })
     }
 
     /// Validate signature, algorithm, audience, AND issuer in a single
@@ -152,7 +166,14 @@ impl SigningKeys {
         validation.validate_nbf = true;
         decode::<AccessClaims>(token, &self.decoding_key, &validation)
             .map(|data| data.claims)
-            .map_err(|_| AuthError::InvalidAccessToken)
+            .map_err(|error| {
+                warn!(
+                    kind = "auth_failed",
+                    reason = ?error.kind(),
+                    "access token rejected"
+                );
+                AuthError::InvalidAccessToken
+            })
     }
 
     pub const fn jwks(&self) -> &JwksDocument {

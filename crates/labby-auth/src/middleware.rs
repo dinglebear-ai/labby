@@ -385,11 +385,19 @@ async fn authenticate(
                     return Ok(request);
                 }
                 Err(error) => {
-                    tracing::debug!(error = %error, "lab-auth JWT validation failed");
+                    // `jwt.rs` already emits one WARN naming the reason this
+                    // token was refused. Repeating it here would triple the
+                    // log volume of a single unauthenticated request — and
+                    // this path runs *before* authn with no rate limiter, so
+                    // an attacker could use the amplification to push genuine
+                    // security events out of journald's rate-limit burst.
+                    // Keep the extra context at debug.
+                    tracing::debug!(error = %error, "bearer token rejected: JWT validation failed");
                 }
             }
         }
 
+        tracing::debug!("request rejected: bearer token matched no static token and no valid JWT");
         return Err(auth_error_response("invalid bearer token", layer));
     }
 
