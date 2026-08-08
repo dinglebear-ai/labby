@@ -57,6 +57,43 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.10.0](https://github.com/dinglebear-ai/labby/compare/v1.9.0...v1.10.0) (2026-08-08)
+
+
+### Added
+
+* add native per-upstream OAuth for stdio mode ([#370](https://github.com/dinglebear-ai/labby/issues/370)) ([b3ed59f](https://github.com/dinglebear-ai/labby/commit/b3ed59f3002fa0648664c4796d4898692cf57a2b))
+* **auth:** add shared Google credential broker ([#356](https://github.com/dinglebear-ai/labby/issues/356)) ([cb6d404](https://github.com/dinglebear-ai/labby/commit/cb6d4044a0ac6839daf40b25d4ad9dc8fbb54f72))
+* **incus:** move the supported gateway runtime to Ubuntu 26.04 ([#381](https://github.com/dinglebear-ai/labby/issues/381)) ([43ac1e0](https://github.com/dinglebear-ai/labby/commit/43ac1e0c3d58b82add5711bef257b9309afe9d4f))
+* **unraid:** bump default incus image to 1.8.5 (verified labby 1.8.5) — 1.4.2 ([#372](https://github.com/dinglebear-ai/labby/issues/372)) ([07ff238](https://github.com/dinglebear-ai/labby/commit/07ff2389fe8c333a51de9fb7574d7e1a2d97efef))
+
+
+### Fixed
+
+* **auth:** accept CIMD private_key_jwt clients that publish jwks_uri ([#375](https://github.com/dinglebear-ai/labby/issues/375)) ([020f227](https://github.com/dinglebear-ai/labby/commit/020f22733e99920f417e2ac9c25107ce4ac8b2b9))
+* **auth:** honour every auth method a CIMD client publishes, and log silent rejections ([#382](https://github.com/dinglebear-ai/labby/issues/382)) ([6e650ad](https://github.com/dinglebear-ai/labby/commit/6e650add84634941fe2e05473a91224006aaf971))
+* **auth:** require explicit upstream OAuth callback base ([#374](https://github.com/dinglebear-ai/labby/issues/374)) ([8a06736](https://github.com/dinglebear-ai/labby/commit/8a06736cf0190cc7cfbd745ab606102397bc4069))
+* **auth:** restore product route observability ([#384](https://github.com/dinglebear-ai/labby/issues/384)) ([2e19c83](https://github.com/dinglebear-ai/labby/commit/2e19c836318a9c9851886f3b13f3bd4a0b314e8c))
+* **brand:** verify the fetched font and stop swallowing render failures ([#361](https://github.com/dinglebear-ai/labby/issues/361)) ([7c8ea81](https://github.com/dinglebear-ai/labby/commit/7c8ea81262efa70e32eb60d893c80de66d2e90c5))
+* **build:** use portable install commands on macOS ([#376](https://github.com/dinglebear-ai/labby/issues/376)) ([b283935](https://github.com/dinglebear-ai/labby/commit/b283935ab34cb59c1f3c29b202cb5ce4e12425d0))
+* **ci:** drop the literal internal endpoint fallback in a public repo ([#377](https://github.com/dinglebear-ai/labby/issues/377)) ([273f7b9](https://github.com/dinglebear-ai/labby/commit/273f7b93f322f951ec65d046d2788b07b0792aa3))
+* **ci:** let the release reminder actually see draft releases ([#367](https://github.com/dinglebear-ai/labby/issues/367)) ([61fe1c4](https://github.com/dinglebear-ai/labby/commit/61fe1c4c71a91c7fcac4ff946a3bd9d3002f3973))
+* **ci:** link draft releases to a page that actually exists ([#369](https://github.com/dinglebear-ai/labby/issues/369)) ([bd6f54a](https://github.com/dinglebear-ai/labby/commit/bd6f54ad57b3d02b585d01166a089e6b53b882d2))
+* **ci:** never let a changed-path gate skip a required job silently ([#357](https://github.com/dinglebear-ai/labby/issues/357)) ([a6d55c1](https://github.com/dinglebear-ai/labby/commit/a6d55c10d510fefba83e168b70344bfd6bf9f40a))
+* **ci:** realign the kache guard with the removed endpoint literal ([#379](https://github.com/dinglebear-ai/labby/issues/379)) ([160b3a0](https://github.com/dinglebear-ai/labby/commit/160b3a07798e3679a4d33af8b6128e18fee7676d))
+* **gateway:** enforce expose_resources and expose_prompts (lab-r8cdd) ([#380](https://github.com/dinglebear-ai/labby/issues/380)) ([3ab1473](https://github.com/dinglebear-ai/labby/commit/3ab1473d4913889038e2c8816d069a7f4e4207f4))
+* **gateway:** enforce expose_tools on OAuth subject-scoped upstreams ([#378](https://github.com/dinglebear-ai/labby/issues/378)) ([433d74b](https://github.com/dinglebear-ai/labby/commit/433d74ba11c7924b205358b6147aa2248acc5dbf))
+* **gateway:** make discovery, macOS setup, and long runs reliable ([#373](https://github.com/dinglebear-ai/labby/issues/373)) ([3cdf011](https://github.com/dinglebear-ai/labby/commit/3cdf0115a98f0b6cf288f17fad7486bedcd75993))
+* **gateway:** route task RPCs through the bulkhead and bound upstream error payloads ([#344](https://github.com/dinglebear-ai/labby/issues/344)) ([fe2810f](https://github.com/dinglebear-ai/labby/commit/fe2810f56364f5c7fb6531df1e0758033e3307ac))
+* **mcp:** let the pool own upstream health accounting ([#348](https://github.com/dinglebear-ai/labby/issues/348)) ([6781264](https://github.com/dinglebear-ai/labby/commit/678126485ed5296318f0a331e33acffcbb9be32f))
+* **npm:** resync the launcher README with the repo README ([#359](https://github.com/dinglebear-ai/labby/issues/359)) ([1324488](https://github.com/dinglebear-ai/labby/commit/132448802ebe5e1e0bbf85c39bf646acae52c912))
+* **ui:** guard code mode inspector against trace re-delivery races ([#342](https://github.com/dinglebear-ai/labby/issues/342)) ([bf31f40](https://github.com/dinglebear-ai/labby/commit/bf31f4019b1bde15ed14a9e970f72b7adadecc86))
+
+
+### Changed
+
+* **errors:** consolidate redaction helpers and close contract gaps ([#351](https://github.com/dinglebear-ai/labby/issues/351)) ([8cde49d](https://github.com/dinglebear-ai/labby/commit/8cde49dbce90d7d4669b1890dc87a70cc2a2a156))
+
 ## [1.9.0](https://github.com/dinglebear-ai/labby/compare/v1.8.9...v1.9.0) (2026-08-05)
 
 
