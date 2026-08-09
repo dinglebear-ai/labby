@@ -57,6 +57,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.10.1](https://github.com/dinglebear-ai/labby/compare/v1.10.0...v1.10.1) (2026-08-09)
+
+
+### Fixed
+
+* **mcp:** stabilize ChatGPT Code Mode without freezing descriptions ([#386](https://github.com/dinglebear-ai/labby/issues/386)) ([0eb9280](https://github.com/dinglebear-ai/labby/commit/0eb9280123b6918491ccd005cc098ee129190eb1))
+
 ## [1.10.0](https://github.com/dinglebear-ai/labby/compare/v1.9.0...v1.10.0) (2026-08-08)
 
 
