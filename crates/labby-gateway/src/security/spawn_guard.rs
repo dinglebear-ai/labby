@@ -9,14 +9,14 @@
 //! - [`ALLOWED_RUNTIME_HINTS`] — executables that may appear as the `command`
 //!   field of a stdio upstream.
 //! - [`DENIED_ENV_NAMES`] — env-var names that upstreams must not override.
-//! - [`DANGEROUS_DOCKER_FLAGS`] / [`DANGEROUS_NODE_FLAGS`] — argv flags that
+//! - [`DANGEROUS_DOCKER_FLAGS`] / [`DANGEROUS_NODE_FLAGS`] / [`DANGEROUS_BUN_FLAGS`] — argv flags that
 //!   are rejected for the corresponding runtime families.
 
 use labby_runtime::error::ToolError;
 
 /// Runtime hints / commands the gateway is allowed to execute as stdio upstreams.
 pub const ALLOWED_RUNTIME_HINTS: &[&str] = &[
-    "npx", "uvx", "docker", "dnx", "pipx", "node", "python", "python3", "deno",
+    "npx", "uvx", "docker", "dnx", "pipx", "node", "bun", "python", "python3", "deno",
 ];
 
 /// Environment variables that upstream processes must not override.
@@ -50,6 +50,21 @@ pub const DANGEROUS_NODE_FLAGS: &[&str] = &[
     "-r",
     "--experimental",
     "--allow",
+    "-e",
+    "--eval",
+    "-p",
+    "--print",
+];
+
+/// Bun flags that preload/evaluate arbitrary code or expose debug surfaces.
+pub const DANGEROUS_BUN_FLAGS: &[&str] = &[
+    "--inspect",
+    "--inspect-wait",
+    "--inspect-brk",
+    "--preload",
+    "--require",
+    "--import",
+    "-r",
     "-e",
     "--eval",
     "-p",
@@ -126,7 +141,7 @@ pub fn validate_stdio_command(
 /// Validate that none of the argv strings violates runtime-specific security policy.
 ///
 /// Checks for control characters and runtime-specific dangerous flags
-/// (e.g. `--privileged` for docker, `--require` for node/npx).
+/// (e.g. `--privileged` for docker, `--require` for node/npx/bun).
 pub fn validate_stdio_argv(runtime_hint: &str, args: &[String]) -> Result<(), ToolError> {
     for arg in args {
         if arg.contains('\n') || arg.contains('\r') || arg.contains('\0') {
@@ -151,6 +166,7 @@ fn validate_runtime_argv_flag(runtime_hint: &str, arg: &str) -> Result<(), ToolE
         "node" | "npx" => DANGEROUS_NODE_FLAGS
             .iter()
             .any(|prefix| node_flag_matches(prefix, flag)),
+        "bun" => DANGEROUS_BUN_FLAGS.contains(&flag),
         "python" | "python3" => DANGEROUS_PYTHON_FLAGS.contains(&flag),
         "deno" => DANGEROUS_DENO_FLAGS.contains(&flag),
         _ => false,
@@ -323,6 +339,12 @@ mod tests {
     }
 
     #[test]
+    fn command_accepts_bun() {
+        assert!(validate_stdio_command("bun", &[], false).is_ok());
+        assert!(validate_stdio_command("/opt/homebrew/bin/bun", &[], false).is_ok());
+    }
+
+    #[test]
     fn command_accepts_extra_allowlisted_binary() {
         let extra = vec!["labby".to_string(), "runarr".to_string()];
         assert!(validate_stdio_command("labby", &extra, false).is_ok());
@@ -479,6 +501,27 @@ mod tests {
                 validate_stdio_argv("node", &[flag.to_string(), "process.exit()".to_string()])
                     .unwrap_err();
             assert_eq!(err.kind(), "invalid_param", "node {flag} must be rejected");
+        }
+    }
+
+    #[test]
+    fn argv_rejects_bun_code_execution_and_debug_flags() {
+        for flag in [
+            "-e",
+            "--eval",
+            "-p",
+            "--print",
+            "-r",
+            "--require",
+            "--import",
+            "--preload",
+            "--inspect",
+            "--inspect-wait",
+            "--inspect-brk",
+        ] {
+            let err = validate_stdio_argv("bun", &[flag.to_string(), "process.exit()".to_string()])
+                .unwrap_err();
+            assert_eq!(err.kind(), "invalid_param", "bun {flag} must be rejected");
         }
     }
 

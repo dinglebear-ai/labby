@@ -51,7 +51,7 @@ loss.
 #### Spawn Guard
 
 The gateway validates that the `command` basename of any stdio upstream is in a
-built-in allowlist (`npx`, `uvx`, `docker`, `node`, `python`, `python3`,
+built-in allowlist (`npx`, `uvx`, `docker`, `node`, `bun`, `python`, `python3`,
 `deno`, `pipx`, `dnx`) before writing the config. Two `[gateway]` knobs in
 `config.toml` control this:
 

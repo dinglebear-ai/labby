@@ -115,8 +115,8 @@
 
 # ── Gateway Spawn Guard ───────────────────────────────────────────────────────
 #
-# The gateway only allows known-safe runtimes (npx, uvx, docker, node, python,
-# python3, deno, pipx, dnx) as the `command` of a stdio upstream. Use these
+# The gateway only allows known-safe runtimes (npx, uvx, docker, node, bun,
+# python, python3, deno, pipx, dnx) as the `command` of a stdio upstream. Use these
 # knobs when you have custom binaries or want to disable the guard entirely.
 
 [gateway]
