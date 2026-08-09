@@ -413,6 +413,9 @@ async fn handle_tool_actions(
             if let Some(enabled) = params.enabled {
                 next.enabled = enabled;
             }
+            if let Some(trusted_read_only_tools) = params.trusted_read_only_tools {
+                next.trusted_read_only_tools = trusted_read_only_tools;
+            }
             if let Some(mcp_ui_enabled) = params.mcp_ui_enabled {
                 next.mcp_ui_enabled = mcp_ui_enabled;
             }

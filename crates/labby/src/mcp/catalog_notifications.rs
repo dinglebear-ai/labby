@@ -3,6 +3,75 @@ use futures::future::join_all;
 use crate::mcp::catalog::{CatalogChangeSet, ToolCatalogSnapshot};
 use crate::mcp::peers::{PeerRegistry, RegisteredPeer};
 
+/// Close the publication gap between a completed `tools/list` and a later
+/// subscription registration.
+///
+/// A catalog trigger can be fully processed while no subscription exists. Once
+/// the sink is registered, compare the live contract with the last complete
+/// contract this session actually received and send one catch-up signal when
+/// they differ. Races with the normal fanout may produce a harmless duplicate;
+/// they must never lose the only signal that tells the client to relist.
+pub(crate) async fn catch_up_tool_contract(peers: &PeerRegistry, registration_id: u64) {
+    let Some(registered) = peers
+        .read()
+        .await
+        .iter()
+        .find(|peer| peer.registration_id == registration_id)
+        .cloned()
+    else {
+        return;
+    };
+    if !registered.target.wants_tool_list_changed() {
+        return;
+    }
+
+    let published = registered.last_contract.clone();
+    let current = registered.contract.visible_contract().await;
+    if published.as_ref() == Some(&current) {
+        return;
+    }
+
+    let timeout = crate::config::resolved_catalog_notification_timeout();
+    let delivered = tokio::time::timeout(timeout, registered.target.notify_tool_list_changed())
+        .await
+        .is_ok_and(|result| result.is_ok());
+
+    let mut guard = peers.write().await;
+    let Some(index) = guard
+        .iter()
+        .position(|peer| peer.registration_id == registration_id)
+    else {
+        return;
+    };
+    if !delivered {
+        guard.remove(index);
+        tracing::warn!(
+            surface = "mcp",
+            service = "peers",
+            action = "peer.disconnect",
+            phase = "tools.catchup",
+            timeout_ms = timeout.as_millis(),
+            "tool-contract catch-up notification failed; pruning stale session"
+        );
+        return;
+    }
+
+    // Do not overwrite a newer contract published concurrently by normal
+    // fanout. The notification itself is content-free, so either delivery
+    // causes the client to relist the current contract.
+    if guard[index].last_contract == published {
+        guard[index].last_contract = Some(current);
+    }
+    tracing::info!(
+        surface = "mcp",
+        service = "peers",
+        action = "catalog.notify.catchup",
+        phase = "subscription.catchup",
+        had_complete_baseline = published.is_some(),
+        "notified newly subscribed MCP peer about an unpublished tool contract"
+    );
+}
+
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::GatewayCatalogDiff;
 
@@ -235,13 +304,16 @@ pub(crate) async fn notify_catalog_peers(
         if !ok {
             continue;
         }
-        let registered = evaluated.clone().into_published();
-        let registration_id = registered.registration_id;
+        let registration_id = evaluated.registered.registration_id;
         if let Some(index) = guard
             .iter()
             .position(|current| current.registration_id == registration_id)
         {
-            guard[index] = registered;
+            publish_contract_if_baseline_matches(
+                &mut guard[index].last_contract,
+                &evaluated.registered.last_contract,
+                evaluated.next_contract.as_ref(),
+            );
         }
     }
     for (evaluated, ok) in outcomes {
@@ -312,14 +384,22 @@ struct EvaluatedPeer {
     next_contract: Option<ToolCatalogSnapshot>,
 }
 
-impl EvaluatedPeer {
-    fn into_published(self) -> RegisteredPeer {
-        let mut registered = self.registered;
-        if let Some(next) = self.next_contract {
-            registered.last_contract = next;
-        }
-        registered
+fn publish_contract_if_baseline_matches(
+    current: &mut Option<ToolCatalogSnapshot>,
+    evaluated_baseline: &Option<ToolCatalogSnapshot>,
+    next: Option<&ToolCatalogSnapshot>,
+) -> bool {
+    let Some(next) = next else {
+        return false;
+    };
+    // Catch-up or another fanout may have published a newer baseline while
+    // this notification was in flight. Advance only from the exact baseline
+    // this evaluation observed; never regress to a stale contract.
+    if current != evaluated_baseline {
+        return false;
     }
+    *current = Some(next.clone());
+    true
 }
 
 /// Re-derive each peer's visible contract and decide what that peer is owed.
@@ -344,10 +424,12 @@ async fn evaluate_peers(
         } else {
             None
         };
-        let tools_changed = next_contract
-            .as_ref()
-            .is_some_and(|next| *next != registered.last_contract)
-            && registered.target.wants_tool_list_changed();
+        let tools_changed = next_contract.as_ref().is_some_and(|next| {
+            registered
+                .last_contract
+                .as_ref()
+                .is_none_or(|published| next != published)
+        }) && registered.target.wants_tool_list_changed();
         let resources_changed =
             changes.resources_changed && registered.target.wants_resource_list_changed();
         let prompts_changed =
@@ -376,7 +458,9 @@ mod tests {
     use rmcp::{ClientHandler, RoleClient, ServerHandler, ServiceExt};
     use tokio::sync::{Notify, RwLock};
 
-    use super::{CatalogNotificationChanges, notify_catalog_peers};
+    use super::{
+        CatalogNotificationChanges, notify_catalog_peers, publish_contract_if_baseline_matches,
+    };
     use crate::mcp::catalog::CatalogChangeSet;
     use crate::mcp::catalog_churn::InFlightToolCall;
     use crate::mcp::catalog_coalesce::{reset_for_test, schedule_catalog_notification};
@@ -386,6 +470,25 @@ mod tests {
         crate::test_support::CATALOG_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn stale_fanout_cannot_overwrite_a_newer_catchup_baseline() {
+        let contract = |name: &str| {
+            crate::mcp::catalog::ToolCatalogSnapshot::from_names(
+                std::iter::once(name.to_string()).collect(),
+            )
+        };
+        let baseline_a = Some(contract("a"));
+        let next_b = contract("b");
+        let mut current = Some(contract("c"));
+
+        assert!(!publish_contract_if_baseline_matches(
+            &mut current,
+            &baseline_a,
+            Some(&next_b),
+        ));
+        assert_eq!(current, Some(contract("c")));
     }
 
     #[derive(Clone)]
@@ -635,6 +738,29 @@ mod tests {
             (0, 1, 1),
             "an unchanged visible tool contract must not trigger a rebuild"
         );
+
+        client_service.cancel().await.expect("client cancels");
+        server_handle.abort();
+    }
+
+    /// A subscription without a completed `tools/list` baseline must receive
+    /// the next relevant trigger even when its current contract is empty.
+    #[tokio::test]
+    async fn unpublished_subscription_receives_first_tool_change_signal() {
+        let _catalog_lock = serial_catalog();
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let (client, client_service, server_handle) = connect_peer(&peers, false).await;
+        peers.write().await[0].last_contract = None;
+
+        notify_catalog_peers(
+            &peers,
+            CatalogNotificationChanges::new(true, false, false),
+            labby_runtime::catalog_notify::SOURCE_GATEWAY_RELOAD_FULL,
+        )
+        .await;
+
+        client.wait_for_notifications(1).await;
+        assert_eq!(client.tool_count.load(Ordering::SeqCst), 1);
 
         client_service.cancel().await.expect("client cancels");
         server_handle.abort();

@@ -12,7 +12,8 @@ use super::server::LabMcpServer;
 use crate::dispatch::upstream::pool::UpstreamPool;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::{
-    auth_context_from_extensions, oauth_upstream_subject_for_request, tool_execute_scope_allowed,
+    auth_context_from_extensions, code_mode_read_scope_allowed, oauth_upstream_subject_for_request,
+    tool_execute_scope_allowed,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::admin_app_resources_visible;
@@ -22,6 +23,8 @@ use crate::mcp::prompts::list_all as list_builtin_prompts;
 
 /// Primary Cloudflare-style Code Mode tool name. This entry point is always text-only.
 pub(crate) const CODE_MODE_TOOL_NAME: &str = "codemode";
+/// Read-only Code Mode entry point. The broker enforces upstream annotations.
+pub(crate) const CODE_MODE_READ_TOOL_NAME: &str = "codemode_read";
 /// Explicit Code Mode MCP App entry point.
 pub(crate) const CODE_MODE_UI_TOOL_NAME: &str = "codemode_ui";
 /// Text-only management tool for the Lab-owned MCP App surface.
@@ -192,6 +195,7 @@ impl LabMcpServer {
         let audience = {
             let auth = auth_context_from_extensions(&context.extensions);
             PeerCatalogAudience {
+                code_mode_read_allowed: code_mode_read_scope_allowed(auth),
                 code_mode_execute_allowed: tool_execute_scope_allowed(auth),
                 admin_apps_visible: admin_app_resources_visible(auth),
                 oauth_subject: oauth_upstream_subject_for_request(
@@ -382,6 +386,7 @@ impl LabMcpServer {
         let visibility = self.code_mode_visibility().await;
         let mut tools = BTreeSet::new();
         if visibility.exposes_synthetic_tools() {
+            tools.insert(CODE_MODE_READ_TOOL_NAME.to_string());
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
             tools.insert(MCP_APP_TOOL_NAME.to_string());
             if self.code_mode_app_state.is_enabled() {
@@ -473,6 +478,7 @@ mod tests {
     #[test]
     fn canonical_code_mode_tool_names_are_stable() {
         assert_eq!(CODE_MODE_TOOL_NAME, "codemode");
+        assert_eq!(CODE_MODE_READ_TOOL_NAME, "codemode_read");
         assert_eq!(CODE_MODE_UI_TOOL_NAME, "codemode_ui");
         assert_eq!(MCP_APP_TOOL_NAME, "mcp_app");
     }

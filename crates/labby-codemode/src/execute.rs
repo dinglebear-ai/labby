@@ -89,7 +89,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
         // `codemode` is exposed only when the host's Code Mode surface is
         // enabled; the surface handler gates on that before reaching here.
-        if !caller.can_execute() {
+        if !execution_allowed(&caller, &scope) {
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
                 message: "codemode requires one of scopes: lab, lab:admin".to_string(),
@@ -590,6 +590,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     }
 }
 
+fn execution_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
+    caller.can_execute() || (scope.is_read_only() && caller.can_read())
+}
+
 /// Whether Labby's runner-reserved local Code Mode providers (`state`/`git`)
 /// are injected and callable for this caller + scope: unscoped admin/trusted
 /// callers only.
@@ -707,6 +711,32 @@ mod tests {
             logs: Vec::new(),
             artifacts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn read_only_scope_can_run_without_granting_write_execution() {
+        let unscoped_caller = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities::default(),
+            sub: Some("unscoped".to_string()),
+        };
+        let read_caller = CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                ..CodeModeCallerCapabilities::default()
+            },
+            sub: Some("reader".to_string()),
+        };
+
+        assert!(!execution_allowed(
+            &unscoped_caller,
+            &ToolScope::default().read_only()
+        ));
+        assert!(!execution_allowed(&read_caller, &ToolScope::default()));
+        assert!(execution_allowed(
+            &read_caller,
+            &ToolScope::default().read_only()
+        ));
+        assert!(!read_caller.can_execute());
     }
 
     #[tokio::test]
@@ -1223,6 +1253,7 @@ mod tests {
         assert!(local_providers_allowed(
             &CodeModeCaller::Scoped {
                 capabilities: CodeModeCallerCapabilities {
+                    can_read: true,
                     can_execute: true,
                     can_use_snippets: true,
                     is_admin: true,
@@ -1234,6 +1265,7 @@ mod tests {
         assert!(!local_providers_allowed(
             &CodeModeCaller::Scoped {
                 capabilities: CodeModeCallerCapabilities {
+                    can_read: true,
                     can_execute: true,
                     can_use_snippets: false,
                     is_admin: false,

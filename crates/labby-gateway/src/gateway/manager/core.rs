@@ -174,6 +174,21 @@ impl GatewayManager {
         self
     }
 
+    /// Override the subprocess used for Code Mode runner execution.
+    ///
+    /// The Labby binary uses the default self-reexec seam. Embedders and test
+    /// harnesses whose current executable is not the Labby binary can provide
+    /// the equivalent program and arguments explicitly.
+    #[must_use]
+    pub fn with_code_mode_runner_spawn(
+        mut self,
+        spawn: crate::gateway::code_mode::RunnerSpawn,
+    ) -> Self {
+        self.code_mode_runner_pool =
+            Arc::new(crate::gateway::code_mode::RunnerPool::with_spawn(spawn));
+        self
+    }
+
     /// Attach a call-usage recorder, shared with every `UpstreamPool` this
     /// manager builds via `new_base_pool`.
     #[must_use]

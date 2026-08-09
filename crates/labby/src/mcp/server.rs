@@ -25,6 +25,7 @@ use rmcp::model::{
 };
 use rmcp::service::{NotificationContext, RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "gateway")]
@@ -253,6 +254,10 @@ pub struct LabMcpServer {
     pub peers: crate::mcp::peers::PeerRegistry,
     /// Gateway-wide switch for the explicit Code Mode MCP App surface.
     pub(crate) code_mode_app_state: crate::mcp::catalog::CodeModeAppState,
+    /// Complete tool contract most recently published to this MCP session.
+    /// Partial pagination never advances this baseline.
+    pub(crate) last_listed_tool_contract:
+        Arc<RwLock<Option<crate::mcp::catalog::ToolCatalogSnapshot>>>,
     /// Observed inbound MCP client registry — shared with `GatewayManager`
     /// via `with_client_registry` so `gateway.clients.list` can read it.
     #[cfg(feature = "gateway")]
@@ -529,11 +534,14 @@ impl ServerHandler for LabMcpServer {
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
-        // Seed the subscription's last-published contract with what this route
-        // currently exposes. A later catalog trigger only notifies this stream
-        // when its own visible contract actually moves.
+        // Seed from the contract this session actually completed through
+        // `tools/list`, never from a fresh live-state sample. Re-sampling here
+        // loses the list(A) -> mutate(B) -> subscribe race by treating B as if
+        // the client had already received it. `None` is intentionally stale:
+        // a client that subscribed before finishing pagination is owed the next
+        // relevant list-changed signal.
         let contract = self.peer_contract_for_request(context.request_context());
-        let last_contract = contract.visible_contract().await;
+        let last_contract = self.last_listed_tool_contract.read().await.clone();
         let route_scope_label = self.route_scope.label();
         let pruned_peer_count = crate::mcp::peers::prune_closed_peers(&self.peers).await;
         let mut peers = self.peers.write().await;
@@ -556,6 +564,9 @@ impl ServerHandler for LabMcpServer {
             "mcp notification subscription connected"
         );
         drop(peers);
+
+        crate::mcp::catalog_notifications::catch_up_tool_contract(&self.peers, registration_id)
+            .await;
 
         context.cancelled().await;
 
@@ -802,6 +813,7 @@ mod tests {
             gateway_manager: None,
             peers,
             code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",
@@ -1293,6 +1305,49 @@ mod tests {
         })
         .await
         .expect("cancelled subscription is removed");
+        client_service.cancel().await.expect("client cancels");
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn subscription_catches_up_when_change_flushed_before_registration() {
+        let peers = std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let server = stateless_test_server(std::sync::Arc::clone(&peers));
+        *server.last_listed_tool_contract.write().await =
+            Some(crate::mcp::catalog::ToolCatalogSnapshot::from_names(
+                std::iter::once("tool-from-listed-contract-a".to_string()).collect(),
+            ));
+        let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+        let server_handle = tokio::spawn(async move {
+            let running = server.serve(server_transport).await.expect("server starts");
+            running.waiting().await
+        });
+        let client_service = ()
+            .serve_with_lifecycle(
+                client_transport,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await
+            .expect("stateless client discovers server");
+        let mut subscription = client_service
+            .peer()
+            .listen(SubscriptionFilter::builder().tools_list_changed().build())
+            .await
+            .expect("subscription is acknowledged");
+
+        let notification = tokio::time::timeout(Duration::from_secs(5), subscription.next())
+            .await
+            .expect("catch-up notification timed out")
+            .expect("subscription remains healthy")
+            .expect("catch-up notification exists");
+        assert!(matches!(
+            notification,
+            ServerNotification::ToolListChangedNotification(_)
+        ));
+
+        subscription.cancel().await.expect("subscription cancels");
         client_service.cancel().await.expect("client cancels");
         server_handle.abort();
     }

@@ -56,6 +56,7 @@ async fn connect_in_process_service_peer(
         gateway_manager: None,
         peers: Arc::new(RwLock::new(Vec::new())),
         code_mode_app_state: Default::default(),
+        last_listed_tool_contract: Default::default(),
         client_registry: Default::default(),
         transport_label: "in-process",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),

@@ -83,6 +83,7 @@ impl PaletteCaller {
         Self {
             caller: CodeModeCaller::Scoped {
                 capabilities: CodeModeCallerCapabilities {
+                    can_read: true,
                     can_execute: true,
                     can_use_snippets: false,
                     is_admin: true,
@@ -106,13 +107,14 @@ impl PaletteCaller {
         Self {
             caller: CodeModeCaller::Scoped {
                 capabilities: CodeModeCallerCapabilities {
+                    can_read: true,
                     can_execute: false,
                     can_use_snippets: false,
                     is_admin: false,
                 },
                 sub: subject.clone(),
             },
-            scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()),
+            scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()).read_only(),
             owner,
             oauth_subject: subject.unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
         }

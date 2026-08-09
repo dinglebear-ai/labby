@@ -15,6 +15,8 @@ use crate::mcp::catalog::{
 };
 use crate::mcp::completion::action_schema;
 use crate::mcp::handlers_tools::server_logs_tool_meta;
+#[cfg(feature = "gateway")]
+use crate::mcp::permanent_tools::code_mode_full_annotations;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -23,12 +25,15 @@ use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
 #[cfg(feature = "gateway")]
+use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
+#[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::UpstreamPool;
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
-    ADD_SERVER_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_tools::{
@@ -40,6 +45,7 @@ use crate::mcp::handlers_tools::{
 /// Request-derived inputs that affect the descriptor set for one peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeerCatalogAudience {
+    pub(crate) code_mode_read_allowed: bool,
     pub(crate) code_mode_execute_allowed: bool,
     pub(crate) admin_apps_visible: bool,
     #[cfg(feature = "gateway")]
@@ -49,6 +55,7 @@ pub(crate) struct PeerCatalogAudience {
 impl Default for PeerCatalogAudience {
     fn default() -> Self {
         Self {
+            code_mode_read_allowed: true,
             code_mode_execute_allowed: true,
             admin_apps_visible: true,
             #[cfg(feature = "gateway")]
@@ -145,8 +152,9 @@ impl PeerContract {
             && self.action_allowed_on_mcp("gateway", "gateway.list").await
     }
 
-    /// Enabled upstream namespaces and normalized hints rendered in codemode's
-    /// descriptor. Descriptor hashing therefore catches a hint-only edit.
+    /// Enabled upstream namespaces and normalized hints rendered in Code
+    /// Mode's descriptors. Descriptor hashing therefore catches a hint-only
+    /// edit and subscription fanout can publish the new contract.
     #[cfg(feature = "gateway")]
     pub(crate) async fn code_mode_upstreams_for_description(
         &self,
@@ -214,39 +222,53 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if visibility.exposes_synthetic_tools() && self.audience.code_mode_execute_allowed {
+        if visibility.exposes_synthetic_tools()
+            && (self.audience.code_mode_read_allowed || self.audience.code_mode_execute_allowed)
+        {
             let upstreams = self.code_mode_upstreams_for_description().await;
-            // `codemode` is permanently text-only; the MCP App metadata lives on
-            // the optional `codemode_ui` twin so disabling the app cannot remove
-            // the execution entry point. Mirrors handlers_tools::list_tools.
-            let tool = self
-                .registry
-                .permanent_tools()
-                .code_mode_descriptor(&upstreams);
-            advertised_names.insert(tool.name.as_ref().to_string());
-            descriptors.push(tool);
-
-            if self.code_mode_app_state.is_enabled() {
-                let tool = Tool::new(
-                    CODE_MODE_UI_TOOL_NAME,
-                    code_mode_ui_description(&upstreams),
-                    code_mode_execute_schema(),
-                )
-                .with_raw_output_schema(code_mode_trace_output_schema())
-                .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME));
-                advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+            if self.audience.code_mode_read_allowed {
+                let tool = self
+                    .registry
+                    .permanent_tools()
+                    .code_mode_read_descriptor(&upstreams);
+                advertised_names.insert(CODE_MODE_READ_TOOL_NAME.to_string());
                 descriptors.push(tool);
             }
 
-            // Always advertised alongside codemode: the control tool is how a
-            // disabled app surface gets restored.
-            let tool = Tool::new(
-                MCP_APP_TOOL_NAME,
-                mcp_app_tool_description(),
-                mcp_app_tool_schema(),
-            );
-            advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
-            descriptors.push(tool);
+            if self.audience.code_mode_execute_allowed {
+                // `codemode` is permanently text-only; the MCP App metadata lives on
+                // the optional `codemode_ui` twin so disabling the app cannot remove
+                // the execution entry point. Mirrors handlers_tools::list_tools.
+                let tool = self
+                    .registry
+                    .permanent_tools()
+                    .code_mode_descriptor(&upstreams);
+                advertised_names.insert(tool.name.as_ref().to_string());
+                descriptors.push(tool);
+
+                if self.code_mode_app_state.is_enabled() {
+                    let tool = Tool::new(
+                        CODE_MODE_UI_TOOL_NAME,
+                        code_mode_ui_description(&upstreams),
+                        code_mode_execute_schema(),
+                    )
+                    .with_annotations(code_mode_full_annotations())
+                    .with_raw_output_schema(code_mode_trace_output_schema())
+                    .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME));
+                    advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+                    descriptors.push(tool);
+                }
+
+                // Always advertised alongside codemode: the control tool is how a
+                // disabled app surface gets restored.
+                let tool = Tool::new(
+                    MCP_APP_TOOL_NAME,
+                    mcp_app_tool_description(),
+                    mcp_app_tool_schema(),
+                );
+                advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
+                descriptors.push(tool);
+            }
         }
 
         #[cfg(feature = "gateway")]
@@ -274,25 +296,27 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
-            let upstream_tools = if hide_raw_tools {
-                pool.healthy_ui_tools_allowed(self.route_scope.allowed_upstreams())
-                    .await
-            } else {
-                pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
-                    .await
-            };
+        if !hide_raw_tools && let Some(pool) = self.current_upstream_pool().await {
+            let mut upstream_tool_count = 0usize;
+            let upstream_tools = pool
+                .healthy_tools_allowed(self.route_scope.allowed_upstreams())
+                .await;
             for upstream_tool in upstream_tools {
                 let name = upstream_tool.tool.name.as_ref();
                 if builtin_names.contains(name) || !advertised_names.insert(name.to_string()) {
                     continue;
                 }
                 descriptors.push(upstream_tool.tool);
+                upstream_tool_count += 1;
             }
 
-            if !hide_raw_tools && let Some(subject) = self.audience.oauth_subject.as_deref() {
+            if let Some(subject) = self.audience.oauth_subject.as_deref() {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
-                for (_, tools) in pool.subject_scoped_tools(&configs, subject).await {
+                let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
+                for (_, tools) in pool
+                    .subject_scoped_tools_bounded(&configs, subject, subject_tool_limit)
+                    .await
+                {
                     for tool in tools {
                         let name = tool.name.as_ref();
                         if builtin_names.contains(name)
@@ -306,6 +330,7 @@ impl PeerContract {
             }
         }
 
+        descriptors.sort_by(|left, right| left.name.cmp(&right.name));
         descriptors
     }
 

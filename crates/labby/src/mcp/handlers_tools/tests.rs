@@ -10,8 +10,8 @@ use crate::dispatch::upstream::types::{
     ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
 use crate::mcp::catalog::{
-    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
-    MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
+    ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
 };
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
@@ -185,6 +185,23 @@ fn large_test_registry(service_count: usize) -> ToolRegistry {
     registry
 }
 
+fn reverse_large_test_registry(service_count: usize) -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    for index in (0..service_count).rev() {
+        let name = Box::leak(format!("service_{index:03}").into_boxed_str());
+        registry.register(RegisteredService {
+            name,
+            description: "Synthetic service",
+            category: "test",
+            kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+            status: "available",
+            actions: TEST_ACTIONS_ONE,
+            dispatch: noop_dispatch,
+        });
+    }
+    registry
+}
+
 fn test_server(
     registry: ToolRegistry,
     gateway_manager: Option<Arc<crate::dispatch::gateway::manager::GatewayManager>>,
@@ -196,6 +213,7 @@ fn test_server(
         gateway_manager,
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         code_mode_app_state: Default::default(),
+        last_listed_tool_contract: Default::default(),
         client_registry: Default::default(),
         transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(logging_level))),
@@ -222,6 +240,56 @@ async fn code_mode_manager(
                     enabled,
                     ..crate::config::CodeModeConfig::default()
                 },
+                ..crate::config::LabConfig::default()
+            }
+            .to_gateway_config(),
+        )
+        .await;
+    manager
+}
+
+fn test_labby_runner_spawn() -> crate::dispatch::gateway::code_mode::RunnerSpawn {
+    let current = std::env::current_exe().expect("current test executable");
+    let debug_dir = current
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("target debug directory");
+    let program = debug_dir.join(format!("labby{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        program.is_file(),
+        "test Labby binary missing: {}",
+        program.display()
+    );
+    crate::dispatch::gateway::code_mode::RunnerSpawn {
+        program,
+        args: vec!["internal".to_string(), "code-mode-runner".to_string()],
+    }
+}
+
+async fn code_mode_manager_with_test_runner(
+    enabled: bool,
+    upstreams: Vec<crate::config::UpstreamConfig>,
+    pool: Option<Arc<UpstreamPool>>,
+) -> Arc<crate::dispatch::gateway::manager::GatewayManager> {
+    let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+    if let Some(pool) = pool {
+        runtime.swap(Some(pool)).await;
+    }
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        )
+        .with_code_mode_runner_spawn(test_labby_runner_spawn()),
+    );
+    manager
+        .seed_config_unchecked_for_tests(
+            crate::config::LabConfig {
+                code_mode: crate::config::CodeModeConfig {
+                    enabled,
+                    ..crate::config::CodeModeConfig::default()
+                },
+                upstream: upstreams,
                 ..crate::config::LabConfig::default()
             }
             .to_gateway_config(),
@@ -1010,12 +1078,30 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         .iter()
         .find(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME)
         .expect("codemode tool");
+    let codemode_read = result
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == CODE_MODE_READ_TOOL_NAME)
+        .expect("codemode_read tool");
     assert_eq!(
         codemode.input_schema["properties"]["code"]["minLength"],
         serde_json::json!(1),
         "codemode must advertise non-empty code"
     );
     assert!(codemode.meta.is_none(), "codemode must remain text-only");
+    let read_annotations = codemode_read
+        .annotations
+        .as_ref()
+        .expect("read annotations");
+    assert_eq!(read_annotations.read_only_hint, Some(true));
+    assert_eq!(read_annotations.destructive_hint, Some(false));
+    assert_eq!(read_annotations.idempotent_hint, Some(true));
+    assert_eq!(read_annotations.open_world_hint, Some(true));
+    let full_annotations = codemode.annotations.as_ref().expect("full annotations");
+    assert_eq!(full_annotations.read_only_hint, Some(false));
+    assert_eq!(full_annotations.destructive_hint, Some(true));
+    assert_eq!(full_annotations.idempotent_hint, Some(false));
+    assert_eq!(full_annotations.open_world_hint, Some(true));
     let schema = codemode.output_schema.as_ref().expect("outputSchema");
     let kinds = schema["oneOf"]
         .as_array()
@@ -1036,6 +1122,7 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         codemode_ui.meta.is_some(),
         "codemode_ui must own app metadata"
     );
+    assert_eq!(codemode_ui.annotations, codemode.annotations);
 
     let control = result
         .tools
@@ -1690,14 +1777,14 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
 
-    assert!(names.contains(&"youtube_search_ui"));
+    assert!(!names.contains(&"youtube_search_ui"));
     assert!(!names.contains(&"youtube_probe"));
     assert!(names.contains(&CODE_MODE_TOOL_NAME));
     assert!(!names.contains(&"hidden-upstream"));
 }
 
 #[tokio::test]
-async fn tool_catalog_snapshot_tracks_promoted_mcp_app_tools_in_code_mode() {
+async fn tool_catalog_snapshot_keeps_code_mode_contract_health_independent() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -1730,7 +1817,7 @@ async fn tool_catalog_snapshot_tracks_promoted_mcp_app_tools_in_code_mode() {
     assert!(snapshot.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(snapshot.tools.contains(CODE_MODE_UI_TOOL_NAME));
     assert!(snapshot.tools.contains(MCP_APP_TOOL_NAME));
-    assert!(snapshot.tools.contains("youtube_search_ui"));
+    assert!(!snapshot.tools.contains("youtube_search_ui"));
     assert!(!snapshot.tools.contains("youtube_probe"));
 }
 
@@ -1941,7 +2028,7 @@ async fn protected_code_mode_list_tools_hides_raw_siblings_and_disallowed_builti
     assert!(!names.contains(&"gateway-alpha"));
     assert!(!names.contains(&"hidden-upstream"));
     assert!(names.contains(&CODE_MODE_TOOL_NAME));
-    assert!(names.contains(&"youtube_search_ui"));
+    assert!(!names.contains(&"youtube_search_ui"));
     assert!(!names.contains(&"youtube_probe"));
 }
 
@@ -1986,8 +2073,9 @@ async fn protected_list_tools_hides_code_mode_when_route_disables_it() {
 }
 
 #[tokio::test]
-async fn codemode_description_lists_route_scoped_enabled_upstreams() {
-    let apps = fixture_upstream_config("apps");
+async fn codemode_description_lists_route_scoped_enabled_upstreams_and_hints() {
+    let mut apps = fixture_upstream_config("apps");
+    apps.code_mode_hint = Some("Search connected application data".to_string());
     let mut hidden = fixture_upstream_config("hidden");
     hidden.enabled = false;
     let gateway_alpha = fixture_upstream_config("hidden-upstream");
@@ -2031,7 +2119,7 @@ async fn codemode_description_lists_route_scoped_enabled_upstreams() {
         .as_ref();
 
     assert!(description.contains("## Available upstream namespaces"));
-    assert!(description.contains("- `apps`"));
+    assert!(description.contains("- `apps` -- Search connected application data"));
     assert!(!description.contains("- `hidden`"));
     assert!(!description.contains("- `hidden-upstream`"));
     assert!(description.contains("Never guess helper or method names"));
@@ -2181,7 +2269,7 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
 }
 
 #[tokio::test]
-async fn advertised_app_visible_callbacks_are_directly_callable_with_read_scope() {
+async fn app_visible_callbacks_are_hidden_but_directly_callable_with_read_scope() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut standard = fixture_upstream_tool(&upstream_name, "standard_app_callback", None);
     standard.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
@@ -2224,11 +2312,11 @@ async fn advertised_app_visible_callbacks_are_directly_callable_with_read_scope(
         .expect("read-scope tools");
     for name in ["standard_app_callback", "openai_app_callback"] {
         assert!(
-            advertised
+            !advertised
                 .tools
                 .iter()
                 .any(|tool| tool.name.as_ref() == name),
-            "{name} should be advertised to an MCP App host"
+            "{name} should stay out of the synthetic Code Mode tools/list contract"
         );
 
         let result = Box::pin(running.service().call_tool_impl(
@@ -2241,7 +2329,7 @@ async fn advertised_app_visible_callbacks_are_directly_callable_with_read_scope(
         let text = result.content[0].as_text().expect("text").text.as_str();
         assert!(
             !text.contains("\"kind\":\"forbidden\""),
-            "advertised MCP App callback {name} should pass the direct read-scope gate, got {text}"
+            "hidden MCP App callback {name} should pass the direct read-scope bridge gate, got {text}"
         );
         assert!(
             text.contains("upstream_error"),
@@ -2623,6 +2711,172 @@ async fn codemode_requires_execute_scope_not_read_scope() {
 }
 
 #[tokio::test]
+async fn read_scope_lists_and_routes_only_codemode_read() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let listed = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("list tools");
+    let names = listed
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&CODE_MODE_READ_TOOL_NAME));
+    assert!(!names.contains(&CODE_MODE_TOOL_NAME));
+    assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
+    assert!(!names.contains(&MCP_APP_TOOL_NAME));
+
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_READ_TOOL_NAME).with_arguments(
+                serde_json::json!({ "code": "async () => 1" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        )
+        .await
+        .expect("call result");
+    let text: &str = result.content[0].as_text().expect("text").text.as_ref();
+    assert!(!text.contains("\"kind\":\"forbidden\""), "{text}");
+    if result.is_error.unwrap_or(false) {
+        assert!(text.contains("\"service\":\"codemode_read\""), "{text}");
+    }
+
+    let full_result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_TOOL_NAME).with_arguments(
+                serde_json::json!({ "code": "async () => 1" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        )
+        .await
+        .expect("full call result");
+    let full_text: &str = full_result.content[0]
+        .as_text()
+        .expect("text")
+        .text
+        .as_ref();
+    assert!(full_text.contains("\"kind\":\"forbidden\""), "{full_text}");
+}
+
+#[tokio::test]
+async fn codemode_read_rejects_artifact_writes_through_the_mcp_surface() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager_with_test_runner(true, Vec::new(), None).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_READ_TOOL_NAME).with_arguments(
+                serde_json::json!({
+                    "code": "async () => await writeArtifact('blocked.txt', 'must not persist')"
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        )
+        .await
+        .expect("call result");
+
+    assert!(result.is_error.unwrap_or(false));
+    let text: &str = result.content[0].as_text().expect("text").text.as_ref();
+    assert!(text.contains("forbidden"), "{text}");
+    assert!(text.contains("writeArtifact"), "{text}");
+    assert!(text.contains("read-only"), "{text}");
+}
+
+#[tokio::test]
+async fn codemode_read_rejects_mutating_upstream_before_dispatch() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let mut mutation = fixture_destructive_upstream_tool(&upstream_name, "records_delete");
+    mutation.tool.annotations = Some(
+        rmcp::model::ToolAnnotations::new()
+            .read_only(false)
+            .destructive(true),
+    );
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([("records_delete".to_string(), mutation)]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_test_runner(
+        true,
+        vec![fixture_upstream_config("apps")],
+        Some(Arc::clone(&pool)),
+    )
+    .await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_READ_TOOL_NAME).with_arguments(
+                serde_json::json!({
+                    "code": "async () => await callTool('apps::records_delete', {})"
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        )
+        .await
+        .expect("call result");
+
+    assert!(result.is_error.unwrap_or(false));
+    let text: &str = result.content[0].as_text().expect("text").text.as_ref();
+    assert!(text.contains("forbidden"), "{text}");
+    assert!(text.contains("read-only"), "{text}");
+    assert_eq!(
+        pool.upstream_tool_last_error("apps").await,
+        None,
+        "a policy rejection must happen before any upstream dispatch attempt"
+    );
+}
+
+#[tokio::test]
 async fn codemode_allows_execute_scope_to_reach_runner_path() {
     let server = test_server(
         completion_test_registry(),
@@ -2899,9 +3153,23 @@ async fn list_tools_paginates_large_builtin_catalog() {
     );
     assert_eq!(first.tools[0].name.as_ref(), "service_000");
     assert_eq!(first.tools[99].name.as_ref(), "service_099");
-    assert_eq!(first.next_cursor.as_deref(), Some("100"));
+    assert!(
+        first
+            .next_cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.starts_with("v1:100:"))
+    );
     assert_eq!(first.ttl_ms, Some(0));
     assert_eq!(first.cache_scope, Some(rmcp::model::CacheScope::Private));
+    assert!(
+        running
+            .service()
+            .last_listed_tool_contract
+            .read()
+            .await
+            .is_none(),
+        "a partial first page must not publish a complete contract baseline"
+    );
     let wire = serde_json::to_value(&first).expect("serialize tool list");
     assert_eq!(wire["resultType"], "complete");
     assert_eq!(wire["ttlMs"], 0);
@@ -2923,10 +3191,136 @@ async fn list_tools_paginates_large_builtin_catalog() {
     );
     assert_eq!(second.tools[0].name.as_ref(), "service_100");
     assert_eq!(second.tools[99].name.as_ref(), "service_199");
-    assert_eq!(second.next_cursor.as_deref(), Some("200"));
+    assert!(
+        second
+            .next_cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.starts_with("v1:200:"))
+    );
+    assert!(
+        running
+            .service()
+            .last_listed_tool_contract
+            .read()
+            .await
+            .is_none(),
+        "an intermediate page must not publish a complete contract baseline"
+    );
+    let third_request = PaginatedRequestParams::default().with_cursor(second.next_cursor.clone());
+    let third = running
+        .service()
+        .list_tools_impl(
+            Some(third_request),
+            request_context_with_peer(running.peer().clone()),
+        )
+        .await
+        .expect("third page");
+    assert_eq!(third.tools.len(), 50);
+    assert!(third.next_cursor.is_none());
+    assert!(
+        running
+            .service()
+            .last_listed_tool_contract
+            .read()
+            .await
+            .is_some(),
+        "only the final revision-validated page publishes the baseline"
+    );
     assert!(
         Arc::ptr_eq(&first.tools[0].input_schema, &second.tools[0].input_schema),
         "built-in tools should reuse the cached stable action schema across list pages"
+    );
+}
+
+#[tokio::test]
+async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
+    async fn collect_names(registry: ToolRegistry) -> Vec<String> {
+        let manager = code_mode_manager(false).await;
+        let server = test_server(
+            registry,
+            Some(manager),
+            crate::mcp::route_scope::McpRouteScope::Root,
+            crate::mcp::logging::LoggingLevel::Emergency,
+        );
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let mut cursor = None;
+        let mut names = Vec::new();
+        loop {
+            let request = cursor
+                .take()
+                .map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor)));
+            let page = running
+                .service()
+                .list_tools_impl(request, request_context_with_peer(running.peer().clone()))
+                .await
+                .expect("tool page");
+            names.extend(page.tools.into_iter().map(|tool| tool.name.to_string()));
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            cursor = Some(next);
+        }
+        names
+    }
+
+    let ascending = collect_names(large_test_registry(250)).await;
+    let rebuilt = collect_names(reverse_large_test_registry(250)).await;
+
+    assert_eq!(ascending, rebuilt);
+    assert_eq!(ascending.len(), 250);
+    assert!(ascending.is_sorted());
+}
+
+#[tokio::test]
+async fn list_tools_rejects_cursor_after_catalog_revision_changes() {
+    let original_manager = code_mode_manager(false).await;
+    let original_server = test_server(
+        large_test_registry(250),
+        Some(original_manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (original_transport, _original_client_transport) = tokio::io::duplex(64);
+    let original = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        original_server,
+        original_transport,
+        None,
+    );
+    let first = original
+        .service()
+        .list_tools_impl(None, request_context_with_peer(original.peer().clone()))
+        .await
+        .expect("first page");
+    let changed_manager = code_mode_manager(false).await;
+    let changed_server = test_server(
+        large_test_registry(251),
+        Some(changed_manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (changed_transport, _changed_client_transport) = tokio::io::duplex(64);
+    let changed = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        changed_server,
+        changed_transport,
+        None,
+    );
+    let request = PaginatedRequestParams::default().with_cursor(first.next_cursor);
+
+    let error = changed
+        .service()
+        .list_tools_impl(
+            Some(request),
+            request_context_with_peer(changed.peer().clone()),
+        )
+        .await
+        .expect_err("cursor must not span catalog revisions");
+
+    assert_eq!(
+        error.data.as_ref().expect("error data")["kind"],
+        serde_json::json!("invalid_cursor")
     );
 }
 
@@ -3632,11 +4026,12 @@ async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
 
     let snapshot = server.snapshot_catalog().await;
 
-    // Code Mode mode exposes the text entry point, explicit UI entry point, and
-    // text-only recovery control. No legacy aliases are permitted.
+    // Code Mode mode exposes the read-only and full text entry points, explicit
+    // UI entry point, and text-only recovery control. No legacy aliases are permitted.
     assert_eq!(
         snapshot.tools,
         [
+            CODE_MODE_READ_TOOL_NAME.to_string(),
             CODE_MODE_TOOL_NAME.to_string(),
             CODE_MODE_UI_TOOL_NAME.to_string(),
             MCP_APP_TOOL_NAME.to_string(),
@@ -3737,6 +4132,7 @@ async fn server_reads_current_pool_from_gateway_manager() {
         gateway_manager: Some(Arc::clone(&manager)),
         peers: Arc::clone(&notifier.peers),
         code_mode_app_state: notifier.code_mode_app_state.clone(),
+        last_listed_tool_contract: Default::default(),
         client_registry: notifier.client_registry.clone(),
         transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
@@ -4097,7 +4493,7 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
     assert!(code_mode_contract.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(code_mode_contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
     assert!(code_mode_contract.tools.contains(MCP_APP_TOOL_NAME));
-    assert!(code_mode_contract.tools.contains("youtube_search_ui"));
+    assert!(!code_mode_contract.tools.contains("youtube_search_ui"));
     assert!(
         !code_mode_contract.tools.contains("youtube_probe"),
         "raw upstream tools stay hidden under Code Mode"
@@ -4137,9 +4533,30 @@ async fn peer_contract_removes_codemode_when_execute_scope_is_revoked() {
     let unauthorized = unauthorized.visible_contract().await;
 
     assert!(authorized.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(authorized.tools.contains(CODE_MODE_READ_TOOL_NAME));
     assert!(!unauthorized.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(unauthorized.tools.contains(CODE_MODE_READ_TOOL_NAME));
     assert_ne!(
         authorized.contract_hash, unauthorized.contract_hash,
         "revoking execute scope changes the client-visible descriptor contract"
     );
+}
+
+#[tokio::test]
+async fn peer_contract_removes_all_codemode_tools_when_read_and_execute_are_revoked() {
+    let manager = code_mode_manager(true).await;
+    let mut contract = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    )
+    .peer_contract();
+    contract.audience.code_mode_read_allowed = false;
+    contract.audience.code_mode_execute_allowed = false;
+
+    let contract = contract.visible_contract().await;
+    assert!(!contract.tools.contains(CODE_MODE_READ_TOOL_NAME));
+    assert!(!contract.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(!contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
 }

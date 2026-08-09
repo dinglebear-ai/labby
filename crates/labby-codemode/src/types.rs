@@ -778,6 +778,7 @@ pub enum CodeModeCaller {
 /// into the kernel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CodeModeCallerCapabilities {
+    pub can_read: bool,
     pub can_execute: bool,
     pub can_use_snippets: bool,
     pub is_admin: bool,
@@ -830,6 +831,14 @@ impl CodeModeCaller {
         }
     }
 
+    #[must_use]
+    pub fn can_read(&self) -> bool {
+        match self {
+            Self::TrustedLocal => true,
+            Self::Scoped { capabilities, .. } => capabilities.can_read,
+        }
+    }
+
     /// Whether this caller carries the `lab:admin` scope (trusted-local always
     /// counts as admin). Hosts use this when mapping the caller onto their own
     /// credential model.
@@ -851,10 +860,18 @@ impl CodeModeCaller {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CodeModeToolAccess {
+    ReadOnly,
+    #[default]
+    Full,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolScope {
     namespaces: Option<BTreeSet<String>>,
     tools: BTreeSet<String>,
+    access: CodeModeToolAccess,
 }
 
 impl ToolScope {
@@ -888,7 +905,22 @@ impl ToolScope {
                 Some(namespaces)
             },
             tools: clean_set(tools),
+            access: CodeModeToolAccess::Full,
         }
+    }
+
+    /// Restrict this execution to tools that the host can prove are read-only.
+    /// Hosts must enforce this again against the live tool descriptor at the
+    /// invocation boundary; discovery filtering alone is not authorization.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.access = CodeModeToolAccess::ReadOnly;
+        self
+    }
+
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.access == CodeModeToolAccess::ReadOnly
     }
 
     #[must_use]
@@ -904,7 +936,9 @@ impl ToolScope {
 
     #[must_use]
     pub fn is_scoped(&self) -> bool {
-        self.namespaces.is_some() || !self.tools.is_empty()
+        self.namespaces.is_some()
+            || !self.tools.is_empty()
+            || self.access == CodeModeToolAccess::ReadOnly
     }
 
     #[must_use]
@@ -915,6 +949,10 @@ impl ToolScope {
     #[must_use]
     pub fn fingerprint(&self) -> String {
         serde_json::json!({
+            "access": match self.access {
+                CodeModeToolAccess::ReadOnly => "read_only",
+                CodeModeToolAccess::Full => "full",
+            },
             "namespaces": self.namespaces.as_ref().map(|set| set.iter().cloned().collect::<Vec<_>>()),
             "tools": self.tools.iter().cloned().collect::<Vec<_>>(),
         })

@@ -444,6 +444,9 @@ fn scoped(scopes: &[&str]) -> super::CodeModeCaller {
     let is_admin = scopes.contains(&"lab:admin");
     super::CodeModeCaller::Scoped {
         capabilities: super::CodeModeCallerCapabilities {
+            can_read: scopes
+                .iter()
+                .any(|scope| matches!(*scope, "lab:read" | "lab" | "lab:admin")),
             can_execute: scopes
                 .iter()
                 .any(|scope| matches!(*scope, "lab" | "lab:admin")),

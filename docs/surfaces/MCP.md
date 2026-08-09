@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-08"
 ---
 
 # MCP Surface
@@ -46,9 +46,32 @@ MCP help lives in [../generated/mcp-help.md](../generated/mcp-help.md).
 
 Without Code Mode, eligible upstream tools are projected into the downstream
 catalog subject to route scopes and exposure filters. With Code Mode enabled,
-raw upstream tools are hidden from normal `tools/list` and the synthetic
-`codemode` tool provides catalog search, description, snippets, and sandboxed
-execution.
+raw upstream tools are hidden from normal `tools/list`. The synthetic surface
+provides two text entry points:
+
+- `codemode_read` is available to `lab:read`, `lab`, and `lab:admin`. It is
+  annotated read-only and can discover or invoke only upstream tools whose live
+  descriptor explicitly sets `readOnlyHint: true` without a contradictory
+  `destructiveHint: true`. Missing or ambiguous annotations fail closed.
+- `codemode` is the full execution surface for `lab` and `lab:admin`. The
+  optional `codemode_ui` tool has the same execution authority and adds the
+  Lab-owned trace inspector.
+
+The full-execution tools are annotated as write-capable and potentially
+destructive. Their annotations describe the approval boundary; upstream tool
+authorization is still enforced again at dispatch time.
+
+Approval-facing Code Mode descriptors include enabled, route-scoped upstream
+names and normalized operator hints. They change when those configuration
+determinants change, but remain stable across runtime health and discovered-tool
+churn. Call `codemode.search(...)` and `codemode.describe(...)` inside a run to
+inspect the current route-scoped tool catalog.
+
+Synthetic Code Mode advertises only the fixed Lab-owned UI action surface. It
+does not add or remove raw upstream MCP App tools as upstream health changes.
+An upstream widget returned by a Code Mode call may still render through its
+resource URI, but its raw callback tools are not added to the approval-facing
+`tools/list` contract.
 
 Code Mode may call exposed upstream MCP tools only. Lab actions are not callable
 from inside its sandbox. Large upstream results must be projected or sliced
@@ -72,6 +95,14 @@ by the action contract. Authorization scope and confirmation are separate checks
 Catalog notifications are evaluated against each peer's visible contract,
 coalesced, and held until in-flight tool calls drain. Do not restore global
 broadcast semantics or notification delivery during an open turn.
+
+`tools/list` assembles the complete visible contract, sorts it globally by tool
+name, and then paginates it. Continuation cursors are bound to that contract's
+revision; a cursor from a changed catalog is rejected instead of being resumed
+at an unsafe offset. A session's notification baseline advances only after it
+receives the final page of a complete listing. Subscribing before that point
+keeps the baseline unpublished so the next relevant catalog trigger emits
+`notifications/tools/list_changed`.
 
 ## Supported Product Boundary
 

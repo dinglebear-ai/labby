@@ -59,6 +59,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Whether the gateway advertises the Code Mode codemode surface",
             },
             ParamSpec {
+                name: "trusted_read_only_tools",
+                ty: "array",
+                required: false,
+                description: "Exact upstream::tool ids operator-trusted for codemode_read (live readOnlyHint is also required)",
+            },
+            ParamSpec {
                 name: "mcp_ui_enabled",
                 ty: "boolean",
                 required: false,

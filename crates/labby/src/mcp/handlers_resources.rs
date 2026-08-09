@@ -1786,6 +1786,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             gateway_manager: Some(manager),
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -1901,6 +1902,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             gateway_manager: Some(manager),
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -1973,6 +1975,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             gateway_manager: None,
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             code_mode_app_state,
+            last_listed_tool_contract: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -2128,7 +2131,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
     }
 
     #[tokio::test]
-    async fn code_mode_app_resource_does_not_shadow_upstream_mcp_ui_resources() {
+    async fn code_mode_keeps_upstream_ui_resources_without_advertising_callback_tools() {
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
             code_mode_server_with_upstream_ui_resource().await,
@@ -2148,11 +2151,6 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             .iter()
             .find(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
             .expect("Code Mode UI tool should be listed");
-        let upstream_ui_tool = tools
-            .tools
-            .iter()
-            .find(|tool| tool.name.as_ref() == UPSTREAM_UI_TOOL_NAME)
-            .expect("upstream UI tool should be listed");
         assert!(
             codemode_tool
                 .meta
@@ -2161,13 +2159,12 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
                 .is_some_and(|uri| uri.starts_with(CODE_MODE_APP_URI_PREFIX)),
             "Code Mode tool must keep its local UI resource: {codemode_tool:?}"
         );
-        assert_eq!(
-            upstream_ui_tool
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.0["ui"]["resourceUri"].as_str()),
-            Some(UPSTREAM_UI_URI),
-            "upstream UI tool must keep its native resource URI"
+        assert!(
+            tools
+                .tools
+                .iter()
+                .all(|tool| tool.name.as_ref() != UPSTREAM_UI_TOOL_NAME),
+            "upstream callback tools must not churn the synthetic Code Mode contract"
         );
 
         let resources = running

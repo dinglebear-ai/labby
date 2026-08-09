@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::manager::GatewayManager;
@@ -56,6 +57,7 @@ impl CodeModeHost for GatewayManager {
             &owner,
             oauth_subject,
             allowed,
+            scope,
             include_snippets,
             use_cache,
         )
@@ -68,7 +70,7 @@ impl CodeModeHost for GatewayManager {
         params: Value,
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
-        _scope: &ToolScope,
+        scope: &ToolScope,
         _ctx: labby_codemode::ExecCtx,
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
         let (upstream, tool) =
@@ -82,6 +84,29 @@ impl CodeModeHost for GatewayManager {
         let upstream_tool = self
             .resolve_code_mode_upstream_tool(upstream, tool, Some(&owner), oauth_subject)
             .await?;
+
+        // Discovery is advisory; authorization is checked again against the
+        // live descriptor immediately before invocation so an annotation
+        // change or stale render cannot turn a read-only run into a write.
+        let code_mode_config = self.code_mode_config().await;
+        if scope.is_read_only() && !tool_is_trusted_read_only(&code_mode_config, &upstream_tool) {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "code_mode",
+                action = "codemode.read",
+                upstream,
+                tool,
+                kind = "forbidden",
+                "blocked tool without operator trust and an explicit read-only annotation"
+            );
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: format!(
+                    "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
+                ),
+            }
+            .into());
+        }
 
         // A destructive tool the caller is not otherwise permitted to run is
         // hard-`forbidden`. Code Mode execution is already scope-gated; there is
@@ -110,8 +135,16 @@ impl CodeModeHost for GatewayManager {
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
         let tool_ui = extract_tool_ui_link(&upstream_tool);
         let safety = upstream_tool_safety(&upstream_tool);
+        let checked_contract = code_mode_tool_contract_digest(&upstream_tool);
         let mut outcome = self
-            .execute_upstream_tool_with_contract(upstream, tool, params, safety, oauth_subject)
+            .execute_upstream_tool_with_contract(
+                upstream,
+                tool,
+                params,
+                safety,
+                oauth_subject,
+                Some((&checked_contract, scope.is_read_only())),
+            )
             .await?;
         if outcome.ui.is_none()
             && let Some(ui) = tool_ui
@@ -252,6 +285,7 @@ impl CodeModeHost for GatewayManager {
             &owner,
             oauth_subject,
             allowed,
+            scope,
             include_snippets,
             use_cache,
         )
@@ -331,6 +365,39 @@ impl CodeModeHost for GatewayManager {
     fn openapi_http_client(&self) -> reqwest::Client {
         self.openapi_http_client.clone()
     }
+}
+
+pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
+    rmcp_tool_is_explicitly_read_only(&tool.tool)
+}
+
+fn rmcp_tool_is_explicitly_read_only(tool: &rmcp::model::Tool) -> bool {
+    tool.annotations.as_ref().is_some_and(|annotations| {
+        annotations.read_only_hint == Some(true) && annotations.destructive_hint != Some(true)
+    })
+}
+
+pub(super) fn tool_is_trusted_read_only(config: &CodeModeConfig, tool: &UpstreamTool) -> bool {
+    tool_is_explicitly_read_only(tool)
+        && config.trusts_read_only_tool(&tool.upstream_name, tool.tool.name.as_ref())
+}
+
+/// Fingerprint every descriptor field used for authorization, validation, and
+/// model-facing discovery. Dispatch rechecks this value against the selected
+/// live pool so a concurrent gateway reload cannot swap in a different tool
+/// contract after the caller's descriptor was authorized.
+fn code_mode_tool_contract_digest(tool: &UpstreamTool) -> String {
+    rmcp_tool_contract_digest(&tool.upstream_name, &tool.tool)
+}
+
+fn rmcp_tool_contract_digest(upstream: &str, tool: &rmcp::model::Tool) -> String {
+    let payload = serde_json::json!({
+        "upstream": upstream,
+        "tool": tool,
+    });
+    let serialized = serde_json::to_vec(&payload).unwrap_or_default();
+    let digest = Sha256::digest(serialized);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Per-run caller identity stamped onto journal rows at flush time (captured
@@ -460,6 +527,7 @@ impl GatewayManager {
             params,
             CodeModeToolSafetyHints::default(),
             Some(SHARED_GATEWAY_OAUTH_SUBJECT),
+            None,
         )
         .await
         .map_err(CodeModeCallError::into_tool_error)
@@ -472,6 +540,7 @@ impl GatewayManager {
         params: Value,
         safety: CodeModeToolSafetyHints,
         oauth_subject: Option<&str>,
+        checked_contract: Option<(&str, bool)>,
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
         let id = format!("{upstream}::{tool}");
         let arguments =
@@ -485,8 +554,6 @@ impl GatewayManager {
             .with_origin(CodeModeErrorOrigin::UpstreamTransport)
             .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
         };
-        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
-        upstream_params.arguments = Some(arguments);
         let oauth_config = self
             .config
             .read()
@@ -495,6 +562,75 @@ impl GatewayManager {
             .iter()
             .find(|config| config.enabled && config.name == upstream && config.oauth.is_some())
             .cloned();
+        if let Some((expected_contract, require_read_only)) = checked_contract {
+            // OAuth descriptors are subject-scoped and can differ from the
+            // gateway catalog. Re-resolve through the same subject connection
+            // cache used by the eventual call. Non-OAuth calls bind to this
+            // exact pool Arc, so a manager reload cannot swap the checked
+            // descriptor out before dispatch.
+            let current_tool = if let Some(config) = oauth_config.as_ref() {
+                let subject = oauth_subject.ok_or_else(|| {
+                    CodeModeCallError::new(
+                        "auth_failed",
+                        format!(
+                            "upstream `{upstream}` requires an authenticated subject for tool execution"
+                        ),
+                    )
+                    .with_tool(id.clone())
+                })?;
+                pool.subject_scoped_tools(std::slice::from_ref(config), subject)
+                    .await
+                    .into_iter()
+                    .flat_map(|(_, tools)| tools)
+                    .find(|candidate| candidate.name.as_ref() == tool)
+            } else {
+                pool.healthy_tools_for_upstream(upstream)
+                    .await
+                    .into_iter()
+                    .find(|candidate| candidate.tool.name.as_ref() == tool)
+                    .map(|candidate| candidate.tool)
+            }
+            .ok_or_else(|| {
+                    CodeModeCallError::new(
+                        "unknown_tool",
+                        format!(
+                            "Tool `{upstream}::{tool}` changed or disappeared before dispatch; rediscover it and retry."
+                        ),
+                    )
+                    .with_tool(id.clone())
+                    .with_origin(CodeModeErrorOrigin::Discovery)
+                    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                })?;
+            if rmcp_tool_contract_digest(upstream, &current_tool) != expected_contract {
+                return Err(CodeModeCallError::new(
+                    "unknown_tool",
+                    format!(
+                        "Tool `{upstream}::{tool}` changed before dispatch; rediscover it and retry."
+                    ),
+                )
+                .with_tool(id.clone())
+                .with_origin(CodeModeErrorOrigin::Discovery)
+                .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+            }
+            if require_read_only {
+                let config = self.code_mode_config().await;
+                if !config.trusts_read_only_tool(upstream, tool)
+                    || !rmcp_tool_is_explicitly_read_only(&current_tool)
+                {
+                    return Err(CodeModeCallError::new(
+                        "forbidden",
+                        format!(
+                            "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
+                        ),
+                    )
+                    .with_tool(id.clone())
+                    .with_origin(CodeModeErrorOrigin::Policy)
+                    .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+                }
+            }
+        }
+        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
+        upstream_params.arguments = Some(arguments);
         let call_result = if let Some(config) = oauth_config {
             let subject = oauth_subject.ok_or_else(|| {
                 CodeModeCallError::new(
@@ -808,6 +944,91 @@ mod tests {
         assert_eq!(
             ui.ui_meta["preferredSize"]["height"],
             serde_json::json!(520)
+        );
+    }
+
+    #[test]
+    fn read_only_access_requires_an_explicit_read_only_hint() {
+        fn upstream_with_annotations(
+            annotations: Option<rmcp::model::ToolAnnotations>,
+        ) -> UpstreamTool {
+            let mut tool =
+                rmcp::model::Tool::new("query".to_string(), "Query data", Arc::new(Map::new()));
+            tool.annotations = annotations;
+            UpstreamTool {
+                tool,
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::from("fixture"),
+                destructive: false,
+            }
+        }
+
+        assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
+            None
+        )));
+        assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
+            Some(rmcp::model::ToolAnnotations::new().destructive(false),)
+        )));
+        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
+            Some(rmcp::model::ToolAnnotations::new().read_only(true),)
+        )));
+        assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
+            Some(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(true),
+            )
+        )));
+
+        let hinted =
+            upstream_with_annotations(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
+        assert!(!tool_is_trusted_read_only(
+            &CodeModeConfig::default(),
+            &hinted
+        ));
+        let mut trusted = CodeModeConfig::default();
+        trusted.trusted_read_only_tools = vec!["fixture::query".to_string()];
+        assert!(tool_is_trusted_read_only(&trusted, &hinted));
+    }
+
+    #[test]
+    fn code_mode_contract_digest_detects_security_relevant_descriptor_drift() {
+        let make = |description: &str, read_only: bool| {
+            let mut tool = rmcp::model::Tool::new(
+                "query".to_string(),
+                description.to_string(),
+                Arc::new(Map::from_iter([(
+                    "type".to_string(),
+                    serde_json::json!("object"),
+                )])),
+            );
+            tool.annotations = Some(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(read_only)
+                    .destructive(!read_only),
+            );
+            UpstreamTool {
+                tool,
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::from("fixture"),
+                destructive: !read_only,
+            }
+        };
+
+        let checked = make("Query data", true);
+        assert_eq!(
+            code_mode_tool_contract_digest(&checked),
+            code_mode_tool_contract_digest(&checked.clone())
+        );
+        assert_ne!(
+            code_mode_tool_contract_digest(&checked),
+            code_mode_tool_contract_digest(&make("Changed contract", true))
+        );
+        assert_ne!(
+            code_mode_tool_contract_digest(&checked),
+            code_mode_tool_contract_digest(&make("Query data", false))
         );
     }
 

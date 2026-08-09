@@ -9,12 +9,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
-use labby_codemode::{ToolDescriptor, ToolsRender, serialized_catalog_size};
+use labby_codemode::{ToolDescriptor, ToolScope, ToolsRender, serialized_catalog_size};
 use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{sanitize_schema, sanitize_tool_text};
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
+use labby_runtime::CodeModeConfig;
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
 
@@ -43,6 +44,7 @@ pub(crate) async fn build_tools_render(
     owner: &UpstreamRuntimeOwner,
     oauth_subject: Option<&str>,
     allowed_upstreams: Option<&BTreeSet<String>>,
+    scope: &ToolScope,
     include_snippets: bool,
     use_cache: bool,
 ) -> Result<ToolsRender, ToolError> {
@@ -60,7 +62,27 @@ pub(crate) async fn build_tools_render(
             )
             .await?
     };
-    catalog_from_tools(manager, raw_tools, include_snippets).await
+    let code_mode_config = manager.code_mode_config().await;
+    catalog_from_tools(
+        manager,
+        filter_tools_for_access(raw_tools, scope, &code_mode_config),
+        include_snippets,
+    )
+    .await
+}
+
+fn filter_tools_for_access(
+    tools: Vec<UpstreamTool>,
+    scope: &ToolScope,
+    config: &CodeModeConfig,
+) -> Vec<UpstreamTool> {
+    if !scope.is_read_only() {
+        return tools;
+    }
+    tools
+        .into_iter()
+        .filter(|tool| super::code_mode_host::tool_is_trusted_read_only(config, tool))
+        .collect()
 }
 
 async fn catalog_from_tools(
@@ -333,6 +355,77 @@ fn normalize_path(path: &Path) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn read_only_catalog_filter_is_fail_closed() {
+        let named = Arc::<str>::from("fixture");
+        let make = |annotations: Option<rmcp::model::ToolAnnotations>| {
+            let mut tool = rmcp::model::Tool::new(
+                "query".to_string(),
+                "Query data",
+                Arc::new(serde_json::Map::new()),
+            );
+            tool.annotations = annotations;
+            UpstreamTool {
+                tool,
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::clone(&named),
+                destructive: false,
+            }
+        };
+        let tools = vec![
+            make(None),
+            make(Some(rmcp::model::ToolAnnotations::new().destructive(false))),
+            make(Some(rmcp::model::ToolAnnotations::new().read_only(true))),
+        ];
+
+        let mut config = CodeModeConfig::default();
+        config.trusted_read_only_tools = vec!["fixture::query".to_string()];
+        let read_only_scope = ToolScope::default().read_only();
+        let filtered = filter_tools_for_access(tools, &read_only_scope, &config);
+        assert_eq!(filtered.len(), 1);
+        assert!(super::super::code_mode_host::tool_is_trusted_read_only(
+            &config,
+            &filtered[0]
+        ));
+    }
+
+    #[test]
+    fn read_only_catalog_requires_operator_trust_in_addition_to_hint() {
+        let named = Arc::<str>::from("fixture");
+        let mut tool = rmcp::model::Tool::new(
+            "query".to_string(),
+            "Query data",
+            Arc::new(serde_json::Map::new()),
+        );
+        tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+        let tool = UpstreamTool {
+            tool,
+            input_schema: None,
+            output_schema: None,
+            upstream_name: named,
+            destructive: false,
+        };
+
+        let read_only_scope = ToolScope::default().read_only();
+        assert!(
+            filter_tools_for_access(
+                vec![tool.clone()],
+                &read_only_scope,
+                &CodeModeConfig::default()
+            )
+            .is_empty()
+        );
+
+        let mut trusted = CodeModeConfig::default();
+        trusted.trusted_read_only_tools = vec!["fixture::query".to_string()];
+        assert_eq!(
+            filter_tools_for_access(vec![tool], &read_only_scope, &trusted).len(),
+            1
+        );
+    }
 
     #[test]
     fn inaccessible_snippet_directory_is_absent_from_fingerprint() {

@@ -1,14 +1,15 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-08"
 ---
 
 # Code Mode
 
-Code Mode is the JavaScript execution surface behind the MCP `codemode` tool. It
-lets an agent discover upstream MCP tools, inspect compact docs, and run one async
-JavaScript function in a sandbox that can call those upstream tools.
+Code Mode is the JavaScript execution surface behind the MCP `codemode` and
+`codemode_read` tools. It lets an agent discover upstream MCP tools, inspect
+compact docs, and run one async JavaScript function in a sandbox that can call
+the tools allowed by that entry point.
 
 Lab actions are intentionally not exposed through Code Mode. Call Lab built-in
 service tools directly when raw tools are visible, or use the native gateway
@@ -16,10 +17,53 @@ management/API surfaces for Lab actions.
 
 ## Surface
 
-Code Mode's primary MCP surface is `codemode({ code })`. The code runs as one
-async JavaScript function in the sandbox. Discovery, focused compact docs,
-upstream calls, fan-out, filtering, and final result shaping all happen inside
-that same execution.
+Code Mode has two text MCP entry points with the same input shape:
+
+- `codemode({ code })` is the full execution surface. It requires `lab` or
+  `lab:admin` and may invoke write-capable or destructive upstream tools.
+- `codemode_read({ code })` is the enforced read-only surface. It accepts
+  `lab:read`, `lab`, or `lab:admin`, exposes only upstream tools present in the
+  operator-owned `trusted_read_only_tools` allowlist **and** whose live MCP
+  descriptor explicitly sets `readOnlyHint: true`, and rejects descriptors that
+  also set `destructiveHint: true`. An absent or merely
+  `destructiveHint: false` annotation is not proof that a tool is read-only.
+
+The trust list is empty by default and accepts exact namespaced tool ids only:
+
+```toml
+[code_mode]
+enabled = true
+trusted_read_only_tools = [
+  "claude-dookie::Read",
+  "qdrant::collection_info",
+]
+```
+
+This is a dedicated safety attestation, separate from an upstream's
+`expose_tools` visibility policy. Tool annotations are upstream-controlled and
+cannot grant read-only authority by themselves. Both the trust entry and the
+live descriptor are checked again on invocation. A changed descriptor is
+rejected before dispatch and must be rediscovered.
+
+The optional `codemode_ui` MCP App entry point has the same full execution
+authority as `codemode`; it is not a read-only inspector shortcut. The full
+entry points are annotated `readOnlyHint: false`, `destructiveHint: true`,
+`idempotentHint: false`, and `openWorldHint: true`. `codemode_read` is annotated
+`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, and
+`openWorldHint: true`.
+
+For every entry point, the code runs as one async JavaScript function in the
+sandbox. Discovery, focused compact docs, allowed upstream calls, fan-out,
+filtering, and final result shaping all happen inside that same execution.
+
+The approval-facing Tool descriptors include the enabled, route-scoped upstream
+namespaces and their normalized operator hints. Names and hints come from the
+current gateway configuration, are sorted and deduplicated, and therefore
+change the descriptor when that configuration changes. Runtime health, tool
+counts, and individual tool names stay out of the descriptor; discover those
+inside the run with `codemode.search(...)` and `codemode.describe(...)`. The
+8192-byte description cap applies after tool-specific suffixes are composed, so
+no final Tool description can exceed the host-facing limit.
 
 Inside the sandbox:
 
@@ -37,11 +81,12 @@ Inside the sandbox:
 Unscoped admin/trusted-local Code Mode also exposes two local sandbox globals:
 `state` and `git`. They are not upstream MCP tools and they do not grant host
 filesystem or shell access. Route-scoped Code Mode runs do not receive these
-globals, and hand-written `callTool("state::...")` / `callTool("git::...")`
-calls are denied at dispatch time. All paths are virtual workspace paths rooted
-inside `$LABBY_HOME/code-mode-workspaces/`. Parameters use the documented
-JavaScript names; result payloads preserve the existing serialized Rust field
-names where those names are already part of the Code Mode contract.
+globals, and neither does `codemode_read`. Hand-written
+`callTool("state::...")` / `callTool("git::...")` calls are denied at dispatch
+time on those surfaces. All paths are virtual workspace paths rooted inside
+`$LABBY_HOME/code-mode-workspaces/`. Parameters use the documented JavaScript
+names; result payloads preserve the existing serialized Rust field names where
+those names are already part of the Code Mode contract.
 
 V1 state methods:
 
@@ -183,8 +228,9 @@ async () => {
 calls. A failed `callTool` rejects only that promise; catch locally when partial
 success is useful.
 
-The gateway exposes only `codemode`. Discovery, schema inspection, tool calls,
-and intermediate values stay inside one sandbox execution.
+Synthetic Code Mode exposes the fixed Lab-owned entry points instead of raw
+upstream tools. Discovery, schema inspection, tool calls, and intermediate
+values stay inside one sandbox execution.
 
 ## Snippets
 
@@ -449,10 +495,15 @@ Semantics:
 
 ### Widget → host callbacks
 
-While the synthetic `codemode` surface is active, raw upstream tools stay hidden
-from `list_tools`; the public Code Mode MCP surface is the single `codemode`
-tool. MCP App tools that carry `_meta.ui.resourceUri` may still be advertised so
-the host can render the widget.
+While synthetic Code Mode is active, raw upstream tools stay hidden from
+`tools/list`, including tools that carry `_meta.ui.resourceUri`. Upstream health
+therefore cannot add or remove approval-facing callback actions. The advertised
+MCP App actions are the fixed Lab-owned surface (`codemode_ui`, `mcp_app`, and
+the configured Lab-owned admin apps), not raw upstream callbacks.
+
+An upstream widget returned by a Code Mode execution can still render through
+the native resource URI mirrored in the result. Rendering that resource does
+not advertise its server's callback tools.
 
 A rendered MCP App can call back to its server only through host
 `callServerTool` / `tools/call`. Lab allows those callback calls through Code
@@ -516,15 +567,20 @@ the dead Wasmtime reference engine and is normalized away by the host.
 
 ## Destructive tool calls
 
-Destructive upstream tools are gated by host-side metadata (`destructive_permitted`
-in `labby-codemode`'s `types.rs`) before dispatch, and by nothing else. Code
-Mode execution is itself scope-gated — a caller needs `lab` or `lab:admin` to
-reach the `codemode` tool at all — so there is no additional per-call
-confirmation or pause step on top of that. Concretely:
+Destructive upstream tools on the full surface are gated by host-side metadata
+(`destructive_permitted` in `labby-codemode`'s `types.rs`) before dispatch, and
+by nothing else. Full Code Mode execution is itself scope-gated — a caller needs
+`lab` or `lab:admin` to reach `codemode` or `codemode_ui` — so there is no
+additional per-call confirmation or pause step on top of that. Concretely:
 
 - **MCP:** an execute-capable caller (`lab` or `lab:admin`) may call any
   destructive upstream tool from Code Mode with no separate confirmation. A
   caller without execute permission is refused with `forbidden` before dispatch.
+- **Read-only MCP:** `codemode_read` never admits a tool unless the operator has
+  trusted its exact namespaced id and its descriptor is explicitly read-only.
+  Discovery filters the catalog, and invocation checks both the operator policy
+  and the live descriptor again immediately before dispatch. `writeArtifact`, local
+  `state`/`git` providers, and other write paths are unavailable.
 - **CLI:** Code Mode execution is operator-driven and always execute-capable,
   so destructive upstream calls are permitted unconditionally.
 
@@ -534,13 +590,16 @@ rest). It has **no** `resume_token` and **no** `confirm` parameter on the
 `codemode` MCP tool, and **no** pause/resume/reject mechanism: the journal is
 orthogonal to dispatch and never interrupts, gates, or confirms a running
 snippet. This preserves the permanent decision to remove the destructive-call
-pause gate — the journal is a record, not a gate. A caller that can invoke
-`codemode` at all can call destructive tools immediately. Do not reintroduce a
-pause/confirm gate on top of Code Mode dispatch.
+pause gate — the journal is a record, not a gate. A caller that can invoke a
+full Code Mode entry point can call destructive tools immediately. The separate
+`codemode_read` boundary is an enforced capability restriction, not a
+pause/confirm gate.
 
 ## Scope
 
 - `lab` or `lab:admin` can use `codemode`.
+- `lab` or `lab:admin` can use `codemode_ui` when the app surface is enabled.
+- `lab:read`, `lab`, or `lab:admin` can use `codemode_read`.
 
 OAuth callers retain their subject attribution when Code Mode calls upstream tools.
 Trusted local callers use the shared gateway subject.

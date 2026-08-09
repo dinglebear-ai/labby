@@ -1651,6 +1651,7 @@ async fn run_stdio(
         gateway_manager: Some(Arc::clone(&gateway_manager)),
         peers: Arc::clone(&notifier.peers),
         code_mode_app_state: notifier.code_mode_app_state.clone(),
+        last_listed_tool_contract: Default::default(),
         #[cfg(feature = "gateway")]
         client_registry: notifier.client_registry.clone(),
         transport_label: "stdio",
@@ -1799,6 +1800,7 @@ fn build_mcp_service_with_scope(
                 gateway_manager: manager,
                 peers,
                 code_mode_app_state,
+                last_listed_tool_contract: Default::default(),
                 #[cfg(feature = "gateway")]
                 client_registry,
                 transport_label: "http",

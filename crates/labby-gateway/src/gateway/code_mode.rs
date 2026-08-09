@@ -20,7 +20,8 @@ pub use labby_codemode::run_code_mode_runner_stdio;
 pub use labby_codemode::{
     CodeModeBroker, CodeModeCaller, CodeModeCallerCapabilities, CodeModeHistory,
     CodeModeHistoryEntry, CodeModeHistoryKind, CodeModeSourceLookup, CodeModeSourceStore,
-    CodeModeSurface, RunnerPool, code_mode_execute_trace, validate_code_mode_params_against_schema,
+    CodeModeSurface, RunnerPool, RunnerSpawn, code_mode_execute_trace,
+    validate_code_mode_params_against_schema,
 };
 #[cfg(any(test, feature = "testkit"))]
 pub use labby_codemode::{CodeModeExecutedCall, CodeModeExecutionResponse};
