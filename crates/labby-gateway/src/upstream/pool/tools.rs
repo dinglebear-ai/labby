@@ -3,7 +3,7 @@
 //! tool health. `has_healthy_tools_for_upstream` is `pub(super)` because
 //! `ensure.rs` calls it across the module boundary (plan §3.0/§2.1).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -24,7 +24,7 @@ use super::helpers::UpstreamCachedSummary;
 /// Prevents runaway allocations when a malicious or misconfigured upstream
 /// exposes an extremely large catalog.  A truncation warning is emitted when
 /// this limit is hit.  Tests can reference this constant to assert bounds behavior.
-pub(crate) const MAX_UPSTREAM_TOOLS: usize = 1000;
+pub const MAX_UPSTREAM_TOOLS: usize = 1000;
 
 /// Hard cap on the total number of resources returned by `list_upstream_resources()`.
 pub(crate) const MAX_UPSTREAM_RESOURCES: usize = 1000;
@@ -55,6 +55,67 @@ fn insert_bounded_tool_row(
     }
 }
 
+fn insert_bounded_upstream_tool(tools: &mut Vec<UpstreamTool>, tool: UpstreamTool, limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    let insert_at = tools
+        .binary_search_by(|existing| {
+            existing
+                .tool
+                .name
+                .cmp(&tool.tool.name)
+                .then_with(|| existing.upstream_name.cmp(&tool.upstream_name))
+        })
+        .unwrap_or_else(std::convert::identity);
+    if insert_at < limit {
+        tools.insert(insert_at, tool);
+        if tools.len() > limit {
+            tools.pop();
+        }
+    }
+}
+
+fn insert_bounded_name(names: &mut Vec<String>, name: String, limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    let insert_at = names
+        .binary_search(&name)
+        .unwrap_or_else(std::convert::identity);
+    if insert_at < limit {
+        names.insert(insert_at, name);
+        if names.len() > limit {
+            names.pop();
+        }
+    }
+}
+
+fn insert_bounded_subject_tool(
+    tools: &mut Vec<(String, rmcp::model::Tool)>,
+    upstream: String,
+    tool: rmcp::model::Tool,
+    limit: usize,
+) {
+    if limit == 0 {
+        return;
+    }
+    let insert_at = tools
+        .binary_search_by(|(existing_upstream, existing_tool)| {
+            existing_tool
+                .name
+                .cmp(&tool.name)
+                .then_with(|| existing_upstream.cmp(&upstream))
+        })
+        .unwrap_or_else(std::convert::identity);
+    if insert_at < limit {
+        tools.insert(insert_at, (upstream, tool));
+        if tools.len() > limit {
+            tools.pop();
+        }
+    }
+}
+
 impl UpstreamPool {
     /// Get all healthy upstream tools, up to [`MAX_UPSTREAM_TOOLS`] total.
     ///
@@ -70,7 +131,9 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<UpstreamTool> {
         let catalog = self.catalog.read().await;
-        let mut tools: Vec<UpstreamTool> = catalog
+        let mut tools = Vec::new();
+        let mut candidate_count = 0usize;
+        for tool in catalog
             .iter()
             .filter(|(name, _)| upstream_allowed(allowed, name))
             .filter(|(_, entry)| entry.tool_health.is_routable())
@@ -82,10 +145,11 @@ impl UpstreamPool {
                         .then(|| tool.clone())
                 })
             })
-            .take(MAX_UPSTREAM_TOOLS + 1)
-            .collect();
-        if tools.len() > MAX_UPSTREAM_TOOLS {
-            tools.truncate(MAX_UPSTREAM_TOOLS);
+        {
+            candidate_count = candidate_count.saturating_add(1);
+            insert_bounded_upstream_tool(&mut tools, tool, MAX_UPSTREAM_TOOLS);
+        }
+        if candidate_count > MAX_UPSTREAM_TOOLS {
             tracing::warn!(
                 limit = MAX_UPSTREAM_TOOLS,
                 "upstream tool catalog exceeds limit — truncating to cap"
@@ -105,7 +169,9 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<UpstreamTool> {
         let catalog = self.catalog.read().await;
-        let mut tools: Vec<UpstreamTool> = catalog
+        let mut tools = Vec::new();
+        let mut candidate_count = 0usize;
+        for tool in catalog
             .iter()
             .filter(|(name, _)| upstream_allowed(allowed, name))
             .filter(|(_, entry)| entry.tool_health.is_routable())
@@ -117,10 +183,11 @@ impl UpstreamPool {
                     .then(|| tool.clone())
                 })
             })
-            .take(MAX_UPSTREAM_TOOLS + 1)
-            .collect();
-        if tools.len() > MAX_UPSTREAM_TOOLS {
-            tools.truncate(MAX_UPSTREAM_TOOLS);
+        {
+            candidate_count = candidate_count.saturating_add(1);
+            insert_bounded_upstream_tool(&mut tools, tool, MAX_UPSTREAM_TOOLS);
+        }
+        if candidate_count > MAX_UPSTREAM_TOOLS {
             tracing::warn!(
                 limit = MAX_UPSTREAM_TOOLS,
                 "upstream MCP App tool catalog exceeds limit — truncating to cap"
@@ -131,7 +198,7 @@ impl UpstreamPool {
 
     pub async fn healthy_tools_for_upstream(&self, upstream: &str) -> Vec<UpstreamTool> {
         let catalog = self.catalog.read().await;
-        catalog
+        let mut tools = catalog
             .get(upstream)
             .into_iter()
             .filter(|entry| entry.tool_health.is_routable())
@@ -143,7 +210,9 @@ impl UpstreamPool {
                         .then(|| tool.clone())
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        tools.sort_by(|left, right| left.tool.name.cmp(&right.tool.name));
+        tools
     }
 
     pub(super) async fn has_healthy_tools_for_upstream(&self, upstream: &str) -> bool {
@@ -272,6 +341,31 @@ impl UpstreamPool {
         configs: &[UpstreamConfig],
         subject: &str,
     ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
+        self.subject_scoped_tools_inner(configs, subject, None)
+            .await
+    }
+
+    /// Return at most `limit` OAuth subject-scoped tools in deterministic
+    /// global tool-name/upstream-name order.
+    ///
+    /// Tool-list surfaces use this bounded form while owner resolution retains
+    /// the complete subject-scoped catalog through [`Self::subject_scoped_tools`].
+    pub async fn subject_scoped_tools_bounded(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        limit: usize,
+    ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
+        self.subject_scoped_tools_inner(configs, subject, Some(limit))
+            .await
+    }
+
+    async fn subject_scoped_tools_inner(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        limit: Option<usize>,
+    ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
         let mut futures = FuturesUnordered::new();
         for config in configs.iter().filter(|config| config.oauth.is_some()) {
             let config = config.clone();
@@ -286,14 +380,17 @@ impl UpstreamPool {
         }
 
         let mut discovered = Vec::new();
+        let mut bounded = Vec::new();
+        let mut exposed_count = 0usize;
         while let Some((name, exposure_policy, result)) = futures.next().await {
             match result {
                 Ok((_peer, tools)) => {
                     let discovered_count = tools.len();
-                    let exposed: Vec<rmcp::model::Tool> = tools
+                    let mut exposed: Vec<rmcp::model::Tool> = tools
                         .into_iter()
                         .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
                         .collect();
+                    exposed.sort_by(|left, right| left.name.cmp(&right.name));
                     let hidden_count = discovered_count - exposed.len();
                     if hidden_count > 0 {
                         tracing::debug!(
@@ -303,7 +400,14 @@ impl UpstreamPool {
                             "subject-scoped upstream tools hidden by exposure policy"
                         );
                     }
-                    discovered.push((name, exposed));
+                    if let Some(limit) = limit {
+                        exposed_count = exposed_count.saturating_add(exposed.len());
+                        for tool in exposed {
+                            insert_bounded_subject_tool(&mut bounded, name.clone(), tool, limit);
+                        }
+                    } else {
+                        discovered.push((name, exposed));
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -314,6 +418,21 @@ impl UpstreamPool {
                 }
             }
         }
+        if let Some(limit) = limit {
+            if exposed_count > limit {
+                tracing::warn!(
+                    limit,
+                    candidate_count = exposed_count,
+                    "subject-scoped upstream tool catalog exceeds limit — truncating to cap"
+                );
+            }
+            let mut by_upstream = BTreeMap::<String, Vec<rmcp::model::Tool>>::new();
+            for (upstream, tool) in bounded {
+                by_upstream.entry(upstream).or_default().push(tool);
+            }
+            return by_upstream.into_iter().collect();
+        }
+        discovered.sort_by(|left, right| left.0.cmp(&right.0));
         discovered
     }
 
@@ -547,7 +666,8 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<String> {
         let catalog = self.catalog.read().await;
-        let mut names: Vec<String> = catalog
+        let mut names = Vec::new();
+        for name in catalog
             .iter()
             .filter(|(name, entry)| {
                 upstream_allowed(allowed, name) && entry.tool_health.is_routable()
@@ -560,10 +680,8 @@ impl UpstreamPool {
                         .then(|| tool.tool.name.to_string())
                 })
             })
-            .take(MAX_UPSTREAM_TOOLS + 1)
-            .collect();
-        if names.len() > MAX_UPSTREAM_TOOLS {
-            names.truncate(MAX_UPSTREAM_TOOLS);
+        {
+            insert_bounded_name(&mut names, name, MAX_UPSTREAM_TOOLS);
         }
         names
     }
@@ -577,7 +695,8 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<String> {
         let catalog = self.catalog.read().await;
-        let mut names: Vec<String> = catalog
+        let mut names = Vec::new();
+        for name in catalog
             .iter()
             .filter(|(name, entry)| {
                 upstream_allowed(allowed, name) && entry.tool_health.is_routable()
@@ -590,10 +709,8 @@ impl UpstreamPool {
                     .then(|| tool.tool.name.to_string())
                 })
             })
-            .take(MAX_UPSTREAM_TOOLS + 1)
-            .collect();
-        if names.len() > MAX_UPSTREAM_TOOLS {
-            names.truncate(MAX_UPSTREAM_TOOLS);
+        {
+            insert_bounded_name(&mut names, name, MAX_UPSTREAM_TOOLS);
         }
         names
     }
@@ -763,6 +880,34 @@ mod tests {
         assert!(names.contains(&"search_repos".to_string()));
         assert!(names.contains(&"github_create_issue".to_string()));
         assert!(!names.contains(&"delete_repo".to_string()));
+    }
+
+    #[tokio::test]
+    async fn healthy_tools_are_sorted_before_the_global_cap_is_applied() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("large");
+        let names = (0..(MAX_UPSTREAM_TOOLS + 50))
+            .rev()
+            .map(|index| format!("tool_{index:04}"))
+            .collect::<Vec<_>>();
+        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let tools = test_upstream_tools(&upstream_name, &name_refs);
+        let entry = healthy_in_process_entry(Arc::clone(&upstream_name), tools);
+        pool.catalog
+            .write()
+            .await
+            .insert("large".to_string(), entry);
+
+        let listed = pool.healthy_tools().await;
+        let listed_names = listed
+            .iter()
+            .map(|tool| tool.tool.name.as_ref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(listed_names.len(), MAX_UPSTREAM_TOOLS);
+        assert_eq!(listed_names.first().copied(), Some("tool_0000"));
+        assert_eq!(listed_names.last().copied(), Some("tool_0999"));
+        assert!(listed_names.is_sorted());
     }
 
     #[tokio::test]

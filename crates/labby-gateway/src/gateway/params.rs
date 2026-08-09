@@ -358,6 +358,8 @@ pub(crate) struct CodeModeSetParams {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
+    pub trusted_read_only_tools: Option<Vec<String>>,
+    #[serde(default)]
     pub mcp_ui_enabled: Option<bool>,
     #[serde(default)]
     pub trace_params: Option<bool>,

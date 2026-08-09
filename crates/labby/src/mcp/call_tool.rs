@@ -31,8 +31,8 @@ use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
-    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
-    MCP_APP_TOOL_NAME,
+    ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_coalesce::schedule_catalog_notification;
@@ -418,7 +418,7 @@ impl LabMcpServer {
             // identity survives upstream churn.
             if matches!(
                 self.registry.permanent_tools().resolve(&service),
-                Some(PermanentToolId::CodeMode)
+                Some(PermanentToolId::CodeMode | PermanentToolId::CodeModeRead)
             ) || service == CODE_MODE_UI_TOOL_NAME
             {
                 if !self.route_scope.exposes_code_mode() {
@@ -445,6 +445,7 @@ impl LabMcpServer {
                         "the Code Mode MCP App is disabled; use codemode for text-only execution or mcp_app to re-enable it",
                         &serde_json::json!({
                             "text_tool": CODE_MODE_TOOL_NAME,
+                            "read_tool": CODE_MODE_READ_TOOL_NAME,
                             "control_tool": MCP_APP_TOOL_NAME,
                         }),
                     );

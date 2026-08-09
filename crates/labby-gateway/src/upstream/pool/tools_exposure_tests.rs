@@ -85,6 +85,21 @@ async fn move_connection_to_subject_cache(
     upstream: &str,
     subject: &str,
 ) {
+    move_connection_to_subject_cache_with_tools(
+        pool,
+        upstream,
+        subject,
+        DISCOVERED_TOOLS.iter().copied().map(test_tool).collect(),
+    )
+    .await;
+}
+
+async fn move_connection_to_subject_cache_with_tools(
+    pool: &super::UpstreamPool,
+    upstream: &str,
+    subject: &str,
+    tools: Vec<rmcp::model::Tool>,
+) {
     // `UpstreamConnection` implements `Drop`, so the whole value has to be moved
     // out of the pool rather than having its fields taken individually.
     let peer = pool
@@ -106,7 +121,7 @@ async fn move_connection_to_subject_cache(
         SubjectScopedConnection {
             _connection: connection,
             peer,
-            tools: DISCOVERED_TOOLS.iter().copied().map(test_tool).collect(),
+            tools,
             last_used: Instant::now(),
         },
     );
@@ -297,6 +312,116 @@ async fn each_upstream_is_filtered_by_its_own_expose_tools() {
     assert!(
         !by_upstream.contains_key("plain"),
         "a non-OAuth upstream must not be listed by the subject-scoped path"
+    );
+}
+
+#[tokio::test]
+async fn subject_scoped_tools_have_stable_upstream_and_tool_order() {
+    let pool = pool_with_both_exposure_paths("zeta", "alice").await;
+    seed_catalog_entry(&pool, "alpha", &["*"]).await;
+    let alpha_pool = static_catalog_pool("alpha").await;
+    {
+        let mut connections = pool.connections.write().await;
+        let mut source = alpha_pool.connections.write().await;
+        if let Some(connection) = source.remove("alpha") {
+            connections.insert("alpha".to_string(), connection);
+        }
+    }
+    move_connection_to_subject_cache(&pool, "alpha", "alice").await;
+    let configs = vec![
+        oauth_upstream_config("zeta", &["*"]),
+        oauth_upstream_config("alpha", &["*"]),
+    ];
+
+    let listed = pool.subject_scoped_tools(&configs, "alice").await;
+    let upstreams = listed
+        .iter()
+        .map(|(upstream, _)| upstream.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(upstreams, vec!["alpha", "zeta"]);
+    for (_, tools) in listed {
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert!(names.is_sorted());
+    }
+}
+
+#[tokio::test]
+async fn bounded_subject_scoped_tools_select_stably_across_over_cap_upstreams() {
+    const TOOLS_PER_UPSTREAM: usize = 600;
+    let pool = static_catalog_pool("zeta").await;
+    let zeta_tools = (0..TOOLS_PER_UPSTREAM)
+        .rev()
+        .map(|index| test_tool(&format!("zeta_tool_{index:04}")))
+        .collect();
+    move_connection_to_subject_cache_with_tools(&pool, "zeta", "alice", zeta_tools).await;
+
+    let alpha_pool = static_catalog_pool("alpha").await;
+    {
+        let mut connections = pool.connections.write().await;
+        let mut source = alpha_pool.connections.write().await;
+        connections.insert(
+            "alpha".to_string(),
+            source.remove("alpha").expect("alpha fixture connection"),
+        );
+    }
+    let alpha_tools = (0..TOOLS_PER_UPSTREAM)
+        .rev()
+        .map(|index| test_tool(&format!("alpha_tool_{index:04}")))
+        .collect();
+    move_connection_to_subject_cache_with_tools(&pool, "alpha", "alice", alpha_tools).await;
+
+    let alpha = UpstreamConfig {
+        expose_tools: None,
+        ..oauth_upstream_config("alpha", &["*"])
+    };
+    let zeta = UpstreamConfig {
+        expose_tools: None,
+        ..oauth_upstream_config("zeta", &["*"])
+    };
+    let first = pool
+        .subject_scoped_tools_bounded(&[zeta.clone(), alpha.clone()], "alice", 1_000)
+        .await;
+    let second = pool
+        .subject_scoped_tools_bounded(&[alpha, zeta], "alice", 1_000)
+        .await;
+
+    let flatten = |listed: Vec<(String, Vec<rmcp::model::Tool>)>| {
+        listed
+            .into_iter()
+            .flat_map(|(upstream, tools)| {
+                tools
+                    .into_iter()
+                    .map(move |tool| format!("{upstream}::{}", tool.name))
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = flatten(first);
+    let second = flatten(second);
+
+    assert_eq!(
+        first, second,
+        "completion and config order must not change selection"
+    );
+    assert_eq!(first.len(), 1_000);
+    assert_eq!(
+        first.first().map(String::as_str),
+        Some("alpha::alpha_tool_0000")
+    );
+    assert_eq!(
+        first.get(599).map(String::as_str),
+        Some("alpha::alpha_tool_0599")
+    );
+    assert_eq!(
+        first.get(600).map(String::as_str),
+        Some("zeta::zeta_tool_0000")
+    );
+    assert_eq!(
+        first.last().map(String::as_str),
+        Some("zeta::zeta_tool_0399")
     );
 }
 

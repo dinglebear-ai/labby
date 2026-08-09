@@ -357,6 +357,7 @@ async fn code_mode_host_list_tools_for_mcp_does_not_block_on_cold_unhealthy_upst
             &manager,
             &CodeModeCaller::Scoped {
                 capabilities: labby_codemode::CodeModeCallerCapabilities {
+                    can_read: true,
                     can_execute: true,
                     can_use_snippets: false,
                     is_admin: false,

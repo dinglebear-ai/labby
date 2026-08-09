@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-08-08"
 ---
 
 # HTTP Auth Modes
@@ -781,9 +781,18 @@ initializing HTTP MCP session handler ... route_scope=protected:<route-name>
 tool list ok
 ```
 
-In Code Mode visibility, ChatGPT may only list one MCP tool, `codemode`, even
-when many upstreams are available. That is intentional: `codemode` exposes
-in-sandbox discovery and execution for the route-scoped upstream catalog.
+In Code Mode visibility, ChatGPT sees the small Lab-owned synthetic surface
+instead of one action per upstream tool. `codemode_read` accepts `lab:read`,
+`lab`, or `lab:admin` and can invoke only tools whose live descriptor explicitly
+sets `readOnlyHint: true` without a contradictory `destructiveHint: true`.
+`codemode` and the optional `codemode_ui` require `lab` or `lab:admin` and retain
+full execution authority.
+
+Those approval-facing descriptors do not embed current upstream names, health,
+hints, or counts. Raw upstream MCP App callback descriptors are not advertised
+while synthetic Code Mode is active. Upstream churn therefore changes the live
+catalog discovered inside `codemode.search(...)` / `codemode.describe(...)`,
+not the OAuth connector's Tool JSON or action set.
 
 ## Auth Precedence
 

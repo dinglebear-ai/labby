@@ -19,18 +19,20 @@ use rmcp::service::RequestContext;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
-use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
-use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
+use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
-    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
-    MCP_APP_TOOL_NAME,
+    ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
 };
+use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
-use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
+use crate::mcp::context::{
+    auth_context_from_extensions, code_mode_read_scope_allowed, tool_execute_scope_allowed,
+};
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
@@ -43,6 +45,8 @@ use crate::mcp::handlers_resources::{
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
+#[cfg(feature = "gateway")]
+use crate::mcp::permanent_tools::code_mode_full_annotations;
 use crate::mcp::server::LabMcpServer;
 
 static ACTION_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> =
@@ -64,7 +68,7 @@ impl LabMcpServer {
             "dispatch start"
         );
         let schema = Arc::clone(&ACTION_SCHEMA);
-        let mut tools = match PageCollector::new(request) {
+        let page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -92,12 +96,13 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
+        let mut descriptors = Vec::new();
         let mut advertised_names = HashSet::new();
         let mut builtin_tool_count = 0usize;
         let mut upstream_tool_count = 0usize;
         let mut subject_scoped_tool_count = 0usize;
         let mut gateway_tool_count = 0usize;
-        let mut upstream_ui_tool_count = 0usize;
+        let upstream_ui_tool_count = 0usize;
         let mut suppressed_builtin_tool_count = 0usize;
         let mut pool_present = false;
         let mut catalog_upstream_count = 0usize;
@@ -142,74 +147,73 @@ impl LabMcpServer {
                     } else {
                         tool
                     };
-                    tools.accept(tool);
+                    descriptors.push(tool);
                     builtin_tool_count += 1;
-                    if tools.finished() {
-                        break;
-                    }
                 }
             }
         }
-        // Early pagination can leave builtin_names/advertised_names partial; every later
-        // source that depends on those dedup sets must stay gated behind tools.finished().
+        // Assemble and deduplicate the complete visible contract before pagination. Offset
+        // cursors are only safe when every catalog rebuild produces the same global order.
         #[cfg(feature = "gateway")]
-        if !tools.finished()
-            && visibility.exposes_synthetic_tools()
-            && tool_execute_scope_allowed(auth)
+        if visibility.exposes_synthetic_tools()
+            && (code_mode_read_scope_allowed(auth) || tool_execute_scope_allowed(auth))
         {
             // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
             // and exposes in-sandbox discovery through `codemode.search()` /
             // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
-            let code_mode_upstreams = self.code_mode_upstreams_for_description().await;
-            let descriptor = self
-                .registry
-                .permanent_tools()
-                .code_mode_descriptor(&code_mode_upstreams);
-            tracing::info!(
-                surface = "mcp",
-                service = labby_codemode::SERVICE,
-                action = "tool.describe",
-                description_bytes = descriptor.description.as_deref().map(str::len).unwrap_or(0),
-                upstream_count = code_mode_upstreams.len(),
-                "registered primary Code Mode description"
-            );
-            tools.accept(descriptor);
-            advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
-            gateway_tool_count += 1;
-
-            if !tools.finished() && self.code_mode_app_state.is_enabled() {
-                let codemode_resource_uri =
-                    code_mode_app_resource_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
-                        .unwrap_or_else(|| "<missing>".to_string());
-                let codemode_skybridge_uri =
-                    code_mode_app_skybridge_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
-                        .unwrap_or_else(|| "<missing>".to_string());
-                tracing::info!(
-                    surface = "mcp",
-                    service = labby_codemode::SERVICE,
-                    action = "mcp_app.advertise",
-                    tool = CODE_MODE_UI_TOOL_NAME,
-                    resource_uri = %codemode_resource_uri,
-                    skybridge_uri = %codemode_skybridge_uri,
-                    "advertised explicit Code Mode MCP app tool"
-                );
-                tools.accept(
-                    Tool::new(
-                        CODE_MODE_UI_TOOL_NAME,
-                        code_mode_ui_description(&code_mode_upstreams),
-                        code_mode_execute_schema(),
-                    )
-                    .with_raw_output_schema(code_mode_trace_output_schema())
-                    .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME)),
-                );
-                advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+            if code_mode_read_scope_allowed(auth) {
+                descriptors.push(self.registry.permanent_tools().code_mode_read_descriptor());
+                advertised_names.insert(CODE_MODE_READ_TOOL_NAME.to_string());
                 gateway_tool_count += 1;
             }
 
-            if !tools.finished() {
-                tools.accept(Tool::new(
+            if tool_execute_scope_allowed(auth) {
+                let descriptor = self.registry.permanent_tools().code_mode_descriptor();
+                tracing::info!(
+                    surface = "mcp",
+                    service = labby_codemode::SERVICE,
+                    action = "tool.describe",
+                    description_bytes =
+                        descriptor.description.as_deref().map(str::len).unwrap_or(0),
+                    "registered primary Code Mode description"
+                );
+                descriptors.push(descriptor);
+                advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
+                gateway_tool_count += 1;
+
+                if self.code_mode_app_state.is_enabled() {
+                    let codemode_resource_uri =
+                        code_mode_app_resource_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
+                            .unwrap_or_else(|| "<missing>".to_string());
+                    let codemode_skybridge_uri =
+                        code_mode_app_skybridge_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
+                            .unwrap_or_else(|| "<missing>".to_string());
+                    tracing::info!(
+                        surface = "mcp",
+                        service = labby_codemode::SERVICE,
+                        action = "mcp_app.advertise",
+                        tool = CODE_MODE_UI_TOOL_NAME,
+                        resource_uri = %codemode_resource_uri,
+                        skybridge_uri = %codemode_skybridge_uri,
+                        "advertised explicit Code Mode MCP app tool"
+                    );
+                    descriptors.push(
+                        Tool::new(
+                            CODE_MODE_UI_TOOL_NAME,
+                            code_mode_ui_description(),
+                            code_mode_execute_schema(),
+                        )
+                        .with_annotations(code_mode_full_annotations())
+                        .with_raw_output_schema(code_mode_trace_output_schema())
+                        .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME)),
+                    );
+                    advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+                    gateway_tool_count += 1;
+                }
+
+                descriptors.push(Tool::new(
                     MCP_APP_TOOL_NAME,
                     mcp_app_tool_description(),
                     mcp_app_tool_schema(),
@@ -220,8 +224,8 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if !tools.finished() && add_server_app_visible {
-            tools.accept(
+        if add_server_app_visible {
+            descriptors.push(
                 Tool::new(
                     ADD_SERVER_TOOL_NAME,
                     "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
@@ -234,8 +238,8 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if !tools.finished() && gateway_status_app_visible {
-            tools.accept(
+        if gateway_status_app_visible {
+            descriptors.push(
                 Tool::new(
                     GATEWAY_STATUS_TOOL_NAME,
                     "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
@@ -254,9 +258,7 @@ impl LabMcpServer {
         // Mode execution/search still performs cold discovery through the
         // gateway manager when the caller asks for upstream catalog data.
         #[cfg(feature = "gateway")]
-        if !tools.finished()
-            && let Some(pool) = self.current_upstream_pool().await
-        {
+        if let Some(pool) = self.current_upstream_pool().await {
             pool_present = true;
             let upstream_status = pool.upstream_status().await;
             catalog_upstream_count = upstream_status.len();
@@ -265,8 +267,7 @@ impl LabMcpServer {
                 .filter(|(_, health)| health.is_open())
                 .count();
             let upstream_tools = if hide_raw_tools {
-                pool.healthy_ui_tools_allowed(self.route_scope.allowed_upstreams())
-                    .await
+                Vec::new()
             } else {
                 pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
                     .await
@@ -285,27 +286,20 @@ impl LabMcpServer {
                     );
                     continue;
                 }
-                tools.accept(ut.tool);
-                if hide_raw_tools {
-                    upstream_ui_tool_count += 1;
-                } else {
-                    upstream_tool_count += 1;
-                }
-                if tools.finished() {
-                    break;
-                }
+                descriptors.push(ut.tool);
+                upstream_tool_count += 1;
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            // Subject-scoped tools share the same partial dedup invariant as the upstream
-            // catalog above, so this source must also stay behind tools.finished().
-            if !tools.finished()
-                && !hide_raw_tools
-                && let Some(oauth_subject) = oauth_subject.as_ref()
-            {
+            if !hide_raw_tools && let Some(oauth_subject) = oauth_subject.as_ref() {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
+                let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, upstream_tools) in pool
-                    .subject_scoped_tools(&configs, oauth_subject.as_ref())
+                    .subject_scoped_tools_bounded(
+                        &configs,
+                        oauth_subject.as_ref(),
+                        subject_tool_limit,
+                    )
                     .await
                 {
                     for ut in upstream_tools {
@@ -315,14 +309,8 @@ impl LabMcpServer {
                         {
                             continue;
                         }
-                        tools.accept(ut);
+                        descriptors.push(ut);
                         subject_scoped_tool_count += 1;
-                        if tools.finished() {
-                            break;
-                        }
-                    }
-                    if tools.finished() {
-                        break;
                     }
                 }
             }
@@ -333,7 +321,42 @@ impl LabMcpServer {
             }
         }
 
-        let (tools, next_cursor) = match tools.finish() {
+        descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut page_collector = page_collector;
+        let complete_contract = ToolCatalogSnapshot::from_descriptors(&descriptors);
+        let contract_revision = hex::encode(complete_contract.contract_hash);
+        if let Err(error) = page_collector.bind_revision(&contract_revision) {
+            let elapsed_ms = start.elapsed().as_millis();
+            let kind = pagination_error_kind(&error);
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_tools",
+                subject,
+                elapsed_ms,
+                kind,
+                "tool list failed"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_tools",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind,
+                },
+            )
+            .await;
+            return Err(error);
+        }
+        for descriptor in descriptors.iter().cloned() {
+            page_collector.accept(descriptor);
+            if page_collector.finished() {
+                break;
+            }
+        }
+        let (tools, next_cursor) = match page_collector.finish() {
             Ok(page) => page,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -363,6 +386,9 @@ impl LabMcpServer {
         };
         let page_tool_count = tools.len();
         let has_next_cursor = next_cursor.is_some();
+        if !has_next_cursor {
+            *self.last_listed_tool_contract.write().await = Some(complete_contract);
+        }
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -410,16 +436,6 @@ impl LabMcpServer {
         result.next_cursor = next_cursor;
         Ok(result)
     }
-
-    /// Delegates to `PeerContract` so the description rendered here and the
-    /// description determinants the notification fanout diffs are computed by
-    /// one function — otherwise a change to either drifts silently.
-    #[cfg(feature = "gateway")]
-    async fn code_mode_upstreams_for_description(&self) -> Vec<CodeModeUpstreamDescription> {
-        self.peer_contract()
-            .code_mode_upstreams_for_description()
-            .await
-    }
 }
 
 /// The note appended to the text-only `codemode` descriptor.
@@ -435,11 +451,10 @@ pub(crate) fn code_mode_app_text_note() -> String {
 
 /// Description for the optional `codemode_ui` MCP App twin.
 #[cfg(feature = "gateway")]
-pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
-    format!(
-        "{}\n\nThis explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` for text-only execution.",
-        crate::mcp::call_tool_codemode::code_mode_description(upstreams)
-    )
+pub(crate) fn code_mode_ui_description() -> String {
+    crate::mcp::call_tool_codemode::code_mode_description_with_suffix(&format!(
+        "This explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` for text-only execution."
+    ))
 }
 
 /// Description for the text-only `mcp_app` control tool.

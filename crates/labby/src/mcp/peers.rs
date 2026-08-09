@@ -26,10 +26,9 @@ pub struct RegisteredPeer {
     pub(crate) registration_id: u64,
     pub(crate) target: NotificationTarget,
     pub(crate) contract: crate::mcp::peer_contract::PeerContract,
-    /// Last contract this peer was notified about. Seeded at registration so
-    /// the first diff compares against what the peer actually received in its
-    /// initial `tools/list`, not against an empty set.
-    pub(crate) last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
+    /// Last complete contract this peer actually received from `tools/list`,
+    /// or `None` when it subscribed before completing a listing.
+    pub(crate) last_contract: Option<crate::mcp::catalog::ToolCatalogSnapshot>,
 }
 
 static PEER_REGISTRATION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -132,7 +131,7 @@ impl RegisteredPeer {
     pub(crate) fn from_subscription(
         sink: SubscriptionSink,
         contract: crate::mcp::peer_contract::PeerContract,
-        last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
+        last_contract: Option<crate::mcp::catalog::ToolCatalogSnapshot>,
     ) -> Self {
         Self {
             registration_id: next_registration_id(),
@@ -195,7 +194,7 @@ impl RegisteredPeer {
                 code_mode_app_state: Default::default(),
                 audience: crate::mcp::peer_contract::PeerCatalogAudience::default(),
             },
-            last_contract,
+            last_contract: Some(last_contract),
         }
     }
 

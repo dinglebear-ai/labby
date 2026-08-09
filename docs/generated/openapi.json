@@ -1811,6 +1811,12 @@
           },
           "trace_params": {
             "type": "boolean"
+          },
+          "trusted_read_only_tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

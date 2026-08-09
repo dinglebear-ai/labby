@@ -14,11 +14,12 @@ pub(super) async fn handle_artifact_write_event(
     cfg: &RunnerConfig,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
+    let writes_allowed = artifact_writes_allowed(&cfg.capability_filter);
     let artifact_root = state.artifact_root.clone();
     let artifact_max_bytes = state.artifact_max_bytes;
     let trace_params = cfg.trace_params;
     let artifact_op = async {
-        if !state.artifact_store_pruned {
+        if writes_allowed && !state.artifact_store_pruned {
             super::super::artifacts::prune_artifact_runs(
                 super::super::artifacts::artifact_retention_runs(),
             )
@@ -38,6 +39,7 @@ pub(super) async fn handle_artifact_write_event(
             },
             trace_params,
             artifact_max_bytes,
+            writes_allowed,
         )
         .await
     };
@@ -52,6 +54,10 @@ pub(super) async fn handle_artifact_write_event(
             Err(code_mode_timeout_error(&state.calls))
         }
     }
+}
+
+fn artifact_writes_allowed(scope: &ToolScope) -> bool {
+    !scope.is_read_only()
 }
 
 pub(super) async fn handle_snippet_resolve_event<H: CodeModeHost>(
@@ -164,9 +170,33 @@ async fn handle_artifact_write(
     request: CodeModeArtifactWrite,
     trace_params: bool,
     max_bytes: usize,
+    writes_allowed: bool,
 ) -> Result<(), ToolError> {
     let started = std::time::Instant::now();
     let redacted_params = artifact_trace_params(&request, trace_params);
+    if !writes_allowed {
+        let error = CodeModeCallError::from(ToolError::Forbidden {
+            message: "writeArtifact is unavailable on read-only Code Mode surfaces".to_string(),
+            required_scopes: vec!["lab".to_string(), "lab:admin".to_string()],
+        })
+        .with_tool(ARTIFACT_WRITE_CALL_ID);
+        let kind = error.kind.clone();
+        calls.push(artifact_call(
+            seq,
+            false,
+            started.elapsed().as_millis(),
+            redacted_params,
+            Some(kind),
+        ));
+        return write_runner_input(
+            stdin,
+            &CodeModeRunnerInput::ToolError {
+                seq,
+                error: Box::new(error),
+            },
+        )
+        .await;
+    }
     match write_code_mode_artifact(artifact_root, &request, max_bytes).await {
         Ok(receipt) => {
             let result = json!(receipt);
@@ -228,4 +258,16 @@ fn artifact_call(
             ui: None,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::artifact_writes_allowed;
+    use crate::ToolScope;
+
+    #[test]
+    fn artifact_writes_are_blocked_for_read_only_runs() {
+        assert!(artifact_writes_allowed(&ToolScope::default()));
+        assert!(!artifact_writes_allowed(&ToolScope::default().read_only()));
+    }
 }

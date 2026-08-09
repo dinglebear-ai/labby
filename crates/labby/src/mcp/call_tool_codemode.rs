@@ -32,7 +32,10 @@ use crate::dispatch::gateway::code_mode::{
     CodeModeHistoryEntry, CodeModeHistoryKind, JournalOwner, ToolScope, code_mode_execute_trace,
 };
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
+use crate::mcp::catalog::CODE_MODE_READ_TOOL_NAME;
+use crate::mcp::context::{
+    auth_context_from_extensions, code_mode_read_scope_allowed, tool_execute_scope_allowed,
+};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::result_format::{
     code_mode_error_envelope, error_result_from_envelope, estimate_tokens, estimate_tokens_args,
@@ -198,9 +201,9 @@ impl Drop for StepBufferDropGuard {
 
 /// Static body for the primary `codemode` MCP tool description.
 ///
-/// The final model-visible description is rendered with the current upstream
-/// namespace snapshot by [`code_mode_description`]. Keep the rendered result
-/// under 8192 bytes.
+/// This is deliberately independent of gateway health. Namespaces and tools
+/// belong to the live in-sandbox catalog, not the MCP tool identity cached by a
+/// host.
 pub(crate) const CODE_MODE_DESCRIPTION_BODY: &str = "\
 Execute JavaScript in a sandbox with access to the Labby gateway catalog.
 
@@ -214,6 +217,10 @@ Never guess helper or method names. If you have not already confirmed the exact 
 tool, run `codemode.search(...)` first. `codemode.search` returns compact \
 signatures; `codemode.describe(\"upstream.tool\")` returns focused TypeScript \
 declarations and call details.
+
+The available upstream namespaces and tools are intentionally not embedded in \
+this descriptor because their health can change independently. Discover the \
+live catalog at execution time with `codemode.search` and `codemode.describe`.
 
 Pass `code` as `async () => { ... }` — the sandbox awaits its return value. \
 Whatever it returns becomes `result`.
@@ -313,7 +320,8 @@ A failed callTool rejects only its own promise — the run continues, so catch i
 proceed. For catch-and-continue fan-out, prefer `Promise.allSettled` so every call \
 settles before you return.
 
-Scope: `codemode` requires `lab` or `lab:admin`.
+Scope: `codemode_read` accepts `lab:read`, `lab`, or `lab:admin`; `codemode` and \
+`codemode_ui` require `lab` or `lab:admin`.
 
 Results are capped to the configured envelope budget (default 24 KB / 6000 tokens). \
 Oversized results are replaced with a truncation marker containing `truncated`, \
@@ -354,58 +362,48 @@ fn code_mode_call_metrics_json(calls: &[CodeModeExecutedCall]) -> String {
     serde_json::to_string(&calls).unwrap_or_else(|_| "[]".to_string())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodeModeUpstreamDescription {
-    pub(crate) name: String,
-    pub(crate) hint: Option<String>,
-}
-
-fn push_description_line(out: &mut String, line: &str) -> bool {
-    if out.len() + line.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES {
-        out.push_str(line);
-        true
-    } else {
-        false
+fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
+    let mut end = value.len().min(max_bytes);
+    while !value.is_char_boundary(end) {
+        end -= 1;
     }
-}
-
-fn append_truncation_marker(out: &mut String, omitted_count: usize) {
-    let marker = format!("- {omitted_count} more omitted; use codemode.search\n");
-    while out.len() + marker.len() > CODE_MODE_DESCRIPTION_MAX_BYTES {
-        if out.pop().is_none() {
-            break;
-        }
-    }
-    out.push_str(&marker);
+    &value[..end]
 }
 
 #[must_use]
-pub(crate) fn code_mode_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
-    let mut out = format!("{CODE_MODE_DESCRIPTION_BODY}\n\n## Available upstream namespaces\n\n");
-    if upstreams.is_empty() {
-        push_description_line(&mut out, "- none currently configured\n");
-        return out.trim_end().to_string();
+#[cfg(test)]
+pub(crate) fn code_mode_description() -> String {
+    code_mode_description_with_suffix("")
+}
+
+/// Compose and cap the final model-visible Code Mode tool description.
+///
+/// Hosts commonly snapshot the complete `Tool` JSON, so callers must pass all
+/// stable tool-specific guidance here instead of appending text after the byte
+/// cap has been applied. On overflow, the beginning of the protocol contract
+/// and the beginning of the suffix are retained at UTF-8 boundaries.
+#[must_use]
+pub(crate) fn code_mode_description_with_suffix(suffix: &str) -> String {
+    const SEPARATOR: &str = "\n\n";
+    const TRUNCATION_NOTE: &str =
+        "\n\n[description truncated; use codemode.search for live details]";
+    const SUFFIX_PREFIX_MAX_BYTES: usize = 512;
+
+    let body = CODE_MODE_DESCRIPTION_BODY.trim_end();
+    let suffix = suffix.trim();
+    if suffix.is_empty() {
+        return utf8_prefix(body, CODE_MODE_DESCRIPTION_MAX_BYTES).to_string();
     }
-    for (idx, upstream) in upstreams.iter().enumerate() {
-        let line = match upstream
-            .hint
-            .as_deref()
-            .and_then(labby_runtime::gateway_config::normalize_code_mode_hint)
-        {
-            Some(hint) => format!("- `{}` -- {}\n", upstream.name, hint),
-            None => format!("- `{}`\n", upstream.name),
-        };
-        if !push_description_line(&mut out, &line) {
-            append_truncation_marker(&mut out, upstreams.len() - idx);
-            tracing::warn!(
-                omitted_count = upstreams.len() - idx,
-                max_bytes = CODE_MODE_DESCRIPTION_MAX_BYTES,
-                "code mode upstream namespace description truncated"
-            );
-            break;
-        }
+
+    if body.len() + SEPARATOR.len() + suffix.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES {
+        return format!("{body}{SEPARATOR}{suffix}");
     }
-    out.trim_end().to_string()
+
+    let suffix = utf8_prefix(suffix, SUFFIX_PREFIX_MAX_BYTES);
+    let reserved = SEPARATOR.len() + suffix.len() + TRUNCATION_NOTE.len();
+    let body_budget = CODE_MODE_DESCRIPTION_MAX_BYTES.saturating_sub(reserved);
+    let body = utf8_prefix(body, body_budget);
+    format!("{body}{SEPARATOR}{suffix}{TRUNCATION_NOTE}")
 }
 
 pub(crate) fn string_array_arg(
@@ -492,10 +490,28 @@ impl LabMcpServer {
         let subject = self.request_subject_log_tag(context);
         let actor_key = self.request_actor_key(context);
         let auth = auth_context_from_extensions(&context.extensions);
-        if !tool_execute_scope_allowed(auth) {
+        let read_only = service == CODE_MODE_READ_TOOL_NAME;
+        let scope_allowed = if read_only {
+            code_mode_read_scope_allowed(auth)
+        } else {
+            tool_execute_scope_allowed(auth)
+        };
+        if !scope_allowed {
+            let required_scopes = if read_only {
+                vec![
+                    "lab:read".to_string(),
+                    "lab".to_string(),
+                    "lab:admin".to_string(),
+                ]
+            } else {
+                vec!["lab".to_string(), "lab:admin".to_string()]
+            };
             let err = DispatchToolError::Forbidden {
-                message: "codemode requires one of scopes: lab, lab:admin".to_string(),
-                required_scopes: vec!["lab".to_string(), "lab:admin".to_string()],
+                message: format!(
+                    "{service} requires one of scopes: {}",
+                    required_scopes.join(", ")
+                ),
+                required_scopes,
             };
             tracing::warn!(
                 surface = "mcp",
@@ -544,6 +560,11 @@ impl LabMcpServer {
                     return Ok(error_result_from_envelope(env));
                 }
             };
+        let capability_filter = if read_only {
+            capability_filter.read_only()
+        } else {
+            capability_filter
+        };
         let code_hash = hash_arguments(&Value::String(code.to_string()));
         // V4: random component so a crashing/restarting host can never mint a
         // colliding id (mirror runtime.ts:360 `exec_<ts>_<uuid>`).
@@ -836,6 +857,9 @@ impl LabMcpServer {
 fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabilities {
     let is_admin = scopes.iter().any(|scope| scope == "lab:admin");
     CodeModeCallerCapabilities {
+        can_read: scopes
+            .iter()
+            .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin")),
         can_execute: scopes
             .iter()
             .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")),

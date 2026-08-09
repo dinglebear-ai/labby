@@ -132,6 +132,14 @@ pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
     #[serde(default)]
     pub enabled: bool,
+    /// Operator-owned allowlist of upstream tools trusted for `codemode_read`.
+    ///
+    /// Entries are exact namespaced ids (`upstream::tool`). Upstream-provided
+    /// `readOnlyHint` metadata is untrusted and remains a second, independent
+    /// requirement. An empty list therefore fails closed: read-only Code Mode
+    /// may execute pure JavaScript, but cannot invoke any upstream tool.
+    #[serde(default)]
+    pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
     /// The text-only `codemode` executor remains available when this is false.
     #[serde(default = "default_true")]
@@ -200,6 +208,7 @@ impl Default for CodeModeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            trusted_read_only_tools: Vec::new(),
             mcp_ui_enabled: true,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
@@ -221,6 +230,19 @@ impl Default for CodeModeConfig {
 }
 
 impl CodeModeConfig {
+    /// Whether the operator has explicitly trusted this exact upstream tool for
+    /// the read-only Code Mode execution surface.
+    #[must_use]
+    pub fn trusts_read_only_tool(&self, upstream: &str, tool: &str) -> bool {
+        self.trusted_read_only_tools.iter().any(|candidate| {
+            candidate
+                .split_once("::")
+                .is_some_and(|(trusted_upstream, trusted_tool)| {
+                    trusted_upstream == upstream && trusted_tool == tool
+                })
+        })
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(1..=60_000).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
@@ -1721,10 +1743,23 @@ client_secret_env = "SECRET"
         let expected = CodeModeConfig::default();
         assert_eq!(cfg, expected);
         assert!(!cfg.enabled);
+        assert!(cfg.trusted_read_only_tools.is_empty());
         assert!(cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
+    }
+
+    #[test]
+    fn code_mode_read_only_tool_trust_is_exact_and_fail_closed() {
+        let mut cfg = CodeModeConfig::default();
+        assert!(!cfg.trusts_read_only_tool("dookie", "read_file"));
+
+        cfg.trusted_read_only_tools = vec!["dookie::read_file".to_string()];
+        assert!(cfg.trusts_read_only_tool("dookie", "read_file"));
+        assert!(!cfg.trusts_read_only_tool("dookie", "write_file"));
+        assert!(!cfg.trusts_read_only_tool("other", "read_file"));
+        assert!(!cfg.trusts_read_only_tool("dookie", "read_file::extra"));
     }
 
     #[test]

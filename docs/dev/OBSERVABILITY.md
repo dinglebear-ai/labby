@@ -254,6 +254,22 @@ there and nowhere else — recording at the individual emitters would count one
 diff once per connected peer. New emitters must route through it rather than
 calling `peer.notify_*_list_changed()` directly.
 
+The sole exception is subscription catch-up, which also lives in
+`mcp/catalog_notifications.rs`. A catalog change can finish before a session
+registers its notification sink. Immediately after registration, Labby compares
+the current visible tool contract with the last **complete** `tools/list`
+contract that session received. A mismatch emits one
+`action = "catalog.notify.catchup"` event and one `tools/list_changed` signal.
+It may race with normal fanout and produce a harmless duplicate; losing the only
+signal is forbidden. A failed or timed-out catch-up send emits
+`action = "peer.disconnect"`, `phase = "tools.catchup"`, and prunes the sink.
+
+Only the final page of a revision-bound `tools/list` publishes that session's
+baseline. An interrupted or partial pagination sequence remains unpublished,
+so subscribing afterward receives the conservative catch-up signal. Continuation
+cursors are bound to the descriptor-set revision; stale or unversioned tool-list
+cursors fail instead of silently joining pages from different contracts.
+
 **Every emission must be attributed.** `notify_catalog_peers` takes a `source`
 label from `labby_runtime::catalog_notify`, which is the single vocabulary
 shared by the gateway and MCP crates:
@@ -327,6 +343,14 @@ attribution lives. What is finally sent is recomputed per peer at flush time,
 so the delivered notification reflects settled state, never a stale
 intermediate.
 
+Code Mode's synthetic descriptors are a stable client contract: their Tool JSON
+must not include live upstream names, health, or operator hints. Those details
+remain discoverable inside Code Mode. As a result, upstream health and catalog
+churn do not by themselves change the host-cached `codemode`, `codemode_read`,
+or `codemode_ui` descriptors. Final Code Mode responses are also capped at the
+documented byte budget after trace composition, so truncation is deterministic
+and visible instead of surfacing as a client transport failure.
+
 - `LABBY_MCP_CATALOG_COALESCE_MS` — settle window (default `250`, clamped 1–10000)
 - `LABBY_MCP_CATALOG_MAX_HOLD_MS` — total deferral bound (default `5000`, clamped 100–120000)
 
@@ -347,7 +371,6 @@ the existing counts:
 |---|---|
 | `projection` | `code_mode_visible` or `raw` — which contract the diff measured |
 | `tools_added` / `tools_removed` | changed tool names, capped at 20 per list |
-| `namespaces_added` / `namespaces_removed` | changed Code Mode namespaces, rendered as bare upstream names |
 | `delta_truncated_count` | names dropped by the cap |
 | `raw_tools_changed` | whether the raw upstream tool set moved |
 | `suppressed_raw_churn` | raw set moved but the visible contract did not — a notification correctly withheld |
@@ -371,9 +394,9 @@ upstreams are flapping and clients are being shielded from it.
 4. `since_last_ms` and `window_count` bound how fast it is happening.
 
 Notification field values include upstream-controlled tool names, so they are
-subject to the sanitization rule in **Redaction Rules** below; the namespace
-sentinel tokens used internally by the reconcile snapshot are decoded to bare
-upstream names before logging rather than being emitted raw.
+subject to the sanitization rule in **Redaction Rules** below. Code Mode
+namespace names and hints are not part of the host-facing descriptor snapshot
+and therefore do not appear in these catalog delta fields.
 
 ## Required Fields
 

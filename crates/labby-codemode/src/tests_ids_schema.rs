@@ -215,6 +215,16 @@ fn capability_filter_fingerprint_is_structured_and_collision_resistant() {
 }
 
 #[test]
+fn capability_filter_fingerprint_separates_read_only_from_full_access() {
+    let full = ToolScope::new(vec!["github".to_string()], Vec::new());
+    let read_only = full.clone().read_only();
+
+    assert!(!full.is_read_only());
+    assert!(read_only.is_read_only());
+    assert_ne!(full.fingerprint(), read_only.fingerprint());
+}
+
+#[test]
 fn scoped_tool_scope_with_empty_namespaces_denies_all_tool_calls() {
     let filter = ToolScope::scoped_namespaces(Vec::new(), Vec::new());
 
