@@ -21,6 +21,8 @@ use serde_json::Value;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
 #[cfg(feature = "gateway")]
+use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
+#[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
@@ -163,14 +165,22 @@ impl LabMcpServer {
             // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
+            let code_mode_upstreams = self.code_mode_upstreams_for_description().await;
             if code_mode_read_scope_allowed(auth) {
-                descriptors.push(self.registry.permanent_tools().code_mode_read_descriptor());
+                descriptors.push(
+                    self.registry
+                        .permanent_tools()
+                        .code_mode_read_descriptor(&code_mode_upstreams),
+                );
                 advertised_names.insert(CODE_MODE_READ_TOOL_NAME.to_string());
                 gateway_tool_count += 1;
             }
 
             if tool_execute_scope_allowed(auth) {
-                let descriptor = self.registry.permanent_tools().code_mode_descriptor();
+                let descriptor = self
+                    .registry
+                    .permanent_tools()
+                    .code_mode_descriptor(&code_mode_upstreams);
                 tracing::info!(
                     surface = "mcp",
                     service = labby_codemode::SERVICE,
@@ -202,7 +212,7 @@ impl LabMcpServer {
                     descriptors.push(
                         Tool::new(
                             CODE_MODE_UI_TOOL_NAME,
-                            code_mode_ui_description(),
+                            code_mode_ui_description(&code_mode_upstreams),
                             code_mode_execute_schema(),
                         )
                         .with_annotations(code_mode_full_annotations())
@@ -436,6 +446,15 @@ impl LabMcpServer {
         result.next_cursor = next_cursor;
         Ok(result)
     }
+
+    /// Enabled, route-scoped upstream namespaces rendered into Code Mode's
+    /// model-visible tool descriptions.
+    #[cfg(feature = "gateway")]
+    async fn code_mode_upstreams_for_description(&self) -> Vec<CodeModeUpstreamDescription> {
+        self.peer_contract()
+            .code_mode_upstreams_for_description()
+            .await
+    }
 }
 
 /// The note appended to the text-only `codemode` descriptor.
@@ -451,10 +470,13 @@ pub(crate) fn code_mode_app_text_note() -> String {
 
 /// Description for the optional `codemode_ui` MCP App twin.
 #[cfg(feature = "gateway")]
-pub(crate) fn code_mode_ui_description() -> String {
-    crate::mcp::call_tool_codemode::code_mode_description_with_suffix(&format!(
-        "This explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` for text-only execution."
-    ))
+pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
+    crate::mcp::call_tool_codemode::code_mode_description_with_suffix(
+        upstreams,
+        &format!(
+            "This explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` for text-only execution."
+        ),
+    )
 }
 
 /// Description for the text-only `mcp_app` control tool.

@@ -56,12 +56,14 @@ For every entry point, the code runs as one async JavaScript function in the
 sandbox. Discovery, focused compact docs, allowed upstream calls, fan-out,
 filtering, and final result shaping all happen inside that same execution.
 
-The approval-facing Tool descriptors deliberately exclude live upstream names,
-hints, health, and counts. Their JSON identity therefore stays stable while the
-gateway catalog changes. Discover current namespaces and tools inside the run
-with `codemode.search(...)` and `codemode.describe(...)`. The 8192-byte
-description cap applies after stable tool-specific suffixes are composed, so no
-final Tool description can exceed the host-facing limit.
+The approval-facing Tool descriptors include the enabled, route-scoped upstream
+namespaces and their normalized operator hints. Names and hints come from the
+current gateway configuration, are sorted and deduplicated, and therefore
+change the descriptor when that configuration changes. Runtime health, tool
+counts, and individual tool names stay out of the descriptor; discover those
+inside the run with `codemode.search(...)` and `codemode.describe(...)`. The
+8192-byte description cap applies after tool-specific suffixes are composed, so
+no final Tool description can exceed the host-facing limit.
 
 Inside the sandbox:
 

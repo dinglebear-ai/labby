@@ -29,6 +29,8 @@ use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::UpstreamPool;
 #[cfg(feature = "gateway")]
+use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
+#[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
@@ -150,6 +152,36 @@ impl PeerContract {
             && self.action_allowed_on_mcp("gateway", "gateway.list").await
     }
 
+    /// Enabled upstream namespaces and normalized hints rendered in Code
+    /// Mode's descriptors. Descriptor hashing therefore catches a hint-only
+    /// edit and subscription fanout can publish the new contract.
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn code_mode_upstreams_for_description(
+        &self,
+    ) -> Vec<CodeModeUpstreamDescription> {
+        let Some(manager) = &self.gateway_manager else {
+            return Vec::new();
+        };
+        let mut upstreams = manager
+            .current_config()
+            .await
+            .upstream
+            .into_iter()
+            .filter(|upstream| upstream.enabled)
+            .filter(|upstream| self.route_scope.allows_upstream(&upstream.name))
+            .map(|upstream| CodeModeUpstreamDescription {
+                name: upstream.name,
+                hint: upstream
+                    .code_mode_hint
+                    .as_deref()
+                    .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
+            })
+            .collect::<Vec<_>>();
+        upstreams.sort_by(|a, b| a.name.cmp(&b.name));
+        upstreams.dedup_by(|a, b| a.name == b.name);
+        upstreams
+    }
+
     #[cfg(feature = "gateway")]
     async fn route_scoped_oauth_upstream_configs(&self) -> Vec<crate::config::UpstreamConfig> {
         let Some(manager) = &self.gateway_manager else {
@@ -193,8 +225,12 @@ impl PeerContract {
         if visibility.exposes_synthetic_tools()
             && (self.audience.code_mode_read_allowed || self.audience.code_mode_execute_allowed)
         {
+            let upstreams = self.code_mode_upstreams_for_description().await;
             if self.audience.code_mode_read_allowed {
-                let tool = self.registry.permanent_tools().code_mode_read_descriptor();
+                let tool = self
+                    .registry
+                    .permanent_tools()
+                    .code_mode_read_descriptor(&upstreams);
                 advertised_names.insert(CODE_MODE_READ_TOOL_NAME.to_string());
                 descriptors.push(tool);
             }
@@ -203,14 +239,17 @@ impl PeerContract {
                 // `codemode` is permanently text-only; the MCP App metadata lives on
                 // the optional `codemode_ui` twin so disabling the app cannot remove
                 // the execution entry point. Mirrors handlers_tools::list_tools.
-                let tool = self.registry.permanent_tools().code_mode_descriptor();
+                let tool = self
+                    .registry
+                    .permanent_tools()
+                    .code_mode_descriptor(&upstreams);
                 advertised_names.insert(tool.name.as_ref().to_string());
                 descriptors.push(tool);
 
                 if self.code_mode_app_state.is_enabled() {
                     let tool = Tool::new(
                         CODE_MODE_UI_TOOL_NAME,
-                        code_mode_ui_description(),
+                        code_mode_ui_description(&upstreams),
                         code_mode_execute_schema(),
                     )
                     .with_annotations(code_mode_full_annotations())

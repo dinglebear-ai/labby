@@ -201,9 +201,8 @@ impl Drop for StepBufferDropGuard {
 
 /// Static body for the primary `codemode` MCP tool description.
 ///
-/// This is deliberately independent of gateway health. Namespaces and tools
-/// belong to the live in-sandbox catalog, not the MCP tool identity cached by a
-/// host.
+/// The final model-visible description is rendered with the current enabled,
+/// route-scoped upstream namespace snapshot by [`code_mode_description`].
 pub(crate) const CODE_MODE_DESCRIPTION_BODY: &str = "\
 Execute JavaScript in a sandbox with access to the Labby gateway catalog.
 
@@ -218,9 +217,9 @@ tool, run `codemode.search(...)` first. `codemode.search` returns compact \
 signatures; `codemode.describe(\"upstream.tool\")` returns focused TypeScript \
 declarations and call details.
 
-The available upstream namespaces and tools are intentionally not embedded in \
-this descriptor because their health can change independently. Discover the \
-live catalog at execution time with `codemode.search` and `codemode.describe`.
+Enabled upstream namespaces are summarized below from the current route-scoped \
+configuration. Their individual tools and runtime health remain live; discover \
+those at execution time with `codemode.search` and `codemode.describe`.
 
 Pass `code` as `async () => { ... }` — the sandbox awaits its return value. \
 Whatever it returns becomes `result`.
@@ -370,10 +369,43 @@ fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
     &value[..end]
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeModeUpstreamDescription {
+    pub(crate) name: String,
+    pub(crate) hint: Option<String>,
+}
+
+fn dynamic_code_mode_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
+    let mut out = format!(
+        "{}\n\n## Available upstream namespaces\n\n",
+        CODE_MODE_DESCRIPTION_BODY.trim_end()
+    );
+    if upstreams.is_empty() {
+        out.push_str("- none currently configured");
+        return out;
+    }
+
+    for upstream in upstreams {
+        match upstream
+            .hint
+            .as_deref()
+            .and_then(labby_runtime::gateway_config::normalize_code_mode_hint)
+        {
+            Some(hint) => {
+                out.push_str(&format!("- `{}` -- {}\n", upstream.name, hint));
+            }
+            None => {
+                out.push_str(&format!("- `{}`\n", upstream.name));
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
 #[must_use]
 #[cfg(test)]
-pub(crate) fn code_mode_description() -> String {
-    code_mode_description_with_suffix("")
+pub(crate) fn code_mode_description(upstreams: &[CodeModeUpstreamDescription]) -> String {
+    code_mode_description_with_suffix(upstreams, "")
 }
 
 /// Compose and cap the final model-visible Code Mode tool description.
@@ -383,13 +415,17 @@ pub(crate) fn code_mode_description() -> String {
 /// cap has been applied. On overflow, the beginning of the protocol contract
 /// and the beginning of the suffix are retained at UTF-8 boundaries.
 #[must_use]
-pub(crate) fn code_mode_description_with_suffix(suffix: &str) -> String {
+pub(crate) fn code_mode_description_with_suffix(
+    upstreams: &[CodeModeUpstreamDescription],
+    suffix: &str,
+) -> String {
     const SEPARATOR: &str = "\n\n";
     const TRUNCATION_NOTE: &str =
         "\n\n[description truncated; use codemode.search for live details]";
     const SUFFIX_PREFIX_MAX_BYTES: usize = 512;
 
-    let body = CODE_MODE_DESCRIPTION_BODY.trim_end();
+    let body = dynamic_code_mode_description(upstreams);
+    let body = body.as_str();
     let suffix = suffix.trim();
     if suffix.is_empty() {
         return utf8_prefix(body, CODE_MODE_DESCRIPTION_MAX_BYTES).to_string();

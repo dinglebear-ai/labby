@@ -52,6 +52,11 @@ static SUPPRESSED_RAW_CHURN_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// field is diagnosing repeated small deltas, not dumping the catalog.
 const MAX_LOGGED_DELTA_NAMES: usize = 20;
 
+/// Prefix marking a synthetic namespace-description determinant inside a Code
+/// Mode-visible snapshot. The control character cannot occur in a valid
+/// upstream or tool name, keeping these entries disjoint from real tool names.
+const NS_TOKEN_PREFIX: &str = "\u{1}ns\u{1}";
+
 /// Stable synthetic tool advertised whenever the gateway is in Code Mode.
 /// Keeping it in the projected snapshot makes raw↔Code Mode transitions visible
 /// even when the gateway has no connected upstreams.
@@ -65,18 +70,33 @@ const CODE_MODE_APP_CONTROL_TOOL_NAME: &str = "mcp_app";
 struct CatalogToolDelta {
     added: Vec<String>,
     removed: Vec<String>,
+    namespaces_added: Vec<String>,
+    namespaces_removed: Vec<String>,
     truncated: usize,
 }
 
 impl CatalogToolDelta {
     fn describe(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Self {
         let mut delta = Self::default();
-        for (source, tools) in [
-            (after.difference(before), &mut delta.added),
-            (before.difference(after), &mut delta.removed),
+        for (source, tools, namespaces) in [
+            (
+                after.difference(before),
+                &mut delta.added,
+                &mut delta.namespaces_added,
+            ),
+            (
+                before.difference(after),
+                &mut delta.removed,
+                &mut delta.namespaces_removed,
+            ),
         ] {
             for entry in source {
-                tools.push(entry.clone());
+                if let Some(rest) = entry.strip_prefix(NS_TOKEN_PREFIX) {
+                    let name = rest.split('\u{1}').next().unwrap_or(rest);
+                    namespaces.push(name.to_string());
+                } else {
+                    tools.push(entry.clone());
+                }
             }
         }
         delta.truncate_names();
@@ -84,7 +104,12 @@ impl CatalogToolDelta {
     }
 
     fn truncate_names(&mut self) {
-        for names in [&mut self.added, &mut self.removed] {
+        for names in [
+            &mut self.added,
+            &mut self.removed,
+            &mut self.namespaces_added,
+            &mut self.namespaces_removed,
+        ] {
             if names.len() > MAX_LOGGED_DELTA_NAMES {
                 self.truncated += names.len() - MAX_LOGGED_DELTA_NAMES;
                 names.truncate(MAX_LOGGED_DELTA_NAMES);
@@ -268,21 +293,25 @@ impl GatewayManager {
         // "before" snapshot uses the currently-active regime; the "after"
         // snapshot uses the incoming config. When Code Mode itself toggles this
         // correctly captures the raw↔`codemode` transition as a real change.
-        // Code Mode descriptors are stable and discover live upstream details
-        // only when invoked. Upstream names, hints, health, and UI callbacks
-        // therefore cannot affect this projected tool contract.
-        let (old_code_mode_enabled, old_mcp_ui_enabled, lab_owned_surface_changed) = {
+        // The synthetic tool names are stable, while enabled upstream namespace
+        // names and normalized operator hints are intentionally rendered into
+        // their descriptions. Snapshot those determinants so hint/name changes
+        // publish a real tools/list_changed notification.
+        let (old_code_mode_enabled, old_mcp_ui_enabled, old_ns_tokens, lab_owned_surface_changed) = {
             let current = self.config.read().await;
             (
                 current.code_mode.enabled,
                 current.code_mode.mcp_ui_enabled,
+                code_mode_namespace_tokens(&current),
                 current.code_mode.enabled != cfg.code_mode.enabled
                     || current.code_mode.mcp_ui_enabled != cfg.code_mode.mcp_ui_enabled
-                    || current.virtual_servers != cfg.virtual_servers,
+                    || current.virtual_servers != cfg.virtual_servers
+                    || current.protected_mcp_routes != cfg.protected_mcp_routes,
             )
         };
         let new_code_mode_enabled = cfg.code_mode.enabled;
         let new_mcp_ui_enabled = cfg.code_mode.mcp_ui_enabled;
+        let new_ns_tokens = code_mode_namespace_tokens(&cfg);
 
         let (pool_settings_unchanged, changed_upstreams, changed_upstreams_add_only) = {
             let current = self.config.read().await;
@@ -336,6 +365,7 @@ impl GatewayManager {
                 Some(Arc::clone(&current_pool)),
                 old_code_mode_enabled,
                 old_mcp_ui_enabled,
+                &old_ns_tokens,
             )
             .await;
             current_pool
@@ -349,6 +379,7 @@ impl GatewayManager {
                 Some(Arc::clone(&current_pool)),
                 new_code_mode_enabled,
                 new_mcp_ui_enabled,
+                &new_ns_tokens,
             )
             .await;
             *self.protected_route_index.write().await =
@@ -381,6 +412,8 @@ impl GatewayManager {
                 prompts_changed = diff.prompts_changed,
                 tools_added = ?observed.delta.added,
                 tools_removed = ?observed.delta.removed,
+                namespaces_added = ?observed.delta.namespaces_added,
+                namespaces_removed = ?observed.delta.namespaces_removed,
                 delta_truncated_count = observed.delta.truncated,
                 raw_tools_changed = observed.raw_tools_changed,
                 suppressed_raw_churn = observed.suppressed_raw_churn,
@@ -400,8 +433,13 @@ impl GatewayManager {
         }
 
         let old_pool = existing_pool;
-        let before =
-            snapshot_from_pool(old_pool.clone(), old_code_mode_enabled, old_mcp_ui_enabled).await;
+        let before = snapshot_from_pool(
+            old_pool.clone(),
+            old_code_mode_enabled,
+            old_mcp_ui_enabled,
+            &old_ns_tokens,
+        )
+        .await;
         let old_pool_present = old_pool.is_some();
         tracing::info!(
             surface = "dispatch",
@@ -500,6 +538,7 @@ impl GatewayManager {
             fresh_pool.clone(),
             new_code_mode_enabled,
             new_mcp_ui_enabled,
+            &new_ns_tokens,
         )
         .await;
         tracing::info!(
@@ -566,6 +605,8 @@ impl GatewayManager {
             prompts_changed = diff.prompts_changed,
             tools_added = ?observed.delta.added,
             tools_removed = ?observed.delta.removed,
+            namespaces_added = ?observed.delta.namespaces_added,
+            namespaces_removed = ?observed.delta.namespaces_removed,
             delta_truncated_count = observed.delta.truncated,
             raw_tools_changed = observed.raw_tools_changed,
             suppressed_raw_churn = observed.suppressed_raw_churn,
@@ -681,22 +722,44 @@ fn upstream_fingerprint_map(cfg: &GatewayConfig) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Tokens mirroring the global config-derived determinants of each peer's
+/// route-scoped Code Mode description. Route scope itself is tracked by
+/// `lab_owned_surface_changed`; this global superset catches upstream
+/// add/remove/enable and normalized hint edits without reacting to runtime
+/// health or discovered-tool churn.
+fn code_mode_namespace_tokens(cfg: &GatewayConfig) -> BTreeSet<String> {
+    cfg.upstream
+        .iter()
+        .filter(|upstream| upstream.enabled)
+        .map(|upstream| {
+            let hint = upstream
+                .code_mode_hint
+                .as_deref()
+                .and_then(labby_runtime::gateway_config::normalize_code_mode_hint)
+                .unwrap_or_default();
+            format!("{NS_TOKEN_PREFIX}{}\u{1}{hint}", upstream.name)
+        })
+        .collect()
+}
+
 /// Snapshot the pool's catalog for `tools/list_changed` change detection.
 ///
 /// `code_mode_enabled` selects the **externally visible** tool projection so
 /// the diff reflects the client-facing contract, not raw internal pool state.
 /// When Code Mode is enabled the MCP surface hides every raw upstream tool
-/// behind the constant `codemode` tool. Diffing raw
+/// behind the `codemode` tool. Diffing raw
 /// `healthy_tools()` in that mode makes ordinary upstream churn — an upstream
 /// becoming healthy, discovering tools, or being added — flip `tools_changed`
 /// and emit a spurious `tools/list_changed`, even though the visible contract
-/// (the fixed Lab-owned Code Mode tools) never moved. That notification churn is what makes
+/// (the Lab-owned Code Mode tools and their configured namespace descriptions)
+/// never moved. That notification churn is what makes
 /// clients discard and rebuild the canonical `codemode` binding. So under Code
-/// Mode we snapshot only the stable Lab-owned tools (`codemode_read`,
-/// `codemode`, `mcp_app`, and optional `codemode_ui`). Upstream names, hints,
-/// health, and UI callbacks are discovered live inside Code Mode and cannot
-/// alter the advertised descriptor. The stable set is unchanged during
-/// ordinary upstream churn but makes a
+/// Mode we snapshot the Lab-owned tools (`codemode_read`, `codemode`,
+/// `mcp_app`, and optional `codemode_ui`) plus synthetic tokens for the enabled
+/// upstream names and normalized hints rendered into their descriptions.
+/// Runtime health, discovered tools, and UI callbacks do not alter those
+/// descriptors. The projected set is unchanged during ordinary upstream churn,
+/// while configuration changes to names or hints remain observable, and a
 /// raw↔Code Mode regime transition observable even with an empty pool.
 ///
 /// The raw tool set is captured alongside the visible one so the reconcile log
@@ -707,6 +770,7 @@ async fn snapshot_from_pool(
     pool: Option<Arc<UpstreamPool>>,
     code_mode_enabled: bool,
     mcp_ui_enabled: bool,
+    namespace_tokens: &BTreeSet<String>,
 ) -> ProjectedCatalogSnapshot {
     let raw_tools: BTreeSet<String> = match pool.as_ref() {
         Some(pool) => pool
@@ -727,6 +791,7 @@ async fn snapshot_from_pool(
         if mcp_ui_enabled {
             tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
         }
+        tools.extend(namespace_tokens.iter().cloned());
         tools
     } else {
         raw_tools.clone()
@@ -818,8 +883,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        CatalogToolDelta, GatewayCatalogSnapshot, MAX_LOGGED_DELTA_NAMES, ProjectedCatalogSnapshot,
-        ReconcileCatalogObservation, diff_catalogs, snapshot_from_pool,
+        CatalogToolDelta, GatewayCatalogSnapshot, MAX_LOGGED_DELTA_NAMES, NS_TOKEN_PREFIX,
+        ProjectedCatalogSnapshot, ReconcileCatalogObservation, diff_catalogs, snapshot_from_pool,
     };
 
     fn snapshot(tools: BTreeSet<String>) -> GatewayCatalogSnapshot {
@@ -842,24 +907,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn code_mode_projection_contains_only_stable_lab_owned_tools() {
-        let snapshot = snapshot_from_pool(None, true, true).await;
+    async fn code_mode_projection_includes_lab_owned_tools_and_description_determinants() {
+        let namespace_tokens = names(&[&format!(
+            "{NS_TOKEN_PREFIX}apps\u{1}Search connected application data"
+        )]);
+        let snapshot = snapshot_from_pool(None, true, true, &namespace_tokens).await;
 
-        assert_eq!(
-            snapshot.visible.tools,
-            names(&["codemode", "codemode_read", "codemode_ui", "mcp_app"])
-        );
+        assert!(snapshot.visible.tools.contains("codemode"));
+        assert!(snapshot.visible.tools.contains("codemode_read"));
+        assert!(snapshot.visible.tools.contains("codemode_ui"));
+        assert!(snapshot.visible.tools.contains("mcp_app"));
+        assert!(snapshot.visible.tools.is_superset(&namespace_tokens));
         assert!(snapshot.raw_tools.is_empty());
 
-        let without_ui = snapshot_from_pool(None, true, false).await;
-        assert_eq!(
-            without_ui.visible.tools,
-            names(&["codemode", "codemode_read", "mcp_app"])
-        );
+        let without_ui = snapshot_from_pool(None, true, false, &namespace_tokens).await;
+        assert!(!without_ui.visible.tools.contains("codemode_ui"));
+        assert!(without_ui.visible.tools.is_superset(&namespace_tokens));
         assert!(diff_catalogs(&without_ui.visible, &snapshot.visible).tools_changed);
 
-        let raw = snapshot_from_pool(None, false, false).await;
+        let raw = snapshot_from_pool(None, false, false, &namespace_tokens).await;
         assert!(diff_catalogs(&raw.visible, &snapshot.visible).tools_changed);
+    }
+
+    #[test]
+    fn namespace_description_changes_are_logged_and_notify_clients() {
+        let before = names(&[&format!("{NS_TOKEN_PREFIX}apps\u{1}old hint")]);
+        let after = names(&[&format!("{NS_TOKEN_PREFIX}apps\u{1}new hint")]);
+
+        let delta = CatalogToolDelta::describe(&before, &after);
+
+        assert_eq!(delta.namespaces_added, ["apps"]);
+        assert_eq!(delta.namespaces_removed, ["apps"]);
+        assert!(diff_catalogs(&snapshot(before), &snapshot(after)).tools_changed);
     }
 
     #[test]

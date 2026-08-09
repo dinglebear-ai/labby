@@ -3,7 +3,9 @@
 use rmcp::model::{Tool, ToolAnnotations};
 
 #[cfg(feature = "gateway")]
-use crate::mcp::call_tool_codemode::code_mode_description_with_suffix;
+use crate::mcp::call_tool_codemode::{
+    CodeModeUpstreamDescription, code_mode_description_with_suffix,
+};
 use crate::mcp::catalog::{CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME};
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_tools::{
@@ -76,7 +78,7 @@ impl PermanentToolRegistry {
 
     #[cfg(feature = "gateway")]
     #[must_use]
-    pub(crate) fn code_mode_descriptor(&self) -> Tool {
+    pub(crate) fn code_mode_descriptor(&self, upstreams: &[CodeModeUpstreamDescription]) -> Tool {
         debug_assert_eq!(
             PERMANENT_TOOLS
                 .iter()
@@ -89,7 +91,7 @@ impl PermanentToolRegistry {
         // remove the execution entry point. See mcp/CLAUDE.md.
         Tool::new(
             CODE_MODE_TOOL_NAME,
-            code_mode_description_with_suffix(&code_mode_app_text_note()),
+            code_mode_description_with_suffix(upstreams, &code_mode_app_text_note()),
             code_mode_execute_schema(),
         )
         .with_annotations(code_mode_full_annotations())
@@ -98,10 +100,14 @@ impl PermanentToolRegistry {
 
     #[cfg(feature = "gateway")]
     #[must_use]
-    pub(crate) fn code_mode_read_descriptor(&self) -> Tool {
+    pub(crate) fn code_mode_read_descriptor(
+        &self,
+        upstreams: &[CodeModeUpstreamDescription],
+    ) -> Tool {
         Tool::new(
             CODE_MODE_READ_TOOL_NAME,
             code_mode_description_with_suffix(
+                upstreams,
                 "Read-only Code Mode execution. Only upstream tools explicitly annotated readOnly=true are discoverable and callable; artifact writes are disabled. Use codemode for write-capable execution.",
             ),
             code_mode_execute_schema(),
@@ -133,9 +139,9 @@ mod tests {
 
     #[cfg(feature = "gateway")]
     #[test]
-    fn codemode_descriptor_is_stable_and_final_description_is_bounded() {
+    fn codemode_descriptor_is_dynamic_and_final_description_is_bounded() {
         let registry = PermanentToolRegistry::new();
-        let descriptor = registry.code_mode_descriptor();
+        let descriptor = registry.code_mode_descriptor(&[]);
         let description = descriptor.description.expect("description");
         assert!(description.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES);
         assert!(description.contains("codemode.search"));
@@ -145,7 +151,7 @@ mod tests {
     #[cfg(feature = "gateway")]
     #[test]
     fn codemode_read_descriptor_is_truthfully_annotated_and_bounded() {
-        let descriptor = PermanentToolRegistry::new().code_mode_read_descriptor();
+        let descriptor = PermanentToolRegistry::new().code_mode_read_descriptor(&[]);
         let annotations = descriptor.annotations.expect("annotations");
         assert_eq!(annotations.read_only_hint, Some(true));
         assert_eq!(annotations.destructive_hint, Some(false));

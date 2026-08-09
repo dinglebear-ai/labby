@@ -61,10 +61,11 @@ The full-execution tools are annotated as write-capable and potentially
 destructive. Their annotations describe the approval boundary; upstream tool
 authorization is still enforced again at dispatch time.
 
-Approval-facing Code Mode descriptors are stable across upstream health and
-catalog churn. They do not embed live upstream names, hints, or tool counts.
-Call `codemode.search(...)` and `codemode.describe(...)` inside a run to inspect
-the current route-scoped catalog.
+Approval-facing Code Mode descriptors include enabled, route-scoped upstream
+names and normalized operator hints. They change when those configuration
+determinants change, but remain stable across runtime health and discovered-tool
+churn. Call `codemode.search(...)` and `codemode.describe(...)` inside a run to
+inspect the current route-scoped tool catalog.
 
 Synthetic Code Mode advertises only the fixed Lab-owned UI action surface. It
 does not add or remove raw upstream MCP App tools as upstream health changes.

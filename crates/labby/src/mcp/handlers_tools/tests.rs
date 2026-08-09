@@ -2073,8 +2073,9 @@ async fn protected_list_tools_hides_code_mode_when_route_disables_it() {
 }
 
 #[tokio::test]
-async fn codemode_description_is_independent_of_route_scoped_upstreams() {
-    let apps = fixture_upstream_config("apps");
+async fn codemode_description_lists_route_scoped_enabled_upstreams_and_hints() {
+    let mut apps = fixture_upstream_config("apps");
+    apps.code_mode_hint = Some("Search connected application data".to_string());
     let mut hidden = fixture_upstream_config("hidden");
     hidden.enabled = false;
     let gateway_alpha = fixture_upstream_config("hidden-upstream");
@@ -2117,8 +2118,8 @@ async fn codemode_description_is_independent_of_route_scoped_upstreams() {
         .expect("codemode description")
         .as_ref();
 
-    assert!(description.contains("live catalog"));
-    assert!(!description.contains("- `apps`"));
+    assert!(description.contains("## Available upstream namespaces"));
+    assert!(description.contains("- `apps` -- Search connected application data"));
     assert!(!description.contains("- `hidden`"));
     assert!(!description.contains("- `hidden-upstream`"));
     assert!(description.contains("Never guess helper or method names"));

@@ -343,13 +343,15 @@ attribution lives. What is finally sent is recomputed per peer at flush time,
 so the delivered notification reflects settled state, never a stale
 intermediate.
 
-Code Mode's synthetic descriptors are a stable client contract: their Tool JSON
-must not include live upstream names, health, or operator hints. Those details
-remain discoverable inside Code Mode. As a result, upstream health and catalog
-churn do not by themselves change the host-cached `codemode`, `codemode_read`,
-or `codemode_ui` descriptors. Final Code Mode responses are also capped at the
-documented byte budget after trace composition, so truncation is deterministic
-and visible instead of surfacing as a client transport failure.
+Code Mode's synthetic descriptors include enabled, route-scoped upstream names
+and normalized operator hints from gateway configuration. A name, hint, enabled
+state, or route-scope change is a real descriptor change and must produce a
+`tools/list_changed` notification. Runtime health and discovered-tool churn do
+not change the host-cached `codemode`, `codemode_read`, or `codemode_ui`
+descriptors by themselves. Reconcile logs therefore separate namespace
+determinants from suppressed raw-tool churn. Final Code Mode responses are also
+capped at the documented byte budget after trace composition, so truncation is
+deterministic and visible instead of surfacing as a client transport failure.
 
 - `LABBY_MCP_CATALOG_COALESCE_MS` — settle window (default `250`, clamped 1–10000)
 - `LABBY_MCP_CATALOG_MAX_HOLD_MS` — total deferral bound (default `5000`, clamped 100–120000)
