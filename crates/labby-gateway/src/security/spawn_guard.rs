@@ -166,7 +166,9 @@ fn validate_runtime_argv_flag(runtime_hint: &str, arg: &str) -> Result<(), ToolE
         "node" | "npx" => DANGEROUS_NODE_FLAGS
             .iter()
             .any(|prefix| node_flag_matches(prefix, flag)),
-        "bun" => DANGEROUS_BUN_FLAGS.contains(&flag),
+        "bun" => DANGEROUS_BUN_FLAGS
+            .iter()
+            .any(|denied| bun_flag_matches(denied, flag)),
         "python" | "python3" => DANGEROUS_PYTHON_FLAGS.contains(&flag),
         "deno" => DANGEROUS_DENO_FLAGS.contains(&flag),
         _ => false,
@@ -188,6 +190,10 @@ fn node_flag_matches(denied: &str, flag: &str) -> bool {
             "--allow" | "--experimental" | "--inspect" => flag.starts_with(&format!("{denied}-")),
             _ => false,
         }
+}
+
+fn bun_flag_matches(denied: &str, flag: &str) -> bool {
+    flag == denied || matches!(denied, "-e" | "-p" | "-r") && flag.starts_with(denied)
 }
 
 /// Validate an environment variable name supplied with a stdio upstream.
@@ -522,6 +528,19 @@ mod tests {
             let err = validate_stdio_argv("bun", &[flag.to_string(), "process.exit()".to_string()])
                 .unwrap_err();
             assert_eq!(err.kind(), "invalid_param", "bun {flag} must be rejected");
+        }
+
+        for flag in [
+            "-eprocess.exit()",
+            "-pglobalThis.process",
+            "-r/tmp/preload.ts",
+        ] {
+            let err = validate_stdio_argv("bun", &[flag.to_string()]).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                "invalid_param",
+                "bun concatenated flag {flag} must be rejected"
+            );
         }
     }
 
