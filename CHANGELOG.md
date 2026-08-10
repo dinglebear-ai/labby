@@ -57,6 +57,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.11.0](https://github.com/dinglebear-ai/labby/compare/v1.10.1...v1.11.0) (2026-08-10)
+
+
+### Added
+
+* **gateway:** allow Bun stdio upstreams ([#385](https://github.com/dinglebear-ai/labby/issues/385)) ([f111813](https://github.com/dinglebear-ai/labby/commit/f11181380b629ab27b0ec5ce439f9ddc93351bf4))
+
 ## [1.10.1](https://github.com/dinglebear-ai/labby/compare/v1.10.0...v1.10.1) (2026-08-09)
 
 
