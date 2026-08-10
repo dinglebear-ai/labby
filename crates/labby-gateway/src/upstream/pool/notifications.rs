@@ -468,6 +468,7 @@ impl UpstreamPool {
     }
 
     pub(super) async fn cancel_all_upstream_subscriptions(&self) {
+        self.subscription_reconcile_cancel.cancel();
         let tasks = {
             let mut generations = self.subscription_tasks.write().await;
             let tasks = generations

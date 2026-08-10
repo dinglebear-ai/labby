@@ -44,6 +44,8 @@ fn human_console_target_enabled(target: &str) -> bool {
         || target.starts_with("labby::")
         || target == "labby_auth"
         || target.starts_with("labby_auth::")
+        || target == "labby_gateway"
+        || target.starts_with("labby_gateway::")
 }
 
 /// Initialize tracing.
@@ -679,9 +681,18 @@ mod tests {
     use anyhow::anyhow;
 
     use super::{
-        ClapErrorKind, argv_command_label, clap_error_value, cli_error_value, parse_cli_args,
+        ClapErrorKind, argv_command_label, clap_error_value, cli_error_value,
+        human_console_target_enabled, parse_cli_args,
     };
     use crate::dispatch::error::ToolError;
+
+    #[test]
+    fn human_console_includes_extracted_gateway_observability() {
+        assert!(human_console_target_enabled("labby_gateway"));
+        assert!(human_console_target_enabled(
+            "labby_gateway::upstream::pool::logging"
+        ));
+    }
 
     #[test]
     fn json_clap_failure_is_structured_and_course_correcting() {

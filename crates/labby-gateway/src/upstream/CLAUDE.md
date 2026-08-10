@@ -53,7 +53,8 @@ Dependency direction:
 | `pool/health.rs` | Circuit breaker: `record_*`, `should_reprobe*`, `*_last_error`, `filter_collisions`, `upstream_status`/`upstream_count`. |
 | `pool/resources_exposure_tests.rs` | Regressions pinning `expose_resources` on both the listing and the read (list-only filtering is a bypass). |
 | `pool/prompts_exposure_tests.rs` | Regressions pinning `expose_prompts` on the listing, `prompts/get`, and subject-scoped owner lookup. |
-| `pool/resources_list.rs` | Resource listing + synthetic `gateway_*` documents. Native `ui://` (mcp-ui) resources skip the `lab://upstream/{name}/…` rewrite so they stay addressable by the same URI a tool's `_meta.ui.resourceUri` references. |
+| `pool/resources_list.rs` | Bounded resource listing + synthetic `gateway_*` documents. OAuth listings reuse the per-subject connection cache. Native `ui://` (mcp-ui) resources skip the `lab://upstream/{name}/…` rewrite so they stay addressable by the same URI a tool's `_meta.ui.resourceUri` references. |
+| `pool/subscription_schedule.rs` | Coalesces resource-triggered subscription refreshes onto cancellable background batches so `resources/list` never waits for acknowledgement handshakes. |
 | `pool/resources_read.rs` | `read_upstream_resource` + `subject_scoped_read_resource` + `read_upstream_ui_resource` (reverse-looks-up the owning upstream by cached native `ui://` `resource_uris`, forwards the read, preserves the native URI — **no** `lab://upstream/` rewrite — for mcp-ui widget resources). |
 | `pool/prompts_list.rs` | Prompt listing + ownership lookup (`collect_upstream_prompts`, `find_prompt_owner`, …). |
 | `pool/prompts_get.rs` | `subject_scoped_prompts`, `get_prompt`, `subject_scoped_get_prompt`. |
