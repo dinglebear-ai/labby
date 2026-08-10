@@ -97,7 +97,9 @@ process environment.** The following invariants are NON-NEGOTIABLE:
      processes without causing unrecoverable data loss. Only `gateway.remove`
      and `gateway.oauth.google_revoke` are destructive, which triggers MCP
      elicitation and CLI `-y`. HTTP does not gate on `destructive` at all
-     (see `api/services/helpers.rs`).
+     (see `api/services/helpers.rs`). This is Labby's own per-action metadata,
+     not MCP `ToolAnnotations`, which are per-tool advertised hints (see
+     `docs/surfaces/MCP.md`).
    - `pool/connect_stdio.rs` sets a process-group guard so spawned children are
      reaped on drop.
 

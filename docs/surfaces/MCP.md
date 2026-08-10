@@ -131,8 +131,51 @@ credential.
 ## Destructive Actions
 
 When the client supports elicitation, destructive service actions use the shared
-confirmation flow. Headless callers pass the explicit confirmation field required
-by the action contract. Authorization scope and confirmation are separate checks.
+2026-07-28 MRTR confirmation flow: the dispatcher returns `input_required` and
+validates the answer from the retried request's `inputResponses`.
+
+When the client does **not** support form elicitation, the dispatcher executes
+normally. There is no `params.confirm`, `--yes`, or header equivalent on the MCP
+path — request params are payload, not authorization. MCP is therefore the one
+surface that fails **open** without elicitation support; CLI bails without `-y`
+and the palette defaults its confirmation to false.
+
+`ActionSpec.destructive` is the single source of truth for this gate.
+Authorization scope and confirmation are separate checks.
+
+## Tool Annotations
+
+Labby forwards each upstream tool's `annotations` object **verbatim** — including
+`title`, unknown or future fields, and the absence of the block. It does not fill
+in missing hints, overwrite hints it disagrees with, strip fields it does not
+understand, or rename the tool while copying it. This holds on every listing path:
+the aggregated path, the subject-scoped OAuth path, and through nested gateways.
+
+Upstream hints are attacker-controlled data from Labby's perspective. Per the MCP
+spec, clients must not make tool-use decisions based on annotations from untrusted
+servers. Labby relays them for presentation; it does not vouch for them.
+
+Independently of what an upstream claims, Labby derives its own fail-closed
+`destructive` judgement for gating a proxied tool (`cached_upstream_tool`): a tool
+is treated as destructive unless its annotations explicitly say otherwise. That
+value never reaches the wire.
+
+Annotations on Labby's **own** tools are specified in
+[../design/tool-annotations/](../design/tool-annotations/) and are not yet
+implemented. Two properties from that spec matter to clients: a Labby tool fronts
+a whole service, so a tool-level hint is the least-safe **union** of that
+service's actions and must not be read as a claim about a specific `action`; and
+in a labby → labby chain these hints feed the next hop's own gate, so they are
+advisory to clients but not inert.
+
+Per-action truth (`destructive`, `requires_admin`) is available for the seven
+registered service tools via `{"action": "help"}` or the `lab://<service>/actions`
+resource. It is **not** available for `codemode`, `codemode_ui`, `mcp_app`,
+`add_server`, or `gateway_status`, which are not registry services.
+
+Note that tool visibility and `lab://<service>/actions` are scoped by
+`route_scope`, **not** by the caller's admin scope: action metadata crosses that
+boundary even though action execution does not.
 
 ## Notifications
 
