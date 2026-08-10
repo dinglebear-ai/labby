@@ -37,11 +37,20 @@ use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
 /// Process-global counter minting a unique `relay_session_id` per
-/// `LabMcpServer` instance. Each transport session (HTTP factory invocation or
-/// the single stdio server) builds one `LabMcpServer`, so the id is stable for
-/// a session's lifetime and unique across sessions — exactly the key the
-/// upstream relay cache needs to bind a cached connection to one downstream
-/// agent without ever reusing it across agents.
+/// `LabMcpServer` instance.
+///
+/// **The instance lifetime differs by transport, and the id inherits that.** On
+/// stdio one `LabMcpServer` serves the whole process, so the id is genuinely
+/// stable for the session. On streamable HTTP the service factory runs *per
+/// POST* (rmcp `StreamableHttpService::handle_post` calls `get_service()` for
+/// each request under the stateless mode Labby configures — see
+/// `build_mcp_service`), so a fresh instance and a fresh id are minted per
+/// request; all of them share one peer registry via `PeerNotifier`.
+///
+/// The id therefore binds a cached upstream relay connection to one downstream
+/// agent without ever reusing it across agents — which holds on both
+/// transports — but it must not be read as a stable per-connection session
+/// identity on HTTP.
 static RELAY_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -456,6 +465,31 @@ fn connected_client_from_discovery(
     }
 }
 
+/// Strip capabilities a legacy (pre-2026-07-28) session cannot actually use.
+///
+/// MCP advertises a single `resources.subscribe` flag for two different
+/// mechanisms: the deprecated `resources/subscribe` RPC pair, and the
+/// `subscriptions/listen` stream that replaced it in 2026-07-28. `get_info`
+/// must keep the flag set, because rmcp intersects a client's requested
+/// `SubscriptionFilter` against it (`SubscriptionFilter::supported_by`) —
+/// clearing it there would silence modern subscriptions, including the
+/// gateway's own upstream negotiation.
+///
+/// A legacy session can reach neither mechanism: Labby implements no
+/// `resources/subscribe` handler, so rmcp answers with `method_not_found`, and
+/// rmcp gates `subscriptions/listen` to modern sessions. Advertising the flag
+/// on this path therefore promises something that cannot work, so withhold it
+/// for legacy sessions only.
+///
+/// Extracted from `initialize` so it can be unit tested against a fabricated
+/// `ServerInfo` without standing up a gateway manager (the flag is
+/// gateway-conditional in `get_info`).
+fn withhold_legacy_unusable_capabilities(info: &mut ServerInfo) {
+    if let Some(resources) = info.capabilities.resources.as_mut() {
+        resources.subscribe = None;
+    }
+}
+
 impl ServerHandler for LabMcpServer {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
@@ -482,6 +516,10 @@ impl ServerHandler for LabMcpServer {
         // negotiated peer version. Echo the requested version because every
         // SDK-known historical version is explicitly declared above.
         info.protocol_version = request.protocol_version;
+        // This is the only legacy entry point — modern clients negotiate via
+        // `discover`, which returns `get_info()` untouched — so it is also the
+        // only place a capability can be withheld from legacy sessions alone.
+        withhold_legacy_unusable_capabilities(&mut info);
         Ok(info)
     }
 
@@ -954,8 +992,8 @@ mod tests {
     use super::verify_upstream_subject_resolution_support;
     use super::{
         LabMcpServer, MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
-        cancel_tracked_request_by_token, request_cancellation_key, restore_request_meta,
-        track_request_cancellation,
+        ServerCapabilities, ServerInfo, cancel_tracked_request_by_token, request_cancellation_key,
+        restore_request_meta, track_request_cancellation, withhold_legacy_unusable_capabilities,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
@@ -1212,6 +1250,86 @@ mod tests {
         assert!(
             first.token.is_cancelled() && second.token.is_cancelled(),
             "an ambiguous stateless fallback key must not silently orphan either live request"
+        );
+    }
+
+    /// A legacy session can use neither subscription mechanism, so it must not
+    /// be told `resources.subscribe` is available. Regression guard for the
+    /// capability-honesty defect in issue #211.
+    #[test]
+    fn legacy_initialize_withholds_resource_subscribe_capability() {
+        let capabilities = ServerCapabilities::builder()
+            .enable_resources()
+            .enable_resources_list_changed()
+            .enable_resources_subscribe()
+            .build();
+        let mut info = ServerInfo::new(capabilities);
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.subscribe),
+            Some(true),
+            "fixture must start with the capability advertised, or this test proves nothing"
+        );
+
+        withhold_legacy_unusable_capabilities(&mut info);
+
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.subscribe),
+            None,
+            "a legacy session reaches neither resources/subscribe (no handler) nor \
+             subscriptions/listen (rmcp gates it to modern sessions), so advertising \
+             the capability to it promises something that cannot work"
+        );
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.list_changed),
+            Some(true),
+            "withholding subscribe must not disturb the other resource capabilities"
+        );
+    }
+
+    /// The withholding must not depend on `resources` being present — under
+    /// `--no-default-features` the gateway-conditional branch never runs.
+    #[test]
+    fn withholding_is_safe_when_no_resource_capability_is_advertised() {
+        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        withhold_legacy_unusable_capabilities(&mut info);
+        assert!(info.capabilities.resources.is_none());
+        assert!(
+            info.capabilities.tools.is_some(),
+            "unrelated capabilities must survive"
+        );
+    }
+
+    /// `get_info` — the path `discover` returns to modern clients — must keep
+    /// the flag. rmcp intersects a requested `SubscriptionFilter` against it
+    /// (`SubscriptionFilter::supported_by`), so clearing it globally instead of
+    /// per-session would silence modern subscriptions and the gateway's own
+    /// upstream negotiation.
+    #[test]
+    fn get_info_does_not_withhold_capabilities_from_modern_sessions() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let info = server.get_info();
+
+        // This fixture has no gateway manager, so `subscribe` is not advertised
+        // in the first place. What this locks in is that `get_info` performs no
+        // withholding of its own: the resource capability it does advertise is
+        // unmodified, and withholding happens only on the legacy path.
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.list_changed),
+            Some(true),
+            "get_info must return capabilities untouched by legacy withholding"
         );
     }
 
