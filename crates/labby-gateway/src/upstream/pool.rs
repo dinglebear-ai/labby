@@ -3,7 +3,7 @@
 //! Connects to configured upstreams via HTTP (`StreamableHttpClientTransport`)
 //! or stdio (child process), discovers their tools, and caches schemas.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -63,6 +63,7 @@ mod resources_read;
 mod spawn_lock;
 mod stdio_stderr;
 mod stdio_transport;
+mod subscription_schedule;
 mod tasks;
 #[cfg(test)]
 mod testsupport;
@@ -123,10 +124,14 @@ pub struct UpstreamPool {
     notification_tx: tokio::sync::broadcast::Sender<UpstreamNotificationEvent>,
     /// Cancellation tokens for one active subscriptions/listen stream per upstream.
     subscription_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
+    /// Upstreams already queued for a background subscription reconcile.
+    subscription_refresh_pending: Arc<Mutex<BTreeSet<String>>>,
+    /// Cancels queued/in-flight subscription reconcile batches during pool drain.
+    subscription_reconcile_cancel: CancellationToken,
     /// Native resource URIs acknowledged by each upstream subscription.
-    subscription_resources: Arc<RwLock<HashMap<String, std::collections::BTreeSet<String>>>>,
+    subscription_resources: Arc<RwLock<HashMap<String, BTreeSet<String>>>>,
     /// Lock-free gateway-facing snapshot used by synchronous subscription negotiation.
-    subscribable_resource_uris: Arc<ArcSwap<std::collections::BTreeSet<String>>>,
+    subscribable_resource_uris: Arc<ArcSwap<BTreeSet<String>>>,
     /// Per-upstream OAuth managers, keyed by upstream name.
     /// `None` when the server was started without OAuth support.
     oauth_client_cache: Option<OauthClientCache>,
@@ -361,10 +366,10 @@ impl UpstreamPool {
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
+            subscription_refresh_pending: Arc::new(Mutex::new(BTreeSet::new())),
+            subscription_reconcile_cancel: CancellationToken::new(),
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),
-            subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(
-                std::collections::BTreeSet::new(),
-            )),
+            subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             oauth_client_cache: None,
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(

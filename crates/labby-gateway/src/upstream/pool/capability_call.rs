@@ -278,10 +278,46 @@ where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
     SizeFn: Fn(&R) -> usize,
 {
+    timed_capability_call_with_timeout(
+        pool,
+        pool.request_timeout,
+        upstream_name,
+        capability,
+        event,
+        start,
+        rpc_future,
+        size_fn,
+        subject,
+        error_message_fn,
+        timeout_message,
+    )
+    .await
+}
+
+/// Variant of [`timed_capability_call`] for surfaces with a stricter local
+/// budget than the general upstream request timeout.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn timed_capability_call_with_timeout<R, Fut, SizeFn>(
+    pool: &UpstreamPool,
+    request_timeout: std::time::Duration,
+    upstream_name: &str,
+    capability: UpstreamCapability,
+    event: UpstreamRequestLog<'_>,
+    start: Instant,
+    rpc_future: Fut,
+    size_fn: SizeFn,
+    subject: Option<&str>,
+    error_message_fn: impl Fn(&dyn std::fmt::Display) -> String,
+    timeout_message: String,
+) -> Result<R, CapabilityCallError>
+where
+    Fut: Future<Output = Result<R, rmcp::ServiceError>>,
+    SizeFn: Fn(&R) -> usize,
+{
     // Enforce one wall-clock budget across peer acquisition, bulkhead wait, and
     // the RPC itself. Waiting for a permit must not extend the configured
     // upstream timeout, and queue pressure must not poison connection health.
-    let gate_remaining = pool.request_timeout.saturating_sub(start.elapsed());
+    let gate_remaining = request_timeout.saturating_sub(start.elapsed());
     if gate_remaining.is_zero() {
         log_upstream_request_error(
             event,
@@ -362,7 +398,7 @@ where
 
     let generation = pool.connection_generation(upstream_name, subject).await;
     let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
-    let rpc_remaining = pool.request_timeout.saturating_sub(start.elapsed());
+    let rpc_remaining = request_timeout.saturating_sub(start.elapsed());
     let outcome = if rpc_remaining.is_zero() {
         RawCallOutcome::Timeout
     } else {

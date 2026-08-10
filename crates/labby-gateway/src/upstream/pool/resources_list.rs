@@ -6,7 +6,7 @@
 //! resources. `cached_upstream_resource_uris` exposes the cached snapshot.
 
 use std::collections::BTreeSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -20,8 +20,8 @@ use super::super::types::{ToolExposurePolicy, UpstreamCapability};
 use super::UpstreamPool;
 use super::capability_call::{
     CapabilityCallError, bounded_service_error_text, timed_capability_call,
+    timed_capability_call_with_timeout,
 };
-use super::connect::connect_upstream;
 use super::discover::routable_upstream_peers;
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
@@ -31,8 +31,17 @@ use super::helpers::{
     bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri,
     upstream_discovery_timeout, upstream_transport,
 };
-use super::logging::{UpstreamRequestLog, is_capability_unsupported, log_upstream_request_start};
+use super::logging::{
+    UpstreamRequestLog, is_capability_unsupported, log_upstream_request_error,
+    log_upstream_request_finish, log_upstream_request_start,
+};
 use super::tools::MAX_UPSTREAM_RESOURCES;
+
+const RESOURCE_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
+    request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
+}
 
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
     template.name = format!("{upstream_name}/{}", template.name);
@@ -237,13 +246,65 @@ impl UpstreamPool {
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
+            let request_timeout = resource_catalog_timeout(self.request_timeout);
             futures.push(async move {
-                let result = peer.list_all_resources().await;
+                let started = Instant::now();
+                let event = UpstreamRequestLog::resources_list(&name, false);
+                log_upstream_request_start(event);
+                let result = match tokio::time::timeout(request_timeout, peer.list_all_resources())
+                    .await
+                {
+                    Ok(Ok(resources)) => {
+                        let response_bytes =
+                            serde_json::to_vec(&resources).map_or(usize::MAX, |body| body.len());
+                        log_upstream_request_finish(
+                            event,
+                            started.elapsed().as_millis(),
+                            Some(response_bytes),
+                        );
+                        Ok(resources)
+                    }
+                    Ok(Err(error)) if is_capability_unsupported(&error) => {
+                        log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
+                        tracing::debug!(
+                            upstream = %name,
+                            "upstream does not implement resources/list — capability absent"
+                        );
+                        Ok(Vec::new())
+                    }
+                    Ok(Err(error)) => {
+                        let error_text = bounded_service_error_text(&error);
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            classify_upstream_error(&error_text),
+                            Some(&error_text),
+                            None,
+                            None,
+                        );
+                        Err(error_text)
+                    }
+                    Err(_) => {
+                        let error_text = format!(
+                            "upstream resource listing timed out after {}ms",
+                            request_timeout.as_millis()
+                        );
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            "timeout",
+                            None,
+                            None,
+                            None,
+                        );
+                        Err(error_text)
+                    }
+                };
                 (name, result)
             });
         }
 
-        let mut results: Vec<(String, Result<_, _>)> = Vec::new();
+        let mut results = Vec::new();
         while let Some(item) = futures.next().await {
             results.push(item);
         }
@@ -265,21 +326,27 @@ impl UpstreamPool {
                     // is editing `expose_resources`, and hiding excluded URIs
                     // there would make the allowlist un-editable. Enforcement
                     // happens on what leaves this function, and on every read.
-                    let policy = {
+                    let (policy, resource_uris_changed) = {
                         let mut catalog = self.catalog.write().await;
                         match catalog.get_mut(&name) {
                             Some(entry) => {
+                                let changed = entry.resource_uris != resource_uris;
                                 entry.resource_count = upstream_resources.len();
                                 entry.resource_uris = resource_uris;
-                                entry.resource_exposure_policy.clone()
+                                (entry.resource_exposure_policy.clone(), changed)
                             }
                             // Unreachable in practice — the peer list came from
                             // the catalog — but an upstream that vanished
                             // mid-listing has no known policy, so hide it.
-                            None => ToolExposurePolicy::AllowList(Vec::new()),
+                            None => (ToolExposurePolicy::AllowList(Vec::new()), false),
                         }
                     };
-                    subscription_refreshes.push(name.clone());
+                    if self
+                        .subscription_refresh_required(&name, resource_uris_changed)
+                        .await
+                    {
+                        subscription_refreshes.push(name.clone());
+                    }
                     let mut hidden_count = 0usize;
                     let mut exposed_count = 0usize;
                     for mut resource in upstream_resources {
@@ -309,28 +376,7 @@ impl UpstreamPool {
                     }
                     log_exposure_filter(&name, "resources", hidden_count, exposed_count, false);
                 }
-                Err(e) if is_capability_unsupported(&e) => {
-                    // The upstream simply doesn't implement `resources/list`
-                    // (JSON-RPC -32601). This is expected capability negotiation,
-                    // not a failure: treat it like an empty, successful listing so
-                    // the upstream stays routable and accrues no phantom failures.
-                    self.record_success_for(&name, UpstreamCapability::Resources)
-                        .await;
-                    {
-                        let mut catalog = self.catalog.write().await;
-                        if let Some(entry) = catalog.get_mut(&name) {
-                            entry.resource_count = 0;
-                            entry.resource_uris.clear();
-                        }
-                    }
-                    tracing::debug!(
-                        upstream = %name,
-                        error = %e,
-                        "upstream does not implement resources/list — capability absent"
-                    );
-                }
-                Err(e) => {
-                    let error_text = bounded_service_error_text(&e);
+                Err(error_text) => {
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Resources,
@@ -354,7 +400,7 @@ impl UpstreamPool {
             }
         }
 
-        self.refresh_upstream_subscriptions_concurrently(subscription_refreshes)
+        self.schedule_upstream_subscription_refreshes(subscription_refreshes)
             .await;
 
         resources
@@ -443,15 +489,16 @@ impl UpstreamPool {
         subject: &str,
     ) -> Vec<Resource> {
         let mut futures = FuturesUnordered::new();
-        let oauth_client_cache = self.oauth_client_cache.clone();
         for config in configs
             .iter()
             .filter(|config| config.oauth.is_some() && config.proxy_resources)
         {
             let config = config.clone();
             let subject = subject.to_string();
-            let oauth_client_cache = oauth_client_cache.clone();
+            let pool = self.clone();
             futures.push(async move {
+                let started = Instant::now();
+                let request_timeout = resource_catalog_timeout(pool.request_timeout);
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -461,39 +508,84 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_resources.clone(),
                 );
-                let result = connect_upstream(
-                    &config,
-                    Some(subject.as_str()),
-                    oauth_client_cache.as_ref(),
-                    None,
-                    None,
+                let event = UpstreamRequestLog::resources_list(&config.name, true)
+                    .with_transport(upstream_transport(&config));
+                log_upstream_request_start(event);
+                let peer = match tokio::time::timeout(
+                    request_timeout,
+                    pool.acquire_or_connect_subject(&config, &subject),
                 )
                 .await
-                .map(|(conn, _)| conn);
+                {
+                    Ok(Ok((peer, _tools))) => peer,
+                    Ok(Err(error)) => {
+                        pool.record_failure_for(
+                            &config.name,
+                            UpstreamCapability::Resources,
+                            format!("upstream connect failed: {error}"),
+                        )
+                        .await;
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            "upstream_connect_error",
+                            Some(&error),
+                            None,
+                            None,
+                        );
+                        return (config.name, policy, Err(error.to_string()));
+                    }
+                    Err(_) => {
+                        let error = format!(
+                            "subject-scoped upstream connection timed out after {}ms",
+                            request_timeout.as_millis()
+                        );
+                        pool.record_failure_for(
+                            &config.name,
+                            UpstreamCapability::Resources,
+                            error.clone(),
+                        )
+                        .await;
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            "timeout",
+                            None,
+                            None,
+                            None,
+                        );
+                        return (config.name, policy, Err(error));
+                    }
+                };
+                let timeout_ms = request_timeout.as_millis();
+                let result = timed_capability_call_with_timeout(
+                    &pool,
+                    request_timeout,
+                    &config.name,
+                    UpstreamCapability::Resources,
+                    event,
+                    started,
+                    peer.list_all_resources(),
+                    |resources| serde_json::to_vec(resources).map_or(usize::MAX, |body| body.len()),
+                    Some(&subject),
+                    |error| format!("subject-scoped upstream resource discovery failed: {error}"),
+                    format!(
+                        "subject-scoped upstream resource listing timed out after {timeout_ms}ms"
+                    ),
+                )
+                .await
+                .map_err(|error| error.to_string());
                 (config.name.clone(), policy, result)
             });
         }
 
-        // Deliberate bulkhead exception + partial-result semantics — same
-        // contract as `list_upstream_resources_allowed`. These are ephemeral
-        // per-subject connections, so failures are surfaced via the classified
-        // `warn!`s below rather than the shared circuit breaker.
+        // Subject-scoped resource lists reuse the per-(upstream, subject)
+        // connection cache and execute concurrently under the ordinary request
+        // budget. One slow or broken OAuth upstream therefore degrades to a
+        // partial catalog without delaying every other upstream.
         let mut resources = Vec::new();
         while let Some((name, policy, result)) = futures.next().await {
-            let conn = match result {
-                Ok(conn) => conn,
-                Err(error) => {
-                    let error_text = error.to_string();
-                    tracing::warn!(
-                        upstream = %name,
-                        kind = classify_upstream_error(&error_text),
-                        error = %error_text,
-                        "subject-scoped upstream resource connect failed"
-                    );
-                    continue;
-                }
-            };
-            match conn.peer.list_all_resources().await {
+            match result {
                 Ok(upstream_resources) => {
                     let mut hidden_count = 0usize;
                     let mut exposed_count = 0usize;
@@ -508,8 +600,7 @@ impl UpstreamPool {
                     }
                     log_exposure_filter(&name, "resources", hidden_count, exposed_count, true);
                 }
-                Err(error) => {
-                    let error_text = bounded_service_error_text(&error);
+                Err(error_text) => {
                     tracing::warn!(
                         upstream = %name,
                         kind = classify_upstream_error(&error_text),
@@ -591,7 +682,7 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use rmcp::model::{
         ErrorData, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
@@ -609,12 +700,32 @@ mod tests {
     use super::super::SubjectScopedConnection;
     use super::super::entries::healthy_in_process_entry;
     use super::super::helpers::normalize_resource_result_uri;
-    use super::super::testsupport::catalog_pool_with_server;
+    use super::super::testsupport::{StaticCatalogServer, catalog_pool_with_server};
     use super::*;
 
     #[derive(Clone)]
     struct SchemaToolServer {
         tool_name: &'static str,
+    }
+
+    struct SlowResourceListServer;
+
+    impl ServerHandler for SlowResourceListServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(ListResourcesResult::with_all_items(vec![Resource::new(
+                "file:///slow",
+                "slow",
+            )]))
+        }
     }
 
     impl ServerHandler for SchemaToolServer {
@@ -633,6 +744,18 @@ mod tests {
                 Arc::new(serde_json::Map::new()),
             )]))
         }
+    }
+
+    #[test]
+    fn resource_catalog_timeout_caps_the_general_upstream_budget() {
+        assert_eq!(
+            resource_catalog_timeout(Duration::from_mins(1)),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            resource_catalog_timeout(Duration::from_millis(25)),
+            Duration::from_millis(25)
+        );
     }
 
     fn oauth_schema_config(name: &str) -> UpstreamConfig {
@@ -1007,6 +1130,150 @@ mod tests {
         assert!(
             matches!(bob, ToolError::Sdk { .. }),
             "failure should stay classified: {bob:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_resources_reuse_the_cached_subject_connection() {
+        let pool = catalog_pool_with_server("google-drive", StaticCatalogServer::default()).await;
+        let peer = pool
+            .connections
+            .read()
+            .await
+            .get("google-drive")
+            .expect("fixture connection")
+            .peer
+            .clone();
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("google-drive")
+            .expect("move fixture connection into subject cache");
+        pool.subject_connections.write().await.insert(
+            ("google-drive".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+        let mut config = oauth_schema_config("google-drive");
+        config.proxy_resources = true;
+
+        let resources = pool.subject_scoped_resources(&[config], "alice").await;
+        let uris = resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            uris,
+            vec![
+                "lab://upstream/google-drive/file:///tmp/upstream-one",
+                "lab://upstream/google-drive/lab://upstream/old-name/file:///tmp/upstream-two",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_resources_bound_a_stalled_upstream() {
+        let pool = catalog_pool_with_server("slow", SlowResourceListServer).await;
+        let peer = pool
+            .connections
+            .read()
+            .await
+            .get("slow")
+            .expect("fixture connection")
+            .peer
+            .clone();
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove("slow")
+            .expect("move fixture connection into subject cache");
+        pool.subject_connections.write().await.insert(
+            ("slow".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+        let mut pool = Arc::try_unwrap(pool)
+            .ok()
+            .expect("fixture pool has one owner");
+        pool.request_timeout = Duration::from_millis(25);
+        let mut config = oauth_schema_config("slow");
+        config.proxy_resources = true;
+
+        let started = Instant::now();
+        let resources = pool.subject_scoped_resources(&[config], "alice").await;
+
+        assert!(
+            resources.is_empty(),
+            "a timed-out upstream yields partial data"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "a stalled upstream exceeded the request budget: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_resources_bound_connection_acquisition() {
+        let mut pool = UpstreamPool::new();
+        pool.request_timeout = Duration::from_millis(25);
+        let connect_lock = Arc::new(tokio::sync::Mutex::new(()));
+        pool.subject_connect_locks.write().await.insert(
+            ("slow-connect".to_string(), "alice".to_string()),
+            Arc::clone(&connect_lock),
+        );
+        let guard = connect_lock.lock_owned().await;
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(guard);
+        });
+        let mut config = oauth_schema_config("slow-connect");
+        config.proxy_resources = true;
+
+        let started = Instant::now();
+        let resources = pool.subject_scoped_resources(&[config], "alice").await;
+
+        assert!(
+            resources.is_empty(),
+            "a timed-out connect yields partial data"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "connection acquisition exceeded the request budget: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_resources_bound_a_stalled_upstream() {
+        let pool = catalog_pool_with_server("slow", SlowResourceListServer).await;
+        let mut pool = Arc::try_unwrap(pool)
+            .ok()
+            .expect("fixture pool has one owner");
+        pool.request_timeout = Duration::from_millis(25);
+
+        let started = Instant::now();
+        let resources = pool.list_upstream_resources().await;
+
+        assert!(
+            resources.is_empty(),
+            "a timed-out upstream yields partial data"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "a stalled upstream exceeded the request budget: {:?}",
+            started.elapsed()
         );
     }
 
