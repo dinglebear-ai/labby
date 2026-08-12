@@ -84,6 +84,18 @@ impl<'a> UpstreamRequestLog<'a> {
         }
     }
 
+    pub(super) fn resources_list(upstream: &'a str, subject_scoped: bool) -> Self {
+        Self {
+            upstream,
+            capability: "resources",
+            operation: "resources.list",
+            subject_scoped,
+            transport: None,
+            item_kind: None,
+            item: None,
+        }
+    }
+
     pub(super) fn prompt(upstream: &'a str, prompt: &'a str, subject_scoped: bool) -> Self {
         Self {
             upstream,

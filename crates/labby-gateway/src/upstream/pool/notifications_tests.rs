@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
-    ErrorData, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    ServerInfo, SubscriptionFilter,
+    ErrorData, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    Resource, ServerCapabilities, ServerInfo, SubscriptionFilter,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{
@@ -87,6 +87,17 @@ impl ServerHandler for SubscriptionServer {
         ))
     }
 
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(vec![Resource::new(
+            NATIVE_RESOURCE_URI,
+            "subscription-resource",
+        )]))
+    }
+
     fn accepted_subscription_filter(
         &self,
         requested: &SubscriptionFilter,
@@ -150,6 +161,10 @@ async fn add_subscription_server(pool: &UpstreamPool, upstream: &str, server: Su
             runtime: UpstreamRuntimeMetadata::default(),
         },
     );
+    pool.resource_upstreams
+        .write()
+        .await
+        .push(upstream.to_string());
 }
 
 #[tokio::test]
@@ -222,6 +237,56 @@ async fn batch_refresh_waits_for_acknowledgements_concurrently() {
         "bravo",
         NATIVE_RESOURCE_URI
     )));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resource_listing_does_not_wait_for_subscription_rehandshake() {
+    let pool = UpstreamPool::new();
+    add_subscription_server(
+        &pool,
+        "leaf",
+        SubscriptionServer::delayed(Duration::from_millis(600)),
+    )
+    .await;
+
+    let started = Instant::now();
+    let resources = pool.list_upstream_resources().await;
+
+    assert_eq!(
+        resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>(),
+        vec!["lab://upstream/leaf/file:///tmp/subscription-resource"]
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "resources/list waited for a subscription handshake: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_background_subscription_refreshes_are_coalesced() {
+    let pool = UpstreamPool::new();
+    let server = SubscriptionServer::delayed(Duration::from_millis(100));
+    let attempts = Arc::clone(&server.attempts);
+    add_subscription_server(&pool, "leaf", server).await;
+
+    pool.schedule_upstream_subscription_refreshes(vec!["leaf".to_string()])
+        .await;
+    pool.schedule_upstream_subscription_refreshes(vec!["leaf".to_string()])
+        .await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while attempts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("subscription refresh starts");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

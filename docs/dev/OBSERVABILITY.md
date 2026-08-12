@@ -193,6 +193,24 @@ surrounding caller context, including `request_id` when present. Timeouts must
 be logged as explicit failures rather than disappearing into generic disconnect
 noise.
 
+Resource catalog fan-out uses `operation = "resources.list"`. Each upstream
+emits `upstream.request.start` followed by `upstream.request.finish` or
+`upstream.request.error`, including `subject_scoped = true` for OAuth resource
+passes. This makes a slow catalog refresh attributable to the exact upstream
+and distinguishes connection acquisition, timeout, upstream error, and success.
+Each shared or subject-scoped fan-out phase has a 10-second ceiling (or the
+smaller configured upstream request timeout), and preserves partial results.
+
+Resource subscription reconciliation is not part of the caller's
+`resources/list` latency budget. It runs as a coalesced background batch with:
+
+- `action = "subscription.refresh.schedule"`, `phase = "scheduled|coalesced"`
+- `action = "subscription.refresh.batch"`, `phase = "start|finish|cancelled"`
+- `upstream_count` on every event and `elapsed_ms` on batch completion
+
+Pool drain cancels pending reconciliation so an obsolete pool cannot recreate
+subscriptions after replacement.
+
 The 2026-07-28 MCP surface does not advertise the removed legacy logging
 capability. Required observability is emitted through local structured tracing,
 not `logging/setLevel` or `notifications/message`.
