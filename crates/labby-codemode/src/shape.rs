@@ -221,6 +221,37 @@ mod tests {
         );
     }
 
+    /// FR-5 (issue #210, lab-41e7m.2): under a non-`Off` policy, an
+    /// over-budget STRUCTURED result becomes exactly one marker string whose
+    /// preview derives from the pretty-printed JSON — nothing else in the
+    /// shaped result is re-serialized or double-encoded.
+    #[test]
+    fn over_budget_structured_result_becomes_single_marker_string() {
+        let shaped = shape_final_result(
+            Some(serde_json::json!({"rows": vec!["r".repeat(64); 4000]})),
+            CodeModeResultShapePolicy::Truncate,
+            MAX_BYTES,
+            MAX_TOKENS,
+            TOKEN_DIVISOR,
+        );
+
+        assert!(shaped.metadata.truncated);
+        let marker = shaped
+            .result
+            .as_ref()
+            .and_then(Value::as_str)
+            .expect("marker is one string");
+        assert!(marker.starts_with("[code mode result truncated]"));
+        assert!(
+            marker.contains("\"rows\""),
+            "preview shows the pretty-printed structured value, not a re-stringified escape soup"
+        );
+        assert!(
+            !marker.contains("\\\"rows\\\""),
+            "the structured value must not be double-encoded"
+        );
+    }
+
     #[test]
     fn hard_marker_stays_on_utf8_boundary() {
         let shaped = shape_final_result(
