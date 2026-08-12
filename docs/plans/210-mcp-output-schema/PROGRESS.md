@@ -23,7 +23,7 @@ decisions, and findings.
 | `lab-41e7m` | Epic | open | — |
 | `lab-41e7m.1` | Envelope schema + registry builder + FR-7 | **implemented** (this commit) | — |
 | `lab-41e7m.2` | Lock Code Mode unwrap + truncation + success-path proxy fidelity | **implemented** (this commit) | — |
-| `lab-41e7m.3` | Catalog output-shape coverage | open | **`lab-41e7m.7`** |
+| `lab-41e7m.3` | Catalog output-shape coverage | **implemented** (this commit) | ~~`lab-41e7m.7`~~ done |
 | `lab-41e7m.4` | Docs, generated artifacts, conformance | open | .1, .2, .3 |
 | `lab-41e7m.5` | **FR-2a** — authorization-gate consolidation (moved OUT of `.1`) | open (filed 2026-08-11) | — |
 | `lab-41e7m.6` | FR-9a — sanitize upstream metadata on `tools/list` (HIGH) | **implemented** (this commit) | — |
@@ -52,7 +52,7 @@ places, which is the exact drift this issue exists to eliminate).
 | FR-5 | Structure survives truncation — **both** markers | .2 | ☑ 2026-08-11 |
 | FR-6 | Success-path proxy fidelity | .2 | ☑ 2026-08-11 |
 | FR-7 | Error trace ↔ trace schema consistency | .1 | ☑ 2026-08-11 |
-| FR-8 | Catalog coverage | .3 | ☐ |
+| FR-8 | Catalog coverage | .3 | ☑ 2026-08-11 |
 | FR-9a | Sanitize upstream metadata on `tools/list` | `lab-41e7m.6` | ☑ 2026-08-11 |
 | FR-9b | Bound `$ref` expansion | `lab-41e7m.7` | ☑ 2026-08-11 |
 
@@ -85,7 +85,13 @@ contract (C2.3).
 | `add_server` | synthetic | envelope (`open`/`test`/`create`) | yes | `call_tool.rs` → `format_dispatch_result` | envelope | |
 | `gateway_status` | synthetic | envelope (`open`/`refresh`) | yes | `call_tool.rs` → `format_dispatch_result` | envelope | |
 
-**OpenAPI provider output schemas (FR-8 / plan §5.3):** _not yet audited._
+**OpenAPI provider output schemas (FR-8 / plan §5.3):** audited 2026-08-11.
+`labby-openapi/src/convert.rs` extracts only dispatch metadata (operationId, HTTP method,
+path template) — no `responses` parsing exists in the crate, and OpenAPI operations dispatch
+through the reserved `openapi` local provider without per-operation `ToolDescriptor`s, so
+nothing fabricates output types today. Deriving output schemas from spec `responses` is
+deferred to its own bead (`lab-kooxf`, filed 2026-08-11) per the plan's
+truthfulness rule: a spec-derived schema is the one place a WRONG schema can be introduced.
 
 ## 4. Verification log
 

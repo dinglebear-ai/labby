@@ -357,6 +357,123 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    // ── Issue #210 (lab-41e7m.3): catalog output-shape coverage ─────────────
+    //
+    // These pin the sanitize → ToolDescriptor::tool path that the cache-miss
+    // branch of `build_catalog_entries` runs per upstream tool.
+
+    /// An upstream `output_schema` reaches the descriptor and renders a real
+    /// `Promise<T>` in both the one-line signature and the `.d.ts`.
+    #[test]
+    fn upstream_output_schema_reaches_descriptor_and_dts() {
+        let output_schema = serde_json::json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+            "required": ["ok"]
+        });
+
+        let descriptor = ToolDescriptor::tool(
+            "fixture",
+            "query",
+            &sanitize_tool_text("Query data", 2048),
+            sanitize_schema(Some(serde_json::json!({ "type": "object" }))),
+            sanitize_schema(Some(output_schema.clone())),
+        );
+
+        assert_eq!(descriptor.output_schema, Some(output_schema));
+        assert!(
+            descriptor.signature.contains("Promise<FixtureQueryOutput>"),
+            "{}",
+            descriptor.signature
+        );
+        assert!(
+            descriptor.dts.contains("type FixtureQueryOutput = {"),
+            "typed output must render a structural type, not `unknown`: {}",
+            descriptor.dts
+        );
+        assert!(
+            descriptor.dts.contains("ok: boolean;"),
+            "{}",
+            descriptor.dts
+        );
+    }
+
+    /// Absent output schema is rendered truthfully as `unknown` — no
+    /// fabricated type.
+    #[test]
+    fn missing_output_schema_renders_unknown_not_a_fabricated_type() {
+        let descriptor = ToolDescriptor::tool(
+            "fixture",
+            "query",
+            "Query data",
+            sanitize_schema(Some(serde_json::json!({ "type": "object" }))),
+            sanitize_schema(None),
+        );
+
+        assert_eq!(descriptor.output_schema, None);
+        assert!(
+            descriptor
+                .dts
+                .contains("type FixtureQueryOutput = unknown;"),
+            "{}",
+            descriptor.dts
+        );
+    }
+
+    /// Pathological schemas must not panic or leak: an oversized schema is
+    /// dropped to `None` by `sanitize_schema`'s render-time gate (and the type
+    /// falls back to `unknown`); a malformed one renders defensively.
+    #[test]
+    fn pathological_output_schemas_degrade_without_panic() {
+        let oversized = serde_json::json!({
+            "type": "object",
+            "description": "x".repeat(600_000)
+        });
+        let descriptor = ToolDescriptor::tool(
+            "fixture",
+            "query",
+            "Query data",
+            None,
+            sanitize_schema(Some(oversized)),
+        );
+        assert_eq!(
+            descriptor.output_schema, None,
+            "oversized schema must drop to None"
+        );
+        assert!(
+            descriptor
+                .dts
+                .contains("type FixtureQueryOutput = unknown;"),
+            "{}",
+            descriptor.dts
+        );
+
+        let malformed = serde_json::json!({
+            "type": 42,
+            "properties": "not-an-object",
+            "items": { "$ref": "#/definitions/missing" }
+        });
+        let descriptor = ToolDescriptor::tool(
+            "fixture",
+            "query",
+            "Query data",
+            None,
+            sanitize_schema(Some(malformed.clone())),
+        );
+        assert_eq!(
+            descriptor.output_schema,
+            Some(malformed),
+            "malformed-but-small schemas are relayed; only the TYPE render degrades"
+        );
+        assert!(
+            descriptor
+                .dts
+                .contains("type FixtureQueryOutput = Record<string, unknown>;"),
+            "malformed type/properties must degrade to a defensive open record, never a fabricated type: {}",
+            descriptor.dts
+        );
+    }
+
     #[test]
     fn read_only_catalog_filter_is_fail_closed() {
         let named = Arc::<str>::from("fixture");
