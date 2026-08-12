@@ -768,7 +768,7 @@ fn ui_resource_uri(ui_meta: &Value) -> Option<&str> {
 
 /// Unwrap an upstream `CallToolResult` into the value Code Mode returns.
 ///
-/// This is a locked contract (docs/plans/210-mcp-output-schema/CONTRACT.md
+/// This is a locked contract (docs/contracts/mcp-tool-output.md
 /// §C6), byte-identical since `977cb2166` (2026-05-31). Do not change the
 /// behavior without updating that contract and the edge-case matrix tests
 /// below. Precedence — first match wins; rule 0 (`is_error == Some(true)`)
@@ -1359,7 +1359,7 @@ mod tests {
     // ── Issue #210 (lab-41e7m.2): the C6 unwrap precedence matrix ───────────
     //
     // `unwrap_code_mode_upstream_result` is a locked contract
-    // (docs/plans/210-mcp-output-schema/CONTRACT.md §C6). These tests pin the
+    // (docs/contracts/mcp-tool-output.md §C6). These tests pin the
     // behavior; they do not define it. Rule 0 (`is_error`) is handled by the
     // caller before the unwrap — its conversion to `CodeModeCallError` is
     // pinned by `tool_error.rs::adapter_preserves_shared_analysis`.

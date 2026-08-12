@@ -55,7 +55,7 @@ fn builtin_action_schema() -> Arc<serde_json::Map<String, Value>> {
 /// actions, so a tool-level schema cannot describe per-action payloads.
 ///
 /// Error envelopes are deliberately NOT described here — see
-/// docs/plans/210-mcp-output-schema/CONTRACT.md §C3.2. The exemption for
+/// docs/contracts/mcp-tool-output.md §C3.2. The exemption for
 /// `isError` results is ecosystem convention, not explicit spec text.
 ///
 /// `additionalProperties` is `true` by decision (SPEC §5.2): closing the
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn envelope_output_schema_matches_published_schema() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/plans/210-mcp-output-schema/schemas/dispatch-envelope.schema.json");
+            .join("../../docs/contracts/schemas/dispatch-envelope.schema.json");
         let published: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|error| {
                 panic!("published schema unreadable at {}: {error}", path.display())

@@ -11,7 +11,7 @@ decisions, and findings.
 | Branch | `feat/mcp-output-schema-210` |
 | Worktree | `.worktrees/feat-mcp-output-schema-210` |
 | Base | `origin/main` @ `43d51ec73` (merged 2026-08-11; original plan base `132448802`) |
-| Phase | **`.1` implemented (audit, schema, registry builder, rewire, FR-7, tests). `.2`–`.4` and security beads open** |
+| Phase | **All epic beads implemented** (`.1`–`.7`, 6 commits on this branch). Remaining: FU-1..FU-8 follow-ups + `lab-kooxf` (OpenAPI response schemas), and the AC-16 caveat in the eventual PR description + issue comment |
 | Last updated | 2026-08-11 |
 
 ---
@@ -24,7 +24,7 @@ decisions, and findings.
 | `lab-41e7m.1` | Envelope schema + registry builder + FR-7 | **implemented** (this commit) | — |
 | `lab-41e7m.2` | Lock Code Mode unwrap + truncation + success-path proxy fidelity | **implemented** (this commit) | — |
 | `lab-41e7m.3` | Catalog output-shape coverage | **implemented** (this commit) | ~~`lab-41e7m.7`~~ done |
-| `lab-41e7m.4` | Docs, generated artifacts, conformance | open | .1, .2, .3 |
+| `lab-41e7m.4` | Docs, generated artifacts, conformance | **implemented** (this commit) | ~~.1, .2, .3~~ done |
 | `lab-41e7m.5` | **FR-2a** — authorization-gate consolidation (moved OUT of `.1`) | **implemented** (this commit) | — |
 | `lab-41e7m.6` | FR-9a — sanitize upstream metadata on `tools/list` (HIGH) | **implemented** (this commit) | — |
 | `lab-41e7m.7` | FR-9b — bound `$ref` expansion (HIGH, blocks `.3`) | **implemented** (this commit) | — |

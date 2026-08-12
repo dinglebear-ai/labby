@@ -41,9 +41,9 @@ use serde_json::{Value, json};
 ///
 /// This shape is advertised as every builtin tool's MCP `outputSchema`
 /// (`mcp/permanent_tools.rs::dispatch_envelope_output_schema`, published at
-/// docs/plans/210-mcp-output-schema/schemas/dispatch-envelope.schema.json).
-/// Adding or renaming a field here REQUIRES updating that schema in the same
-/// commit.
+/// docs/contracts/schemas/dispatch-envelope.schema.json, contract at
+/// docs/contracts/mcp-tool-output.md). Adding or renaming a field here
+/// REQUIRES updating that schema in the same commit.
 #[must_use]
 pub fn build_success(service: &str, action: &str, data: &Value) -> Value {
     json!({
