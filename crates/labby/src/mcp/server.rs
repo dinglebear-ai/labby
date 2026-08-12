@@ -692,6 +692,7 @@ impl ServerHandler for LabMcpServer {
                 .get_task_routed(
                     request,
                     self.request_subject(&context),
+                    &self.route_scope.task_authorization(),
                     context.peer.clone(),
                 )
                 .await
@@ -719,6 +720,7 @@ impl ServerHandler for LabMcpServer {
                 .update_task_routed(
                     request,
                     self.request_subject(&context),
+                    &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
                 )
@@ -746,6 +748,7 @@ impl ServerHandler for LabMcpServer {
                 .cancel_task_routed(
                     request,
                     self.request_subject(&context),
+                    &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
                 )

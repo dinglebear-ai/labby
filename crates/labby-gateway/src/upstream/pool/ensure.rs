@@ -108,6 +108,7 @@ impl UpstreamPool {
         oauth_subject: Option<&str>,
         runtime_owner: Option<&UpstreamRuntimeOwner>,
     ) -> anyhow::Result<bool> {
+        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
         if !config.enabled {
             return Ok(false);
         }
@@ -180,6 +181,17 @@ impl UpstreamPool {
             .write()
             .await
             .insert(config.name.clone(), conn);
+        if let Some(subject) = subject {
+            self.generic_oauth_subjects
+                .write()
+                .await
+                .insert(config.name.clone(), subject.to_string());
+        } else {
+            self.generic_oauth_subjects
+                .write()
+                .await
+                .remove(&config.name);
+        }
         self.replace_catalog_tools(config, tools).await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
@@ -204,9 +216,10 @@ impl UpstreamPool {
     async fn ensure_tools_for_upstream_with_connector(
         &self,
         config: &UpstreamConfig,
-        _oauth_subject: Option<&str>,
+        oauth_subject: Option<&str>,
         connector: TestUpstreamConnector,
     ) -> anyhow::Result<bool> {
+        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
         if !config.enabled {
             return Ok(false);
         }
@@ -237,6 +250,17 @@ impl UpstreamPool {
                 .write()
                 .await
                 .insert(config.name.clone(), connection);
+            if let Some(subject) = oauth_subject {
+                self.generic_oauth_subjects
+                    .write()
+                    .await
+                    .insert(config.name.clone(), subject.to_string());
+            } else {
+                self.generic_oauth_subjects
+                    .write()
+                    .await
+                    .remove(&config.name);
+            }
         }
         self.replace_catalog_tools(config, tools).await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)

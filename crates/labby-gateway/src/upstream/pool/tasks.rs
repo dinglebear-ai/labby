@@ -1,5 +1,6 @@
 //! Routing for task handles returned by upstream MCP servers.
 
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -28,8 +29,30 @@ pub(super) struct TaskRoute {
     upstream_name: String,
     native_task_id: String,
     caller_subject: Option<String>,
+    oauth_subject: Option<String>,
+    authorization: TaskRouteAuthorization,
     connection: RelayCachedConnection,
     last_used: Instant,
+}
+
+/// Surface-neutral snapshot of the protected MCP route that minted a task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskRouteAuthorization {
+    route_key: String,
+    allowed_upstreams: Option<BTreeSet<String>>,
+}
+
+impl TaskRouteAuthorization {
+    pub fn new(route_key: impl Into<String>, allowed_upstreams: Option<BTreeSet<String>>) -> Self {
+        Self {
+            route_key: route_key.into(),
+            allowed_upstreams,
+        }
+    }
+
+    pub fn root() -> Self {
+        Self::new("root", None)
+    }
 }
 
 fn mint_task_handle() -> String {
@@ -61,6 +84,69 @@ fn prune_task_routes(routes: &mut std::collections::HashMap<String, TaskRoute>) 
 }
 
 impl UpstreamPool {
+    pub(super) async fn invalidate_task_routes_for_oauth_subject(
+        &self,
+        upstream: &str,
+        subject: &str,
+        reason: &'static str,
+    ) -> usize {
+        self.invalidate_oauth_task_routes(reason, |route| {
+            route.upstream_name == upstream && route.oauth_subject.as_deref() == Some(subject)
+        })
+        .await
+    }
+
+    pub(super) async fn invalidate_all_oauth_task_routes(&self, reason: &'static str) -> usize {
+        self.invalidate_oauth_task_routes(reason, |route| route.oauth_subject.is_some())
+            .await
+    }
+
+    pub(super) async fn invalidate_oauth_task_routes_for_upstreams(
+        &self,
+        upstreams: &HashSet<&str>,
+        reason: &'static str,
+    ) -> usize {
+        self.invalidate_oauth_task_routes(reason, |route| {
+            route.oauth_subject.is_some() && upstreams.contains(route.upstream_name.as_str())
+        })
+        .await
+    }
+
+    async fn invalidate_oauth_task_routes(
+        &self,
+        reason: &'static str,
+        should_remove: impl Fn(&TaskRoute) -> bool,
+    ) -> usize {
+        let removed = {
+            let mut routes = self.task_routes.write().await;
+            let ids = routes
+                .iter()
+                .filter(|(_, route)| should_remove(route))
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|id| routes.remove(&id))
+                .collect::<Vec<_>>()
+        };
+        let count = removed.len();
+        futures::future::join_all(removed.into_iter().map(|route| async move {
+            let upstream_name = route.upstream_name;
+            route
+                .connection
+                ._connection
+                .shutdown(&upstream_name, reason)
+                .await
+        }))
+        .await;
+        tracing::debug!(
+            action = "task.routes.invalidate",
+            reason,
+            invalidated_count = count,
+            "OAuth task routes invalidated"
+        );
+        count
+    }
+
     /// Convert an upstream task handle into a gateway-owned, subject-bound
     /// handle. The relay connection that created the task is moved out of the
     /// general relay cache and retained for the task lifecycle.
@@ -68,19 +154,21 @@ impl UpstreamPool {
         &self,
         relay_key: &(String, u64, Option<String>),
         caller_subject: Option<&str>,
+        authorization: TaskRouteAuthorization,
         response: CallToolResponse,
-    ) -> CallToolResponse {
+    ) -> Result<CallToolResponse, String> {
         let CallToolResponse::Task(mut created) = response else {
-            return response;
+            return Ok(response);
         };
         let native_task_id = created.task.task_id.clone();
         let Some(connection) = self.relay_connections.write().await.remove(relay_key) else {
             tracing::warn!(
                 upstream = %relay_key.0,
-                native_task_id = %native_task_id,
+                action = "task.registration.reject",
+                reason = "relay_connection_unavailable",
                 "upstream returned a task but its relay connection was unavailable"
             );
-            return CallToolResponse::Task(created);
+            return Err("upstream task registration failed".to_string());
         };
 
         let gateway_task_id = mint_task_handle();
@@ -98,17 +186,39 @@ impl UpstreamPool {
                 upstream_name: relay_key.0.clone(),
                 native_task_id,
                 caller_subject: caller_subject.map(str::to_owned),
+                oauth_subject: relay_key.2.clone(),
+                authorization,
                 connection,
                 last_used: Instant::now(),
             },
         );
-        CallToolResponse::Task(created)
+        Ok(CallToolResponse::Task(created))
     }
 
-    fn authorize_task_route(route: &TaskRoute, caller_subject: Option<&str>) -> Result<(), String> {
-        if route.caller_subject.as_deref() == caller_subject {
+    fn authorize_task_route(
+        route: &TaskRoute,
+        caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
+    ) -> Result<(), String> {
+        let subject_matches = route.caller_subject.as_deref() == caller_subject;
+        let scope_matches = route.authorization == *authorization
+            && authorization
+                .allowed_upstreams
+                .as_ref()
+                .is_none_or(|upstreams| upstreams.contains(&route.upstream_name));
+        if subject_matches && scope_matches {
             Ok(())
         } else {
+            tracing::warn!(
+                action = "task.route.authorize",
+                upstream = %route.upstream_name,
+                subject_matches,
+                scope_matches,
+                origin_route = %route.authorization.route_key,
+                caller_route = %authorization.route_key,
+                reason = "task_route_mismatch",
+                "task route authorization rejected"
+            );
             Err(task_not_found())
         }
     }
@@ -117,6 +227,7 @@ impl UpstreamPool {
         &self,
         mut params: GetTaskParams,
         caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
         downstream: Peer<RoleServer>,
     ) -> Result<GetTaskResult, String> {
         let start = Instant::now();
@@ -127,7 +238,7 @@ impl UpstreamPool {
             let route = routes
                 .get_mut(&gateway_task_id)
                 .ok_or_else(task_not_found)?;
-            Self::authorize_task_route(route, caller_subject)?;
+            Self::authorize_task_route(route, caller_subject, authorization)?;
             route.connection.rebind_downstream(downstream).await;
             route.last_used = Instant::now();
             (
@@ -169,6 +280,7 @@ impl UpstreamPool {
         &self,
         mut params: UpdateTaskParams,
         caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
         gateway_task_id: &str,
         downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
@@ -177,7 +289,7 @@ impl UpstreamPool {
             let mut routes = self.task_routes.write().await;
             prune_task_routes(&mut routes);
             let route = routes.get_mut(gateway_task_id).ok_or_else(task_not_found)?;
-            Self::authorize_task_route(route, caller_subject)?;
+            Self::authorize_task_route(route, caller_subject, authorization)?;
             route.connection.rebind_downstream(downstream).await;
             route.last_used = Instant::now();
             (
@@ -228,6 +340,7 @@ impl UpstreamPool {
         &self,
         mut params: CancelTaskParams,
         caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
         gateway_task_id: &str,
         downstream: Peer<RoleServer>,
     ) -> Result<(), String> {
@@ -236,7 +349,7 @@ impl UpstreamPool {
             let mut routes = self.task_routes.write().await;
             prune_task_routes(&mut routes);
             let route = routes.get_mut(gateway_task_id).ok_or_else(task_not_found)?;
-            Self::authorize_task_route(route, caller_subject)?;
+            Self::authorize_task_route(route, caller_subject, authorization)?;
             route.connection.rebind_downstream(downstream).await;
             route.last_used = Instant::now();
             (
@@ -474,12 +587,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_relay_connection_rejects_orphan_task_response() {
+        let (pool, _server, _downstream, relay_key) = task_pool().await;
+        pool.relay_connections.write().await.remove(&relay_key);
+
+        let response = pool
+            .register_task_response(
+                &relay_key,
+                Some("alice"),
+                super::TaskRouteAuthorization::root(),
+                create_task_response(),
+            )
+            .await;
+
+        assert_eq!(
+            response.expect_err(
+                "a native task handle must not escape when the gateway cannot register its route",
+            ),
+            "upstream task registration failed"
+        );
+    }
+
+    #[tokio::test]
     async fn routed_task_lifecycle_uses_gateway_handle_and_native_upstream_id() {
         let (pool, server, downstream, relay_key) = task_pool().await;
 
         let registered = pool
-            .register_task_response(&relay_key, Some("alice"), create_task_response())
-            .await;
+            .register_task_response(
+                &relay_key,
+                Some("alice"),
+                super::TaskRouteAuthorization::root(),
+                create_task_response(),
+            )
+            .await
+            .expect("task route registers");
         assert!(
             matches!(&registered, CallToolResponse::Task(_)),
             "expected task response"
@@ -495,6 +636,7 @@ mod tests {
             .get_task_routed(
                 GetTaskParams::new(&gateway_task_id),
                 Some("bob"),
+                &super::TaskRouteAuthorization::root(),
                 downstream.peer().clone(),
             )
             .await;
@@ -504,6 +646,7 @@ mod tests {
             .get_task_routed(
                 GetTaskParams::new(&gateway_task_id),
                 Some("alice"),
+                &super::TaskRouteAuthorization::root(),
                 downstream.peer().clone(),
             )
             .await
@@ -517,6 +660,7 @@ mod tests {
         pool.update_task_routed(
             UpdateTaskParams::new(&gateway_task_id, InputResponses::new()),
             Some("alice"),
+            &super::TaskRouteAuthorization::root(),
             &gateway_task_id,
             downstream.peer().clone(),
         )
@@ -525,6 +669,7 @@ mod tests {
         pool.cancel_task_routed(
             CancelTaskParams::new(&gateway_task_id),
             Some("alice"),
+            &super::TaskRouteAuthorization::root(),
             &gateway_task_id,
             downstream.peer().clone(),
         )
@@ -536,6 +681,143 @@ mod tests {
             server.cancellations.lock().await.as_slice(),
             [NATIVE_TASK_ID]
         );
+    }
+
+    #[tokio::test]
+    async fn protected_task_route_rejects_disjoint_route_lifecycle_operations() {
+        let (pool, server, downstream, relay_key) = task_pool().await;
+        let route_a = super::TaskRouteAuthorization::new(
+            "protected:a",
+            Some(["task-upstream".to_string()].into_iter().collect()),
+        );
+        let route_b = super::TaskRouteAuthorization::new(
+            "protected:b",
+            Some(["other-upstream".to_string()].into_iter().collect()),
+        );
+        let registered = pool
+            .register_task_response(&relay_key, Some("alice"), route_a, create_task_response())
+            .await
+            .expect("task route registers");
+        let CallToolResponse::Task(created) = registered else {
+            panic!("expected task response");
+        };
+        let gateway_task_id = created.task.task_id;
+
+        let get = pool
+            .get_task_routed(
+                GetTaskParams::new(&gateway_task_id),
+                Some("alice"),
+                &route_b,
+                downstream.peer().clone(),
+            )
+            .await;
+        assert_eq!(
+            get.expect_err("disjoint route must reject get"),
+            super::task_not_found()
+        );
+        let update = pool
+            .update_task_routed(
+                UpdateTaskParams::new(&gateway_task_id, InputResponses::new()),
+                Some("alice"),
+                &route_b,
+                &gateway_task_id,
+                downstream.peer().clone(),
+            )
+            .await;
+        assert_eq!(
+            update.expect_err("disjoint route must reject update"),
+            super::task_not_found()
+        );
+        let cancel = pool
+            .cancel_task_routed(
+                CancelTaskParams::new(&gateway_task_id),
+                Some("alice"),
+                &route_b,
+                &gateway_task_id,
+                downstream.peer().clone(),
+            )
+            .await;
+        assert_eq!(
+            cancel.expect_err("disjoint route must reject cancel"),
+            super::task_not_found()
+        );
+        assert!(server.updates.lock().await.is_empty());
+        assert!(server.cancellations.lock().await.is_empty());
+    }
+
+    async fn rekey_relay_for_oauth_subject(
+        pool: &UpstreamPool,
+        relay_key: &(String, u64, Option<String>),
+        oauth_subject: &str,
+    ) -> (String, u64, Option<String>) {
+        let connection = pool
+            .relay_connections
+            .write()
+            .await
+            .remove(relay_key)
+            .expect("relay connection exists");
+        let oauth_key = (
+            relay_key.0.clone(),
+            relay_key.1,
+            Some(oauth_subject.to_string()),
+        );
+        pool.relay_connections
+            .write()
+            .await
+            .insert(oauth_key.clone(), connection);
+        oauth_key
+    }
+
+    #[tokio::test]
+    async fn shared_admin_oauth_task_invalidation_uses_credential_subject() {
+        let (pool, _server, _downstream, relay_key) = task_pool().await;
+        let oauth_key = rekey_relay_for_oauth_subject(&pool, &relay_key, "shared-admin").await;
+        pool.register_task_response(
+            &oauth_key,
+            Some("alice"),
+            super::TaskRouteAuthorization::root(),
+            create_task_response(),
+        )
+        .await
+        .expect("shared-admin OAuth task registers");
+
+        assert_eq!(
+            pool.invalidate_task_routes_for_oauth_subject("task-upstream", "shared-admin", "test")
+                .await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_stdio_oauth_task_without_caller_subject_is_invalidated() {
+        let (pool, _server, _downstream, relay_key) = task_pool().await;
+        let oauth_key = rekey_relay_for_oauth_subject(&pool, &relay_key, "stdio-oauth").await;
+        pool.register_task_response(
+            &oauth_key,
+            None,
+            super::TaskRouteAuthorization::root(),
+            create_task_response(),
+        )
+        .await
+        .expect("trusted stdio OAuth task registers");
+
+        assert_eq!(pool.invalidate_all_oauth_task_routes("test").await, 1);
+    }
+
+    #[tokio::test]
+    async fn global_oauth_invalidation_preserves_raw_authenticated_task() {
+        let (pool, _server, _downstream, relay_key) = task_pool().await;
+        pool.register_task_response(
+            &relay_key,
+            Some("alice"),
+            super::TaskRouteAuthorization::root(),
+            create_task_response(),
+        )
+        .await
+        .expect("raw authenticated task registers");
+
+        assert_eq!(pool.invalidate_all_oauth_task_routes("test").await, 0);
+        assert_eq!(pool.task_routes.read().await.len(), 1);
     }
 
     /// The bulkhead-routed task path preserves the historical error-string
@@ -553,8 +835,14 @@ mod tests {
             task_pool_with_store(Some(Arc::clone(&store))).await;
 
         let registered = pool
-            .register_task_response(&relay_key, Some("alice"), create_task_response())
-            .await;
+            .register_task_response(
+                &relay_key,
+                Some("alice"),
+                super::TaskRouteAuthorization::root(),
+                create_task_response(),
+            )
+            .await
+            .expect("task route registers");
         let CallToolResponse::Task(created) = registered else {
             panic!("expected task response");
         };
@@ -567,6 +855,7 @@ mod tests {
             .get_task_routed(
                 GetTaskParams::new(&gateway_task_id),
                 Some("alice"),
+                &super::TaskRouteAuthorization::root(),
                 downstream.peer().clone(),
             )
             .await
@@ -586,6 +875,7 @@ mod tests {
         pool.get_task_routed(
             GetTaskParams::new(&gateway_task_id),
             Some("alice"),
+            &super::TaskRouteAuthorization::root(),
             downstream.peer().clone(),
         )
         .await

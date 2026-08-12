@@ -586,6 +586,15 @@ succeeded and the counts of dependent Labby refresh tokens and authorization
 codes revoked. It must not log the deleted row. Explicit shared revocation must
 log the same count-only audit shape.
 
+Credential replacement, proactive refresh, clear, and shared-provider
+revocation must also emit `action = "session.invalidate"` after the live
+gateway runtime has been invalidated. Required fields are `upstream`, a bounded
+non-secret `reason`, `subject_connections`, `relay_connections`, `task_routes`,
+`generic_connections`, and `invalidated_total`. This event must never contain the raw OAuth subject;
+when caller correlation is available at the surface, use only its bound
+`actor_key`. A successful credential mutation is not complete until every
+matching initialized MCP peer and task-retained peer has been closed.
+
 ## Level Rules
 
 Use these level conventions consistently:

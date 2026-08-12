@@ -27,8 +27,6 @@ use crate::types::{
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-pub(super) const SCHEMA_VERSION: i64 = 8;
-
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
 };
@@ -1006,9 +1004,7 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             code_challenge_method TEXT NOT NULL,
             provider_refresh_token TEXT,
             created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL,
-            refresh_claim_id TEXT,
-            refresh_claim_expires_at INTEGER
+            expires_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS refresh_tokens (
             refresh_token_hash TEXT PRIMARY KEY,
@@ -1213,7 +1209,7 @@ mod tests {
 
     use crate::util::now_unix;
 
-    use super::{SQLITE_POOL_SIZE, SqliteStore, hash_token, sqlite_error};
+    use super::{SQLITE_POOL_SIZE, SqliteStore, hash_token, migrations, sqlite_error};
 
     #[tokio::test]
     async fn sqlite_store_enables_wal_and_busy_timeout() {
@@ -1756,6 +1752,177 @@ mod tests {
         assert!(err.to_string().contains("FOREIGN KEY"));
     }
 
+    #[test]
+    fn schema_migration_v4_stamps_only_its_own_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE registered_clients (
+               client_id TEXT PRIMARY KEY,
+               redirect_uris TEXT NOT NULL,
+               created_at INTEGER NOT NULL
+             );
+             CREATE TABLE refresh_tokens (
+               refresh_token_hash TEXT PRIMARY KEY,
+               client_id TEXT NOT NULL,
+               subject TEXT NOT NULL,
+               resource TEXT NOT NULL DEFAULT '',
+               scope TEXT NOT NULL,
+               provider_refresh_token TEXT,
+               created_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL
+             );
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+
+        migrations::migrate_v4(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let has_assertion_jtis: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assertion_jtis')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!has_assertion_jtis);
+    }
+
+    #[test]
+    fn schema_migration_v4_rejects_orphaned_refresh_tokens() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE registered_clients (
+               client_id TEXT PRIMARY KEY,
+               redirect_uris TEXT NOT NULL,
+               created_at INTEGER NOT NULL
+             );
+             CREATE TABLE refresh_tokens (
+               refresh_token_hash TEXT PRIMARY KEY,
+               client_id TEXT NOT NULL,
+               subject TEXT NOT NULL,
+               resource TEXT NOT NULL DEFAULT '',
+               scope TEXT NOT NULL,
+               provider_refresh_token TEXT,
+               created_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL
+             );
+             INSERT INTO refresh_tokens VALUES (
+               'hash', 'missing-client', 'subject', '', 'scope', NULL, 1, 2
+             );
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+
+        let error = migrations::migrate_v4(&conn).unwrap_err();
+        assert!(error.to_string().contains("foreign key"), "{error}");
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+    }
+
+    #[tokio::test]
+    async fn schema_migration_repairs_legacy_falsely_stamped_v8_database() {
+        let path = temp_db_path();
+        let store = SqliteStore::open(path.clone()).await.unwrap();
+        drop(store);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "DROP TABLE assertion_jtis;
+                 DROP TABLE google_provider_credentials;
+                 CREATE TABLE google_provider_credentials (
+                   subject TEXT PRIMARY KEY,
+                   email TEXT,
+                   refresh_token TEXT NOT NULL,
+                   generation INTEGER NOT NULL,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );
+                 ALTER TABLE refresh_tokens DROP COLUMN refresh_claim_expires_at;
+                 ALTER TABLE refresh_tokens DROP COLUMN refresh_claim_id;
+                 PRAGMA user_version = 8;",
+            )
+            .unwrap();
+        }
+        crate::util::set_restrictive_permissions(&path).unwrap();
+
+        let repaired = SqliteStore::open(path).await.unwrap();
+        let refresh_columns = table_columns(&repaired, "refresh_tokens").await;
+        let broker_columns = table_columns(&repaired, "google_provider_credentials").await;
+        assert!(refresh_columns.contains(&"refresh_claim_id".to_string()));
+        assert!(refresh_columns.contains(&"refresh_claim_expires_at".to_string()));
+        assert!(broker_columns.contains(&"client_id".to_string()));
+        assert!(broker_columns.contains(&"granted_scopes_json".to_string()));
+        let assertion_table_exists = repaired
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assertion_jtis')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert!(assertion_table_exists);
+    }
+
+    #[test]
+    fn schema_migration_repair_rejects_unrelated_v8_corruption() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE refresh_tokens (
+               refresh_token_hash TEXT PRIMARY KEY,
+               client_id TEXT NOT NULL,
+               subject TEXT NOT NULL,
+               resource TEXT NOT NULL DEFAULT '',
+               scope TEXT NOT NULL,
+               provider_refresh_token TEXT,
+               created_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL,
+               refresh_claim_id TEXT,
+               refresh_claim_expires_at INTEGER
+             );
+             CREATE TABLE google_provider_credentials (
+               subject TEXT PRIMARY KEY,
+               email TEXT,
+               client_id TEXT NOT NULL DEFAULT '',
+               granted_scopes_json TEXT NOT NULL,
+               access_token TEXT,
+               token_received_at INTEGER,
+               access_token_expires_at INTEGER,
+               issuer TEXT,
+               last_refresh_at INTEGER,
+               last_scope_upgrade_at INTEGER,
+               generation INTEGER NOT NULL,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE assertion_jtis (
+               issuer TEXT NOT NULL,
+               jti TEXT NOT NULL,
+               expires_at INTEGER NOT NULL,
+               PRIMARY KEY (issuer, jti)
+             );
+             PRAGMA user_version = 8;",
+        )
+        .unwrap();
+
+        let error = migrations::run_migrations(&conn).unwrap_err();
+        assert!(error.to_string().contains("refresh_token"), "{error}");
+    }
+
     #[tokio::test]
     async fn schema_migration_v7_promotes_the_newest_subject_provider_credential() {
         let path = temp_db_path();
@@ -1791,6 +1958,83 @@ mod tests {
         assert_eq!(credential.refresh_token, "newer-provider-refresh");
         assert_eq!(credential.generation, 1);
         assert!(credential.email.is_none());
+    }
+
+    #[tokio::test]
+    async fn schema_migration_v7_skips_ambiguous_newest_provider_credentials() {
+        for provider_tokens in [["provider-a", "provider-b"], ["provider-b", "provider-a"]] {
+            let path = temp_db_path();
+            let store = SqliteStore::open(path.clone()).await.unwrap();
+            register_test_client(&store, "client").await;
+            for (index, provider_token) in provider_tokens.into_iter().enumerate() {
+                let mut row = sample_refresh_token(
+                    "client",
+                    &format!("local-refresh-{index}-{provider_token}"),
+                );
+                row.subject = "ambiguous-subject".to_string();
+                row.provider_refresh_token = Some(provider_token.to_string());
+                row.created_at = 1234;
+                store.upsert_refresh_token(row).await.unwrap();
+            }
+            drop(store);
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(
+                    "DROP TABLE google_provider_credentials; PRAGMA user_version = 6;",
+                )
+                .unwrap();
+            }
+            crate::util::set_restrictive_permissions(&path).unwrap();
+
+            let migrated = SqliteStore::open(path).await.unwrap();
+            assert!(
+                migrated
+                    .find_google_provider_credential("ambiguous-subject")
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "ambiguous legacy credentials must force reauthorization"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fresh_and_v4_upgraded_schema_are_identical() {
+        let fresh_path = temp_db_path();
+        let fresh = SqliteStore::open(fresh_path).await.unwrap();
+        let fresh_schema = auth_schema_snapshot(&fresh).await;
+
+        let upgraded_path = temp_db_path();
+        let upgraded = SqliteStore::open(upgraded_path.clone()).await.unwrap();
+        drop(upgraded);
+        {
+            let conn = Connection::open(&upgraded_path).unwrap();
+            conn.execute_batch(
+                "DROP TABLE assertion_jtis;
+                 DROP TABLE google_provider_credentials;
+                 ALTER TABLE refresh_tokens DROP COLUMN refresh_claim_expires_at;
+                 ALTER TABLE refresh_tokens DROP COLUMN refresh_claim_id;
+                 PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        }
+        crate::util::set_restrictive_permissions(&upgraded_path).unwrap();
+        let upgraded = SqliteStore::open(upgraded_path).await.unwrap();
+        let upgraded_schema = auth_schema_snapshot(&upgraded).await;
+
+        assert_eq!(fresh_schema, upgraded_schema);
+    }
+
+    #[tokio::test]
+    async fn fresh_schema_keeps_refresh_claim_lease_only_on_refresh_tokens() {
+        let store = SqliteStore::open(temp_db_path()).await.unwrap();
+        let authorization_code_columns = table_columns(&store, "authorization_codes").await;
+        let refresh_token_columns = table_columns(&store, "refresh_tokens").await;
+
+        assert!(!authorization_code_columns.contains(&"refresh_claim_id".to_string()));
+        assert!(!authorization_code_columns.contains(&"refresh_claim_expires_at".to_string()));
+        assert!(refresh_token_columns.contains(&"refresh_claim_id".to_string()));
+        assert!(refresh_token_columns.contains(&"refresh_claim_expires_at".to_string()));
     }
 
     #[tokio::test]
@@ -1942,6 +2186,85 @@ mod tests {
 
     async fn pragma_ms(store: &SqliteStore, name: &str) -> u64 {
         pragma(store, name).await.parse().unwrap()
+    }
+
+    async fn auth_schema_snapshot(store: &SqliteStore) -> Vec<String> {
+        store
+            .with_conn(|conn| {
+                let mut table_statement = conn
+                    .prepare(
+                        "SELECT name FROM sqlite_master
+                         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                         ORDER BY name",
+                    )
+                    .map_err(sqlite_error)?;
+                let tables = table_statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(sqlite_error)?;
+                let mut snapshot = Vec::new();
+                for table in tables {
+                    snapshot.push(format!("table:{table}"));
+                    let escaped = table.replace('"', "\"\"");
+                    let mut column_statement = conn
+                        .prepare(&format!("PRAGMA table_info(\"{escaped}\")"))
+                        .map_err(sqlite_error)?;
+                    let columns = column_statement
+                        .query_map([], |row| {
+                            Ok(format!(
+                                "column:{}:{}:{}:{:?}:{}",
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, i64>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, i64>(5)?
+                            ))
+                        })
+                        .map_err(sqlite_error)?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map_err(sqlite_error)?;
+                    snapshot.extend(columns);
+                }
+                let mut index_statement = conn
+                    .prepare(
+                        "SELECT name, COALESCE(sql, '') FROM sqlite_master
+                         WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
+                         ORDER BY name",
+                    )
+                    .map_err(sqlite_error)?;
+                let indexes = index_statement
+                    .query_map([], |row| {
+                        Ok(format!(
+                            "index:{}:{}",
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?
+                        ))
+                    })
+                    .map_err(sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(sqlite_error)?;
+                snapshot.extend(indexes);
+                Ok(snapshot)
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn table_columns(store: &SqliteStore, table: &'static str) -> Vec<String> {
+        store
+            .with_conn(move |conn| {
+                let mut statement = conn
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .map_err(sqlite_error)?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .map_err(sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(sqlite_error)
+            })
+            .await
+            .unwrap()
     }
 
     fn temp_db_path() -> PathBuf {

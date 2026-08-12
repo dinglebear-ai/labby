@@ -45,6 +45,7 @@ Dependency direction:
 | `pool/relay_cancellation.rs` | Coordinates acknowledgement-aware relay-token cancellation, standard cancellation compatibility delivery, fixed relay-send deadlines, and bounded detached request-handle cleanup. |
 | `pool/relay_cancellation_tests.rs` | Focused regressions for early false acknowledgements, blocked relay sends, and stalled request-handle cleanup. |
 | `pool/notifications.rs` | Owns the normalized notification event bus plus generation-guarded `subscriptions/listen` acknowledgment snapshots, retry tasks, concurrent refresh batching, and exact-upstream tool re-listing before downstream catalog publication. |
+| `pool/oauth_invalidation.rs` | Single credential-lifecycle boundary that closes subject, relay, and task-retained peers after OAuth replacement, refresh, clear, or shared-provider revocation; returns structured invalidation counts without exposing raw subjects. |
 | `pool/notifications_tests.rs` | Focused regressions for acknowledgement visibility, stale-generation isolation, concurrent refresh deadlines, and retry after initial failure. |
 | `pool/tools.rs` | Tool queries (`healthy_tools*`, `find_tool*`, `tool_schema`, exposure rows, summaries, runtime metadata, health). `subject_scoped_tools` applies `expose_tools` from the live `UpstreamConfig`, since a subject-scoped tool list never reaches the catalog and so has no `UpstreamEntry::exposure_policy` to read. |
 | `pool/tools_call.rs` | `call_tool` + `subject_scoped_call_tool`. Owns `subject_scoped_tool_is_exposed` — the fail-closed `expose_tools` guard the OAuth execution primitives (here and the subject-scoped arm of `call_tool_relayed`) apply so a hidden tool is uncallable independently of which caller resolved the owner. |
@@ -103,6 +104,12 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 - The pool is constructed in `cli/serve.rs` and injected into `AppState` and `LabMcpServer`.
 - Circuit breaker state is internal to the pool. Surfaces call `record_failure()` and `record_success()`. Open circuits use exponential quarantine, and every failed reprobe resets the quarantine clock.
 - Every caller-attributed upstream RPC must pass through the per-upstream bulkhead. Do not bypass `timed_capability_call` or the relay generation registration when adding tool, prompt, resource, or task paths. The documented exceptions are the fan-out aggregation passes — discovery (`pool/discover.rs`) and prompt/resource listing (`pool/prompts_list.rs`, `pool/resources_list.rs`) — which run under their own discovery concurrency/timeout bounds, keep deliberate partial-result semantics, and record per-upstream failures via the circuit breaker, `*_last_error`, and classified `warn!` logs instead.
+- OAuth credential mutation is an execution barrier, not merely a token-cache
+  update. Callback replacement, refresh, clear, and shared-provider revocation
+  must route through `pool/oauth_invalidation.rs` so initialized subject peers,
+  OAuth relay peers, and task-retained peers are closed before success is
+  reported. Never log raw OAuth subjects from this boundary; emit only
+  `upstream`, a bounded `reason`, and per-cache invalidation counts.
 - **Exposure is enforced on discovery *and* on access.** `expose_tools`,
   `expose_resources`, and `expose_prompts` must each gate the listing path and
   the direct-access path (`tools/call`, `resources/read`, `prompts/get`,

@@ -550,6 +550,19 @@ impl GatewayManager {
             old_pool_present,
             "gateway reconcile"
         );
+        // Serialize publication with credential invalidation. A revocation
+        // that wins first leaves no subject-authenticated state in this cold
+        // pool; one that wins second observes this pool as current and drains
+        // it. This prevents revocation from targeting the old pool while a
+        // replacement is concurrently published behind it.
+        let oauth_barrier = self
+            .oauth_client_cache
+            .as_ref()
+            .map(|cache| cache.invalidation_barrier());
+        let _oauth_publication_guard = match oauth_barrier {
+            Some(barrier) => Some(barrier.write_owned().await),
+            None => None,
+        };
         self.runtime.swap(fresh_pool).await;
         // Keep the old pool serving throughout build/probe and publish the
         // replacement before draining. A dropped/timeout-cancelled reload can

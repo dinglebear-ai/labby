@@ -813,6 +813,7 @@ impl UpstreamPool {
         session_id: u64,
         capabilities: ClientCapabilities,
         caller_subject: Option<&str>,
+        task_authorization: super::TaskRouteAuthorization,
     ) -> Option<Result<CallToolResponse, String>> {
         let started = Instant::now();
         let tool_name = params.name.to_string();
@@ -921,9 +922,9 @@ impl UpstreamPool {
                     Some(response_size),
                 );
                 let result = self
-                    .register_task_response(&relay_key, caller_subject, result)
+                    .register_task_response(&relay_key, caller_subject, task_authorization, result)
                     .await;
-                Some(Ok(result))
+                Some(result)
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
                 log_upstream_request_error(
@@ -1319,6 +1320,9 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        // One shared reader/writer invariant covers subject, relay, task, and
+        // OAuth-client publication. Credential invalidation is the sole writer.
+        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
@@ -1978,6 +1982,7 @@ mod tests {
                 1,
                 capabilities,
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay exists");
@@ -2021,6 +2026,7 @@ mod tests {
                     1,
                     capabilities,
                     None,
+                    crate::upstream::pool::TaskRouteAuthorization::root(),
                 )
                 .await
         });
@@ -2066,6 +2072,7 @@ mod tests {
                 1,
                 capabilities,
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay exists");
@@ -2138,6 +2145,7 @@ mod tests {
                 1,
                 capabilities,
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay exists")
@@ -2355,6 +2363,7 @@ mod tests {
                 1,
                 relay_test_capabilities(),
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await;
 
@@ -2509,6 +2518,108 @@ mod tests {
             vec![("up".to_string(), 1, Some("bob".to_string()))],
             "only the targeted subject's connection should be evicted"
         );
+    }
+
+    /// Revoking one OAuth subject must close every relay peer authenticated as
+    /// that subject while preserving other subjects and unauthenticated peers.
+    /// This catches an invalidation path that only evicts `OauthClientCache` or
+    /// the ordinary subject-connection cache.
+    #[tokio::test]
+    async fn oauth_subject_invalidation_evicts_only_matching_relay_peers() {
+        let pool = UpstreamPool::new();
+        let (alice_a, _alice_a_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (alice_b, _alice_b_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (bob, _bob_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (anonymous, _anonymous_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        {
+            let mut cache = pool.relay_connections.write().await;
+            cache.insert(("up".to_string(), 1, Some("alice".to_string())), alice_a);
+            cache.insert(("up".to_string(), 2, Some("alice".to_string())), alice_b);
+            cache.insert(("up".to_string(), 3, Some("bob".to_string())), bob);
+            cache.insert(("up".to_string(), 4, None), anonymous);
+        }
+
+        let invalidated = pool
+            .invalidate_oauth_subject_sessions("up", "alice", "oauth.credentials.clear")
+            .await;
+
+        assert_eq!(invalidated.relay_connections, 2);
+        let mut remaining = pool
+            .relay_connections
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec![
+                ("up".to_string(), 3, Some("bob".to_string())),
+                ("up".to_string(), 4, None),
+            ]
+        );
+    }
+
+    /// Revoking a provider credential shared across upstream OAuth managers
+    /// must close every authenticated relay peer, while leaving raw relay
+    /// sessions alone.
+    #[tokio::test]
+    async fn shared_oauth_invalidation_preserves_independent_oauth_relay_peers() {
+        let pool = UpstreamPool::new();
+        let (alice, _alice_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (bob, _bob_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (anonymous, _anonymous_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        {
+            let mut cache = pool.relay_connections.write().await;
+            cache.insert(("first".to_string(), 1, Some("alice".to_string())), alice);
+            cache.insert(("second".to_string(), 2, Some("bob".to_string())), bob);
+            cache.insert(("raw".to_string(), 3, None), anonymous);
+        }
+
+        let invalidated = pool
+            .invalidate_oauth_upstream_sessions(
+                &["first".to_string()],
+                "oauth.google_provider.revoke",
+            )
+            .await;
+
+        assert_eq!(invalidated.relay_connections, 1);
+        let mut remaining = pool
+            .relay_connections
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        remaining.sort();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.contains(&("second".to_string(), 2, Some("bob".to_string()))));
+        assert!(remaining.contains(&("raw".to_string(), 3, None)));
+    }
+
+    #[tokio::test]
+    async fn subject_and_shared_oauth_invalidation_cannot_deadlock() {
+        let pool = UpstreamPool::new();
+        let subject_pool = pool.clone();
+        let shared_pool = pool.clone();
+        let shared_upstreams = ["first".to_string()];
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+            tokio::join!(
+                subject_pool.invalidate_oauth_subject_sessions(
+                    "first",
+                    "alice",
+                    "oauth.credentials.clear",
+                ),
+                shared_pool.invalidate_oauth_upstream_sessions(
+                    &shared_upstreams,
+                    "oauth.google_provider.revoke",
+                ),
+            )
+        })
+        .await
+        .expect("credential invalidations must share one deadlock-free barrier");
     }
 
     /// `sweep_relay_connections` evicts entries past the idle TTL while keeping
@@ -2672,6 +2783,7 @@ mod tests {
                 1,
                 relay_test_capabilities(),
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await;
         assert!(
@@ -2803,6 +2915,7 @@ mod tests {
                 1,
                 relay_test_capabilities(),
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay connection is present")

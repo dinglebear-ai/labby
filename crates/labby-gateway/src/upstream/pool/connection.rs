@@ -304,6 +304,11 @@ impl UpstreamPool {
     )> {
         use super::connect::connect_upstream_with_client;
 
+        // Held through cache publication so credential mutation cannot evict
+        // the client cache and then race an older authenticated connection
+        // into the live pool.
+        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
+
         let key = (config.name.clone(), subject.to_string());
 
         // Fast path: check cache with inline TTL eviction (write lock allows
@@ -604,6 +609,69 @@ mod tests {
         // Now verify that the cache already has the entry and evict_subject works.
         pool.evict_subject_connections_for("alpha").await;
         assert_eq!(pool.subject_connections.read().await.len(), 0);
+    }
+
+    /// Clearing credentials must remove the initialized subject-scoped MCP
+    /// peer, not only the token-producing client cache. Otherwise the old peer
+    /// can keep executing until its idle TTL expires.
+    #[tokio::test]
+    async fn oauth_subject_invalidation_evicts_matching_subject_connection() {
+        use std::time::Instant;
+
+        let pool = static_catalog_pool("alpha").await;
+        let alpha_conn = pool
+            .connections
+            .write()
+            .await
+            .remove("alpha")
+            .expect("alpha connection");
+        let peer = alpha_conn.peer.clone();
+        pool.subject_connections.write().await.insert(
+            ("alpha".to_string(), "alice".to_string()),
+            SubjectScopedConnection {
+                _connection: alpha_conn,
+                peer,
+                tools: vec![],
+                last_used: Instant::now(),
+            },
+        );
+
+        let invalidated = pool
+            .invalidate_oauth_subject_sessions("alpha", "alice", "oauth.credentials.clear")
+            .await;
+
+        assert_eq!(invalidated.subject_connections, 1);
+        assert!(pool.subject_connections.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oauth_invalidation_evicts_generic_oauth_peer_but_preserves_raw_peer() {
+        let oauth_pool = static_catalog_pool("oauth").await;
+        oauth_pool
+            .generic_oauth_subjects
+            .write()
+            .await
+            .insert("oauth".to_string(), "alice".to_string());
+        let raw_pool = static_catalog_pool("raw").await;
+        let raw_connection = raw_pool
+            .connections
+            .write()
+            .await
+            .remove("raw")
+            .expect("raw connection");
+        oauth_pool
+            .connections
+            .write()
+            .await
+            .insert("raw".to_string(), raw_connection);
+
+        let invalidated = oauth_pool
+            .invalidate_oauth_upstream_sessions(&["oauth".to_string()], "oauth.provider.revoke")
+            .await;
+
+        assert_eq!(invalidated.generic_connections, 1);
+        assert!(!oauth_pool.connections.read().await.contains_key("oauth"));
+        assert!(oauth_pool.connections.read().await.contains_key("raw"));
     }
 
     /// P-C1: `evict_subject_connections_for` removes only entries keyed to the

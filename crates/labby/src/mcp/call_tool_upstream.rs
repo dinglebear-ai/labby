@@ -469,6 +469,7 @@ impl LabMcpServer {
                             self.relay_session_id,
                             capabilities,
                             self.request_subject(context),
+                            self.route_scope.task_authorization(),
                         )
                         .await
                         .map(|result| result.map_err(UpstreamCallFailure::Relayed))
@@ -729,6 +730,7 @@ impl LabMcpServer {
                                 self.relay_session_id,
                                 capabilities,
                                 self.request_subject(context),
+                                self.route_scope.task_authorization(),
                             )
                             .await
                         {

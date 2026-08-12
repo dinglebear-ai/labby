@@ -8,6 +8,8 @@ use labby_auth::upstream::types::{BeginAuthorization, OauthError};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
 
+use crate::upstream::pool::OAuthSessionInvalidation;
+
 pub(crate) mod probe;
 #[cfg(test)]
 mod tests;
@@ -47,6 +49,22 @@ pub(super) fn should_use_dynamic_registration(
 }
 
 impl GatewayManager {
+    fn google_provider_upstream_names(
+        config: &labby_runtime::gateway_config::GatewayConfig,
+    ) -> Vec<String> {
+        config
+            .upstream
+            .iter()
+            .filter(|upstream| {
+                upstream
+                    .oauth
+                    .as_ref()
+                    .is_some_and(|oauth| oauth.credential.is_google_provider())
+            })
+            .map(|upstream| upstream.name.clone())
+            .collect()
+    }
+
     pub async fn oauth_upstream_configs(&self) -> Vec<UpstreamConfig> {
         self.config
             .read()
@@ -93,10 +111,91 @@ impl GatewayManager {
         self.oauth_redirect_uri.as_deref().map(|s| s.to_string())
     }
 
-    pub fn evict_subject_client(&self, upstream: &str, subject: &str) {
-        if let Some(cache) = &self.oauth_client_cache {
-            cache.evict_subject(upstream, subject);
-        }
+    async fn invalidate_subject_oauth_runtime(
+        &self,
+        upstream: &str,
+        subject: &str,
+        reason: &'static str,
+    ) -> OAuthSessionInvalidation {
+        let oauth_barrier = self
+            .oauth_client_cache
+            .as_ref()
+            .map(|cache| cache.invalidation_barrier());
+        let _guard = match oauth_barrier {
+            Some(barrier) => Some(barrier.write_owned().await),
+            None => None,
+        };
+        let invalidated = match self.current_pool_sync() {
+            Some(pool) => {
+                pool.invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
+                    .await
+            }
+            None => {
+                if let Some(cache) = &self.oauth_client_cache {
+                    cache.evict_subject(upstream, subject);
+                }
+                OAuthSessionInvalidation::default()
+            }
+        };
+        tracing::info!(
+            service = "upstream_oauth",
+            action = "session.invalidate",
+            upstream,
+            reason,
+            generic_connections = invalidated.generic_connections,
+            subject_connections = invalidated.subject_connections,
+            relay_connections = invalidated.relay_connections,
+            task_routes = invalidated.task_routes,
+            invalidated_total = invalidated.total(),
+            "upstream OAuth subject runtime invalidated"
+        );
+        invalidated
+    }
+
+    async fn invalidate_shared_oauth_runtime(
+        &self,
+        upstream: &str,
+        reason: &'static str,
+    ) -> OAuthSessionInvalidation {
+        let config = self.config.read().await;
+        let shared_upstreams = Self::google_provider_upstream_names(&config);
+        drop(config);
+        let oauth_barrier = self
+            .oauth_client_cache
+            .as_ref()
+            .map(|cache| cache.invalidation_barrier());
+        let _guard = match oauth_barrier {
+            Some(barrier) => Some(barrier.write_owned().await),
+            None => None,
+        };
+        let invalidated = match self.current_pool_sync() {
+            Some(pool) => {
+                pool.invalidate_oauth_upstream_sessions_guarded(&shared_upstreams, reason)
+                    .await
+            }
+            None => {
+                if let Some(cache) = &self.oauth_client_cache {
+                    for name in &shared_upstreams {
+                        cache.evict_upstream(name);
+                    }
+                }
+                OAuthSessionInvalidation::default()
+            }
+        };
+        tracing::info!(
+            service = "upstream_oauth",
+            action = "session.invalidate",
+            upstream,
+            reason,
+            affected_upstreams = shared_upstreams.len(),
+            generic_connections = invalidated.generic_connections,
+            subject_connections = invalidated.subject_connections,
+            relay_connections = invalidated.relay_connections,
+            task_routes = invalidated.task_routes,
+            invalidated_total = invalidated.total(),
+            "shared upstream OAuth runtime invalidated"
+        );
+        invalidated
     }
 
     /// Look up the `UpstreamOauthManager` for `upstream` and return it, or
@@ -190,18 +289,11 @@ impl GatewayManager {
         );
 
         if manager.credential_source_label() == "google_provider" {
-            if let Some(cache) = &self.oauth_client_cache {
-                cache.evict_all();
-            }
-            tracing::info!(
-                service = "upstream_oauth",
-                action = "callback",
-                upstream,
-                credential_source = "google_provider",
-                "upstream oauth callback: evicted all cached clients after shared credential update"
-            );
+            self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace")
+                .await;
         } else {
-            self.evict_subject_client(upstream, subject);
+            self.invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.replace")
+                .await;
         }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
@@ -292,7 +384,12 @@ impl GatewayManager {
             match manager.refresh_auth_client(subject).await {
                 Ok(()) => {
                     refreshed = true;
-                    self.evict_subject_client(upstream, subject);
+                    self.invalidate_subject_oauth_runtime(
+                        upstream,
+                        subject,
+                        "oauth.credentials.refresh",
+                    )
+                    .await;
                     // Fire-and-forget: rediscovery is a full reload that can
                     // outlive this request future's deadline; the detached
                     // task applies (and logs) on its own.
@@ -470,9 +567,9 @@ impl GatewayManager {
                 );
                 tool_error_from_oauth(error)
             })?;
-        if let Some(cache) = &self.oauth_client_cache {
-            cache.evict_all();
-        }
+        let sessions = self
+            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke")
+            .await;
         tracing::warn!(
             service = "upstream_oauth",
             action = "google_revoke",
@@ -480,6 +577,11 @@ impl GatewayManager {
             invalidated = invalidation.invalidated,
             revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
             revoked_authorization_codes = invalidation.revoked_authorization_codes,
+            subject_connections = sessions.subject_connections,
+            generic_connections = sessions.generic_connections,
+            relay_connections = sessions.relay_connections,
+            task_routes = sessions.task_routes,
+            invalidated_sessions = sessions.total(),
             elapsed_ms = started.elapsed().as_millis(),
             "Google provider credential revoked and OAuth client cache evicted"
         );
@@ -506,11 +608,18 @@ impl GatewayManager {
             tool_error_from_oauth(e)
         })?;
 
-        self.evict_subject_client(upstream, subject);
+        let sessions = self
+            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear")
+            .await;
         tracing::info!(
             service = "upstream_oauth",
             action = "clear",
             upstream,
+            subject_connections = sessions.subject_connections,
+            generic_connections = sessions.generic_connections,
+            relay_connections = sessions.relay_connections,
+            task_routes = sessions.task_routes,
+            invalidated_sessions = sessions.total(),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth clear: credentials cleared and client cache evicted"
         );

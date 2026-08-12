@@ -45,6 +45,7 @@ mod logging;
 mod notifications;
 #[cfg(test)]
 mod notifications_tests;
+mod oauth_invalidation;
 mod probe;
 mod prompts_exposure;
 #[cfg(test)]
@@ -85,7 +86,9 @@ pub(crate) use helpers::{
     upstream_discovery_concurrency,
 };
 pub use notifications::UpstreamNotificationEvent;
+pub use oauth_invalidation::OAuthSessionInvalidation;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
+pub use tasks::TaskRouteAuthorization;
 pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
@@ -118,6 +121,9 @@ pub struct UpstreamPool {
     /// Live client connections, keyed by upstream name.
     /// Each is an `Arc<Peer<RoleClient>>` that can `call_tool` / `list_tools`.
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
+    /// OAuth subject provenance for entries in the generic connection map.
+    /// Absence means the generic peer was connected without upstream OAuth.
+    generic_oauth_subjects: Arc<RwLock<HashMap<String, String>>>,
     /// Names of upstreams that have `proxy_resources=true`.
     resource_upstreams: Arc<RwLock<Vec<String>>>,
     /// Normalized notification events produced by upstream subscription streams.
@@ -135,6 +141,9 @@ pub struct UpstreamPool {
     /// Per-upstream OAuth managers, keyed by upstream name.
     /// `None` when the server was started without OAuth support.
     oauth_client_cache: Option<OauthClientCache>,
+    /// Shared with `OauthClientCache`: readers cover the entire authenticated
+    /// connect-and-publish path; credential mutation takes the sole writer.
+    oauth_invalidation_barrier: Arc<RwLock<()>>,
     /// Background reprobe task cancellation tokens, keyed by upstream name.
     probe_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
@@ -363,6 +372,7 @@ impl UpstreamPool {
         Self {
             catalog: Arc::new(RwLock::new(HashMap::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
+            generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
@@ -371,6 +381,7 @@ impl UpstreamPool {
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),
             subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             oauth_client_cache: None,
+            oauth_invalidation_barrier: Arc::new(RwLock::new(())),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 upstream_discovery_concurrency(None),
@@ -410,6 +421,7 @@ impl UpstreamPool {
     /// Must be called before `discover_all` for OAuth upstreams to connect successfully.
     #[must_use]
     pub fn with_oauth_client_cache(mut self, cache: OauthClientCache) -> Self {
+        self.oauth_invalidation_barrier = cache.invalidation_barrier();
         self.oauth_client_cache = Some(cache);
         self
     }
