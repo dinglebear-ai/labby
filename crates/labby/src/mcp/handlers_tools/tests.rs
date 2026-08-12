@@ -4788,3 +4788,51 @@ async fn builtin_unknown_action_error_is_exempt_from_success_schema() {
         "error envelope carries the agent error contract, not the success shape"
     );
 }
+
+/// FR-2a (issue #210, lab-41e7m.5): non-admin denial at the DISPATCH path.
+/// The consolidated availability gate is audience-free; the admin check lives
+/// at this call site. A non-admin caller's `add_server` call must fall
+/// through to normal routing (unknown tool here — no upstream by that name),
+/// never into the admin app handler; an admin caller is handled.
+#[tokio::test]
+async fn call_tool_add_server_denies_non_admin_scope_at_dispatch() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let denied = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(ADD_SERVER_TOOL_NAME),
+        scoped_context(running.peer().clone(), &["lab:read"]),
+    ))
+    .await
+    .expect("call result");
+    assert_eq!(
+        denied.is_error,
+        Some(true),
+        "non-admin call must fall through to normal routing (which errors here), not the admin app"
+    );
+    let envelope = denied.structured_content.as_ref().expect("error envelope");
+    assert_eq!(envelope["ok"], Value::Bool(false));
+
+    let handled = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(ADD_SERVER_TOOL_NAME),
+        scoped_context(running.peer().clone(), &["lab:admin"]),
+    ))
+    .await
+    .expect("admin call result");
+    let structured = handled
+        .structured_content
+        .as_ref()
+        .expect("admin add_server dispatch formats an envelope");
+    assert_eq!(
+        structured["service"],
+        Value::String(ADD_SERVER_TOOL_NAME.into())
+    );
+}

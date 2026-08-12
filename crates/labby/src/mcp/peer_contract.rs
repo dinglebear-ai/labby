@@ -32,6 +32,103 @@ use crate::mcp::catalog::{
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
 };
 
+// ── FR-2a (issue #210, lab-41e7m.5): single audience-free authorization gates ──
+//
+// One implementation of the MCP visibility/authorization predicates,
+// consumed by both `LabMcpServer` (catalog.rs, live-request path) and
+// `PeerContract` (stored-subscription path). Two hard constraints, from the
+// 2026-08-05 engineering review:
+//
+// - AUDIENCE-FREE. `audience.admin_apps_visible` (or the request's
+//   `admin_app_resources_visible`) must stay at the call sites: folding it in
+//   here would silently grant admin apps to unprivileged callers, because
+//   `catalog.rs` supplies `PeerCatalogAudience::default()` with
+//   `admin_apps_visible: true`.
+// - FREE FUNCTIONS over borrowed fields, not methods reached via
+//   `self.peer_contract()` — constructing a `PeerContract` clones a deep
+//   `McpRouteScope` on every builtin dispatch.
+
+/// Whether `service` is exposed on the MCP surface for this route scope.
+#[cfg(feature = "gateway")]
+pub(crate) async fn mcp_service_visible(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    service: &str,
+) -> bool {
+    if !route_scope.allows_service(service) {
+        return false;
+    }
+    match gateway_manager {
+        Some(manager) => manager.surface_enabled_for_service(service, "mcp").await,
+        None => true,
+    }
+}
+
+/// Whether `service.action` is allowed on the MCP surface.
+#[cfg(feature = "gateway")]
+pub(crate) async fn mcp_action_allowed(
+    gateway_manager: Option<&GatewayManager>,
+    service: &str,
+    action: &str,
+) -> bool {
+    match gateway_manager {
+        Some(manager) => {
+            manager
+                .mcp_action_allowed_for_service(service, action)
+                .await
+        }
+        None => true,
+    }
+}
+
+/// Whether the current route can safely advertise and execute Add Server.
+#[cfg(feature = "gateway")]
+pub(crate) async fn add_server_app_available(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    registry: &ToolRegistry,
+) -> bool {
+    admin_gateway_app_available(
+        route_scope,
+        gateway_manager,
+        registry,
+        &["gateway.test", "gateway.add"],
+    )
+    .await
+}
+
+/// Whether the current route can safely advertise live gateway status.
+#[cfg(feature = "gateway")]
+pub(crate) async fn gateway_status_app_available(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    registry: &ToolRegistry,
+) -> bool {
+    admin_gateway_app_available(route_scope, gateway_manager, registry, &["gateway.list"]).await
+}
+
+#[cfg(feature = "gateway")]
+async fn admin_gateway_app_available(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    registry: &ToolRegistry,
+    required_actions: &[&str],
+) -> bool {
+    if !(route_scope.allows_service("gateway")
+        && gateway_manager.is_some()
+        && registry.service("gateway").is_some()
+        && mcp_service_visible(route_scope, gateway_manager, "gateway").await)
+    {
+        return false;
+    }
+    for action in required_actions {
+        if !mcp_action_allowed(gateway_manager, "gateway", action).await {
+            return false;
+        }
+    }
+    true
+}
+
 /// Request-derived inputs that affect the descriptor set for one peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeerCatalogAudience {
@@ -99,47 +196,34 @@ impl PeerContract {
     }
 
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
-        if !self.route_scope.allows_service(service) {
-            return false;
-        }
         #[cfg(feature = "gateway")]
-        match &self.gateway_manager {
-            Some(manager) => manager.surface_enabled_for_service(service, "mcp").await,
-            None => true,
+        {
+            mcp_service_visible(&self.route_scope, self.gateway_manager.as_deref(), service).await
         }
         #[cfg(not(feature = "gateway"))]
-        true
-    }
-
-    #[cfg(feature = "gateway")]
-    async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
-        match &self.gateway_manager {
-            Some(manager) => {
-                manager
-                    .mcp_action_allowed_for_service(service, action)
-                    .await
-            }
-            None => true,
+        {
+            self.route_scope.allows_service(service)
         }
     }
 
     #[cfg(feature = "gateway")]
     async fn add_server_app_available(&self) -> bool {
-        self.route_scope.allows_service("gateway")
-            && self.gateway_manager.is_some()
-            && self.registry.service("gateway").is_some()
-            && self.service_visible_on_mcp("gateway").await
-            && self.action_allowed_on_mcp("gateway", "gateway.test").await
-            && self.action_allowed_on_mcp("gateway", "gateway.add").await
+        add_server_app_available(
+            &self.route_scope,
+            self.gateway_manager.as_deref(),
+            &self.registry,
+        )
+        .await
     }
 
     #[cfg(feature = "gateway")]
     async fn gateway_status_app_available(&self) -> bool {
-        self.route_scope.allows_service("gateway")
-            && self.gateway_manager.is_some()
-            && self.registry.service("gateway").is_some()
-            && self.service_visible_on_mcp("gateway").await
-            && self.action_allowed_on_mcp("gateway", "gateway.list").await
+        gateway_status_app_available(
+            &self.route_scope,
+            self.gateway_manager.as_deref(),
+            &self.registry,
+        )
+        .await
     }
 
     /// Enabled upstream namespaces and normalized hints rendered in Code

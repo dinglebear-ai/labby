@@ -25,7 +25,7 @@ decisions, and findings.
 | `lab-41e7m.2` | Lock Code Mode unwrap + truncation + success-path proxy fidelity | **implemented** (this commit) | — |
 | `lab-41e7m.3` | Catalog output-shape coverage | **implemented** (this commit) | ~~`lab-41e7m.7`~~ done |
 | `lab-41e7m.4` | Docs, generated artifacts, conformance | open | .1, .2, .3 |
-| `lab-41e7m.5` | **FR-2a** — authorization-gate consolidation (moved OUT of `.1`) | open (filed 2026-08-11) | — |
+| `lab-41e7m.5` | **FR-2a** — authorization-gate consolidation (moved OUT of `.1`) | **implemented** (this commit) | — |
 | `lab-41e7m.6` | FR-9a — sanitize upstream metadata on `tools/list` (HIGH) | **implemented** (this commit) | — |
 | `lab-41e7m.7` | FR-9b — bound `$ref` expansion (HIGH, blocks `.3`) | **implemented** (this commit) | — |
 | **to file** | FU-1..FU-8 follow-ups (SPEC §6.2) | — | — |
@@ -46,7 +46,7 @@ places, which is the exact drift this issue exists to eliminate).
 |---|---|---|---|
 | FR-1 | Envelope `outputSchema` on builtins (Raw mode only) | .1 | ☑ 2026-08-11 |
 | FR-2 | One builder — extend `PermanentToolRegistry` | .1 | ☑ 2026-08-11 |
-| FR-2a | Consolidate duplicated authorization gates | `lab-41e7m.5` | ☐ |
+| FR-2a | Consolidate duplicated authorization gates | `lab-41e7m.5` | ☑ 2026-08-11 |
 | FR-3 | Audit before attachment — shape **and** presence | .1 | ☑ §3 below |
 | FR-4 | Unwrap precedence documented + tested | .2 | ☑ 2026-08-11 |
 | FR-5 | Structure survives truncation — **both** markers | .2 | ☑ 2026-08-11 |
