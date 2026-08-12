@@ -7,6 +7,8 @@ use crate::types::RegisteredClient;
 use crate::util::now_unix;
 
 const MAX_CACHE_ENTRIES: usize = 1_024;
+const MAX_REMOTE_FETCH_LOCKS: usize = 2_048;
+const NEGATIVE_CACHE_SECS: i64 = 30;
 
 #[derive(Debug, Deserialize)]
 struct ClientMetadataDocument {
@@ -42,27 +44,26 @@ pub async fn resolve_client(
     let Some(url) = metadata_document_url(client_id) else {
         return state.store.find_client(client_id).await;
     };
-    let now = now_unix();
-    let lock_key = format!("cimd:{client_id}");
-    let fetch_lock = state
-        .remote_fetch_locks
-        .entry(lock_key.clone())
-        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
-    let _guard = fetch_lock.lock().await;
-    if let Some(entry) = state.cimd_cache.get(client_id)
-        && entry.value().1 > now
-    {
-        return Ok(Some(entry.value().0.clone()));
-    }
-    if let Some(entry) = state.cimd_cache.get(client_id)
-        && entry.value().1 > now_unix()
-    {
-        let client = entry.value().0.clone();
-        drop(entry);
-        drop(_guard);
-        state.remote_fetch_locks.remove(&lock_key);
+    if let Some(client) = cached_client(state, client_id) {
         return Ok(Some(client));
+    }
+    if negative_cache_hit(state, client_id) {
+        return Err(AuthError::Validation(
+            "client metadata document is temporarily unavailable".to_string(),
+        ));
+    }
+    let lock_key = format!("cimd:{client_id}");
+    let fetch_lock = acquire_remote_fetch_lock(state, &lock_key)?;
+    let _guard = fetch_lock.lock().await;
+    // Re-read time and both caches after entering the single-flight section:
+    // another waiter may have populated either while this task was parked.
+    if let Some(client) = cached_client(state, client_id) {
+        return Ok(Some(client));
+    }
+    if negative_cache_hit(state, client_id) {
+        return Err(AuthError::Validation(
+            "client metadata document is temporarily unavailable".to_string(),
+        ));
     }
     let _permit = state
         .remote_fetch_permits
@@ -75,17 +76,25 @@ pub async fn resolve_client(
         {
             Ok(value) => value,
             Err(error) => {
-                drop(_guard);
-                state.remote_fetch_locks.remove(&lock_key);
+                record_negative_cache(state, client_id);
                 return Err(error);
             }
         };
-    let client = validate_document(
+    let client = match validate_document(
         client_id,
         document,
         &state.config.allowed_client_redirect_uris,
-    )?;
+    ) {
+        Ok(client) => client,
+        Err(error) => {
+            record_negative_cache(state, client_id);
+            return Err(error);
+        }
+    };
     if cache_policy.cacheable {
+        let _maintenance = state.cimd_cache_maintenance.lock().map_err(|_| {
+            AuthError::Server("client metadata cache maintenance poisoned".to_string())
+        })?;
         state
             .cimd_cache
             .retain(|_, (_, expires_at)| *expires_at > now_unix());
@@ -105,10 +114,82 @@ pub async fn resolve_client(
                 now_unix().saturating_add(cache_policy.max_age_secs),
             ),
         );
+        state.cimd_negative_cache.remove(client_id);
     }
-    drop(_guard);
-    state.remote_fetch_locks.remove(&lock_key);
     Ok(Some(client))
+}
+
+fn cached_client(state: &AuthState, client_id: &str) -> Option<RegisteredClient> {
+    let now = now_unix();
+    state
+        .cimd_cache
+        .get(client_id)
+        .and_then(|entry| (entry.value().1 > now).then(|| entry.value().0.clone()))
+}
+
+fn negative_cache_hit(state: &AuthState, client_id: &str) -> bool {
+    let now = now_unix();
+    state
+        .cimd_negative_cache
+        .get(client_id)
+        .is_some_and(|entry| *entry.value() > now)
+}
+
+fn record_negative_cache(state: &AuthState, client_id: &str) {
+    let Ok(_maintenance) = state.cimd_cache_maintenance.lock() else {
+        warn!(
+            kind = "internal_error",
+            "client metadata negative cache maintenance lock poisoned"
+        );
+        return;
+    };
+    state
+        .cimd_negative_cache
+        .retain(|_, expires_at| *expires_at > now_unix());
+    while state.cimd_negative_cache.len() >= MAX_CACHE_ENTRIES {
+        let oldest = state
+            .cimd_negative_cache
+            .iter()
+            .min_by_key(|entry| *entry.value())
+            .map(|entry| entry.key().clone());
+        let Some(oldest) = oldest else { break };
+        state.cimd_negative_cache.remove(&oldest);
+    }
+    state.cimd_negative_cache.insert(
+        client_id.to_string(),
+        now_unix().saturating_add(NEGATIVE_CACHE_SECS),
+    );
+}
+
+fn acquire_remote_fetch_lock(
+    state: &AuthState,
+    lock_key: &str,
+) -> Result<std::sync::Arc<tokio::sync::Mutex<()>>, AuthError> {
+    let _maintenance = state
+        .remote_fetch_lock_maintenance
+        .lock()
+        .map_err(|_| AuthError::Server("remote fetch lock registry poisoned".to_string()))?;
+    if let Some(existing) = state.remote_fetch_locks.get(lock_key) {
+        return Ok(existing.value().clone());
+    }
+    while state.remote_fetch_locks.len() >= MAX_REMOTE_FETCH_LOCKS {
+        let idle = state
+            .remote_fetch_locks
+            .iter()
+            .find(|entry| std::sync::Arc::strong_count(entry.value()) == 1)
+            .map(|entry| entry.key().clone());
+        let Some(idle) = idle else {
+            return Err(AuthError::Server(
+                "remote metadata fetch capacity exhausted".to_string(),
+            ));
+        };
+        state.remote_fetch_locks.remove(&idle);
+    }
+    let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    state
+        .remote_fetch_locks
+        .insert(lock_key.to_string(), lock.clone());
+    Ok(lock)
 }
 
 /// Whether a client identifier names a Client ID Metadata Document (CIMD).
@@ -249,7 +330,13 @@ fn validate_jwks_uri(uri: &str) -> Result<String, AuthError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMetadataDocument, resolve_client, validate_document};
+    use std::sync::Arc;
+
+    use super::{
+        ClientMetadataDocument, MAX_CACHE_ENTRIES, MAX_REMOTE_FETCH_LOCKS,
+        acquire_remote_fetch_lock, negative_cache_hit, record_negative_cache, resolve_client,
+        validate_document,
+    };
     use crate::authorize::tests::test_auth_state;
     use crate::types::RegisteredClient;
     use crate::util::now_unix;
@@ -546,5 +633,85 @@ mod tests {
         let resolved = resolve_client(&state, client_id).await.unwrap().unwrap();
         assert_eq!(resolved.token_endpoint_auth_method, "private_key_jwt");
         assert!(resolved.jwks.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_does_not_split_the_single_flight_generation() {
+        let state = test_auth_state().await;
+        let key = "cimd:https://client.example/client.json";
+        let lock = acquire_remote_fetch_lock(&state, key).unwrap();
+        let guard = lock.lock().await;
+
+        let waiter_state = state.clone();
+        let waiter = tokio::spawn(async move {
+            let waiter_lock = acquire_remote_fetch_lock(&waiter_state, key).unwrap();
+            let _guard = waiter_lock.lock().await;
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        drop(guard);
+
+        let next = acquire_remote_fetch_lock(&state, key).unwrap();
+        assert!(Arc::ptr_eq(&lock, &next));
+        assert_eq!(state.remote_fetch_locks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn waiter_observes_cache_filled_while_it_was_waiting() {
+        let state = test_auth_state().await;
+        let client_id = "https://client.example/client.json";
+        let lock_key = format!("cimd:{client_id}");
+        let lock = acquire_remote_fetch_lock(&state, &lock_key).unwrap();
+        let guard = lock.lock().await;
+
+        let waiter_state = state.clone();
+        let waiter = tokio::spawn(async move { resolve_client(&waiter_state, client_id).await });
+        tokio::task::yield_now().await;
+        state.cimd_cache.insert(
+            client_id.to_string(),
+            (
+                RegisteredClient {
+                    client_id: client_id.to_string(),
+                    redirect_uris: vec!["http://127.0.0.1:3000/callback".to_string()],
+                    created_at: now_unix(),
+                    token_endpoint_auth_method: "none".to_string(),
+                    token_endpoint_auth_methods: vec!["none".to_string()],
+                    jwks: None,
+                    jwks_uri: None,
+                },
+                now_unix() + 60,
+            ),
+        );
+        drop(guard);
+
+        let resolved = waiter.await.unwrap().unwrap().unwrap();
+        assert_eq!(resolved.client_id, client_id);
+    }
+
+    #[tokio::test]
+    async fn attacker_controlled_single_flight_keys_stay_bounded() {
+        let state = test_auth_state().await;
+        for index in 0..=MAX_REMOTE_FETCH_LOCKS {
+            let key = format!("cimd:https://client-{index}.example/client.json");
+            drop(acquire_remote_fetch_lock(&state, &key).unwrap());
+        }
+        assert_eq!(state.remote_fetch_locks.len(), MAX_REMOTE_FETCH_LOCKS);
+    }
+
+    #[tokio::test]
+    async fn negative_cache_is_short_lived_and_bounded() {
+        let state = test_auth_state().await;
+        for index in 0..=MAX_CACHE_ENTRIES {
+            record_negative_cache(
+                &state,
+                &format!("https://client-{index}.example/client.json"),
+            );
+        }
+        assert_eq!(state.cimd_negative_cache.len(), MAX_CACHE_ENTRIES);
+        assert!(negative_cache_hit(
+            &state,
+            "https://client-1024.example/client.json"
+        ));
     }
 }

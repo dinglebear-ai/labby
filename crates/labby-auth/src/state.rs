@@ -186,12 +186,21 @@ pub struct AuthState {
     token_limiter: PerIpRateLimiter,
     #[cfg(feature = "http-axum")]
     pub(crate) cimd_cache: Arc<DashMap<String, (RegisteredClient, i64)>>,
+    /// Short-lived failures for untrusted CIMD URLs. This prevents a caller
+    /// from repeatedly turning the same invalid document into outbound I/O.
+    #[cfg(feature = "http-axum")]
+    pub(crate) cimd_negative_cache: Arc<DashMap<String, i64>>,
+    #[cfg(feature = "http-axum")]
+    pub(crate) cimd_cache_maintenance: Arc<std::sync::Mutex<()>>,
     #[cfg(feature = "http-axum")]
     pub(crate) jwks_cache: Arc<DashMap<String, (jsonwebtoken::jwk::JwkSet, i64)>>,
     /// Per-document single-flight locks. Never hold one global lock across
     /// remote I/O: an unrelated slow metadata endpoint must not block OAuth.
     #[cfg(feature = "http-axum")]
     pub(crate) remote_fetch_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Serializes bounded maintenance of the attacker-keyed single-flight map.
+    #[cfg(feature = "http-axum")]
+    pub(crate) remote_fetch_lock_maintenance: Arc<std::sync::Mutex<()>>,
     /// Global concurrency cap for untrusted remote metadata fetches. This is a
     /// semaphore, not a mutex: unrelated documents may still fetch in parallel.
     #[cfg(feature = "http-axum")]
@@ -262,9 +271,15 @@ impl AuthState {
             #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
+            cimd_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            cimd_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
             remote_fetch_locks: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_fetch_lock_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
         })
@@ -424,9 +439,15 @@ impl AuthState {
             #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
+            cimd_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            cimd_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
             remote_fetch_locks: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_fetch_lock_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
         }

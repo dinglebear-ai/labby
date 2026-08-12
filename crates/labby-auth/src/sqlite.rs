@@ -253,7 +253,13 @@ impl SqliteStore {
         .await
     }
 
-    pub async fn redeem_auth_code(&self, code: &str) -> Result<AuthorizationCodeRow, AuthError> {
+    /// Test-only primitive for exercising one-time and expiry semantics without
+    /// bypassing verified redemption in production code.
+    #[cfg(test)]
+    pub(crate) async fn redeem_auth_code(
+        &self,
+        code: &str,
+    ) -> Result<AuthorizationCodeRow, AuthError> {
         let code = code.to_string();
         let now = now_unix();
         self.with_conn(move |conn| {
@@ -270,6 +276,59 @@ impl SqliteStore {
             .map_err(|error| match error {
                 rusqlite::Error::QueryReturnedNoRows => AuthError::InvalidGrant(
                     "authorization code is missing, expired, or already redeemed".to_string(),
+                ),
+                other => sqlite_error(other),
+            })
+        })
+        .await
+    }
+
+    /// Atomically verify every grant-bound authorization-code attribute and
+    /// consume the code only when all of them match.
+    pub async fn redeem_verified_auth_code(
+        &self,
+        code: &str,
+        client_id: &str,
+        redirect_uri: &str,
+        resource: Option<&str>,
+        code_challenge: &str,
+        code_challenge_method: &str,
+    ) -> Result<AuthorizationCodeRow, AuthError> {
+        let code = code.to_string();
+        let client_id = client_id.to_string();
+        let redirect_uri = redirect_uri.to_string();
+        let resource = resource.map(str::to_string);
+        let code_challenge = code_challenge.to_string();
+        let code_challenge_method = code_challenge_method.to_string();
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "DELETE FROM authorization_codes
+                 WHERE code = ?1
+                   AND expires_at > ?2
+                   AND client_id = ?3
+                   AND redirect_uri = ?4
+                   AND (?5 IS NULL OR resource = ?5)
+                   AND code_challenge = ?6
+                   AND code_challenge_method = ?7
+                 RETURNING code, client_id, subject, redirect_uri, scope,
+                           code_challenge, code_challenge_method, provider_refresh_token,
+                           created_at, expires_at, resource",
+                params![
+                    code,
+                    now,
+                    client_id,
+                    redirect_uri,
+                    resource,
+                    code_challenge,
+                    code_challenge_method,
+                ],
+                row_to_authorization_code,
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => AuthError::InvalidGrant(
+                    "authorization code is missing, expired, already redeemed, or does not match the grant"
+                        .to_string(),
                 ),
                 other => sqlite_error(other),
             })
@@ -1034,6 +1093,11 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         );
         CREATE INDEX IF NOT EXISTS idx_google_provider_credentials_email
             ON google_provider_credentials(email COLLATE NOCASE);
+        CREATE TABLE IF NOT EXISTS google_provider_revocations (
+            subject TEXT PRIMARY KEY,
+            epoch INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS assertion_jtis (
             issuer TEXT NOT NULL,
             jti TEXT NOT NULL,
@@ -1235,6 +1299,77 @@ mod tests {
         assert!(a.is_ok() ^ b.is_ok(), "a={a:?} b={b:?}");
     }
 
+    #[tokio::test]
+    async fn sqlite_store_does_not_consume_auth_code_when_grant_verification_fails() {
+        let store = temp_store().await;
+        store.insert_auth_code(sample_code()).await.unwrap();
+
+        for (client_id, redirect_uri, resource, challenge, method) in [
+            (
+                "wrong-client",
+                "http://127.0.0.1:7777/callback",
+                "https://lab.example.com/mcp",
+                "challenge",
+                "S256",
+            ),
+            (
+                "client",
+                "https://attacker.example/callback",
+                "https://lab.example.com/mcp",
+                "challenge",
+                "S256",
+            ),
+            (
+                "client",
+                "http://127.0.0.1:7777/callback",
+                "https://other.example/mcp",
+                "challenge",
+                "S256",
+            ),
+            (
+                "client",
+                "http://127.0.0.1:7777/callback",
+                "https://lab.example.com/mcp",
+                "wrong-challenge",
+                "S256",
+            ),
+            (
+                "client",
+                "http://127.0.0.1:7777/callback",
+                "https://lab.example.com/mcp",
+                "challenge",
+                "plain",
+            ),
+        ] {
+            assert!(
+                store
+                    .redeem_verified_auth_code(
+                        "code-123",
+                        client_id,
+                        redirect_uri,
+                        Some(resource),
+                        challenge,
+                        method,
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+
+        let redeemed = store
+            .redeem_verified_auth_code(
+                "code-123",
+                "client",
+                "http://127.0.0.1:7777/callback",
+                Some("https://lab.example.com/mcp"),
+                "challenge",
+                "S256",
+            )
+            .await
+            .unwrap();
+        assert_eq!(redeemed.code, "code-123");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn sqlite_store_refuses_world_readable_database_file() {
@@ -1415,6 +1550,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn google_provider_token_bundle_cas_rejects_a_stale_generation() {
+        let store = temp_store().await;
+        let now = now_unix();
+        let update = |access_token: &str, refresh_token: &str| GoogleProviderCredentialUpdate {
+            subject: "google-subject-cas".to_string(),
+            email: Some("admin@example.com".to_string()),
+            client_id: "google-client".to_string(),
+            granted_scopes: vec!["openid".to_string()],
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.to_string(),
+            token_received_at: now,
+            access_token_expires_at: now + 3600,
+            issuer: Some("https://accounts.google.com".to_string()),
+            refreshed: true,
+            scope_upgraded: false,
+        };
+
+        store
+            .upsert_google_provider_token_bundle(update("access-v1", "refresh-v1"))
+            .await
+            .unwrap();
+        let original = store
+            .find_google_provider_credential("google-subject-cas")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            store
+                .replace_google_provider_token_bundle_if_generation(
+                    update("access-v2", "refresh-v2"),
+                    original.generation,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .replace_google_provider_token_bundle_if_generation(
+                    update("stale-access", "stale-refresh"),
+                    original.generation,
+                )
+                .await
+                .unwrap(),
+            "a stale exchange must not overwrite the newer provider generation"
+        );
+        let current = store
+            .find_google_provider_credential("google-subject-cas")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.generation, original.generation + 1);
+        assert_eq!(current.access_token.as_deref(), Some("access-v2"));
+        assert_eq!(current.refresh_token, "refresh-v2");
+        assert_eq!(current.granted_scopes, vec!["openid".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn google_provider_revoke_epoch_prevents_stale_cross_store_recreation() {
+        let path = temp_db_path();
+        let writer = SqliteStore::open(path.clone()).await.unwrap();
+        let revoker = SqliteStore::open(path).await.unwrap();
+        let now = now_unix();
+        let update = GoogleProviderCredentialUpdate {
+            subject: "google-subject-revoked".to_string(),
+            email: Some("admin@example.com".to_string()),
+            client_id: "google-client".to_string(),
+            granted_scopes: vec!["openid".to_string()],
+            access_token: "stale-access".to_string(),
+            refresh_token: "stale-refresh".to_string(),
+            token_received_at: now,
+            access_token_expires_at: now + 3600,
+            issuer: Some("https://accounts.google.com".to_string()),
+            refreshed: false,
+            scope_upgraded: true,
+        };
+        writer
+            .upsert_google_provider_token_bundle(update.clone())
+            .await
+            .unwrap();
+        let observed_epoch = writer
+            .google_provider_revocation_epoch("google-subject-revoked")
+            .await
+            .unwrap();
+        let generation = writer
+            .find_google_provider_credential("google-subject-revoked")
+            .await
+            .unwrap()
+            .unwrap()
+            .generation;
+
+        assert!(
+            revoker
+                .invalidate_google_provider_credential("google-subject-revoked", generation)
+                .await
+                .unwrap()
+                .invalidated
+        );
+        assert!(
+            !writer
+                .insert_google_provider_token_bundle_if_absent(update.clone(), observed_epoch)
+                .await
+                .unwrap(),
+            "a writer paused before revoke must not recreate the deleted credential"
+        );
+        assert!(
+            writer
+                .find_google_provider_credential("google-subject-revoked")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let new_authorization_epoch = writer.google_provider_fence_epoch().await.unwrap();
+        assert!(
+            writer
+                .insert_google_provider_token_bundle_if_absent(update, new_authorization_epoch,)
+                .await
+                .unwrap(),
+            "an authorization deliberately started after revoke must use the current fence"
+        );
+    }
+
+    #[tokio::test]
     async fn google_provider_bundle_is_encrypted_at_rest_and_readable_after_reopen() {
         let path = temp_db_path();
         let key = TokenEncryptionKey::from_passphrase("google-broker-test-key");
@@ -1526,6 +1784,64 @@ mod tests {
             .unwrap();
         assert!(after.0.starts_with("enc:"));
         assert!(after.1.starts_with("enc:"));
+    }
+
+    #[tokio::test]
+    async fn legacy_encryption_snapshot_cannot_overwrite_a_newer_cross_store_bundle() {
+        let path = temp_db_path();
+        let writer = SqliteStore::open(path.clone()).await.unwrap();
+        let now = now_unix();
+        let update = move |access: &str, refresh: &str| GoogleProviderCredentialUpdate {
+            subject: "legacy-race-subject".to_string(),
+            email: Some("admin@example.com".to_string()),
+            client_id: "google-client".to_string(),
+            granted_scopes: vec!["openid".to_string()],
+            access_token: access.to_string(),
+            refresh_token: refresh.to_string(),
+            token_received_at: now,
+            access_token_expires_at: now + 3600,
+            issuer: Some("https://accounts.google.com".to_string()),
+            refreshed: false,
+            scope_upgraded: false,
+        };
+        writer
+            .upsert_google_provider_token_bundle(update("old-access", "old-refresh"))
+            .await
+            .unwrap();
+        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
+        *super::google_credentials::LEGACY_ENCRYPTION_SNAPSHOT_HOOK
+            .lock()
+            .unwrap() = Some((reached_tx, resume_rx));
+
+        let encrypted_path = path.clone();
+        let opener = tokio::spawn(async move {
+            SqliteStore::open_with_key(
+                encrypted_path,
+                Some(TokenEncryptionKey::from_passphrase("legacy-race-key")),
+            )
+            .await
+            .unwrap()
+        });
+        tokio::task::spawn_blocking(move || reached_rx.recv().unwrap())
+            .await
+            .unwrap();
+        let newer = tokio::spawn(async move {
+            writer
+                .upsert_google_provider_token_bundle(update("new-access", "new-refresh"))
+                .await
+                .unwrap();
+        });
+        resume_tx.send(()).unwrap();
+        let encrypted = opener.await.unwrap();
+        newer.await.unwrap();
+        let row = encrypted
+            .find_google_provider_credential("legacy-race-subject")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.access_token.as_deref(), Some("new-access"));
+        assert_eq!(row.refresh_token, "new-refresh");
     }
 
     #[tokio::test]
@@ -2038,6 +2354,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_and_v8_upgraded_schemas_include_v9_google_revocation_epochs() {
+        let path = temp_db_path();
+        let fresh = SqliteStore::open(path.clone()).await.unwrap();
+        assert!(
+            table_columns(&fresh, "google_provider_revocations")
+                .await
+                .contains(&"epoch".to_string())
+        );
+        drop(fresh);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE google_provider_revocations; PRAGMA user_version = 8;")
+            .unwrap();
+        drop(conn);
+        crate::util::set_restrictive_permissions(&path).unwrap();
+        let upgraded = SqliteStore::open(path.clone()).await.unwrap();
+        assert!(
+            table_columns(&upgraded, "google_provider_revocations")
+                .await
+                .contains(&"epoch".to_string())
+        );
+        drop(upgraded);
+        let conn = Connection::open(path).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            9
+        );
+    }
+
+    #[tokio::test]
     async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker_metadata() {
         let path = temp_db_path();
         let store = SqliteStore::open(path.clone()).await.unwrap();
@@ -2084,7 +2430,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 8);
+        assert_eq!(schema_version, 9);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await

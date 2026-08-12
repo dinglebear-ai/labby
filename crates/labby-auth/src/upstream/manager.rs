@@ -389,7 +389,7 @@ impl UpstreamOauthManager {
             .revoke_google_provider_credential(account.as_deref())
             .await
             .map_err(|error| OauthError::Internal(error.to_string()))?;
-        tracing::warn!(
+        tracing::info!(
             upstream = %self.upstream.name,
             invalidated = invalidation.invalidated,
             revoked_refresh_tokens = invalidation.revoked_refresh_tokens,

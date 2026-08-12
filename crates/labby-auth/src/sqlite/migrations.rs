@@ -159,6 +159,20 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     if current == 8 {
         repair_falsely_stamped_v8(conn)?;
     }
+    if current < 9 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS google_provider_revocations (
+                   subject TEXT PRIMARY KEY,
+                   epoch INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = 9;",
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+    }
     Ok(())
 }
 

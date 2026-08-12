@@ -570,7 +570,7 @@ impl GatewayManager {
         let sessions = self
             .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke")
             .await;
-        tracing::warn!(
+        tracing::info!(
             service = "upstream_oauth",
             action = "google_revoke",
             upstream,

@@ -20,7 +20,6 @@ use crate::error::AuthError;
 use crate::google::{GoogleExchange, merge_google_scopes};
 use crate::jwt::AccessClaims;
 use crate::state::AuthState;
-use crate::types::AuthorizationCodeRow;
 use crate::types::{RefreshTokenRow, RevocationRequest, TokenRequest, TokenResponse};
 use crate::util::{
     duration_secs_usize, expires_at, fingerprint, now_unix, random_token, timestamp_usize,
@@ -97,13 +96,13 @@ impl RefreshClaimLease {
                         }
                         return;
                     }
-                    _ = tokio::time::sleep(renew_interval) => {}
-                }
-                let expires_at = now_unix().saturating_add(lease_seconds);
-                match heartbeat_store
-                    .renew_refresh_claim(&heartbeat_token, &heartbeat_claim_id, expires_at)
-                    .await
-                {
+                    renewal = async {
+                        tokio::time::sleep(renew_interval).await;
+                        let expires_at = now_unix().saturating_add(lease_seconds);
+                        heartbeat_store
+                            .renew_refresh_claim(&heartbeat_token, &heartbeat_claim_id, expires_at)
+                            .await
+                    } => match renewal {
                     Ok(true) => {
                         debug!(
                             refresh_token_id = %heartbeat_token_id,
@@ -133,6 +132,7 @@ impl RefreshClaimLease {
                         drop(lost_tx.send(error));
                         return;
                     }
+                    },
                 }
             }
         });
@@ -1006,36 +1006,27 @@ async fn authorization_code_grant(
         "oauth authorization_code grant redeeming local code"
     );
 
-    let row = state.store.redeem_auth_code(&code).await.map_err(|error| {
-        warn!(
-            auth_code_id = %auth_code_id,
-            client_id = %client_id,
-            error = %error,
-            "oauth token rejected: authorization code is invalid, expired, or already redeemed"
-        );
-        error
-    })?;
-    validate_authorization_code_row(
-        &row,
-        &client_id,
-        &redirect_uri,
-        &code_verifier,
-        &auth_code_id,
-    )?;
-    if let Some(requested_resource) = requested_resource
-        && requested_resource != row.resource
-    {
-        warn!(
-            auth_code_id = %auth_code_id,
-            requested_resource = %requested_resource,
-            stored_resource = %row.resource,
-            "oauth token rejected: resource does not match authorization code"
-        );
-        return Err(AuthError::InvalidGrant(
-            "resource does not match the authorization code".to_string(),
-        ));
-    }
-
+    let expected_challenge = pkce_challenge(&code_verifier);
+    let row = state
+        .store
+        .redeem_verified_auth_code(
+            &code,
+            &client_id,
+            &redirect_uri,
+            requested_resource.as_deref(),
+            &expected_challenge,
+            "S256",
+        )
+        .await
+        .map_err(|error| {
+            warn!(
+                auth_code_id = %auth_code_id,
+                client_id = %client_id,
+                error = %error,
+                "oauth token rejected: authorization code is invalid, expired, already redeemed, or does not match the grant"
+            );
+            error
+        })?;
     if !state
         .store
         .has_google_provider_credential_for_subject(&row.subject)
@@ -1281,14 +1272,14 @@ async fn refresh_google_provider_credential(
                 let granted_scopes =
                     merge_google_scopes(&credential.granted_scopes, &google.granted_scopes);
                 let token_received_at = now_unix();
-                state
+                let persisted = state
                     .store
-                    .upsert_google_provider_token_bundle(
+                    .replace_google_provider_token_bundle_if_generation(
                         crate::types::GoogleProviderCredentialUpdate {
                             subject: google.subject.clone(),
                             email: google.email.clone(),
                             client_id: state.google.client_id.clone(),
-                            granted_scopes,
+                            granted_scopes: granted_scopes.clone(),
                             access_token: google.access_token.clone(),
                             refresh_token: next_provider_refresh_token.to_string(),
                             token_received_at,
@@ -1300,8 +1291,28 @@ async fn refresh_google_provider_credential(
                             refreshed: true,
                             scope_upgraded: false,
                         },
+                        credential.generation,
                     )
                     .await?;
+                if !persisted {
+                    let replacement_present = state
+                        .store
+                        .has_google_provider_credential_for_subject(subject)
+                        .await?;
+                    warn!(
+                        refresh_token_id = %refresh_token_id,
+                        subject_id = %subject_id,
+                        stale_provider_generation = credential.generation,
+                        replacement_provider_credential_present = replacement_present,
+                        "oauth provider refresh result discarded because a newer generation was persisted"
+                    );
+                    if !replacement_present {
+                        return Err(AuthError::OauthNeedsReauth(
+                            "google provider credential changed during refresh; reauthorization required"
+                                .to_string(),
+                        ));
+                    }
+                }
                 return Ok(google);
             }
             Err(AuthError::OauthNeedsReauth(message)) => {
@@ -1503,62 +1514,6 @@ fn pkce_challenge(code_verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()))
 }
 
-fn validate_authorization_code_row(
-    row: &AuthorizationCodeRow,
-    client_id: &str,
-    redirect_uri: &str,
-    code_verifier: &str,
-    auth_code_id: &str,
-) -> Result<(), AuthError> {
-    if row.client_id != client_id {
-        warn!(
-            auth_code_id = %auth_code_id,
-            requested_client_id = %client_id,
-            stored_client_id = %row.client_id,
-            "oauth token rejected: client_id does not match authorization code"
-        );
-        return Err(AuthError::InvalidGrant(
-            "client_id does not match the authorization code".to_string(),
-        ));
-    }
-    if row.redirect_uri != redirect_uri {
-        warn!(
-            auth_code_id = %auth_code_id,
-            requested_redirect_uri = %redirect_uri,
-            stored_redirect_uri = %row.redirect_uri,
-            "oauth token rejected: redirect_uri does not match authorization code"
-        );
-        return Err(AuthError::InvalidGrant(
-            "redirect_uri does not match the authorization code".to_string(),
-        ));
-    }
-    if row.code_challenge_method != "S256" {
-        warn!(
-            auth_code_id = %auth_code_id,
-            code_challenge_method = %row.code_challenge_method,
-            "oauth token rejected: unsupported PKCE method on authorization code"
-        );
-        return Err(AuthError::InvalidGrant(
-            "authorization code uses an unsupported PKCE method".to_string(),
-        ));
-    }
-    if !bool::from(
-        pkce_challenge(code_verifier)
-            .as_bytes()
-            .ct_eq(row.code_challenge.as_bytes()),
-    ) {
-        warn!(
-            auth_code_id = %auth_code_id,
-            client_id = %row.client_id,
-            "oauth token rejected: code_verifier did not match authorization code"
-        );
-        return Err(AuthError::InvalidGrant(
-            "code_verifier does not match the authorization code".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -1702,8 +1657,7 @@ mod tests {
         let state = test_auth_state_with_registered_client().await;
         seed_authorization_code(&state).await;
         let app = router(state);
-        let response = app
-            .oneshot(
+        let response = app.oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/token")
@@ -1791,8 +1745,7 @@ mod tests {
                 .unwrap()
                 .contains(&serde_json::json!("client_secret_basic"))
         );
-        let response = app
-            .oneshot(
+        let response = app.oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/token")
@@ -2886,6 +2839,7 @@ mod tests {
         seed_authorization_code(&state).await;
         let app = router(state);
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -2900,6 +2854,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let legitimate = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/token")
+                    .header(
+                        header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded",
+                    )
+                    .body(Body::from("grant_type=authorization_code&code=lab-code&client_id=client&resource=https%3A%2F%2Flab.example.com%2Fmcp&redirect_uri=http://127.0.0.1:7777/callback&code_verifier=verifier"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(legitimate.status(), StatusCode::OK);
     }
 
     #[tokio::test]

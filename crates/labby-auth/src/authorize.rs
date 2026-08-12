@@ -9,6 +9,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
+#[cfg(test)]
+static CALLBACK_PROVIDER_LOCK_REACHED: std::sync::LazyLock<tokio::sync::Notify> =
+    std::sync::LazyLock::new(tokio::sync::Notify::new);
+
 use crate::error::AuthError;
 use crate::google::{AuthorizeUrlRequest, merge_google_scopes};
 use crate::session::{append_set_cookie, build_browser_session_cookie, create_browser_session};
@@ -404,6 +408,7 @@ pub async fn callback(
         scope = %request.scope,
         "oauth callback state redeemed"
     );
+    let observed_revocation_epoch = state.store.google_provider_fence_epoch().await?;
     let google = state
         .google
         .exchange_code(&query.code, &request.provider_code_verifier)
@@ -442,6 +447,14 @@ pub async fn callback(
                     .to_string(),
             )
         })?;
+    // Serialize callback installation with refresh/invalidation for this Google
+    // account. SQLite generation CAS below also protects deployments with more
+    // than one Labby process sharing the auth database.
+    #[cfg(test)]
+    CALLBACK_PROVIDER_LOCK_REACHED.notify_waiters();
+    let _provider_guard = crate::google_refresh::lock(&google.subject)
+        .lock_owned()
+        .await;
     let received_provider_refresh_token = google.refresh_token.is_some();
     let existing_credential = state
         .store
@@ -491,24 +504,57 @@ pub async fn callback(
         return Ok(Redirect::to(redirect_target.as_str()).into_response());
     };
     let provider_token_received_at = now_unix();
-    state
-        .store
-        .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
-            subject: google.subject.clone(),
-            email: Some(verified_email.to_string()),
-            client_id: state.google.client_id.clone(),
-            granted_scopes,
-            access_token: google.access_token.clone(),
-            refresh_token: provider_refresh_token,
-            token_received_at: provider_token_received_at,
-            access_token_expires_at: provider_token_received_at.saturating_add(
-                i64::try_from(google.expires_in.unwrap_or(3600)).unwrap_or(i64::MAX),
-            ),
-            issuer: Some("https://accounts.google.com".to_string()),
-            refreshed: false,
-            scope_upgraded,
-        })
-        .await?;
+    let provider_update = crate::types::GoogleProviderCredentialUpdate {
+        subject: google.subject.clone(),
+        email: Some(verified_email.to_string()),
+        client_id: state.google.client_id.clone(),
+        granted_scopes: granted_scopes.clone(),
+        access_token: google.access_token.clone(),
+        refresh_token: provider_refresh_token,
+        token_received_at: provider_token_received_at,
+        access_token_expires_at: provider_token_received_at
+            .saturating_add(i64::try_from(google.expires_in.unwrap_or(3600)).unwrap_or(i64::MAX)),
+        issuer: Some("https://accounts.google.com".to_string()),
+        refreshed: false,
+        scope_upgraded,
+    };
+    let provider_update_persisted = if let Some(existing) = existing_credential.as_ref() {
+        state
+            .store
+            .replace_google_provider_token_bundle_if_generation(
+                provider_update,
+                existing.generation,
+            )
+            .await?
+    } else {
+        state
+            .store
+            .insert_google_provider_token_bundle_if_absent(
+                provider_update,
+                observed_revocation_epoch,
+            )
+            .await?
+    };
+    if !provider_update_persisted {
+        let replacement_present = state
+            .store
+            .has_google_provider_credential_for_subject(&google.subject)
+            .await?;
+        warn!(
+            client_id = %request.client_id,
+            oauth_state_id = %oauth_state_id,
+            subject_id = %subject_id,
+            observed_provider_generation = ?existing_credential.as_ref().map(|row| row.generation),
+            replacement_provider_credential_present = replacement_present,
+            "oauth callback discarded stale provider exchange after generation changed"
+        );
+        if !replacement_present {
+            return Err(AuthError::OauthNeedsReauth(
+                "google provider credential changed during authorization; retry authorization"
+                    .to_string(),
+            ));
+        }
+    }
     info!(
         client_id = %request.client_id,
         oauth_state_id = %oauth_state_id,
@@ -1885,7 +1931,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_callback_reuses_the_subject_credential_without_copying_it_into_the_auth_code() {
+    async fn oauth_callback_started_before_revoke_cannot_recreate_the_provider_credential() {
         let base_state = test_auth_state_with_registered_client().await;
         let now = now_unix();
         base_state
@@ -1932,6 +1978,7 @@ pub mod tests {
             .and(path("/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "access_token": "google-access-token",
+                "refresh_token": "late-provider-refresh",
                 "expires_in": 3600,
                 "id_token": signed_test_id_token(),
             })))
@@ -1960,39 +2007,69 @@ pub mod tests {
             google,
         );
 
-        let response = router(state.clone())
-            .oneshot(
-                Request::builder()
-                    .uri("/auth/google/callback?state=repeat-state&code=upstream-code")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let location = response
-            .headers()
-            .get(header::LOCATION)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        let redirect = Url::parse(location).unwrap();
-        let code = redirect
-            .query_pairs()
-            .find(|(key, _)| key == "code")
-            .map(|(_, value)| value.into_owned())
-            .unwrap();
-        let authorization = state.store.redeem_auth_code(&code).await.unwrap();
-        assert!(authorization.provider_refresh_token.is_none());
-        let credential = state
+        let provider_guard = crate::google_refresh::lock("google-subject-123")
+            .lock_owned()
+            .await;
+        let provider_lock_reached = super::CALLBACK_PROVIDER_LOCK_REACHED.notified();
+        tokio::pin!(provider_lock_reached);
+        let request_state = state.clone();
+        let response_task = tokio::spawn(async move {
+            router(request_state)
+                .oneshot(
+                    Request::builder()
+                        .uri("/auth/google/callback?state=repeat-state&code=upstream-code")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        provider_lock_reached.await;
+        assert!(
+            !response_task.is_finished(),
+            "the callback must share the subject lock used by provider refresh"
+        );
+        let generation = state
             .store
             .find_google_provider_credential("google-subject-123")
             .await
             .unwrap()
-            .unwrap();
-        assert_eq!(credential.refresh_token, "existing-provider-refresh");
-        assert_eq!(credential.email.as_deref(), Some("user@example.com"));
+            .unwrap()
+            .generation;
+        assert!(
+            state
+                .store
+                .invalidate_google_provider_credential("google-subject-123", generation)
+                .await
+                .unwrap()
+                .invalidated
+        );
+        drop(provider_guard);
+        let response = response_task.await.unwrap();
+
+        if response.status() == StatusCode::SEE_OTHER {
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(
+                !Url::parse(location)
+                    .unwrap()
+                    .query_pairs()
+                    .any(|(key, _)| key == "code"),
+                "a pre-revoke callback must not issue a Labby authorization code"
+            );
+        }
+        assert!(
+            state
+                .store
+                .find_google_provider_credential("google-subject-123")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

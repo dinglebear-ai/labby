@@ -470,6 +470,26 @@ impl SqliteStore {
             if invalidated == 0 {
                 return Ok(GoogleProviderInvalidation::default());
             }
+            transaction
+                .execute(
+                    "INSERT INTO google_provider_revocations (subject, epoch, updated_at)
+                     VALUES (?1, 1, ?2)
+                     ON CONFLICT(subject) DO UPDATE SET
+                       epoch = google_provider_revocations.epoch + 1,
+                       updated_at = excluded.updated_at",
+                    params![subject, now_unix()],
+                )
+                .map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO google_provider_revocations (subject, epoch, updated_at)
+                     VALUES ('*', 1, ?1)
+                     ON CONFLICT(subject) DO UPDATE SET
+                       epoch = google_provider_revocations.epoch + 1,
+                       updated_at = excluded.updated_at",
+                    params![now_unix()],
+                )
+                .map_err(sqlite_error)?;
             let revoked_authorization_codes = transaction
                 .execute(
                     "DELETE FROM authorization_codes WHERE subject = ?1",

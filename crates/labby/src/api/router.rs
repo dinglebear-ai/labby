@@ -40,9 +40,7 @@ use crate::app_manifest::{
     SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_DATA_API_PREFIX,
 };
 
-use super::router_middleware::{
-    derive_actor_key, lab_auth_deriver, parse_bearer_token, percent_encode_path, tokens_equal,
-};
+use super::router_middleware::{derive_actor_key, lab_auth_deriver, parse_bearer_token};
 
 use super::app_routes::{
     apps_launcher_page, apps_manifest, labby_app_host_js, server_logs_app_page,
@@ -277,32 +275,6 @@ async fn auth_native_poll(
     query: Query<labby_auth::types::NativePollQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), query).await?)
-}
-
-fn auth_error_response(
-    message: &str,
-    resource_url: Option<&str>,
-    scopes: &[String],
-) -> axum::response::Response {
-    let err = ToolError::Sdk {
-        sdk_kind: "auth_failed".into(),
-        message: message.into(),
-    };
-    let mut response = ApiError::new(err).into_response();
-    if let Some(url) = resource_url {
-        let scope = scopes.join(" ");
-        let www_auth = format!(
-            "{}, scope=\"{}\"",
-            crate::api::oauth::www_authenticate_value(url),
-            scope
-        );
-        if let Ok(value) = HeaderValue::from_str(&www_auth) {
-            response
-                .headers_mut()
-                .insert(header::WWW_AUTHENTICATE, value);
-        }
-    }
-    response
 }
 
 fn auth_error_response_with_challenge(
@@ -892,179 +864,6 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
     crate::oauth::public_relay::is_reserved_public_relay_path(path)
 }
 
-fn csrf_error_response(message: &str) -> axum::response::Response {
-    ApiError::new(ToolError::Sdk {
-        sdk_kind: "validation_failed".into(),
-        message: message.into(),
-    })
-    .into_response()
-}
-
-async fn authenticate_request(
-    mut request: Request<Body>,
-    next: Next,
-    static_token: Option<Arc<str>>,
-    auth_state: Option<Arc<labby_auth::state::AuthState>>,
-    actor_key_deriver: Option<Arc<crate::observability::activity::ActorKeyDeriver>>,
-    resource_url: Option<Arc<str>>,
-    allow_session_cookie: bool,
-) -> Result<axum::response::Response, std::convert::Infallible> {
-    let auth_header = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_bearer_token);
-
-    if let Some(token) = auth_header {
-        if let Some(ref expected) = static_token
-            && tokens_equal(&token, expected.as_ref())
-        {
-            let sub = "static-bearer".to_string();
-            let actor_key = derive_actor_key(actor_key_deriver.as_deref(), &sub);
-            request
-                .extensions_mut()
-                .insert(crate::api::oauth::AuthContext {
-                    sub,
-                    actor_key,
-                    scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
-                    issuer: "local".to_string(),
-                    via_session: false,
-                    csrf_token: None,
-                    email: None,
-                });
-            return Ok(next.run(request).await);
-        }
-
-        if let Some(ref auth_state) = auth_state {
-            let Some(expected_issuer) = auth_state
-                .config
-                .public_url
-                .as_ref()
-                .map(|url| url.as_str().trim_end_matches('/').to_string())
-            else {
-                return Ok(auth_error_response(
-                    "server misconfigured: LABBY_PUBLIC_URL required for JWT validation",
-                    resource_url.as_deref(),
-                    &auth_state.config.scopes_supported,
-                ));
-            };
-            let expected_aud = labby_auth::metadata::canonical_resource_url(auth_state);
-            match auth_state.signing_keys.validate_access_token_with_issuer(
-                &token,
-                &expected_aud,
-                &expected_issuer,
-            ) {
-                Ok(claims) => {
-                    request
-                        .extensions_mut()
-                        .insert(crate::api::oauth::AuthContext {
-                            actor_key: derive_actor_key(actor_key_deriver.as_deref(), &claims.sub),
-                            sub: claims.sub,
-                            scopes: claims
-                                .scope
-                                .split_whitespace()
-                                .filter(|scope| !scope.is_empty())
-                                .map(ToOwned::to_owned)
-                                .collect(),
-                            issuer: claims.iss,
-                            via_session: false,
-                            csrf_token: None,
-                            email: None,
-                        });
-                    return Ok(next.run(request).await);
-                }
-                Err(error) => {
-                    tracing::debug!(error = %error, "lab-auth JWT validation failed");
-                }
-            }
-        }
-
-        return Ok(auth_error_response(
-            "invalid bearer token",
-            resource_url.as_deref(),
-            auth_state
-                .as_ref()
-                .map_or(&[], |state| state.config.scopes_supported.as_slice()),
-        ));
-    }
-
-    if allow_session_cookie
-        && let Some(auth_state) = auth_state.as_ref()
-        && let Some(session_id) = labby_auth::session::read_cookie(
-            request.headers(),
-            &auth_state.config.session_cookie_name,
-        )
-    {
-        match auth_state.store.find_browser_session(&session_id).await {
-            Ok(Some(session)) => {
-                if !matches!(
-                    *request.method(),
-                    Method::GET | Method::HEAD | Method::OPTIONS
-                ) {
-                    let csrf = request
-                        .headers()
-                        .get(labby_auth::session::BROWSER_CSRF_HEADER_NAME)
-                        .and_then(|value| value.to_str().ok());
-                    if csrf != Some(session.csrf_token.as_str()) {
-                        return Ok(csrf_error_response("missing or invalid csrf token"));
-                    }
-                }
-
-                request
-                    .extensions_mut()
-                    .insert(crate::api::oauth::AuthContext {
-                        actor_key: derive_actor_key(actor_key_deriver.as_deref(), &session.subject),
-                        sub: session.subject,
-                        scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
-                        issuer: "browser-session".to_string(),
-                        via_session: true,
-                        csrf_token: Some(session.csrf_token),
-                        email: session.email,
-                    });
-                return Ok(next.run(request).await);
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::debug!(error = %error, "browser session lookup failed");
-            }
-        }
-    }
-
-    // For browser GET requests with no bearer token and no valid session cookie,
-    // redirect to /auth/login so the Google OAuth flow can establish a session.
-    // Only fires on v1 routes (allow_session_cookie=true); the MCP endpoint uses bearer-only.
-    if allow_session_cookie
-        && auth_state.is_some()
-        && *request.method() == Method::GET
-        && request
-            .headers()
-            .get(header::ACCEPT)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|accept| accept.contains("text/html"))
-    {
-        let return_to = request
-            .uri()
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/");
-        let encoded = percent_encode_path(return_to);
-        let login_url = format!("/auth/login?return_to={encoded}");
-        return Ok(axum::response::Redirect::to(&login_url).into_response());
-    }
-
-    Ok(auth_error_response(
-        if allow_session_cookie {
-            "missing bearer token or session cookie"
-        } else {
-            "missing bearer token"
-        },
-        resource_url.as_deref(),
-        auth_state
-            .as_ref()
-            .map_or(&[], |state| state.config.scopes_supported.as_slice()),
-    ))
-}
-
 /// Build the `/v1` sub-router with all feature-gated service routes.
 #[cfg_attr(not(feature = "fs"), allow(unused_variables))]
 fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppState> {
@@ -1347,6 +1146,13 @@ pub(crate) fn build_router_with_external_auth(
             .with_static_token(static_token.clone())
             .with_actor_key_deriver(layer_deriver.clone())
             .with_resource_url(resource_url.clone())
+            .with_error_response_mapper(|error| {
+                ApiError::new(ToolError::Sdk {
+                    sdk_kind: error.kind().to_string(),
+                    message: error.to_string(),
+                })
+                .into_response()
+            })
             .with_allow_session_cookie(allow_session_cookie);
         layer
     };
@@ -1356,25 +1162,9 @@ pub(crate) fn build_router_with_external_auth(
         v1_router
     };
 
-    let auth_state_for_mcp = auth_state.clone();
-    let static_token_for_mcp = static_token.clone();
-    let actor_key_deriver_for_mcp = state.actor_key_deriver.clone();
-    let resource_url_for_mcp = resource_url.clone();
     let mcp_protected = mcp_router.map(|mcp| {
         if credential_auth_configured {
-            mcp.route_layer(axum::middleware::from_fn(
-                move |request: Request<Body>, next: Next| {
-                    authenticate_request(
-                        request,
-                        next,
-                        static_token_for_mcp.clone(),
-                        auth_state_for_mcp.clone(),
-                        actor_key_deriver_for_mcp.clone(),
-                        resource_url_for_mcp.clone(),
-                        false,
-                    )
-                },
-            ))
+            mcp.route_layer(make_auth_layer(false))
         } else {
             mcp
         }
@@ -1759,6 +1549,63 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"], "auth_failed");
+    }
+
+    async fn assert_canonical_auth_failure(response: axum::response::Response) {
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("Bearer resource_metadata=\"")),
+            "missing RFC 9728 bearer challenge"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "auth_failed");
+        assert_eq!(json["contract_version"], 1);
+        assert_eq!(json["origin"], "policy");
+        assert_eq!(json["recovery"]["action"], "reauthenticate");
+        assert_eq!(json["recovery"]["same_arguments"], "never");
+        assert_eq!(json["side_effects"], "none_expected");
+    }
+
+    #[tokio::test]
+    async fn shared_auth_layer_preserves_canonical_contract_for_v1_and_mcp() {
+        let auth_state = test_lab_auth_state().await;
+        let mcp_router = Router::new().route("/mcp", get(|| async { StatusCode::OK }));
+        let app = build_router(
+            AppState::new(),
+            Some("secret-token".to_string()),
+            Some(auth_state),
+            Some(mcp_router),
+            &[],
+        );
+
+        for (path, authorization) in [
+            ("/v1/setup/actions", None),
+            ("/v1/setup/actions", Some("Bearer invalid")),
+            ("/mcp", None),
+            ("/mcp", Some("Bearer invalid")),
+        ] {
+            let mut request = Request::builder().method("GET").uri(path);
+            if let Some(authorization) = authorization {
+                request = request.header(header::AUTHORIZATION, authorization);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_canonical_auth_failure(response).await;
+        }
     }
 
     #[tokio::test]
@@ -2499,6 +2346,33 @@ mod tests {
                             session.session_id
                         ),
                     )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mcp_rejects_static_bearer_when_oauth_policy_disables_it() {
+        let state = AppState::new();
+        let mut auth_state = test_lab_auth_state().await;
+        Arc::make_mut(&mut auth_state.config).disable_static_token_with_oauth = true;
+        let mcp_router = Router::new().route("/mcp", get(|| async { StatusCode::OK }));
+        let app = build_router(
+            state,
+            Some("static-token".to_string()),
+            Some(auth_state),
+            Some(mcp_router),
+            &[],
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/mcp")
+                    .header(header::AUTHORIZATION, "Bearer static-token")
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -107,6 +107,9 @@ struct AuthLayerInner {
     /// [`crate::config::AuthConfig::session_cookie_name`] when an
     /// `auth_state` is supplied; otherwise this is unused.
     session_cookie_name: String,
+    /// Optional consumer-owned error projection. Authentication decisions stay
+    /// in this crate while products can preserve their public error contract.
+    error_response_mapper: Option<Arc<dyn Fn(AuthError) -> Response + Send + Sync>>,
 }
 
 impl AuthLayer {
@@ -128,6 +131,7 @@ impl AuthLayer {
                 static_token_scopes: Vec::new(),
                 login_path: crate::config::DEFAULT_LOGIN_PATH.to_string(),
                 session_cookie_name: crate::config::DEFAULT_SESSION_COOKIE_NAME.to_string(),
+                error_response_mapper: None,
             }),
         }
     }
@@ -154,6 +158,7 @@ impl AuthLayer {
                 static_token_scopes,
                 login_path,
                 session_cookie_name,
+                error_response_mapper: None,
             }),
         }
     }
@@ -226,6 +231,16 @@ impl AuthLayer {
     #[must_use]
     pub fn with_session_cookie_name(self, name: impl Into<String>) -> Self {
         self.with(|inner| inner.session_cookie_name = name.into())
+    }
+
+    /// Project authentication failures into a consumer-specific response
+    /// envelope without duplicating authentication policy in the consumer.
+    #[must_use]
+    pub fn with_error_response_mapper(
+        self,
+        mapper: impl Fn(AuthError) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        self.with(|inner| inner.error_response_mapper = Some(Arc::new(mapper)))
     }
 }
 
@@ -503,7 +518,22 @@ fn derive_actor_key(deriver: Option<&ActorKeyDeriver>, subject: &str) -> Option<
 /// Build a 401 response wrapping [`AuthError::AuthFailed`] and decorate it
 /// with `WWW-Authenticate` when a `resource_url` was supplied.
 fn auth_error_response(message: &str, layer: &AuthLayerInner) -> Response {
-    let mut response = AuthError::AuthFailed(message.to_string()).into_response();
+    let error = AuthError::AuthFailed(message.to_string());
+    let kind = error.kind();
+    let mut response = if let Some(mapper) = layer.error_response_mapper.as_ref() {
+        mapper(error)
+    } else {
+        error.into_response()
+    };
+    response
+        .extensions_mut()
+        .insert(crate::error::AuthErrorKind(kind));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     let challenge = layer
         .protected_resource_metadata_url
         .as_deref()
