@@ -13,10 +13,6 @@ use rmcp::model::Tool;
 use crate::mcp::catalog::{
     CodeModeAppState, CodeModeVisibility, SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot,
 };
-use crate::mcp::completion::action_schema;
-use crate::mcp::handlers_tools::server_logs_tool_meta;
-#[cfg(feature = "gateway")]
-use crate::mcp::permanent_tools::code_mode_full_annotations;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -34,12 +30,6 @@ use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
-};
-#[cfg(feature = "gateway")]
-use crate::mcp::handlers_tools::{
-    add_server_tool_meta, add_server_tool_schema, code_mode_execute_schema, code_mode_tool_meta,
-    code_mode_trace_output_schema, code_mode_ui_description, gateway_status_tool_meta,
-    gateway_status_tool_schema, mcp_app_tool_description, mcp_app_tool_schema,
 };
 
 /// Request-derived inputs that affect the descriptor set for one peer.
@@ -198,7 +188,6 @@ impl PeerContract {
     pub(crate) async fn visible_tool_descriptors(&self) -> Vec<Tool> {
         let visibility = self.code_mode_visibility().await;
         let hide_raw_tools = visibility.hides_raw_tools();
-        let schema = Arc::new(action_schema());
         let mut descriptors = Vec::new();
         let mut builtin_names = HashSet::new();
         let mut advertised_names = HashSet::new();
@@ -209,15 +198,12 @@ impl PeerContract {
                 if hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME {
                     continue;
                 }
-                let tool = Tool::new(service.name, service.description, Arc::clone(&schema));
-                let tool =
-                    if service.name == SERVER_LOGS_TOOL_NAME && self.audience.admin_apps_visible {
-                        tool.with_meta(server_logs_tool_meta(service.name))
-                    } else {
-                        tool
-                    };
                 advertised_names.insert(service.name.to_string());
-                descriptors.push(tool);
+                descriptors.push(
+                    self.registry
+                        .permanent_tools()
+                        .builtin_service_tool(service, self.audience.admin_apps_visible),
+                );
             }
         }
 
@@ -247,25 +233,17 @@ impl PeerContract {
                 descriptors.push(tool);
 
                 if self.code_mode_app_state.is_enabled() {
-                    let tool = Tool::new(
-                        CODE_MODE_UI_TOOL_NAME,
-                        code_mode_ui_description(&upstreams),
-                        code_mode_execute_schema(),
-                    )
-                    .with_annotations(code_mode_full_annotations())
-                    .with_raw_output_schema(code_mode_trace_output_schema())
-                    .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME));
+                    let tool = self
+                        .registry
+                        .permanent_tools()
+                        .code_mode_ui_tool(&upstreams);
                     advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
                     descriptors.push(tool);
                 }
 
                 // Always advertised alongside codemode: the control tool is how a
                 // disabled app surface gets restored.
-                let tool = Tool::new(
-                    MCP_APP_TOOL_NAME,
-                    mcp_app_tool_description(),
-                    mcp_app_tool_schema(),
-                );
+                let tool = self.registry.permanent_tools().mcp_app_tool();
                 advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
                 descriptors.push(tool);
             }
@@ -273,24 +251,14 @@ impl PeerContract {
 
         #[cfg(feature = "gateway")]
         if self.audience.admin_apps_visible && self.add_server_app_available().await {
-            let tool = Tool::new(
-                ADD_SERVER_TOOL_NAME,
-                "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
-                add_server_tool_schema(),
-            )
-            .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME));
+            let tool = self.registry.permanent_tools().add_server_tool();
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
 
         #[cfg(feature = "gateway")]
         if self.audience.admin_apps_visible && self.gateway_status_app_available().await {
-            let tool = Tool::new(
-                GATEWAY_STATUS_TOOL_NAME,
-                "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
-                gateway_status_tool_schema(),
-            )
-            .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME));
+            let tool = self.registry.permanent_tools().gateway_status_tool();
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
             descriptors.push(tool);
         }

@@ -10,9 +10,9 @@ decisions, and findings.
 | Issue | [#210](https://github.com/dinglebear-ai/labby/issues/210) |
 | Branch | `feat/mcp-output-schema-210` |
 | Worktree | `.worktrees/feat-mcp-output-schema-210` |
-| Base | `origin/main` @ `132448802` |
-| Phase | **Planning revised after 10-agent research + 4-agent engineering review — implementation not started** |
-| Last updated | 2026-08-05 |
+| Base | `origin/main` @ `43d51ec73` (merged 2026-08-11; original plan base `132448802`) |
+| Phase | **`.1` implemented (audit, schema, registry builder, rewire, FR-7, tests). `.2`–`.4` and security beads open** |
+| Last updated | 2026-08-11 |
 
 ---
 
@@ -21,13 +21,13 @@ decisions, and findings.
 | Bead | Title | Status | Blocked by |
 |---|---|---|---|
 | `lab-41e7m` | Epic | open | — |
-| `lab-41e7m.1` | Envelope schema + registry builder + FR-7 | open | — |
+| `lab-41e7m.1` | Envelope schema + registry builder + FR-7 | **implemented** (this commit) | — |
 | `lab-41e7m.2` | Lock Code Mode unwrap + truncation + success-path proxy fidelity | open | — |
-| `lab-41e7m.3` | Catalog output-shape coverage | open | **FR-9b** |
+| `lab-41e7m.3` | Catalog output-shape coverage | open | **`lab-41e7m.7`** |
 | `lab-41e7m.4` | Docs, generated artifacts, conformance | open | .1, .2, .3 |
-| **to file** | **FR-2a** — authorization-gate consolidation (moved OUT of `.1`) | — | — |
-| **to file** | FR-9a — sanitize upstream metadata on `tools/list` (HIGH) | — | — |
-| **to file** | FR-9b — bound `$ref` expansion (HIGH, blocks `.3`) | — | — |
+| `lab-41e7m.5` | **FR-2a** — authorization-gate consolidation (moved OUT of `.1`) | open (filed 2026-08-11) | — |
+| `lab-41e7m.6` | FR-9a — sanitize upstream metadata on `tools/list` (HIGH) | open (filed 2026-08-11) | — |
+| `lab-41e7m.7` | FR-9b — bound `$ref` expansion (HIGH, blocks `.3`) | open (filed 2026-08-11) | — |
 | **to file** | FU-1..FU-8 follow-ups (SPEC §6.2) | — | — |
 
 ```bash
@@ -44,36 +44,46 @@ places, which is the exact drift this issue exists to eliminate).
 
 | Req | Summary | Bead | Status |
 |---|---|---|---|
-| FR-1 | Envelope `outputSchema` on builtins (Raw mode only) | .1 | ☐ |
-| FR-2 | One builder — extend `PermanentToolRegistry` | .1 | ☐ |
-| FR-2a | Consolidate duplicated authorization gates | **own bead** | ☐ |
-| FR-3 | Audit before attachment — shape **and** presence | .1 | ☐ |
+| FR-1 | Envelope `outputSchema` on builtins (Raw mode only) | .1 | ☑ 2026-08-11 |
+| FR-2 | One builder — extend `PermanentToolRegistry` | .1 | ☑ 2026-08-11 |
+| FR-2a | Consolidate duplicated authorization gates | `lab-41e7m.5` | ☐ |
+| FR-3 | Audit before attachment — shape **and** presence | .1 | ☑ §3 below |
 | FR-4 | Unwrap precedence documented + tested | .2 | ☐ |
 | FR-5 | Structure survives truncation — **both** markers | .2 | ☐ |
 | FR-6 | Success-path proxy fidelity | .2 | ☐ |
-| FR-7 | Error trace ↔ trace schema consistency | .1 | ☐ |
+| FR-7 | Error trace ↔ trace schema consistency | .1 | ☑ 2026-08-11 |
 | FR-8 | Catalog coverage | .3 | ☐ |
-| FR-9a | Sanitize upstream metadata on `tools/list` | new | ☐ |
-| FR-9b | Bound `$ref` expansion | new | ☐ |
+| FR-9a | Sanitize upstream metadata on `tools/list` | `lab-41e7m.6` | ☐ |
+| FR-9b | Bound `$ref` expansion | `lab-41e7m.7` | ☐ |
 
-**Acceptance criteria AC-1 … AC-18:** all ☐. See SPEC §6.
+**Acceptance criteria:** AC-1, AC-2, AC-2a, AC-3, AC-15 ☑ (tests in
+`handlers_tools/tests.rs` §"Issue #210" and `permanent_tools.rs::tests`); AC-16 lands with
+`.4` plus the PR description and issue comment. Others track their beads. See SPEC §6.
 
 ## 3. Audit results
 
 Required by FR-3 before any schema is attached. **Two axes** — shape *and* presence.
 
+Audited 2026-08-11 at merge `e0c6bf7ec`. Every registry service's success path funnels
+through one chokepoint — the generic dispatch at `call_tool.rs` → `format_dispatch_result`
+(`result_format.rs:124-127`), which always sets the envelope as `structuredContent` — so
+the builtin rows share one verification site. Stub services can only return
+`unknown_action` errors (exempt); attaching the schema to them is harmless and keeps the
+loop uniform. Elicitation `input_required` is a distinct result variant, outside the
+contract (C2.3).
+
 | Tool | Class | Success shape | `structuredContent` always set? | Verified at | Schema | Notes |
 |---|---|---|---|---|---|---|
-| `gateway` | builtin | | | | | |
-| `doctor` | builtin | | | | | |
-| `setup` | builtin | | | | | |
-| `server_logs` | builtin | | | | | |
-| `snippets` | builtin | | | | | |
-| `fs` | builtin | | | | | |
-| `lab_admin` | builtin | | | | | |
-| `mcp_app` | synthetic | | | | | |
-| `add_server` | synthetic | | | | | |
-| `gateway_status` | synthetic | | | | | |
+| `gateway` | builtin | envelope | yes | `result_format.rs:124-127` via `call_tool.rs` generic path | envelope | |
+| `doctor` | builtin | envelope | yes | same chokepoint | envelope | |
+| `setup` | builtin | envelope | yes | same chokepoint | envelope | |
+| `server_logs` | builtin | envelope | yes | same chokepoint | envelope | meta unchanged, still audience-gated |
+| `snippets` | builtin | envelope | yes | `services/snippets.rs:77` → `format_dispatch_result` | envelope | |
+| `fs` | builtin | envelope | yes | generic path (`services/fs.rs` builds no `CallToolResult`) | envelope | |
+| `lab_admin` | builtin | envelope | yes | same chokepoint | envelope | |
+| `mcp_app` | synthetic | `{"kind":"mcp_app_control", …}` | yes (`call_tool.rs:410-411`) | read | **none** | shape axis fails — accurate-or-none rule |
+| `add_server` | synthetic | envelope (`open`/`test`/`create`) | yes | `call_tool.rs` → `format_dispatch_result` | envelope | |
+| `gateway_status` | synthetic | envelope (`open`/`refresh`) | yes | `call_tool.rs` → `format_dispatch_result` | envelope | |
 
 **OpenAPI provider output schemas (FR-8 / plan §5.3):** _not yet audited._
 
@@ -81,9 +91,9 @@ Required by FR-3 before any schema is attached. **Two axes** — shape *and* pre
 
 | Date | Command | Result | Notes |
 |---|---|---|---|
-| — | `cargo nextest run --workspace --all-features` | not run | |
-| — | `cargo clippy --workspace --all-features --all-targets` | not run | |
-| — | `just docs-check` | not run | expected no-op (SPEC NFR-8) |
+| 2026-08-11 | `cargo nextest run --workspace --all-features` | **2557 passed, 0 failed** | includes 6 new #210 tests |
+| 2026-08-11 | `just lint` (clippy `-D warnings` + fmt + drift checks) | clean | CI's clippy runs **without** `--all-targets`; the plan's `--all-targets` variant surfaces two pre-existing `clippy::panic` warnings in `labby-runtime/tests/agent_error_schema.rs` that also exist on main — out of scope |
+| 2026-08-11 | `just docs-generate && just docs-check` | fresh (no-op) | confirmed F22/NFR-8: artifacts render from the action catalog |
 
 ## 5. Decision log
 

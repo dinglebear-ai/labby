@@ -9,6 +9,7 @@ use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::dispatch::upstream::types::{
     ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
+use crate::mcp::catalog::ToolCatalogSnapshot;
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
@@ -4559,4 +4560,231 @@ async fn peer_contract_removes_all_codemode_tools_when_read_and_execute_are_revo
     assert!(!contract.tools.contains(CODE_MODE_READ_TOOL_NAME));
     assert!(!contract.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(!contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
+}
+
+// ── Issue #210: builtin outputSchema + descriptor drift (Raw mode) ──────────
+
+/// AC-2 + AC-2a. The existing drift test above runs only under Code Mode,
+/// where `hide_raw_tools` suppresses every builtin except `server_logs`, so it
+/// never exercises the builtin descriptor loop. This sibling forces Raw mode.
+#[tokio::test]
+async fn raw_mode_builtin_descriptors_match_across_builders() {
+    // HERMETIC: force Raw unconditionally. `Root` + `gateway_manager: None` is
+    // NOT sufficient — `peer_contract.rs` returns InProcessPeer when
+    // `gateway_manager.is_none() && config::process_code_mode_enabled()`, and
+    // that backing store is a process-global `AtomicBool` any other test in
+    // the binary can set. `expose_code_mode: false` forces Raw.
+    //
+    // The services list MUST name the registered services:
+    // `service_visible_on_mcp` gates on `route_scope.allows_service`, so an
+    // empty list advertises nothing and the test proves nothing.
+    let scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "raw-mode-drift",
+        Vec::<String>::new(),
+        ["hidden-upstream", "gateway-alpha"],
+        /* expose_code_mode */ false,
+    );
+    let server = test_server(
+        completion_test_registry(),
+        None,
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+
+    let contract_tools = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let snapshot_for_request = running
+        .service()
+        .snapshot_tool_catalog_for_request(&context)
+        .await;
+    let result = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list tools");
+
+    assert_eq!(
+        result.tools, contract_tools,
+        "raw-mode tools/list and the notification contract must use identical descriptors"
+    );
+
+    // AC-2a: `output_schema` participates in `descriptor_contract_hash`, which
+    // drives tools/list_changed — one-sided drift makes change detection
+    // wrong, not merely incomplete.
+    assert_eq!(
+        ToolCatalogSnapshot::from_descriptors(&result.tools),
+        snapshot_for_request,
+        "snapshot built from the handler's descriptors must equal the request snapshot"
+    );
+
+    // Positive name assertions: without these the test passes vacuously — the
+    // exact failure mode of the code-mode sibling.
+    let names = result
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"gateway-alpha"),
+        "raw mode must advertise builtins"
+    );
+    assert!(
+        names.contains(&"hidden-upstream"),
+        "raw mode must NOT suppress builtins — the code-mode sibling asserts the inverse"
+    );
+
+    // AC-1: every registry service advertises the success-envelope schema.
+    // Scoped to registry services: synthetic tools may legitimately carry no
+    // schema (`mcp_app` returns `{"kind":"mcp_app_control", …}`).
+    let service_names: Vec<&str> = completion_test_registry()
+        .services()
+        .iter()
+        .map(|s| s.name)
+        .collect();
+    for tool in result
+        .tools
+        .iter()
+        .filter(|t| service_names.contains(&t.name.as_ref()))
+    {
+        let schema = tool
+            .output_schema
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} advertises no outputSchema", tool.name));
+        assert_eq!(schema["properties"]["ok"]["const"], serde_json::json!(true));
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["ok", "service", "action", "data"])
+        );
+        assert_eq!(schema["additionalProperties"], serde_json::json!(true));
+    }
+}
+
+/// AC-3 both axes: the success envelope is always present as
+/// `structuredContent`, carries exactly the four contract keys, and the text
+/// block parses to the identical value.
+#[tokio::test]
+async fn builtin_help_success_sets_conformant_structured_content() {
+    let server = test_server(
+        completion_test_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "raw-mode-envelope",
+            Vec::<String>::new(),
+            ["hidden-upstream", "gateway-alpha"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway-alpha").with_arguments(serde_json::Map::from_iter([(
+            "action".to_string(),
+            Value::String("help".to_string()),
+        )])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert_ne!(result.is_error, Some(true), "help must succeed");
+    let structured = result
+        .structured_content
+        .as_ref()
+        .expect("success results must always set structuredContent (FR-3 axis 2)");
+    let envelope = structured.as_object().expect("envelope object");
+    assert_eq!(
+        envelope.len(),
+        4,
+        "success envelope must carry exactly ok/service/action/data: {envelope:?}"
+    );
+    assert_eq!(envelope["ok"], Value::Bool(true));
+    assert_eq!(envelope["service"], Value::String("gateway-alpha".into()));
+    assert_eq!(envelope["action"], Value::String("help".into()));
+    assert!(envelope.contains_key("data"));
+
+    let text = result.content[0].as_text().expect("compat text block");
+    let reparsed: Value = serde_json::from_str(&text.text).expect("text block parses");
+    assert_eq!(
+        &reparsed, structured,
+        "compat text block must serialize the identical envelope"
+    );
+}
+
+/// Error exemption (CONTRACT §C3.2): an unknown action returns `isError` with
+/// an `{ok: false}` envelope; the advertised success schema deliberately does
+/// not describe it.
+///
+/// Needs its own dispatch fn: `noop_dispatch` succeeds for every action, so
+/// the shared fixture cannot produce this path.
+#[tokio::test]
+async fn builtin_unknown_action_error_is_exempt_from_success_schema() {
+    fn unknown_action_dispatch(
+        action: String,
+        _params: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
+        Box::pin(async move {
+            Err(ToolError::UnknownAction {
+                message: format!("unknown action `{action}`"),
+                valid: vec!["demo.list".to_string()],
+                hint: None,
+            })
+        })
+    }
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredService {
+        name: "gateway-alpha",
+        description: "Gateway alpha",
+        category: "network",
+        kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
+        status: "available",
+        actions: TEST_ACTIONS_TWO,
+        dispatch: unknown_action_dispatch,
+    });
+    let server = test_server(
+        registry,
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "raw-mode-error",
+            Vec::<String>::new(),
+            ["hidden-upstream", "gateway-alpha"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway-alpha").with_arguments(serde_json::Map::from_iter([(
+            "action".to_string(),
+            Value::String("definitely.not.real".to_string()),
+        )])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.as_ref().expect("error envelope");
+    assert_eq!(structured["ok"], Value::Bool(false));
+    assert!(
+        structured.get("error").is_some(),
+        "error envelope carries the agent error contract, not the success shape"
+    );
 }
