@@ -60,7 +60,19 @@ async fn connect_in_process_service_peer(
         client_registry: Default::default(),
         transport_label: "in-process",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
-        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+        // FU-1 (issue #210, lab-48z4k): force Raw mode. Under `Root` the mini
+        // server derives its visibility from the process-global code-mode
+        // flag, so inside a serve process with Code Mode ENABLED the peer
+        // suppressed the very service it exists to expose and registered zero
+        // tools. `expose_code_mode: false` pins Raw regardless of the flag,
+        // and the single-service allowlist scopes the peer to exactly its
+        // own service.
+        route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
+            format!("in-process-{}", service.name),
+            std::iter::empty::<&str>(),
+            [service.name],
+            /* expose_code_mode */ false,
+        ),
         relay_session_id: crate::mcp::server::next_relay_session_id(),
         #[cfg(test)]
         code_mode_widget_callbacks_enabled_for_test: false,
@@ -138,4 +150,75 @@ async fn connect_in_process_service_peer(
         entry_name,
         upstream_name,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    fn noop_dispatch(
+        _action: String,
+        _params: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, crate::dispatch::error::ToolError>> + Send>>
+    {
+        Box::pin(async { Ok(serde_json::json!({})) })
+    }
+
+    const TEST_ACTIONS: &[labby_primitives::action::ActionSpec] =
+        &[labby_primitives::action::ActionSpec {
+            name: "demo.list",
+            description: "List demo entries",
+            params: &[],
+            returns: "DemoList",
+            destructive: false,
+            requires_admin: false,
+        }];
+
+    /// FU-1 (issue #210, lab-48z4k): the mini in-process server must list its
+    /// service in Raw mode even when the PROCESS code-mode flag is enabled —
+    /// which is exactly the state of a serve process whose Code Mode catalog
+    /// these peers exist to populate. Before the fix the peer derived
+    /// `InProcessPeer` visibility from the global flag, suppressed its own
+    /// service, and registered zero tools.
+    ///
+    /// Safe to toggle the process-global flag here: nextest runs each test in
+    /// its own process (see the same reasoning at pool helpers tests).
+    #[tokio::test]
+    async fn in_process_peer_lists_its_service_under_process_code_mode() {
+        crate::config::set_process_code_mode_enabled(true);
+
+        let service = crate::registry::RegisteredService {
+            name: "gateway-alpha",
+            description: "Gateway alpha",
+            category: "network",
+            kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
+            status: "available",
+            actions: TEST_ACTIONS,
+            dispatch: noop_dispatch,
+        };
+
+        let registration = connect_in_process_service_peer(service)
+            .await
+            .expect("in-process registration");
+
+        assert_eq!(
+            registration.tools.len(),
+            1,
+            "the peer must expose exactly its own service tool"
+        );
+        let tool = &registration.tools[0];
+        assert_eq!(tool.name.as_ref(), "gateway-alpha");
+        let schema = tool
+            .output_schema
+            .as_ref()
+            .expect("builtin peer tool carries the envelope outputSchema");
+        assert_eq!(
+            schema["properties"]["ok"]["const"],
+            serde_json::json!(true),
+            "schema and capability must arrive together (FU-1)"
+        );
+    }
 }

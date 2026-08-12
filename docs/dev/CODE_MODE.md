@@ -323,6 +323,21 @@ inject full schema, output schema, dts payloads, or snippet source. When a schem
 is missing or too complex for the TypeScript emitter, generated signatures fall
 back to `unknown`.
 
+### Builtin services as in-process peers
+
+Builtin Labby services (`gateway`, `doctor`, `setup`, …) join the Code Mode
+catalog as in-process upstream peers under synthetic
+`__in_process__<service>` namespaces, so the dispatch-envelope
+`outputSchema` and the callable capability arrive together (issue #210
+FU-1). Registration is lazy and idempotent — it happens on the root-scope
+catalog build; protected MCP routes never see them, because a route's
+upstream allowlist cannot contain the synthetic names (fail closed).
+Authorization matches ordinary upstream tools: builtin peers carry no
+annotations, so they fail closed as destructive (Code Mode execute
+permission required) and are excluded from read-only Code Mode unless
+operator-trusted. Each peer serves exactly its own service, pinned to Raw
+mode regardless of the process-wide Code Mode flag.
+
 ## Catalog Freshness
 
 Code Mode does not build or read a durable vector, lexical, or RRF index. Each

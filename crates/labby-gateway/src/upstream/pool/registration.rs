@@ -32,6 +32,35 @@ impl UpstreamPool {
         self.register_in_process_service_list(services).await;
     }
 
+    /// Idempotent variant for hot paths: register only services whose
+    /// in-process entry is missing, unhealthy, or empty. Safe to call on
+    /// every Code Mode catalog build — an already-registered healthy peer is
+    /// left untouched, so no duplicate mini-servers are spawned and no
+    /// connections are churned.
+    pub async fn ensure_in_process_service_peers(&self, registry: &dyn InProcessServiceRegistry) {
+        let services: Vec<Box<dyn InProcessService>> = registry
+            .in_process_services()
+            .into_iter()
+            .filter(|service| service.has_actions())
+            .collect();
+        let missing: Vec<Box<dyn InProcessService>> = {
+            let catalog = self.catalog.read().await;
+            services
+                .into_iter()
+                .filter(|service| {
+                    let upstream_name = in_process_upstream_name(service.service_name());
+                    !catalog.get(&upstream_name).is_some_and(|entry| {
+                        entry.tool_health.is_routable() && !entry.tools.is_empty()
+                    })
+                })
+                .collect()
+        };
+        if missing.is_empty() {
+            return;
+        }
+        self.register_in_process_service_list(missing).await;
+    }
+
     async fn register_in_process_service_list(&self, services: Vec<Box<dyn InProcessService>>) {
         let Some(connector) = self.in_process_connector.clone() else {
             tracing::warn!(
@@ -202,6 +231,63 @@ mod tests {
 
     fn service(name: &'static str) -> Box<dyn InProcessService> {
         Box::new(StubService { name })
+    }
+
+    struct StubRegistry(&'static [&'static str]);
+
+    impl crate::registry::InProcessServiceRegistry for StubRegistry {
+        fn in_process_services(&self) -> Vec<Box<dyn InProcessService>> {
+            self.0.iter().map(|name| service(name)).collect()
+        }
+    }
+
+    /// FU-1 (issue #210, lab-48z4k): `ensure_in_process_service_peers` runs on
+    /// every Code Mode catalog build, so it must not re-spawn mini-servers or
+    /// churn connections once a healthy, non-empty entry exists.
+    #[tokio::test]
+    async fn ensure_in_process_service_peers_is_idempotent() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    let upstream_name: Arc<str> =
+                        Arc::from(in_process_upstream_name(service.service_name()));
+                    Ok(InProcessRegistration {
+                        connection: None,
+                        tools: vec![rmcp::model::Tool::new(
+                            "gateway-alpha",
+                            "Gateway alpha",
+                            Arc::new(serde_json::Map::new()),
+                        )],
+                        entry_name: Arc::clone(&upstream_name),
+                        upstream_name: upstream_name.to_string(),
+                    })
+                });
+            future
+        });
+        let pool = UpstreamPool::new().with_in_process_connector(connector);
+        let registry = StubRegistry(&["gateway-alpha"]);
+
+        pool.ensure_in_process_service_peers(&registry).await;
+        pool.ensure_in_process_service_peers(&registry).await;
+
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            1,
+            "a healthy, non-empty peer entry must not be re-registered"
+        );
+        let tools = pool.healthy_tools_allowed(None).await;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].upstream_name.as_ref(),
+            in_process_upstream_name("gateway-alpha")
+        );
     }
 
     #[tokio::test]

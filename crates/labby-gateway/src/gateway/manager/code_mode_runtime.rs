@@ -267,6 +267,18 @@ impl GatewayManager {
         let Some(pool) = self.current_pool().await else {
             return Ok(Vec::new());
         };
+        // FU-1 (issue #210, lab-48z4k): builtin services join the Code Mode
+        // catalog as in-process upstream peers so schema and capability
+        // arrive together. Root scope only — a ProtectedSubset route's
+        // allowlist can never contain the synthetic `__in_process__*` names,
+        // so registering for it would be wasted work and the downstream
+        // `upstream_allowed` filter keeps protected routes builtin-free
+        // (fail closed) either way.
+        if allowed_upstreams.is_none() {
+            let registry = self.builtin_service_registry();
+            pool.ensure_in_process_service_peers(registry.as_ref())
+                .await;
+        }
         Ok(pool.healthy_tools_allowed(allowed_upstreams).await)
     }
 

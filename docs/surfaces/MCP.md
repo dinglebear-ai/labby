@@ -62,10 +62,14 @@ schema cannot describe per-action payloads.
 
 Scope and caveats:
 
-- **This is Raw-mode-only in practice.** Builtins are suppressed from
+- **On `tools/list` this is Raw-mode-only.** Builtins are suppressed from
   `tools/list` whenever Code Mode is enabled, so under Code Mode the only
-  builtin schema a client sees is `server_logs`. The `codemode*` tools
-  advertise their own execution-trace schema instead.
+  builtin schema a client sees there is `server_logs`. The `codemode*` tools
+  advertise their own execution-trace schema instead. Under Code Mode,
+  builtin services instead join the **Code Mode catalog** as in-process
+  peers (`__in_process__<service>` namespaces, root scope only), so the
+  envelope schema and the callable capability arrive together through
+  `codemode.search` / `codemode.describe`.
 - **Error envelopes are outside `outputSchema`.** An `isError: true` result
   carries the `{ "ok": false, … }` error envelope
   ([agent-error-contract.md](../contracts/agent-error-contract.md)). The
