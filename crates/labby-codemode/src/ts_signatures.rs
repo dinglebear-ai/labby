@@ -43,8 +43,8 @@ pub(crate) fn generate_tool_types(
     let tool_method = tool_name_to_snake(tool);
     let tool_id = namespaced_tool_id(namespace, tool);
     let tool_id_literal = serde_json::to_string(&tool_id).unwrap_or_else(|_| "\"\"".to_string());
-    let input_type = json_schema_to_type(input_schema);
-    let output_type = json_schema_to_type(output_schema);
+    let input_type = json_schema_to_type_labeled(input_schema, Some(&tool_id));
+    let output_type = json_schema_to_type_labeled(output_schema, Some(&tool_id));
     let signature = format!(
         "codemode.{namespace_method}.{tool_method}(params: {input_name}): Promise<{output_name}>"
     );
@@ -74,19 +74,120 @@ pub(crate) fn generate_tool_types(
     ToolTypes { signature, dts }
 }
 
+/// Test-only unlabeled entry point; production callers go through
+/// `generate_tool_types`, which labels renders with the tool id.
+#[cfg(test)]
 pub(crate) fn json_schema_to_type(schema: Option<&Value>) -> String {
+    json_schema_to_type_labeled(schema, None)
+}
+
+/// Render a schema to a TS type, attributing any budget exhaustion to
+/// `label` (a `namespace::tool` id) in the warning log.
+fn json_schema_to_type_labeled(schema: Option<&Value>, label: Option<&str>) -> String {
     let Some(schema) = schema else {
         return "unknown".to_string();
     };
-    let mut seen_refs = HashSet::new();
-    schema_to_type(schema, schema, 0, &mut seen_refs)
+    let mut budget = TypeRenderBudget::new();
+    let rendered = schema_to_type(schema, schema, 0, &mut budget);
+    if budget.exhausted {
+        // FR-9b: a partial render can silently misdescribe the tool, and the
+        // unbounded alternative is an attacker-controlled multi-GB String.
+        // `unknown` is always truthful.
+        tracing::warn!(
+            surface = "dispatch",
+            service = "code_mode",
+            action = "type.render_budget_exceeded",
+            tool = label.unwrap_or("<unlabeled>"),
+            nodes = budget.nodes,
+            rendered_bytes = budget.bytes,
+            "schema type render exceeded its expansion budget; publishing `unknown` instead"
+        );
+        return "unknown".to_string();
+    }
+    rendered
+}
+
+/// FR-9b (issue #210, lab-41e7m.7): recursion state for one type render.
+///
+/// `schema_to_type` removes a `$ref` from `seen_refs` on return, so shared
+/// non-cyclic refs re-expand at every occurrence — O(B^depth). The depth cap
+/// alone does not bound the OUTPUT: the function returns a `String` built by
+/// concatenation, so a hostile wide-and-deep `$defs` graph produces a
+/// multi-gigabyte allocation (an OOM kill, not a slow request). The budget
+/// bounds both node visits and accumulated rendered bytes; exhaustion makes
+/// the whole render collapse to `unknown`.
+///
+/// Deliberately NOT a `(ref, root)` memo cache: expansion depends on the
+/// current `seen_refs` set, so a cached entry would return a cycle-truncated
+/// result where full expansion was correct, and it would bound no output.
+struct TypeRenderBudget {
+    seen_refs: HashSet<String>,
+    nodes: usize,
+    bytes: usize,
+    exhausted: bool,
+}
+
+/// Node-visit cap. Legitimate schemas render in hundreds to low thousands of
+/// visits; the 512 KB input gate (`MAX_SCHEMA_BYTES`) bounds honest inputs
+/// long before this.
+const MAX_TYPE_RENDER_NODES: usize = 100_000;
+
+/// Accumulated rendered bytes, charged per node and therefore depth-weighted:
+/// a final string of `n` bytes at nesting depth `d` charges ~`n × d`. A
+/// legitimate 100 KB render at depth ~10 accumulates ~1 MB; a hostile
+/// expansion heads to gigabytes.
+const MAX_TYPE_RENDER_BYTES: usize = 4 * 1024 * 1024;
+
+impl TypeRenderBudget {
+    fn new() -> Self {
+        Self {
+            seen_refs: HashSet::new(),
+            nodes: 0,
+            bytes: 0,
+            exhausted: false,
+        }
+    }
+
+    /// Charge one node visit; `false` once the budget is exhausted.
+    fn enter(&mut self) -> bool {
+        if self.exhausted {
+            return false;
+        }
+        self.nodes += 1;
+        if self.nodes > MAX_TYPE_RENDER_NODES {
+            self.exhausted = true;
+            return false;
+        }
+        true
+    }
+
+    fn charge_bytes(&mut self, len: usize) {
+        self.bytes = self.bytes.saturating_add(len);
+        if self.bytes > MAX_TYPE_RENDER_BYTES {
+            self.exhausted = true;
+        }
+    }
 }
 
 fn schema_to_type(
     schema: &Value,
     root: &Value,
     depth: usize,
-    seen_refs: &mut HashSet<String>,
+    budget: &mut TypeRenderBudget,
+) -> String {
+    if !budget.enter() {
+        return "unknown".to_string();
+    }
+    let rendered = schema_to_type_unbudgeted(schema, root, depth, budget);
+    budget.charge_bytes(rendered.len());
+    rendered
+}
+
+fn schema_to_type_unbudgeted(
+    schema: &Value,
+    root: &Value,
+    depth: usize,
+    seen_refs: &mut TypeRenderBudget,
 ) -> String {
     if let Some(value) = schema.as_bool() {
         return if value { "unknown" } else { "never" }.to_string();
@@ -99,13 +200,13 @@ fn schema_to_type(
     };
 
     if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-        if !seen_refs.insert(reference.to_string()) {
+        if !seen_refs.seen_refs.insert(reference.to_string()) {
             return "unknown".to_string();
         }
         let resolved = resolve_ref(root, reference)
             .map(|schema| schema_to_type(schema, root, depth + 1, seen_refs))
             .unwrap_or_else(|| "unknown".to_string());
-        seen_refs.remove(reference);
+        seen_refs.seen_refs.remove(reference);
         return resolved;
     }
 
@@ -206,7 +307,7 @@ fn schema_type_to_type(
     schema: &Value,
     root: &Value,
     depth: usize,
-    seen_refs: &mut HashSet<String>,
+    seen_refs: &mut TypeRenderBudget,
 ) -> String {
     match kind {
         "object" => object_type(schema, root, depth, seen_refs),
@@ -226,7 +327,7 @@ fn object_type(
     schema: &Value,
     root: &Value,
     depth: usize,
-    seen_refs: &mut HashSet<String>,
+    seen_refs: &mut TypeRenderBudget,
 ) -> String {
     let Some(object) = schema.as_object() else {
         return "Record<string, unknown>".to_string();
@@ -305,7 +406,7 @@ fn array_type(
     schema: &Value,
     root: &Value,
     depth: usize,
-    seen_refs: &mut HashSet<String>,
+    seen_refs: &mut TypeRenderBudget,
 ) -> String {
     let Some(object) = schema.as_object() else {
         return "unknown[]".to_string();

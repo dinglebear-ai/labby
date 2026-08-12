@@ -27,7 +27,7 @@ decisions, and findings.
 | `lab-41e7m.4` | Docs, generated artifacts, conformance | open | .1, .2, .3 |
 | `lab-41e7m.5` | **FR-2a** — authorization-gate consolidation (moved OUT of `.1`) | open (filed 2026-08-11) | — |
 | `lab-41e7m.6` | FR-9a — sanitize upstream metadata on `tools/list` (HIGH) | open (filed 2026-08-11) | — |
-| `lab-41e7m.7` | FR-9b — bound `$ref` expansion (HIGH, blocks `.3`) | open (filed 2026-08-11) | — |
+| `lab-41e7m.7` | FR-9b — bound `$ref` expansion (HIGH, blocks `.3`) | **implemented** (this commit) | — |
 | **to file** | FU-1..FU-8 follow-ups (SPEC §6.2) | — | — |
 
 ```bash
@@ -54,7 +54,7 @@ places, which is the exact drift this issue exists to eliminate).
 | FR-7 | Error trace ↔ trace schema consistency | .1 | ☑ 2026-08-11 |
 | FR-8 | Catalog coverage | .3 | ☐ |
 | FR-9a | Sanitize upstream metadata on `tools/list` | `lab-41e7m.6` | ☐ |
-| FR-9b | Bound `$ref` expansion | `lab-41e7m.7` | ☐ |
+| FR-9b | Bound `$ref` expansion | `lab-41e7m.7` | ☑ 2026-08-11 |
 
 **Acceptance criteria:** AC-1, AC-2, AC-2a, AC-3, AC-15 ☑ (tests in
 `handlers_tools/tests.rs` §"Issue #210" and `permanent_tools.rs::tests`); AC-16 lands with
