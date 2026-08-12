@@ -103,7 +103,13 @@ impl LabMcpServer {
         let mut catalog_upstream_count = 0usize;
         let mut upstream_tool_error_count = 0usize;
         let mut open_upstream_count = 0usize;
-        let visibility = self.code_mode_visibility().await;
+        // FU-2 (issue #210, lab-ecxfl): one PeerContract for the whole listing.
+        // The three consumers below (visibility, Code Mode upstream
+        // descriptions, upstream pool) are audience-independent, so hoisting
+        // is behavior-neutral. The clone cost is only real on ProtectedSubset
+        // routes — `Root` is a unit variant.
+        let peer_contract = self.peer_contract();
+        let visibility = peer_contract.code_mode_visibility().await;
         let manager_code_mode_enabled = visibility.exposes_synthetic_tools();
         let process_code_mode_enabled = crate::config::process_code_mode_enabled();
         let hide_raw_tools = visibility.hides_raw_tools();
@@ -155,7 +161,7 @@ impl LabMcpServer {
             // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
-            let code_mode_upstreams = self.code_mode_upstreams_for_description().await;
+            let code_mode_upstreams = peer_contract.code_mode_upstreams_for_description().await;
             if code_mode_read_scope_allowed(auth) {
                 descriptors.push(
                     self.registry
@@ -235,7 +241,7 @@ impl LabMcpServer {
         // Mode execution/search still performs cold discovery through the
         // gateway manager when the caller asks for upstream catalog data.
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
+        if let Some(pool) = peer_contract.current_upstream_pool().await {
             pool_present = true;
             let upstream_status = pool.upstream_status().await;
             catalog_upstream_count = upstream_status.len();
@@ -412,15 +418,6 @@ impl LabMcpServer {
             .with_cache_scope(rmcp::model::CacheScope::Private);
         result.next_cursor = next_cursor;
         Ok(result)
-    }
-
-    /// Enabled, route-scoped upstream namespaces rendered into Code Mode's
-    /// model-visible tool descriptions.
-    #[cfg(feature = "gateway")]
-    async fn code_mode_upstreams_for_description(&self) -> Vec<CodeModeUpstreamDescription> {
-        self.peer_contract()
-            .code_mode_upstreams_for_description()
-            .await
     }
 }
 
