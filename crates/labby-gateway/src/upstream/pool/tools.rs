@@ -452,7 +452,9 @@ impl UpstreamPool {
                     .cloned()
                     .collect()
             }
-            UpstreamCapability::Tools | UpstreamCapability::Prompts => catalog
+            UpstreamCapability::Tools
+            | UpstreamCapability::Prompts
+            | UpstreamCapability::Skills => catalog
                 .iter()
                 .filter(|(_, entry)| entry.health_for(capability).is_routable())
                 .map(|(name, _)| name.clone())

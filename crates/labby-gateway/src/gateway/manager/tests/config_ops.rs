@@ -144,6 +144,8 @@ async fn add_with_bearer_token_value_writes_env_and_references_generated_env_var
                 expose_tools: None,
                 expose_resources: None,
                 expose_prompts: None,
+                proxy_skills: false,
+                expose_skills: None,
                 code_mode_hint: None,
                 oauth: None,
                 imported_from: None,

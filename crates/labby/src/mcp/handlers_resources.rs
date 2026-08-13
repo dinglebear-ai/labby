@@ -1886,6 +1886,8 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
                         expose_tools: None,
                         expose_resources: None,
                         expose_prompts: None,
+                        proxy_skills: false,
+                        expose_skills: None,
                         code_mode_hint: None,
                         oauth: None,
                         imported_from: None,

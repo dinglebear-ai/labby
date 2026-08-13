@@ -33,6 +33,7 @@ pub(super) fn capability_name(capability: UpstreamCapability) -> &'static str {
         UpstreamCapability::Tools => "tools",
         UpstreamCapability::Prompts => "prompts",
         UpstreamCapability::Resources => "resources",
+        UpstreamCapability::Skills => "skills",
     }
 }
 
