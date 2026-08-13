@@ -96,9 +96,12 @@ pub fn parse_digest(raw: &str) -> Result<ResourceDigest, ToolError> {
             ),
         });
     }
+    // `is_ascii_hexdigit` accepts `A-F`, so lowercase is asserted separately;
+    // uppercase input is rejected rather than folded, keeping one digest to one
+    // representation.
     if !hex
         .chars()
-        .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase() && c.is_ascii_hexdigit())
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     {
         return Err(ToolError::Sdk {
             sdk_kind: "invalid_param".to_string(),

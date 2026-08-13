@@ -76,9 +76,12 @@ impl SkillUri {
         let skill_path = self.path.strip_suffix(SKILL_MD_FILE)?;
         let skill_path = skill_path.strip_suffix('/').unwrap_or(skill_path);
         if skill_path.is_empty() {
-            // `skill://<origin>/SKILL.md` — the origin label is the whole skill
-            // path, so the name is the origin itself.
-            return Some(("", self.origin.as_str()));
+            // `skill://<origin>/SKILL.md` carries an origin label and no skill
+            // path, so there is no name to recover. Treating the origin label as
+            // the name would let a routing label masquerade as a skill — exactly
+            // the cross-origin confusion the per-origin namespace exists to
+            // prevent — so this is malformed rather than a special case.
+            return None;
         }
         let name = skill_path.rsplit('/').next().unwrap_or(skill_path);
         Some((skill_path, name))
@@ -223,6 +226,15 @@ mod tests {
         let uri = parse_skill_uri("skill://acme/billing/refunds/SKILL.md").expect("valid");
         assert_eq!(uri.origin(), "acme");
         assert_eq!(uri.skill_md_parts(), Some(("billing/refunds", "refunds")));
+    }
+
+    #[test]
+    fn origin_label_is_never_treated_as_a_skill_name() {
+        // Parses structurally, but names no skill: the origin label must not be
+        // able to stand in for one.
+        let uri = parse_skill_uri("skill://labby/SKILL.md").expect("parses");
+        assert!(uri.is_skill_md());
+        assert_eq!(uri.skill_md_parts(), None);
     }
 
     #[test]
