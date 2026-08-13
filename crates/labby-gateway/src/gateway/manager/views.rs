@@ -50,9 +50,7 @@ impl GatewayManager {
     }
 
     pub async fn list(&self) -> Result<Vec<ServerView>, ToolError> {
-        let (cfg_guard, pool) = tokio::join!(self.config.read(), self.runtime.current_pool(),);
-        let cfg = cfg_guard.clone();
-        drop(cfg_guard);
+        let (cfg, pool) = self.published_config_and_pool().await;
         // `gateway.list` backs both the CLI and dashboard. Warm lazy, non-OAuth
         // upstreams before projecting the snapshot so a freshly started daemon
         // does not report zero capabilities for healthy servers until another
@@ -91,9 +89,7 @@ impl GatewayManager {
     }
 
     pub async fn get_server(&self, id: &str) -> Result<ServerView, ToolError> {
-        let (cfg_guard, pool) = tokio::join!(self.config.read(), self.runtime.current_pool(),);
-        let cfg = cfg_guard.clone();
-        drop(cfg_guard);
+        let (cfg, pool) = self.published_config_and_pool().await;
 
         if let Some(upstream) = cfg.upstream.iter().find(|upstream| upstream.name == id) {
             return Ok(server_view_from_upstream(pool.as_deref(), upstream).await);
@@ -116,7 +112,7 @@ impl GatewayManager {
     }
 
     pub async fn get(&self, name: &str) -> Result<GatewayView, ToolError> {
-        let cfg = self.config.read().await;
+        let (cfg, pool) = self.published_config_and_pool().await;
         let code_mode = cfg.code_mode.clone();
         let upstream = cfg
             .upstream
@@ -127,16 +123,9 @@ impl GatewayManager {
                 message: format!("gateway `{name}` not found"),
             })?
             .clone();
-        drop(cfg);
-
         Ok(GatewayView {
             config: config_view(&upstream, &code_mode),
-            runtime: runtime_view(
-                self.runtime.current_pool().await.as_deref(),
-                &upstream.name,
-                None,
-            )
-            .await,
+            runtime: runtime_view(pool.as_deref(), &upstream.name, None).await,
             enrichment_suggestion: None,
             enrichment_suggestion_error: None,
         })
@@ -205,16 +194,13 @@ impl GatewayManager {
     }
 
     pub async fn status(&self, name: Option<&str>) -> Result<Vec<GatewayRuntimeView>, ToolError> {
-        let upstreams: Vec<UpstreamConfig> = self
-            .config
-            .read()
-            .await
+        let (cfg, pool) = self.published_config_and_pool().await;
+        let upstreams: Vec<UpstreamConfig> = cfg
             .upstream
             .iter()
             .filter(|u| name.is_none_or(|needle| needle == u.name))
             .cloned()
             .collect();
-        let pool = self.runtime.current_pool().await;
         // P-M8: use the cached prompt-ownership snapshot instead of a live
         // prompts/list fan-out on every status poll (mirrors the resources fix
         // for lab-mzm2 — same pattern, same rationale).

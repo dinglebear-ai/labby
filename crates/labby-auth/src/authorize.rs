@@ -12,6 +12,15 @@ use tracing::{debug, info, warn};
 #[cfg(test)]
 static CALLBACK_PROVIDER_LOCK_REACHED: std::sync::LazyLock<tokio::sync::Notify> =
     std::sync::LazyLock::new(tokio::sync::Notify::new);
+#[cfg(test)]
+static CALLBACK_CAS_PAUSE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static CALLBACK_CAS_OBSERVED: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(0));
+#[cfg(test)]
+static CALLBACK_CAS_RESUME: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(0));
 
 use crate::error::AuthError;
 use crate::google::{AuthorizeUrlRequest, merge_google_scopes};
@@ -510,6 +519,17 @@ pub async fn callback(
         .store
         .find_google_provider_credential(&google.subject)
         .await?;
+    #[cfg(test)]
+    if request.client_state == "generation-loss-client-state"
+        && CALLBACK_CAS_PAUSE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+    {
+        CALLBACK_CAS_OBSERVED.add_permits(1);
+        CALLBACK_CAS_RESUME
+            .acquire()
+            .await
+            .expect("test semaphore open")
+            .forget();
+    }
     let granted_scopes = merge_google_scopes(
         existing_credential
             .as_ref()
@@ -596,14 +616,13 @@ pub async fn callback(
             subject_id = %subject_id,
             observed_provider_generation = ?existing_credential.as_ref().map(|row| row.generation),
             replacement_provider_credential_present = replacement_present,
+            kind = "oauth_needs_reauth",
             "oauth callback discarded stale provider exchange after generation changed"
         );
-        if !replacement_present {
-            return Err(AuthError::OauthNeedsReauth(
-                "google provider credential changed during authorization; retry authorization"
-                    .to_string(),
-            ));
-        }
+        return Err(AuthError::OauthNeedsReauth(
+            "google provider credential changed during authorization; retry authorization"
+                .to_string(),
+        ));
     }
     info!(
         client_id = %request.client_id,
@@ -2166,7 +2185,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_callback_started_before_revoke_cannot_recreate_the_provider_credential() {
+    async fn oauth_callback_generation_loss_cannot_issue_code_over_fresh_credential() {
         let base_state = test_auth_state_with_registered_client().await;
         let now = now_unix();
         base_state
@@ -2193,10 +2212,10 @@ pub mod tests {
         base_state
             .store
             .insert_authorization_request(AuthorizationRequestRow {
-                state: "repeat-state".to_string(),
+                state: "generation-loss-state".to_string(),
                 client_id: "client".to_string(),
                 redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
-                client_state: "client-state".to_string(),
+                client_state: "generation-loss-client-state".to_string(),
                 native_poll_token_hash: None,
                 resource: "https://lab.example.com/mcp".to_string(),
                 scope: "lab".to_string(),
@@ -2243,28 +2262,27 @@ pub mod tests {
             google,
         );
 
-        let provider_guard = crate::google_refresh::lock("google-subject-123")
-            .lock_owned()
-            .await;
-        let provider_lock_reached = super::CALLBACK_PROVIDER_LOCK_REACHED.notified();
-        tokio::pin!(provider_lock_reached);
+        super::CALLBACK_CAS_PAUSE_ENABLED.store(true, std::sync::atomic::Ordering::Release);
         let request_state = state.clone();
         let response_task = tokio::spawn(async move {
             router(request_state)
                 .oneshot(
                     Request::builder()
-                        .uri("/auth/google/callback?state=repeat-state&code=upstream-code")
+                        .uri("/auth/google/callback?state=generation-loss-state&code=upstream-code")
                         .body(Body::empty())
                         .unwrap(),
                 )
                 .await
                 .unwrap()
         });
-        provider_lock_reached.await;
-        assert!(
-            !response_task.is_finished(),
-            "the callback must share the subject lock used by provider refresh"
-        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            super::CALLBACK_CAS_OBSERVED.acquire(),
+        )
+        .await
+        .expect("callback reached generation CAS")
+        .unwrap()
+        .forget();
         let generation = state
             .store
             .find_google_provider_credential("google-subject-123")
@@ -2272,16 +2290,38 @@ pub mod tests {
             .unwrap()
             .unwrap()
             .generation;
+        let peer_store = crate::sqlite::SqliteStore::open_with_key(
+            state.config.sqlite_path.clone(),
+            state.config.token_encryption_key.clone(),
+        )
+        .await
+        .unwrap();
+        let now = now_unix();
         assert!(
-            state
-                .store
-                .invalidate_google_provider_credential("google-subject-123", generation)
+            peer_store
+                .replace_google_provider_token_bundle_if_generation(
+                    GoogleProviderCredentialUpdate {
+                        subject: "google-subject-123".to_string(),
+                        email: Some("user@example.com".to_string()),
+                        client_id: "client-id".to_string(),
+                        granted_scopes: vec!["openid".to_string(), "email".to_string()],
+                        access_token: "fresh-provider-access".to_string(),
+                        refresh_token: "fresh-provider-refresh".to_string(),
+                        token_received_at: now,
+                        access_token_expires_at: now + 3600,
+                        issuer: Some("https://accounts.google.com".to_string()),
+                        refreshed: false,
+                        scope_upgraded: true,
+                    },
+                    generation
+                )
                 .await
                 .unwrap()
-                .invalidated
         );
-        drop(provider_guard);
+        super::CALLBACK_CAS_PAUSE_ENABLED.store(false, std::sync::atomic::Ordering::Release);
+        super::CALLBACK_CAS_RESUME.add_permits(1);
         let response = response_task.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         if response.status() == StatusCode::SEE_OTHER {
             let location = response
@@ -2298,14 +2338,13 @@ pub mod tests {
                 "a pre-revoke callback must not issue a Labby authorization code"
             );
         }
-        assert!(
-            state
-                .store
-                .find_google_provider_credential("google-subject-123")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        let credential = state
+            .store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.refresh_token, "fresh-provider-refresh");
     }
 
     #[tokio::test]
@@ -2905,7 +2944,7 @@ pub mod tests {
         )
     }
 
-    fn signed_test_id_token() -> String {
+    pub(crate) fn signed_test_id_token() -> String {
         let claims = json!({
             "iss": "https://accounts.google.com",
             "aud": "client-id",
@@ -2920,7 +2959,7 @@ pub mod tests {
         encode(&header, &claims, &test_encoding_key()).unwrap()
     }
 
-    fn test_jwks() -> serde_json::Value {
+    pub(crate) fn test_jwks() -> serde_json::Value {
         let key = test_rsa_key();
         let public_key = key.to_public_key();
         json!({

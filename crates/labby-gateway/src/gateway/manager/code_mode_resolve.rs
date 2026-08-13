@@ -42,8 +42,8 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         lookup: CallbackToolLookup,
     ) -> Result<Vec<(String, UpstreamTool)>, ToolError> {
-        let cfg = self.config.read().await.clone();
-        let Some(pool) = self.current_pool().await else {
+        let (cfg, pool) = self.published_config_and_pool().await;
+        let Some(pool) = pool else {
             return Ok(Vec::new());
         };
 
@@ -142,17 +142,37 @@ impl GatewayManager {
 
         self.ensure_upstream_tool_runtime_ready(upstream, owner, oauth_subject)
             .await?;
-        let pool = self.current_pool().await.ok_or_else(|| ToolError::Sdk {
+        // Runtime readiness can race a reload. Re-snapshot both components so
+        // execution never combines the old config with the newly published
+        // pool (or vice versa).
+        let (published_cfg, pool) = self.published_config_and_pool().await;
+        if !published_cfg.code_mode.enabled {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: "the gateway codemode surface is not enabled; set [code_mode] enabled = true in config".to_string(),
+            });
+        }
+        let pool = pool.ok_or_else(|| ToolError::Sdk {
             sdk_kind: "unknown_tool".to_string(),
             message: format!("upstream tool `{upstream}::{tool}` was not found"),
         })?;
 
-        let Some(upstream_config) = upstream_config.as_ref() else {
+        let Some(upstream_config) = published_cfg
+            .upstream
+            .iter()
+            .find(|candidate| candidate.name == upstream && candidate.enabled)
+        else {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: format!("upstream tool `{upstream}::{tool}` was not found"),
             });
         };
+        if !is_routable(upstream_config.priority) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("upstream tool `{upstream}::{tool}` was not found"),
+            });
+        }
         routed_tools_for_upstream(&pool, upstream_config, oauth_subject)
             .await
             .into_iter()
@@ -192,13 +212,13 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
     ) -> Result<(String, UpstreamTool), ToolError> {
         let selector = ToolExecuteSelector::parse(tool, None)?;
-        let cfg = self.config.read().await.clone();
+        let (cfg, pool) = self.published_config_and_pool().await;
         let priority_by_upstream: HashMap<String, f32> = cfg
             .upstream
             .iter()
             .map(|upstream| (upstream.name.clone(), upstream.priority))
             .collect();
-        let Some(pool) = self.current_pool().await else {
+        let Some(pool) = pool else {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: format!("unknown tool `{}`", selector.display_name()),

@@ -152,6 +152,10 @@ pub struct UpstreamPool {
     /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
     /// independent schedules, but only a bounded number may probe concurrently.
     reprobe_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Shared gate for cold subject-scoped catalog fan-outs. Unlike the
+    /// per-upstream call bulkheads, this bounds simultaneous OAuth connection
+    /// acquisition across the entire fleet and across concurrent callers.
+    catalog_fanout_semaphore: Arc<tokio::sync::Semaphore>,
     /// Per-upstream RPC bulkheads. Each upstream receives an independent
     /// semaphore so one slow or reconnecting peer cannot absorb unbounded
     /// concurrent retries.
@@ -392,6 +396,9 @@ impl UpstreamPool {
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 upstream_discovery_concurrency(None),
             )),
+            catalog_fanout_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                upstream_discovery_concurrency(None),
+            )),
             call_semaphores: Arc::new(RwLock::new(HashMap::new())),
             call_concurrency: helpers::upstream_call_concurrency(),
             lazy_connect_locks: Arc::new(RwLock::new(HashMap::new())),
@@ -459,6 +466,15 @@ impl UpstreamPool {
         self
     }
 
+    pub(super) async fn acquire_catalog_fanout_permit(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        Arc::clone(&self.catalog_fanout_semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|_| "subject catalog concurrency gate was closed".to_string())
+    }
+
     pub(super) async fn acquire_upstream_call_permit(
         &self,
         upstream_name: &str,
@@ -522,7 +538,8 @@ impl UpstreamPool {
         self
     }
 
-    #[cfg(any(test, feature = "testkit"))]
+    /// Configured wall-clock request budget used by surface adapters that must
+    /// compose multiple upstream passes under one absolute deadline.
     pub fn request_timeout(&self) -> Duration {
         self.request_timeout
     }

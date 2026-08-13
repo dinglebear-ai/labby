@@ -200,6 +200,17 @@ passes. This makes a slow catalog refresh attributable to the exact upstream
 and distinguishes connection acquisition, timeout, upstream error, and success.
 Each shared or subject-scoped fan-out phase has a 10-second ceiling (or the
 smaller configured upstream request timeout), and preserves partial results.
+The combined MCP `prompts/list` path is stricter: raw and subject-scoped OAuth
+passes share one absolute upstream request deadline, including cold connection
+acquisition, concurrency-gate wait, and cursor pagination. Deadline warnings
+use `kind = "timeout"`, identify the phase, and set `partial_result = true`;
+the request returns all prompts completed before the deadline.
+
+Cold subject-scoped tool, prompt, and resource discovery shares the configured
+fleet-wide discovery concurrency gate. Resource aggregation additionally emits
+a warning when its global item or serialized-byte cap truncates the partial
+catalog; the event includes `limit` and the accepted item or byte count. These
+events must not include the OAuth subject.
 
 Resource subscription reconciliation is not part of the caller's
 `resources/list` latency budget. It runs as a coalesced background batch with:

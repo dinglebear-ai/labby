@@ -1763,11 +1763,6 @@ fn build_mcp_service_with_scope(
     // All HTTP sessions share the same PeerNotifier (and thus the same peers
     // vec) so that gateway reload notifications reach every connected session.
     let shared_peers = Arc::clone(&notifier.peers);
-    // NeverSessionManager constructs a handler per HTTP request. Keep the
-    // completed tools/list baselines at the route-factory boundary so a later
-    // subscriptions/listen request can inherit the same subject's contract.
-    let shared_listed_tool_contracts: crate::mcp::server::ToolContractBaselines =
-        Default::default();
     let shared_code_mode_app_state = notifier.code_mode_app_state.clone();
     #[cfg(feature = "gateway")]
     let shared_client_registry = notifier.client_registry.clone();
@@ -1783,7 +1778,6 @@ fn build_mcp_service_with_scope(
             #[cfg(not(feature = "gateway"))]
             let gateway_manager_configured = false;
             let peers = Arc::clone(&shared_peers);
-            let listed_tool_contracts = Arc::clone(&shared_listed_tool_contracts);
             let code_mode_app_state = shared_code_mode_app_state.clone();
             #[cfg(feature = "gateway")]
             let client_registry = shared_client_registry.clone();
@@ -1806,7 +1800,11 @@ fn build_mcp_service_with_scope(
                 gateway_manager: manager,
                 peers,
                 code_mode_app_state,
-                last_listed_tool_contract: listed_tool_contracts,
+                // Stateless HTTP requests cannot prove that a listen belongs
+                // to any earlier tools/list request. This per-request store is
+                // therefore intentionally empty; listen catches up
+                // conservatively instead of inheriting another conversation.
+                last_listed_tool_contract: Default::default(),
                 #[cfg(feature = "gateway")]
                 client_registry,
                 transport_label: "http",
@@ -2406,14 +2404,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stateless_http_abandoned_anonymous_list_cannot_suppress_later_listen_catchup() {
+    async fn stateless_http_list_mutation_listen_race_catches_up_conservatively() {
+        let notifier = PeerNotifier::default();
+        let code_mode_app_state = notifier.code_mode_app_state.clone();
         let app = build_http_router(
             AppState::new(),
             None,
             None,
             &McpPreferences::default(),
             &[],
-            PeerNotifier::default(),
+            notifier,
             true,
             false,
         )
@@ -2452,6 +2452,12 @@ mod tests {
             .await
             .expect("tools/list response");
         assert_eq!(listed.status(), StatusCode::OK);
+
+        // Mutate the advertised contract after the caller's completed list and
+        // before its separate stateless listen request. Sampling the live
+        // contract during listen would incorrectly treat this new state as the
+        // caller's baseline and suppress the required catch-up signal.
+        code_mode_app_state.set_enabled(false);
 
         let listening = app
             .oneshot(
@@ -2500,7 +2506,7 @@ mod tests {
         let observed = String::from_utf8_lossy(&observed);
         assert!(
             observed.contains("notifications/tools/list_changed"),
-            "an unrelated anonymous list baseline suppressed conservative catch-up: {observed}"
+            "the list(A) -> mutate(B) -> listen race missed its conservative catch-up: {observed}"
         );
     }
 

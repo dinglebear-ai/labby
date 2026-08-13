@@ -42,6 +42,19 @@ impl UpstreamPool {
         subject: &str,
         builtin_names: &[&str],
     ) -> Vec<Prompt> {
+        let deadline_at = tokio::time::Instant::now() + self.request_timeout;
+        self.subject_scoped_prompts_until(configs, subject, builtin_names, deadline_at)
+            .await
+    }
+
+    /// Discover OAuth prompts within a caller-owned absolute deadline.
+    pub async fn subject_scoped_prompts_until(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        builtin_names: &[&str],
+        deadline_at: tokio::time::Instant,
+    ) -> Vec<Prompt> {
         let mut futures = FuturesUnordered::new();
         for config in configs.iter().filter(|config| config.oauth.is_some()) {
             let config = config.clone();
@@ -55,22 +68,80 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_prompts.clone(),
                 );
-                let result = pool
-                    .acquire_or_connect_subject(&config, &subject)
-                    .await
-                    .map(|(peer, _tools)| peer);
-                (config.name.clone(), policy, result)
+                let _fanout_permit = match tokio::time::timeout_at(
+                    deadline_at,
+                    pool.acquire_catalog_fanout_permit(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            upstream = %config.name,
+                            kind = "queue_closed",
+                            error = %error,
+                            "subject-scoped upstream prompt discovery failed"
+                        );
+                        return (config.name.clone(), policy, None);
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            upstream = %config.name,
+                            kind = "timeout",
+                            phase = "oauth_fanout_gate",
+                            partial_result = true,
+                            "subject-scoped prompt fanout permit wait exceeded request deadline"
+                        );
+                        return (config.name.clone(), policy, None);
+                    }
+                };
+                let result = tokio::time::timeout_at(
+                    deadline_at,
+                    pool.acquire_or_connect_subject(&config, &subject),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("subject-scoped prompt acquisition exceeded request deadline")
+                })
+                .and_then(|result| result.map(|(peer, _tools)| peer));
+                (config.name.clone(), policy, Some(result))
             });
         }
 
         let mut upstream_prompts = Vec::new();
         while let Some((name, policy, result)) = futures.next().await {
-            let Ok(peer) = result else {
+            let Some(result) = result else {
                 continue;
             };
+            let peer = match result {
+                Ok(peer) => peer,
+                Err(error) => {
+                    let error_text = error.to_string();
+                    tracing::warn!(
+                        upstream = %name,
+                        kind = super::helpers::classify_upstream_error(&error_text),
+                        phase = "oauth_acquisition",
+                        partial_result = true,
+                        error = %error_text,
+                        "subject-scoped prompt acquisition failed within shared request deadline"
+                    );
+                    continue;
+                }
+            };
+            let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    upstream = %name,
+                    kind = "timeout",
+                    phase = "oauth_pagination",
+                    partial_result = true,
+                    "subject-scoped prompt pagination skipped after request deadline"
+                );
+                continue;
+            }
             match catalog_pagination::list_prompts(
                 &peer,
-                self.request_timeout,
+                remaining,
                 super::tools::MAX_UPSTREAM_PROMPTS,
             )
             .await
@@ -94,6 +165,8 @@ impl UpstreamPool {
                     tracing::warn!(
                         upstream = %name,
                         kind = error.kind(),
+                        phase = "oauth_pagination",
+                        partial_result = true,
                         error = %error.bounded_text(),
                         "subject-scoped upstream prompt discovery failed"
                     );
@@ -125,15 +198,22 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_prompts.clone(),
                 );
+                let _fanout_permit = match pool.acquire_catalog_fanout_permit().await {
+                    Ok(permit) => permit,
+                    Err(_) => return (config.name.clone(), policy, target_prompt, None),
+                };
                 let result = pool
                     .acquire_or_connect_subject(&config, &subject)
                     .await
                     .map(|(peer, _tools)| peer);
-                (config.name.clone(), policy, target_prompt, result)
+                (config.name.clone(), policy, target_prompt, Some(result))
             });
         }
 
         while let Some((name, policy, target_prompt, result)) = futures.next().await {
+            let Some(result) = result else {
+                continue;
+            };
             let Ok(peer) = result else {
                 continue;
             };

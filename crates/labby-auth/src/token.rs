@@ -42,6 +42,8 @@ struct RefreshClaimLease {
     heartbeat: Option<tokio::task::JoinHandle<()>>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     active: bool,
+    #[cfg(test)]
+    observer: Option<std::sync::Arc<RefreshClaimLeaseObserver>>,
 }
 
 #[cfg(test)]
@@ -49,6 +51,8 @@ struct RefreshClaimLease {
 struct RefreshClaimLeaseObserver {
     cancellation_released: tokio::sync::Notify,
     renewal_finished: tokio::sync::Notify,
+    explicit_release_started: tokio::sync::Notify,
+    explicit_release_continue: tokio::sync::Notify,
 }
 
 impl RefreshClaimLease {
@@ -124,6 +128,8 @@ impl RefreshClaimLease {
         let heartbeat_token_id = refresh_token_id.clone();
         let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+        #[cfg(test)]
+        let heartbeat_observer = observer.clone();
         let heartbeat = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -144,7 +150,7 @@ impl RefreshClaimLease {
                             ),
                         }
                         #[cfg(test)]
-                        if let Some(observer) = observer.as_ref() {
+                        if let Some(observer) = heartbeat_observer.as_ref() {
                             observer.cancellation_released.notify_one();
                         }
                         return;
@@ -157,7 +163,7 @@ impl RefreshClaimLease {
                             .await
                     } => {
                         #[cfg(test)]
-                        if let Some(observer) = observer.as_ref() {
+                        if let Some(observer) = heartbeat_observer.as_ref() {
                             observer.renewal_finished.notify_one();
                         }
                         match renewal {
@@ -203,6 +209,8 @@ impl RefreshClaimLease {
                 heartbeat: Some(heartbeat),
                 cancel: Some(cancel_tx),
                 active: true,
+                #[cfg(test)]
+                observer,
             },
             lost_rx,
         )
@@ -221,12 +229,40 @@ impl RefreshClaimLease {
         if let Some(heartbeat) = self.heartbeat.take() {
             heartbeat.abort();
         }
-        let result = self
-            .store
-            .release_refresh_claim(&self.refresh_token, &self.claim_id)
-            .await;
+        let store = self.store.clone();
+        let refresh_token = self.refresh_token.clone();
+        let refresh_token_id = fingerprint(&refresh_token);
+        let claim_id = self.claim_id.clone();
+        #[cfg(test)]
+        let observer = self.observer.clone();
+        let cleanup = tokio::spawn(async move {
+            #[cfg(test)]
+            if let Some(observer) = observer.as_ref() {
+                observer.explicit_release_started.notify_one();
+                observer.explicit_release_continue.notified().await;
+            }
+            let result = store.release_refresh_claim(&refresh_token, &claim_id).await;
+            match result.as_ref() {
+                Ok(()) => debug!(
+                    refresh_token_id = %refresh_token_id,
+                    "oauth refresh_token claim released after completed request"
+                ),
+                Err(error) => warn!(
+                    refresh_token_id = %refresh_token_id,
+                    kind = error.kind(),
+                    error = %error,
+                    "oauth refresh_token claim release after completed request failed"
+                ),
+            }
+            result
+        });
+        // From this point onward the owned task, rather than Drop, is solely
+        // responsible for cleanup. Dropping this request future detaches the
+        // task but cannot cancel the durable release.
         self.active = false;
-        result
+        cleanup.await.map_err(|error| {
+            AuthError::Storage(format!("refresh claim release task failed: {error}"))
+        })?
     }
 }
 
@@ -1322,6 +1358,9 @@ async fn refresh_token_grant(
     if result.is_ok() {
         claim_lease.disarm();
     } else {
+        if matches!(&result, Err(AuthError::OauthNeedsReauth(_))) {
+            state.store.revoke_refresh_token(&refresh_token).await?;
+        }
         claim_lease.release().await?;
     }
     result
@@ -1439,14 +1478,13 @@ async fn refresh_google_provider_credential(
                         subject_id = %subject_id,
                         stale_provider_generation = credential.generation,
                         replacement_provider_credential_present = replacement_present,
+                        kind = "oauth_needs_reauth",
                         "oauth provider refresh result discarded because a newer generation was persisted"
                     );
-                    if !replacement_present {
-                        return Err(AuthError::OauthNeedsReauth(
-                            "google provider credential changed during refresh; reauthorization required"
-                                .to_string(),
-                        ));
-                    }
+                    return Err(AuthError::OauthNeedsReauth(
+                        "google provider credential changed during refresh; reauthorization required"
+                            .to_string(),
+                    ));
                 }
                 return Ok(google);
             }
@@ -3004,6 +3042,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_explicit_release_still_releases_durable_claim() {
+        let state = test_auth_state_with_refreshable_google().await;
+        let now = crate::util::now_unix();
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "release-cancel-refresh-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now - 60,
+                expires_at: now + 3600,
+            })
+            .await
+            .unwrap();
+        state
+            .store
+            .claim_refresh_token("release-cancel-refresh-token", "release-owner", now + 90)
+            .await
+            .unwrap()
+            .expect("claim acquired");
+        let observer = std::sync::Arc::new(super::RefreshClaimLeaseObserver::default());
+        let (lease, _lost) = super::RefreshClaimLease::start_with_timing_observed(
+            state.store.clone(),
+            "release-cancel-refresh-token".to_string(),
+            "release-owner".to_string(),
+            crate::util::fingerprint("release-cancel-refresh-token"),
+            90,
+            std::time::Duration::from_mins(1),
+            observer.clone(),
+        );
+
+        let release = tokio::spawn(lease.release());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            observer.explicit_release_started.notified(),
+        )
+        .await
+        .expect("explicit release reached durable cleanup");
+        release.abort();
+        release.await.expect_err("release request was cancelled");
+        observer.explicit_release_continue.notify_one();
+
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(claim) = state
+                    .store
+                    .claim_refresh_token(
+                        "release-cancel-refresh-token",
+                        "post-release-cancel",
+                        crate::util::now_unix() + 30,
+                    )
+                    .await
+                    .unwrap()
+                {
+                    break claim;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached release freed the claim");
+        assert_eq!(recovered.refresh_token, "release-cancel-refresh-token");
+    }
+
+    #[tokio::test]
     async fn token_endpoint_refresh_grant_preserves_stored_resource_when_omitted() {
         let state = test_auth_state_with_refreshable_google().await;
         state
@@ -3445,6 +3551,148 @@ mod tests {
                 .filter(|status| **status == StatusCode::BAD_REQUEST)
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_generation_loss_revokes_stale_local_grant_without_issuing_replacement() {
+        let base = test_auth_state_with_registered_client().await;
+        let server = Box::leak(Box::new(MockServer::start().await));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(500))
+                    .set_body_json(serde_json::json!({
+                        "access_token": "stale-provider-access",
+                        "refresh_token": "stale-provider-refresh",
+                        "expires_in": 3600,
+                        "id_token": super::super::authorize::tests::signed_test_id_token(),
+                    })),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/certs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(super::super::authorize::tests::test_jwks()),
+            )
+            .mount(server)
+            .await;
+        let google = GoogleProvider::new(
+            "client-id".to_string(),
+            "client-secret".to_string(),
+            Url::parse("https://lab.example.com/auth/google/callback").unwrap(),
+        )
+        .unwrap()
+        .with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        )
+        .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
+        let state = AuthState::for_tests(
+            (*base.config).clone(),
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            google,
+        );
+        install_google_provider_credential(&state).await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "race-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let peer_store = crate::sqlite::SqliteStore::open_with_key(
+            state.config.sqlite_path.clone(),
+            state.config.token_encryption_key.clone(),
+        )
+        .await
+        .unwrap();
+        let app = router(state.clone());
+        let request = tokio::spawn(async move {
+            app.oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", "race-refresh"),
+                    ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap()
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if server.received_requests().await.is_some_and(|requests| {
+                    requests
+                        .iter()
+                        .any(|request| request.url.path() == "/token")
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("provider refresh request observed");
+        let generation = peer_store
+            .find_google_provider_credential("google-subject-123")
+            .await
+            .unwrap()
+            .unwrap()
+            .generation;
+        let now = crate::util::now_unix();
+        assert!(
+            peer_store
+                .replace_google_provider_token_bundle_if_generation(
+                    crate::types::GoogleProviderCredentialUpdate {
+                        subject: "google-subject-123".to_string(),
+                        email: Some("admin@example.com".to_string()),
+                        client_id: "client-id".to_string(),
+                        granted_scopes: vec!["openid".to_string()],
+                        access_token: "fresh-provider-access".to_string(),
+                        refresh_token: "fresh-provider-refresh".to_string(),
+                        token_received_at: now,
+                        access_token_expires_at: now + 3600,
+                        issuer: Some("https://accounts.google.com".to_string()),
+                        refreshed: true,
+                        scope_upgraded: false,
+                    },
+                    generation,
+                )
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            state
+                .store
+                .find_refresh_token("race-refresh")
+                .await
+                .unwrap()
+                .is_none(),
+            "the stale local grant must not survive provider lifecycle loss"
+        );
+        assert_eq!(
+            state
+                .store
+                .find_google_provider_credential("google-subject-123")
+                .await
+                .unwrap()
+                .unwrap()
+                .refresh_token,
+            "fresh-provider-refresh"
         );
     }
 

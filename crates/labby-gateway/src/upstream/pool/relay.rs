@@ -804,6 +804,16 @@ impl UpstreamPool {
                 message: downstream_cancelled("downstream request was already cancelled"),
             }));
         }
+        // Keep credential invalidation outside the complete OAuth relay call,
+        // including the relay-cache -> task-route ownership transfer. Without
+        // this outer reader a revocation writer can remove the relay entry,
+        // scan an empty task map, and then let task registration publish a
+        // credential-backed route after revocation has returned.
+        let _oauth_lifecycle = if subject.is_some() {
+            Some(self.oauth_invalidation_barrier.read().await)
+        } else {
+            None
+        };
         let relay_key = (
             config.name.clone(),
             session_id,
@@ -834,7 +844,7 @@ impl UpstreamPool {
                     message,
                 }));
             }
-            connection = self.acquire_or_connect_relay(
+            connection = self.acquire_or_connect_relay_guarded(
                 config, subject, downstream, session_id, capabilities
             ) => connection,
         };
@@ -1679,6 +1689,25 @@ impl UpstreamPool {
         // One shared reader/writer invariant covers subject, relay, task, and
         // OAuth-client publication. Credential invalidation is the sole writer.
         let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
+        self.acquire_or_connect_relay_guarded(config, subject, downstream, session_id, capabilities)
+            .await
+    }
+
+    /// Relay acquisition when the caller already owns the OAuth lifecycle
+    /// reader for a larger atomic operation.
+    async fn acquire_or_connect_relay_guarded(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        downstream: Peer<RoleServer>,
+        session_id: u64,
+        capabilities: ClientCapabilities,
+    ) -> Option<(
+        Peer<RoleClient>,
+        Arc<RelayRouteState>,
+        Option<HttpCancellationSender>,
+        Option<u64>,
+    )> {
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
@@ -2901,7 +2930,11 @@ mod tests {
             .expect("downstream server connects")
     }
 
-    async fn wait_for_usage_outcome(store: &crate::usage::UsageStore, outcome: &str) -> i64 {
+    async fn wait_for_usage_outcome(
+        store: &crate::usage::UsageStore,
+        outcome: &str,
+        expected_count: i64,
+    ) -> i64 {
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let expected = outcome.to_string();
@@ -2916,11 +2949,33 @@ mod tests {
                 })
                 .await
                 .expect("usage query succeeds");
-            if count > 0 || Instant::now() >= deadline {
+            if count >= expected_count || Instant::now() >= deadline {
                 return count;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    async fn usage_items_for_outcome(
+        store: &crate::usage::UsageStore,
+        outcome: &str,
+    ) -> Vec<String> {
+        let expected = outcome.to_string();
+        store
+            .with_conn(move |conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT tool_name FROM upstream_calls WHERE outcome = ?1 ORDER BY tool_name",
+                    )
+                    .map_err(crate::usage::store::sqlite_error)?;
+                statement
+                    .query_map([expected], |row| row.get(0))
+                    .map_err(crate::usage::store::sqlite_error)?
+                    .collect::<Result<Vec<String>, _>>()
+                    .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .expect("usage item query succeeds")
     }
 
     /// Cold relay establishment is part of the request's cancellation scope.
@@ -2976,7 +3031,10 @@ mod tests {
             super::super::capability_call::CapabilityCallError::Cancelled { .. }
         ));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
-        assert_eq!(wait_for_usage_outcome(&store, "connect_cancelled").await, 1);
+        assert_eq!(
+            wait_for_usage_outcome(&store, "connect_cancelled", 1).await,
+            1
+        );
     }
 
     /// The same absolute relay deadline covers cold connection establishment;
@@ -3034,44 +3092,190 @@ mod tests {
                 started.elapsed() < timeout + std::time::Duration::from_secs(1),
                 "cold connect exceeded the absolute relay budget"
             );
-            assert_eq!(wait_for_usage_outcome(&store, "connect_timeout").await, 1);
+            assert_eq!(
+                wait_for_usage_outcome(&store, "connect_timeout", 1).await,
+                1
+            );
         });
     }
 
-    /// Keep the documented request lifecycle paired on every cold-connect
-    /// relay path. Runtime usage outcomes are asserted by the two async tests;
-    /// this structural guard covers tool, prompt, and resource adapters without
-    /// installing a process-global tracing subscriber in parallel tests.
-    #[test]
-    fn cold_connect_paths_start_before_select_and_classify_every_exit() {
-        let source = include_str!("relay.rs");
-        for (start, end) in [
-            (
-                "pub async fn call_tool_relayed",
-                "pub async fn get_prompt_relayed",
-            ),
-            (
-                "pub async fn get_prompt_relayed",
-                "pub async fn read_resource_relayed",
-            ),
-            (
-                "pub async fn read_resource_relayed",
-                "async fn acquire_or_connect_relay",
-            ),
-        ] {
-            let section = source
-                .split_once(start)
-                .and_then(|(_, tail)| tail.split_once(end).map(|(section, _)| section))
-                .expect("relay function section");
-            assert!(
-                section.find("log_upstream_request_start").unwrap()
-                    < section.find("tokio::select!").unwrap(),
-                "{start} must log request.start before cold connect"
-            );
-            for kind in ["connect_cancelled", "connect_timeout", "connect_error"] {
-                assert!(section.contains(kind), "{start} missing {kind}");
+    #[derive(Clone, Copy)]
+    enum RelayTestCapability {
+        Tools,
+        Prompts,
+        Resources,
+    }
+
+    async fn invoke_cold_relay_path(
+        pool: &UpstreamPool,
+        config: &UpstreamConfig,
+        downstream: &Peer<RoleServer>,
+        session_id: u64,
+        cancellation: CancellationToken,
+        capability: RelayTestCapability,
+    ) {
+        let request_id = RequestId::Number(session_id as i64);
+        let capabilities = relay_test_capabilities();
+        match capability {
+            RelayTestCapability::Tools => {
+                let _result = pool
+                    .call_tool_relayed(
+                        config,
+                        None,
+                        CallToolRequestParams::new("cold-tool"),
+                        downstream.clone(),
+                        request_id,
+                        cancellation,
+                        session_id,
+                        capabilities,
+                        None,
+                        crate::upstream::pool::TaskRouteAuthorization::root(),
+                    )
+                    .await;
+            }
+            RelayTestCapability::Prompts => {
+                let _result = pool
+                    .get_prompt_relayed(
+                        config,
+                        None,
+                        GetPromptRequestParams::new(format!("{}/cold-prompt", config.name)),
+                        downstream.clone(),
+                        request_id,
+                        cancellation,
+                        session_id,
+                        capabilities,
+                    )
+                    .await;
+            }
+            RelayTestCapability::Resources => {
+                let _result = pool
+                    .read_resource_relayed(
+                        config,
+                        None,
+                        ReadResourceRequestParams::new(format!(
+                            "lab://upstream/{}/file:///cold-resource",
+                            config.name
+                        )),
+                        downstream.clone(),
+                        request_id,
+                        cancellation,
+                        session_id,
+                        capabilities,
+                    )
+                    .await;
             }
         }
+    }
+
+    /// Exercise the real tool, prompt, and resource adapters instead of
+    /// inspecting their source text. Each cold-connect exit must reach the
+    /// shared request telemetry boundary with its classified outcome.
+    #[tokio::test]
+    async fn every_cold_relay_adapter_records_cancel_timeout_and_connect_error() {
+        let dir = tempfile::tempdir().expect("usage tempdir");
+        let store = Arc::new(
+            crate::usage::UsageStore::open(dir.path().join("usage.db"))
+                .await
+                .expect("usage store opens"),
+        );
+        let config = super::super::testsupport::test_upstream_config();
+        let downstream = relay_test_downstream().await;
+
+        let capabilities = [
+            RelayTestCapability::Tools,
+            RelayTestCapability::Prompts,
+            RelayTestCapability::Resources,
+        ];
+        for (index, capability) in capabilities.into_iter().enumerate() {
+            let session_id = 100 + index as u64;
+            let pool = UpstreamPool::new()
+                .with_usage_store(Some(Arc::clone(&store)))
+                .with_relay_timeout(std::time::Duration::from_secs(30));
+            let key = relay_cache_key(&config.name, session_id, None);
+            let connect_lock = Arc::new(Mutex::new(()));
+            pool.relay_connect_locks
+                .write()
+                .await
+                .insert(key, Arc::clone(&connect_lock));
+            let _held = connect_lock.lock().await;
+            let cancellation = CancellationToken::new();
+            let cancel = cancellation.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                cancel.cancel();
+            });
+            invoke_cold_relay_path(
+                &pool,
+                &config,
+                downstream.peer(),
+                session_id,
+                cancellation,
+                capability,
+            )
+            .await;
+        }
+        assert_eq!(
+            wait_for_usage_outcome(&store, "connect_cancelled", 3).await,
+            3
+        );
+        let expected_items = vec![
+            "cold-prompt".to_string(),
+            "cold-tool".to_string(),
+            "lab://upstream/test/file:///cold-resource".to_string(),
+        ];
+        assert_eq!(
+            usage_items_for_outcome(&store, "connect_cancelled").await,
+            expected_items
+        );
+
+        for (index, capability) in capabilities.into_iter().enumerate() {
+            let session_id = 200 + index as u64;
+            let pool = UpstreamPool::new()
+                .with_usage_store(Some(Arc::clone(&store)))
+                .with_relay_timeout(std::time::Duration::from_millis(20));
+            let key = relay_cache_key(&config.name, session_id, None);
+            let connect_lock = Arc::new(Mutex::new(()));
+            pool.relay_connect_locks
+                .write()
+                .await
+                .insert(key, Arc::clone(&connect_lock));
+            let _held = connect_lock.lock().await;
+            invoke_cold_relay_path(
+                &pool,
+                &config,
+                downstream.peer(),
+                session_id,
+                CancellationToken::new(),
+                capability,
+            )
+            .await;
+        }
+        assert_eq!(
+            wait_for_usage_outcome(&store, "connect_timeout", 3).await,
+            3
+        );
+        assert_eq!(
+            usage_items_for_outcome(&store, "connect_timeout").await,
+            expected_items
+        );
+
+        let pool = UpstreamPool::new().with_usage_store(Some(Arc::clone(&store)));
+        for (index, capability) in capabilities.into_iter().enumerate() {
+            invoke_cold_relay_path(
+                &pool,
+                &config,
+                downstream.peer(),
+                300 + index as u64,
+                CancellationToken::new(),
+                capability,
+            )
+            .await;
+        }
+        assert_eq!(wait_for_usage_outcome(&store, "connect_error", 3).await, 3);
+        assert_eq!(
+            usage_items_for_outcome(&store, "connect_error").await,
+            expected_items
+        );
     }
 
     /// `evict_relay_connection` removes only the targeted

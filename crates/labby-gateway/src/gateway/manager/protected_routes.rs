@@ -15,6 +15,7 @@ impl GatewayManager {
         host: &str,
         path: &str,
     ) -> Option<ProtectedMcpRouteConfig> {
+        let _publication = self.publication_barrier.read().await;
         self.protected_route_index.read().await.resolve(host, path)
     }
 
@@ -23,6 +24,7 @@ impl GatewayManager {
         host: &str,
         path: &str,
     ) -> Option<ProtectedMcpRouteConfig> {
+        let _publication = self.publication_barrier.read().await;
         self.protected_route_index
             .read()
             .await

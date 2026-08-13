@@ -93,6 +93,11 @@ pub struct GatewayManager {
     pub(super) store: Arc<dyn GatewayConfigStore>,
     pub(super) runtime: GatewayRuntimeHandle,
     pub(super) config: Arc<RwLock<GatewayConfig>>,
+    /// Serializes the short publication window spanning the live pool,
+    /// config snapshot, protected-route index, and Code Mode flags. Readers
+    /// that combine those components take a read lease and clone a coherent
+    /// revision before doing slow I/O.
+    pub(super) publication_barrier: Arc<RwLock<()>>,
     pub(super) config_mutation: Arc<Mutex<()>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
@@ -235,6 +240,11 @@ impl GatewayManager {
 
     pub(super) async fn persist_config(&self, cfg: GatewayConfig) -> Result<(), ToolError> {
         self.write_config_file(&cfg).await?;
+        let _publication = self.publication_barrier.write().await;
+        self.store
+            .set_process_code_mode_enabled(cfg.code_mode.enabled);
+        self.code_mode_app_state
+            .set_enabled(cfg.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
         *self.config.write().await = cfg;

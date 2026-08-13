@@ -775,6 +775,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_revocation_cannot_scan_between_relay_removal_and_task_publication() {
+        let (pool, _server, _downstream, relay_key) = task_pool().await;
+        let oauth_key = rekey_relay_for_oauth_subject(&pool, &relay_key, "alice-oauth").await;
+
+        // Model the exact transition performed by `call_tool_relayed`: its
+        // outer lifecycle reader spans the relay response and registration.
+        let lifecycle = pool.oauth_invalidation_barrier.read().await;
+        let connection = pool
+            .relay_connections
+            .write()
+            .await
+            .remove(&oauth_key)
+            .expect("relay removed at deterministic transition pause");
+
+        let invalidating_pool = pool.clone();
+        let invalidation = tokio::spawn(async move {
+            invalidating_pool
+                .invalidate_oauth_subject_sessions(
+                    "task-upstream",
+                    "alice-oauth",
+                    "oauth.credentials.clear",
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !invalidation.is_finished(),
+            "revocation writer must wait while relay ownership is in transition"
+        );
+
+        pool.relay_connections
+            .write()
+            .await
+            .insert(oauth_key.clone(), connection);
+        pool.register_task_response(
+            &oauth_key,
+            Some("alice"),
+            super::TaskRouteAuthorization::root(),
+            create_task_response(),
+        )
+        .await
+        .expect("task publishes before lifecycle reader releases");
+        drop(lifecycle);
+
+        let invalidated = invalidation.await.expect("invalidation joins");
+        assert_eq!(invalidated.task_routes, 1);
+        assert!(pool.task_routes.read().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn trusted_stdio_oauth_task_without_caller_subject_is_invalidated() {
         let (pool, _server, _downstream, relay_key) = task_pool().await;
         let oauth_key = rekey_relay_for_oauth_subject(&pool, &relay_key, "stdio-oauth").await;

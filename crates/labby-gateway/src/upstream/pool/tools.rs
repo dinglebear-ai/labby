@@ -457,6 +457,16 @@ impl UpstreamPool {
             futures.push(async move {
                 let exposure_policy =
                     resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+                let _fanout_permit = match pool.acquire_catalog_fanout_permit().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        return (
+                            config.name.clone(),
+                            exposure_policy,
+                            Err(anyhow::anyhow!(error)),
+                        );
+                    }
+                };
                 let result = pool.acquire_or_connect_subject(&config, &subject).await;
                 (config.name.clone(), exposure_policy, result)
             });

@@ -33,7 +33,7 @@ pub mod types;
 pub mod view_models;
 mod virtual_servers;
 
-pub use catalog::ACTIONS;
+pub use catalog::{ACTIONS, AUTHORITATIVE_RESULT_ACTIONS, requires_authoritative_result};
 pub use client::{current_gateway_manager, install_gateway_manager, require_gateway_manager};
 pub use config_store::GatewayConfigStore;
 pub use dispatch::{dispatch, dispatch_with_manager, dispatch_with_manager_scoped};

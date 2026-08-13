@@ -29,7 +29,7 @@ use super::entries::{
     resolve_request_resource_exposure_policy, resource_exposed,
 };
 use super::helpers::{
-    bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri,
+    bare_upstream_resource_uri, classify_upstream_error, max_response_bytes, rewrite_resource_uri,
     upstream_discovery_timeout, upstream_transport,
 };
 use super::logging::{
@@ -518,6 +518,22 @@ impl UpstreamPool {
                 let event = UpstreamRequestLog::resources_list(&config.name, true)
                     .with_transport(upstream_transport(&config));
                 log_upstream_request_start(event);
+                let _fanout_permit = match tokio::time::timeout(
+                    request_timeout,
+                    pool.acquire_catalog_fanout_permit(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(error)) => return (config.name, policy, Err(error)),
+                    Err(_) => {
+                        return (
+                            config.name,
+                            policy,
+                            Err("subject catalog concurrency wait timed out".to_string()),
+                        );
+                    }
+                };
                 let peer = match tokio::time::timeout(
                     request_timeout,
                     pool.acquire_or_connect_subject(&config, &subject),
@@ -598,36 +614,70 @@ impl UpstreamPool {
         // connection cache and execute concurrently under the ordinary request
         // budget. One slow or broken OAuth upstream therefore degrades to a
         // partial catalog without delaying every other upstream.
-        let mut resources = Vec::new();
+        let mut results = Vec::new();
         while let Some((name, policy, result)) = futures.next().await {
-            match result {
-                Ok(upstream_resources) => {
-                    let mut hidden_count = 0usize;
-                    let mut exposed_count = 0usize;
-                    for mut resource in upstream_resources {
-                        if !resource_exposed(&policy, bare_upstream_resource_uri(&resource.uri)) {
-                            hidden_count += 1;
-                            continue;
-                        }
-                        rewrite_resource_uri(&mut resource, &name);
-                        resources.push(resource);
-                        exposed_count += 1;
+            results.push((name, policy, result));
+        }
+        results.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, max_response_bytes())
+    }
+}
+
+type SubjectResourceResult = (String, ToolExposurePolicy, Result<Vec<Resource>, String>);
+
+fn aggregate_subject_resources(
+    results: Vec<SubjectResourceResult>,
+    item_limit: usize,
+    byte_limit: usize,
+) -> Vec<Resource> {
+    let mut resources = Vec::new();
+    let mut serialized_bytes = 0usize;
+    for (name, policy, result) in results {
+        match result {
+            Ok(upstream_resources) => {
+                let mut hidden_count = 0usize;
+                let mut exposed_count = 0usize;
+                for mut resource in upstream_resources {
+                    if !resource_exposed(&policy, bare_upstream_resource_uri(&resource.uri)) {
+                        hidden_count += 1;
+                        continue;
                     }
-                    log_exposure_filter(&name, "resources", hidden_count, exposed_count, true);
+                    if resources.len() >= item_limit {
+                        tracing::warn!(
+                            limit = item_limit,
+                            accepted_items = resources.len(),
+                            "subject-scoped resource catalog exceeds global item limit"
+                        );
+                        return resources;
+                    }
+                    rewrite_resource_uri(&mut resource, &name);
+                    let resource_bytes =
+                        serde_json::to_vec(&resource).map_or(usize::MAX, |body| body.len());
+                    if serialized_bytes.saturating_add(resource_bytes) > byte_limit {
+                        tracing::warn!(
+                            limit = byte_limit,
+                            accepted_bytes = serialized_bytes,
+                            "subject-scoped resource catalog exceeds global byte limit"
+                        );
+                        return resources;
+                    }
+                    serialized_bytes = serialized_bytes.saturating_add(resource_bytes);
+                    resources.push(resource);
+                    exposed_count += 1;
                 }
-                Err(error_text) => {
-                    tracing::warn!(
-                        upstream = %name,
-                        kind = classify_upstream_error(&error_text),
-                        error = %error_text,
-                        "subject-scoped upstream resource discovery failed"
-                    );
-                }
+                log_exposure_filter(&name, "resources", hidden_count, exposed_count, true);
+            }
+            Err(error_text) => {
+                tracing::warn!(
+                    upstream = %name,
+                    kind = classify_upstream_error(&error_text),
+                    error = %error_text,
+                    "subject-scoped upstream resource discovery failed"
+                );
             }
         }
-
-        resources
     }
+    resources
 }
 
 fn render_subject_scoped_gateway_schema(
@@ -717,6 +767,79 @@ mod tests {
     use super::super::helpers::normalize_resource_result_uri;
     use super::super::testsupport::{StaticCatalogServer, catalog_pool_with_server};
     use super::*;
+
+    #[test]
+    fn subject_resource_aggregation_enforces_global_item_cap() {
+        let policy = ToolExposurePolicy::All;
+        let results = vec![
+            (
+                "alpha".to_string(),
+                policy.clone(),
+                Ok((0..700)
+                    .map(|index| Resource::new(format!("file:///alpha/{index}"), "resource"))
+                    .collect()),
+            ),
+            (
+                "beta".to_string(),
+                policy,
+                Ok((0..700)
+                    .map(|index| Resource::new(format!("file:///beta/{index}"), "resource"))
+                    .collect()),
+            ),
+        ];
+
+        let resources = aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, usize::MAX);
+
+        assert_eq!(resources.len(), MAX_UPSTREAM_RESOURCES);
+    }
+
+    #[test]
+    fn subject_resource_aggregation_enforces_global_byte_cap() {
+        let policy = ToolExposurePolicy::All;
+        let results = vec![(
+            "alpha".to_string(),
+            policy,
+            Ok(vec![
+                Resource::new("file:///alpha/one", "x".repeat(128)),
+                Resource::new("file:///alpha/two", "y".repeat(128)),
+            ]),
+        )];
+
+        let resources = aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, 300);
+
+        assert_eq!(resources.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn subject_catalog_fanout_gate_is_global_and_bounded() {
+        let pool = UpstreamPool::new();
+        let permit_count = pool.catalog_fanout_semaphore.available_permits() as u32;
+        let held = Arc::clone(&pool.catalog_fanout_semaphore)
+            .acquire_many_owned(permit_count)
+            .await
+            .expect("hold every permit");
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                pool.acquire_catalog_fanout_permit()
+            )
+            .await
+            .is_err(),
+            "a second catalog job must wait behind the fleet-wide gate"
+        );
+
+        drop(held);
+        drop(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                pool.acquire_catalog_fanout_permit(),
+            )
+            .await
+            .expect("permit becomes available")
+            .expect("gate remains open"),
+        );
+    }
 
     #[derive(Clone)]
     struct SchemaToolServer {

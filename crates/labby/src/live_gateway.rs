@@ -443,20 +443,10 @@ impl LiveGateway {
 }
 
 fn dispatch_timeout_for_action(action: &str, default: Duration) -> Option<Duration> {
-    match action {
-        // This action is an explicit long poll whose caller supplies its own
-        // server-side wait bound. A blanket client deadline would truncate it.
-        "gateway.oauth.wait"
-        // These configuration mutations deliberately detach their durable
-        // persist-and-reconcile transaction from request cancellation. A
-        // client-side timeout could therefore report failure immediately
-        // before the mutation commits, making an automatic retry ambiguous.
-        | "gateway.add"
-        | "gateway.update"
-        | "gateway.remove"
-        | "gateway.import"
-        | "gateway.reload" => None,
-        _ => Some(default),
+    if labby_gateway::gateway::requires_authoritative_result(action) {
+        None
+    } else {
+        Some(default)
     }
 }
 
@@ -658,11 +648,30 @@ mod tests {
     fn long_poll_and_detached_mutations_opt_out_of_default_dispatch_timeout() {
         for action in [
             "gateway.oauth.wait",
+            "gateway.code_mode.set",
+            "gateway.enrich.apply",
+            "gateway.protected_route.add",
+            "gateway.protected_route.update",
+            "gateway.protected_route.remove",
+            "gateway.virtual_server.enable",
+            "gateway.virtual_server.disable",
+            "gateway.virtual_server.remove",
+            "gateway.virtual_server.quarantine.restore",
+            "gateway.virtual_server.set_surface",
+            "gateway.virtual_server.set_mcp_policy",
+            "gateway.service_config.set",
+            "gateway.discover",
             "gateway.add",
             "gateway.update",
             "gateway.remove",
             "gateway.import",
+            "gateway.import_pending.approve",
+            "gateway.import_pending.reject",
+            "gateway.import_tombstones.clear",
+            "gateway.import_tombstones.restore",
             "gateway.reload",
+            "gateway.mcp.enable",
+            "gateway.mcp.disable",
         ] {
             assert_eq!(
                 dispatch_timeout_for_action(action, Duration::from_secs(30)),
@@ -674,6 +683,44 @@ mod tests {
             dispatch_timeout_for_action("gateway.list", Duration::from_secs(30)),
             Some(Duration::from_secs(30))
         );
+
+        let classified = labby_gateway::gateway::ACTIONS
+            .iter()
+            .filter(|spec| {
+                dispatch_timeout_for_action(spec.name, Duration::from_secs(30)).is_none()
+            })
+            .map(|spec| spec.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = [
+            "gateway.oauth.wait",
+            "gateway.code_mode.set",
+            "gateway.enrich.apply",
+            "gateway.protected_route.add",
+            "gateway.protected_route.update",
+            "gateway.protected_route.remove",
+            "gateway.virtual_server.enable",
+            "gateway.virtual_server.disable",
+            "gateway.virtual_server.remove",
+            "gateway.virtual_server.quarantine.restore",
+            "gateway.virtual_server.set_surface",
+            "gateway.virtual_server.set_mcp_policy",
+            "gateway.service_config.set",
+            "gateway.discover",
+            "gateway.add",
+            "gateway.update",
+            "gateway.remove",
+            "gateway.import",
+            "gateway.import_pending.approve",
+            "gateway.import_pending.reject",
+            "gateway.import_tombstones.clear",
+            "gateway.import_tombstones.restore",
+            "gateway.reload",
+            "gateway.mcp.enable",
+            "gateway.mcp.disable",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(classified, expected);
     }
 
     #[tokio::test]

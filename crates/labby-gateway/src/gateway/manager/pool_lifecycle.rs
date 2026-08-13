@@ -325,8 +325,11 @@ impl GatewayManager {
         if pool_settings_unchanged && existing_pool.is_some() && changed_upstreams.is_empty() {
             self.reconcile_runtime_state(&cfg, existing_pool.as_deref())
                 .await?;
+            let _publication = self.publication_barrier.write().await;
             self.store
                 .set_process_code_mode_enabled(cfg.code_mode.enabled);
+            self.code_mode_app_state
+                .set_enabled(cfg.code_mode.mcp_ui_enabled);
             *self.protected_route_index.write().await =
                 ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
             *self.config.write().await = cfg;
@@ -483,8 +486,11 @@ impl GatewayManager {
             Some(barrier) => Some(barrier.write_owned().await),
             None => None,
         };
+        let _publication = self.publication_barrier.write().await;
         self.store
             .set_process_code_mode_enabled(cfg.code_mode.enabled);
+        self.code_mode_app_state
+            .set_enabled(cfg.code_mode.mcp_ui_enabled);
         self.runtime.swap(fresh_pool).await;
         // Keep the old pool serving throughout build/probe and publish the
         // replacement before draining. A dropped/timeout-cancelled reload can

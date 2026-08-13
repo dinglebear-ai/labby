@@ -1,5 +1,45 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
 
+/// Actions whose authoritative result must not be cut off by the thin
+/// client's ordinary request deadline.
+///
+/// The mutation entries hand durable persistence/reconciliation to an owned
+/// task so cancellation cannot leave configuration half-committed.  A client
+/// timeout would make their outcome ambiguous.  The OAuth wait entry is an
+/// explicit long poll with its own caller-selected server-side bound.
+pub const AUTHORITATIVE_RESULT_ACTIONS: &[&str] = &[
+    "gateway.oauth.wait",
+    "gateway.code_mode.set",
+    "gateway.enrich.apply",
+    "gateway.protected_route.add",
+    "gateway.protected_route.update",
+    "gateway.protected_route.remove",
+    "gateway.virtual_server.enable",
+    "gateway.virtual_server.disable",
+    "gateway.virtual_server.remove",
+    "gateway.virtual_server.quarantine.restore",
+    "gateway.virtual_server.set_surface",
+    "gateway.virtual_server.set_mcp_policy",
+    "gateway.service_config.set",
+    "gateway.discover",
+    "gateway.add",
+    "gateway.update",
+    "gateway.remove",
+    "gateway.import",
+    "gateway.import_pending.approve",
+    "gateway.import_pending.reject",
+    "gateway.import_tombstones.clear",
+    "gateway.import_tombstones.restore",
+    "gateway.reload",
+    "gateway.mcp.enable",
+    "gateway.mcp.disable",
+];
+
+#[must_use]
+pub fn requires_authoritative_result(action: &str) -> bool {
+    AUTHORITATIVE_RESULT_ACTIONS.contains(&action)
+}
+
 const NAME_PARAM: ParamSpec = ParamSpec {
     name: "name",
     ty: "string",

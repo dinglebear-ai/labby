@@ -550,6 +550,40 @@ async fn cancelled_reload_keeps_old_pool_available_while_replacement_probe_is_bl
 }
 
 #[tokio::test]
+async fn publication_barrier_hides_mixed_pool_and_config_revisions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager.seed_config(GatewayConfig::default()).await;
+
+    let publication = manager.publication_barrier.write().await;
+    manager
+        .runtime
+        .swap(Some(Arc::new(UpstreamPool::new())))
+        .await;
+
+    // Pause after the first component changes. A multi-component reader must
+    // not observe this mixed revision while publication is in flight.
+    let reading_manager = manager.clone();
+    let reader = tokio::spawn(async move { reading_manager.published_config_and_pool().await });
+    tokio::task::yield_now().await;
+    assert!(
+        !reader.is_finished(),
+        "reader must wait at deterministic mid-publication pause"
+    );
+
+    manager.config.write().await.code_mode.enabled = true;
+    manager.store.set_process_code_mode_enabled(true);
+    drop(publication);
+
+    let (config, pool) = reader.await.expect("reader joins");
+    assert!(config.code_mode.enabled);
+    assert!(pool.is_some());
+}
+
+#[tokio::test]
 async fn reload_removed_upstream_rebuilds_pool_instead_of_reusing_stale_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

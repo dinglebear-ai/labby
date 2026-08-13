@@ -30,6 +30,7 @@ impl UpstreamPool {
         &self,
         builtin_names: &[&str],
         allowed: Option<&BTreeSet<String>>,
+        deadline_at: tokio::time::Instant,
     ) -> (Vec<Prompt>, HashMap<String, String>) {
         let peers = routable_upstream_peers(self, UpstreamCapability::Prompts, allowed).await;
 
@@ -48,12 +49,17 @@ impl UpstreamPool {
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
             futures.push(async move {
-                let result = catalog_pagination::list_prompts(
-                    &peer,
-                    self.request_timeout,
-                    MAX_UPSTREAM_PROMPTS,
-                )
-                .await;
+                let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return (
+                        name,
+                        Err(catalog_pagination::CatalogPaginationError::Deadline {
+                            deadline_ms: 0,
+                        }),
+                    );
+                }
+                let result =
+                    catalog_pagination::list_prompts(&peer, remaining, MAX_UPSTREAM_PROMPTS).await;
                 (name, result)
             });
         }
@@ -98,6 +104,18 @@ impl UpstreamPool {
                 }
                 Err(e) => {
                     let error_text = e.bounded_text();
+                    if matches!(
+                        e,
+                        catalog_pagination::CatalogPaginationError::Deadline { .. }
+                    ) {
+                        tracing::warn!(
+                            upstream = %name,
+                            kind = "timeout",
+                            phase = "raw_pagination",
+                            partial_result = true,
+                            "prompt catalog upstream exceeded shared request deadline"
+                        );
+                    }
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Prompts,
@@ -158,7 +176,10 @@ impl UpstreamPool {
 
     /// List prompts from all healthy upstreams, filtering built-in and cross-upstream collisions.
     pub async fn list_upstream_prompts(&self, builtin_names: &[&str]) -> Vec<Prompt> {
-        let (prompts, _) = self.collect_upstream_prompts(builtin_names, None).await;
+        let deadline_at = tokio::time::Instant::now() + self.request_timeout;
+        let (prompts, _) = self
+            .collect_upstream_prompts(builtin_names, None, deadline_at)
+            .await;
         prompts
     }
 
@@ -213,7 +234,10 @@ impl UpstreamPool {
     /// Makes M RPCs (one per healthy upstream), not M*N. Use this when you need
     /// to look up ownership for multiple prompts.
     pub async fn prompt_ownership_map(&self, builtin_names: &[&str]) -> HashMap<String, String> {
-        let (_, owners) = self.collect_upstream_prompts(builtin_names, None).await;
+        let deadline_at = tokio::time::Instant::now() + self.request_timeout;
+        let (_, owners) = self
+            .collect_upstream_prompts(builtin_names, None, deadline_at)
+            .await;
         owners
     }
 
@@ -254,7 +278,8 @@ impl UpstreamPool {
             return Some(owner);
         }
 
-        let (_, owners) = self.collect_upstream_prompts(&[], None).await;
+        let deadline_at = tokio::time::Instant::now() + self.request_timeout;
+        let (_, owners) = self.collect_upstream_prompts(&[], None, deadline_at).await;
         if let Some(owner) = owners.get(prompt_name) {
             return Some(owner.clone());
         }
@@ -267,8 +292,21 @@ impl UpstreamPool {
         builtin_name_refs: &[&str],
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<Prompt> {
+        let deadline_at = tokio::time::Instant::now() + self.request_timeout;
+        self.list_upstream_prompts_allowed_until(builtin_name_refs, allowed, deadline_at)
+            .await
+    }
+
+    /// List prompts using a caller-owned absolute deadline. This lets the MCP
+    /// adapter share one budget across raw and OAuth subject-scoped passes.
+    pub async fn list_upstream_prompts_allowed_until(
+        &self,
+        builtin_name_refs: &[&str],
+        allowed: Option<&BTreeSet<String>>,
+        deadline_at: tokio::time::Instant,
+    ) -> Vec<Prompt> {
         let (prompts, _) = self
-            .collect_upstream_prompts(builtin_name_refs, allowed)
+            .collect_upstream_prompts(builtin_name_refs, allowed, deadline_at)
             .await;
         prompts
     }
@@ -296,7 +334,7 @@ mod tests {
         ServerCapabilities, ServerInfo,
     };
     use rmcp::service::RequestContext;
-    use rmcp::{RoleServer, ServerHandler};
+    use rmcp::{RoleServer, ServerHandler, ServiceExt};
 
     use super::super::super::types;
     use super::super::helpers::merge_upstream_prompts;
@@ -306,6 +344,93 @@ mod tests {
     #[derive(Clone, Default)]
     struct PaginatedPromptServer {
         calls: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone, Default)]
+    struct StalledPromptServer;
+
+    impl ServerHandler for StalledPromptServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        }
+
+        async fn list_prompts(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListPromptsResult, ErrorData> {
+            std::future::pending().await
+        }
+    }
+
+    async fn attach_prompt_server<S>(pool: &UpstreamPool, upstream_name: &str, server: S)
+    where
+        S: ServerHandler,
+    {
+        let (server_transport, client_transport) =
+            tokio::io::duplex(super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = server
+                .serve(server_transport)
+                .await
+                .expect("prompt server starts");
+            running.waiting().await.expect("prompt server runs");
+        });
+        let client_service: rmcp::service::RunningService<rmcp::RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("prompt client starts");
+        let peer = client_service.peer().clone();
+        let entry_name = Arc::<str>::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            super::super::entries::healthy_in_process_entry(entry_name, HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            super::super::UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: super::super::UpstreamRuntimeMetadata::default(),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_catalog_obeys_caller_absolute_deadline() {
+        let pool = catalog_pool_with_server("stalled", StalledPromptServer).await;
+        let started = tokio::time::Instant::now();
+        let deadline_at = started + std::time::Duration::from_millis(30);
+
+        let prompts = pool
+            .list_upstream_prompts_allowed_until(&[], None, deadline_at)
+            .await;
+
+        assert!(prompts.is_empty());
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(150),
+            "the caller deadline must bound the entire prompt aggregation"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_catalog_returns_completed_upstreams_when_one_stalls() {
+        let pool = catalog_pool_with_server("quick", PaginatedPromptServer::default()).await;
+        attach_prompt_server(pool.as_ref(), "stalled", StalledPromptServer).await;
+        let started = tokio::time::Instant::now();
+        let deadline_at = started + std::time::Duration::from_millis(40);
+
+        let prompts = pool
+            .list_upstream_prompts_allowed_until(&[], None, deadline_at)
+            .await;
+        let names = prompts
+            .iter()
+            .map(|prompt| prompt.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["quick/first", "quick/second"]);
+        assert!(started.elapsed() < std::time::Duration::from_millis(160));
     }
 
     impl ServerHandler for PaginatedPromptServer {
