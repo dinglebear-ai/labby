@@ -60,6 +60,7 @@ mod relay_cancellation_tests;
 mod resources_exposure_tests;
 mod resources_list;
 mod resources_read;
+mod skills_cache;
 mod skills_list;
 mod skills_tests;
 mod spawn_lock;
