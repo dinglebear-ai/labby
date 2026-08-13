@@ -19,7 +19,7 @@ use super::capability_call::bounded_service_error_text;
 use super::discover::routable_upstream_peers;
 use super::helpers::{classify_upstream_error, merge_upstream_prompts};
 use super::logging::is_capability_unsupported;
-use super::paginate::list_prompts_bounded;
+use super::paginate::{list_prompts_bounded, listing_catalog_timeout};
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
 impl UpstreamPool {
@@ -48,8 +48,17 @@ impl UpstreamPool {
         // so completion order does not affect the final result.
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
+            let request_timeout = listing_catalog_timeout(self.request_timeout);
             futures.push(async move {
-                let result = list_prompts_bounded(&peer, &name).await;
+                let result =
+                    match tokio::time::timeout(request_timeout, list_prompts_bounded(&peer, &name))
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(rmcp::ServiceError::Timeout {
+                            timeout: request_timeout,
+                        }),
+                    };
                 (name, result)
             });
         }
@@ -58,9 +67,19 @@ impl UpstreamPool {
         let mut prompt_name_updates: HashMap<String, Vec<String>> = HashMap::new();
         while let Some((name, result)) = futures.next().await {
             match result {
-                Ok(prompts) => {
+                Ok((prompts, truncation)) => {
                     self.record_success_for(&name, UpstreamCapability::Prompts)
                         .await;
+                    // A truncated pass still returned data, but must not read
+                    // as a clean success in `gateway.status`.
+                    if let Some(truncation) = truncation {
+                        self.record_listing_truncation_for(
+                            &name,
+                            UpstreamCapability::Prompts,
+                            truncation.status_note(),
+                        )
+                        .await;
+                    }
                     prompt_name_updates.insert(name.clone(), Vec::new());
                     {
                         let mut catalog = self.catalog.write().await;
@@ -283,140 +302,14 @@ impl UpstreamPool {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
 
-    use rmcp::model::{
-        ErrorData, GetPromptRequestParams, ListPromptsResult, PaginatedRequestParams, Prompt,
-        ServerCapabilities, ServerInfo,
-    };
-    use rmcp::service::RequestContext;
-    use rmcp::{RoleServer, ServerHandler};
+    use rmcp::model::{GetPromptRequestParams, Prompt};
 
     use super::super::super::types;
     use super::super::helpers::merge_upstream_prompts;
     use super::super::testsupport::*;
     use super::*;
-
-    #[derive(Clone, Default)]
-    struct PaginatedPromptServer {
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl ServerHandler for PaginatedPromptServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
-        }
-
-        async fn list_prompts(
-            &self,
-            request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListPromptsResult, ErrorData> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let cursor = request.and_then(|request| request.cursor);
-            let mut result = match cursor.as_deref() {
-                None => ListPromptsResult::with_all_items(vec![Prompt::new(
-                    "first",
-                    Some("first page"),
-                    None,
-                )]),
-                Some("page-2") => ListPromptsResult::with_all_items(vec![Prompt::new(
-                    "second",
-                    Some("second page"),
-                    None,
-                )]),
-                Some(other) => {
-                    return Err(ErrorData::invalid_params(
-                        format!("unexpected cursor: {other}"),
-                        None,
-                    ));
-                }
-            };
-            if cursor.is_none() {
-                result.next_cursor = Some("page-2".to_string());
-            }
-            Ok(result)
-        }
-    }
-
-    /// A malicious/buggy upstream whose `nextCursor` always points back at the
-    /// same cursor value.
-    #[derive(Clone, Default)]
-    struct LoopingCursorPromptServer {
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl ServerHandler for LoopingCursorPromptServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
-        }
-
-        async fn list_prompts(
-            &self,
-            _request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListPromptsResult, ErrorData> {
-            let page = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut result = ListPromptsResult::with_all_items(vec![Prompt::new(
-                format!("page-{page}"),
-                Some("looping page"),
-                None,
-            )]);
-            result.next_cursor = Some("loop".to_string());
-            Ok(result)
-        }
-    }
-
-    #[tokio::test]
-    async fn prompt_catalog_breaks_a_looping_cursor() {
-        let server = LoopingCursorPromptServer::default();
-        let calls = Arc::clone(&server.calls);
-        let pool = catalog_pool_with_server("looping", server).await;
-
-        let prompts = pool.list_upstream_prompts(&[]).await;
-        let names = prompts
-            .iter()
-            .map(|prompt| prompt.name.as_str())
-            .collect::<Vec<_>>();
-
-        // Page 1 introduces the cursor, page 2 repeats it — no third fetch.
-        assert_eq!(names, vec!["looping/page-1", "looping/page-2"]);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            pool.catalog
-                .read()
-                .await
-                .get("looping")
-                .expect("looping catalog entry")
-                .prompt_count,
-            2
-        );
-    }
-
-    #[tokio::test]
-    async fn prompt_catalog_traverses_all_upstream_pages() {
-        let server = PaginatedPromptServer::default();
-        let calls = Arc::clone(&server.calls);
-        let pool = catalog_pool_with_server("paged", server).await;
-
-        let prompts = pool.list_upstream_prompts(&[]).await;
-        let names = prompts
-            .iter()
-            .map(|prompt| prompt.name.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(names, vec!["paged/first", "paged/second"]);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            pool.catalog
-                .read()
-                .await
-                .get("paged")
-                .expect("paged catalog entry")
-                .prompt_count,
-            2
-        );
-    }
 
     #[test]
     fn merge_upstream_prompts_is_deterministic() {

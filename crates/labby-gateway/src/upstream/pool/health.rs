@@ -97,6 +97,26 @@ impl UpstreamPool {
         }
     }
 
+    /// Record a truncated (partial) listing pass for an upstream capability.
+    ///
+    /// A truncated pass — cursor loop broken or page cap hit — still returned
+    /// usable data, so the upstream stays healthy/routable and the circuit
+    /// breaker is untouched. But it must not read as a clean bill of health
+    /// either: the note lands in the capability's `last_error`, the channel
+    /// `gateway.status` surfaces, so operators can see the catalog is partial.
+    /// Call this *after* `record_success_for`, which clears `last_error`.
+    pub async fn record_listing_truncation_for(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+        note: impl Into<String>,
+    ) {
+        let mut catalog = self.catalog.write().await;
+        if let Some(entry) = catalog.get_mut(upstream_name) {
+            entry.set_last_error_for(capability, Some(note.into()));
+        }
+    }
+
     /// Return the most relevant last error for an upstream, if any capability has one.
     pub async fn upstream_last_error(&self, upstream_name: &str) -> Option<String> {
         let catalog = self.catalog.read().await;

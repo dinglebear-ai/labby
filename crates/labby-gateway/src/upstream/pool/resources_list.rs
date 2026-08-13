@@ -6,7 +6,7 @@
 //! resources. `cached_upstream_resource_uris` exposes the cached snapshot.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -35,14 +35,10 @@ use super::logging::{
     UpstreamRequestLog, is_capability_unsupported, log_upstream_request_error,
     log_upstream_request_finish, log_upstream_request_start,
 };
-use super::paginate::{list_resource_templates_bounded, list_resources_bounded};
+use super::paginate::{
+    list_resource_templates_bounded, list_resources_bounded, listing_catalog_timeout,
+};
 use super::tools::MAX_UPSTREAM_RESOURCES;
-
-const RESOURCE_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
-
-fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
-    request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
-}
 
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
     template.name = format!("{upstream_name}/{}", template.name);
@@ -247,7 +243,7 @@ impl UpstreamPool {
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
-            let request_timeout = resource_catalog_timeout(self.request_timeout);
+            let request_timeout = listing_catalog_timeout(self.request_timeout);
             futures.push(async move {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);
@@ -258,7 +254,7 @@ impl UpstreamPool {
                 )
                 .await
                 {
-                    Ok(Ok(resources)) => {
+                    Ok(Ok((resources, truncation))) => {
                         let response_bytes =
                             serde_json::to_vec(&resources).map_or(usize::MAX, |body| body.len());
                         log_upstream_request_finish(
@@ -266,7 +262,7 @@ impl UpstreamPool {
                             started.elapsed().as_millis(),
                             Some(response_bytes),
                         );
-                        Ok(resources)
+                        Ok((resources, truncation))
                     }
                     Ok(Err(error)) if is_capability_unsupported(&error) => {
                         log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
@@ -274,7 +270,7 @@ impl UpstreamPool {
                             upstream = %name,
                             "upstream does not implement resources/list — capability absent"
                         );
-                        Ok(Vec::new())
+                        Ok((Vec::new(), None))
                     }
                     Ok(Err(error)) => {
                         let error_text = bounded_service_error_text(&error);
@@ -318,9 +314,19 @@ impl UpstreamPool {
         let mut subscription_refreshes = Vec::new();
         for (name, result) in results {
             match result {
-                Ok(upstream_resources) => {
+                Ok((upstream_resources, truncation)) => {
                     self.record_success_for(&name, UpstreamCapability::Resources)
                         .await;
+                    // A truncated pass still returned data, but must not read
+                    // as a clean success in `gateway.status`.
+                    if let Some(truncation) = truncation {
+                        self.record_listing_truncation_for(
+                            &name,
+                            UpstreamCapability::Resources,
+                            truncation.status_note(),
+                        )
+                        .await;
+                    }
                     let resource_uris = upstream_resources
                         .iter()
                         .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
@@ -426,8 +432,19 @@ impl UpstreamPool {
         // contract as `list_upstream_resources_allowed` above.
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
+            let request_timeout = listing_catalog_timeout(self.request_timeout);
             futures.push(async move {
-                let result = list_resource_templates_bounded(&peer, &name).await;
+                let result = match tokio::time::timeout(
+                    request_timeout,
+                    list_resource_templates_bounded(&peer, &name),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(rmcp::ServiceError::Timeout {
+                        timeout: request_timeout,
+                    }),
+                };
                 (name, result)
             });
         }
@@ -441,9 +458,17 @@ impl UpstreamPool {
         let mut templates = Vec::new();
         for (name, result) in results {
             match result {
-                Ok(upstream_templates) => {
+                Ok((upstream_templates, truncation)) => {
                     self.record_success_for(&name, UpstreamCapability::Resources)
                         .await;
+                    if let Some(truncation) = truncation {
+                        self.record_listing_truncation_for(
+                            &name,
+                            UpstreamCapability::Resources,
+                            truncation.status_note(),
+                        )
+                        .await;
+                    }
                     for mut template in upstream_templates {
                         if templates.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
@@ -502,7 +527,7 @@ impl UpstreamPool {
             let pool = self.clone();
             futures.push(async move {
                 let started = Instant::now();
-                let request_timeout = resource_catalog_timeout(pool.request_timeout);
+                let request_timeout = listing_catalog_timeout(pool.request_timeout);
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -569,7 +594,14 @@ impl UpstreamPool {
                     UpstreamCapability::Resources,
                     event,
                     started,
-                    list_resources_bounded(&peer, &config.name),
+                    // Subject-scoped OAuth listings never land in `self.catalog`,
+                    // so there is no entry to record a truncation note on — the
+                    // WARN inside the bounded helper is the visibility here.
+                    async {
+                        list_resources_bounded(&peer, &config.name)
+                            .await
+                            .map(|(resources, _truncation)| resources)
+                    },
                     |resources| serde_json::to_vec(resources).map_or(usize::MAX, |body| body.len()),
                     Some(&subject),
                     |error| format!("subject-scoped upstream resource discovery failed: {error}"),
@@ -750,18 +782,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resource_catalog_timeout_caps_the_general_upstream_budget() {
-        assert_eq!(
-            resource_catalog_timeout(Duration::from_mins(1)),
-            Duration::from_secs(10)
-        );
-        assert_eq!(
-            resource_catalog_timeout(Duration::from_millis(25)),
-            Duration::from_millis(25)
-        );
-    }
-
     fn oauth_schema_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
             enabled: true,
@@ -914,124 +934,6 @@ mod tests {
             }
             Ok(result)
         }
-    }
-
-    /// A malicious/buggy upstream whose `nextCursor` always points back at the
-    /// same cursor value (`"loop"`), for both resources and templates.
-    #[derive(Clone, Default)]
-    struct LoopingCursorResourceServer {
-        resource_calls: Arc<AtomicUsize>,
-        template_calls: Arc<AtomicUsize>,
-    }
-
-    impl ServerHandler for LoopingCursorResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
-        }
-
-        async fn list_resources(
-            &self,
-            _request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListResourcesResult, ErrorData> {
-            let page = self.resource_calls.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut result = ListResourcesResult::with_all_items(vec![Resource::new(
-                format!("file:///page-{page}"),
-                format!("page-{page}"),
-            )]);
-            result.next_cursor = Some("loop".to_string());
-            Ok(result)
-        }
-
-        async fn list_resource_templates(
-            &self,
-            _request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListResourceTemplatesResult, ErrorData> {
-            let page = self.template_calls.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut result =
-                ListResourceTemplatesResult::with_all_items(vec![ResourceTemplate::new(
-                    format!("file:///page-{page}/{{path}}"),
-                    format!("page-{page}"),
-                )]);
-            result.next_cursor = Some("loop".to_string());
-            Ok(result)
-        }
-    }
-
-    /// An upstream that mints a fresh `nextCursor` on every page, forever.
-    #[derive(Clone, Default)]
-    struct EndlessCursorResourceServer {
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl ServerHandler for EndlessCursorResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
-        }
-
-        async fn list_resources(
-            &self,
-            _request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListResourcesResult, ErrorData> {
-            let page = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut result = ListResourcesResult::with_all_items(vec![Resource::new(
-                format!("file:///page-{page}"),
-                format!("page-{page}"),
-            )]);
-            result.next_cursor = Some(format!("page-{page}"));
-            Ok(result)
-        }
-    }
-
-    #[tokio::test]
-    async fn resource_catalog_breaks_a_looping_cursor() {
-        let server = LoopingCursorResourceServer::default();
-        let calls = Arc::clone(&server.resource_calls);
-        let pool = catalog_pool_with_server("looping", server).await;
-
-        let resources = pool.list_upstream_resources().await;
-
-        // Page 1 introduces the cursor, page 2 repeats it — no third fetch.
-        assert_eq!(resources.len(), 2);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            pool.catalog
-                .read()
-                .await
-                .get("looping")
-                .expect("looping catalog entry")
-                .resource_count,
-            2
-        );
-    }
-
-    #[tokio::test]
-    async fn resource_template_catalog_breaks_a_looping_cursor() {
-        let server = LoopingCursorResourceServer::default();
-        let calls = Arc::clone(&server.template_calls);
-        let pool = catalog_pool_with_server("looping", server).await;
-
-        let templates = pool.list_upstream_resource_templates_allowed(None).await;
-
-        assert_eq!(templates.len(), 2);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn resource_catalog_stops_at_the_page_cap_when_cursors_never_repeat() {
-        let server = EndlessCursorResourceServer::default();
-        let calls = Arc::clone(&server.calls);
-        let pool = catalog_pool_with_server("endless", server).await;
-
-        let resources = pool.list_upstream_resources().await;
-
-        assert_eq!(resources.len(), super::super::paginate::MAX_LIST_PAGES);
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            super::super::paginate::MAX_LIST_PAGES
-        );
     }
 
     #[tokio::test]

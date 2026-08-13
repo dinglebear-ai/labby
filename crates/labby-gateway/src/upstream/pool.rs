@@ -41,6 +41,8 @@ mod http_cancellation;
 mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
+#[cfg(test)]
+mod listing_bounds_tests;
 mod logging;
 mod notifications;
 #[cfg(test)]
