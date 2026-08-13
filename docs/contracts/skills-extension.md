@@ -58,13 +58,29 @@ Freshness is TTL + stale-while-revalidate + gateway reload.
 > ([SEP-2549]) — with the same semantics: a freshness hint for the listing and a
 > cache-scope marker, **not an integrity property**.
 
-**Labby:** `cache_scope` is typed as a free-form `Option<String>` so an
-unrecognized value round-trips rather than failing to deserialize. Labby always
-shards its cache per OAuth subject regardless of the declared scope.
+SEP-2549 is **merged**, and its vocabulary is exactly two values:
 
-> **Open:** the concrete SEP-2549 vocabulary has not been read. It is not needed
-> to serve or ingest skills, but a consumer that branches on `cacheScope` must
-> resolve it first.
+| Value | Meaning |
+|-------|---------|
+| `"public"` | No user-specific data. Any client, shared gateway, or caching proxy may store and serve it to any user. |
+| `"private"` | Not meant to be shared between callers. May be reused within one authorization context; caches **must not** be shared across authorization contexts. |
+
+Two rules that bind a paginating client: a server **must** apply the same
+`cacheScope` to every page of one list, and each page carries its **own**
+`ttlMs`, which servers may vary between pages.
+
+**Labby:** `cache_scope` is typed as a free-form `Option<String>` so a future
+value round-trips rather than failing to deserialize. Labby shards its cache per
+OAuth subject unconditionally, regardless of the declared scope. That is
+deliberately stricter than `"public"` allows: the spec names a shared gateway as
+a permitted sharer and warns that a `"public"` result "may be shared between
+callers even if the Result is coming from an authenticated endpoint" — sharing
+we decline to do. Over-sharing is what the spec forbids; sharding more finely
+than declared is always permitted and costs only upstream requests.
+
+`cacheScope` is not an access control. Per the same document, implementations
+"MUST NOT rely on `cacheScope` alone to prevent unauthorized access" — exposure
+policy governs independently.
 
 ### 3. Are digest-less resources allowed?
 
