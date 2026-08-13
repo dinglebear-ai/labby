@@ -392,9 +392,65 @@ impl LabMcpServer {
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None));
         }
 
-        serde_json::to_value(list_first_party_skills())
+        let mut listing = list_first_party_skills();
+        listing
+            .skills
+            .extend(self.proxied_skill_entries(context).await);
+        serde_json::to_value(listing)
             .map(CustomResult::new)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    }
+
+    /// Skills aggregated from upstreams, relabelled under each origin.
+    ///
+    /// Route scope is applied here rather than in the pool: the pool has no
+    /// notion of a named route, and this is where the caller's scope is known.
+    /// A restricted route must not see skills from an upstream it cannot reach,
+    /// or the agent's skill world would not match its tool world.
+    #[cfg(feature = "gateway")]
+    async fn proxied_skill_entries(&self, context: &RequestContext<RoleServer>) -> Vec<SkillEntry> {
+        let Some(manager) = self.gateway_manager.as_ref() else {
+            return Vec::new();
+        };
+        let Some(pool) = self.current_upstream_pool().await else {
+            return Vec::new();
+        };
+        let subject = self.request_subject(context);
+        let scope = self.route_scope.clone();
+
+        let mut entries = Vec::new();
+        for config in manager.current_config().await.upstream {
+            if !config.enabled || !config.proxy_skills {
+                continue;
+            }
+            if !scope.allows_upstream(&config.name) {
+                continue;
+            }
+            match pool.upstream_skills(&config, subject).await {
+                Ok(exposed) => {
+                    entries.extend(aggregate::mint_proxied_entries(&config, &exposed.skills));
+                }
+                Err(error) => {
+                    // Partial results: one unreachable upstream must not empty
+                    // the whole listing. The failure is already recorded on the
+                    // circuit breaker by the pool.
+                    tracing::warn!(
+                        upstream = %config.name,
+                        error = %error,
+                        "skipping an upstream while aggregating skills"
+                    );
+                }
+            }
+        }
+        entries
+    }
+
+    #[cfg(not(feature = "gateway"))]
+    async fn proxied_skill_entries(
+        &self,
+        _context: &RequestContext<RoleServer>,
+    ) -> Vec<SkillEntry> {
+        Vec::new()
     }
 }
 
