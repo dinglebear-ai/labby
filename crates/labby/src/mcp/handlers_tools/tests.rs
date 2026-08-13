@@ -3082,19 +3082,14 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
     );
     let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
     let pool = Arc::new(UpstreamPool::new());
-    pool.insert_entry_for_test(
-        "oauth_apps",
-        fixture_upstream_entry(
-            "oauth_apps",
-            HashMap::from([
-                ("youtube_search_ui".to_string(), ui_tool),
-                ("youtube_probe".to_string(), plain_tool),
-            ]),
-        ),
+    let upstream = fixture_oauth_upstream_config("oauth_apps");
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "reader",
+        vec![ui_tool.tool, plain_tool.tool],
     )
     .await;
-    let manager =
-        code_mode_manager_with_pool(true, fixture_oauth_upstream_config("oauth_apps"), pool).await;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
     let server = test_server(
         completion_test_registry(),
         Some(manager),
@@ -3123,7 +3118,7 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
         envelope["error"]["cause"]
             .as_str()
             .is_some_and(|cause| cause.contains("relayed upstream")),
-        "subject-scoped route should preserve relayed-connect evidence: {text}"
+        "subject-scoped catalog must pass the sibling callback gate and reach relayed execution: {text}"
     );
 }
 

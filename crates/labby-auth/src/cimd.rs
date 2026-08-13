@@ -161,7 +161,7 @@ fn record_negative_cache(state: &AuthState, client_id: &str) {
     );
 }
 
-fn acquire_remote_fetch_lock(
+pub(crate) fn acquire_remote_fetch_lock(
     state: &AuthState,
     lock_key: &str,
 ) -> Result<std::sync::Arc<tokio::sync::Mutex<()>>, AuthError> {

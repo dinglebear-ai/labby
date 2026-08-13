@@ -194,6 +194,12 @@ pub struct AuthState {
     pub(crate) cimd_cache_maintenance: Arc<std::sync::Mutex<()>>,
     #[cfg(feature = "http-axum")]
     pub(crate) jwks_cache: Arc<DashMap<String, (jsonwebtoken::jwk::JwkSet, i64)>>,
+    /// Short-lived failures and unknown-key results, keyed by JWKS document
+    /// rather than attacker-controlled `kid` values.
+    #[cfg(feature = "http-axum")]
+    pub(crate) jwks_negative_cache: Arc<DashMap<String, i64>>,
+    #[cfg(feature = "http-axum")]
+    pub(crate) jwks_cache_maintenance: Arc<std::sync::Mutex<()>>,
     /// Per-document single-flight locks. Never hold one global lock across
     /// remote I/O: an unrelated slow metadata endpoint must not block OAuth.
     #[cfg(feature = "http-axum")]
@@ -283,6 +289,10 @@ impl AuthState {
             cimd_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            jwks_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            jwks_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_locks: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
@@ -451,6 +461,10 @@ impl AuthState {
             cimd_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            jwks_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            jwks_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_locks: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]

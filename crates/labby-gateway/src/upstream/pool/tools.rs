@@ -17,7 +17,7 @@ use super::super::types::{
 };
 use super::UpstreamPool;
 use super::entries::resolve_request_exposure_policy;
-use super::helpers::UpstreamCachedSummary;
+use super::helpers::{UpstreamCachedSummary, cached_upstream_tool};
 
 /// Hard cap on the total number of tools returned by a single `healthy_tools()` call.
 ///
@@ -360,6 +360,33 @@ impl UpstreamPool {
             .await
     }
 
+    /// Return the OAuth tools visible to one subject in the same routed form
+    /// used by the global catalog, without ever publishing them globally.
+    pub async fn subject_scoped_upstream_tools_allowed(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<UpstreamTool> {
+        let configs = configs
+            .iter()
+            .filter(|config| config.enabled && upstream_allowed(allowed, &config.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut routed = Vec::new();
+        for (upstream, tools) in self
+            .subject_scoped_tools_bounded(&configs, subject, MAX_UPSTREAM_TOOLS)
+            .await
+        {
+            let upstream_name = std::sync::Arc::<str>::from(upstream);
+            for tool in tools {
+                let (_, tool) = cached_upstream_tool(tool, &upstream_name);
+                insert_bounded_upstream_tool(&mut routed, tool, MAX_UPSTREAM_TOOLS);
+            }
+        }
+        routed
+    }
+
     async fn subject_scoped_tools_inner(
         &self,
         configs: &[UpstreamConfig],
@@ -367,7 +394,10 @@ impl UpstreamPool {
         limit: Option<usize>,
     ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
         let mut futures = FuturesUnordered::new();
-        for config in configs.iter().filter(|config| config.oauth.is_some()) {
+        for config in configs
+            .iter()
+            .filter(|config| config.enabled && config.oauth.is_some())
+        {
             let config = config.clone();
             let subject = subject.to_string();
             let pool = self.clone();

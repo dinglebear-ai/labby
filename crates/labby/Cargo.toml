@@ -155,6 +155,6 @@ default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []
 systemd = ["dep:sd-notify"]
-proxy-testkit = []
+proxy-testkit = ["labby-gateway/testkit"]
 [lints]
 workspace = true

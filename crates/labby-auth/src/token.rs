@@ -44,6 +44,13 @@ struct RefreshClaimLease {
     active: bool,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct RefreshClaimLeaseObserver {
+    cancellation_released: tokio::sync::Notify,
+    renewal_finished: tokio::sync::Notify,
+}
+
 impl RefreshClaimLease {
     fn start(
         store: crate::sqlite::SqliteStore,
@@ -69,6 +76,48 @@ impl RefreshClaimLease {
         lease_seconds: i64,
         renew_interval: std::time::Duration,
     ) -> (Self, tokio::sync::oneshot::Receiver<AuthError>) {
+        Self::start_inner(
+            store,
+            refresh_token,
+            claim_id,
+            refresh_token_id,
+            lease_seconds,
+            renew_interval,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    fn start_with_timing_observed(
+        store: crate::sqlite::SqliteStore,
+        refresh_token: String,
+        claim_id: String,
+        refresh_token_id: String,
+        lease_seconds: i64,
+        renew_interval: std::time::Duration,
+        observer: std::sync::Arc<RefreshClaimLeaseObserver>,
+    ) -> (Self, tokio::sync::oneshot::Receiver<AuthError>) {
+        Self::start_inner(
+            store,
+            refresh_token,
+            claim_id,
+            refresh_token_id,
+            lease_seconds,
+            renew_interval,
+            Some(observer),
+        )
+    }
+
+    fn start_inner(
+        store: crate::sqlite::SqliteStore,
+        refresh_token: String,
+        claim_id: String,
+        refresh_token_id: String,
+        lease_seconds: i64,
+        renew_interval: std::time::Duration,
+        #[cfg(test)] observer: Option<std::sync::Arc<RefreshClaimLeaseObserver>>,
+        #[cfg(not(test))] _observer: Option<()>,
+    ) -> (Self, tokio::sync::oneshot::Receiver<AuthError>) {
         let heartbeat_store = store.clone();
         let heartbeat_token = refresh_token.clone();
         let heartbeat_claim_id = claim_id.clone();
@@ -79,10 +128,10 @@ impl RefreshClaimLease {
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => {
-                        match heartbeat_store
+                        let release = heartbeat_store
                             .release_refresh_claim(&heartbeat_token, &heartbeat_claim_id)
-                            .await
-                        {
+                            .await;
+                        match release {
                             Ok(()) => debug!(
                                 refresh_token_id = %heartbeat_token_id,
                                 "oauth refresh_token claim released after request cancellation"
@@ -94,6 +143,10 @@ impl RefreshClaimLease {
                                 "oauth refresh_token claim release after cancellation failed"
                             ),
                         }
+                        #[cfg(test)]
+                        if let Some(observer) = observer.as_ref() {
+                            observer.cancellation_released.notify_one();
+                        }
                         return;
                     }
                     renewal = async {
@@ -102,37 +155,43 @@ impl RefreshClaimLease {
                         heartbeat_store
                             .renew_refresh_claim(&heartbeat_token, &heartbeat_claim_id, expires_at)
                             .await
-                    } => match renewal {
-                    Ok(true) => {
-                        debug!(
-                            refresh_token_id = %heartbeat_token_id,
-                            claim_lease_seconds = lease_seconds,
-                            "oauth refresh_token claim lease renewed"
-                        );
+                    } => {
+                        #[cfg(test)]
+                        if let Some(observer) = observer.as_ref() {
+                            observer.renewal_finished.notify_one();
+                        }
+                        match renewal {
+                            Ok(true) => {
+                                debug!(
+                                    refresh_token_id = %heartbeat_token_id,
+                                    claim_lease_seconds = lease_seconds,
+                                    "oauth refresh_token claim lease renewed"
+                                );
+                            }
+                            Ok(false) => {
+                                let error = AuthError::InvalidGrant(
+                                    "refresh token claim ownership was lost".to_string(),
+                                );
+                                warn!(
+                                    refresh_token_id = %heartbeat_token_id,
+                                    kind = error.kind(),
+                                    "oauth refresh_token claim lease could not be renewed"
+                                );
+                                drop(lost_tx.send(error));
+                                return;
+                            }
+                            Err(error) => {
+                                warn!(
+                                    refresh_token_id = %heartbeat_token_id,
+                                    kind = error.kind(),
+                                    error = %error,
+                                    "oauth refresh_token claim lease renewal failed"
+                                );
+                                drop(lost_tx.send(error));
+                                return;
+                            }
+                        }
                     }
-                    Ok(false) => {
-                        let error = AuthError::InvalidGrant(
-                            "refresh token claim ownership was lost".to_string(),
-                        );
-                        warn!(
-                            refresh_token_id = %heartbeat_token_id,
-                            kind = error.kind(),
-                            "oauth refresh_token claim lease could not be renewed"
-                        );
-                        drop(lost_tx.send(error));
-                        return;
-                    }
-                    Err(error) => {
-                        warn!(
-                            refresh_token_id = %heartbeat_token_id,
-                            kind = error.kind(),
-                            error = %error,
-                            "oauth refresh_token claim lease renewal failed"
-                        );
-                        drop(lost_tx.send(error));
-                        return;
-                    }
-                    },
                 }
             }
         });
@@ -434,6 +493,58 @@ async fn load_enterprise_jwks(
     load_remote_jwks(state, uri, required_kid, "enterprise JWKS").await
 }
 
+const MAX_JWKS_CACHE_ENTRIES: usize = 256;
+const JWKS_NEGATIVE_CACHE_SECS: i64 = 30;
+
+fn jwks_negative_cache_hit(state: &AuthState, cache_key: &str) -> bool {
+    let hit = state
+        .jwks_negative_cache
+        .get(cache_key)
+        .is_some_and(|entry| *entry.value() > now_unix());
+    if hit {
+        tracing::info!(
+            event = "oauth.jwks.cache",
+            document = "remote_jwks",
+            outcome = "negative_hit",
+            "remote JWKS refresh suppressed"
+        );
+    }
+    hit
+}
+
+fn record_jwks_negative_cache(state: &AuthState, cache_key: &str) {
+    let Ok(_maintenance) = state.jwks_cache_maintenance.lock() else {
+        tracing::warn!(
+            kind = "internal_error",
+            "JWKS negative cache maintenance lock poisoned"
+        );
+        return;
+    };
+    state
+        .jwks_negative_cache
+        .retain(|_, expires_at| *expires_at > now_unix());
+    while state.jwks_negative_cache.len() >= MAX_JWKS_CACHE_ENTRIES {
+        let oldest = state
+            .jwks_negative_cache
+            .iter()
+            .min_by_key(|entry| *entry.value())
+            .map(|entry| entry.key().clone());
+        let Some(oldest) = oldest else { break };
+        state.jwks_negative_cache.remove(&oldest);
+    }
+    state.jwks_negative_cache.insert(
+        cache_key.to_string(),
+        now_unix().saturating_add(JWKS_NEGATIVE_CACHE_SECS),
+    );
+    tracing::info!(
+        event = "oauth.jwks.cache",
+        document = "remote_jwks",
+        outcome = "negative_recorded",
+        ttl_secs = JWKS_NEGATIVE_CACHE_SECS,
+        "remote JWKS negative result cached"
+    );
+}
+
 /// Fetch (or reuse a cached) remote JWK set, keyed by URL.
 ///
 /// `required_kid` participates in the cache-hit test so a key rotation the
@@ -449,26 +560,32 @@ async fn load_remote_jwks(
     let now = now_unix();
     if let Some(entry) = state.jwks_cache.get(cache_key)
         && entry.value().1 > now
-        && entry.value().0.find(required_kid).is_some()
     {
-        return Ok(entry.value().0.clone());
+        if entry.value().0.find(required_kid).is_some() || jwks_negative_cache_hit(state, cache_key)
+        {
+            return Ok(entry.value().0.clone());
+        }
+    }
+    if jwks_negative_cache_hit(state, cache_key) {
+        return Err(AuthError::Validation(format!(
+            "{document_name} is temporarily unavailable"
+        )));
     }
     let lock_key = format!("jwks:{cache_key}");
-    let fetch_lock = state
-        .remote_fetch_locks
-        .entry(lock_key.clone())
-        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
+    let fetch_lock = crate::cimd::acquire_remote_fetch_lock(state, &lock_key)?;
     let _guard = fetch_lock.lock().await;
     if let Some(entry) = state.jwks_cache.get(cache_key)
         && entry.value().1 > now_unix()
-        && entry.value().0.find(required_kid).is_some()
+        && (entry.value().0.find(required_kid).is_some()
+            || jwks_negative_cache_hit(state, cache_key))
     {
         let jwks = entry.value().0.clone();
-        drop(entry);
-        drop(_guard);
-        state.remote_fetch_locks.remove(&lock_key);
         return Ok(jwks);
+    }
+    if jwks_negative_cache_hit(state, cache_key) {
+        return Err(AuthError::Validation(format!(
+            "{document_name} is temporarily unavailable"
+        )));
     }
     let _permit = state
         .remote_fetch_permits
@@ -478,16 +595,36 @@ async fn load_remote_jwks(
     let (jwks, cache_policy) = match crate::remote::fetch_json::<JwkSet>(uri, document_name).await {
         Ok(value) => value,
         Err(error) => {
-            drop(_guard);
-            state.remote_fetch_locks.remove(&lock_key);
+            record_jwks_negative_cache(state, cache_key);
             return Err(error);
         }
     };
+    if jwks.find(required_kid).is_some() {
+        state.jwks_negative_cache.remove(cache_key);
+        tracing::info!(
+            event = "oauth.jwks.refresh",
+            document = document_name,
+            outcome = "required_key_found",
+            "remote JWKS refresh completed"
+        );
+    } else {
+        record_jwks_negative_cache(state, cache_key);
+        tracing::warn!(
+            event = "oauth.jwks.refresh",
+            document = document_name,
+            outcome = "required_key_absent",
+            "remote JWKS refresh completed without the required key"
+        );
+    }
     if cache_policy.cacheable {
+        let _maintenance = state
+            .jwks_cache_maintenance
+            .lock()
+            .map_err(|_| AuthError::Server("JWKS cache maintenance lock poisoned".to_string()))?;
         state
             .jwks_cache
             .retain(|_, (_, expires_at)| *expires_at > now_unix());
-        if state.jwks_cache.len() >= 256
+        if state.jwks_cache.len() >= MAX_JWKS_CACHE_ENTRIES
             && let Some(oldest) = state
                 .jwks_cache
                 .iter()
@@ -504,8 +641,6 @@ async fn load_remote_jwks(
             ),
         );
     }
-    drop(_guard);
-    state.remote_fetch_locks.remove(&lock_key);
     Ok(jwks)
 }
 
@@ -1537,6 +1672,86 @@ mod tests {
         test_auth_state_with_mock_google, test_auth_state_with_registered_client,
     };
 
+    #[tokio::test]
+    async fn unknown_jwks_kid_is_negatively_cached_per_document() {
+        let state = test_auth_state_with_registered_client().await;
+        let uri = Url::parse("https://keys.example.com/jwks.json").unwrap();
+        let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_value(serde_json::json!({
+            "keys": []
+        }))
+        .unwrap();
+        state.jwks_cache.insert(
+            uri.to_string(),
+            (jwks.clone(), crate::util::now_unix() + 60),
+        );
+        super::record_jwks_negative_cache(&state, uri.as_str());
+
+        // A cache miss for an attacker-selected kid must not turn into another
+        // remote fetch while this document's short negative entry is live.
+        let resolved = super::load_remote_jwks(&state, &uri, "attacker-kid", "client JWKS")
+            .await
+            .unwrap();
+        assert_eq!(resolved.keys.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn jwks_negative_cache_cardinality_is_bounded_by_document_count() {
+        let state = test_auth_state_with_registered_client().await;
+        for index in 0..=super::MAX_JWKS_CACHE_ENTRIES {
+            super::record_jwks_negative_cache(
+                &state,
+                &format!("https://keys-{index}.example/jwks.json"),
+            );
+        }
+        assert_eq!(
+            state.jwks_negative_cache.len(),
+            super::MAX_JWKS_CACHE_ENTRIES
+        );
+        assert!(super::jwks_negative_cache_hit(
+            &state,
+            "https://keys-256.example/jwks.json"
+        ));
+        state.jwks_negative_cache.insert(
+            "https://expired.example/jwks.json".to_string(),
+            crate::util::now_unix() - 1,
+        );
+        assert!(!super::jwks_negative_cache_hit(
+            &state,
+            "https://expired.example/jwks.json"
+        ));
+    }
+
+    #[tokio::test]
+    async fn negative_jwks_result_without_a_cached_document_skips_remote_io() {
+        let state = test_auth_state_with_registered_client().await;
+        let uri = Url::parse("https://does-not-resolve.invalid/jwks.json").unwrap();
+        super::record_jwks_negative_cache(&state, uri.as_str());
+
+        let error = super::load_remote_jwks(&state, &uri, "attacker-kid", "client JWKS")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("temporarily unavailable"));
+    }
+
+    #[tokio::test]
+    async fn previously_unseen_kid_still_attempts_one_rotation_refresh() {
+        let state = test_auth_state_with_registered_client().await;
+        let uri = Url::parse("https://does-not-resolve.invalid/jwks.json").unwrap();
+        let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_value(serde_json::json!({
+            "keys": []
+        }))
+        .unwrap();
+        state
+            .jwks_cache
+            .insert(uri.to_string(), (jwks, crate::util::now_unix() + 60));
+
+        let error = super::load_remote_jwks(&state, &uri, "rotated-key", "client JWKS")
+            .await
+            .unwrap_err();
+        assert!(!error.to_string().contains("temporarily unavailable"));
+        assert!(super::jwks_negative_cache_hit(&state, uri.as_str()));
+    }
+
     async fn install_google_provider_credential(state: &AuthState) {
         state
             .store
@@ -1594,42 +1809,6 @@ mod tests {
                 "error": "invalid_grant",
                 "error_description": "Token has been expired or revoked."
             })))
-            .mount(server)
-            .await;
-        let google = GoogleProvider::new(
-            "client-id".to_string(),
-            "client-secret".to_string(),
-            Url::parse("https://lab.example.com/auth/google/callback").unwrap(),
-        )
-        .unwrap()
-        .with_endpoints(
-            server.uri().parse::<Url>().unwrap(),
-            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
-        );
-        let state = AuthState::for_tests(
-            (*state.config).clone(),
-            state.store.clone(),
-            (*state.signing_keys).clone(),
-            google,
-        );
-        install_google_provider_credential(&state).await;
-        state
-    }
-
-    async fn test_auth_state_with_slow_google_refresh() -> AuthState {
-        let state = test_auth_state_with_registered_client().await;
-        let server = Box::leak(Box::new(MockServer::start().await));
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(std::time::Duration::from_secs(10))
-                    .set_body_json(serde_json::json!({
-                        "access_token": "slow-access-token",
-                        "expires_in": 3600,
-                        "scope": "openid email profile"
-                    })),
-            )
             .mount(server)
             .await;
         let google = GoogleProvider::new(
@@ -2649,7 +2828,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_refresh_releases_local_claim_without_waiting_for_lease_expiry() {
-        let state = test_auth_state_with_slow_google_refresh().await;
+        let state = test_auth_state_with_refreshable_google().await;
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2665,58 +2844,44 @@ mod tests {
             .await
             .unwrap();
 
-        let request = tokio::spawn(router(state.clone()).oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/token")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(
-                    "grant_type=refresh_token&refresh_token=cancelled-refresh-token&client_id=client",
-                ))
-                .unwrap(),
-        ));
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if state
-                    .store
-                    .refresh_claim_state("cancelled-refresh-token")
-                    .await
-                    .unwrap()
-                    .is_some()
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("request acquired its local claim");
-
-        request.abort();
-        let cancellation = request.await.expect_err("request must be cancelled");
-        assert!(cancellation.is_cancelled());
-        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Some(row) = state
-                    .store
-                    .claim_refresh_token(
-                        "cancelled-refresh-token",
-                        "post-cancel",
-                        crate::util::now_unix() + 30,
-                    )
-                    .await
-                    .unwrap()
-                {
-                    return row;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-        assert!(
-            recovered.is_ok(),
-            "cancellation must release the claim without waiting for its lease to expire"
+        state
+            .store
+            .claim_refresh_token(
+                "cancelled-refresh-token",
+                "cancelled-owner",
+                crate::util::now_unix() + 90,
+            )
+            .await
+            .unwrap()
+            .expect("claim acquired");
+        let observer = std::sync::Arc::new(super::RefreshClaimLeaseObserver::default());
+        let (lease, _lost) = super::RefreshClaimLease::start_with_timing_observed(
+            state.store.clone(),
+            "cancelled-refresh-token".to_string(),
+            "cancelled-owner".to_string(),
+            crate::util::fingerprint("cancelled-refresh-token"),
+            90,
+            std::time::Duration::from_mins(1),
+            observer.clone(),
         );
+
+        drop(lease);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            observer.cancellation_released.notified(),
+        )
+        .await
+        .expect("detached cancellation cleanup completed");
+        let recovered = state
+            .store
+            .claim_refresh_token(
+                "cancelled-refresh-token",
+                "post-cancel",
+                crate::util::now_unix() + 30,
+            )
+            .await
+            .unwrap();
+        assert!(recovered.is_some());
     }
 
     #[tokio::test]
@@ -2740,7 +2905,7 @@ mod tests {
             .unwrap();
         state
             .store
-            .claim_refresh_token("heartbeat-refresh-token", "heartbeat-owner", now + 1)
+            .claim_refresh_token("heartbeat-refresh-token", "heartbeat-owner", now + 10)
             .await
             .unwrap()
             .expect("claim acquired");
@@ -2751,31 +2916,30 @@ mod tests {
             .unwrap()
             .unwrap()
             .1;
-        let (lease, mut lost) = super::RefreshClaimLease::start_with_timing(
+        let observer = std::sync::Arc::new(super::RefreshClaimLeaseObserver::default());
+        let (lease, mut lost) = super::RefreshClaimLease::start_with_timing_observed(
             state.store.clone(),
             "heartbeat-refresh-token".to_string(),
             "heartbeat-owner".to_string(),
             crate::util::fingerprint("heartbeat-refresh-token"),
             30,
             std::time::Duration::from_millis(10),
+            observer.clone(),
         );
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                let renewed_expiry = state
-                    .store
-                    .refresh_claim_state("heartbeat-refresh-token")
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .1;
-                if renewed_expiry > original_expiry {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            observer.renewal_finished.notified(),
+        )
         .await
         .expect("heartbeat extended the original claim");
+        let renewed_expiry = state
+            .store
+            .refresh_claim_state("heartbeat-refresh-token")
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert!(renewed_expiry > original_expiry);
         state
             .store
             .release_refresh_claim("heartbeat-refresh-token", "heartbeat-owner")
@@ -2787,6 +2951,56 @@ mod tests {
             .expect("heartbeat reports an error");
         assert_eq!(lost_error.kind(), "invalid_grant");
         drop(lease);
+    }
+
+    #[tokio::test]
+    async fn successful_refresh_claim_disarm_does_not_run_cancellation_cleanup() {
+        let state = test_auth_state_with_refreshable_google().await;
+        let now = crate::util::now_unix();
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "completed-refresh-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now - 60,
+                expires_at: now + 3600,
+            })
+            .await
+            .unwrap();
+        state
+            .store
+            .claim_refresh_token("completed-refresh-token", "completed-owner", now + 90)
+            .await
+            .unwrap()
+            .expect("claim acquired");
+        let observer = std::sync::Arc::new(super::RefreshClaimLeaseObserver::default());
+        let (mut lease, _lost) = super::RefreshClaimLease::start_with_timing_observed(
+            state.store.clone(),
+            "completed-refresh-token".to_string(),
+            "completed-owner".to_string(),
+            crate::util::fingerprint("completed-refresh-token"),
+            90,
+            std::time::Duration::from_mins(1),
+            observer,
+        );
+
+        lease.disarm();
+        drop(lease);
+
+        assert_eq!(
+            state
+                .store
+                .refresh_claim_state("completed-refresh-token")
+                .await
+                .unwrap()
+                .unwrap()
+                .0,
+            "completed-owner"
+        );
     }
 
     #[tokio::test]

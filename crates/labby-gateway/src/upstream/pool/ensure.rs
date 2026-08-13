@@ -108,10 +108,35 @@ impl UpstreamPool {
         oauth_subject: Option<&str>,
         runtime_owner: Option<&UpstreamRuntimeOwner>,
     ) -> anyhow::Result<bool> {
-        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
         if !config.enabled {
             return Ok(false);
         }
+        // OAuth tool discovery is identity-scoped. Keep its peer and tool list
+        // in the per-(upstream, subject) cache; publishing either into the
+        // process-global connection/catalog maps lets the first authenticated
+        // caller shape every later caller's view.
+        if config.oauth.is_some()
+            && let Some(subject) = oauth_subject
+        {
+            let started = Instant::now();
+            self.ensure_lazy_upstream_entry(config).await;
+            let (_peer, tools) = self.acquire_or_connect_subject(config, subject).await?;
+            self.record_success_for(&config.name, UpstreamCapability::Tools)
+                .await;
+            tracing::info!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "upstream.subject.ensure",
+                event = "finish",
+                operation = "connection.acquire",
+                upstream = %config.name,
+                tool_count = tools.len(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "subject-scoped upstream tools ready"
+            );
+            return Ok(true);
+        }
+        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
         if self.has_healthy_tools_for_upstream(&config.name).await {
             self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
                 .await;
@@ -223,6 +248,13 @@ impl UpstreamPool {
         if !config.enabled {
             return Ok(false);
         }
+        if config.oauth.is_some() && oauth_subject.is_some() {
+            self.ensure_lazy_upstream_entry(config).await;
+            let (_connection, _tools) = connector(config.clone()).await?;
+            self.record_success_for(&config.name, UpstreamCapability::Tools)
+                .await;
+            return Ok(true);
+        }
         if self.has_healthy_tools_for_upstream(&config.name).await {
             return Ok(false);
         }
@@ -290,6 +322,39 @@ impl UpstreamPool {
         Ok(true)
     }
 
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn install_test_subject_tools_for_upstream(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        tools: Vec<rmcp::model::Tool>,
+    ) {
+        use std::time::Instant;
+
+        let fixture = super::testsupport::catalog_pool_with_server(
+            &config.name,
+            super::testsupport::SlowResponseServer,
+        )
+        .await;
+        let connection = fixture
+            .connections
+            .write()
+            .await
+            .remove(&config.name)
+            .expect("fixture connection present");
+        let peer = connection.peer.clone();
+        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        self.subject_connections.write().await.insert(
+            (config.name.clone(), subject.to_string()),
+            super::SubjectScopedConnection {
+                _connection: connection,
+                peer,
+                tools,
+                last_used: Instant::now(),
+            },
+        );
+    }
+
     async fn lazy_connect_lock(&self, upstream_name: &str) -> Arc<Mutex<()>> {
         if let Some(lock) = self
             .lazy_connect_locks
@@ -332,6 +397,12 @@ impl UpstreamPool {
                 "upstream reprobe skipped"
             );
             return Ok(false);
+        }
+        if config.oauth.is_some()
+            && let Some(subject) = oauth_subject
+        {
+            self.acquire_or_connect_subject(config, subject).await?;
+            return Ok(true);
         }
         let connect_lock = self.lazy_connect_lock(&config.name).await;
         let _connect_guard = connect_lock.lock().await;
@@ -396,6 +467,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use labby_runtime::gateway_config::{
+        UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+    };
     use rmcp::model::MetaObject;
     use rmcp::{RoleClient, ServiceExt};
 
@@ -503,6 +577,35 @@ mod tests {
         assert_eq!(connected, 1);
         assert_eq!(connect_count.load(Ordering::Relaxed), 1);
         assert_eq!(pool.healthy_tools_for_upstream("alpha").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn subject_scoped_oauth_ensure_never_publishes_tools_globally() {
+        let pool = UpstreamPool::new();
+        let config = UpstreamConfig {
+            oauth: Some(UpstreamOauthConfig {
+                mode: UpstreamOauthMode::AuthorizationCodePkce,
+                registration: UpstreamOauthRegistration::Dynamic,
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            }),
+            ..named_test_upstream_config("oauth")
+        };
+        pool.seed_lazy_upstreams(std::slice::from_ref(&config))
+            .await;
+
+        pool.ensure_tools_for_upstream_with_connector(
+            &config,
+            Some("subject-a"),
+            Arc::new(|_config| Box::pin(async { Ok((None, vec![test_tool("private_a")])) })),
+        )
+        .await
+        .expect("subject-scoped discovery succeeds");
+
+        assert!(pool.healthy_tools().await.is_empty());
+        assert!(pool.healthy_tools_for_upstream("oauth").await.is_empty());
+        assert_eq!(pool.connection_count_for_tests().await, 0);
     }
 
     #[tokio::test]

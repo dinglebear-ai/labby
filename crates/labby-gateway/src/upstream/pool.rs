@@ -66,7 +66,7 @@ mod stdio_stderr;
 mod stdio_transport;
 mod subscription_schedule;
 mod tasks;
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 mod testsupport;
 mod tools;
 mod tools_call;
