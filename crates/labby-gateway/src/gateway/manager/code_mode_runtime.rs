@@ -2,7 +2,7 @@
 //! single-flight catalog reprobe with TTL coalescing, and the rendered-catalog
 //! cache used by the `search` surface.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -34,6 +34,22 @@ const SEMANTIC_SEARCH_COOLDOWN: std::time::Duration = std::time::Duration::from_
 static CODE_MODE_WARM_UP_IN_FLIGHT: OnceLock<tokio::sync::Mutex<BTreeSet<String>>> =
     OnceLock::new();
 
+fn merge_visible_catalog_tools(
+    global: Vec<UpstreamTool>,
+    subject_scoped: Vec<UpstreamTool>,
+) -> Vec<UpstreamTool> {
+    let mut by_identity = BTreeMap::new();
+    for tool in global.into_iter().chain(subject_scoped) {
+        by_identity
+            .entry((tool.upstream_name.to_string(), tool.tool.name.to_string()))
+            .or_insert(tool);
+    }
+    by_identity
+        .into_values()
+        .take(crate::upstream::pool::MAX_UPSTREAM_TOOLS)
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct CodeModeReprobeFailure {
     upstream: String,
@@ -59,13 +75,16 @@ async fn no_real_upstream_tools(
     pool: &UpstreamPool,
     allowed_upstreams: Option<&BTreeSet<String>>,
 ) -> bool {
-    pool.healthy_tools_allowed(allowed_upstreams)
-        .await
-        .iter()
-        .all(|tool| {
-            tool.upstream_name
-                .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
-        })
+    all_tools_are_in_process(&pool.healthy_tools_allowed(allowed_upstreams).await)
+}
+
+/// Shared by both emptiness guards so the synthetic-peer exclusion cannot
+/// drift between the warm and cold-connect branches.
+fn all_tools_are_in_process(tools: &[UpstreamTool]) -> bool {
+    tools.iter().all(|tool| {
+        tool.upstream_name
+            .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+    })
 }
 
 impl GatewayManager {
@@ -155,6 +174,9 @@ impl GatewayManager {
                 .iter()
                 .filter(|u| u.enabled && upstream_allowed(&u.name, allowed_upstreams))
             {
+                if upstream.oauth.is_some() && oauth_subject.is_none() {
+                    continue;
+                }
                 let subject = upstream.oauth.as_ref().and(oauth_subject);
                 if let Err(err) = pool
                     .ensure_tools_for_upstream(upstream, subject, owner)
@@ -233,6 +255,14 @@ impl GatewayManager {
         let pool = if let Some(pool) = self.runtime.current_pool().await {
             pool
         } else {
+            // Lazy startup is also a pool publication. Serialize it with reload
+            // so readers never pair the newly installed pool with a config or
+            // Code Mode revision that is midway through publication.
+            let _publication = self.publication_barrier.write().await;
+            if let Some(pool) = self.runtime.current_pool_sync() {
+                pool.seed_lazy_upstreams(&cfg.upstream).await;
+                return pool;
+            }
             let mut base_pool =
                 self.new_base_pool(cfg.upstream_request_timeout(), cfg.upstream_relay_timeout());
             base_pool = base_pool.with_runtime_owner(Some(owner.cloned().unwrap_or_else(|| {
@@ -306,7 +336,15 @@ impl GatewayManager {
         let Some(pool) = self.current_pool().await else {
             return Ok(Vec::new());
         };
-        Ok(pool.healthy_tools_allowed(allowed_upstreams).await)
+        let global = pool.healthy_tools_allowed(allowed_upstreams).await;
+        let subject_scoped = if let Some(subject) = oauth_subject {
+            let cfg = self.config.read().await;
+            pool.subject_scoped_upstream_tools_allowed(&cfg.upstream, subject, allowed_upstreams)
+                .await
+        } else {
+            Vec::new()
+        };
+        Ok(merge_visible_catalog_tools(global, subject_scoped))
     }
 
     /// One-shot CLI variant of `code_mode_catalog_tools`: serve the codemode
@@ -337,6 +375,43 @@ impl GatewayManager {
         let mut updates = Vec::new();
         let mut pool = None;
         for upstream in cfg.upstream.iter().filter(|u| u.enabled) {
+            if upstream.oauth.is_some() {
+                let Some(subject) = oauth_subject else {
+                    continue;
+                };
+                let subject_pool = match &pool {
+                    Some(pool) => Arc::clone(pool),
+                    None => {
+                        let fresh = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+                        pool = Some(Arc::clone(&fresh));
+                        fresh
+                    }
+                };
+                if let Err(error) = subject_pool
+                    .ensure_tools_for_upstream(upstream, Some(subject), owner)
+                    .await
+                {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "code_mode.catalog_cache",
+                        upstream = %upstream.name,
+                        error = %error,
+                        "subject-scoped upstream connect failed; omitting it from the one-shot catalog"
+                    );
+                    continue;
+                }
+                tools.extend(
+                    subject_pool
+                        .subject_scoped_upstream_tools_allowed(
+                            std::slice::from_ref(upstream),
+                            subject,
+                            None,
+                        )
+                        .await,
+                );
+                continue;
+            }
             let fingerprint = catalog_cache::fingerprint(upstream);
             if let Some(cached) = cache.fresh_tools(&upstream.name, &fingerprint) {
                 tools.extend(cached);
@@ -463,7 +538,11 @@ impl GatewayManager {
         let enabled_upstreams: Vec<_> = cfg
             .upstream
             .iter()
-            .filter(|u| u.enabled && upstream_allowed(&u.name, allowed_upstreams))
+            .filter(|u| {
+                u.enabled
+                    && upstream_allowed(&u.name, allowed_upstreams)
+                    && (u.oauth.is_none() || oauth_subject.is_some())
+            })
             .cloned()
             .collect();
 
@@ -474,9 +553,13 @@ impl GatewayManager {
                 let oauth_subject = oauth_subject_cloned.clone();
                 async move {
                     let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
-                    let outcome = pool
-                        .reprobe_tools_for_upstream_as(&upstream, subject, owner.as_ref())
-                        .await;
+                    let outcome = if upstream.oauth.is_some() {
+                        pool.ensure_tools_for_upstream(&upstream, subject, owner.as_ref())
+                            .await
+                    } else {
+                        pool.reprobe_tools_for_upstream_as(&upstream, None, owner.as_ref())
+                            .await
+                    };
                     (upstream, outcome)
                 }
             })
@@ -492,15 +575,17 @@ impl GatewayManager {
                     // Keep the one-shot CLI catalog cache warm from the
                     // long-lived surface so `gateway code exec` rarely has to
                     // cold-connect upstreams for proxy generation.
-                    cache_updates.push(
-                        crate::gateway::code_mode::catalog_cache::CatalogCacheUpdate {
-                            upstream_name: upstream.name.clone(),
-                            fingerprint: crate::gateway::code_mode::catalog_cache::fingerprint(
-                                &upstream,
-                            ),
-                            tools: pool.healthy_tools_for_upstream(&upstream.name).await,
-                        },
-                    );
+                    if upstream.oauth.is_none() {
+                        cache_updates.push(
+                            crate::gateway::code_mode::catalog_cache::CatalogCacheUpdate {
+                                upstream_name: upstream.name.clone(),
+                                fingerprint: crate::gateway::code_mode::catalog_cache::fingerprint(
+                                    &upstream,
+                                ),
+                                tools: pool.healthy_tools_for_upstream(&upstream.name).await,
+                            },
+                        );
+                    }
                 }
                 Err(err) => {
                     failures.push(CodeModeReprobeFailure {
@@ -512,7 +597,22 @@ impl GatewayManager {
         }
         crate::gateway::code_mode::catalog_cache::merge_and_store(cache_updates).await;
 
-        if !failures.is_empty() && no_real_upstream_tools(&pool, allowed_upstreams).await {
+        // origin/main widened this to include subject-scoped tools; #210 excludes
+        // the synthetic in-process builtin peers. Both matter: the error must
+        // still fire when every REAL upstream is unreachable, whether the
+        // caller's tools come from the shared pool or an OAuth subject scope.
+        let mut available = pool.healthy_tools_allowed(allowed_upstreams).await;
+        if let Some(subject) = oauth_subject {
+            available.extend(
+                pool.subject_scoped_upstream_tools_allowed(
+                    &cfg.upstream,
+                    subject,
+                    allowed_upstreams,
+                )
+                .await,
+            );
+        }
+        if !failures.is_empty() && all_tools_are_in_process(&available) {
             let details = failures
                 .iter()
                 .map(|failure| format!("{}: {}", failure.upstream, failure.message))
@@ -748,6 +848,9 @@ impl GatewayManager {
             .iter()
             .filter(|u| u.enabled && upstream_allowed(&u.name, allowed_upstreams))
         {
+            if upstream.oauth.is_some() && oauth_subject.is_none() {
+                continue;
+            }
             let pool = Arc::clone(&pool);
             let upstream = upstream.clone();
             let owner = owner.clone();
@@ -803,5 +906,52 @@ impl GatewayManager {
                     .remove(&warm_up_key);
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod catalog_merge_tests {
+    use super::*;
+
+    fn tool(upstream: &str, name: &str) -> UpstreamTool {
+        UpstreamTool {
+            tool: rmcp::model::Tool::new(name.to_string(), "", Arc::new(serde_json::Map::new())),
+            input_schema: None,
+            output_schema: None,
+            upstream_name: Arc::from(upstream),
+            destructive: false,
+        }
+    }
+
+    #[test]
+    fn combined_catalog_keeps_same_named_tools_from_distinct_upstreams() {
+        let merged = merge_visible_catalog_tools(
+            vec![tool("public", "search")],
+            vec![tool("private", "search")],
+        );
+        let identities = merged
+            .iter()
+            .map(|tool| (tool.upstream_name.as_ref(), tool.tool.name.as_ref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            identities,
+            vec![("private", "search"), ("public", "search")]
+        );
+    }
+
+    #[test]
+    fn combined_catalog_caps_after_deterministic_cross_scope_merge() {
+        let global = (0..crate::upstream::pool::MAX_UPSTREAM_TOOLS)
+            .map(|index| tool("z-global", &format!("tool_{index:04}")))
+            .collect();
+        let merged = merge_visible_catalog_tools(global, vec![tool("a-subject", "private")]);
+
+        assert_eq!(merged.len(), crate::upstream::pool::MAX_UPSTREAM_TOOLS);
+        assert_eq!(merged[0].upstream_name.as_ref(), "a-subject");
+        assert!(
+            merged
+                .iter()
+                .any(|tool| tool.tool.name.as_ref() == "private")
+        );
     }
 }

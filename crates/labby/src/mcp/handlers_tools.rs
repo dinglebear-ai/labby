@@ -278,7 +278,7 @@ impl LabMcpServer {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, upstream_tools) in pool
-                    .subject_scoped_tools_bounded(
+                    .cached_subject_scoped_tools_bounded(
                         &configs,
                         oauth_subject.as_ref(),
                         subject_tool_limit,
@@ -369,8 +369,12 @@ impl LabMcpServer {
         };
         let page_tool_count = tools.len();
         let has_next_cursor = next_cursor.is_some();
-        if !has_next_cursor {
-            *self.last_listed_tool_contract.write().await = Some(complete_contract);
+        if !has_next_cursor && self.transport_label != "http" {
+            let subject_key = self.request_subject(&context).map(str::to_owned);
+            self.last_listed_tool_contract
+                .write()
+                .await
+                .publish(subject_key, complete_contract);
         }
 
         let elapsed_ms = start.elapsed().as_millis();
@@ -388,6 +392,7 @@ impl LabMcpServer {
             suppressed_builtin_tool_count,
             pool_present,
             cold_discovery_skipped = hide_raw_tools,
+            oauth_subject_catalog_source = "cached_only",
             upstream_catalog_source = if pool_present {
                 "cached"
             } else {

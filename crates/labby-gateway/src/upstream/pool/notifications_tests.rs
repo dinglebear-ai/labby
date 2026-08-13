@@ -312,6 +312,76 @@ async fn initial_failure_is_retried_and_eventually_published() {
     assert!(attempts.load(Ordering::SeqCst) >= 2);
 }
 
+#[test]
+fn subscription_retry_delay_is_bounded_exponential_and_dephased() {
+    let alpha = super::notifications::subscription_retry_delay("alpha", 0);
+    let bravo = super::notifications::subscription_retry_delay("bravo", 0);
+    assert_ne!(alpha, bravo, "upstream identity must dephase retries");
+    assert!(super::notifications::subscription_retry_delay("alpha", 8) <= Duration::from_secs(72));
+    assert!(super::notifications::subscription_retry_delay("alpha", 8) >= Duration::from_secs(48));
+    assert!(super::notifications::subscription_retry_delay("alpha", 2) > alpha);
+}
+
+#[test]
+fn subscription_backoff_resets_only_after_stable_interval() {
+    assert_eq!(
+        super::notifications::next_subscription_retry_attempt(4, Duration::from_secs(29)),
+        5
+    );
+    assert_eq!(
+        super::notifications::next_subscription_retry_attempt(4, Duration::from_secs(30)),
+        0
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_subscription_reconnect_is_cancelled_during_backoff() {
+    let pool = UpstreamPool::new();
+    let mut server = SubscriptionServer::accepting();
+    server.failures_before_accept = usize::MAX;
+    let attempts = Arc::clone(&server.attempts);
+    add_subscription_server(&pool, "leaf", server).await;
+
+    pool.refresh_upstream_subscription("leaf").await;
+    tokio::task::yield_now().await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    pool.cancel_all_upstream_subscriptions().await;
+    tokio::time::advance(Duration::from_mins(2)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_subscription_reconnects_after_its_jittered_deadline() {
+    let pool = UpstreamPool::new();
+    let server = SubscriptionServer::fail_then_accept();
+    let attempts = Arc::clone(&server.attempts);
+    add_subscription_server(&pool, "leaf", server).await;
+
+    pool.refresh_upstream_subscription("leaf").await;
+    tokio::task::yield_now().await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let delay = super::notifications::subscription_retry_delay("leaf", 0);
+    tokio::time::advance(delay.saturating_sub(Duration::from_millis(1))).await;
+    tokio::task::yield_now().await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    for _ in 0..20 {
+        if attempts.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    let expected = UpstreamPool::gateway_resource_uri("leaf", NATIVE_RESOURCE_URI);
+    assert!(
+        pool.subscribable_resource_uris_snapshot()
+            .contains(&expected)
+    );
+}
+
 #[tokio::test]
 async fn tool_change_consumer_refreshes_the_exact_named_catalog() {
     let pool = UpstreamPool::new();

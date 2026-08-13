@@ -251,7 +251,7 @@ impl UpstreamPool {
                     )
                     .await
                     {
-                        Ok(Ok((conn, tools, truncation))) => {
+                        Ok(Ok((conn, tools))) => {
                             let (
                                 resource_count,
                                 resource_last_error,
@@ -281,7 +281,6 @@ impl UpstreamPool {
                                 config.proxy_resources,
                                 conn,
                                 tools,
-                                truncation,
                                 resource_count,
                                 resource_last_error,
                                 resource_health,
@@ -337,7 +336,6 @@ impl UpstreamPool {
                     proxy_resources,
                     conn,
                     tools,
-                    truncation,
                     resource_count,
                     resource_last_error,
                     resource_health,
@@ -382,10 +380,7 @@ impl UpstreamPool {
                         prompt_unhealthy_since: (!prompt_health.is_routable()).then(Instant::now),
                         resource_unhealthy_since: (!resource_health.is_routable())
                             .then(Instant::now),
-                        // A truncated connect-time tools listing must not read
-                        // as a complete catalog in `gateway.status` — same
-                        // contract as `record_listing_success_for`.
-                        tool_last_error: truncation.map(|truncation| truncation.status_note()),
+                        tool_last_error: None,
                         prompt_last_error,
                         resource_last_error,
                     };

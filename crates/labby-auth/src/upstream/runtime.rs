@@ -234,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn configured_upstream_oauth_requires_explicit_public_callback_base() {
         let auth = AuthConfig::default();
-        let error = match build_upstream_oauth_runtime(
+        let error = build_upstream_oauth_runtime(
             &[test_oauth_upstream(
                 UpstreamOauthCredentialSource::Dedicated,
             )],
@@ -242,10 +242,8 @@ mod tests {
             Some("0000000000000000000000000000000000000000000000000000000000000000"),
         )
         .await
-        {
-            Ok(_) => panic!("upstream OAuth without a callback base must fail closed"),
-            Err(error) => error,
-        };
+        .err()
+        .expect("upstream OAuth without a callback base must fail closed");
 
         assert!(error.to_string().contains("LABBY_PUBLIC_URL"));
         assert!(error.to_string().contains("public callback base"));
@@ -254,10 +252,12 @@ mod tests {
     #[tokio::test]
     async fn shared_google_runtime_requires_provider_token_encryption_key() {
         let dir = tempfile::tempdir().unwrap();
-        let mut auth = AuthConfig::default();
-        auth.public_url = Some(url::Url::parse("https://lab.example.com").unwrap());
-        auth.sqlite_path = dir.path().join("auth.db");
-        auth.token_encryption_key = None;
+        let auth = AuthConfig {
+            public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
+            sqlite_path: dir.path().join("auth.db"),
+            token_encryption_key: None,
+            ..AuthConfig::default()
+        };
         let mut upstream =
             test_oauth_upstream(UpstreamOauthCredentialSource::GoogleProvider { account: None });
         upstream.name = "google-calendar".to_string();
@@ -268,16 +268,14 @@ mod tests {
         };
         upstream.oauth.as_mut().unwrap().scopes = Some(vec!["calendar".to_string()]);
 
-        let error = match build_upstream_oauth_runtime(
+        let error = build_upstream_oauth_runtime(
             &[upstream],
             &auth,
             Some("0000000000000000000000000000000000000000000000000000000000000000"),
         )
         .await
-        {
-            Ok(_) => panic!("shared Google runtime must require provider token encryption"),
-            Err(error) => error,
-        };
+        .err()
+        .expect("shared Google runtime must require provider token encryption");
         assert!(error.to_string().contains("TOKEN_ENCRYPTION_KEY"));
     }
 }

@@ -75,11 +75,13 @@ pub(crate) async fn catch_up_tool_contract(peers: &PeerRegistry, registration_id
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::GatewayCatalogDiff;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CatalogNotificationChanges {
     pub(crate) tools_changed: bool,
     pub(crate) resources_changed: bool,
     pub(crate) prompts_changed: bool,
+    resource_upstreams: Option<std::sync::Arc<std::collections::BTreeSet<String>>>,
+    prompt_upstreams: Option<std::sync::Arc<std::collections::BTreeSet<String>>>,
 }
 
 impl CatalogNotificationChanges {
@@ -92,21 +94,80 @@ impl CatalogNotificationChanges {
             tools_changed,
             resources_changed,
             prompts_changed,
+            resource_upstreams: None,
+            prompt_upstreams: None,
         }
     }
 
-    pub(crate) const fn any(self) -> bool {
+    pub(crate) fn for_upstream(mut self, upstream: impl Into<String>) -> Self {
+        let upstream = upstream.into();
+        if self.resources_changed {
+            self.resource_upstreams = Some(std::sync::Arc::new(
+                std::iter::once(upstream.clone()).collect(),
+            ));
+        }
+        if self.prompts_changed {
+            self.prompt_upstreams = Some(std::sync::Arc::new(std::iter::once(upstream).collect()));
+        }
+        self
+    }
+
+    pub(crate) const fn any(&self) -> bool {
         self.tools_changed || self.resources_changed || self.prompts_changed
     }
 
     /// Union of two triggers. Coalescing must never drop a kind because a
     /// later trigger in the batch only moved a different one.
-    pub(crate) const fn merged_with(self, other: Self) -> Self {
+    pub(crate) fn merged_with(self, other: Self) -> Self {
+        let resources_changed = self.resources_changed || other.resources_changed;
+        let prompts_changed = self.prompts_changed || other.prompts_changed;
         Self {
             tools_changed: self.tools_changed || other.tools_changed,
-            resources_changed: self.resources_changed || other.resources_changed,
-            prompts_changed: self.prompts_changed || other.prompts_changed,
+            resources_changed,
+            prompts_changed,
+            resource_upstreams: merge_changed_upstream_scopes(
+                self.resources_changed.then_some(self.resource_upstreams),
+                other.resources_changed.then_some(other.resource_upstreams),
+            ),
+            prompt_upstreams: merge_changed_upstream_scopes(
+                self.prompts_changed.then_some(self.prompt_upstreams),
+                other.prompts_changed.then_some(other.prompt_upstreams),
+            ),
         }
+    }
+
+    fn resource_visible_to(&self, registered: &RegisteredPeer) -> bool {
+        self.resource_upstreams.as_ref().is_none_or(|upstreams| {
+            upstreams
+                .iter()
+                .any(|upstream| registered.contract.route_scope.allows_upstream(upstream))
+        })
+    }
+
+    fn prompt_visible_to(&self, registered: &RegisteredPeer) -> bool {
+        self.prompt_upstreams.as_ref().is_none_or(|upstreams| {
+            upstreams
+                .iter()
+                .any(|upstream| registered.contract.route_scope.allows_upstream(upstream))
+        })
+    }
+}
+
+fn merge_changed_upstream_scopes(
+    left: Option<Option<std::sync::Arc<std::collections::BTreeSet<String>>>>,
+    right: Option<Option<std::sync::Arc<std::collections::BTreeSet<String>>>>,
+) -> Option<std::sync::Arc<std::collections::BTreeSet<String>>> {
+    match (left, right) {
+        (Some(Some(mut left)), Some(Some(right))) => {
+            std::sync::Arc::make_mut(&mut left).extend(right.iter().cloned());
+            Some(left)
+        }
+        // An active global signal dominates an active scoped signal.
+        (Some(None), _) | (_, Some(None)) => None,
+        // An inactive kind contributes no scope and must not widen the active
+        // event from the other side.
+        (Some(Some(scope)), None) | (None, Some(Some(scope))) => Some(scope),
+        (None, None) => None,
     }
 }
 
@@ -152,7 +213,7 @@ pub(crate) async fn notify_catalog_peers(
 
     let peer_snapshot = peers.read().await.clone();
     let peer_count = peer_snapshot.len();
-    let evaluated = evaluate_peers(peer_snapshot, changes).await;
+    let evaluated = evaluate_peers(peer_snapshot, changes.clone()).await;
     let peers_notified = evaluated
         .iter()
         .filter(|evaluated| evaluated.changes.any())
@@ -222,7 +283,7 @@ pub(crate) async fn notify_catalog_peers(
     let notification_timeout = crate::config::resolved_catalog_notification_timeout();
     let notify_futures = evaluated.iter().enumerate().map(|(peer_index, evaluated)| {
         let target = evaluated.registered.target.clone();
-        let changes = evaluated.changes;
+        let changes = evaluated.changes.clone();
         async move {
             let result = tokio::time::timeout(notification_timeout, async {
                 if changes.tools_changed && target.notify_tool_list_changed().await.is_err() {
@@ -407,8 +468,8 @@ fn publish_contract_if_baseline_matches(
 /// `changes.tools_changed` arrives as a *hint* — "something happened that could
 /// move a tool list" — not a verdict. The verdict is per peer, because two
 /// sessions can see different contracts from the same gateway state (see
-/// `peer_contract.rs`). Resources and prompts are still global signals and are
-/// forwarded to every peer unchanged.
+/// `peer_contract.rs`). Named upstream resource and prompt signals are filtered
+/// through the same route scope; global reconcile signals remain conservative.
 ///
 /// Contracts are computed off the registry lock: `visible_contract()` takes
 /// gateway config and pool locks, and holding the peer registry across that
@@ -430,10 +491,12 @@ async fn evaluate_peers(
                 .as_ref()
                 .is_none_or(|published| next != published)
         }) && registered.target.wants_tool_list_changed();
-        let resources_changed =
-            changes.resources_changed && registered.target.wants_resource_list_changed();
-        let prompts_changed =
-            changes.prompts_changed && registered.target.wants_prompt_list_changed();
+        let resources_changed = changes.resources_changed
+            && changes.resource_visible_to(&registered)
+            && registered.target.wants_resource_list_changed();
+        let prompts_changed = changes.prompts_changed
+            && changes.prompt_visible_to(&registered)
+            && registered.target.wants_prompt_list_changed();
         evaluated.push(EvaluatedPeer {
             registered,
             changes: CatalogNotificationChanges::new(
@@ -648,6 +711,35 @@ mod tests {
         assert_eq!(changes, CatalogNotificationChanges::new(false, true, true));
     }
 
+    #[test]
+    fn mixed_kind_coalesce_does_not_widen_scoped_resource_or_prompt_events() {
+        let resource = CatalogNotificationChanges::new(false, true, false).for_upstream("alpha");
+        let prompt = CatalogNotificationChanges::new(false, false, true).for_upstream("beta");
+
+        let merged = resource.merged_with(prompt);
+
+        assert_eq!(
+            merged
+                .resource_upstreams
+                .as_deref()
+                .expect("resource scope stays bounded")
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["alpha"]
+        );
+        assert_eq!(
+            merged
+                .prompt_upstreams
+                .as_deref()
+                .expect("prompt scope stays bounded")
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["beta"]
+        );
+    }
+
     #[cfg(feature = "gateway")]
     #[test]
     fn catalog_notification_changes_preserves_gateway_diff_fields() {
@@ -691,6 +783,49 @@ mod tests {
 
         client_service.cancel().await.expect("client cancels");
         server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn upstream_list_changes_only_notify_routes_that_expose_that_upstream() {
+        let _catalog_lock = serial_catalog();
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let (alpha, alpha_service, alpha_handle) = connect_peer(&peers, false).await;
+        let (beta, beta_service, beta_handle) = connect_peer(&peers, false).await;
+        {
+            let mut registered = peers.write().await;
+            registered[0].contract.route_scope =
+                crate::mcp::route_scope::McpRouteScope::protected_subset(
+                    "alpha-route",
+                    ["alpha"],
+                    std::iter::empty::<&str>(),
+                    false,
+                );
+            registered[1].contract.route_scope =
+                crate::mcp::route_scope::McpRouteScope::protected_subset(
+                    "beta-route",
+                    ["beta"],
+                    std::iter::empty::<&str>(),
+                    false,
+                );
+        }
+
+        notify_catalog_peers(
+            &peers,
+            CatalogNotificationChanges::new(false, true, true).for_upstream("alpha"),
+            "upstream.subscription",
+        )
+        .await;
+
+        alpha.wait_for_notifications(2).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(alpha.resource_count.load(Ordering::SeqCst), 1);
+        assert_eq!(alpha.prompt_count.load(Ordering::SeqCst), 1);
+        assert_eq!(beta.total(), 0, "hidden upstream churn must stay hidden");
+
+        alpha_service.cancel().await.expect("alpha cancels");
+        beta_service.cancel().await.expect("beta cancels");
+        alpha_handle.abort();
+        beta_handle.abort();
     }
 
     #[tokio::test]

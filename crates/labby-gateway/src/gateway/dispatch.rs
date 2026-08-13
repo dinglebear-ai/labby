@@ -32,6 +32,16 @@ fn parse_params<T: DeserializeOwned>(params_value: Value) -> Result<T, ToolError
     })
 }
 
+fn reject_shared_oauth_subject_override(params: &Value) -> Result<(), ToolError> {
+    if params.get("subject").is_some() {
+        return Err(ToolError::InvalidParam {
+            message: "shared gateway OAuth actions do not accept a subject override".to_string(),
+            param: "subject".to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub async fn dispatch_with_manager(
     manager: &GatewayManager,
     action: &str,
@@ -751,31 +761,34 @@ async fn handle_oauth_actions(
             to_json(crate::gateway::oauth::probe(manager, url).await?)
         }
         "gateway.oauth.start" => {
+            reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
-            let subject = params
-                .subject
-                .as_deref()
-                .unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT);
             to_json(
-                crate::gateway::oauth::begin_authorization(manager, &params.upstream, subject)
-                    .await?,
+                crate::gateway::oauth::begin_authorization(
+                    manager,
+                    &params.upstream,
+                    SHARED_GATEWAY_OAUTH_SUBJECT,
+                )
+                .await?,
             )
         }
         "gateway.oauth.status" => {
+            reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
-            let subject = params
-                .subject
-                .as_deref()
-                .unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT);
-            to_json(crate::gateway::oauth::status(manager, &params.upstream, subject).await?)
+            to_json(
+                crate::gateway::oauth::status(
+                    manager,
+                    &params.upstream,
+                    SHARED_GATEWAY_OAUTH_SUBJECT,
+                )
+                .await?,
+            )
         }
         "gateway.oauth.clear" => {
+            reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
-            let subject = params
-                .subject
-                .as_deref()
-                .unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT);
-            crate::gateway::oauth::clear(manager, &params.upstream, subject).await?;
+            crate::gateway::oauth::clear(manager, &params.upstream, SHARED_GATEWAY_OAUTH_SUBJECT)
+                .await?;
             to_json(serde_json::json!({ "ok": true }))
         }
         "gateway.oauth.google_revoke" => {
@@ -796,19 +809,20 @@ async fn handle_oauth_actions(
         // Q-H3: poll loop moved from cli/gateway.rs into shared dispatch so all
         // surfaces (CLI, API, MCP) share the same orchestration logic.
         "gateway.oauth.wait" => {
+            reject_shared_oauth_subject_override(&params_value)?;
             // Extract timeout_secs before parse_params consumes params_value.
             let timeout_secs: u64 = params_value
                 .get("timeout_secs")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120);
             let params: GatewayOauthNameParams = parse_params(params_value)?;
-            let subject = params
-                .subject
-                .as_deref()
-                .unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT);
             let timeout = std::time::Duration::from_secs(timeout_secs);
             let authenticated = manager
-                .await_upstream_authorization(&params.upstream, subject, timeout)
+                .await_upstream_authorization(
+                    &params.upstream,
+                    SHARED_GATEWAY_OAUTH_SUBJECT,
+                    timeout,
+                )
                 .await?;
             to_json(serde_json::json!({
                 "authenticated": authenticated,

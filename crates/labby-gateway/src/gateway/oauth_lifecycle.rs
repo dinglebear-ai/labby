@@ -1,12 +1,28 @@
 use std::sync::Arc;
 
-use crate::gateway::manager::GatewayManager;
+use crate::gateway::manager::{GatewayManager, OauthStatusDiscoverySnapshot};
 use crate::gateway::oauth::{UpstreamOauthConnectionState, UpstreamOauthStatusView};
 use labby_auth::upstream::encryption::EncryptionKey;
 use labby_auth::upstream::manager::UpstreamOauthManager;
 use labby_auth::upstream::types::{BeginAuthorization, OauthError};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
+
+use crate::upstream::pool::OAuthSessionInvalidation;
+
+const OAUTH_STATUS_DISCOVERY_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(30);
+const OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN: std::time::Duration =
+    std::time::Duration::from_mins(5);
+const OAUTH_STATUS_DISCOVERY_CACHE_MAX: usize = 256;
+
+fn oauth_status_discovery_is_fresh(snapshot: &OauthStatusDiscoverySnapshot) -> bool {
+    snapshot.completed_at.elapsed()
+        < if snapshot.tool_error.is_some() || snapshot.error.is_some() {
+            OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN
+        } else {
+            OAUTH_STATUS_DISCOVERY_FRESHNESS
+        }
+}
 
 pub(crate) mod probe;
 #[cfg(test)]
@@ -47,13 +63,115 @@ pub(super) fn should_use_dynamic_registration(
 }
 
 impl GatewayManager {
+    async fn invalidate_oauth_status_discovery(&self, upstream: &str, subject: Option<&str>) {
+        self.oauth_status_discovery_cache.lock().await.retain(
+            |(cached_upstream, cached_subject), _| {
+                cached_upstream != upstream
+                    || subject.is_some_and(|subject| cached_subject != subject)
+            },
+        );
+    }
+
+    async fn oauth_status_discovery(
+        &self,
+        upstream: &str,
+        subject: &str,
+        config: UpstreamConfig,
+    ) -> OauthStatusDiscoverySnapshot {
+        let key = (upstream.to_string(), subject.to_string());
+        if let Some(snapshot) = self.oauth_status_discovery_cache.lock().await.get(&key)
+            && oauth_status_discovery_is_fresh(snapshot)
+        {
+            tracing::debug!(
+                service = "upstream_oauth",
+                action = "status.discovery",
+                upstream,
+                cache_hit = true,
+                failure_cooldown = snapshot.tool_error.is_some() || snapshot.error.is_some(),
+                "upstream oauth status discovery reused cached result"
+            );
+            return snapshot.clone();
+        }
+
+        let lock = self
+            .oauth_status_discovery_locks
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+        if let Some(snapshot) = self.oauth_status_discovery_cache.lock().await.get(&key)
+            && oauth_status_discovery_is_fresh(snapshot)
+        {
+            return snapshot.clone();
+        }
+
+        let started = std::time::Instant::now();
+        let (request_timeout, relay_timeout) = {
+            let cfg = self.config.read().await;
+            (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
+        };
+        let pool = self.new_base_pool(request_timeout, relay_timeout);
+        pool.discover_all_for_subject(&[config], subject).await;
+        let snapshot = OauthStatusDiscoverySnapshot {
+            completed_at: tokio::time::Instant::now(),
+            summary: pool.cached_upstream_summary(upstream).await,
+            tool_error: pool.upstream_tool_last_error(upstream).await,
+            error: pool.upstream_last_error(upstream).await,
+        };
+        let mut cache = self.oauth_status_discovery_cache.lock().await;
+        if cache.len() >= OAUTH_STATUS_DISCOVERY_CACHE_MAX && !cache.contains_key(&key) {
+            if let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, value)| value.completed_at)
+                .map(|(key, _)| key.clone())
+            {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(key.clone(), snapshot.clone());
+        drop(cache);
+        if Arc::strong_count(&lock) <= 2 {
+            self.oauth_status_discovery_locks.remove(&key);
+        }
+        tracing::debug!(
+            service = "upstream_oauth",
+            action = "status.discovery",
+            upstream,
+            cache_hit = false,
+            elapsed_ms = started.elapsed().as_millis(),
+            failed = snapshot.tool_error.is_some() || snapshot.error.is_some(),
+            "upstream oauth status discovery completed"
+        );
+        snapshot
+    }
+
+    fn is_routable_oauth_upstream(upstream: &UpstreamConfig) -> bool {
+        upstream.enabled && upstream.priority > 0.0 && upstream.oauth.is_some()
+    }
+
+    fn google_provider_upstream_names(
+        config: &labby_runtime::gateway_config::GatewayConfig,
+    ) -> Vec<String> {
+        config
+            .upstream
+            .iter()
+            .filter(|upstream| {
+                upstream
+                    .oauth
+                    .as_ref()
+                    .is_some_and(|oauth| oauth.credential.is_google_provider())
+            })
+            .map(|upstream| upstream.name.clone())
+            .collect()
+    }
+
     pub async fn oauth_upstream_configs(&self) -> Vec<UpstreamConfig> {
         self.config
             .read()
             .await
             .upstream
             .iter()
-            .filter(|upstream| upstream.enabled && upstream.oauth.is_some())
+            .filter(|upstream| Self::is_routable_oauth_upstream(upstream))
             .cloned()
             .collect()
     }
@@ -65,7 +183,7 @@ impl GatewayManager {
             .upstream
             .iter()
             .find(|upstream| {
-                upstream.name == upstream_name && upstream.enabled && upstream.oauth.is_some()
+                upstream.name == upstream_name && Self::is_routable_oauth_upstream(upstream)
             })
             .cloned()
     }
@@ -93,10 +211,148 @@ impl GatewayManager {
         self.oauth_redirect_uri.as_deref().map(|s| s.to_string())
     }
 
-    pub fn evict_subject_client(&self, upstream: &str, subject: &str) {
-        if let Some(cache) = &self.oauth_client_cache {
-            cache.evict_subject(upstream, subject);
+    async fn invalidate_subject_oauth_runtime(
+        &self,
+        upstream: &str,
+        subject: &str,
+        reason: &'static str,
+    ) -> OAuthSessionInvalidation {
+        let oauth_barrier = self
+            .oauth_client_cache
+            .as_ref()
+            .map(|cache| cache.invalidation_barrier());
+        let _guard = match oauth_barrier {
+            Some(barrier) => Some(barrier.write_owned().await),
+            None => None,
+        };
+        let invalidated = match self.current_pool_sync() {
+            Some(pool) => {
+                pool.invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
+                    .await
+            }
+            None => {
+                if let Some(cache) = &self.oauth_client_cache {
+                    cache.evict_subject(upstream, subject);
+                }
+                OAuthSessionInvalidation::default()
+            }
+        };
+        tracing::info!(
+            service = "upstream_oauth",
+            action = "session.invalidate",
+            upstream,
+            reason,
+            generic_connections = invalidated.generic_connections,
+            subject_connections = invalidated.subject_connections,
+            relay_connections = invalidated.relay_connections,
+            task_routes = invalidated.task_routes,
+            invalidated_total = invalidated.total(),
+            "upstream OAuth subject runtime invalidated"
+        );
+        invalidated
+    }
+
+    async fn invalidate_shared_oauth_runtime(
+        &self,
+        upstream: &str,
+        reason: &'static str,
+    ) -> OAuthSessionInvalidation {
+        let config = self.config.read().await;
+        let shared_upstreams = Self::google_provider_upstream_names(&config);
+        drop(config);
+        let oauth_barrier = self
+            .oauth_client_cache
+            .as_ref()
+            .map(|cache| cache.invalidation_barrier());
+        let _guard = match oauth_barrier {
+            Some(barrier) => Some(barrier.write_owned().await),
+            None => None,
+        };
+        let invalidated = match self.current_pool_sync() {
+            Some(pool) => {
+                pool.invalidate_oauth_upstream_sessions_guarded(&shared_upstreams, reason)
+                    .await
+            }
+            None => {
+                if let Some(cache) = &self.oauth_client_cache {
+                    for name in &shared_upstreams {
+                        cache.evict_upstream(name);
+                    }
+                }
+                OAuthSessionInvalidation::default()
+            }
+        };
+        tracing::info!(
+            service = "upstream_oauth",
+            action = "session.invalidate",
+            upstream,
+            reason,
+            affected_upstreams = shared_upstreams.len(),
+            generic_connections = invalidated.generic_connections,
+            subject_connections = invalidated.subject_connections,
+            relay_connections = invalidated.relay_connections,
+            task_routes = invalidated.task_routes,
+            invalidated_total = invalidated.total(),
+            "shared upstream OAuth runtime invalidated"
+        );
+        invalidated
+    }
+
+    /// Fence every shared-Google upstream runtime for one revoked subject.
+    ///
+    /// The caller must durably revoke the provider credential first. This
+    /// method then holds the shared lifecycle barrier while evicting the OAuth
+    /// client cache and closing subject, generic, relay, and task-retained
+    /// peers, so a successful administrative revocation cannot republish a
+    /// client built from the old credential.
+    pub async fn google_provider_lifecycle_write_guard(
+        &self,
+    ) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        match &self.oauth_client_cache {
+            Some(cache) => Some(cache.invalidation_barrier().write_owned().await),
+            None => None,
         }
+    }
+
+    /// Drain one subject while the caller holds the lifecycle write barrier.
+    pub async fn invalidate_google_provider_subject_runtime_guarded(
+        &self,
+        subject: &str,
+        reason: &'static str,
+    ) -> OAuthSessionInvalidation {
+        let shared_upstreams = {
+            let config = self.config.read().await;
+            Self::google_provider_upstream_names(&config)
+        };
+        let mut total = OAuthSessionInvalidation::default();
+        if let Some(pool) = self.current_pool_sync() {
+            for upstream in &shared_upstreams {
+                let invalidated = pool
+                    .invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
+                    .await;
+                total.generic_connections += invalidated.generic_connections;
+                total.subject_connections += invalidated.subject_connections;
+                total.relay_connections += invalidated.relay_connections;
+                total.task_routes += invalidated.task_routes;
+            }
+        } else if let Some(cache) = &self.oauth_client_cache {
+            for upstream in &shared_upstreams {
+                cache.evict_subject(upstream, subject);
+            }
+        }
+        tracing::info!(
+            service = "upstream_oauth",
+            action = "allowlist_subject.invalidate",
+            reason,
+            affected_upstreams = shared_upstreams.len(),
+            generic_connections = total.generic_connections,
+            subject_connections = total.subject_connections,
+            relay_connections = total.relay_connections,
+            task_routes = total.task_routes,
+            invalidated_total = total.total(),
+            "allowlist subject OAuth runtime invalidated"
+        );
+        total
     }
 
     /// Look up the `UpstreamOauthManager` for `upstream` and return it, or
@@ -180,6 +436,11 @@ impl GatewayManager {
                 );
                 tool_error_from_oauth(e)
             })?;
+        self.invalidate_oauth_status_discovery(
+            upstream,
+            (manager.credential_source_label() != "google_provider").then_some(subject),
+        )
+        .await;
 
         tracing::info!(
             service = "upstream_oauth",
@@ -190,23 +451,16 @@ impl GatewayManager {
         );
 
         if manager.credential_source_label() == "google_provider" {
-            if let Some(cache) = &self.oauth_client_cache {
-                cache.evict_all();
-            }
-            tracing::info!(
-                service = "upstream_oauth",
-                action = "callback",
-                upstream,
-                credential_source = "google_provider",
-                "upstream oauth callback: evicted all cached clients after shared credential update"
-            );
+            self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace")
+                .await;
         } else {
-            self.evict_subject_client(upstream, subject);
+            self.invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.replace")
+                .await;
         }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
-            let _mutation_guard = self.config_mutation.lock().await;
-            let mut cfg = self.config.read().await.clone();
+            let _mutation_guard = self.acquire_config_mutation().await?;
+            let mut cfg = self.load_config_for_mutation().await?;
             let Some(existing) = cfg.upstream.iter_mut().find(|u| u.name == upstream) else {
                 tracing::debug!(
                     service = "upstream_oauth",
@@ -224,7 +478,7 @@ impl GatewayManager {
                     "upstream oauth callback: persisting oauth config for probe-created manager"
                 );
                 existing.oauth = Some(oauth_config);
-                self.persist_config(cfg).await?;
+                self.persist_config_owned(_mutation_guard, cfg).await?;
             }
         }
 
@@ -289,30 +543,39 @@ impl GatewayManager {
                 .is_some_and(|row| row.access_token_expires_at - now <= 300)
         {
             refresh_attempted = true;
-            match manager.refresh_auth_client(subject).await {
-                Ok(()) => {
-                    refreshed = true;
-                    self.evict_subject_client(upstream, subject);
-                    // Fire-and-forget: rediscovery is a full reload that can
-                    // outlive this request future's deadline; the detached
-                    // task applies (and logs) on its own.
-                    if let Err(error) = self
-                        .reload_with_origin_detached(
-                            Some("upstream-oauth.status.refresh"),
-                            None,
-                            std::time::Duration::ZERO,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            service = "upstream_oauth",
-                            action = "status",
+            match manager.refresh_auth_client_if_due(subject).await {
+                Ok(did_refresh) => {
+                    refreshed = did_refresh;
+                    if did_refresh {
+                        self.invalidate_oauth_status_discovery(upstream, Some(subject))
+                            .await;
+                        self.invalidate_subject_oauth_runtime(
                             upstream,
                             subject,
-                            kind = error.kind(),
-                            elapsed_ms = started.elapsed().as_millis(),
-                            "upstream oauth status: refreshed token but gateway rediscovery failed"
-                        );
+                            "oauth.credentials.refresh",
+                        )
+                        .await;
+                        // Fire-and-forget: rediscovery is a full reload that can
+                        // outlive this request future's deadline; the detached
+                        // task applies (and logs) on its own.
+                        if let Err(error) = self
+                            .reload_with_origin_detached(
+                                Some("upstream-oauth.status.refresh"),
+                                None,
+                                std::time::Duration::ZERO,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                service = "upstream_oauth",
+                                action = "status",
+                                upstream,
+                                subject,
+                                kind = error.kind(),
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "upstream oauth status: refreshed token but gateway rediscovery failed"
+                            );
+                        }
                     }
                     row = manager.credential_row(subject).await.map_err(|e| {
                         tracing::warn!(
@@ -383,15 +646,11 @@ impl GatewayManager {
 
         if authenticated {
             discovery_checked = true;
-            let (request_timeout, relay_timeout) = {
-                let cfg = self.config.read().await;
-                (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
-            };
-            let pool = self.new_base_pool(request_timeout, relay_timeout);
             let upstream_config = manager.upstream_config().clone();
-            pool.discover_all_for_subject(&[upstream_config], subject)
+            let discovery = self
+                .oauth_status_discovery(upstream, subject, upstream_config)
                 .await;
-            if let Some(summary) = pool.cached_upstream_summary(upstream).await {
+            if let Some(summary) = discovery.summary {
                 discovered_tool_count = summary.discovered_tool_count;
                 exposed_tool_count = summary.exposed_tool_count;
             }
@@ -402,10 +661,10 @@ impl GatewayManager {
             // 400 for `resources/list` instead of a clean "unsupported" reply)
             // must NOT hide tools that discovered fine; surface it as a
             // non-fatal diagnostic and keep the connection authenticated.
-            if let Some(error) = pool.upstream_tool_last_error(upstream).await {
+            if let Some(error) = discovery.tool_error {
                 discovery_error = Some(error);
                 state = UpstreamOauthConnectionState::DiscoveryFailed;
-            } else if let Some(error) = pool.upstream_last_error(upstream).await {
+            } else if let Some(error) = discovery.error {
                 discovery_error = Some(error);
             }
         }
@@ -470,16 +729,22 @@ impl GatewayManager {
                 );
                 tool_error_from_oauth(error)
             })?;
-        if let Some(cache) = &self.oauth_client_cache {
-            cache.evict_all();
-        }
-        tracing::warn!(
+        self.invalidate_oauth_status_discovery(upstream, None).await;
+        let sessions = self
+            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke")
+            .await;
+        tracing::info!(
             service = "upstream_oauth",
             action = "google_revoke",
             upstream,
             invalidated = invalidation.invalidated,
             revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
             revoked_authorization_codes = invalidation.revoked_authorization_codes,
+            subject_connections = sessions.subject_connections,
+            generic_connections = sessions.generic_connections,
+            relay_connections = sessions.relay_connections,
+            task_routes = sessions.task_routes,
+            invalidated_sessions = sessions.total(),
             elapsed_ms = started.elapsed().as_millis(),
             "Google provider credential revoked and OAuth client cache evicted"
         );
@@ -505,12 +770,21 @@ impl GatewayManager {
             );
             tool_error_from_oauth(e)
         })?;
+        self.invalidate_oauth_status_discovery(upstream, Some(subject))
+            .await;
 
-        self.evict_subject_client(upstream, subject);
+        let sessions = self
+            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear")
+            .await;
         tracing::info!(
             service = "upstream_oauth",
             action = "clear",
             upstream,
+            subject_connections = sessions.subject_connections,
+            generic_connections = sessions.generic_connections,
+            relay_connections = sessions.relay_connections,
+            task_routes = sessions.task_routes,
+            invalidated_sessions = sessions.total(),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth clear: credentials cleared and client cache evicted"
         );

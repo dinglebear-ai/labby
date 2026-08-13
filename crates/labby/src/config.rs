@@ -1027,6 +1027,13 @@ pub fn resolve_auth_for_config(cfg: &LabConfig) -> Result<auth_config::AuthConfi
 /// Prefer [`resolve_auth_for_config`] when a full `LabConfig` is available,
 /// so that `[public_urls].app` is used as a fallback for `LABBY_PUBLIC_URL`.
 pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::AuthConfig> {
+    resolve_auth_with_env(config, std::env::vars())
+}
+
+fn resolve_auth_with_env(
+    config: Option<&AuthFileConfig>,
+    env_vars: impl IntoIterator<Item = (String, String)>,
+) -> Result<auth_config::AuthConfig> {
     let mut merged: HashMap<String, String> = HashMap::new();
 
     if let Some(config) = config {
@@ -1147,10 +1154,11 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
         );
     }
 
-    for (key, value) in std::env::vars() {
+    for (key, value) in env_vars {
         if key.starts_with("LABBY_AUTH_")
             || key == "LABBY_PUBLIC_URL"
             || key.starts_with("LABBY_GOOGLE_")
+            || key == "LABBY_TOKEN_ENCRYPTION_KEY"
         {
             merged.insert(key, value);
         }
@@ -2067,6 +2075,14 @@ fn scan_instances_from(
 mod tests {
     use super::*;
 
+    fn resolve_oauth_fixture(config: &AuthFileConfig) -> auth_config::AuthConfig {
+        resolve_auth_with_env(
+            Some(config),
+            [("LABBY_TOKEN_ENCRYPTION_KEY".to_string(), "11".repeat(32))],
+        )
+        .expect("OAuth fixture should resolve")
+    }
+
     /// `install_resolved_preferences` must pick up config.toml values when no
     /// overriding env var is set. This test does not touch process env, so
     /// it's safe under both nextest's per-process isolation and cargo test's
@@ -2434,7 +2450,7 @@ future = "keep"
             codex_issuer_compatibility: Some(true),
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
         assert_eq!(resolved.access_token_ttl.as_secs(), 120);
         assert_eq!(resolved.refresh_token_ttl.as_secs(), 3600);
         assert_eq!(resolved.auth_code_ttl.as_secs(), 45);
@@ -2475,7 +2491,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).unwrap();
+        let resolved = resolve_oauth_fixture(&cfg);
         assert_eq!(resolved.machine_clients, vec![machine]);
         assert_eq!(resolved.enterprise_issuers, vec![issuer]);
     }
@@ -2491,7 +2507,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
 
         assert_eq!(
             resolved.allowed_client_redirect_uris,
@@ -2518,7 +2534,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
 
         assert_eq!(resolved.allowed_client_redirect_uris, Vec::<String>::new());
     }
@@ -2535,7 +2551,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
 
         assert_eq!(
             resolved.allowed_client_redirect_uris,

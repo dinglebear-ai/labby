@@ -912,4 +912,34 @@ mod tests {
             "durable write failures must be observable"
         );
     }
+
+    #[tokio::test]
+    async fn runtime_state_failure_does_not_publish_candidate_pool_or_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        crate::gateway::config::write_gateway_config(&config_path, &GatewayConfig::default())
+            .expect("seed config");
+        let manager = GatewayManager::new(config_path.clone(), GatewayRuntimeHandle::default());
+        manager
+            .reload_with_origin(None, None)
+            .await
+            .expect("initial reload");
+        let initial_pool = manager.runtime.current_pool().await.expect("initial pool");
+        let state_path = manager.runtime_state_path();
+        std::fs::remove_file(&state_path).expect("remove initial state");
+        std::fs::create_dir(&state_path).expect("block runtime-state write");
+
+        let mut candidate = GatewayConfig::default();
+        candidate.code_mode.enabled = true;
+        crate::gateway::config::write_gateway_config(&config_path, &candidate)
+            .expect("write candidate");
+
+        manager
+            .reload_with_origin(None, None)
+            .await
+            .expect_err("runtime-state failure must abort publication");
+        let current_pool = manager.runtime.current_pool().await.expect("current pool");
+        assert!(Arc::ptr_eq(&initial_pool, &current_pool));
+        assert!(!manager.current_config().await.code_mode.enabled);
+    }
 }

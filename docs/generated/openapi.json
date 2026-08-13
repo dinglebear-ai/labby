@@ -2059,9 +2059,6 @@
           "upstream"
         ],
         "properties": {
-          "subject": {
-            "type": "string"
-          },
           "upstream": {
             "type": "string"
           }
@@ -2151,9 +2148,6 @@
           "upstream"
         ],
         "properties": {
-          "subject": {
-            "type": "string"
-          },
           "upstream": {
             "type": "string"
           }
@@ -2165,9 +2159,6 @@
           "upstream"
         ],
         "properties": {
-          "subject": {
-            "type": "string"
-          },
           "upstream": {
             "type": "string"
           }
@@ -2179,9 +2170,6 @@
           "upstream"
         ],
         "properties": {
-          "subject": {
-            "type": "string"
-          },
           "timeout_secs": {
             "type": "integer"
           },

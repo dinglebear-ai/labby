@@ -17,13 +17,14 @@ use super::super::types;
 use super::super::types::UpstreamCapability;
 use super::super::types::UpstreamRuntimeOwner;
 use super::UpstreamPool;
+use super::catalog_pagination;
 use super::connect::connect_upstream_with_client;
 use super::connect::stable_jitter_seed;
 use super::helpers::{
     AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR, DISCOVERY_TIMEOUT, auth_error_should_backoff_aggressively,
-    classify_upstream_error, upstream_discovery_timeout, upstream_transport,
+    classify_upstream_error, upstream_transport,
 };
-use super::paginate::list_tools_bounded;
+use super::tools::MAX_UPSTREAM_TOOLS;
 
 #[cfg(any(test, feature = "testkit"))]
 static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
@@ -208,17 +209,12 @@ impl UpstreamPool {
         };
 
         if let Some(peer) = existing_peer {
-            match tokio::time::timeout(DISCOVERY_TIMEOUT, list_tools_bounded(&peer, &config.name))
-                .await
+            match catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await
             {
-                Ok(Ok((tools, truncation))) => {
+                Ok(tools) => {
                     self.replace_catalog_tools(config, tools).await;
-                    self.record_listing_success_for(
-                        &config.name,
-                        UpstreamCapability::Tools,
-                        truncation,
-                    )
-                    .await;
+                    self.record_success_for(&config.name, UpstreamCapability::Tools)
+                        .await;
                     tracing::info!(
                         surface = "dispatch",
                         service = "upstream.pool",
@@ -232,11 +228,11 @@ impl UpstreamPool {
                     );
                     return Ok(true);
                 }
-                Ok(Err(error)) => {
+                Err(error) => {
                     self.record_failure_for(
                         &config.name,
                         UpstreamCapability::Tools,
-                        format!("upstream heartbeat failed: {error}"),
+                        format!("upstream heartbeat failed: {}", error.bounded_text()),
                     )
                     .await;
                     tracing::warn!(
@@ -248,30 +244,9 @@ impl UpstreamPool {
                         upstream = %config.name,
                         transport = upstream_transport(config),
                         elapsed_ms = started.elapsed().as_millis(),
-                        kind = "upstream_heartbeat_failed",
-                        error = %error,
+                        kind = error.kind(),
+                        error = %error.bounded_text(),
                         "upstream heartbeat failed"
-                    );
-                }
-                Err(_) => {
-                    self.record_failure_for(
-                        &config.name,
-                        UpstreamCapability::Tools,
-                        "upstream heartbeat timed out",
-                    )
-                    .await;
-                    tracing::warn!(
-                        surface = "dispatch",
-                        service = "upstream.pool",
-                        action = "upstream.reprobe",
-                        event = "heartbeat.error",
-                        operation = "health",
-                        upstream = %config.name,
-                        transport = upstream_transport(config),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        kind = "timeout",
-                        timeout_secs = DISCOVERY_TIMEOUT.as_secs(),
-                        "upstream heartbeat timed out"
                     );
                 }
             }
@@ -302,32 +277,21 @@ impl UpstreamPool {
 
         let subject = config.oauth.as_ref().and(oauth_subject);
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
-        let discovery_timeout = upstream_discovery_timeout(config, self.request_timeout);
-        let (conn, tools, truncation) = match tokio::time::timeout(
-            discovery_timeout,
-            connect_upstream_with_client(
-                config,
-                subject,
-                self.oauth_client_cache.as_ref(),
-                self.runtime_origin.as_deref(),
-                runtime_owner,
-                Some(&self.shared_http_client),
-            ),
+        let (conn, tools) = connect_upstream_with_client(
+            config,
+            subject,
+            self.oauth_client_cache.as_ref(),
+            self.runtime_origin.as_deref(),
+            runtime_owner,
+            Some(&self.shared_http_client),
         )
-        .await
-        {
-            Ok(connected) => connected?,
-            Err(_) => anyhow::bail!(
-                "upstream reprobe reconnect timed out after {}s",
-                discovery_timeout.as_secs()
-            ),
-        };
+        .await?;
         {
             let mut connections = self.connections.write().await;
             connections.insert(config.name.clone(), conn);
         }
         self.replace_catalog_tools(config, tools).await;
-        self.record_listing_success_for(&config.name, UpstreamCapability::Tools, truncation)
+        self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         tracing::info!(
             surface = "dispatch",

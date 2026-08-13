@@ -132,6 +132,7 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
         ("auth:public-url", "Public URL"),
         ("auth:google-client-id", "Google credentials"),
         ("auth:google-client-secret", "Google credentials"),
+        ("auth:token-encryption-key", "Credential encryption"),
         ("auth:sqlite-path", "Auth store"),
         ("auth:key-path", "Auth store"),
         ("auth:sqlite-perms", "Auth store"),

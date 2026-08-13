@@ -1,5 +1,45 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
 
+/// Actions whose authoritative result must not be cut off by the thin
+/// client's ordinary request deadline.
+///
+/// The mutation entries hand durable persistence/reconciliation to an owned
+/// task so cancellation cannot leave configuration half-committed.  A client
+/// timeout would make their outcome ambiguous.  The OAuth wait entry is an
+/// explicit long poll with its own caller-selected server-side bound.
+pub const AUTHORITATIVE_RESULT_ACTIONS: &[&str] = &[
+    "gateway.oauth.wait",
+    "gateway.code_mode.set",
+    "gateway.enrich.apply",
+    "gateway.protected_route.add",
+    "gateway.protected_route.update",
+    "gateway.protected_route.remove",
+    "gateway.virtual_server.enable",
+    "gateway.virtual_server.disable",
+    "gateway.virtual_server.remove",
+    "gateway.virtual_server.quarantine.restore",
+    "gateway.virtual_server.set_surface",
+    "gateway.virtual_server.set_mcp_policy",
+    "gateway.service_config.set",
+    "gateway.discover",
+    "gateway.add",
+    "gateway.update",
+    "gateway.remove",
+    "gateway.import",
+    "gateway.import_pending.approve",
+    "gateway.import_pending.reject",
+    "gateway.import_tombstones.clear",
+    "gateway.import_tombstones.restore",
+    "gateway.reload",
+    "gateway.mcp.enable",
+    "gateway.mcp.disable",
+];
+
+#[must_use]
+pub fn requires_authoritative_result(action: &str) -> bool {
+    AUTHORITATIVE_RESULT_ACTIONS.contains(&action)
+}
+
 const NAME_PARAM: ParamSpec = ParamSpec {
     name: "name",
     ty: "string",
@@ -928,20 +968,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BeginAuthorization",
-        params: &[
-            ParamSpec {
-                name: "upstream",
-                ty: "string",
-                required: true,
-                description: "Configured upstream name",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
-            },
-        ],
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: true,
+            description: "Configured upstream name",
+        }],
     },
     ActionSpec {
         name: "gateway.oauth.status",
@@ -949,20 +981,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "UpstreamOauthStatusView",
-        params: &[
-            ParamSpec {
-                name: "upstream",
-                ty: "string",
-                required: true,
-                description: "Configured upstream name",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
-            },
-        ],
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: true,
+            description: "Configured upstream name",
+        }],
     },
     ActionSpec {
         name: "gateway.oauth.clear",
@@ -970,20 +994,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ok",
-        params: &[
-            ParamSpec {
-                name: "upstream",
-                ty: "string",
-                required: true,
-                description: "Configured upstream name",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
-            },
-        ],
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: true,
+            description: "Configured upstream name",
+        }],
     },
     ActionSpec {
         name: "gateway.oauth.google_revoke",
@@ -1020,12 +1036,6 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: true,
                 description: "Configured upstream name to wait on",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
             },
             ParamSpec {
                 name: "timeout_secs",
@@ -1275,5 +1285,24 @@ mod tests {
             param_names.contains(&"timeout_secs"),
             "missing timeout_secs param"
         );
+    }
+
+    #[test]
+    fn shared_gateway_oauth_actions_do_not_advertise_subject_overrides() {
+        for action in [
+            "gateway.oauth.start",
+            "gateway.oauth.status",
+            "gateway.oauth.clear",
+            "gateway.oauth.wait",
+        ] {
+            let spec = ACTIONS
+                .iter()
+                .find(|spec| spec.name == action)
+                .expect("shared OAuth action should be in the catalog");
+            assert!(
+                spec.params.iter().all(|param| param.name != "subject"),
+                "{action} must not advertise an unsupported subject override"
+            );
+        }
     }
 }

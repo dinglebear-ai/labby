@@ -84,8 +84,8 @@ impl GatewayManager {
     ) -> Result<GatewayHintApplyView, ToolError> {
         scope.ensure_visible(&params.upstream)?;
         let hint = validate_hint(&params.hint)?;
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let pool = self.current_pool().await;
         let selected = [SelectedUpstream {
             name: params.upstream.clone(),
@@ -122,7 +122,7 @@ impl GatewayManager {
             .as_deref()
             .and_then(labby_runtime::gateway_config::normalize_code_mode_hint);
         upstream.code_mode_hint = Some(hint.clone());
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         // A `code_mode_hint` is rendered into the visible `codemode` tool
         // description (the "Available upstream namespaces" section built in
         // `mcp/handlers_tools.rs` via `code_mode_description`), so applying a

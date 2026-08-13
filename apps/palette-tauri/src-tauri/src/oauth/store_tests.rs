@@ -7,6 +7,7 @@ fn sample(server: &str, refresh: Option<&str>, expires_at: i64) -> StoredCredent
         access_token: "access-abc".into(),
         refresh_token: refresh.map(Secret::from),
         token_endpoint: format!("{server}/token"),
+        revocation_endpoint: Some(format!("{server}/revoke")),
         expires_at_unix: expires_at,
         scope: "axon:read axon:write".to_string(),
         server_url: server.to_string(),
@@ -35,6 +36,50 @@ fn save_then_load_round_trips() {
     );
     assert_eq!(loaded.token_endpoint, "https://axon.example.com/token");
     assert_eq!(loaded.server_url, "https://axon.example.com");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn saving_rotated_credentials_atomically_replaces_existing_file() {
+    let dir = env::temp_dir().join(format!("labby-oauth-rotate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("oauth.json");
+
+    save(
+        &path,
+        &sample("https://labby.example.com", Some("old-refresh"), 1),
+    )
+    .unwrap();
+    let mut rotated = sample("https://labby.example.com", Some("new-refresh"), 2);
+    rotated.access_token = "new-access".into();
+    save(&path, &rotated).unwrap();
+
+    let loaded = load(&path).expect("rotated credentials present");
+    assert_eq!(loaded.access_token.expose(), "new-access");
+    assert_eq!(
+        loaded.refresh_token.as_ref().map(|secret| secret.expose()),
+        Some("new-refresh")
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn saved_credentials_are_owner_read_write_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = env::temp_dir().join(format!("labby-oauth-mode-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("oauth.json");
+    save(
+        &path,
+        &sample("https://labby.example.com", Some("secret"), 1),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

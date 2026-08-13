@@ -7,7 +7,7 @@
 //! in with `use super::super::testsupport::*;` (or `use super::testsupport::*;`
 //! from the pool.rs test module).
 
-#![cfg(test)]
+#![cfg(any(test, feature = "testkit"))]
 
 use std::collections::HashMap;
 use std::sync::Arc;

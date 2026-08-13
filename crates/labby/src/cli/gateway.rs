@@ -415,6 +415,23 @@ mod tests {
     }
 
     #[test]
+    fn gateway_cli_rejects_shared_oauth_subject_override() {
+        let error = Cli::try_parse_from([
+            "lab",
+            "gateway",
+            "mcp",
+            "auth",
+            "start",
+            "fixture-http",
+            "--subject",
+            "private-subject-marker",
+        ])
+        .expect_err("shared gateway OAuth must not expose a subject override");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn gateway_enrich_apply_parser_captures_approval_args() {
         let cli = Cli::try_parse_from([
             "lab",

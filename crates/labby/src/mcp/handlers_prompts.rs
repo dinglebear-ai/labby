@@ -110,11 +110,13 @@ impl LabMcpServer {
         if !prompts.finished()
             && let Some(pool) = self.current_upstream_pool().await
         {
+            let catalog_deadline = tokio::time::Instant::now() + pool.request_timeout();
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
             let upstream_prompts = pool
-                .list_upstream_prompts_allowed(
+                .list_upstream_prompts_allowed_until(
                     &builtin_name_refs,
                     self.route_scope.allowed_upstreams(),
+                    catalog_deadline,
                 )
                 .await;
             for prompt in upstream_prompts {
@@ -130,10 +132,11 @@ impl LabMcpServer {
                 {
                     let configs = self.route_scoped_oauth_upstream_configs().await;
                     let scoped_prompts = pool
-                        .subject_scoped_prompts(
+                        .subject_scoped_prompts_until(
                             &configs,
                             oauth_subject.as_ref(),
                             &builtin_name_refs,
+                            catalog_deadline,
                         )
                         .await;
                     for prompt in scoped_prompts.into_iter().filter(|prompt| {

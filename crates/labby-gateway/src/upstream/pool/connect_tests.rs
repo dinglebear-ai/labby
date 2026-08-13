@@ -105,7 +105,7 @@ async fn http_upstream_falls_back_after_transport_rejects_2026_discovery() {
     config.name = "legacy-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let (_connection, tools, _truncation) = connect_http_upstream(
+    let (_connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,
@@ -228,7 +228,7 @@ async fn http_upstream_falls_back_when_discovery_versions_do_not_overlap() {
     config.name = "version-negotiation-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let (_connection, tools, _truncation) = connect_http_upstream(
+    let (_connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,
@@ -338,7 +338,7 @@ async fn http_upstream_accepts_discovery_result_with_server_info_metadata() {
     config.name = "metadata-fallback-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let (_connection, tools, _truncation) = connect_http_upstream(
+    let (_connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,
@@ -421,7 +421,7 @@ async fn http_upstream_falls_back_when_discover_method_not_found_arrives_over_ss
     config.name = "sse-legacy-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let (_connection, tools, _truncation) = connect_http_upstream(
+    let (_connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,
@@ -517,7 +517,7 @@ async fn http_upstream_initializes_when_discovery_requires_a_session() {
     config.name = "session-required-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let (_connection, tools, _truncation) = connect_http_upstream(
+    let (_connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,
@@ -593,7 +593,7 @@ async fn http_upstream_keeps_modern_lifecycle_without_legacy_probe() {
     config.name = "modern-http".to_string();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let (_connection, tools, _truncation) = connect_http_upstream(
+    let (_connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,

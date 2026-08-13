@@ -6,7 +6,6 @@ use serde_json::json;
 
 use crate::cli::gateway::{GatewayOauthUpstreamArgs, LazyGatewayManager};
 use crate::config::LabConfig;
-use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::output::OutputFormat;
 
 use super::dispatch::dispatch_gateway_action;
@@ -22,7 +21,7 @@ pub(super) async fn run_gateway_oauth_start(
     args: GatewayOauthUpstreamArgs,
     format: OutputFormat,
 ) -> Result<ExitCode> {
-    let params = json!({ "upstream": args.name, "subject": args.subject });
+    let params = json!({ "upstream": args.name });
     let start = std::time::Instant::now();
     let value = dispatch_gateway_action(manager, config, "gateway.oauth.start".to_string(), params)
         .await
@@ -66,15 +65,11 @@ pub(super) async fn run_gateway_oauth_start(
     }
 
     if args.wait {
-        let subject = args
-            .subject
-            .as_deref()
-            .unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT);
         eprintln!(
             "{}",
             theme.muted(format!(
-                "Waiting for OAuth completion for `{}` using shared subject `{}`...",
-                args.name, subject
+                "Waiting for OAuth completion for the shared gateway credential on `{}`...",
+                args.name
             ))
         );
         let wait_value = dispatch_gateway_action(
@@ -83,7 +78,6 @@ pub(super) async fn run_gateway_oauth_start(
             "gateway.oauth.wait".to_string(),
             json!({
                 "upstream": args.name,
-                "subject": subject,
                 "timeout_secs": args.wait_timeout_secs,
             }),
         )
@@ -104,8 +98,8 @@ pub(super) async fn run_gateway_oauth_start(
             eprintln!(
                 "{}",
                 theme.success(&format!(
-                    "OAuth completed for `{}`. The existing callback route stored credentials for shared subject `{}`.",
-                    args.name, subject
+                    "OAuth completed for `{}`. The callback stored the shared gateway credential.",
+                    args.name
                 ))
             );
         } else {

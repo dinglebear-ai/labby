@@ -231,7 +231,7 @@ impl BridgeServerHandler {
 
 impl ServerHandler for BridgeServerHandler {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
+        Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
     }
 
     async fn initialize(
@@ -260,7 +260,7 @@ impl ServerHandler for BridgeServerHandler {
         _context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
         Ok(DiscoverResult::from_server_info(
-            vec![ProtocolVersion::V_2026_07_28],
+            ProtocolVersion::KNOWN_VERSIONS.to_vec(),
             self.get_info(),
         ))
     }

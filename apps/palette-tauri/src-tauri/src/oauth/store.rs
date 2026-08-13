@@ -21,6 +21,10 @@ pub(crate) struct StoredCredentials {
     /// The token endpoint discovered at login. Refresh posts here rather than
     /// reconstructing `{server_url}/token`, which breaks behind reverse proxies.
     pub token_endpoint: String,
+    /// RFC 7009 endpoint discovered at login. Optional for credentials written
+    /// by older Palette releases; logout rediscovers it before revocation.
+    #[serde(default)]
+    pub revocation_endpoint: Option<String>,
     pub expires_at_unix: i64,
     pub scope: String,
     pub server_url: String,
@@ -52,6 +56,14 @@ pub(crate) fn credentials_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// (a corrupt file degrades to "signed out", never a hard error). A non-missing
 /// read error is logged so it is not silently indistinguishable from absence.
 pub(crate) fn load(path: &Path) -> Option<StoredCredentials> {
+    if let Some(parent) = path.parent()
+        && let Err(err) = crate::persistence::harden_secret_directory(parent)
+    {
+        crate::warn(format!(
+            "refusing to load OAuth credentials before ACL hardening: {err}"
+        ));
+        return None;
+    }
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,

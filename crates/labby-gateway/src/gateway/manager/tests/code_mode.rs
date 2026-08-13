@@ -37,6 +37,22 @@ async fn search_tools_seeds_cold_lazy_runtime_before_searching() {
 }
 
 #[tokio::test]
+async fn unauthenticated_code_mode_readiness_never_discovers_oauth_catalog() {
+    let (manager, pool) =
+        code_mode_manager_with_pool(fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp"))
+            .await;
+
+    let tools = manager
+        .code_mode_catalog_tools(true, None, None)
+        .await
+        .expect("OAuth upstreams are skipped without a subject");
+
+    assert!(tools.is_empty());
+    assert!(pool.healthy_tools().await.is_empty());
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
+#[tokio::test]
 async fn scoped_code_mode_catalog_fails_when_allowed_upstream_is_unhealthy() {
     let (manager, pool) = code_mode_manager_with_upstreams(vec![
         fixture_http_upstream("alpha"),
@@ -221,6 +237,74 @@ async fn resolve_raw_upstream_tool_scoped_hides_priority_zero_upstreams() {
         ToolError::Sdk { sdk_kind, .. } => assert_eq!(sdk_kind, "unknown_tool"),
         other => panic!("expected unknown_tool sdk error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn advertised_subject_scoped_oauth_tool_resolves_and_executes() {
+    let upstream = fixture_oauth_upstream("private", "http://unused.invalid/mcp");
+    let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "alice",
+        vec![rmcp::model::Tool::new(
+            "private_ping".to_string(),
+            "private ping",
+            Arc::new(serde_json::Map::new()),
+        )],
+    )
+    .await;
+    let caller = CodeModeCaller::Scoped {
+        capabilities: labby_codemode::CodeModeCallerCapabilities {
+            can_read: true,
+            can_execute: true,
+            can_use_snippets: false,
+            is_admin: false,
+        },
+        sub: Some("alice".to_string()),
+    };
+
+    let advertised = CodeModeHost::list_tools(
+        &manager,
+        &caller,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+        false,
+        false,
+    )
+    .await
+    .expect("subject catalog is advertised");
+    assert!(
+        advertised
+            .entries
+            .iter()
+            .any(|entry| entry.id == "private::private_ping")
+    );
+
+    let resolved = manager
+        .resolve_code_mode_upstream_tool("private", "private_ping", None, Some("alice"))
+        .await
+        .expect("advertised Code Mode tool resolves");
+    assert_eq!(resolved.tool.name.as_ref(), "private_ping");
+    for selector in ["private_ping", "private::private_ping"] {
+        let (owner, resolved) = manager
+            .resolve_raw_upstream_tool(selector, None, Some("alice"))
+            .await
+            .expect("advertised raw tool resolves");
+        assert_eq!(owner, "private");
+        assert_eq!(resolved.tool.name.as_ref(), "private_ping");
+    }
+
+    CodeModeHost::call_tool(
+        &manager,
+        "private::private_ping",
+        json!({}),
+        &caller,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+        labby_codemode::ExecCtx::none(),
+    )
+    .await
+    .expect("advertised subject-scoped tool executes through its subject peer");
 }
 
 #[tokio::test]

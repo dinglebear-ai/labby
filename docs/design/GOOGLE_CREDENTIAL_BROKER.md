@@ -490,6 +490,13 @@ least one configured Google Workspace application scope, Google issuer metadata,
 Opening a schema v7 database with that key idempotently encrypts legacy plaintext
 provider access and refresh tokens before the broker can serve them.
 
+Product OAuth has the same fail-closed requirement even when no shared
+`google_provider` upstream is configured: `{PREFIX}_TOKEN_ENCRYPTION_KEY` must
+be present and valid before the authorization runtime starts. The broker's
+write methods independently reject missing encryption, so alternate callers
+cannot persist plaintext. Bearer-only mode does not require this key. `labby
+doctor` reports the key's presence and validity without logging its value.
+
 ## Database Contract
 
 Schema version:

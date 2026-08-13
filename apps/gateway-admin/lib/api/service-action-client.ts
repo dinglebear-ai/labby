@@ -1,4 +1,21 @@
 import { gatewayRequestInit } from './gateway-request.ts'
+import {
+  getBrowserSessionState,
+  getSessionCsrfToken,
+  loadBrowserSession,
+  type BrowserSessionState,
+} from '../auth/session-store.ts'
+
+let browserSessionRefresh: Promise<BrowserSessionState> | undefined
+
+function refreshBrowserSession() {
+  if (!browserSessionRefresh) {
+    browserSessionRefresh = loadBrowserSession().finally(() => {
+      browserSessionRefresh = undefined
+    })
+  }
+  return browserSessionRefresh
+}
 
 export interface ServiceActionError extends Error {
   status: number
@@ -78,24 +95,62 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   createError: ActionErrorFactory<TError>
   source?: string
 }): Promise<T> {
-  let response: Response
-  try {
-    const init = gatewayRequestInit(action, params, undefined, signal)
-    if (source) {
-      init.headers = { ...(init.headers as Record<string, string>), 'X-Lab-Source': source }
+  const initialCsrfToken = getSessionCsrfToken()
+  const attemptedSessionAuth = Boolean(initialCsrfToken)
+
+  const request = async () => {
+    let response: Response
+    try {
+      const init = gatewayRequestInit(action, params, undefined, signal)
+      if (source) {
+        init.headers = { ...(init.headers as Record<string, string>), 'X-Lab-Source': source }
+      }
+      response = await fetch(url, init)
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error
+      }
+      const message = error instanceof Error ? error.message : 'unknown network error'
+      throw createError(
+        `${serviceLabel} backend action \`${action}\` failed before a response was received: ${message}`,
+        502,
+        'backend_unreachable',
+      )
     }
-    response = await fetch(url, init)
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw error
-    }
-    const message = error instanceof Error ? error.message : 'unknown network error'
-    throw createError(
-      `${serviceLabel} backend action \`${action}\` failed before a response was received: ${message}`,
-      502,
-      'backend_unreachable',
-    )
+
+    return parseActionResponse<T, TError>(response, createError)
   }
 
-  return parseActionResponse<T, TError>(response, createError)
+  try {
+    return await request()
+  } catch (error) {
+    const authFailure =
+      error instanceof Error &&
+      'status' in error &&
+      'code' in error &&
+      ((error as ServiceActionError).code === 'auth_failed' ||
+        (attemptedSessionAuth &&
+          (error as ServiceActionError).code === 'validation_failed' &&
+          (error as ServiceActionError).message.toLowerCase().includes('csrf'))) &&
+      [401, 403, 422].includes((error as ServiceActionError).status)
+
+    if (!authFailure) {
+      throw error
+    }
+
+    const currentSession = getBrowserSessionState()
+    if (
+      currentSession.status === 'authenticated' &&
+      currentSession.csrfToken !== initialCsrfToken
+    ) {
+      return request()
+    }
+
+    const session = await refreshBrowserSession()
+    if (session.status !== 'authenticated') {
+      throw error
+    }
+
+    return request()
+  }
 }

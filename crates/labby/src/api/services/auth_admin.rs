@@ -424,8 +424,47 @@ async fn delete_allowed_email(
         "auth.allowed_user.remove intent"
     );
 
-    match auth_state.store.remove_allowed_user(&email).await {
-        Ok(()) => {}
+    // Preflight the runtime boundary and exclude new OAuth client/peer
+    // publication before committing the durable revocation. Holding this
+    // write guard through the drain closes the DB-to-runtime reuse window.
+    #[cfg(feature = "gateway")]
+    let gateway_manager = if email.eq_ignore_ascii_case(admin_email) {
+        None
+    } else {
+        match &state.gateway_manager {
+            Some(manager) => Some(std::sync::Arc::clone(manager)),
+            None => {
+                let error = ToolError::internal_message(
+                    "gateway runtime invalidation is unavailable; allowlist entry was not removed",
+                );
+                log_auth_dispatch(
+                    action,
+                    req_id.as_deref(),
+                    start,
+                    Some(error.kind()),
+                    actor_key,
+                );
+                return no_store(ApiError::new(error).into_response());
+            }
+        }
+    };
+    #[cfg(feature = "gateway")]
+    let _oauth_lifecycle_guard = match &gateway_manager {
+        Some(manager) => manager.google_provider_lifecycle_write_guard().await,
+        None => None,
+    };
+
+    let removal = if email.eq_ignore_ascii_case(admin_email) {
+        auth_state
+            .store
+            .remove_bootstrap_admin_allowlist_entry(&email)
+            .await
+            .map(|()| labby_auth::types::AllowedUserRevocation::default())
+    } else {
+        auth_state.store.remove_allowed_user(&email).await
+    };
+    let revocation = match removal {
+        Ok(counts) => counts,
         Err(err) => {
             let kind = err.kind();
             tracing::warn!(
@@ -440,6 +479,20 @@ async fn delete_allowed_email(
             log_auth_dispatch(action, req_id.as_deref(), start, Some(kind), actor_key);
             return no_store(ApiError::new(auth_err(err)).into_response());
         }
+    };
+
+    let mut invalidated_runtime_sessions = 0;
+    #[cfg(feature = "gateway")]
+    if let Some(manager) = &gateway_manager {
+        for subject in &revocation.subjects {
+            invalidated_runtime_sessions += manager
+                .invalidate_google_provider_subject_runtime_guarded(
+                    subject,
+                    "auth.allowed_user.remove",
+                )
+                .await
+                .total();
+        }
     }
 
     tracing::info!(
@@ -447,6 +500,12 @@ async fn delete_allowed_email(
         service = "auth",
         action,
         email_fp,
+        revoked_sessions = revocation.revoked_sessions,
+        revoked_provider_credentials = revocation.revoked_provider_credentials,
+        revoked_refresh_tokens = revocation.revoked_refresh_tokens,
+        revoked_authorization_codes = revocation.revoked_authorization_codes,
+        invalidated_subjects = revocation.subjects.len(),
+        invalidated_runtime_sessions,
         elapsed_ms = start.elapsed().as_millis(),
         "auth.allowed_user.remove complete"
     );

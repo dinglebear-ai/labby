@@ -22,6 +22,7 @@ pub(super) fn row_to_authorization_request(
         client_id: row.get(1)?,
         redirect_uri: row.get(2)?,
         client_state: row.get(3)?,
+        native_poll_token_hash: row.get(11)?,
         resource: row.get(10)?,
         scope: row.get(4)?,
         provider_code_verifier: row.get(5)?,
@@ -79,7 +80,7 @@ pub(super) fn row_to_native_authorization_result(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<NativeAuthorizationResultRow> {
     Ok(NativeAuthorizationResultRow {
-        state: row.get(0)?,
+        poll_token_hash: row.get(0)?,
         code: row.get(1)?,
         created_at: row.get(2)?,
         expires_at: row.get(3)?,

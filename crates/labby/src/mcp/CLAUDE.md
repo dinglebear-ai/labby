@@ -91,13 +91,16 @@ authorization. A declined or invalid elicitation retry returns
 The above is Labby's own destructive-action elicitation. For an upstream MCP
 server, the gateway preserves an `input_required` tool response for the
 downstream client.
-`mcp/call_tool_upstream.rs` routes the proxied call through
-`UpstreamPool::call_tool_relayed` (a dedicated connection served with
-`RelayClientHandler`, see `dispatch/upstream/pool/relay.rs`) instead of the
-pooled path whenever the downstream agent advertises an MRTR input capability.
-Both proxy branches do this automatically — the raw branch passes
-`subject = None`, while the OAuth branch forwards `oauth_subject`. The relay
-uses `call_tool_once`; it never fulfills the input inside Labby.
+`mcp/call_tool_upstream.rs`, `mcp/handlers_prompts.rs`, and
+`mcp/resource_proxy.rs` route proxied `call_tool`, `get_prompt`, and
+`read_resource` requests through the corresponding `UpstreamPool::*_relayed`
+method. Those methods use a dedicated connection served with
+`RelayClientHandler` (see `dispatch/upstream/pool/relay.rs`) instead of the
+ordinary pooled connection. Both proxy branches do this automatically: the raw
+branch passes `subject = None`, while the OAuth branch forwards
+`oauth_subject`. The relay forwards upstream elicitation, sampling, roots,
+progress, and cancellation to the downstream peer; it never fulfills an
+interactive request inside Labby.
 
 Relay connections are cached per `(upstream, session_id, subject)`. `session_id`
 is minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed
@@ -109,18 +112,24 @@ reuse it, without risking misrouted elicitation. `subject` (the OAuth identity,
 one identity is never reused for a call made as another within the same session.
 It stays opt-in (gated) so the default path is the untouched pooled `call_tool`.
 
-**Deadline.** A relayed call blocks on a *human* answering the forwarded
-elicitation, so it is bounded by the pool's `relay_timeout`
+**Deadline and cancellation.** A relayed request can block on a *human*
+answering forwarded elicitation, so `call_tool`, `get_prompt`, and
+`read_resource` are bounded by the pool's `relay_timeout`
 (`upstream_relay_timeout_ms`, default 5 min) instead of the 30s
 `upstream_request_timeout_ms` the pooled path uses — otherwise a confirmation
-dialog left open would abort the upstream call. See `config.rs`
-(`upstream_relay_timeout`) and `dispatch/upstream/pool/relay.rs`.
+dialog left open would abort the upstream request. Each path also passes the
+current request cancellation token and request ID into the relay. See
+`config.rs` (`upstream_relay_timeout`) and
+`dispatch/upstream/pool/relay.rs`.
 
-**Scope.** Only the proxied `call_tool` path is relay-handled. Upstream
-`read_resource` and `get_prompt` still run over the pooled `()` connection, so an
-upstream raising elicitation/sampling/roots *during* one of those has it
-declined. Tool calls are where interactive upstreams elicit in practice;
-widening the scope means routing those paths through a relay handler too.
+**Scope and capability exposure.** Relay handling covers proxied `call_tool`,
+`get_prompt`, and `read_resource`; discovery operations such as `list_prompts`
+and `list_resources` remain on the ordinary pool. The relay receives only the
+capability snapshot attached to the current request. Even when modern request
+metadata is absent, `forwardable_client_capabilities` supplies an honest empty
+capability set and uses a relay connection so request-scoped progress and
+cancellation still work. It never reuses capability history from an earlier
+request or another downstream session.
 
 ## Built-in actions
 

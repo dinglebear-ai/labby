@@ -460,29 +460,48 @@ async fn revoke_google(
     let invalidation = crate::dispatch::gateway::oauth::revoke_google(&manager, &body.upstream)
         .await
         .inspect_err(|error| {
-            warn!(
-                surface = "api",
-                service = "upstream_oauth",
-                action = "google_revoke",
-                subject = %auth.sub,
-                elapsed_ms = started.elapsed().as_millis(),
-                kind = error.kind(),
-                "Google provider credential revoke failed"
-            );
+            log_google_revoke_failure(&auth, &body.upstream, started, error.kind());
         })?;
+    log_google_revoke_success(&auth, &body.upstream, started, &invalidation);
+    Ok(Json(invalidation))
+}
+
+fn log_google_revoke_failure(
+    auth: &crate::api::oauth::AuthContext,
+    upstream: &str,
+    started: std::time::Instant,
+    kind: &str,
+) {
     warn!(
         surface = "api",
         service = "upstream_oauth",
         action = "google_revoke",
-        subject = %auth.sub,
-        upstream = %body.upstream,
+        actor_key = auth.actor_key.as_deref(),
+        upstream,
+        elapsed_ms = started.elapsed().as_millis(),
+        kind,
+        "Google provider credential revoke failed"
+    );
+}
+
+fn log_google_revoke_success(
+    auth: &crate::api::oauth::AuthContext,
+    upstream: &str,
+    started: std::time::Instant,
+    invalidation: &labby_auth::types::GoogleProviderInvalidation,
+) {
+    info!(
+        surface = "api",
+        service = "upstream_oauth",
+        action = "google_revoke",
+        actor_key = auth.actor_key.as_deref(),
+        upstream,
         invalidated = invalidation.invalidated,
         revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
         revoked_authorization_codes = invalidation.revoked_authorization_codes,
         elapsed_ms = started.elapsed().as_millis(),
         "Google provider credential explicitly revoked"
     );
-    Ok(Json(invalidation))
 }
 
 async fn callback(
@@ -583,14 +602,18 @@ async fn callback(
         }
     }
 
-    if let Some(auth_error) = &query.error {
+    if query.error.is_some() {
         warn!(
             surface = "api",
             service = "upstream_oauth",
             action = "callback",
             upstream = %upstream,
-            error = %auth_error,
-            error_description = ?query.error_description,
+            kind = "authorization_failed",
+            error_present = true,
+            error_description_present = query.error_description.is_some(),
+            error_code_bytes = query.error.as_deref().map_or(0, str::len),
+            error_description_bytes = query.error_description.as_deref().map_or(0, str::len),
+            elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth callback received error from authorization server"
         );
         if let Err(revoke_err) = sqlite
@@ -725,8 +748,12 @@ mod tests {
         state::AuthState,
     };
     use tower::ServiceExt;
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-    use super::{browser_routes, callback_subject, gateway_routes};
+    use super::{
+        browser_routes, callback_subject, gateway_routes, log_google_revoke_failure,
+        log_google_revoke_success,
+    };
     use crate::{
         api::oauth::AuthContext,
         api::state::AppState,
@@ -735,7 +762,91 @@ mod tests {
             manager::GatewayRuntimeHandle,
         },
         oauth::upstream::encryption::load_key,
+        test_support::{SharedBuf, captured_logs},
     };
+
+    #[test]
+    fn google_revoke_logs_actor_key_without_raw_subject() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::registry().with(
+            fmt::layer()
+                .json()
+                .with_writer(buf.clone())
+                .with_filter(EnvFilter::new("info")),
+        );
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let auth = AuthContext {
+            sub: "distinctive-raw-google-subject".to_string(),
+            actor_key: Some(Arc::<str>::from("actor_key_fixture_123")),
+            scopes: vec!["lab:admin".to_string()],
+            issuer: "https://issuer.example".to_string(),
+            via_session: true,
+            csrf_token: None,
+            email: Some("distinctive-secret@example.com".to_string()),
+        };
+        let invalidation = labby_auth::types::GoogleProviderInvalidation {
+            invalidated: true,
+            revoked_refresh_tokens: 2,
+            revoked_authorization_codes: 3,
+        };
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            log_google_revoke_failure(
+                &auth,
+                "google-upstream",
+                std::time::Instant::now(),
+                "storage_error",
+            );
+            log_google_revoke_success(
+                &auth,
+                "google-upstream",
+                std::time::Instant::now(),
+                &invalidation,
+            );
+        });
+
+        let logs = captured_logs(&buf);
+        assert!(logs.contains("actor_key_fixture_123"), "{logs}");
+        assert!(logs.contains("storage_error"), "{logs}");
+        assert!(logs.contains("google-upstream"), "{logs}");
+        assert!(logs.contains("\"level\":\"WARN\""), "{logs}");
+        assert!(logs.contains("\"level\":\"INFO\""), "{logs}");
+        assert!(logs.contains("revoked_refresh_tokens"), "{logs}");
+        assert!(!logs.contains("distinctive-raw-google-subject"), "{logs}");
+        assert!(!logs.contains("distinctive-secret@example.com"), "{logs}");
+        assert!(!logs.contains("subject"), "{logs}");
+    }
+
+    #[test]
+    fn google_revoke_logs_do_not_invent_an_actor_when_actor_key_is_missing() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().unwrap();
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::registry().with(
+            fmt::layer()
+                .json()
+                .with_writer(buf.clone())
+                .with_filter(EnvFilter::new("warn")),
+        );
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let mut auth = test_auth_context();
+        auth.sub = "raw-subject-without-actor-key".to_string();
+        auth.actor_key = None;
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            log_google_revoke_failure(
+                &auth,
+                "google-upstream",
+                std::time::Instant::now(),
+                "storage_error",
+            );
+        });
+
+        let logs = captured_logs(&buf);
+        assert!(!logs.contains("raw-subject-without-actor-key"), "{logs}");
+        assert!(!logs.contains("anonymous"), "{logs}");
+        assert!(!logs.contains("unknown-actor"), "{logs}");
+    }
 
     #[tokio::test]
     async fn callback_requires_authenticated_browser_session() {
@@ -968,6 +1079,12 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
             ..AuthConfig::default()
         };
         AuthState::new(config).await.unwrap()

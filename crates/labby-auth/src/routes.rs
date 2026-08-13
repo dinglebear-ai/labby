@@ -34,7 +34,7 @@ pub fn router(state: AuthState) -> Router {
         .route("/auth/login", get(browser_login))
         .route("/auth/google/callback", get(callback))
         .route("/native/callback", get(native_callback))
-        .route("/native/poll", get(native_poll))
+        .route("/native/poll", post(native_poll))
         .route("/token", post(token))
         .route("/revoke", post(revoke));
     if enable_registration {
@@ -104,7 +104,7 @@ pub const BEARER_ONLY_ROUTER_FORBIDDEN_PATHS: &[(&str, &str)] = &[
     ("GET", "/auth/login"),
     ("POST", "/register"),
     ("GET", "/native/callback"),
-    ("GET", "/native/poll"),
+    ("POST", "/native/poll"),
 ];
 
 /// Emit the canonical API dispatch event for an inbound OAuth endpoint.

@@ -42,9 +42,18 @@ pub use super::runtime::GatewayRuntimeHandle;
 use super::service_registry::GatewayServiceRegistry;
 use super::types::CatalogChangeNotifier;
 
+#[derive(Clone)]
+pub(super) struct OauthStatusDiscoverySnapshot {
+    pub(super) completed_at: Instant,
+    pub(super) summary: Option<crate::upstream::pool::UpstreamCachedSummary>,
+    pub(super) tool_error: Option<String>,
+    pub(super) error: Option<String>,
+}
+
 mod code_mode_resolve;
 mod code_mode_runtime;
 mod config_ops;
+mod config_transaction;
 mod core;
 mod enrichment;
 mod import_matchers;
@@ -84,12 +93,21 @@ pub struct GatewayManager {
     pub(super) store: Arc<dyn GatewayConfigStore>,
     pub(super) runtime: GatewayRuntimeHandle,
     pub(super) config: Arc<RwLock<GatewayConfig>>,
+    /// Serializes the short publication window spanning the live pool,
+    /// config snapshot, protected-route index, and Code Mode flags. Readers
+    /// that combine those components take a read lease and clone a coherent
+    /// revision before doing slow I/O.
+    pub(super) publication_barrier: Arc<RwLock<()>>,
     pub(super) config_mutation: Arc<Mutex<()>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,
     pub(super) oauth_client_cache: Option<OauthClientCache>,
     pub(super) upstream_oauth_managers: Option<Arc<dashmap::DashMap<String, UpstreamOauthManager>>>,
+    pub(super) oauth_status_discovery_cache:
+        Arc<Mutex<std::collections::HashMap<(String, String), OauthStatusDiscoverySnapshot>>>,
+    pub(super) oauth_status_discovery_locks:
+        Arc<dashmap::DashMap<(String, String), Arc<Mutex<()>>>>,
     builtin_service_registry: Arc<ArcSwap<Arc<dyn GatewayServiceRegistry>>>,
     pub(super) oauth_sqlite: Option<labby_auth::sqlite::SqliteStore>,
     pub(super) oauth_key: Option<EncryptionKey>,
@@ -174,6 +192,19 @@ pub struct GatewayManager {
     pub(super) client_registry: labby_runtime::client_registry::ClientRegistryHandle,
 }
 
+pub(crate) struct ConfigMutationGuard {
+    _local: tokio::sync::OwnedMutexGuard<()>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl Drop for ConfigMutationGuard {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
 impl GatewayManager {
     /// Persist a gateway config without replacing the live in-memory snapshot.
     ///
@@ -209,6 +240,11 @@ impl GatewayManager {
 
     pub(super) async fn persist_config(&self, cfg: GatewayConfig) -> Result<(), ToolError> {
         self.write_config_file(&cfg).await?;
+        let _publication = self.publication_barrier.write().await;
+        self.store
+            .set_process_code_mode_enabled(cfg.code_mode.enabled);
+        self.code_mode_app_state
+            .set_enabled(cfg.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
         *self.config.write().await = cfg;

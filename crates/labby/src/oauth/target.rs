@@ -30,11 +30,7 @@ pub fn resolve_machine_target(
             machine_id: machine_id.to_string(),
             available: machines.keys().cloned().collect::<Vec<_>>().join(", "),
         })?;
-    let target_url =
-        Url::parse(&config.target_url).map_err(|source| OauthRelayError::InvalidTargetUrl {
-            value: config.target_url.clone(),
-            source,
-        })?;
+    let target_url = parse_target_url(&config.target_url)?;
 
     Ok(ResolvedTarget {
         machine_id: Some(machine_id.to_string()),
@@ -48,17 +44,27 @@ pub fn resolve_explicit_target(
     target_url: &str,
     default_port: Option<u16>,
 ) -> Result<ResolvedTarget, OauthRelayError> {
-    let target_url =
-        Url::parse(target_url).map_err(|source| OauthRelayError::InvalidTargetUrl {
-            value: target_url.to_string(),
-            source,
-        })?;
+    let target_url = parse_target_url(target_url)?;
 
     Ok(ResolvedTarget {
         machine_id: None,
         target_url,
         default_port,
     })
+}
+
+fn parse_target_url(value: &str) -> Result<Url, OauthRelayError> {
+    let url = Url::parse(value).map_err(|source| OauthRelayError::InvalidTargetUrl {
+        // Never echo a possibly credential-bearing URL into CLI output/logs.
+        value: "<redacted>".to_string(),
+        source,
+    })?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(OauthRelayError::InvalidTargetPolicy {
+            detail: "URL userinfo is not allowed",
+        });
+    }
+    Ok(url)
 }
 
 /// Construct a forwarding URL by appending the incoming suffix path and query.
@@ -172,6 +178,30 @@ mod tests {
         assert!(message.contains("missing"));
         assert!(message.contains("node-a"));
         assert!(message.contains("node-b"));
+    }
+
+    #[test]
+    fn explicit_and_machine_targets_reject_url_userinfo_without_echoing_it() {
+        let error = resolve_explicit_target(
+            "http://operator:super-secret@127.0.0.1:38935/callback",
+            None,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("userinfo"));
+        assert!(!message.contains("operator"));
+        assert!(!message.contains("super-secret"));
+
+        let machines = BTreeMap::from([(
+            "node-a".to_string(),
+            OauthMachineConfig {
+                target_url: "http://operator:super-secret@127.0.0.1/callback".to_string(),
+                description: None,
+                default_port: None,
+            },
+        )]);
+        let error = resolve_machine_target(&machines, "node-a").unwrap_err();
+        assert!(!error.to_string().contains("super-secret"));
     }
 
     #[test]

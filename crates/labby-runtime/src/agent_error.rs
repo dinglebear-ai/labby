@@ -334,6 +334,7 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "unknown_instance" | "ambiguous_tool" | "not_found" | "snippet_not_found" => {
             AgentErrorOrigin::Discovery
         }
+        "invalid_cursor" => AgentErrorOrigin::Discovery,
         "tool_error" => AgentErrorOrigin::ToolExecution,
         // `timeout` means no completed result arrived from the dependency or
         // sandbox; treat it as transport-family so side-effect guidance stays
@@ -390,7 +391,7 @@ pub fn recovery_for_kind(
         },
         "unknown_action" | "unknown_subaction" | "unknown_tool" | "unknown_upstream"
         | "unknown_instance" | "ambiguous_tool" | "not_found" | "snippet_not_found"
-        | "invalid_code_mode_id" => AgentRecoveryAdvice {
+        | "invalid_code_mode_id" | "invalid_cursor" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::Rediscover,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "List or search the available actions, tools, prompts, or resources, then retry with a valid identifier.".to_string(),
@@ -497,6 +498,18 @@ mod tests {
         assert_eq!(
             metadata.recovery.action,
             AgentRecoveryAction::ReviseAndRetry
+        );
+    }
+
+    #[test]
+    fn stale_cursor_requires_rediscovery_without_side_effects() {
+        let metadata = metadata_for_kind("invalid_cursor", None);
+        assert_eq!(metadata.origin, AgentErrorOrigin::Discovery);
+        assert_eq!(metadata.side_effects, AgentSideEffectRisk::NoneExpected);
+        assert_eq!(metadata.recovery.action, AgentRecoveryAction::Rediscover);
+        assert_eq!(
+            metadata.recovery.same_arguments,
+            AgentSameArgumentsRetry::Never
         );
     }
 
