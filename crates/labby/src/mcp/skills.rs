@@ -20,6 +20,8 @@
 //! the action catalog, or a prompt. The bytes travel from `include_str!` to the
 //! wire and nowhere else.
 
+pub(crate) mod aggregate;
+
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -452,5 +454,38 @@ mod serve_tests {
         assert!(read_first_party_skill_file("skill://labby/using-labby/../escape.md").is_none());
         assert!(read_first_party_skill_file("skill://labby/nonexistent/SKILL.md").is_none());
         assert!(first_party_skill_entry("skill://labby/nonexistent/SKILL.md").is_none());
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use labby_runtime::gateway_config::UpstreamConfig;
+
+    /// The smallest `UpstreamConfig` the aggregation tests need. Kept here so
+    /// the submodule does not reach into the gateway crate's test fixtures.
+    pub(crate) fn minimal_config() -> UpstreamConfig {
+        UpstreamConfig {
+            enabled: true,
+            name: "upstream".to_string(),
+            url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: vec![],
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: true,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }
     }
 }
