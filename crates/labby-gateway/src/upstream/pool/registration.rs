@@ -22,6 +22,12 @@ use super::helpers::{
 };
 use super::{InProcessConnector, UpstreamPool};
 
+/// Minimum interval between registration attempts for peers that stay
+/// missing/failed. Mirrors the shape of `SEMANTIC_SEARCH_COOLDOWN`: long
+/// enough that a broken builtin is not re-spawned on every `codemode.search`,
+/// short enough that recovery lands within a working session.
+const IN_PROCESS_ENSURE_RETRY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl UpstreamPool {
     pub async fn register_in_process_service_peers(&self, registry: &dyn InProcessServiceRegistry) {
         let services: Vec<Box<dyn InProcessService>> = registry
@@ -33,20 +39,27 @@ impl UpstreamPool {
     }
 
     /// Idempotent variant for hot paths: register only services whose
-    /// in-process entry is missing, unhealthy, or empty. Safe to call on
-    /// every Code Mode catalog build — an already-registered healthy peer is
-    /// left untouched, so no duplicate mini-servers are spawned and no
-    /// connections are churned.
+    /// in-process entry is missing, circuit-open, or empty. (A re-registration
+    /// replaces the entry via `healthy_in_process_entry`, which also resets
+    /// breaker state — deliberate for local peers, which self-heal.) Safe to
+    /// call on every Code Mode catalog build:
+    ///
+    /// - Single-flight: concurrent builds serialize on the ensure mutex, so N
+    ///   simultaneous cold misses spawn each mini-server once, not N times —
+    ///   and never replace a just-registered live connection (which would
+    ///   abort in-flight builtin calls).
+    /// - Failure cooldown: an attempt that still leaves peers missing is not
+    ///   retried within [`IN_PROCESS_ENSURE_RETRY_COOLDOWN`], so a wedged
+    ///   peer costs one bounded attempt per window instead of adding up to
+    ///   `IN_PROCESS_DISCOVERY_TIMEOUT` to every catalog build.
     pub async fn ensure_in_process_service_peers(&self, registry: &dyn InProcessServiceRegistry) {
-        let services: Vec<Box<dyn InProcessService>> = registry
-            .in_process_services()
-            .into_iter()
-            .filter(|service| service.has_actions())
-            .collect();
+        let mut last_attempt = self.in_process_ensure_state.lock().await;
         let missing: Vec<Box<dyn InProcessService>> = {
             let catalog = self.catalog.read().await;
-            services
+            registry
+                .in_process_services()
                 .into_iter()
+                .filter(|service| service.has_actions())
                 .filter(|service| {
                     let upstream_name = in_process_upstream_name(service.service_name());
                     !catalog.get(&upstream_name).is_some_and(|entry| {
@@ -58,6 +71,12 @@ impl UpstreamPool {
         if missing.is_empty() {
             return;
         }
+        if last_attempt
+            .is_some_and(|attempted| attempted.elapsed() < IN_PROCESS_ENSURE_RETRY_COOLDOWN)
+        {
+            return;
+        }
+        *last_attempt = Some(std::time::Instant::now());
         self.register_in_process_service_list(missing).await;
     }
 
@@ -123,14 +142,25 @@ impl UpstreamPool {
                             .insert(registration.upstream_name.clone(), conn);
                     }
                     in_process_resource_names.push(registration.upstream_name.clone());
-                    tracing::info!(
-                        upstream = %registration.entry_name,
-                        service = service_name,
-                        tool_count,
-                        resource_count = 0,
-                        prompt_count = 0,
-                        "in-process peer registration succeeded"
-                    );
+                    if tool_count == 0 {
+                        // A zero-tool "success" re-qualifies as missing on the
+                        // next ensure pass, so without this signal the retry
+                        // loop is silent churn (review finding on lab-48z4k).
+                        tracing::warn!(
+                            upstream = %registration.entry_name,
+                            service = service_name,
+                            "in-process peer registered ZERO tools — it will be re-registered after the ensure cooldown"
+                        );
+                    } else {
+                        tracing::info!(
+                            upstream = %registration.entry_name,
+                            service = service_name,
+                            tool_count,
+                            resource_count = 0,
+                            prompt_count = 0,
+                            "in-process peer registration succeeded"
+                        );
+                    }
                 }
                 Ok(Err(error)) => {
                     failed_count += 1;
@@ -288,6 +318,40 @@ mod tests {
         assert_eq!(
             tools[0].upstream_name.as_ref(),
             in_process_upstream_name("gateway-alpha")
+        );
+    }
+
+    /// Review fix (lab-48z4k): a peer that keeps failing must not be
+    /// re-registered on every catalog build — one attempt per cooldown
+    /// window, so a wedged builtin cannot put its connect timeout on every
+    /// `codemode.search`.
+    #[tokio::test]
+    async fn ensure_in_process_service_peers_applies_failure_cooldown() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |_service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    anyhow::bail!("mini-server refuses to start");
+                });
+            future
+        });
+        let pool = UpstreamPool::new().with_in_process_connector(connector);
+        let registry = StubRegistry(&["gateway-alpha"]);
+
+        pool.ensure_in_process_service_peers(&registry).await;
+        pool.ensure_in_process_service_peers(&registry).await;
+        pool.ensure_in_process_service_peers(&registry).await;
+
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            1,
+            "a failing peer is retried at most once per cooldown window"
         );
     }
 

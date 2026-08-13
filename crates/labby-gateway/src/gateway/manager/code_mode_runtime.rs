@@ -252,6 +252,26 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<Vec<UpstreamTool>, ToolError> {
+        // FU-1 (issue #210, lab-48z4k): builtin services join the Code Mode
+        // catalog as in-process upstream peers so schema and capability
+        // arrive together. Root scope only — a ProtectedSubset route's
+        // allowlist should never contain the synthetic `__in_process__*`
+        // names, and the downstream `upstream_allowed` filter keeps protected
+        // routes builtin-free. Gated on the config flag so a gateway with
+        // Code Mode disabled never plants synthetic entries into the shared
+        // pool. Runs BEFORE the upstream refresh so an all-upstreams-down
+        // gateway still serves the builtin catalog: the refresh's hard-error
+        // path fires only when the healthy tool set is empty, and the builtin
+        // `gateway` tool is most needed exactly when every upstream is broken.
+        if allowed_upstreams.is_none() {
+            let cfg = self.config.read().await.clone();
+            if cfg.code_mode.enabled {
+                let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+                let registry = self.builtin_service_registry();
+                pool.ensure_in_process_service_peers(registry.as_ref())
+                    .await;
+            }
+        }
         if allow_cold_connect {
             self.refresh_code_mode_catalog_allowed(owner, oauth_subject, allowed_upstreams)
                 .await?;
@@ -267,18 +287,6 @@ impl GatewayManager {
         let Some(pool) = self.current_pool().await else {
             return Ok(Vec::new());
         };
-        // FU-1 (issue #210, lab-48z4k): builtin services join the Code Mode
-        // catalog as in-process upstream peers so schema and capability
-        // arrive together. Root scope only — a ProtectedSubset route's
-        // allowlist can never contain the synthetic `__in_process__*` names,
-        // so registering for it would be wasted work and the downstream
-        // `upstream_allowed` filter keeps protected routes builtin-free
-        // (fail closed) either way.
-        if allowed_upstreams.is_none() {
-            let registry = self.builtin_service_registry();
-            pool.ensure_in_process_service_peers(registry.as_ref())
-                .await;
-        }
         Ok(pool.healthy_tools_allowed(allowed_upstreams).await)
     }
 

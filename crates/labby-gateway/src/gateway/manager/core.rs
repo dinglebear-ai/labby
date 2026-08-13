@@ -375,13 +375,22 @@ impl GatewayManager {
         request_timeout: std::time::Duration,
         relay_timeout: std::time::Duration,
     ) -> UpstreamPool {
-        match &self.oauth_client_cache {
+        let pool = match &self.oauth_client_cache {
             Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
             None => UpstreamPool::new(),
         }
         .with_request_timeout(request_timeout)
         .with_relay_timeout(relay_timeout)
-        .with_usage_store(self.usage_store.clone())
+        .with_usage_store(self.usage_store.clone());
+        // Propagate the in-process connector so pools built on reload, lazy
+        // dispatch, OAuth lifecycle, and ephemeral gateway.test can register
+        // builtin service peers. Before this, the field was write-only and
+        // in-process registration silently died on the first full pool
+        // rebuild (review finding on lab-48z4k).
+        match &self.in_process_connector {
+            Some(connector) => pool.with_in_process_connector(connector.clone()),
+            None => pool,
+        }
     }
 
     #[doc(hidden)]
