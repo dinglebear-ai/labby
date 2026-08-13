@@ -183,7 +183,7 @@ mod tests {
             .collect();
 
         let minted = mint_proxied_entry("gh", &skill, None).expect("mints");
-        assert_eq!(minted.uri, "skill://gh/refunds/SKILL.md");
+        assert_eq!(minted.uri, "skill://gh/their-label/refunds/SKILL.md");
         let minted_resources = minted.resources.as_ref().expect("manifest");
         assert!(
             minted_resources
@@ -215,8 +215,8 @@ mod tests {
         let b = mint_proxied_entry("beta", &upstream_skill("y", "refunds"), None).expect("b");
 
         assert_ne!(a.uri, b.uri);
-        assert_eq!(a.uri, "skill://alpha/refunds/SKILL.md");
-        assert_eq!(b.uri, "skill://beta/refunds/SKILL.md");
+        assert_eq!(a.uri, "skill://alpha/x/refunds/SKILL.md");
+        assert_eq!(b.uri, "skill://beta/y/refunds/SKILL.md");
         // Names collide by design; the URIs are what identify them.
         assert_eq!(a.frontmatter.get("name"), b.frontmatter.get("name"));
     }
@@ -227,7 +227,9 @@ mod tests {
         // are different skills that share a final segment.
         let billing = upstream_skill("acme", "refunds");
         let minted = mint_proxied_entry("acme-corp", &billing, None).expect("mints");
-        assert_eq!(minted.uri, "skill://acme-corp/refunds/SKILL.md");
+        // The upstream's own `acme` prefix survives: the label is prepended,
+        // not substituted, so nothing the upstream organized by is discarded.
+        assert_eq!(minted.uri, "skill://acme-corp/acme/refunds/SKILL.md");
         // Nothing here dedupes by name, so a sibling at another path is
         // unaffected — asserting the absence of a name-keyed collapse.
         let entries = mint_proxied_entries(
@@ -257,7 +259,7 @@ mod tests {
         let mut skill = upstream_skill("their-label", "refunds");
         skill.entry.resources = None;
         let minted = mint_proxied_entry("gh", &skill, None).expect("mints");
-        assert_eq!(minted.uri, "skill://gh/refunds/SKILL.md");
+        assert_eq!(minted.uri, "skill://gh/their-label/refunds/SKILL.md");
         assert!(minted.resources.is_none(), "must not fabricate a manifest");
     }
 }

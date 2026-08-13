@@ -362,8 +362,13 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: Option<&str>,
-        path: &str,
+        // The upstream's OWN full `<skill-path>/<file-path>` — i.e. what
+        // remains after stripping the origin label Labby prepended. Named for
+        // the invariant because passing a label-relative remainder here silently
+        // matches nothing.
+        upstream_path: &str,
     ) -> Result<VerifiedSkillFile, ToolError> {
+        let path = upstream_path;
         let exposed = self
             .upstream_skills(config, subject)
             .await
@@ -372,8 +377,13 @@ impl UpstreamPool {
                 message: error,
             })?;
 
-        // Match on the path remainder, since the origin label differs between
-        // what Labby published and what the upstream serves.
+        // `path` is the remainder after the label Labby prepended, which is
+        // exactly the upstream's own full path — so it is matched against the
+        // upstream URI's *full* path, not its remainder. Matching remainders
+        // would drop the upstream's own first segment on both sides and make
+        // `skill://git-workflow/SKILL.md` (a legal one-segment skill path)
+        // unmatchable.
+        //
         // The owning skill travels with the match: verifying a `SKILL.md`
         // needs the frontmatter its own entry published, not another skill's.
         let mut found: Option<(&str, &str, &ValidatedSkill)> = None;
@@ -383,7 +393,7 @@ impl UpstreamPool {
             };
             for resource in resources {
                 if let Ok(parsed) = parse_skill_uri(&resource.uri)
-                    && parsed.path() == path
+                    && parsed.full_path() == path
                 {
                     found = Some((resource.uri.as_str(), resource.digest.as_str(), skill));
                     break;
@@ -531,6 +541,10 @@ impl UpstreamPool {
 /// Compared against the entry's own URI rather than by matching the `SKILL.md`
 /// suffix, so a nested `references/SKILL.md` is not mistaken for the skill's
 /// own definition and cross-verified against the wrong frontmatter.
-fn is_skill_md(entry_uri: &str, path: &str) -> bool {
-    parse_skill_uri(entry_uri).is_ok_and(|parsed| parsed.path() == path)
+fn is_skill_md(entry_uri: &str, upstream_path: &str) -> bool {
+    // Compared on the full path, matching what the caller passes. Using the
+    // post-first-segment remainder here made this silently return false for
+    // every skill, which disabled the frontmatter cross-check entirely — a
+    // security check that fails open by never firing.
+    parse_skill_uri(entry_uri).is_ok_and(|parsed| parsed.full_path() == upstream_path)
 }

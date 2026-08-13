@@ -16,9 +16,9 @@ updated: 2026-08-12
 | What | Value |
 |------|-------|
 | Mirror repo | `modelcontextprotocol/experimental-ext-skills` |
-| **Pinned commit** | **`9f55cd349932ba00fc18402873c9eb2d2c2e78cb`** (2026-08-05) |
+| **Pinned commit** | **`d29bd05222b4732d7b665b552abee532a8c200fa`** (2026-08-11) |
 | Pinned file | `docs/sep-draft-skills-extension.md` |
-| Upstream provenance | mirrors `modelcontextprotocol/modelcontextprotocol@0eb05fe9fbd6` on branch `sep/skills-extension` |
+| Upstream provenance | PR #2640 head on branch `sep/skills-extension` |
 | Upstream PR | [#2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) — open |
 | Companion | `docs/threat-model.md` (T1–T9), `docs/rationale.md` |
 
@@ -241,12 +241,55 @@ frontmatter disagrees with its `SKILL.md`.
 skill://<origin-label>/<skill-path>/<file-path>
 ```
 
-The SEP's own form is `skill://<skill-path>/<file-path>`. Labby prefixes an
-origin label, which lands in the first segment — the RFC 3986 authority
-component, to which the SEP assigns no semantics and which clients are told not
-to resolve. Using it as a routing label is within the convention.
+The SEP's own form is `skill://<skill-path>/<file-path>`, where `<skill-path>`
+is **one or more** segments whose **final** segment is the skill's `name`, and
+any preceding segments are a server-chosen organizational prefix. The SEP is
+explicit that the first segment, though it occupies the RFC 3986 authority
+component, **"carries no special semantics under this convention."**
 
-`labby` is reserved for first-party skills; an upstream may not claim it.
+Read that carefully before touching this code. Treating the first segment as a
+routing authority — rather than as part of `<skill-path>` — is the exact
+divergence the SEP's Motivation cites as the reason it exists: implementations
+"invented their own `skill://` URI structure, with diverging semantics for
+authority, path, and sub-resource addressing." Labby made that mistake, and its
+cost was concrete: `skill://git-workflow/SKILL.md` — the SEP's own first
+example — was rejected at ingest, so every one-segment skill from a conforming
+upstream was silently dropped.
+
+Labby therefore **prepends** its host-assigned label as an additional prefix
+segment rather than claiming the authority slot:
+
+| Upstream serves | Labby publishes | Skill name |
+|---|---|---|
+| `skill://git-workflow/SKILL.md` | `skill://gh/git-workflow/SKILL.md` | `git-workflow` |
+| `skill://acme/billing/refunds/SKILL.md` | `skill://gh/acme/billing/refunds/SKILL.md` | `refunds` |
+
+Prepending preserves the name-is-the-final-segment invariant at any depth and is
+**lossless**: stripping the label recovers the upstream's URI exactly, which is
+what lets a proxied read be routed back. Replacing the first segment was lossy —
+it discarded `acme` above — and is what `SkillUri::with_origin` used to do.
+
+Relabelling at all is required, not cosmetic: a skill is identified by its
+`uri`, so two upstreams serving `skill://git-workflow/SKILL.md` passed through
+unchanged would publish one identifier twice, and neither Labby nor the
+downstream host could route or disambiguate. The SEP separately requires hosts
+to resolve names in a per-origin namespace under a host-assigned label and
+forbids one origin's skill shadowing another's.
+
+Provenance rides in `_meta` under Labby's own reverse-domain prefix, which the
+SEP explicitly sanctions: "Intermediaries MAY attach provenance or verification
+annotations via `_meta` under their own reverse-domain prefix — not the
+`io.modelcontextprotocol.skills/` prefix reserved for this extension."
+
+`labby` is reserved for first-party skills. Under prepending this is
+structurally guaranteed rather than merely validated: an upstream's segments can
+never occupy the first position of a URI Labby publishes.
+
+**Inbound URIs are not held to Labby's minting grammar.** Labby mints labels as
+lowercase-alphanumeric-with-hyphens, but the SEP only says the first segment
+SHOULD be a valid RFC 3986 `reg-name`. Applying the stricter minting rule to
+upstream URIs rejected conforming servers; the grammar is enforced in
+`with_origin`, not in `parse_skill_uri`.
 
 **The skill/file split is a manifest lookup, never positional.** Given
 `skill://labby/pdf-processing/references/FORMS.md` in isolation, the skill could
