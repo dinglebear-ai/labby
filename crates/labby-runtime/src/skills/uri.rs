@@ -160,7 +160,10 @@ pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
         .strip_prefix(SKILL_URI_SCHEME)
         .ok_or_else(|| invalid(uri, "expected the `skill://` scheme"))?;
     if rest.contains('?') || rest.contains('#') {
-        return Err(invalid(uri, "query and fragment components are not allowed"));
+        return Err(invalid(
+            uri,
+            "query and fragment components are not allowed",
+        ));
     }
 
     let mut segments = rest.split('/');
@@ -206,8 +209,7 @@ mod tests {
 
     #[test]
     fn parses_nested_file_path() {
-        let uri =
-            parse_skill_uri("skill://labby/using-labby/references/x.md").expect("valid");
+        let uri = parse_skill_uri("skill://labby/using-labby/references/x.md").expect("valid");
         assert_eq!(uri.path(), "using-labby/references/x.md");
         assert!(!uri.is_skill_md());
         // Deliberately unsplit: only a manifest can say whether the skill is
@@ -269,7 +271,9 @@ mod tests {
         let long_segment = "a".repeat(MAX_URI_SEGMENT_CHARS + 1);
         assert!(parse_skill_uri(&format!("skill://labby/{long_segment}/SKILL.md")).is_err());
 
-        let many = std::iter::repeat_n("seg", 400).collect::<Vec<_>>().join("/");
+        let many = std::iter::repeat_n("seg", 400)
+            .collect::<Vec<_>>()
+            .join("/");
         assert!(parse_skill_uri(&format!("skill://labby/{many}/SKILL.md")).is_err());
     }
 

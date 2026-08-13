@@ -94,7 +94,11 @@ pub struct SkillsListParams {
 pub struct SkillsListResult {
     #[serde(default)]
     pub skills: Vec<SkillEntry>,
-    #[serde(rename = "nextCursor", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "nextCursor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
     /// Freshness hint for the listing, per the base protocol's list-caching
     /// attributes. A hint only — never an integrity property.

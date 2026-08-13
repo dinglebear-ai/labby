@@ -62,11 +62,13 @@ impl ResourceDigest {
 
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-        // Writing to a String is infallible.
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            // Writing to a String is infallible.
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 /// Parse a digest string from a skill entry.
@@ -94,7 +96,10 @@ pub fn parse_digest(raw: &str) -> Result<ResourceDigest, ToolError> {
             ),
         });
     }
-    if !hex.chars().all(|c| c.is_ascii_digit() || c.is_ascii_lowercase() && c.is_ascii_hexdigit()) {
+    if !hex
+        .chars()
+        .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase() && c.is_ascii_hexdigit())
+    {
         return Err(ToolError::Sdk {
             sdk_kind: "invalid_param".to_string(),
             message: "skill resource digest must be lowercase hexadecimal".to_string(),

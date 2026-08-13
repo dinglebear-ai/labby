@@ -219,7 +219,9 @@ pub fn compare_frontmatter(
     }
     for key in skill_md.keys() {
         if !entry.contains_key(key) {
-            differences.push(format!("`{key}` is present in SKILL.md but not in the entry"));
+            differences.push(format!(
+                "`{key}` is present in SKILL.md but not in the entry"
+            ));
         }
     }
     if differences.is_empty() {
@@ -242,7 +244,9 @@ mod tests {
     }
 
     fn minimal() -> Map<String, Value> {
-        object(json!({ "name": "git-workflow", "description": "Follow the team's Git conventions." }))
+        object(
+            json!({ "name": "git-workflow", "description": "Follow the team's Git conventions." }),
+        )
     }
 
     #[test]
@@ -340,7 +344,10 @@ mod tests {
         let content = "---\nname: git-workflow\ndescription: Follow conventions\n---\n\n# Body\n";
         let parsed = parse_skill_md_frontmatter(content).expect("parsed");
         assert_eq!(parsed.get("name"), Some(&json!("git-workflow")));
-        assert_eq!(parsed.get("description"), Some(&json!("Follow conventions")));
+        assert_eq!(
+            parsed.get("description"),
+            Some(&json!("Follow conventions"))
+        );
     }
 
     #[test]

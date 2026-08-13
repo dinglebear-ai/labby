@@ -243,7 +243,10 @@ mod tests {
         let entry = entry_with(
             "skill://acme/billing/refunds/SKILL.md",
             "refunds",
-            Some(vec![resource("skill://acme/billing/refunds/SKILL.md", b"x")]),
+            Some(vec![resource(
+                "skill://acme/billing/refunds/SKILL.md",
+                b"x",
+            )]),
         );
         assert_eq!(validate_skill_entry(&entry).expect("valid").name, "refunds");
     }
@@ -320,10 +323,14 @@ mod tests {
             "x",
             Some(vec![resource("skill://labby/x/SKILL.md", b"body")]),
         );
-        entry.resources.as_mut().expect("manifest").push(SkillResource {
-            uri: "skill://labby/x/SKILL.md".to_string(),
-            digest: ResourceDigest::of_bytes(b"different").to_wire(),
-        });
+        entry
+            .resources
+            .as_mut()
+            .expect("manifest")
+            .push(SkillResource {
+                uri: "skill://labby/x/SKILL.md".to_string(),
+                digest: ResourceDigest::of_bytes(b"different").to_wire(),
+            });
         assert_eq!(
             validate_skill_entry(&entry),
             Err(SkillRejection::ManifestDuplicateUri)

@@ -35,19 +35,17 @@ pub mod wire;
 
 pub use digest::{DIGEST_ALGORITHM, ResourceDigest, parse_digest};
 pub use frontmatter::{
-    RESERVED_METADATA_PREFIX, compare_frontmatter, is_valid_skill_name,
-    parse_skill_md_frontmatter, validate_frontmatter,
+    RESERVED_METADATA_PREFIX, compare_frontmatter, is_valid_skill_name, parse_skill_md_frontmatter,
+    validate_frontmatter,
 };
-pub use manifest::{
-    SkillRejection, ValidatedSkill, validate_skill_entry, verify_manifest_file,
-};
+pub use manifest::{SkillRejection, ValidatedSkill, validate_skill_entry, verify_manifest_file};
 pub use uri::{
     FIRST_PARTY_ORIGIN, SKILL_MD_FILE, SKILL_URI_SCHEME, SkillUri, is_valid_origin_label,
     parse_skill_uri,
 };
 pub use wire::{
-    RESOURCES_DIRECTORY_READ_METHOD, SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD, SKILLS_LIST_METHOD,
-    SKILL_MD_MIME_TYPE, SkillEntry, SkillResource, SkillsCapability, SkillsGetParams,
+    RESOURCES_DIRECTORY_READ_METHOD, SKILL_MD_MIME_TYPE, SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD,
+    SKILLS_LIST_METHOD, SkillEntry, SkillResource, SkillsCapability, SkillsGetParams,
     SkillsGetResult, SkillsListParams, SkillsListResult,
 };
 
