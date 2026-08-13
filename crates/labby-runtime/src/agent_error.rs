@@ -311,6 +311,11 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "ssrf_blocked"
         | "content_too_large"
         | "relay_invalid_target"
+        // Skills verification failures (SEP-2640): Labby rejected the content
+        // before returning any of it, so nothing committed and the caller's
+        // request — not the upstream transport — is what has to change.
+        | "skill_digest_mismatch"
+        | "skill_manifest_stale"
         | "invalid_code_mode_id" => AgentErrorOrigin::Validation,
         "forbidden"
         | "permission_denied"
@@ -328,6 +333,10 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "call_budget_exceeded"
         | "result_too_large"
         | "artifact_too_large"
+        // `response_too_large` predates this table and was never registered,
+        // so it silently classified as the runtime catch-all. It belongs with
+        // the payload-limit family.
+        | "response_too_large"
         | "snippet_budget_exceeded"
         | "snippet_resolve_limit" => AgentErrorOrigin::Budget,
         "unknown_action" | "unknown_subaction" | "unknown_tool" | "unknown_upstream"
@@ -444,10 +453,28 @@ pub fn recovery_for_kind(
         },
         "budget_exceeded" | "call_budget_exceeded" | "quota_exceeded"
         | "result_too_large" | "artifact_too_large" | "content_too_large"
+        | "response_too_large"
         | "snippet_budget_exceeded" | "snippet_resolve_limit" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::ReduceWork,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "Reduce fan-out or payload size, split the work, or use an artifact before retrying.".to_string(),
+            retry_after_ms: None,
+        },
+        // Skills verification failures (SEP-2640). The spec's own prescribed
+        // recovery is to refresh the entry through `skills/get` — or the whole
+        // catalog through `skills/list` — and proceed from the current
+        // `resources` set, which, being different, revokes any content-bound
+        // approval. Benign staleness (the skill changed after the listing was
+        // fetched) is a normal cause, so this is `rediscover` rather than
+        // `do_not_retry`; `never` still forbids replaying the identical read,
+        // because an unchanged retry cannot succeed until the entry is
+        // refreshed. The generic rediscover guidance is overridden here: it
+        // points at actions, tools, prompts, and resources, none of which is
+        // the method a caller needs.
+        "skill_digest_mismatch" | "skill_manifest_stale" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::Rediscover,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Refresh the skill entry with `skills/get` for this skill, or `skills/list` to refresh the catalog, then retry against the current `resources` set. A changed resource set revokes any approval bound to the previous content.".to_string(),
             retry_after_ms: None,
         },
         "forbidden" | "permission_denied" | "route_scope_denied" => AgentRecoveryAdvice {

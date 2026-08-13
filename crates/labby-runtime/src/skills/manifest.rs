@@ -1,0 +1,409 @@
+//! Validation of a skill entry's `resources` manifest.
+//!
+//! The manifest is the unit a host verifies and a user's approval binds to, so
+//! it is validated once at ingest and then treated as the authority for which
+//! URIs a skill may read. SEP-2640 constrains it tightly:
+//!
+//! - When present it MUST be complete — every file of the skill, each exactly
+//!   once, including an entry whose URI matches the skill's own `uri`, carrying
+//!   the digest of `SKILL.md` itself.
+//! - Each `uri` MUST be the skill's `SKILL.md` or a file within the skill's
+//!   directory.
+//! - It MAY be omitted only for dynamically generated skills, which are
+//!   consequently unverifiable. Hosts may decline to load those, and Labby does.
+//!
+//! The second rule is the confused-deputy guard (threat model T5): without it a
+//! manifest could name a URI belonging to a different skill, a different
+//! upstream, or another scheme entirely, and a host walking the manifest would
+//! fetch it on the skill's behalf.
+
+use std::collections::BTreeSet;
+
+use crate::error::ToolError;
+use crate::skills::digest::parse_digest;
+use crate::skills::frontmatter::validate_frontmatter;
+use crate::skills::limits::MAX_RESOURCES_PER_SKILL;
+use crate::skills::uri::{SKILL_MD_FILE, SkillUri, parse_skill_uri};
+use crate::skills::wire::SkillEntry;
+
+/// Why a skill was rejected at ingest.
+///
+/// Kept as a distinct enum rather than a bare message so callers can count
+/// rejections by cause: the aggregate counts are surfaced to operators in full
+/// and to agents as a bare completeness number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillRejection {
+    /// The entry's own `uri` is not a well-formed `skill://` URI, or does not
+    /// name a `SKILL.md`.
+    InvalidSkillUri,
+    /// `frontmatter` failed Agent Skills validation, or its `name` disagrees
+    /// with the final skill-path segment.
+    InvalidFrontmatter,
+    /// The manifest is absent. Spec-permitted for generated skills; Labby
+    /// declines them because they cannot be content-bound.
+    MissingManifest,
+    /// A digest was absent, used an unsupported algorithm, or was malformed.
+    InvalidDigest,
+    /// A manifest URI fell outside the skill's own directory, or used another
+    /// origin or scheme.
+    ManifestUriOutOfNamespace,
+    /// The manifest omits an entry for the skill's own `SKILL.md`.
+    ManifestMissingSkillMd,
+    /// The same URI appears more than once in one manifest.
+    ManifestDuplicateUri,
+    /// The manifest exceeds the per-skill resource cap.
+    ManifestTooLarge,
+}
+
+impl SkillRejection {
+    /// Short, stable, log-safe reason code.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidSkillUri => "invalid_skill_uri",
+            Self::InvalidFrontmatter => "invalid_frontmatter",
+            Self::MissingManifest => "missing_manifest",
+            Self::InvalidDigest => "invalid_digest",
+            Self::ManifestUriOutOfNamespace => "manifest_uri_out_of_namespace",
+            Self::ManifestMissingSkillMd => "manifest_missing_skill_md",
+            Self::ManifestDuplicateUri => "manifest_duplicate_uri",
+            Self::ManifestTooLarge => "manifest_too_large",
+        }
+    }
+}
+
+/// A skill entry that passed ingest validation, with its URI already parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedSkill {
+    /// Parsed form of the entry's own `uri`.
+    pub uri: SkillUri,
+    /// The skill's `name`, equal to the final skill-path segment.
+    pub name: String,
+    /// The entry as received, unmodified.
+    pub entry: SkillEntry,
+}
+
+/// Validate one skill entry for ingest.
+///
+/// Returns the rejection cause rather than a `ToolError`: a single bad skill
+/// must never sink the whole upstream, so callers exclude the skill, count the
+/// cause, and carry on.
+pub fn validate_skill_entry(entry: &SkillEntry) -> Result<ValidatedSkill, SkillRejection> {
+    let uri = parse_skill_uri(&entry.uri).map_err(|_| SkillRejection::InvalidSkillUri)?;
+    // Take an owned name so the borrow of `uri` ends before it is moved into
+    // the returned `ValidatedSkill`.
+    let name = {
+        let (_, name) = uri
+            .skill_md_parts()
+            .ok_or(SkillRejection::InvalidSkillUri)?;
+        name.to_string()
+    };
+
+    validate_frontmatter(&entry.frontmatter, Some(&name))
+        .map_err(|_| SkillRejection::InvalidFrontmatter)?;
+
+    let resources = entry
+        .resources
+        .as_ref()
+        .ok_or(SkillRejection::MissingManifest)?;
+    if resources.len() > MAX_RESOURCES_PER_SKILL {
+        return Err(SkillRejection::ManifestTooLarge);
+    }
+
+    // Everything in the manifest must sit under the skill's own directory, which
+    // is the entry URI with the trailing `/SKILL.md` removed.
+    let skill_root = entry
+        .uri
+        .strip_suffix(SKILL_MD_FILE)
+        .ok_or(SkillRejection::InvalidSkillUri)?;
+
+    let mut seen = BTreeSet::new();
+    let mut has_skill_md = false;
+    for resource in resources {
+        parse_digest(&resource.digest).map_err(|_| SkillRejection::InvalidDigest)?;
+
+        // Reject before the prefix test so a malformed URI cannot slip through
+        // on a lucky string match.
+        parse_skill_uri(&resource.uri).map_err(|_| SkillRejection::ManifestUriOutOfNamespace)?;
+        if !resource.uri.starts_with(skill_root) {
+            return Err(SkillRejection::ManifestUriOutOfNamespace);
+        }
+        if !seen.insert(resource.uri.as_str()) {
+            return Err(SkillRejection::ManifestDuplicateUri);
+        }
+        if resource.uri == entry.uri {
+            has_skill_md = true;
+        }
+    }
+    if !has_skill_md {
+        return Err(SkillRejection::ManifestMissingSkillMd);
+    }
+
+    Ok(ValidatedSkill {
+        uri,
+        name,
+        entry: entry.clone(),
+    })
+}
+
+impl ValidatedSkill {
+    /// Look up a file URI in this skill's manifest, returning its digest.
+    ///
+    /// A URI absent from the manifest is, per the SEP, a change to the skill and
+    /// a verification failure equivalent to a digest mismatch — not a mere
+    /// lookup miss. Callers must not fall back to reading it.
+    #[must_use]
+    pub fn digest_for(&self, uri: &str) -> Option<&str> {
+        self.entry
+            .resources
+            .as_ref()?
+            .iter()
+            .find(|resource| resource.uri == uri)
+            .map(|resource| resource.digest.as_str())
+    }
+}
+
+/// Verify fetched bytes against the digest the manifest published for `uri`.
+///
+/// A match proves the file and the entry are consistent with each other. It
+/// proves nothing about whether either is trustworthy — the SEP is explicit
+/// that an intermediary can rewrite both together.
+pub fn verify_manifest_file(
+    skill: &ValidatedSkill,
+    uri: &str,
+    bytes: &[u8],
+) -> Result<(), ToolError> {
+    let Some(raw) = skill.digest_for(uri) else {
+        return Err(ToolError::Sdk {
+            sdk_kind: "validation_failed".to_string(),
+            message: format!(
+                "`{uri}` is not listed in the manifest for skill `{}`; an unlisted file is a change to the skill",
+                skill.name
+            ),
+        });
+    };
+    let digest = parse_digest(raw)?;
+    if !digest.matches(bytes) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "validation_failed".to_string(),
+            message: format!(
+                "content of `{uri}` does not match the digest published for skill `{}`",
+                skill.name
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::digest::ResourceDigest;
+    use crate::skills::wire::SkillResource;
+    use serde_json::json;
+
+    fn entry_with(uri: &str, name: &str, resources: Option<Vec<SkillResource>>) -> SkillEntry {
+        SkillEntry {
+            uri: uri.to_string(),
+            frontmatter: json!({ "name": name, "description": "d" })
+                .as_object()
+                .expect("object")
+                .clone(),
+            resources,
+        }
+    }
+
+    fn resource(uri: &str, bytes: &[u8]) -> SkillResource {
+        SkillResource {
+            uri: uri.to_string(),
+            digest: ResourceDigest::of_bytes(bytes).to_wire(),
+        }
+    }
+
+    fn valid_entry() -> SkillEntry {
+        entry_with(
+            "skill://labby/using-labby/SKILL.md",
+            "using-labby",
+            Some(vec![
+                resource("skill://labby/using-labby/SKILL.md", b"body"),
+                resource("skill://labby/using-labby/references/x.md", b"ref"),
+            ]),
+        )
+    }
+
+    #[test]
+    fn accepts_a_well_formed_entry() {
+        let validated = validate_skill_entry(&valid_entry()).expect("valid");
+        assert_eq!(validated.name, "using-labby");
+        assert_eq!(validated.uri.origin(), "labby");
+    }
+
+    #[test]
+    fn accepts_nested_skill_path_naming() {
+        let entry = entry_with(
+            "skill://acme/billing/refunds/SKILL.md",
+            "refunds",
+            Some(vec![resource("skill://acme/billing/refunds/SKILL.md", b"x")]),
+        );
+        assert_eq!(validate_skill_entry(&entry).expect("valid").name, "refunds");
+    }
+
+    #[test]
+    fn rejects_missing_manifest_as_unverifiable() {
+        let entry = entry_with("skill://labby/gen/SKILL.md", "gen", None);
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::MissingManifest)
+        );
+    }
+
+    #[test]
+    fn rejects_manifest_without_skill_md_entry() {
+        let entry = entry_with(
+            "skill://labby/x/SKILL.md",
+            "x",
+            Some(vec![resource("skill://labby/x/other.md", b"o")]),
+        );
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::ManifestMissingSkillMd)
+        );
+    }
+
+    #[test]
+    fn rejects_cross_origin_and_foreign_scheme_manifest_uris() {
+        for foreign in [
+            "skill://other-origin/x/leak.md",
+            "skill://labby/different-skill/leak.md",
+            "file:///etc/passwd",
+            "lab://catalog",
+            "https://example.com/x.md",
+        ] {
+            let entry = entry_with(
+                "skill://labby/x/SKILL.md",
+                "x",
+                Some(vec![
+                    resource("skill://labby/x/SKILL.md", b"body"),
+                    resource(foreign, b"leak"),
+                ]),
+            );
+            assert_eq!(
+                validate_skill_entry(&entry),
+                Err(SkillRejection::ManifestUriOutOfNamespace),
+                "should reject manifest URI {foreign}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_manifest_uris() {
+        // The SEP requires each file exactly once, so a repeat is invalid even
+        // when both copies agree.
+        let entry = entry_with(
+            "skill://labby/x/SKILL.md",
+            "x",
+            Some(vec![
+                resource("skill://labby/x/SKILL.md", b"body"),
+                resource("skill://labby/x/SKILL.md", b"body"),
+            ]),
+        );
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::ManifestDuplicateUri)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_uri_with_conflicting_digests() {
+        let mut entry = entry_with(
+            "skill://labby/x/SKILL.md",
+            "x",
+            Some(vec![resource("skill://labby/x/SKILL.md", b"body")]),
+        );
+        entry.resources.as_mut().expect("manifest").push(SkillResource {
+            uri: "skill://labby/x/SKILL.md".to_string(),
+            digest: ResourceDigest::of_bytes(b"different").to_wire(),
+        });
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::ManifestDuplicateUri)
+        );
+    }
+
+    #[test]
+    fn rejects_bad_digests() {
+        for bad in ["sha1:abc", "notadigest", "sha256:XYZ"] {
+            let entry = entry_with(
+                "skill://labby/x/SKILL.md",
+                "x",
+                Some(vec![SkillResource {
+                    uri: "skill://labby/x/SKILL.md".to_string(),
+                    digest: bad.to_string(),
+                }]),
+            );
+            assert_eq!(
+                validate_skill_entry(&entry),
+                Err(SkillRejection::InvalidDigest),
+                "should reject digest {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_frontmatter_name_disagreeing_with_path() {
+        let entry = entry_with(
+            "skill://labby/using-labby/SKILL.md",
+            "something-else",
+            Some(vec![resource("skill://labby/using-labby/SKILL.md", b"x")]),
+        );
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::InvalidFrontmatter)
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_manifest() {
+        let mut resources = vec![resource("skill://labby/x/SKILL.md", b"body")];
+        for index in 0..MAX_RESOURCES_PER_SKILL {
+            resources.push(resource(&format!("skill://labby/x/f{index}.md"), b"f"));
+        }
+        let entry = entry_with("skill://labby/x/SKILL.md", "x", Some(resources));
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::ManifestTooLarge)
+        );
+    }
+
+    #[test]
+    fn verifies_listed_file_and_rejects_mismatch_and_unlisted() {
+        let skill = validate_skill_entry(&valid_entry()).expect("valid");
+
+        verify_manifest_file(&skill, "skill://labby/using-labby/SKILL.md", b"body")
+            .expect("matching bytes verify");
+
+        let err = verify_manifest_file(&skill, "skill://labby/using-labby/SKILL.md", b"tampered")
+            .expect_err("mismatch");
+        assert!(err.to_string().contains("does not match the digest"));
+
+        let err = verify_manifest_file(&skill, "skill://labby/using-labby/unlisted.md", b"x")
+            .expect_err("unlisted");
+        assert!(err.to_string().contains("not listed in the manifest"));
+    }
+
+    #[test]
+    fn rejection_reasons_are_stable_and_unique() {
+        let all = [
+            SkillRejection::InvalidSkillUri,
+            SkillRejection::InvalidFrontmatter,
+            SkillRejection::MissingManifest,
+            SkillRejection::InvalidDigest,
+            SkillRejection::ManifestUriOutOfNamespace,
+            SkillRejection::ManifestMissingSkillMd,
+            SkillRejection::ManifestDuplicateUri,
+            SkillRejection::ManifestTooLarge,
+        ];
+        let unique: BTreeSet<_> = all.iter().map(|reason| reason.as_str()).collect();
+        assert_eq!(unique.len(), all.len());
+    }
+}
