@@ -55,10 +55,19 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_prompts.clone(),
                 );
-                let result = pool
-                    .acquire_or_connect_subject(&config, &subject)
-                    .await
-                    .map(|(peer, _tools)| peer);
+                let acquire_timeout = listing_catalog_timeout(pool.request_timeout);
+                let result = match tokio::time::timeout(
+                    acquire_timeout,
+                    pool.acquire_or_connect_subject(&config, &subject),
+                )
+                .await
+                {
+                    Ok(result) => result.map(|(peer, _tools)| peer),
+                    Err(_) => Err(anyhow::anyhow!(
+                        "subject-scoped upstream connection timed out after {}ms",
+                        acquire_timeout.as_millis()
+                    )),
+                };
                 (config.name.clone(), policy, result)
             });
         }
@@ -135,10 +144,19 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_prompts.clone(),
                 );
-                let result = pool
-                    .acquire_or_connect_subject(&config, &subject)
-                    .await
-                    .map(|(peer, _tools)| peer);
+                let acquire_timeout = listing_catalog_timeout(pool.request_timeout);
+                let result = match tokio::time::timeout(
+                    acquire_timeout,
+                    pool.acquire_or_connect_subject(&config, &subject),
+                )
+                .await
+                {
+                    Ok(result) => result.map(|(peer, _tools)| peer),
+                    Err(_) => Err(anyhow::anyhow!(
+                        "subject-scoped upstream connection timed out after {}ms",
+                        acquire_timeout.as_millis()
+                    )),
+                };
                 (config.name.clone(), policy, target_prompt, result)
             });
         }

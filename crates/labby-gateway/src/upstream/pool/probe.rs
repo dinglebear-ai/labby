@@ -21,7 +21,7 @@ use super::connect::connect_upstream_with_client;
 use super::connect::stable_jitter_seed;
 use super::helpers::{
     AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR, DISCOVERY_TIMEOUT, auth_error_should_backoff_aggressively,
-    classify_upstream_error, upstream_transport,
+    classify_upstream_error, upstream_discovery_timeout, upstream_transport,
 };
 use super::paginate::list_tools_bounded;
 
@@ -302,15 +302,26 @@ impl UpstreamPool {
 
         let subject = config.oauth.as_ref().and(oauth_subject);
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
-        let (conn, tools, truncation) = connect_upstream_with_client(
-            config,
-            subject,
-            self.oauth_client_cache.as_ref(),
-            self.runtime_origin.as_deref(),
-            runtime_owner,
-            Some(&self.shared_http_client),
+        let discovery_timeout = upstream_discovery_timeout(config, self.request_timeout);
+        let (conn, tools, truncation) = match tokio::time::timeout(
+            discovery_timeout,
+            connect_upstream_with_client(
+                config,
+                subject,
+                self.oauth_client_cache.as_ref(),
+                self.runtime_origin.as_deref(),
+                runtime_owner,
+                Some(&self.shared_http_client),
+            ),
         )
-        .await?;
+        .await
+        {
+            Ok(connected) => connected?,
+            Err(_) => anyhow::bail!(
+                "upstream reprobe reconnect timed out after {}s",
+                discovery_timeout.as_secs()
+            ),
+        };
         {
             let mut connections = self.connections.write().await;
             connections.insert(config.name.clone(), conn);

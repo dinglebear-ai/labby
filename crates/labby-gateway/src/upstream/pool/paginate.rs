@@ -2,9 +2,8 @@
 //!
 //! rmcp's `Peer::list_all_*` helpers follow `nextCursor` in an unbounded loop,
 //! so a malicious or buggy upstream (e.g. one whose `nextCursor` points back
-//! at itself) could stream pages into gateway memory for the entire listing
-//! timeout window — or indefinitely, on the untimed prompt/template passes —
-//! before the `MAX_UPSTREAM_*` item caps apply. These wrappers fetch at most
+//! at itself) could stream pages into gateway memory for as long as its
+//! transport allowed before the `MAX_UPSTREAM_*` item caps applied. These wrappers fetch at most
 //! [`MAX_LIST_PAGES`] pages per upstream per listing pass and stop early on a
 //! repeated cursor, truncating with a WARN and a [`ListTruncation`] report
 //! instead of looping. Callers that publish a catalog entry surface that
@@ -87,7 +86,7 @@ impl ListTruncation {
     /// `gateway/projection.rs` (mirrored by the doctor finding filter in
     /// `crates/labby/src/dispatch/doctor/gateway.rs`), or `gateway.status`
     /// and doctor would filter it out.
-    pub(crate) fn status_note(&self) -> String {
+    pub(super) fn status_note(&self) -> String {
         format!(
             "{} truncated ({}) after {} pages — upstream catalog is partial",
             self.method, self.reason, self.pages

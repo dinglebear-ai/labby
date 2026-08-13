@@ -310,11 +310,13 @@ mod tests {
             .write()
             .await
             .insert("looping".to_string(), entry);
-        pool.record_failure_for("looping", UpstreamCapability::Tools, "listing failed")
-            .await;
+        // Open the breaker so the reset half of the write is observable.
+        for _ in 0..types::CIRCUIT_BREAKER_THRESHOLD {
+            pool.record_failure_for("looping", UpstreamCapability::Tools, "listing failed")
+                .await;
+        }
 
-        let truncation =
-            super::super::paginate::ListTruncation::for_tests("tools/list", "cursor_loop", 2);
+        let truncation = ListTruncation::for_tests("tools/list", "cursor_loop", 2);
         pool.record_listing_success_for("looping", UpstreamCapability::Tools, Some(truncation))
             .await;
 
@@ -322,7 +324,8 @@ mod tests {
         // replacing the failure error rather than leaving a clean slate.
         let catalog = pool.catalog.read().await;
         let entry = catalog.get("looping").expect("entry present");
-        assert!(entry.tool_health.is_routable());
+        assert!(matches!(entry.tool_health, UpstreamHealth::Healthy));
+        assert!(entry.tool_unhealthy_since.is_none());
         assert_eq!(
             entry.tool_last_error.as_deref(),
             Some("tools/list truncated (cursor_loop) after 2 pages — upstream catalog is partial")
