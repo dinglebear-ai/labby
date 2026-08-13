@@ -149,36 +149,54 @@ pub(crate) fn code_mode_read_scope_allowed(auth: Option<&AuthContext>) -> bool {
     })
 }
 
+/// Whether `action` on builtin `entry` may execute for this caller.
+///
+/// `trust_absent_auth` comes from
+/// [`McpRouteScope::trusts_absent_auth`](crate::mcp::route_scope::McpRouteScope::trusts_absent_auth):
+/// `true` only on the root surface, where a missing `AuthContext` means local
+/// stdio. On any other surface a missing context means the request reached
+/// builtin dispatch over a transport that carries no auth — today the
+/// in-process service peers — and is treated as UNPRIVILEGED, not trusted.
 pub(crate) fn tool_execute_builtin_action_allowed(
     entry: &crate::registry::RegisteredService,
     action: &str,
     auth: Option<&AuthContext>,
+    trust_absent_auth: bool,
 ) -> bool {
     let bare = action
         .strip_prefix(&format!("{}.", entry.name))
         .unwrap_or(action);
+    let trusted_local_stdio = auth.is_none() && trust_absent_auth;
     if entry.name == "setup"
         && crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare)
-        && auth.is_some()
+        && !trusted_local_stdio
     {
         // MCP-over-HTTP always carries AuthContext. Only trusted local stdio
-        // (represented by no per-request auth context) may mint credentials or
-        // ask the host to probe a caller-selected URL.
+        // (represented by no per-request auth context ON THE ROOT SURFACE) may
+        // mint credentials or ask the host to probe a caller-selected URL.
+        // The `trust_absent_auth` term is load-bearing: without it, the
+        // auth-less in-process peer transport satisfied `auth.is_none()` and
+        // these stdio-only actions became remotely reachable through Code Mode.
         return false;
     }
     if !builtin_action_requires_admin(entry, action) {
         return true;
     }
     // INTENTIONAL ASYMMETRY with the HTTP API gate (`api/services/gateway.rs`,
-    // which uses `is_some_and` — absent auth = DENIED). Here `is_none_or` means
-    // absent auth = ALLOWED. That is the stdio trust model: a `None` AuthContext
-    // on the MCP surface means a local stdio caller (trusted), not an anonymous
-    // network request. Remote MCP-over-HTTP cannot reach here unauthenticated
-    // because `cli/serve.rs` refuses to bind a non-loopback address without auth
-    // configured, and the `/mcp` route carries the bearer/OAuth layer when auth
-    // is configured. Do NOT "align" this to `is_some_and` without also proving
-    // every reachable transport injects an AuthContext for authenticated callers.
-    auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"))
+    // which uses `is_some_and` — absent auth = DENIED). Here absent auth is
+    // ALLOWED *only on the root surface*: that is the stdio trust model, where
+    // a `None` AuthContext means a local stdio caller (trusted), not an
+    // anonymous network request. Remote MCP-over-HTTP cannot reach here
+    // unauthenticated because `cli/serve.rs` refuses to bind a non-loopback
+    // address without auth configured, and the `/mcp` route carries the
+    // bearer/OAuth layer when auth is configured. Do NOT widen this to every
+    // surface without also proving every reachable transport injects an
+    // AuthContext for authenticated callers — the in-process peer transport
+    // does not (bead lab-m01gl).
+    match auth {
+        Some(auth) => auth.scopes.iter().any(|scope| scope == "lab:admin"),
+        None => trust_absent_auth,
+    }
 }
 
 pub(crate) fn builtin_action_requires_admin(

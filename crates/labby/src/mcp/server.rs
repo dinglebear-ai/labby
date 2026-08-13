@@ -765,6 +765,20 @@ impl ServerHandler for LabMcpServer {
 use crate::mcp::catalog::CatalogChangeSet;
 
 impl LabMcpServer {
+    /// Whether an ABSENT `AuthContext` on this server's transport means
+    /// "trusted local operator" rather than "unauthenticated hop".
+    ///
+    /// True for every real client transport: stdio carries no per-request
+    /// auth by design, and the HTTP surfaces inject one whenever auth is
+    /// configured (`cli/serve.rs` refuses to bind non-loopback without it).
+    /// False for the in-process service peers, whose duplex transport has no
+    /// HTTP layer to inject auth — treating that absence as trust let a
+    /// caller holding only `lab` reach `requires_admin` builtin actions
+    /// through Code Mode's `__in_process__*` namespaces (bead lab-m01gl).
+    pub(crate) fn trusts_absent_auth(&self) -> bool {
+        self.transport_label != crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL
+    }
+
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
     /// Per-call sites pass their own label so a notification triggered by a
     /// tool call is never confused with a gateway reconcile.

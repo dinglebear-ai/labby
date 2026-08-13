@@ -535,8 +535,12 @@ impl LabMcpServer {
                                 build_error(&service, synthetic_action, "internal_error", message);
                             return Ok(error_result_from_envelope(envelope).into());
                         };
-                        if !tool_execute_builtin_action_allowed(gateway_entry, gateway_action, auth)
-                        {
+                        if !tool_execute_builtin_action_allowed(
+                            gateway_entry,
+                            gateway_action,
+                            auth,
+                            self.trusts_absent_auth(),
+                        ) {
                             let message =
                                 format!("action `{gateway_action}` requires `lab:admin` scope");
                             self.log_add_server_failure(
@@ -804,6 +808,7 @@ impl LabMcpServer {
                 entry,
                 &action,
                 auth_context_from_extensions(&context.extensions),
+                self.trusts_absent_auth(),
             )
         {
             let envelope = build_error_extra(

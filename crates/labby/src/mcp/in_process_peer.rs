@@ -20,6 +20,15 @@ use crate::registry::{RegisteredService, ToolRegistry};
 
 const IN_PROCESS_PEER_BUFFER_BYTES: usize = 256 * 1024;
 
+/// Transport label for the in-process service peers.
+///
+/// Load-bearing beyond logging: this is the signal
+/// `LabMcpServer::trusts_absent_auth` uses to refuse the stdio trust model.
+/// Requests arriving over this duplex transport carry no `AuthContext`
+/// because there is no HTTP layer to inject one — that means "unauthenticated
+/// hop", not "trusted local operator". See bead lab-m01gl.
+pub(crate) const IN_PROCESS_TRANSPORT_LABEL: &str = "in-process";
+
 pub(crate) fn connector() -> InProcessConnector {
     Arc::new(|service: Box<dyn InProcessService>| {
         Box::pin(async move {
@@ -58,7 +67,7 @@ async fn connect_in_process_service_peer(
         code_mode_app_state: Default::default(),
         last_listed_tool_contract: Default::default(),
         client_registry: Default::default(),
-        transport_label: "in-process",
+        transport_label: IN_PROCESS_TRANSPORT_LABEL,
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
         // FU-1 (issue #210, lab-48z4k): force Raw mode. Under `Root` the mini
         // server derives its visibility from the process-global code-mode
