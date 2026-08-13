@@ -1893,6 +1893,35 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.skills.list",
+    "description": "List Agent Skills aggregated from skills-proxying upstreams, with per-origin labels and cache state",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "upstream",
+        "ty": "string",
+        "required": false,
+        "description": "Limit the listing to one upstream"
+      }
+    ],
+    "returns": "UpstreamSkillsView[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.status",
     "description": "Get current runtime gateway status",
     "destructive": false,

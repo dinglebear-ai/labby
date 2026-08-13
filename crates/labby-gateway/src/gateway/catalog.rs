@@ -38,6 +38,19 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
+        name: "gateway.skills.list",
+        description: "List Agent Skills aggregated from skills-proxying upstreams, with per-origin labels and cache state",
+        destructive: false,
+        requires_admin: true,
+        returns: "UpstreamSkillsView[]",
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: false,
+            description: "Limit the listing to one upstream",
+        }],
+    },
+    ActionSpec {
         name: "gateway.code_mode.get",
         description: "Read gateway-wide Code Mode exposure and execution settings",
         destructive: false,
