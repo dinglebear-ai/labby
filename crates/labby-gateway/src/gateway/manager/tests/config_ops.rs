@@ -196,6 +196,365 @@ async fn concurrent_gateway_adds_persist_both_gateways() {
 }
 
 #[tokio::test]
+async fn independent_managers_serialize_read_modify_write_across_process_boundary() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let first = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let second = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let mut alpha = fixture_stdio_upstream("alpha");
+    alpha.enabled = false;
+    let mut bravo = fixture_stdio_upstream("bravo");
+    bravo.enabled = false;
+
+    let (first_result, second_result) = tokio::join!(
+        first.add(alpha, None, None, None),
+        second.add(bravo, None, None, None),
+    );
+
+    first_result.expect("add alpha");
+    second_result.expect("add bravo");
+    let persisted = load_gateway_config(&path).expect("load persisted config");
+    let names = persisted
+        .upstream
+        .iter()
+        .map(|upstream| upstream.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names, BTreeSet::from(["alpha", "bravo"]));
+}
+
+#[test]
+fn gateway_mutation_child_process() {
+    let Ok(path) = std::env::var("LABBY_TEST_GATEWAY_MUTATION_PATH") else {
+        return;
+    };
+    let name = std::env::var("LABBY_TEST_GATEWAY_MUTATION_NAME").expect("child mutation name");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("child runtime");
+    runtime.block_on(async move {
+        let manager = GatewayManager::new(PathBuf::from(path), GatewayRuntimeHandle::default());
+        let mut upstream = fixture_stdio_upstream(&name);
+        upstream.enabled = false;
+        manager
+            .add(upstream, None, None, None)
+            .await
+            .expect("child add");
+    });
+}
+
+#[test]
+fn separate_processes_preserve_both_gateway_mutations() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let executable = std::env::current_exe().expect("current test executable");
+    let spawn = |name: &str| {
+        std::process::Command::new(&executable)
+            .args([
+                "--exact",
+                "gateway::manager::tests::config_ops::gateway_mutation_child_process",
+                "--nocapture",
+            ])
+            .env("LABBY_TEST_GATEWAY_MUTATION_PATH", &path)
+            .env("LABBY_TEST_GATEWAY_MUTATION_NAME", name)
+            .spawn()
+            .expect("spawn child mutation")
+    };
+    let mut alpha = spawn("alpha");
+    let mut bravo = spawn("bravo");
+    assert!(alpha.wait().expect("wait alpha").success());
+    assert!(bravo.wait().expect("wait bravo").success());
+
+    let persisted = load_gateway_config(&path).expect("load persisted config");
+    let names = persisted
+        .upstream
+        .iter()
+        .map(|upstream| upstream.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names, BTreeSet::from(["alpha", "bravo"]));
+}
+
+#[tokio::test]
+async fn failed_reload_rolls_back_disk_live_state_and_restart_truth() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let initial = GatewayConfig::default();
+    crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+    let store = Arc::new(FaultAfterPersistStore::new(path.clone()));
+    let manager =
+        GatewayManager::with_store(path.clone(), GatewayRuntimeHandle::default(), store.clone());
+    manager
+        .seed_config_unchecked_for_tests(initial.clone())
+        .await;
+    store.fail_next_reload();
+
+    manager
+        .add(fixture_stdio_upstream("must-rollback"), None, None, None)
+        .await
+        .expect_err("reload failure must fail the mutation");
+
+    let persisted = load_gateway_config(&path).expect("rollback restores parseable disk config");
+    assert!(
+        persisted.upstream.is_empty(),
+        "disk must return to the previous revision"
+    );
+    assert!(
+        manager.current_config().await.upstream.is_empty(),
+        "live config must remain on the previous revision"
+    );
+    assert!(
+        path.with_file_name("config.toml.bak").exists(),
+        "the pre-commit durable revision must be backed up"
+    );
+    let restarted = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    restarted
+        .reload_with_origin(None, None)
+        .await
+        .expect("restart reload");
+    assert!(restarted.current_config().await.upstream.is_empty());
+}
+
+#[tokio::test]
+async fn failed_code_mode_reconcile_preserves_process_flag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
+        .expect("seed disk");
+    let store = Arc::new(FaultAfterPersistStore::new(path.clone()));
+    let manager = GatewayManager::with_store(path, GatewayRuntimeHandle::default(), store.clone());
+    store.fail_next_reload();
+    manager
+        .set_code_mode_config(
+            CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            None,
+            None,
+        )
+        .await
+        .expect_err("candidate reconcile fails");
+    assert!(
+        !store.process_code_mode_enabled(),
+        "rejected candidate must not publish the process-wide flag"
+    );
+}
+
+#[tokio::test]
+async fn abort_after_persist_does_not_cancel_the_owned_config_transaction() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
+        .expect("seed disk");
+    let persisted = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let store = Arc::new(PauseAfterPersistStore {
+        path: path.clone(),
+        persisted: Arc::clone(&persisted),
+        release: Arc::clone(&release),
+    });
+    let manager = GatewayManager::with_store(path.clone(), GatewayRuntimeHandle::default(), store);
+    let worker = manager.clone();
+    let mut candidate = fixture_stdio_upstream("survives-abort");
+    candidate.enabled = false;
+    let request = tokio::spawn(async move { worker.add(candidate, None, None, None).await });
+
+    tokio::task::spawn_blocking({
+        let persisted = Arc::clone(&persisted);
+        move || {
+            let (lock, cv) = &*persisted;
+            let mut ready = lock.lock().expect("persist lock");
+            while !*ready {
+                ready = cv.wait(ready).expect("persist wait");
+            }
+        }
+    })
+    .await
+    .expect("persist waiter");
+    request.abort();
+    let (release_lock, release_cv) = &*release;
+    *release_lock.lock().expect("release lock") = true;
+    release_cv.notify_all();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if manager
+                .current_config()
+                .await
+                .upstream
+                .iter()
+                .any(|upstream| upstream.name == "survives-abort")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("detached transaction completes");
+    assert!(
+        load_gateway_config(&path)
+            .expect("durable config")
+            .upstream
+            .iter()
+            .any(|upstream| upstream.name == "survives-abort")
+    );
+}
+
+#[tokio::test]
+async fn abort_direct_persist_keeps_durable_and_live_config_coherent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
+        .expect("seed disk");
+    let persisted = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let manager = GatewayManager::with_store(
+        path.clone(),
+        GatewayRuntimeHandle::default(),
+        Arc::new(PauseAfterPersistStore {
+            path: path.clone(),
+            persisted: Arc::clone(&persisted),
+            release: Arc::clone(&release),
+        }),
+    );
+    let worker = manager.clone();
+    let request = tokio::spawn(async move {
+        let guard = worker.acquire_config_mutation().await?;
+        let mut candidate = worker.load_config_for_mutation().await?;
+        candidate.code_mode.mcp_ui_enabled = true;
+        worker.persist_config_owned(guard, candidate).await
+    });
+    tokio::task::spawn_blocking({
+        let persisted = Arc::clone(&persisted);
+        move || {
+            let (lock, cv) = &*persisted;
+            let mut ready = lock.lock().expect("persist lock");
+            while !*ready {
+                ready = cv.wait(ready).expect("persist wait");
+            }
+        }
+    })
+    .await
+    .expect("persist waiter");
+    request.abort();
+    let (release_lock, release_cv) = &*release;
+    *release_lock.lock().expect("release lock") = true;
+    release_cv.notify_all();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !manager.current_config().await.code_mode.mcp_ui_enabled {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("owned direct persist completes");
+    assert!(load_gateway_config(&path).unwrap().code_mode.mcp_ui_enabled);
+}
+
+#[tokio::test]
+async fn reload_rollback_covers_batch_update_remove_and_code_mode_mutations() {
+    // batch-add
+    let batch_dir = tempfile::tempdir().expect("batch tempdir");
+    let batch_path = batch_dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&batch_path, &GatewayConfig::default())
+        .expect("seed batch disk");
+    let batch_store = Arc::new(FaultAfterPersistStore::new(batch_path.clone()));
+    let batch = GatewayManager::with_store(
+        batch_path.clone(),
+        GatewayRuntimeHandle::default(),
+        batch_store.clone(),
+    );
+    batch_store.fail_next_reload();
+    batch
+        .batch_add(
+            vec![
+                fixture_stdio_upstream("alpha"),
+                fixture_stdio_upstream("bravo"),
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect_err("batch reload failure");
+    assert!(
+        load_gateway_config(&batch_path)
+            .unwrap()
+            .upstream
+            .is_empty()
+    );
+
+    // update and remove each start from one disabled durable upstream, avoiding
+    // any real transport connection while exercising the full reload path.
+    for operation in ["update", "remove"] {
+        let dir = tempfile::tempdir().expect("mutation tempdir");
+        let path = dir.path().join("config.toml");
+        let mut initial = GatewayConfig::default();
+        let mut upstream = fixture_stdio_upstream("alpha");
+        upstream.enabled = false;
+        initial.upstream.push(upstream);
+        crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+        let store = Arc::new(FaultAfterPersistStore::new(path.clone()));
+        let manager = GatewayManager::with_store(
+            path.clone(),
+            GatewayRuntimeHandle::default(),
+            store.clone(),
+        );
+        manager.seed_config_unchecked_for_tests(initial).await;
+        store.fail_next_reload();
+        let result = if operation == "update" {
+            manager
+                .update(
+                    "alpha",
+                    crate::gateway::params::GatewayUpdatePatch {
+                        enabled: Some(true),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map(|_| ())
+        } else {
+            manager.remove("alpha", None, None).await.map(|_| ())
+        };
+        result.expect_err("reload failure");
+        let persisted = load_gateway_config(&path).expect("rollback disk");
+        assert_eq!(persisted.upstream.len(), 1);
+        assert!(!persisted.upstream[0].enabled);
+        let live = manager.current_config().await;
+        assert_eq!(live.upstream.len(), 1);
+        assert!(!live.upstream[0].enabled);
+    }
+
+    // Code Mode runtime settings also require a pool reconcile and therefore
+    // share the same rollback contract.
+    let mode_dir = tempfile::tempdir().expect("mode tempdir");
+    let mode_path = mode_dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&mode_path, &GatewayConfig::default())
+        .expect("seed mode disk");
+    let mode_store = Arc::new(FaultAfterPersistStore::new(mode_path.clone()));
+    let mode = GatewayManager::with_store(
+        mode_path.clone(),
+        GatewayRuntimeHandle::default(),
+        mode_store.clone(),
+    );
+    mode_store.fail_next_reload();
+    mode.set_code_mode_config(
+        CodeModeConfig {
+            enabled: true,
+            ..CodeModeConfig::default()
+        },
+        None,
+        None,
+    )
+    .await
+    .expect_err("code mode reload failure");
+    assert!(!load_gateway_config(&mode_path).unwrap().code_mode.enabled);
+    assert!(!mode.current_config().await.code_mode.enabled);
+}
+
+#[tokio::test]
 async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
@@ -225,10 +584,15 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
         .expect("add alpha to the live pool");
     let after_add = runtime.current_pool().await.expect("pool after add");
     assert!(
-        Arc::ptr_eq(&initial_pool, &after_add),
-        "add-only reconciliation should preserve the live pool"
+        !Arc::ptr_eq(&initial_pool, &after_add),
+        "add-only reconciliation must publish a privately validated candidate pool"
     );
     assert_eq!(after_add.upstream_count().await, 1);
+    assert_eq!(
+        initial_pool.upstream_count().await,
+        0,
+        "the previously published pool must not be mutated in place"
+    );
 
     manager
         .update(

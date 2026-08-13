@@ -65,7 +65,7 @@ impl UpstreamPool {
             let mut cache = self.relay_connections.write().await;
             let keys = cache
                 .keys()
-                .filter(|(name, _, cached_subject)| {
+                .filter(|(name, _, cached_subject, _)| {
                     name == upstream && cached_subject.as_deref() == Some(subject)
                 })
                 .cloned()
@@ -160,7 +160,9 @@ impl UpstreamPool {
             let mut cache = self.relay_connections.write().await;
             let keys = cache
                 .keys()
-                .filter(|(name, _, subject)| subject.is_some() && upstreams.contains(name.as_str()))
+                .filter(|(name, _, subject, _)| {
+                    subject.is_some() && upstreams.contains(name.as_str())
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             keys.into_iter()

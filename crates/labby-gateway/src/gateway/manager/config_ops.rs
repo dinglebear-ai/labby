@@ -80,7 +80,7 @@ impl GatewayManager {
             }
         }
 
-        let _mutation_guard = self.config_mutation.lock().await;
+        let _mutation_guard = self.acquire_config_mutation().await?;
         // The host store owns env-file backup/atomic-write semantics and any
         // cached service-client refresh; the manager only validates + delegates.
         if !values.is_empty() {
@@ -135,8 +135,9 @@ impl GatewayManager {
         let spec_name = spec.name.clone();
 
         let mut view = {
-            let _mutation_guard = self.config_mutation.lock().await;
-            let mut cfg = self.config.read().await.clone();
+            let _mutation_guard = self.acquire_config_mutation().await?;
+            let previous = self.load_config_for_mutation().await?;
+            let mut cfg = previous.clone();
 
             // Trim and validate bearer_token_env unconditionally so whitespace typos
             // are caught before they silently fail env-var lookup later.
@@ -171,8 +172,9 @@ impl GatewayManager {
                 target = ?redacted_gateway_target(&spec),
                 "gateway reconcile"
             );
-            self.write_config_file(&cfg).await?;
-            let diff = self.reload_with_origin_unlocked(origin, owner).await?;
+            let diff = self
+                .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+                .await?;
             tracing::info!(
                 surface = "dispatch",
                 service = "gateway",
@@ -226,8 +228,9 @@ impl GatewayManager {
         }
         let started = std::time::Instant::now();
         let (mut views, errors) = {
-            let _mutation_guard = self.config_mutation.lock().await;
-            let mut cfg = self.config.read().await.clone();
+            let _mutation_guard = self.acquire_config_mutation().await?;
+            let previous = self.load_config_for_mutation().await?;
+            let mut cfg = previous.clone();
 
             let mut added_names = Vec::new();
             let mut errors: Vec<(String, ToolError)> = Vec::new();
@@ -251,8 +254,9 @@ impl GatewayManager {
                 return Err(errors.remove(0).1);
             }
 
-            self.write_config_file(&cfg).await?;
-            let diff = self.reload_with_origin_unlocked(origin, owner).await?;
+            let diff = self
+                .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+                .await?;
 
             tracing::info!(
                 surface = "dispatch",
@@ -317,8 +321,9 @@ impl GatewayManager {
             new_gateway = %updated_name,
             "gateway reconcile"
         );
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let previous = self.load_config_for_mutation().await?;
+        let mut cfg = previous.clone();
 
         // Trim and validate bearer_token_env unconditionally so whitespace typos
         // are caught before they silently fail env-var lookup later.
@@ -363,8 +368,9 @@ impl GatewayManager {
         } else {
             update_upstream(&mut cfg, name, patch)?;
         }
-        self.write_config_file(&cfg).await?;
-        let diff = self.reload_with_origin_unlocked(origin, owner).await?;
+        let diff = self
+            .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+            .await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -398,13 +404,15 @@ impl GatewayManager {
             gateway = %name,
             "gateway reconcile"
         );
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let previous = self.load_config_for_mutation().await?;
+        let mut cfg = previous.clone();
         let code_mode = cfg.code_mode.clone();
         let removed = remove_upstream(&mut cfg, name)?;
         tombstone_removed_import(&mut cfg, &removed);
-        self.write_config_file(&cfg).await?;
-        let diff = self.reload_with_origin_unlocked(origin, owner).await?;
+        let diff = self
+            .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+            .await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -439,8 +447,9 @@ impl GatewayManager {
         // Field-level validation (ranges, etc.) runs before acquiring the lock —
         // it is idempotent and does not read shared state.
         validate_code_mode(&next)?;
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let durable_previous = self.load_config_for_mutation().await?;
+        let mut cfg = durable_previous.clone();
         let previous = cfg.code_mode.clone();
         let old_enabled = previous.enabled;
         let old_mcp_ui_enabled = previous.mcp_ui_enabled;
@@ -458,12 +467,12 @@ impl GatewayManager {
         if execution_runtime_changed {
             // Keep the old in-memory snapshot installed until reload observes it
             // as the "before" side of the visible catalog transition.
-            self.write_config_file(&cfg).await?;
-            self.reload_with_origin_unlocked(origin, owner).await?;
+            self.commit_config_and_reload(_mutation_guard, durable_previous, cfg, origin, owner)
+                .await?;
         } else {
             // UI visibility is transport metadata, not an upstream-pool input. A
             // UI-only toggle must never cold-connect or rebuild gateway upstreams.
-            self.persist_config(cfg).await?;
+            self.persist_config_owned(_mutation_guard, cfg).await?;
         }
 
         self.code_mode_app_state.set_enabled(next.mcp_ui_enabled);

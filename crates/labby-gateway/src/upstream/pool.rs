@@ -178,12 +178,14 @@ pub struct UpstreamPool {
     /// never reused across agents; the `Option<String>` subject component
     /// guarantees it is never reused across OAuth identities within a session,
     /// so a connection authenticated as subject A can never serve a call made
-    /// as subject B (`None` = the non-OAuth/raw proxy path). See `pool/relay.rs`.
-    relay_connections:
-        Arc<RwLock<HashMap<(String, u64, Option<String>), relay::RelayCachedConnection>>>,
+    /// as subject B (`None` = the non-OAuth/raw proxy path). The capability
+    /// fingerprint is also part of the key so a newly negotiated snapshot
+    /// cannot drop a connection still serving an older in-flight request.
+    /// See `pool/relay.rs`.
+    relay_connections: Arc<RwLock<HashMap<relay::RelayCacheKey, relay::RelayCachedConnection>>>,
     /// Single-flight locks for the relay-connection cache, mirroring
     /// `subject_connect_locks`. Keyed identically to `relay_connections`.
-    relay_connect_locks: Arc<RwLock<HashMap<(String, u64, Option<String>), Arc<Mutex<()>>>>>,
+    relay_connect_locks: Arc<RwLock<HashMap<relay::RelayCacheKey, Arc<Mutex<()>>>>>,
     /// Gateway-owned task handles and the relay connections that created them.
     /// Shared across stateless HTTP requests through the pool.
     task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,

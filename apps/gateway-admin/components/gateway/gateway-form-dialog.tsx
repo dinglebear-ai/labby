@@ -58,6 +58,7 @@ import {
   type GatewayAuthMode,
 } from '@/lib/gateway-protected-route'
 import { upstreamOauthApi } from '@/lib/api/upstream-oauth-client'
+import { openIsolatedOauthPopup } from '@/lib/oauth-popup'
 import { useUpstreamOauthStatus } from '@/lib/hooks/use-upstream-oauth'
 import type { OAuthConnectState } from '@/lib/types/upstream-oauth'
 import { formatStdioCommandLine, parseStdioCommandLine } from '@/lib/stdio-command'
@@ -445,7 +446,7 @@ export function GatewayFormDialog({
       probeInfoRef.current = { registration_strategy: probe.registration_strategy ?? 'dynamic', scopes: probe.scopes }
       const { authorization_url } = await upstreamOauthApi.start(probe.upstream)
 
-      const targetTab = authTab ?? window.open(authorization_url, '_blank')
+      const targetTab = authTab ?? openIsolatedOauthPopup()
       if (!targetTab || targetTab.closed) {
         setOauthState(
           auto
@@ -454,9 +455,7 @@ export function GatewayFormDialog({
         )
         return
       }
-      if (authTab) {
-        authTab.location.href = authorization_url
-      }
+      targetTab.location.href = authorization_url
       setOauthState({ kind: 'authorizing', upstream: probe.upstream })
     } catch (err: unknown) {
       authTab?.close()
@@ -467,7 +466,7 @@ export function GatewayFormDialog({
   async function handleOauthConnect() {
     if (!url.trim()) return
     // Open a blank tab synchronously in the click handler so browsers allow it.
-    const authTab = window.open('about:blank', '_blank')
+    const authTab = openIsolatedOauthPopup()
     await runOauthConnect({ authTab, auto: false, probeOverride: oauthProbed ?? undefined })
   }
 

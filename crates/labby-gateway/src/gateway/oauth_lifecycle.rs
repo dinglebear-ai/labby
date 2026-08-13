@@ -358,8 +358,8 @@ impl GatewayManager {
         }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
-            let _mutation_guard = self.config_mutation.lock().await;
-            let mut cfg = self.config.read().await.clone();
+            let _mutation_guard = self.acquire_config_mutation().await?;
+            let mut cfg = self.load_config_for_mutation().await?;
             let Some(existing) = cfg.upstream.iter_mut().find(|u| u.name == upstream) else {
                 tracing::debug!(
                     service = "upstream_oauth",
@@ -377,7 +377,7 @@ impl GatewayManager {
                     "upstream oauth callback: persisting oauth config for probe-created manager"
                 );
                 existing.oauth = Some(oauth_config);
-                self.persist_config(cfg).await?;
+                self.persist_config_owned(_mutation_guard, cfg).await?;
             }
         }
 

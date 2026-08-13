@@ -152,7 +152,7 @@ impl UpstreamPool {
     /// general relay cache and retained for the task lifecycle.
     pub async fn register_task_response(
         &self,
-        relay_key: &(String, u64, Option<String>),
+        relay_key: &super::relay::RelayCacheKey,
         caller_subject: Option<&str>,
         authorization: TaskRouteAuthorization,
         response: CallToolResponse,
@@ -486,7 +486,7 @@ mod tests {
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
-        (String, u64, Option<String>),
+        super::super::relay::RelayCacheKey,
     ) {
         task_pool_with_store(None).await
     }
@@ -497,7 +497,7 @@ mod tests {
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
-        (String, u64, Option<String>),
+        super::super::relay::RelayCacheKey,
     ) {
         let capabilities = ClientCapabilities::builder().enable_tasks().build();
 
@@ -568,7 +568,12 @@ mod tests {
             last_used: Instant::now(),
         };
 
-        let key = ("task-upstream".to_string(), 7, None);
+        let key = (
+            "task-upstream".to_string(),
+            7,
+            None,
+            capability_fingerprint(&capabilities),
+        );
         let pool = UpstreamPool::new().with_usage_store(usage_store);
         pool.relay_connections
             .write()
@@ -747,9 +752,9 @@ mod tests {
 
     async fn rekey_relay_for_oauth_subject(
         pool: &UpstreamPool,
-        relay_key: &(String, u64, Option<String>),
+        relay_key: &super::super::relay::RelayCacheKey,
         oauth_subject: &str,
-    ) -> (String, u64, Option<String>) {
+    ) -> super::super::relay::RelayCacheKey {
         let connection = pool
             .relay_connections
             .write()
@@ -760,6 +765,7 @@ mod tests {
             relay_key.0.clone(),
             relay_key.1,
             Some(oauth_subject.to_string()),
+            relay_key.3.clone(),
         );
         pool.relay_connections
             .write()

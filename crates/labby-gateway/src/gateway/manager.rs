@@ -45,6 +45,7 @@ use super::types::CatalogChangeNotifier;
 mod code_mode_resolve;
 mod code_mode_runtime;
 mod config_ops;
+mod config_transaction;
 mod core;
 mod enrichment;
 mod import_matchers;
@@ -172,6 +173,19 @@ pub struct GatewayManager {
     /// by `gateway.clients.list`. `Default` (empty, no-op) when not wired —
     /// see `with_client_registry`.
     pub(super) client_registry: labby_runtime::client_registry::ClientRegistryHandle,
+}
+
+pub(crate) struct ConfigMutationGuard {
+    _local: tokio::sync::OwnedMutexGuard<()>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl Drop for ConfigMutationGuard {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
 }
 
 impl GatewayManager {

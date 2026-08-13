@@ -438,8 +438,8 @@ async fn reload_unaffected_upstream_catalog_entry_survives_single_upstream_chang
     );
 
     assert!(
-        Arc::ptr_eq(&pool_after_first, &pool_after_second),
-        "single-upstream changes must selectively reconcile without swapping the pool"
+        !Arc::ptr_eq(&pool_after_first, &pool_after_second),
+        "single-upstream changes must publish a privately reconciled pool"
     );
 }
 

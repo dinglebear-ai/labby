@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { upstreamOauthApi } from '@/lib/api/upstream-oauth-client'
 import { useUpstreamOauthStatus } from '@/lib/hooks/use-upstream-oauth'
+import { openIsolatedOauthPopup } from '@/lib/oauth-popup'
 
 interface UpstreamOauthCardProps {
   name: string
@@ -30,10 +31,12 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
     setConnecting(true)
     try {
       const { authorization_url } = await upstreamOauthApi.start(name)
-      const popup = window.open(authorization_url, '_blank', 'noopener,noreferrer')
+      const popup = openIsolatedOauthPopup()
       if (!popup) {
         setConnecting(false)
         setError('Popup blocked — please allow popups for this site and try again')
+      } else {
+        popup.location.href = authorization_url
       }
     } catch (err: unknown) {
       setConnecting(false)

@@ -55,10 +55,10 @@ impl GatewayManager {
         route: ProtectedMcpRouteConfig,
     ) -> Result<ProtectedMcpRouteConfig, ToolError> {
         reject_hot_gateway_subset_mutation(&route, "add")?;
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let route = insert_protected_mcp_route(&mut cfg, route)?;
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -81,8 +81,8 @@ impl GatewayManager {
         name: &str,
         route: ProtectedMcpRouteConfig,
     ) -> Result<ProtectedMcpRouteConfig, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         if let Some(existing) = cfg
             .protected_mcp_routes
             .iter()
@@ -92,7 +92,7 @@ impl GatewayManager {
         }
         reject_hot_gateway_subset_mutation(&route, "update")?;
         let route = update_protected_mcp_route(&mut cfg, name, route)?;
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -115,8 +115,8 @@ impl GatewayManager {
         &self,
         name: &str,
     ) -> Result<ProtectedMcpRouteConfig, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         if let Some(existing) = cfg
             .protected_mcp_routes
             .iter()
@@ -125,7 +125,7 @@ impl GatewayManager {
             reject_hot_gateway_subset_mutation(existing, "remove")?;
         }
         let route = remove_protected_mcp_route(&mut cfg, name)?;
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",

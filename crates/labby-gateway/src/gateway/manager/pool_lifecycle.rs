@@ -148,7 +148,7 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayCatalogDiff, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
+        let _mutation_guard = self.acquire_config_mutation().await?;
         self.reload_with_origin_unlocked(origin, owner).await
     }
 
@@ -313,26 +313,23 @@ impl GatewayManager {
         let new_mcp_ui_enabled = cfg.code_mode.mcp_ui_enabled;
         let new_ns_tokens = code_mode_namespace_tokens(&cfg);
 
-        let (pool_settings_unchanged, changed_upstreams, changed_upstreams_add_only) = {
+        let (pool_settings_unchanged, changed_upstreams) = {
             let current = self.config.read().await;
             let changed_upstreams = upstream_changed_names(&current, &cfg);
-            let changed_upstreams_add_only =
-                upstream_changes_are_add_only(&current, &changed_upstreams);
             (
                 pool_settings_fingerprint(&current) == pool_settings_fingerprint(&cfg),
                 changed_upstreams,
-                changed_upstreams_add_only,
             )
         };
         let existing_pool = self.runtime.current_pool().await;
         if pool_settings_unchanged && existing_pool.is_some() && changed_upstreams.is_empty() {
+            self.reconcile_runtime_state(&cfg, existing_pool.as_deref())
+                .await?;
+            self.store
+                .set_process_code_mode_enabled(cfg.code_mode.enabled);
             *self.protected_route_index.write().await =
                 ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-            let current_pool = existing_pool;
             *self.config.write().await = cfg;
-            let current_cfg = self.config.read().await.clone();
-            self.reconcile_runtime_state(&current_cfg, current_pool.as_deref())
-                .await?;
             let diff = GatewayCatalogDiff {
                 tools_changed: lab_owned_surface_changed,
                 ..GatewayCatalogDiff::default()
@@ -352,86 +349,6 @@ impl GatewayManager {
             );
             return Ok(diff);
         }
-        let expected_runtime_origin = runtime_origin_tag(origin);
-        let pool_runtime_identity_matches = existing_pool.as_ref().is_some_and(|pool| {
-            pool.runtime_identity_matches(&expected_runtime_origin, owner.as_ref())
-        });
-        if pool_settings_unchanged
-            && changed_upstreams_add_only
-            && pool_runtime_identity_matches
-            && let Some(current_pool) = existing_pool.clone()
-        {
-            let before = snapshot_from_pool(
-                Some(Arc::clone(&current_pool)),
-                old_code_mode_enabled,
-                old_mcp_ui_enabled,
-                &old_ns_tokens,
-            )
-            .await;
-            current_pool
-                .reconcile_lazy_upstreams(
-                    &cfg.upstream,
-                    &changed_upstreams,
-                    "gateway.reload.selective_reconcile",
-                )
-                .await;
-            let after = snapshot_from_pool(
-                Some(Arc::clone(&current_pool)),
-                new_code_mode_enabled,
-                new_mcp_ui_enabled,
-                &new_ns_tokens,
-            )
-            .await;
-            *self.protected_route_index.write().await =
-                ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-            *self.config.write().await = cfg;
-            let current_cfg = self.config.read().await.clone();
-            self.reconcile_runtime_state(&current_cfg, Some(current_pool.as_ref()))
-                .await?;
-            let observed = ReconcileCatalogObservation::observe(
-                &before,
-                &after,
-                new_code_mode_enabled,
-                lab_owned_surface_changed,
-            );
-            let diff = observed.diff.clone();
-            self.notify_catalog_changes(&diff, SOURCE_GATEWAY_RELOAD_SELECTIVE);
-            tracing::info!(
-                surface = "dispatch",
-                service = "gateway",
-                action = "gateway.reload",
-                event = "catalog.refresh.finish",
-                phase = "finish",
-                source = SOURCE_GATEWAY_RELOAD_SELECTIVE,
-                pool_rebuild_skipped = true,
-                selectively_reconciled_upstream_count = changed_upstreams.len(),
-                lab_owned_surface_changed,
-                projection = observed.projection,
-                tools_changed = diff.tools_changed,
-                resources_changed = diff.resources_changed,
-                prompts_changed = diff.prompts_changed,
-                tools_added = ?observed.delta.added,
-                tools_removed = ?observed.delta.removed,
-                namespaces_added = ?observed.delta.namespaces_added,
-                namespaces_removed = ?observed.delta.namespaces_removed,
-                delta_truncated_count = observed.delta.truncated,
-                raw_tools_changed = observed.raw_tools_changed,
-                suppressed_raw_churn = observed.suppressed_raw_churn,
-                suppressed_raw_churn_total = observed.suppressed_raw_churn_total,
-                before_tool_count = before.visible.tools.len(),
-                after_tool_count = after.visible.tools.len(),
-                before_raw_tool_count = before.raw_tools.len(),
-                after_raw_tool_count = after.raw_tools.len(),
-                before_resource_count = before.visible.resources.len(),
-                after_resource_count = after.visible.resources.len(),
-                before_prompt_count = before.visible.prompts.len(),
-                after_prompt_count = after.visible.prompts.len(),
-                elapsed_ms = started.elapsed().as_millis(),
-                "gateway reconcile (upstream changes selectively reconciled; live pool preserved)"
-            );
-            return Ok(diff);
-        }
-
         let old_pool = existing_pool;
         let before = snapshot_from_pool(
             old_pool.clone(),
@@ -451,8 +368,6 @@ impl GatewayManager {
             upstream_count = cfg.upstream.len(),
             "gateway reconcile"
         );
-        self.store
-            .set_process_code_mode_enabled(cfg.code_mode.enabled);
         let fresh_pool = {
             let base_pool =
                 self.new_base_pool(cfg.upstream_request_timeout(), cfg.upstream_relay_timeout());
@@ -541,6 +456,11 @@ impl GatewayManager {
             &new_ns_tokens,
         )
         .await;
+        // Runtime-state persistence is fallible. Complete it while the fresh
+        // pool is still private so failure cannot publish a pool/config pair
+        // that the caller subsequently rolls back on disk.
+        self.reconcile_runtime_state(&cfg, fresh_pool.as_deref())
+            .await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -563,6 +483,8 @@ impl GatewayManager {
             Some(barrier) => Some(barrier.write_owned().await),
             None => None,
         };
+        self.store
+            .set_process_code_mode_enabled(cfg.code_mode.enabled);
         self.runtime.swap(fresh_pool).await;
         // Keep the old pool serving throughout build/probe and publish the
         // replacement before draining. A dropped/timeout-cancelled reload can
@@ -592,10 +514,6 @@ impl GatewayManager {
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
         *self.config.write().await = cfg;
-        let current_cfg = self.config.read().await.clone();
-        let current_pool = self.runtime.current_pool().await;
-        self.reconcile_runtime_state(&current_cfg, current_pool.as_deref())
-            .await?;
         let observed = ReconcileCatalogObservation::observe(
             &before,
             &after,
@@ -711,16 +629,6 @@ fn upstream_changed_names(current: &GatewayConfig, next: &GatewayConfig) -> Hash
         .filter(|name| current.get(*name) != next.get(*name))
         .cloned()
         .collect()
-}
-
-fn upstream_changes_are_add_only(current: &GatewayConfig, changed_names: &HashSet<String>) -> bool {
-    !changed_names.is_empty()
-        && changed_names.iter().all(|name| {
-            current
-                .upstream
-                .iter()
-                .all(|upstream| upstream.name != *name)
-        })
 }
 
 fn upstream_fingerprint_map(cfg: &GatewayConfig) -> BTreeMap<String, String> {
