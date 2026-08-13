@@ -14,14 +14,27 @@ disallowed-macros = [
     { path = "async_trait::async_trait", reason = "Use native `async fn in trait` (Rust 1.75+). See crates/lab-apis/CLAUDE.md." },
 ]
 
-# The rmcp `Peer::list_all_*` helpers follow `nextCursor` in an unbounded
-# loop, so a malicious or buggy upstream can stream pages into memory until
-# a timeout (or forever). Gateway code must use the bounded wrappers in
-# `crates/labby-gateway/src/upstream/pool/paginate.rs` instead. The trusted
-# in-process peer and MCP conformance/regression fixtures carry explicit
-# `#[allow(clippy::disallowed_methods)]`.
-# Activated via `disallowed_methods = "deny"` in [workspace.lints.clippy].
+# Two independent bans share this list — keep both.
+#
+# 1. `Tool::new` (#210 / lab-41e7m): Labby-owned MCP Tool descriptors have
+#    exactly one construction site, `crates/labby/src/mcp/permanent_tools.rs`
+#    (PermanentToolRegistry). Duplicated `Tool::new` calls across the two
+#    listing paths were the descriptor-drift bug class that issue removed.
+#    Legitimate exceptions — the registry itself, upstream relay/fixture
+#    construction in labby-gateway, and test fixtures — carry a scoped
+#    `#[allow(clippy::disallowed_methods)]` with a reason.
+#
+# 2. `Peer::list_all_*` (#393): the rmcp helpers follow `nextCursor` in an
+#    unbounded loop, so a malicious or buggy upstream can stream pages into
+#    memory until a timeout (or forever). Gateway code must use the bounded
+#    wrappers in `crates/labby-gateway/src/upstream/pool/paginate.rs`. The
+#    trusted in-process peer and MCP conformance/regression fixtures carry
+#    explicit allows.
+#
+# Activated via `disallowed_methods = "deny"` in [workspace.lints.clippy]
+# in /Cargo.toml.
 disallowed-methods = [
+    { path = "rmcp::model::tool::Tool::new", reason = "Construct Labby-owned descriptors through PermanentToolRegistry (crates/labby/src/mcp/permanent_tools.rs); duplicated Tool::new sites are a descriptor-drift hazard (#210)." },
     { path = "rmcp::service::Peer::list_all_tools", reason = "Unbounded nextCursor loop — use paginate.rs list_tools_bounded." },
     { path = "rmcp::service::Peer::list_all_prompts", reason = "Unbounded nextCursor loop — use paginate.rs list_prompts_bounded." },
     { path = "rmcp::service::Peer::list_all_resources", reason = "Unbounded nextCursor loop — use paginate.rs list_resources_bounded." },

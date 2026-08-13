@@ -323,6 +323,31 @@ inject full schema, output schema, dts payloads, or snippet source. When a schem
 is missing or too complex for the TypeScript emitter, generated signatures fall
 back to `unknown`.
 
+### Builtin services as in-process peers
+
+Builtin Labby services (`gateway`, `doctor`, `setup`, …) join the Code Mode
+catalog as in-process upstream peers under synthetic
+`__in_process__<service>` namespaces, so the dispatch-envelope
+`outputSchema` and the callable capability arrive together (issue #210
+FU-1). Registration is lazy, single-flighted, and idempotent — it happens
+on the root-scope catalog build, with a cooldown so a failing peer is not
+retried on every call. Protected MCP routes never see them: the
+`__in_process__` prefix is **rejected at config load** both as an upstream
+name and in a route's `target.upstreams`, so the exclusion is enforced,
+not merely conventional.
+Authorization matches ordinary upstream tools: builtin peers carry no
+annotations, so they fail closed as destructive (Code Mode execute
+permission required) and are excluded from read-only Code Mode unless
+operator-trusted. Each peer serves exactly its own service, pinned to Raw
+mode regardless of the process-wide Code Mode flag.
+
+The peer transport carries no `AuthContext` — there is no HTTP layer to
+inject one — so it does **not** inherit the stdio trust model. Actions
+marked `requires_admin`, and the stdio-only `setup` actions, are refused
+over this transport; only non-admin actions are reachable through Code
+Mode. Without that guard a caller holding just `lab` (enough for Code Mode
+execute, deliberately not enough for admin) could reach admin builtins.
+
 ## Catalog Freshness
 
 Code Mode does not build or read a durable vector, lexical, or RRF index. Each
@@ -394,11 +419,21 @@ includes allowed tools, and direct `callTool` IDs outside the allowlist reject a
 ## Result Contract
 
 Successful upstream tool calls resolve to the payload, never the raw MCP
-`CallToolResult` envelope:
+`CallToolResult` envelope. The unwrap precedence is a locked contract
+([mcp-tool-output.md §C6](../contracts/mcp-tool-output.md)) — byte-identical
+since 2026-05-31 and pinned by an edge-case test matrix. First match wins:
 
-1. `structuredContent` when present.
-2. Otherwise the first text content block, parsed as JSON when possible.
-3. Otherwise raw text, `null`, or non-text content blocks as JSON.
+0. `isError: true` is handled before the unwrap and surfaces in-sandbox as a
+   thrown `CodeModeCallError`.
+1. `structuredContent` when **present** — including falsy JSON values
+   (`false`, `0`, `null`, `""`). Presence, not truthiness; content blocks are
+   discarded (the mcp-ui link is read from `_meta`, not content).
+2. Otherwise, when every content block is text: **all** blocks joined with
+   `"\n"`, then a single JSON parse; on parse failure, the joined string.
+3. Otherwise, empty content resolves to `null`.
+4. Otherwise (mixed/binary content): the entire `CallToolResult` as JSON,
+   including the upstream's `_meta` — a deliberate, upstream-controlled
+   exposure.
 
 `codemode` returns a capped envelope with:
 
@@ -453,9 +488,22 @@ Use `writeArtifact()` when a snippet needs to preserve a large detailed payload.
 The `truncate` policy bounds model-facing output; it is not a redaction policy
 and must not be used to sanitize secrets.
 
-When the envelope is too large, the final `result` is replaced with a truncation
-marker containing `truncated`, `original_size`, `original_tokens`, `preview`, and
-`next_action`. Logs are trimmed after result truncation if needed.
+Two distinct truncation markers exist, and structure survives both — nothing
+is ever stringified-and-reparsed beyond the marker itself:
+
+- **Envelope budget (always on, default path):** when the response exceeds
+  `max_response_bytes`/`max_response_tokens`, the final `result` is replaced
+  with an **object** marker carrying `truncated: true`, `original_size`,
+  `original_tokens`, a bounded `preview`, `artifacts`, and `next_action`.
+  Structured `calls[]` metadata survives verbatim. Logs are trimmed
+  oldest-first after result truncation if needed.
+- **Shaping policy `truncate` (opt-in, non-`Off` policy only):** the final
+  result becomes a single marker **string** prefixed
+  `[code mode result truncated]` with a pretty-printed preview.
+
+Truncation happens only at the outer sandbox→MCP boundary. Values seen by
+sandbox code through `callTool()` / `codemode.<upstream>.<tool>()` are never
+truncated or reshaped.
 
 ## MCP Apps (mcp-ui) widgets
 

@@ -743,6 +743,7 @@ fn capability_schema_error(upstream: &str, error: &CapabilityCallError) -> ToolE
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use std::collections::{BTreeSet, HashMap};
     use std::sync::Arc;

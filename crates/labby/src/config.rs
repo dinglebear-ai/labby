@@ -541,6 +541,27 @@ impl LabConfig {
                         value: "gateway_subset target entries must not be empty".to_string(),
                     },
                 )?;
+                // Mirrors the identical guard in
+                // `labby_runtime::gateway_config::GatewayConfig::normalize_protected_mcp_routes`.
+                // THIS is the copy `load_toml` runs, and therefore the copy the
+                // mounted route scopes in `cli/serve.rs` are built from — the
+                // runtime copy alone left the guard off the serve path
+                // (review finding on lab-eyeuv). Keep the two in sync.
+                if let Some(reserved) = target
+                    .upstreams
+                    .iter()
+                    .find(|name| name.starts_with(IN_PROCESS_UPSTREAM_PREFIX))
+                {
+                    return Err(ConfigError::InvalidProtectedRoute {
+                        name: route.name.clone(),
+                        field: "target.upstreams",
+                        value: format!(
+                            "`{reserved}` uses the reserved `{IN_PROCESS_UPSTREAM_PREFIX}` \
+                             prefix; built-in service peers cannot be routed to a protected \
+                             subset — list the service under `target.services` instead"
+                        ),
+                    });
+                }
             }
             if route.target.is_some()
                 && (route.upstream.is_some() || !route.backend_url.trim().is_empty())
@@ -795,6 +816,7 @@ fn invalid_protected_route(
 // `lab-gateway`; keep them as the public `labby::config` surface and silence the
 // bin-target unused-import lint.
 #[allow(unused_imports)]
+pub use labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX;
 pub use labby_runtime::gateway_config::{
     CodeModeConfig, CodeModeResultShapePolicy, ConfigError, GatewayConfig, GatewayImportMode,
     GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
@@ -3698,5 +3720,36 @@ services = ["removed-service"]
                 .and_then(|n| n.to_str()),
             Some(".labby")
         );
+    }
+
+    /// Review finding on lab-eyeuv: the reserved-prefix guard was added to
+    /// `labby_runtime`'s copy of `normalize_protected_mcp_routes`, but
+    /// `load_toml` runs THIS copy — and the route scopes mounted by
+    /// `cli/serve.rs` are built from this config. The guard has to live on
+    /// both, and this test pins the serve-path copy specifically.
+    #[test]
+    fn serve_path_normalization_rejects_reserved_in_process_upstreams() {
+        let mut route: ProtectedMcpRouteConfig = toml::from_str(
+            "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+        )
+        .unwrap();
+        route.backend_url = String::new();
+        route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
+                services: Vec::new(),
+                expose_code_mode: false,
+            },
+        ));
+        let mut cfg = LabConfig {
+            protected_mcp_routes: vec![route],
+            ..LabConfig::default()
+        };
+
+        let error = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("the serve-path copy must reject the reserved prefix");
+        let rendered = error.to_string();
+        assert!(rendered.contains("__in_process__setup"), "{rendered}");
     }
 }

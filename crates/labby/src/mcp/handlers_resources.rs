@@ -1559,6 +1559,7 @@ fn build_app_resource_meta(
 
 #[cfg(all(test, feature = "gateway"))]
 #[allow(clippy::panic)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
     use crate::dispatch::upstream::pool::{
@@ -2302,6 +2303,50 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             server_logs_uris.iter().all(|uri| uri.contains("?v=")),
             "advertised server logs URI must carry a cache-bust token: {server_logs_uris:?}"
         );
+    }
+
+    /// FR-2a (issue #210, lab-41e7m.5): the consolidated availability gate is
+    /// audience-free, so the admin-scope denial MUST come from this call
+    /// site's own `admin_app_resources_visible` check. A regression that
+    /// folded the audience into the shared gate would flip the non-admin
+    /// branch from `forbidden` to success (catalog default audience is
+    /// admin-visible) — this test pins the denial at the RESOURCE path.
+    #[tokio::test]
+    async fn read_add_server_app_resource_denies_non_admin_scope() {
+        let mut server = code_mode_server().await;
+        // The availability gate requires a registered `gateway` service.
+        server.registry = Arc::new(crate::registry::build_default_registry());
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let uri =
+            add_server_app_resource_uri_for_tool(ADD_SERVER_TOOL_NAME).expect("add server app uri");
+
+        let err = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(uri.clone()),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect_err("non-admin read must be denied");
+        assert_eq!(
+            err.data.as_ref().expect("error data")["kind"],
+            json!("forbidden")
+        );
+
+        let ok = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(uri),
+                    scoped_context(running.peer().clone(), &["lab:admin"]),
+                )
+                .await
+                .expect("admin read succeeds"),
+        );
+        assert!(!ok.contents.is_empty());
     }
 
     #[tokio::test]

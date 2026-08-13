@@ -60,6 +60,33 @@ fn upstream_allowed(upstream: &str, allowed_upstreams: Option<&BTreeSet<String>>
     allowed_upstreams.is_none_or(|allowed| allowed.contains(upstream))
 }
 
+/// Whether the catalog holds no tools from a REAL upstream.
+///
+/// The all-upstreams-down hard error is gated on the healthy tool set being
+/// empty. FU-1 plants synthetic `__in_process__*` builtin peers into that same
+/// catalog, so a plain `is_empty()` check silently went dead the moment one
+/// builtin registered — turning "every upstream you configured is
+/// unreachable" into a normal-looking `Ok` with a builtin-only catalog, on
+/// both the cold-connect and the warm branch. Excluding the synthetic entries
+/// keeps the error contract intact for real upstreams while still letting the
+/// builtin catalog serve (which is the point of registering before the
+/// refresh).
+async fn no_real_upstream_tools(
+    pool: &UpstreamPool,
+    allowed_upstreams: Option<&BTreeSet<String>>,
+) -> bool {
+    all_tools_are_in_process(&pool.healthy_tools_allowed(allowed_upstreams).await)
+}
+
+/// Shared by both emptiness guards so the synthetic-peer exclusion cannot
+/// drift between the warm and cold-connect branches.
+fn all_tools_are_in_process(tools: &[UpstreamTool]) -> bool {
+    tools.iter().all(|tool| {
+        tool.upstream_name
+            .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+    })
+}
+
 impl GatewayManager {
     pub async fn code_mode_config(&self) -> CodeModeConfig {
         self.config.read().await.code_mode.clone()
@@ -161,12 +188,7 @@ impl GatewayManager {
                     });
                 }
             }
-            if !failures.is_empty()
-                && pool
-                    .healthy_tools_allowed(allowed_upstreams)
-                    .await
-                    .is_empty()
-            {
+            if !failures.is_empty() && no_real_upstream_tools(&pool, allowed_upstreams).await {
                 let details = failures
                     .iter()
                     .map(|failure| format!("{}: {}", failure.upstream, failure.message))
@@ -279,6 +301,26 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<Vec<UpstreamTool>, ToolError> {
+        // FU-1 (issue #210, lab-48z4k): builtin services join the Code Mode
+        // catalog as in-process upstream peers so schema and capability
+        // arrive together. Root scope only — a ProtectedSubset route's
+        // allowlist should never contain the synthetic `__in_process__*`
+        // names, and the downstream `upstream_allowed` filter keeps protected
+        // routes builtin-free. Gated on the config flag so a gateway with
+        // Code Mode disabled never plants synthetic entries into the shared
+        // pool. Runs BEFORE the upstream refresh so an all-upstreams-down
+        // gateway still serves the builtin catalog: the refresh's hard-error
+        // path fires only when the healthy tool set is empty, and the builtin
+        // `gateway` tool is most needed exactly when every upstream is broken.
+        if allowed_upstreams.is_none() {
+            let cfg = self.config.read().await.clone();
+            if cfg.code_mode.enabled {
+                let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
+                let registry = self.builtin_service_registry();
+                pool.ensure_in_process_service_peers(registry.as_ref())
+                    .await;
+            }
+        }
         if allow_cold_connect {
             self.refresh_code_mode_catalog_allowed(owner, oauth_subject, allowed_upstreams)
                 .await?;
@@ -555,6 +597,10 @@ impl GatewayManager {
         }
         crate::gateway::code_mode::catalog_cache::merge_and_store(cache_updates).await;
 
+        // origin/main widened this to include subject-scoped tools; #210 excludes
+        // the synthetic in-process builtin peers. Both matter: the error must
+        // still fire when every REAL upstream is unreachable, whether the
+        // caller's tools come from the shared pool or an OAuth subject scope.
         let mut available = pool.healthy_tools_allowed(allowed_upstreams).await;
         if let Some(subject) = oauth_subject {
             available.extend(
@@ -566,7 +612,7 @@ impl GatewayManager {
                 .await,
             );
         }
-        if !failures.is_empty() && available.is_empty() {
+        if !failures.is_empty() && all_tools_are_in_process(&available) {
             let details = failures
                 .iter()
                 .map(|failure| format!("{}: {}", failure.upstream, failure.message))

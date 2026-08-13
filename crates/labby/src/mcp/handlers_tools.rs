@@ -14,7 +14,7 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::MetaObject;
-use rmcp::model::{ListToolsResult, PaginatedRequestParams, Tool};
+use rmcp::model::{ListToolsResult, PaginatedRequestParams};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -28,7 +28,6 @@ use crate::mcp::catalog::{
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
 };
 use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
-use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
@@ -47,12 +46,7 @@ use crate::mcp::handlers_resources::{
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
-#[cfg(feature = "gateway")]
-use crate::mcp::permanent_tools::code_mode_full_annotations;
 use crate::mcp::server::LabMcpServer;
-
-static ACTION_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> =
-    LazyLock::new(|| Arc::new(action_schema()));
 
 impl LabMcpServer {
     pub(crate) async fn list_tools_impl(
@@ -69,7 +63,6 @@ impl LabMcpServer {
             subject,
             "dispatch start"
         );
-        let schema = Arc::clone(&ACTION_SCHEMA);
         let page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
@@ -110,7 +103,13 @@ impl LabMcpServer {
         let mut catalog_upstream_count = 0usize;
         let mut upstream_tool_error_count = 0usize;
         let mut open_upstream_count = 0usize;
-        let visibility = self.code_mode_visibility().await;
+        // FU-2 (issue #210, lab-ecxfl): one PeerContract for the whole listing.
+        // The three consumers below (visibility, Code Mode upstream
+        // descriptions, upstream pool) are audience-independent, so hoisting
+        // is behavior-neutral. The clone cost is only real on ProtectedSubset
+        // routes — `Root` is a unit variant.
+        let peer_contract = self.peer_contract();
+        let visibility = peer_contract.code_mode_visibility().await;
         let manager_code_mode_enabled = visibility.exposes_synthetic_tools();
         let process_code_mode_enabled = crate::config::process_code_mode_enabled();
         let hide_raw_tools = visibility.hides_raw_tools();
@@ -133,23 +132,20 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let gateway_status_app_visible =
             admin_app_resources_visible(auth) && self.gateway_status_app_available_on_mcp().await;
-        let mut builtin_names = Vec::new();
+        let mut builtin_names = HashSet::new();
         for svc in self.registry.services() {
-            if self.route_scope.allows_service(svc.name)
-                && self.service_visible_on_mcp(svc.name).await
-            {
-                builtin_names.push(svc.name);
+            // `service_visible_on_mcp` already checks `route_scope.allows_service`.
+            if self.service_visible_on_mcp(svc.name).await {
+                builtin_names.insert(svc.name.to_string());
                 if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
                     suppressed_builtin_tool_count += 1;
                 } else {
                     advertised_names.insert(svc.name.to_string());
-                    let tool = Tool::new(svc.name, svc.description, Arc::clone(&schema));
-                    let tool = if svc.name == SERVER_LOGS_TOOL_NAME && server_logs_app_visible {
-                        tool.with_meta(server_logs_tool_meta(svc.name))
-                    } else {
-                        tool
-                    };
-                    descriptors.push(tool);
+                    descriptors.push(
+                        self.registry
+                            .permanent_tools()
+                            .builtin_service_tool(svc, server_logs_app_visible),
+                    );
                     builtin_tool_count += 1;
                 }
             }
@@ -165,7 +161,7 @@ impl LabMcpServer {
             // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
-            let code_mode_upstreams = self.code_mode_upstreams_for_description().await;
+            let code_mode_upstreams = peer_contract.code_mode_upstreams_for_description().await;
             if code_mode_read_scope_allowed(auth) {
                 descriptors.push(
                     self.registry
@@ -210,24 +206,15 @@ impl LabMcpServer {
                         "advertised explicit Code Mode MCP app tool"
                     );
                     descriptors.push(
-                        Tool::new(
-                            CODE_MODE_UI_TOOL_NAME,
-                            code_mode_ui_description(&code_mode_upstreams),
-                            code_mode_execute_schema(),
-                        )
-                        .with_annotations(code_mode_full_annotations())
-                        .with_raw_output_schema(code_mode_trace_output_schema())
-                        .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME)),
+                        self.registry
+                            .permanent_tools()
+                            .code_mode_ui_tool(&code_mode_upstreams),
                     );
                     advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
                     gateway_tool_count += 1;
                 }
 
-                descriptors.push(Tool::new(
-                    MCP_APP_TOOL_NAME,
-                    mcp_app_tool_description(),
-                    mcp_app_tool_schema(),
-                ));
+                descriptors.push(self.registry.permanent_tools().mcp_app_tool());
                 advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
                 gateway_tool_count += 1;
             }
@@ -235,28 +222,14 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         if add_server_app_visible {
-            descriptors.push(
-                Tool::new(
-                    ADD_SERVER_TOOL_NAME,
-                    "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
-                    add_server_tool_schema(),
-                )
-                .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME)),
-            );
+            descriptors.push(self.registry.permanent_tools().add_server_tool());
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
         #[cfg(feature = "gateway")]
         if gateway_status_app_visible {
-            descriptors.push(
-                Tool::new(
-                    GATEWAY_STATUS_TOOL_NAME,
-                    "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
-                    gateway_status_tool_schema(),
-                )
-                .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME)),
-            );
+            descriptors.push(self.registry.permanent_tools().gateway_status_tool());
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
@@ -268,7 +241,7 @@ impl LabMcpServer {
         // Mode execution/search still performs cold discovery through the
         // gateway manager when the caller asks for upstream catalog data.
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
+        if let Some(pool) = peer_contract.current_upstream_pool().await {
             pool_present = true;
             let upstream_status = pool.upstream_status().await;
             catalog_upstream_count = upstream_status.len();
@@ -284,7 +257,7 @@ impl LabMcpServer {
             };
             for ut in upstream_tools {
                 let tool_name = ut.tool.name.as_ref();
-                if builtin_names.contains(&tool_name)
+                if builtin_names.contains(tool_name)
                     || !advertised_names.insert(tool_name.to_string())
                 {
                     tracing::debug!(
@@ -314,7 +287,7 @@ impl LabMcpServer {
                 {
                     for ut in upstream_tools {
                         let tool_name = ut.name.as_ref();
-                        if builtin_names.contains(&tool_name)
+                        if builtin_names.contains(tool_name)
                             || !advertised_names.insert(tool_name.to_string())
                         {
                             continue;
@@ -450,15 +423,6 @@ impl LabMcpServer {
             .with_cache_scope(rmcp::model::CacheScope::Private);
         result.next_cursor = next_cursor;
         Ok(result)
-    }
-
-    /// Enabled, route-scoped upstream namespaces rendered into Code Mode's
-    /// model-visible tool descriptions.
-    #[cfg(feature = "gateway")]
-    async fn code_mode_upstreams_for_description(&self) -> Vec<CodeModeUpstreamDescription> {
-        self.peer_contract()
-            .code_mode_upstreams_for_description()
-            .await
     }
 }
 

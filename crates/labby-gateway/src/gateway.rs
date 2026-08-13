@@ -23,7 +23,7 @@ pub mod oauth;
 mod oauth_lifecycle;
 pub mod palette;
 mod params;
-mod projection;
+pub(crate) mod projection;
 pub mod protected_routes;
 mod runtime;
 mod service_catalog;

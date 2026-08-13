@@ -888,6 +888,7 @@ impl LabMcpServer {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use std::collections::BTreeMap;
 

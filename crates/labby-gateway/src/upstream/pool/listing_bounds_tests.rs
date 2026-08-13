@@ -3,7 +3,7 @@
 //! truncation visibility in the status channel. Wall-clock-bound regressions
 //! live in `listing_timeout_tests.rs`. Kept here rather than in the
 //! capability listing modules so those files stay near the 500-LOC target.
-
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 #![cfg(test)]
 
 use std::sync::Arc;

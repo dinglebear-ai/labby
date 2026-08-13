@@ -42,6 +42,50 @@ Each service tool accepts:
 Every service also supports shared `help` and `schema` discovery. Generated
 MCP help lives in [../generated/mcp-help.md](../generated/mcp-help.md).
 
+## Tool Results And `outputSchema`
+
+Every builtin service tool returns the dispatch envelope as
+`structuredContent` on success, mirrored by one JSON text block:
+
+```json
+{ "ok": true, "service": "gateway", "action": "gateway.list", "data": {} }
+```
+
+Builtin service tools — plus the `add_server` and `gateway_status` admin app
+tools — advertise this envelope as their MCP `outputSchema`. The normative
+contract is [mcp-tool-output.md](../contracts/mcp-tool-output.md) and the
+published schema is
+[dispatch-envelope.schema.json](../contracts/schemas/dispatch-envelope.schema.json);
+a drift test binds the runtime schema to the published file. `data` is
+deliberately unconstrained: one tool serves many actions, so a tool-level
+schema cannot describe per-action payloads.
+
+Scope and caveats:
+
+- **On `tools/list` this is Raw-mode-only.** Builtins are suppressed from
+  `tools/list` whenever Code Mode is enabled, so under Code Mode the only
+  builtin schema a client sees there is `server_logs`. The `codemode*` tools
+  advertise their own execution-trace schema instead. Under Code Mode,
+  builtin services instead join the **Code Mode catalog** as in-process
+  peers (`__in_process__<service>` namespaces, root scope only), so the
+  envelope schema and the callable capability arrive together through
+  `codemode.search` / `codemode.describe`.
+- **Error envelopes are outside `outputSchema`.** An `isError: true` result
+  carries the `{ "ok": false, … }` error envelope
+  ([agent-error-contract.md](../contracts/agent-error-contract.md)). The
+  exemption of error results from `outputSchema` conformance is converged
+  ecosystem convention, not explicit MCP spec text.
+- **No protocol-version gating.** The schema is serialized regardless of the
+  negotiated protocol version; older clients ignore the unknown field.
+- **`mcp_app` advertises no schema** — its control payload is
+  `{"kind": "mcp_app_control", …}`, not the envelope, and an inaccurate
+  schema is a hard client-side error in strict SDKs.
+- Upstream tools relay their own `outputSchema` **shape** unchanged and their
+  **result payloads** byte-identically. Documentation strings inside those
+  schemas (`description`, `title`, `$comment`) are sanitized; schema-semantic
+  keywords (`enum`, `const`, `default`, `examples`, `pattern`, `format`,
+  `$ref`, property names) are not.
+
 ## Gateway And Code Mode
 
 Without Code Mode, eligible upstream tools are projected into the downstream

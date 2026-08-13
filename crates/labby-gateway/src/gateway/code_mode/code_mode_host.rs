@@ -767,6 +767,27 @@ fn ui_resource_uri(ui_meta: &Value) -> Option<&str> {
 }
 
 /// Unwrap an upstream `CallToolResult` into the value Code Mode returns.
+///
+/// This is a locked contract (docs/contracts/mcp-tool-output.md
+/// §C6), byte-identical since `977cb2166` (2026-05-31). Do not change the
+/// behavior without updating that contract and the edge-case matrix tests
+/// below. Precedence — first match wins; rule 0 (`is_error == Some(true)`)
+/// is handled by the caller *before* this function and never reaches it:
+///
+/// | # | Condition | Result |
+/// |---|---|---|
+/// | 1 | `structured_content` is `Some(v)` | `v` as-is — including falsy JSON (`false`, `0`, `null`, `""`) |
+/// | 2 | `content` non-empty, every block text | joined with `"\n"`, then ONE `serde_json` parse; on failure the joined string |
+/// | 3 | `content` empty | `Value::Null` |
+/// | 4 | otherwise (mixed / binary) | the entire `CallToolResult` as JSON, including upstream `_meta` |
+///
+/// Invariants: rule 1 precedes any inspection of `content` (when both are
+/// present the structured value wins and content blocks are discarded;
+/// mcp-ui links are unaffected because they are read from `_meta` via
+/// `extract_ui_link`, not `content`). `if let Some(..)` tests presence, not
+/// truthiness. A structured value is never stringified. Divergences from
+/// Cloudflare's `unwrapMcpResult`: no legacy `toolResult` field (rmcp has
+/// none), and empty content yields `Null` rather than the raw result.
 fn unwrap_code_mode_upstream_result(result: CallToolResult) -> Value {
     if let Some(value) = result.structured_content {
         return value;
@@ -865,11 +886,12 @@ fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str
 // upstream proxy so both surfaces emit the same model-facing kind.
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
     use crate::gateway::runtime::GatewayRuntimeHandle;
     use labby_codemode::ExecCtx;
-    use rmcp::model::{ErrorCode, ErrorData, MetaObject};
+    use rmcp::model::{ContentBlock, ErrorCode, ErrorData, MetaObject};
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
     /// tempdir is intentionally leaked so the DB file outlives the store's open
@@ -1333,5 +1355,127 @@ mod tests {
 
             assert_eq!(err.kind(), "invalid_param");
         }
+    }
+
+    // ── Issue #210 (lab-41e7m.2): the C6 unwrap precedence matrix ───────────
+    //
+    // `unwrap_code_mode_upstream_result` is a locked contract
+    // (docs/contracts/mcp-tool-output.md §C6). These tests pin the
+    // behavior; they do not define it. Rule 0 (`is_error`) is handled by the
+    // caller before the unwrap — its conversion to `CodeModeCallError` is
+    // pinned by `gateway/code_mode/tool_error.rs::adapter_preserves_shared_analysis`.
+
+    /// C6 rule 1: a present-but-falsy structured value MUST NOT be treated as
+    /// absent — `if let Some(..)` tests presence, not truthiness.
+    #[test]
+    fn unwrap_returns_falsy_structured_values_verbatim() {
+        for falsy in [
+            Value::Bool(false),
+            serde_json::json!(0),
+            Value::Null,
+            Value::String(String::new()),
+        ] {
+            let mut result = CallToolResult::success(vec![ContentBlock::text("ignored")]);
+            result.structured_content = Some(falsy.clone());
+            assert_eq!(
+                unwrap_code_mode_upstream_result(result),
+                falsy,
+                "falsy structured value must be returned as-is"
+            );
+        }
+    }
+
+    /// C6 rule 1 precedes content inspection: when both are present the
+    /// structured value wins, content blocks are discarded, and the mcp-ui
+    /// link is unaffected because it reads `_meta`, not `content`.
+    #[test]
+    fn unwrap_prefers_structured_content_and_meta_ui_link_survives() {
+        let mut result = CallToolResult::success(vec![
+            ContentBlock::text("textual rendering"),
+            ContentBlock::text("of the same data"),
+        ]);
+        result.structured_content = Some(serde_json::json!({"rows": [1, 2, 3]}));
+        result.meta = Some(MetaObject(Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({"resourceUri": "ui://demo/widget.html"}),
+        )])));
+
+        let ui = extract_ui_link(&result).expect("ui link from _meta");
+        assert_eq!(
+            ui_resource_uri(&ui.ui_meta),
+            Some("ui://demo/widget.html"),
+            "_meta ui link is captured independently of the unwrap"
+        );
+        assert_eq!(
+            unwrap_code_mode_upstream_result(result),
+            serde_json::json!({"rows": [1, 2, 3]}),
+            "structured content wins over text blocks"
+        );
+    }
+
+    /// C6 rule 2: all text blocks are joined with `\n` before a SINGLE parse
+    /// attempt — valid-after-join parses, split-mid-token falls back to the
+    /// joined string (never a per-block parse, never a stringified re-wrap).
+    #[test]
+    fn unwrap_joins_all_text_blocks_before_one_parse() {
+        let valid_after_join = CallToolResult::success(vec![
+            ContentBlock::text("{\"page\": 1,"),
+            ContentBlock::text("\"total\": 2}"),
+        ]);
+        assert_eq!(
+            unwrap_code_mode_upstream_result(valid_after_join),
+            serde_json::json!({"page": 1, "total": 2}),
+            "blocks that form valid JSON after the newline join must parse"
+        );
+
+        let split_mid_token = CallToolResult::success(vec![
+            ContentBlock::text("{\"pa"),
+            ContentBlock::text("ge\": 1}"),
+        ]);
+        assert_eq!(
+            unwrap_code_mode_upstream_result(split_mid_token),
+            Value::String("{\"pa\nge\": 1}".to_string()),
+            "the newline join lands inside the token, so the parse fails and the joined string is returned"
+        );
+    }
+
+    /// C6 rule 3: empty content unwraps to `Null` (divergence from
+    /// Cloudflare's `unwrapMcpResult`, which returns the raw result).
+    #[test]
+    fn unwrap_empty_content_yields_null() {
+        let result = CallToolResult::success(vec![]);
+        assert_eq!(unwrap_code_mode_upstream_result(result), Value::Null);
+    }
+
+    /// C6 rule 4: mixed content returns the whole `CallToolResult` as JSON.
+    /// The upstream's `_meta` is deliberately exposed to sandbox code on this
+    /// path — assert exactly that, so the exposure is a pinned decision
+    /// rather than an accident.
+    #[test]
+    fn unwrap_mixed_content_returns_raw_result_including_meta() {
+        let mut result = CallToolResult::success(vec![
+            ContentBlock::text("caption"),
+            ContentBlock::image("aGVsbG8=", "image/png"),
+        ]);
+        result.meta = Some(MetaObject(Map::from_iter([(
+            "upstreamKey".to_string(),
+            serde_json::json!("upstream-controlled"),
+        )])));
+
+        let value = unwrap_code_mode_upstream_result(result);
+        assert!(
+            value.get("content").is_some(),
+            "mixed content must expose the raw result"
+        );
+        assert_eq!(
+            value["_meta"]["upstreamKey"],
+            serde_json::json!("upstream-controlled"),
+            "rule 4 exposes upstream _meta to sandbox code (CONTRACT §C6)"
+        );
+        assert_eq!(
+            value["isError"],
+            serde_json::json!(false),
+            "rule 4 serializes the whole result, including the explicit isError: false"
+        );
     }
 }

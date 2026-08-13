@@ -108,6 +108,7 @@ impl ToolCatalogSnapshot {
 
     #[cfg(test)]
     #[must_use]
+    #[allow(clippy::disallowed_methods)] // test helper constructs bare Tool values directly
     pub(crate) fn from_names(tools: BTreeSet<String>) -> Self {
         let descriptors = tools
             .iter()
@@ -223,19 +224,35 @@ impl LabMcpServer {
         self.peer_contract().current_upstream_pool().await
     }
 
+    // FR-2a: these four delegate to the shared audience-free gates in
+    // `peer_contract.rs` over borrowed fields — no `self.peer_contract()`
+    // construction (that clones a deep `McpRouteScope` per call).
+
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
-        self.peer_contract().service_visible_on_mcp(service).await
+        #[cfg(feature = "gateway")]
+        {
+            crate::mcp::peer_contract::mcp_service_visible(
+                &self.route_scope,
+                self.gateway_manager.as_deref(),
+                service,
+            )
+            .await
+        }
+        #[cfg(not(feature = "gateway"))]
+        {
+            self.route_scope.allows_service(service)
+        }
     }
 
     pub(crate) async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
         #[cfg(feature = "gateway")]
-        match &self.gateway_manager {
-            Some(manager) => {
-                manager
-                    .mcp_action_allowed_for_service(service, action)
-                    .await
-            }
-            None => true,
+        {
+            crate::mcp::peer_contract::mcp_action_allowed(
+                self.gateway_manager.as_deref(),
+                service,
+                action,
+            )
+            .await
         }
         #[cfg(not(feature = "gateway"))]
         {
@@ -247,30 +264,23 @@ impl LabMcpServer {
     #[cfg(feature = "gateway")]
     /// Whether the current route can safely advertise and execute Add Server.
     pub(crate) async fn add_server_app_available_on_mcp(&self) -> bool {
-        self.route_scope.allows_service("gateway")
-            && self.gateway_manager.is_some()
-            && self
-                .registry
-                .services()
-                .iter()
-                .any(|entry| entry.name == "gateway")
-            && self.service_visible_on_mcp("gateway").await
-            && self.action_allowed_on_mcp("gateway", "gateway.test").await
-            && self.action_allowed_on_mcp("gateway", "gateway.add").await
+        crate::mcp::peer_contract::add_server_app_available(
+            &self.route_scope,
+            self.gateway_manager.as_deref(),
+            &self.registry,
+        )
+        .await
     }
 
     #[cfg(feature = "gateway")]
     /// Whether the current route can safely advertise live gateway status.
     pub(crate) async fn gateway_status_app_available_on_mcp(&self) -> bool {
-        self.route_scope.allows_service("gateway")
-            && self.gateway_manager.is_some()
-            && self
-                .registry
-                .services()
-                .iter()
-                .any(|entry| entry.name == "gateway")
-            && self.service_visible_on_mcp("gateway").await
-            && self.action_allowed_on_mcp("gateway", "gateway.list").await
+        crate::mcp::peer_contract::gateway_status_app_available(
+            &self.route_scope,
+            self.gateway_manager.as_deref(),
+            &self.registry,
+        )
+        .await
     }
 
     pub(crate) async fn allowed_mcp_actions(&self, service: &str) -> Option<Vec<String>> {
@@ -470,6 +480,7 @@ impl LabMcpServer {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
 

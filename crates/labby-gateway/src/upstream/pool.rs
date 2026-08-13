@@ -213,6 +213,13 @@ pub struct UpstreamPool {
     /// Optional connector for in-process (built-in) service peers.
     /// When set, built-in lab services are reachable via the upstream pool.
     in_process_connector: Option<InProcessConnector>,
+    /// Single-flight guard + last-attempt timestamp for
+    /// `ensure_in_process_service_peers`: concurrent catalog builds serialize
+    /// here (only one registers; the rest re-check and find entries present),
+    /// and a persistently failing peer is retried at most once per cooldown
+    /// window instead of on every catalog build. `Arc`-shared so pool clones
+    /// serialize on the same guard.
+    in_process_ensure_state: Arc<Mutex<Option<Instant>>>,
     /// Shared `reqwest::Client` used for ALL non-OAuth HTTP upstream connections.
     ///
     /// `reqwest::Client` is internally `Arc`-wrapped and holds a connection pool:
@@ -413,6 +420,7 @@ impl UpstreamPool {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             relay_timeout: DEFAULT_RELAY_TIMEOUT,
             in_process_connector: None,
+            in_process_ensure_state: Arc::new(Mutex::new(None)),
             shared_http_client,
             usage_store: None,
         }

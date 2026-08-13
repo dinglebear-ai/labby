@@ -38,6 +38,12 @@ use serde_json::{Value, json};
 /// ```json
 /// { "ok": true, "service": "gateway-alpha", "action": "status.list", "data": […] }
 /// ```
+///
+/// This shape is advertised as every builtin tool's MCP `outputSchema`
+/// (`mcp/permanent_tools.rs::dispatch_envelope_output_schema`, published at
+/// docs/contracts/schemas/dispatch-envelope.schema.json, contract at
+/// docs/contracts/mcp-tool-output.md). Adding or renaming a field here
+/// REQUIRES updating that schema in the same commit.
 #[must_use]
 pub fn build_success(service: &str, action: &str, data: &Value) -> Value {
     json!({

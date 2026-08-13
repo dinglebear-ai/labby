@@ -16,6 +16,16 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Namespace prefix owned by the synthetic in-process service peers that
+/// expose builtin Labby services to the Code Mode catalog (issue #210 FU-1).
+///
+/// Reserved in config validation, not merely by convention: an operator-named
+/// upstream that collides with `__in_process__<service>` would shadow the
+/// builtin's catalog entry, and a protected route that lists one in its
+/// `target.upstreams` would receive builtin tools the route is supposed to
+/// exclude. Both are rejected at load (bead lab-eyeuv).
+pub const IN_PROCESS_UPSTREAM_PREFIX: &str = "__in_process__";
+
 pub const CODE_MODE_HINT_MAX_CHARS: usize = 240;
 pub const CODE_MODE_HINT_MAX_WORDS: usize = 24;
 pub const CODE_MODE_HINT_SANITIZER_VERSION: &str = "code_mode_hint_v1";
@@ -684,6 +694,18 @@ impl UpstreamConfig {
                 name: self.name.clone(),
                 reason: "must contain only ASCII letters, digits, hyphens, underscores, and dots"
                     .to_string(),
+            });
+        }
+        // Reserved namespace: `__in_process__*` belongs to the synthetic
+        // builtin-service peers. A configured upstream using it would shadow
+        // a builtin's catalog entry and capture its Code Mode tool calls.
+        if self.name.starts_with(IN_PROCESS_UPSTREAM_PREFIX) {
+            return Err(ConfigError::InvalidName {
+                name: self.name.clone(),
+                reason: format!(
+                    "must not start with `{IN_PROCESS_UPSTREAM_PREFIX}` — that prefix is \
+                     reserved for Labby's built-in service peers"
+                ),
             });
         }
         if self.bearer_token_env.is_some() && self.oauth.is_some() {
@@ -1434,6 +1456,25 @@ impl GatewayConfig {
                         value: "gateway_subset target entries must not be empty".to_string(),
                     },
                 )?;
+                // A protected route must never name a synthetic in-process
+                // peer: builtins reach the Code Mode catalog only on the root
+                // scope, and listing one here would hand the route builtin
+                // tools it is meant to exclude (bead lab-eyeuv).
+                if let Some(reserved) = target
+                    .upstreams
+                    .iter()
+                    .find(|name| name.starts_with(IN_PROCESS_UPSTREAM_PREFIX))
+                {
+                    return Err(ConfigError::InvalidProtectedRoute {
+                        name: route.name.clone(),
+                        field: "target.upstreams",
+                        value: format!(
+                            "`{reserved}` uses the reserved `{IN_PROCESS_UPSTREAM_PREFIX}` \
+                             prefix; built-in service peers cannot be routed to a protected \
+                             subset — list the service under `target.services` instead"
+                        ),
+                    });
+                }
             }
             if route.target.is_some()
                 && (route.upstream.is_some() || !route.backend_url.trim().is_empty())
@@ -1849,5 +1890,67 @@ client_secret_env = "SECRET"
         assert_eq!(route.backend_mcp_path, "/mcp");
         assert!(route.enabled);
         assert_eq!(route.scopes, vec!["mcp:read", "mcp:write"]);
+    }
+
+    /// Bead lab-eyeuv: `__in_process__*` is the namespace of the synthetic
+    /// builtin-service peers (issue #210 FU-1). A configured upstream using
+    /// that prefix would shadow a builtin's catalog entry and capture its
+    /// Code Mode tool calls, so it is rejected at load rather than merely
+    /// discouraged by comment.
+    #[test]
+    fn upstream_name_rejects_the_reserved_in_process_prefix() {
+        let cfg: UpstreamConfig =
+            toml::from_str("name=\"__in_process__gateway\"\nurl=\"https://example.com/mcp\"\n")
+                .unwrap();
+
+        let error = cfg
+            .validate()
+            .expect_err("reserved prefix must be rejected");
+        let rendered = error.to_string();
+        assert!(rendered.contains("__in_process__"), "{rendered}");
+
+        // Ordinary names that merely contain the token are fine — only the
+        // prefix is reserved.
+        let ok: UpstreamConfig =
+            toml::from_str("name=\"my__in_process__thing\"\nurl=\"https://example.com/mcp\"\n")
+                .unwrap();
+        assert!(ok.validate().is_ok());
+    }
+
+    /// A protected route must not be able to opt itself into builtin tools by
+    /// naming a synthetic peer in its upstream allowlist — the `fail closed`
+    /// property FU-1 documents is now enforced, not assumed.
+    #[test]
+    fn protected_route_rejects_reserved_in_process_upstreams() {
+        let mut route: ProtectedMcpRouteConfig = toml::from_str(
+            "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+        )
+        .unwrap();
+        route.backend_url = String::new();
+        route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
+                services: Vec::new(),
+                expose_code_mode: false,
+            },
+        ));
+        let mut cfg = GatewayConfig {
+            protected_mcp_routes: vec![route],
+            ..GatewayConfig::default()
+        };
+
+        let error = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("a protected route must not name an in-process peer");
+        let rendered = error.to_string();
+        assert!(rendered.contains("__in_process__setup"), "{rendered}");
+        assert!(rendered.contains("target.services"), "{rendered}");
+    }
+
+    /// The reserved prefix and the name builder in `labby-gateway` must stay
+    /// in lockstep; the builder formats with this constant.
+    #[test]
+    fn in_process_prefix_constant_is_stable() {
+        assert_eq!(IN_PROCESS_UPSTREAM_PREFIX, "__in_process__");
     }
 }

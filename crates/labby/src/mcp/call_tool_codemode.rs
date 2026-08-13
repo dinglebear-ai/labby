@@ -753,6 +753,11 @@ impl LabMcpServer {
                     "input_tokens": input_tokens as u64,
                     "output_tokens": 0,
                     "result_shape": { "type": "undefined" },
+                    // `logs_count` is required by `code_mode_trace_output_schema`;
+                    // this is internal consistency for trace consumers (the
+                    // inline inspector reads structuredContent on both paths),
+                    // not spec conformance — the trace is `isError` and exempt.
+                    "logs_count": 0,
                 });
                 let mut result = CallToolResult::error(vec![ContentBlock::text(env.to_string())]);
                 result.structured_content = Some(structured);

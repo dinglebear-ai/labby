@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dinglebear.ai/schemas/labby/dispatch-envelope-v1.json",
+  "title": "Labby Dispatch Success Envelope",
+  "description": "Structured content returned by a Labby builtin service tool on success. Advertised as that tool's MCP outputSchema. Error results are deliberately excluded: the ecosystem treats isError results as exempt from outputSchema conformance by convention (this is NOT explicit spec text), and Labby's completed-error envelope is separately schema-locked at docs/contracts/schemas/agent-error.schema.json, which rewraps rather than preserves a tool's success shape. Scope caveat: builtin service tools are suppressed from tools/list whenever Code Mode is enabled, so this schema reaches clients only in Raw mode (server_logs excepted).",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "const": true,
+      "description": "Always true on the success branch. The error envelope carries ok: false and is not described by this schema."
+    },
+    "service": {
+      "type": "string",
+      "description": "Name of the service tool that answered the call. Equals the MCP tool name."
+    },
+    "action": {
+      "type": "string",
+      "description": "Resolved dotted action, e.g. `gateway.list`. Includes the built-in `help` and `schema` actions."
+    },
+    "data": {
+      "description": "Action-specific payload. Deliberately unconstrained: one tool serves many actions, so a tool-level schema cannot express per-action shapes. No machine-readable per-action result schema exists today."
+    }
+  },
+  "required": ["ok", "service", "action", "data"],
+  "additionalProperties": true
+}
