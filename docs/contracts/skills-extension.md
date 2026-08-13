@@ -1,3 +1,9 @@
+---
+title: Skills extension contract
+created: 2026-08-12
+updated: 2026-08-12
+---
+
 # Skills Extension Contract (SEP-2640)
 
 > **Status: unmerged draft.** SEP-2640 is on the MCP Extensions Track and has
