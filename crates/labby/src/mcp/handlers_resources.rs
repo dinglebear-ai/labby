@@ -2320,8 +2320,8 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
         );
-        let uri = add_server_app_resource_uri_for_tool(crate::mcp::catalog::ADD_SERVER_TOOL_NAME)
-            .expect("add server app uri");
+        let uri =
+            add_server_app_resource_uri_for_tool(ADD_SERVER_TOOL_NAME).expect("add server app uri");
 
         let err = running
             .service()

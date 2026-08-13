@@ -326,7 +326,7 @@ mod tests {
 
     struct StubRegistry(&'static [&'static str]);
 
-    impl crate::registry::InProcessServiceRegistry for StubRegistry {
+    impl InProcessServiceRegistry for StubRegistry {
         fn in_process_services(&self) -> Vec<Box<dyn InProcessService>> {
             self.0.iter().map(|name| service(name)).collect()
         }

@@ -220,7 +220,7 @@ mod tests {
     async fn in_process_peer_lists_its_service_under_process_code_mode() {
         crate::config::set_process_code_mode_enabled(true);
 
-        let service = crate::registry::RegisteredService {
+        let service = RegisteredService {
             name: "gateway-alpha",
             description: "Gateway alpha",
             category: "network",
