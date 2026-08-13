@@ -11,7 +11,7 @@ use crate::oauth::secret::Secret;
 /// Subset of the RFC 8414 authorization-server metadata the client needs.
 /// Extra fields in the document are ignored. `registration_endpoint` is
 /// optional — a DCR-disabled server omits it. `native_callback_endpoint`/
-/// `native_poll_endpoint` are Labby's RFC 8252 §7.1-style extension: when
+/// `native_poll_endpoint_v2` are Labby's versioned RFC 8252-style extension: when
 /// present, the redirect_uri is the *server's own* HTTPS route rather than a
 /// client-run loopback listener, sidestepping browser HTTP↔HTTPS loopback
 /// quirks entirely (see `crates/labby-auth`'s `native_callback`/`native_poll`
@@ -25,12 +25,20 @@ pub(crate) struct AuthServerMetadata {
     #[serde(default)]
     pub native_callback_endpoint: Option<String>,
     #[serde(default)]
-    pub native_poll_endpoint: Option<String>,
+    pub native_poll_endpoint_v2: Option<String>,
+    #[serde(default)]
+    pub native_authorization_start_media_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct NativePollResponse {
     code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct NativeAuthorizationStartResponse {
+    pub authorization_url: String,
+    pub poll_token: String,
 }
 
 /// The `/token` success response (lab-auth omits `refresh_token` when the
@@ -220,14 +228,14 @@ pub(crate) async fn exchange_code(
     .map_err(|e| e.message)
 }
 
-/// Poll `{server}/native/poll?state=...` until the server has stashed the
+/// POST a JSON polling credential to `{server}/native/poll` until the server has stashed the
 /// authorization code (the browser completed sign-in against the server's own
 /// `native_callback_endpoint`), or `timeout` elapses. A `202 Accepted` with no
 /// code means "not yet" — keep polling; any other non-success status is fatal.
 pub(crate) async fn poll_native_code(
     client: &reqwest::Client,
     poll_endpoint: &str,
-    state: &str,
+    poll_token: &str,
     timeout: Duration,
 ) -> Result<String, String> {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -240,8 +248,8 @@ pub(crate) async fn poll_native_code(
         let response = tokio::time::timeout(
             remaining,
             client
-                .get(poll_endpoint)
-                .query(&[("state", state)])
+                .post(poll_endpoint)
+                .json(&serde_json::json!({ "poll_token": poll_token }))
                 .header(reqwest::header::ACCEPT, "application/json")
                 .send(),
         )

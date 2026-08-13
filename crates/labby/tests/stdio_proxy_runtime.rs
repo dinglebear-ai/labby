@@ -314,6 +314,12 @@ async fn oauth_state(temp: &tempfile::TempDir) -> Arc<AuthState> {
         key_path: temp.path().join("auth-jwt.pem"),
         scopes_supported: vec!["mcp:read".to_string(), "mcp:write".to_string()],
         disable_static_token_with_oauth: true,
+        token_encryption_key: Some(
+            labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            )
+            .unwrap(),
+        ),
         ..AuthConfig::default()
     };
     Arc::new(AuthState::new(config).await.unwrap())
@@ -748,6 +754,10 @@ async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
         .env("LABBY_AUTH_ADMIN_EMAIL", "admin@example.com")
         .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
         .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret")
+        .env(
+            "LABBY_TOKEN_ENCRYPTION_KEY",
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -887,6 +897,10 @@ exit 2
         .env("LABBY_AUTH_ADMIN_EMAIL", "admin@example.com")
         .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
         .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret")
+        .env(
+            "LABBY_TOKEN_ENCRYPTION_KEY",
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
         .env("LABBY_TAILSCALE_BIN", &tailscale)
         .env("LABBY_PROXY_TEST_RENEW_MS", "100")
         .stdout(std::process::Stdio::piped())

@@ -401,7 +401,14 @@ mod tests {
 
     async fn test_store() -> SqliteStore {
         let path = tempfile::tempdir().unwrap().keep().join("auth.db");
-        SqliteStore::open(path).await.unwrap()
+        SqliteStore::open_with_key(
+            path,
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "google-store-test-key",
+            )),
+        )
+        .await
+        .unwrap()
     }
 
     fn provider() -> Arc<GoogleProvider> {

@@ -674,6 +674,37 @@ mod tests {
         assert!(oauth_pool.connections.read().await.contains_key("raw"));
     }
 
+    #[tokio::test]
+    async fn allowlist_subject_revocation_closes_generic_peer_before_next_use() {
+        let pool = static_catalog_pool("shared-google").await;
+        pool.generic_oauth_subjects
+            .write()
+            .await
+            .insert("shared-google".to_string(), "removed-subject".to_string());
+        assert!(pool.connections.read().await.contains_key("shared-google"));
+
+        let invalidated = pool
+            .invalidate_oauth_subject_sessions(
+                "shared-google",
+                "removed-subject",
+                "auth.allowed_user.remove",
+            )
+            .await;
+
+        assert_eq!(invalidated.generic_connections, 1);
+        assert!(
+            !pool.connections.read().await.contains_key("shared-google"),
+            "the next upstream use must not reuse the peer authenticated by the removed credential"
+        );
+        assert!(
+            !pool
+                .generic_oauth_subjects
+                .read()
+                .await
+                .contains_key("shared-google")
+        );
+    }
+
     /// P-C1: `evict_subject_connections_for` removes only entries keyed to the
     /// given upstream, leaving other upstreams' subject connections intact.
     ///

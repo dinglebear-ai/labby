@@ -198,6 +198,63 @@ impl GatewayManager {
         invalidated
     }
 
+    /// Fence every shared-Google upstream runtime for one revoked subject.
+    ///
+    /// The caller must durably revoke the provider credential first. This
+    /// method then holds the shared lifecycle barrier while evicting the OAuth
+    /// client cache and closing subject, generic, relay, and task-retained
+    /// peers, so a successful administrative revocation cannot republish a
+    /// client built from the old credential.
+    pub async fn google_provider_lifecycle_write_guard(
+        &self,
+    ) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        match &self.oauth_client_cache {
+            Some(cache) => Some(cache.invalidation_barrier().write_owned().await),
+            None => None,
+        }
+    }
+
+    /// Drain one subject while the caller holds the lifecycle write barrier.
+    pub async fn invalidate_google_provider_subject_runtime_guarded(
+        &self,
+        subject: &str,
+        reason: &'static str,
+    ) -> OAuthSessionInvalidation {
+        let shared_upstreams = {
+            let config = self.config.read().await;
+            Self::google_provider_upstream_names(&config)
+        };
+        let mut total = OAuthSessionInvalidation::default();
+        if let Some(pool) = self.current_pool_sync() {
+            for upstream in &shared_upstreams {
+                let invalidated = pool
+                    .invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
+                    .await;
+                total.generic_connections += invalidated.generic_connections;
+                total.subject_connections += invalidated.subject_connections;
+                total.relay_connections += invalidated.relay_connections;
+                total.task_routes += invalidated.task_routes;
+            }
+        } else if let Some(cache) = &self.oauth_client_cache {
+            for upstream in &shared_upstreams {
+                cache.evict_subject(upstream, subject);
+            }
+        }
+        tracing::info!(
+            service = "upstream_oauth",
+            action = "allowlist_subject.invalidate",
+            reason,
+            affected_upstreams = shared_upstreams.len(),
+            generic_connections = total.generic_connections,
+            subject_connections = total.subject_connections,
+            relay_connections = total.relay_connections,
+            task_routes = total.task_routes,
+            invalidated_total = total.total(),
+            "allowlist subject OAuth runtime invalidated"
+        );
+        total
+    }
+
     /// Look up the `UpstreamOauthManager` for `upstream` and return it, or
     /// emit a structured warning and return a `not_found` error.
     ///

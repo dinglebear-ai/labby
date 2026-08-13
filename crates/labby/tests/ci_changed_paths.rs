@@ -400,13 +400,14 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "Ubuntu 26.04 runners must install explicit runtime libraries instead of using Playwright's unsupported distro detector"
     );
     assert!(browser_job.contains("Verify cached Playwright browser launch"));
+    assert!(browser_job.contains("Install Playwright browser on hosted fork runner"));
+    assert!(browser_job.contains("pnpm exec playwright install chromium"));
+    assert!(
+        browser_job.contains("github.event.pull_request.head.repo.full_name != github.repository")
+    );
     assert!(browser_job.contains("chromium.executablePath()"));
     assert!(browser_job.contains("fs.existsSync(executable)"));
     assert!(browser_job.contains("chromium.launch({ headless: true })"));
-    assert!(
-        !browser_job.contains("pnpm exec playwright install chromium"),
-        "Ubuntu 26.04 runners must use the image-provided Playwright browser"
-    );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));
 
     let codemode_smoke = workflow
@@ -496,6 +497,37 @@ fn ci_workflow_text() -> String {
 
 fn ci_workflow_yaml(text: &str) -> serde_yaml::Value {
     serde_yaml::from_str(text).expect("parse ci.yml")
+}
+
+#[test]
+fn fork_code_never_runs_on_the_self_hosted_runner_pool() {
+    let workflow = ci_workflow_yaml(&ci_workflow_text());
+    let jobs = workflow["jobs"].as_mapping().expect("workflow jobs");
+    let fork_condition = "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository";
+    for (name, job) in jobs {
+        let Some(runner) = job["runs-on"].as_str() else {
+            continue;
+        };
+        if !runner.contains("ci-pool-") {
+            continue;
+        }
+        let pool = runner
+            .split("' || '")
+            .nth(1)
+            .and_then(|tail| tail.strip_suffix("' }}"))
+            .expect("runner expression ends in a literal self-hosted pool");
+        let expected = format!("${{{{ {fork_condition} && 'ubuntu-latest' || '{pool}' }}}}");
+        assert!(
+            runner == expected,
+            "job `{}` must use the exact fork-safe hosted-runner conditional; expected `{expected}`, got `{runner}`",
+            name.as_str().expect("job name")
+        );
+    }
+    assert_eq!(
+        jobs[serde_yaml::Value::String("test-fork".to_string())]["runs-on"].as_str(),
+        Some("ubuntu-latest"),
+        "the dedicated fork test job must always use GitHub-hosted Ubuntu"
+    );
 }
 
 /// Adding a routing key to `changed_paths.py` and gating a job on it are only

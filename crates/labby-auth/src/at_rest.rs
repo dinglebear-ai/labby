@@ -9,9 +9,9 @@
 /// The encryption key is a 32-byte value derived from the
 /// `{PREFIX}_TOKEN_ENCRYPTION_KEY` environment variable, which must be
 /// either 64 hex digits or 43 base64url-no-pad characters.  When the env
-/// var is absent the helper functions are no-ops: data is stored as-is
-/// (backward-compatible with existing deployments that haven't opted in to
-/// at-rest protection yet).
+/// Product OAuth and the central Google credential broker require this key.
+/// The optional helpers remain available only for credential stores whose
+/// callers explicitly support an unencrypted mode.
 ///
 /// # Storage format
 ///
@@ -170,6 +170,19 @@ pub fn maybe_encrypt(key: Option<&TokenEncryptionKey>, value: &str) -> Result<St
     }
 }
 
+/// Encrypt a provider credential, refusing to persist it without a key.
+///
+/// Use this at security boundaries that must never support plaintext storage,
+/// such as the central Google credential broker.
+pub fn require_encrypt(key: Option<&TokenEncryptionKey>, value: &str) -> Result<String, AuthError> {
+    let key = key.ok_or_else(|| {
+        AuthError::Config(
+            "TOKEN_ENCRYPTION_KEY is required to persist Google provider credentials".to_string(),
+        )
+    })?;
+    encrypt_provider_token(key, value)
+}
+
 /// Attempt to decrypt `stored` if it carries the `"enc:"` prefix.  If no
 /// key is provided but the value is encrypted, return an error — the caller
 /// should not silently return ciphertext as the token value.
@@ -234,6 +247,12 @@ mod tests {
         let value = "some-token";
         let result = maybe_encrypt(None, value).unwrap();
         assert_eq!(result, value);
+    }
+
+    #[test]
+    fn required_encryption_fails_closed_without_key() {
+        let error = require_encrypt(None, "must-not-be-persisted").unwrap_err();
+        assert!(error.to_string().contains("TOKEN_ENCRYPTION_KEY"));
     }
 
     #[test]

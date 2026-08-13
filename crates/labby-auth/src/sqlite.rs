@@ -177,8 +177,8 @@ impl SqliteStore {
             conn.execute(
                 "INSERT INTO authorization_requests (
                     state, client_id, redirect_uri, client_state, resource, scope, provider_code_verifier,
-                    code_challenge, code_challenge_method, created_at, expires_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    code_challenge, code_challenge_method, created_at, expires_at, native_poll_token_hash
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     request.state,
                     request.client_id,
@@ -191,6 +191,7 @@ impl SqliteStore {
                     request.code_challenge_method,
                     request.created_at,
                     request.expires_at,
+                    request.native_poll_token_hash,
                 ],
             )
             .map_err(sqlite_error)?;
@@ -211,7 +212,8 @@ impl SqliteStore {
                  WHERE state = ?1
                    AND expires_at > ?2
                  RETURNING state, client_id, redirect_uri, client_state, scope, provider_code_verifier,
-                           code_challenge, code_challenge_method, created_at, expires_at, resource",
+                           code_challenge, code_challenge_method, created_at, expires_at, resource,
+                           native_poll_token_hash",
                 params![state, now],
                 row_to_authorization_request,
             )
@@ -482,11 +484,10 @@ impl SqliteStore {
         .await
     }
 
-    /// Store a native-flow authorization code keyed by `state`, for the
+    /// Store a native-flow authorization code keyed by a polling-token hash, for the
     /// polling desktop client to retrieve via `take_native_authorization_result`.
     ///
-    /// Last-write-wins on a `state` collision (e.g. a client retrying
-    /// `/authorize` with the same `state` after a timeout): each row is
+    /// Last-write-wins on an effectively impossible token-hash collision: each row is
     /// single-use (deleted on first successful poll), so overwriting with the
     /// newest code is correct — silently dropping the newest code instead
     /// (`DO NOTHING`) would leave the polling client hung until the row's TTL
@@ -497,14 +498,14 @@ impl SqliteStore {
     ) -> Result<(), AuthError> {
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO native_authorization_results (state, code, created_at, expires_at)
+                "INSERT INTO native_authorization_results (poll_token_hash, code, created_at, expires_at)
                  VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(state) DO UPDATE SET
+                 ON CONFLICT(poll_token_hash) DO UPDATE SET
                     code = excluded.code,
                     created_at = excluded.created_at,
                     expires_at = excluded.expires_at",
                 params![
-                    result.state,
+                    result.poll_token_hash,
                     result.code,
                     result.created_at,
                     result.expires_at,
@@ -519,17 +520,17 @@ impl SqliteStore {
     /// One-shot read-and-delete of a pending native-flow authorization code.
     pub async fn take_native_authorization_result(
         &self,
-        state: &str,
+        poll_token_hash: &str,
     ) -> Result<Option<NativeAuthorizationResultRow>, AuthError> {
-        let state = state.to_string();
+        let poll_token_hash = poll_token_hash.to_string();
         let now = now_unix();
         self.with_conn(move |conn| {
             conn.query_row(
                 "DELETE FROM native_authorization_results
-                 WHERE state = ?1
+                 WHERE poll_token_hash = ?1
                    AND expires_at > ?2
-                 RETURNING state, code, created_at, expires_at",
-                params![state, now],
+                 RETURNING poll_token_hash, code, created_at, expires_at",
+                params![poll_token_hash, now],
                 row_to_native_authorization_result,
             )
             .optional()
@@ -947,15 +948,118 @@ impl SqliteStore {
         .await
     }
 
-    /// Remove an email address from the allowlist.
+    /// Remove only an email address from the allowlist.
     ///
-    /// Idempotent: returns `Ok(())` even if the email was not present.
-    pub async fn remove_allowed_user(&self, email: &str) -> Result<(), AuthError> {
+    /// This narrow operation is for deleting a redundant row matching the
+    /// configured bootstrap admin, whose authorization remains in config.
+    /// Other callers must use [`Self::remove_allowed_user`].
+    pub async fn remove_bootstrap_admin_allowlist_entry(
+        &self,
+        email: &str,
+    ) -> Result<(), AuthError> {
         let email = email.to_lowercase();
         self.with_conn(move |conn| {
             conn.execute("DELETE FROM allowed_users WHERE email = ?1", params![email])
                 .map_err(sqlite_error)?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Remove an allowlist entry and revoke renewable credentials for every
+    /// subject currently associated with that email.
+    ///
+    /// The allowlist deletion, browser sessions, local OAuth grants, central
+    /// provider credentials, and provider-revocation epochs share one
+    /// transaction so a successful return cannot leave renewable authority
+    /// behind. Already-issued signed access tokens remain valid only until
+    /// their configured expiry because they are deliberately stateless.
+    pub async fn remove_allowed_user(
+        &self,
+        email: &str,
+    ) -> Result<crate::types::AllowedUserRevocation, AuthError> {
+        let email = email.to_lowercase();
+        self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            let subjects = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT subject FROM browser_sessions WHERE email = ?1 COLLATE NOCASE
+                         UNION SELECT subject FROM google_provider_credentials
+                         WHERE email = ?1 COLLATE NOCASE",
+                    )
+                    .map_err(sqlite_error)?;
+                statement
+                    .query_map(params![email], |row| row.get::<_, String>(0))
+                    .map_err(sqlite_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(sqlite_error)?
+            };
+            let encoded_subjects = serde_json::to_string(&subjects).map_err(|error| {
+                AuthError::Storage(format!("failed to encode revocation subjects: {error}"))
+            })?;
+            let revoked_refresh_tokens = transaction
+                .execute(
+                    "DELETE FROM refresh_tokens WHERE subject IN
+                     (SELECT value FROM json_each(?1))",
+                    params![encoded_subjects],
+                )
+                .map_err(sqlite_error)?;
+            let revoked_authorization_codes = transaction
+                .execute(
+                    "DELETE FROM authorization_codes WHERE subject IN
+                     (SELECT value FROM json_each(?1))",
+                    params![encoded_subjects],
+                )
+                .map_err(sqlite_error)?;
+            let revoked_provider_credentials = transaction
+                .execute(
+                    "DELETE FROM google_provider_credentials WHERE subject IN
+                     (SELECT value FROM json_each(?1))",
+                    params![encoded_subjects],
+                )
+                .map_err(sqlite_error)?;
+            for subject in &subjects {
+                transaction
+                    .execute(
+                        "INSERT INTO google_provider_revocations (subject, epoch, updated_at)
+                     VALUES (?1, 1, ?2) ON CONFLICT(subject) DO UPDATE SET
+                     epoch = google_provider_revocations.epoch + 1,
+                     updated_at = excluded.updated_at",
+                        params![subject, now_unix()],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+            if !subjects.is_empty() {
+                transaction
+                    .execute(
+                        "INSERT INTO google_provider_revocations (subject, epoch, updated_at)
+                     VALUES ('*', 1, ?1) ON CONFLICT(subject) DO UPDATE SET
+                     epoch = google_provider_revocations.epoch + 1,
+                     updated_at = excluded.updated_at",
+                        params![now_unix()],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+            let revoked_sessions = transaction
+                .execute(
+                    "DELETE FROM browser_sessions
+                     WHERE email = ?1 COLLATE NOCASE
+                        OR subject IN (SELECT value FROM json_each(?2))",
+                    params![email, encoded_subjects],
+                )
+                .map_err(sqlite_error)?;
+            transaction
+                .execute("DELETE FROM allowed_users WHERE email = ?1", params![email])
+                .map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            Ok(crate::types::AllowedUserRevocation {
+                subjects,
+                revoked_sessions: revoked_sessions as u64,
+                revoked_provider_credentials: revoked_provider_credentials as u64,
+                revoked_refresh_tokens: revoked_refresh_tokens as u64,
+                revoked_authorization_codes: revoked_authorization_codes as u64,
+            })
         })
         .await
     }
@@ -1044,6 +1148,7 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             client_id TEXT NOT NULL,
             redirect_uri TEXT NOT NULL,
             client_state TEXT NOT NULL,
+            native_poll_token_hash TEXT,
             resource TEXT NOT NULL DEFAULT '',
             scope TEXT NOT NULL,
             provider_code_verifier TEXT NOT NULL,
@@ -1122,7 +1227,7 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             expires_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS native_authorization_results (
-            state TEXT PRIMARY KEY,
+            poll_token_hash TEXT PRIMARY KEY,
             code TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
@@ -1262,6 +1367,8 @@ fn add_column_if_missing(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    use rusqlite::params;
 
     use rusqlite::Connection;
 
@@ -1610,8 +1717,11 @@ mod tests {
     #[tokio::test]
     async fn google_provider_revoke_epoch_prevents_stale_cross_store_recreation() {
         let path = temp_db_path();
-        let writer = SqliteStore::open(path.clone()).await.unwrap();
-        let revoker = SqliteStore::open(path).await.unwrap();
+        let key = TokenEncryptionKey::from_passphrase("revocation-cross-store-key");
+        let writer = SqliteStore::open_with_key(path.clone(), Some(key.clone()))
+            .await
+            .unwrap();
+        let revoker = SqliteStore::open_with_key(path, Some(key)).await.unwrap();
         let now = now_unix();
         let update = GoogleProviderCredentialUpdate {
             subject: "google-subject-revoked".to_string(),
@@ -1724,23 +1834,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn google_provider_bundle_refuses_plaintext_persistence_without_a_key() {
+        let path = temp_db_path();
+        let store = SqliteStore::open(path.clone()).await.unwrap();
+        let now = now_unix();
+        let error = store
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "must-not-persist".to_string(),
+                email: Some("admin@example.com".to_string()),
+                client_id: "google-client".to_string(),
+                granted_scopes: vec!["openid".to_string()],
+                access_token: "sensitive-access".to_string(),
+                refresh_token: "sensitive-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: None,
+                refreshed: false,
+                scope_upgraded: false,
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("TOKEN_ENCRYPTION_KEY"));
+
+        let conn = Connection::open(path).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM google_provider_credentials WHERE subject = ?1",
+                ["must-not-persist"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "failed encryption must not write any credential row"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_plaintext_google_provider_row_is_not_served_without_a_key() {
+        let path = temp_db_path();
+        let store = SqliteStore::open(path).await.unwrap();
+        let now = now_unix();
+        store
+            .with_conn(move |conn| {
+                conn.execute(
+                    "INSERT INTO google_provider_credentials (
+                        subject, client_id, granted_scopes_json, access_token, refresh_token,
+                        generation, created_at, updated_at
+                     ) VALUES (?1, ?2, '[]', ?3, ?4, 1, ?5, ?5)",
+                    params!["legacy-no-key", "google-client", "access", "refresh", now],
+                )
+                .map_err(sqlite_error)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let error = store
+            .find_google_provider_credential("legacy-no-key")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("TOKEN_ENCRYPTION_KEY"));
+    }
+
+    #[tokio::test]
     async fn opening_with_a_key_encrypts_legacy_plaintext_provider_tokens() {
         let path = temp_db_path();
         let plaintext_store = SqliteStore::open(path.clone()).await.unwrap();
         let now = now_unix();
         plaintext_store
-            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
-                subject: "legacy-google-subject".to_string(),
-                email: Some("legacy@example.com".to_string()),
-                client_id: "google-client".to_string(),
-                granted_scopes: vec!["openid".to_string()],
-                access_token: "legacy-access".to_string(),
-                refresh_token: "legacy-refresh".to_string(),
-                token_received_at: now,
-                access_token_expires_at: now + 3600,
-                issuer: Some("https://accounts.google.com".to_string()),
-                refreshed: false,
-                scope_upgraded: true,
+            .with_conn(move |conn| {
+                conn.execute(
+                    "INSERT INTO google_provider_credentials (
+                    subject, email, client_id, granted_scopes_json, access_token,
+                    refresh_token, token_received_at, access_token_expires_at, issuer,
+                    generation, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?7, ?7)",
+                    params![
+                        "legacy-google-subject",
+                        "legacy@example.com",
+                        "google-client",
+                        "[\"openid\"]",
+                        "legacy-access",
+                        "legacy-refresh",
+                        now,
+                        now + 3600,
+                        "https://accounts.google.com"
+                    ],
+                )
+                .map_err(sqlite_error)?;
+                Ok(())
             })
             .await
             .unwrap();
@@ -1789,7 +1972,10 @@ mod tests {
     #[tokio::test]
     async fn legacy_encryption_snapshot_cannot_overwrite_a_newer_cross_store_bundle() {
         let path = temp_db_path();
-        let writer = SqliteStore::open(path.clone()).await.unwrap();
+        let migration_key = TokenEncryptionKey::from_passphrase("legacy-race-key");
+        let writer = SqliteStore::open_with_key(path.clone(), Some(migration_key.clone()))
+            .await
+            .unwrap();
         let now = now_unix();
         let update = move |access: &str, refresh: &str| GoogleProviderCredentialUpdate {
             subject: "legacy-race-subject".to_string(),
@@ -1805,7 +1991,27 @@ mod tests {
             scope_upgraded: false,
         };
         writer
-            .upsert_google_provider_token_bundle(update("old-access", "old-refresh"))
+            .with_conn(move |conn| {
+                conn.execute(
+                    "INSERT INTO google_provider_credentials (
+                    subject, email, client_id, granted_scopes_json, access_token,
+                    refresh_token, token_received_at, access_token_expires_at,
+                    generation, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?7, ?7)",
+                    params![
+                        "legacy-race-subject",
+                        "admin@example.com",
+                        "google-client",
+                        "[\"openid\"]",
+                        "old-access",
+                        "old-refresh",
+                        now,
+                        now + 3600
+                    ],
+                )
+                .map_err(sqlite_error)?;
+                Ok(())
+            })
             .await
             .unwrap();
         let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(0);
@@ -2265,7 +2471,12 @@ mod tests {
         }
         crate::util::set_restrictive_permissions(&path).unwrap();
 
-        let migrated = SqliteStore::open(path).await.unwrap();
+        let migrated = SqliteStore::open_with_key(
+            path,
+            Some(TokenEncryptionKey::from_passphrase("v7-migration-test-key")),
+        )
+        .await
+        .unwrap();
         let credential = migrated
             .find_google_provider_credential("google-subject-123")
             .await
@@ -2354,7 +2565,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_and_v8_upgraded_schemas_include_v9_google_revocation_epochs() {
+    async fn fresh_and_v8_upgraded_schemas_include_v10_revocations_and_native_poll_hashes() {
         let path = temp_db_path();
         let fresh = SqliteStore::open(path.clone()).await.unwrap();
         assert!(
@@ -2362,10 +2573,42 @@ mod tests {
                 .await
                 .contains(&"epoch".to_string())
         );
+        assert!(
+            table_columns(&fresh, "authorization_requests")
+                .await
+                .contains(&"native_poll_token_hash".to_string())
+        );
+        assert_eq!(
+            table_columns(&fresh, "native_authorization_results").await,
+            vec![
+                "poll_token_hash".to_string(),
+                "code".to_string(),
+                "created_at".to_string(),
+                "expires_at".to_string(),
+            ]
+        );
+        assert!(
+            !table_columns(&fresh, "assertion_jtis")
+                .await
+                .contains(&"native_poll_token_hash".to_string())
+        );
         drop(fresh);
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch("DROP TABLE google_provider_revocations; PRAGMA user_version = 8;")
-            .unwrap();
+        conn.execute_batch(
+            "DROP TABLE google_provider_revocations;
+             DROP TABLE native_authorization_results;
+             CREATE TABLE native_authorization_results (
+               state TEXT PRIMARY KEY,
+               code TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL
+             );
+             INSERT INTO native_authorization_results
+               (state, code, created_at, expires_at)
+             VALUES ('attacker-known-state', 'legacy-code', 1, 9999999999);
+             PRAGMA user_version = 8;",
+        )
+        .unwrap();
         drop(conn);
         crate::util::set_restrictive_permissions(&path).unwrap();
         let upgraded = SqliteStore::open(path.clone()).await.unwrap();
@@ -2374,12 +2617,38 @@ mod tests {
                 .await
                 .contains(&"epoch".to_string())
         );
+        assert!(
+            table_columns(&upgraded, "authorization_requests")
+                .await
+                .contains(&"native_poll_token_hash".to_string())
+        );
+        assert_eq!(
+            table_columns(&upgraded, "native_authorization_results").await,
+            vec![
+                "poll_token_hash".to_string(),
+                "code".to_string(),
+                "created_at".to_string(),
+                "expires_at".to_string(),
+            ]
+        );
+        let legacy_rows = upgraded
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM native_authorization_results",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(legacy_rows, 0);
         drop(upgraded);
         let conn = Connection::open(path).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
     }
 
@@ -2422,7 +2691,12 @@ mod tests {
         }
         crate::util::set_restrictive_permissions(&path).unwrap();
 
-        let migrated = SqliteStore::open(path).await.unwrap();
+        let migrated = SqliteStore::open_with_key(
+            path,
+            Some(TokenEncryptionKey::from_passphrase("v8-migration-test-key")),
+        )
+        .await
+        .unwrap();
         let schema_version = migrated
             .with_conn(|conn| {
                 conn.query_row("PRAGMA user_version;", [], |row| row.get::<_, i64>(0))
@@ -2430,7 +2704,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 9);
+        assert_eq!(schema_version, 10);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await
@@ -2483,6 +2757,7 @@ mod tests {
                 client_id: "client".to_string(),
                 redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
                 client_state: "cs".to_string(),
+                native_poll_token_hash: None,
                 resource: "https://lab.example.com/mcp".to_string(),
                 scope: "lab".to_string(),
                 provider_code_verifier: "verifier".to_string(),
@@ -2523,7 +2798,14 @@ mod tests {
     }
 
     async fn temp_store() -> SqliteStore {
-        SqliteStore::open(temp_db_path()).await.unwrap()
+        SqliteStore::open_with_key(
+            temp_db_path(),
+            Some(TokenEncryptionKey::from_passphrase(
+                "sqlite-test-provider-key",
+            )),
+        )
+        .await
+        .unwrap()
     }
 
     async fn pragma(store: &SqliteStore, name: &str) -> String {

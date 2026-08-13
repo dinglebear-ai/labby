@@ -133,6 +133,9 @@ mod tests {
         config.google.client_id = "client-id".into();
         config.google.client_secret = "client-secret".into();
         config.admin_email = "admin@example.com".into();
+        config.token_encryption_key = Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+            "session-test-provider-key",
+        ));
         let dir = tempfile::tempdir().expect("tempdir");
         config.sqlite_path = dir.path().join("auth.db");
         config.key_path = dir.path().join("auth.pem");

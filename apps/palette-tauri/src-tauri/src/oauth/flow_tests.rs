@@ -6,7 +6,8 @@ fn meta() -> AuthServerMetadata {
         token_endpoint: "https://axon.example.com/token".to_string(),
         registration_endpoint: Some("https://axon.example.com/register".to_string()),
         native_callback_endpoint: None,
-        native_poll_endpoint: None,
+        native_poll_endpoint_v2: None,
+        native_authorization_start_media_type: None,
     }
 }
 

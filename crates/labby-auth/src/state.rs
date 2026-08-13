@@ -222,6 +222,13 @@ impl AuthState {
                 prefix = config.env_prefix
             )));
         }
+        if config.token_encryption_key.is_none() {
+            return Err(AuthError::Config(format!(
+                "{prefix}_TOKEN_ENCRYPTION_KEY is required when {prefix}_AUTH_MODE=oauth; \
+                 Google provider credentials must be encrypted at rest",
+                prefix = config.env_prefix
+            )));
+        }
 
         let public_url = config.public_url.clone().ok_or_else(|| {
             AuthError::Config(format!(
@@ -554,6 +561,9 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "state-test-google-provider-key",
+            )),
             access_token_ttl: Duration::from_hours(1),
             refresh_token_ttl: Duration::from_hours(1),
             auth_code_ttl: Duration::from_mins(5),
@@ -564,6 +574,18 @@ mod tests {
         })
         .await
         .expect("auth state")
+    }
+
+    #[tokio::test]
+    async fn auth_state_refuses_oauth_without_provider_credential_encryption() {
+        let mut config = crate::authorize::tests::test_auth_config();
+        config.token_encryption_key = None;
+        let error = AuthState::new(config)
+            .await
+            .err()
+            .expect("OAuth without provider encryption must fail closed");
+        assert!(error.to_string().contains("TOKEN_ENCRYPTION_KEY"));
+        assert!(error.to_string().contains("encrypted at rest"));
     }
 
     #[tokio::test]
@@ -635,6 +657,9 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "state-test-google-provider-key",
+            )),
             access_token_ttl: Duration::from_hours(1),
             refresh_token_ttl: Duration::from_hours(1),
             auth_code_ttl: Duration::from_mins(5),
@@ -666,6 +691,10 @@ mod tests {
                 ("LAB_GOOGLE_CLIENT_ID", "client-id"),
                 ("LAB_GOOGLE_CLIENT_SECRET", "client-secret"),
                 ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+                (
+                    "LAB_TOKEN_ENCRYPTION_KEY",
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                ),
                 (
                     "LAB_AUTH_SQLITE_PATH",
                     temp.path().join("auth.db").to_str().expect("sqlite path"),

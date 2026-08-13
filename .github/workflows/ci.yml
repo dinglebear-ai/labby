@@ -40,7 +40,7 @@ jobs:
 
   changes:
     name: changes
-    runs-on: ci-pool-ops
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-ops' }}
     timeout-minutes: 10
     outputs:
       # `all` and `docs` are exported for the run summary only — no job gates
@@ -232,7 +232,7 @@ jobs:
 
   unraid-plugin-check:
     name: Unraid plugin checksums
-    runs-on: ci-pool-ops
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-ops' }}
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.unraid == 'true' }}
@@ -249,7 +249,7 @@ jobs:
 
   actionlint:
     name: Actionlint
-    runs-on: ci-pool-ops
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-ops' }}
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.workflow == 'true' }}
@@ -271,7 +271,7 @@ jobs:
 
   frontend-assets:
     name: Frontend assets
-    runs-on: ci-pool-typescript
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-typescript' }}
     timeout-minutes: 20
     needs: changes
     if: >-
@@ -297,7 +297,7 @@ jobs:
 
   gateway-admin-browser:
     name: Gateway Admin browser tests
-    runs-on: ci-pool-typescript
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-typescript' }}
     timeout-minutes: 20
     env:
       # JIT jobs may run as root, while the fleet mounts the durable browser
@@ -381,6 +381,9 @@ jobs:
               libxkbcommon0 \
               libxrandr2
           fi
+      - name: Install Playwright browser on hosted fork runner
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: pnpm exec playwright install chromium
       # The self-hosted runner image carries the matching Playwright browser.
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
       # already cached, so verify the image contract with a real headless launch
@@ -408,7 +411,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -437,7 +440,7 @@ jobs:
 
   deny:
     name: Cargo Deny
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 20
     needs: changes
     if: ${{ needs.changes.outputs.security == 'true' }}
@@ -475,7 +478,7 @@ jobs:
   # and msrv additionally checks --all-targets.
   msrv:
     name: MSRV
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -496,7 +499,7 @@ jobs:
 
   codemode-runner-smoke:
     name: Code Mode runner smoke
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
@@ -519,7 +522,7 @@ jobs:
 
   npm-launcher:
     name: npm launcher
-    runs-on: ci-pool-typescript
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-typescript' }}
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.npm == 'true' }}
@@ -539,7 +542,7 @@ jobs:
 
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -594,7 +597,7 @@ jobs:
 
   extracted-crate-slices:
     name: Extracted crate slices
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 60
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -630,7 +633,7 @@ jobs:
 
   docs-check:
     name: Generated docs
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.docs_check == 'true' }}
@@ -651,7 +654,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -671,7 +674,7 @@ jobs:
 
   mcp-regressions:
     name: MCP focused regressions
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 60
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
@@ -710,7 +713,7 @@ jobs:
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 20
     needs: changes
     env:
@@ -751,7 +754,7 @@ jobs:
     name: Test
     # The Rust pool connects Kache to the fleet MinIO cache; no GitHub cache
     # save/restore layer is needed.
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 60
     env:
       # lld keeps the link step cheap. Do NOT reintroduce CARGO_BUILD_JOBS
@@ -801,7 +804,8 @@ jobs:
 
   test-fork:
     name: Test
-    runs-on: ci-pool-rust
+    # Fork code is untrusted and must never execute on the homelab runner pool.
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       # Match the internal-PR test job resource profile on the shared pool.
@@ -1038,7 +1042,7 @@ jobs:
 
   release-contract:
     name: Release metadata contract
-    runs-on: ci-pool-ops
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-ops' }}
     timeout-minutes: 10
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' }}
@@ -1053,7 +1057,7 @@ jobs:
 
   container-contract:
     name: Container source contract
-    runs-on: ci-pool-ops
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-ops' }}
     timeout-minutes: 10
     needs: changes
     if: ${{ needs.changes.outputs.docker == 'true' }}
@@ -1082,7 +1086,7 @@ jobs:
 
   palette-web:
     name: Palette renderer
-    runs-on: ci-pool-typescript
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-typescript' }}
     timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
@@ -1114,7 +1118,7 @@ jobs:
 
   palette-rust:
     name: Palette Tauri (Linux)
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
@@ -1168,7 +1172,7 @@ jobs:
 
   rust-coverage:
     name: Rust coverage
-    runs-on: ci-pool-rust
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-rust' }}
     timeout-minutes: 90
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
@@ -1217,7 +1221,7 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    runs-on: ci-pool-ops
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'ci-pool-ops' }}
     timeout-minutes: 10
     if: always()
     needs:

@@ -1,7 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect};
 use axum::{Json, response::Response};
 use base64::Engine;
@@ -20,11 +20,13 @@ use crate::state::AuthState;
 use crate::types::{
     AuthorizationCodeRow, AuthorizationRequestRow, AuthorizeQuery, BrowserLoginQuery,
     BrowserLoginStateRow, CallbackQuery, ClientRegistrationRequest, ClientRegistrationResponse,
-    NativeAuthorizationResultRow, NativePollQuery, NativePollResponse, RegisteredClient,
+    NativeAuthorizationResultRow, NativeAuthorizationStartResponse, NativeCallbackQuery,
+    NativePollQuery, NativePollResponse, RegisteredClient,
 };
 use crate::util::{expires_at, fingerprint, now_unix, random_token};
 
 const AUTH_REQUEST_TTL_SECS: i64 = 300;
+const NATIVE_START_MEDIA_TYPE: &str = "application/vnd.labby.native-oauth-start+json";
 const NATIVE_SUCCESS_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Signed in to Labby</h2><p>You can close this tab and return to the app.</p></body></html>"#;
 const NATIVE_CALLBACK_EXPIRED_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Sign-in link expired</h2><p>Return to the app and start sign-in again.</p></body></html>"#;
 
@@ -183,6 +185,7 @@ pub async fn register_client(
 pub async fn authorize(
     State(state): State<AuthState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(query): Query<AuthorizeQuery>,
 ) -> Result<Response, AuthError> {
     state.check_authorize_rate_limit(remote_ip(addr)).await?;
@@ -261,6 +264,31 @@ pub async fn authorize(
         );
     }
 
+    let native_callback_endpoint = crate::metadata::native_callback_endpoint(&state);
+    let is_native = query.redirect_uri == native_callback_endpoint;
+    let accepts_native_start = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|part| {
+                part.split(';').next().is_some_and(|essence| {
+                    essence.trim().eq_ignore_ascii_case(NATIVE_START_MEDIA_TYPE)
+                })
+            })
+        });
+    if is_native && !accepts_native_start {
+        return Err(AuthError::Validation(format!(
+            "native OAuth clients must request `{NATIVE_START_MEDIA_TYPE}` and use the returned poll_token"
+        )));
+    }
+    let native_poll_token = is_native
+        .then(|| random_token(32))
+        .transpose()?
+        .map(|token| {
+            let hash = URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()));
+            (token, hash)
+        });
+
     let provider_code_verifier = random_token(32)?;
     let provider_code_challenge =
         URL_SAFE_NO_PAD.encode(Sha256::digest(provider_code_verifier.as_bytes()));
@@ -274,6 +302,7 @@ pub async fn authorize(
             client_id: query.client_id.clone(),
             redirect_uri: query.redirect_uri.clone(),
             client_state: query.state.clone(),
+            native_poll_token_hash: native_poll_token.as_ref().map(|(_, hash)| hash.clone()),
             resource: resource.clone(),
             scope: scope.clone(),
             provider_code_verifier,
@@ -329,11 +358,23 @@ pub async fn authorize(
         "oauth authorize redirect URL generated"
     );
 
-    Ok((
-        StatusCode::FOUND,
-        [(header::LOCATION, location.to_string())],
-    )
-        .into_response())
+    if let Some((poll_token, _)) = native_poll_token {
+        let mut response = Json(NativeAuthorizationStartResponse {
+            authorization_url: location.to_string(),
+            poll_token,
+        })
+        .into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        Ok(response)
+    } else {
+        Ok((
+            StatusCode::FOUND,
+            [(header::LOCATION, location.to_string())],
+        )
+            .into_response())
+    }
 }
 
 fn authorization_error_redirect(
@@ -611,7 +652,8 @@ pub async fn callback(
     // custom URI scheme) register `redirect_uri = native_callback_endpoint` —
     // our own HTTPS route — instead of a client-hosted URL. In that case there
     // is no redirect target to send the browser back to: stash the code keyed
-    // by `state` for the client to retrieve via `/native/poll`, and show a
+    // by the independently generated polling-token hash for the client to
+    // retrieve via `POST /native/poll`, and show a
     // plain "signed in" page directly.
     let native_callback_endpoint = crate::metadata::native_callback_endpoint(&state);
     if request.redirect_uri == native_callback_endpoint {
@@ -619,7 +661,12 @@ pub async fn callback(
         state
             .store
             .insert_native_authorization_result(NativeAuthorizationResultRow {
-                state: request.client_state,
+                poll_token_hash: request.native_poll_token_hash.ok_or_else(|| {
+                    AuthError::Storage(
+                        "native authorization request is missing its polling credential"
+                            .to_string(),
+                    )
+                })?,
                 code: auth_code,
                 created_at: now,
                 expires_at: expires_at(
@@ -700,7 +747,9 @@ fn authorization_response_query_presence(redirect: &url::Url) -> (bool, bool, bo
 /// answers a stray direct visit (e.g. a stale bookmark or a misconfigured
 /// client), so `state` is validated for URL-shape consistency but
 /// deliberately not looked up — there's nothing to correlate it against.
-pub async fn native_callback(Query(query): Query<NativePollQuery>) -> Result<Response, AuthError> {
+pub async fn native_callback(
+    Query(query): Query<NativeCallbackQuery>,
+) -> Result<Response, AuthError> {
     let state_param = query.state.trim();
     if state_param.is_empty() {
         return Err(AuthError::Validation(
@@ -720,17 +769,18 @@ pub async fn native_callback(Query(query): Query<NativePollQuery>) -> Result<Res
 
 pub async fn native_poll(
     State(state): State<AuthState>,
-    Query(query): Query<NativePollQuery>,
+    Json(query): Json<NativePollQuery>,
 ) -> Result<Response, AuthError> {
-    let state_param = query.state.trim();
-    if state_param.is_empty() {
+    let poll_token = query.poll_token.trim();
+    if poll_token.is_empty() {
         return Err(AuthError::Validation(
-            "missing `state` parameter".to_string(),
+            "missing `poll_token` parameter".to_string(),
         ));
     }
+    let poll_token_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(poll_token.as_bytes()));
     let mut response = if let Some(row) = state
         .store
-        .take_native_authorization_result(state_param)
+        .take_native_authorization_result(&poll_token_hash)
         .await?
     {
         Json(NativePollResponse {
@@ -1062,6 +1112,7 @@ pub mod tests {
     use rsa::pkcs8::{EncodePrivateKey, LineEnding};
     use rsa::traits::PublicKeyParts;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
     use tower::util::ServiceExt;
     use url::Url;
     use wiremock::matchers::{method, path};
@@ -1081,6 +1132,19 @@ pub mod tests {
     use axum::Router;
     use axum::extract::connect_info::MockConnectInfo;
     use std::net::SocketAddr;
+
+    fn native_poll_token_hash_for(token: &str) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()))
+    }
+
+    fn native_poll_request(poll_token: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/native/poll")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "poll_token": poll_token }).to_string()))
+            .unwrap()
+    }
 
     // `oneshot` bypasses the live `into_make_service_with_connect_info` layer,
     // so the rate-limit handlers' `ConnectInfo<SocketAddr>` extractor would be
@@ -1242,15 +1306,10 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn native_poll_returns_202_with_no_code_for_an_unknown_state() {
+    async fn native_poll_returns_202_with_no_code_for_an_unknown_poll_token() {
         let app = router(test_auth_state().await);
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/native/poll?state=never-issued")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(native_poll_request("never-issued"))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
@@ -1262,18 +1321,75 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn native_poll_rejects_missing_state() {
-        let app = router(test_auth_state().await);
-        let response = app
+    async fn native_authorize_returns_server_generated_polling_credential() {
+        let state = test_auth_state().await;
+        let native_callback = crate::metadata::native_callback_endpoint(&state);
+        state
+            .store
+            .register_client(RegisteredClient {
+                client_id: "native-start-client".to_string(),
+                redirect_uris: vec![native_callback.clone()],
+                created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods: Vec::new(),
+                jwks: None,
+                jwks_uri: None,
+            })
+            .await
+            .unwrap();
+        let mut uri = Url::parse("https://lab.example.com/authorize").unwrap();
+        uri.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", "native-start-client")
+            .append_pair("redirect_uri", &native_callback)
+            .append_pair("state", "attacker-known-state")
+            .append_pair("scope", "lab")
+            .append_pair("code_challenge", "pkce")
+            .append_pair("code_challenge_method", "S256");
+        let uri = format!("{}?{}", uri.path(), uri.query().unwrap());
+        let response = router(state)
             .oneshot(
                 Request::builder()
-                    .uri("/native/poll?state=")
+                    .uri(uri)
+                    .header(
+                        header::ACCEPT,
+                        "text/html, Application/Vnd.Labby.Native-Oauth-Start+Json; charset=utf-8; q=1",
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let poll_token = json["poll_token"].as_str().unwrap();
+        assert_ne!(poll_token, "attacker-known-state");
+        assert!(poll_token.len() >= 32);
+        assert!(json["authorization_url"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn native_poll_rejects_missing_poll_token() {
+        let app = router(test_auth_state().await);
+        let response = app.oneshot(native_poll_request("")).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn native_poll_never_accepts_a_polling_secret_in_the_request_uri() {
+        let response = router(test_auth_state().await)
+            .oneshot(
+                Request::builder()
+                    .uri("/native/poll?poll_token=must-not-enter-access-logs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]
@@ -1282,7 +1398,7 @@ pub mod tests {
         state
             .store
             .insert_native_authorization_result(NativeAuthorizationResultRow {
-                state: "poll-me".to_string(),
+                poll_token_hash: native_poll_token_hash_for("poll-me"),
                 code: "the-code".to_string(),
                 created_at: now_unix(),
                 expires_at: now_unix() + 300,
@@ -1293,12 +1409,7 @@ pub mod tests {
 
         let first = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/native/poll?state=poll-me")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(native_poll_request("poll-me"))
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
@@ -1308,17 +1419,9 @@ pub mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "the-code");
 
-        // Second poll for the same `state` must not still return the code —
+        // Second poll for the same token must not still return the code —
         // `take_native_authorization_result` is a one-shot read-and-delete.
-        let second = app
-            .oneshot(
-                Request::builder()
-                    .uri("/native/poll?state=poll-me")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let second = app.oneshot(native_poll_request("poll-me")).await.unwrap();
         assert_eq!(second.status(), StatusCode::ACCEPTED);
     }
 
@@ -1338,14 +1441,14 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn insert_native_authorization_result_overwrites_on_state_collision() {
-        // A retried /authorize with a reused `state` must not silently lose
-        // the newer code — last-write-wins, not `DO NOTHING`.
+    async fn insert_native_authorization_result_overwrites_on_token_hash_collision() {
+        // The effectively impossible hash-collision case remains deterministic:
+        // last-write-wins, not `DO NOTHING`.
         let state = test_auth_state().await;
         state
             .store
             .insert_native_authorization_result(NativeAuthorizationResultRow {
-                state: "collide".to_string(),
+                poll_token_hash: native_poll_token_hash_for("collide"),
                 code: "first-code".to_string(),
                 created_at: now_unix(),
                 expires_at: now_unix() + 300,
@@ -1355,7 +1458,7 @@ pub mod tests {
         state
             .store
             .insert_native_authorization_result(NativeAuthorizationResultRow {
-                state: "collide".to_string(),
+                poll_token_hash: native_poll_token_hash_for("collide"),
                 code: "second-code".to_string(),
                 created_at: now_unix(),
                 expires_at: now_unix() + 300,
@@ -1364,7 +1467,7 @@ pub mod tests {
             .unwrap();
         let fetched = state
             .store
-            .take_native_authorization_result("collide")
+            .take_native_authorization_result(&native_poll_token_hash_for("collide"))
             .await
             .unwrap()
             .expect("row should still be present");
@@ -1374,12 +1477,55 @@ pub mod tests {
     #[tokio::test]
     async fn callback_stores_native_flow_code_for_polling_instead_of_redirecting() {
         let native_state = test_auth_state_with_mock_google_native().await;
+        let native_callback = crate::metadata::native_callback_endpoint(&native_state);
         let app = router(native_state);
+        let mut authorize_uri = Url::parse("https://lab.example.com/authorize").unwrap();
+        authorize_uri
+            .query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", "native-client")
+            .append_pair("redirect_uri", &native_callback)
+            .append_pair("state", "native-client-state")
+            .append_pair("scope", "lab")
+            .append_pair("code_challenge", "challenge")
+            .append_pair("code_challenge_method", "S256");
+        let authorize_uri = format!(
+            "{}?{}",
+            authorize_uri.path(),
+            authorize_uri.query().unwrap()
+        );
+        let start = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(authorize_uri)
+                    .header(
+                        header::ACCEPT,
+                        "application/vnd.labby.native-oauth-start+json",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start.status(), StatusCode::OK);
+        let start_body = axum::body::to_bytes(start.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let start_json: serde_json::Value = serde_json::from_slice(&start_body).unwrap();
+        let poll_token = start_json["poll_token"].as_str().unwrap().to_string();
+        let provider_url = Url::parse(start_json["authorization_url"].as_str().unwrap()).unwrap();
+        let provider_state = provider_url
+            .query_pairs()
+            .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+            .unwrap();
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/auth/google/callback?state=native-good-state&code=upstream-code")
+                    .uri(format!(
+                        "/auth/google/callback?state={provider_state}&code=upstream-code"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1394,21 +1540,43 @@ pub mod tests {
         let body = String::from_utf8_lossy(&body);
         assert!(body.contains("Signed in"));
 
-        let poll = app
-            .oneshot(
-                Request::builder()
-                    .uri("/native/poll?state=native-client-state")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        let attacker_poll = app
+            .clone()
+            .oneshot(native_poll_request("native-client-state"))
             .await
             .unwrap();
+        assert_eq!(attacker_poll.status(), StatusCode::ACCEPTED);
+
+        let poll = app.oneshot(native_poll_request(&poll_token)).await.unwrap();
         assert_eq!(poll.status(), StatusCode::OK);
         let poll_body = axum::body::to_bytes(poll.into_body(), usize::MAX)
             .await
             .unwrap();
         let poll_json: serde_json::Value = serde_json::from_slice(&poll_body).unwrap();
         assert!(poll_json["code"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn native_poll_rejects_an_attacker_who_only_knows_the_client_state() {
+        let native_state = test_auth_state_with_mock_google_native().await;
+        let app = router(native_state);
+        let callback = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/google/callback?state=native-good-state&code=upstream-code")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(callback.status(), StatusCode::OK);
+
+        let attacker_poll = app
+            .oneshot(native_poll_request("native-client-state"))
+            .await
+            .unwrap();
+        assert_eq!(attacker_poll.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
@@ -1962,6 +2130,7 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
                 client_state: "client-state".to_string(),
+                native_poll_token_hash: None,
                 resource: "https://lab.example.com/mcp".to_string(),
                 scope: "lab".to_string(),
                 provider_code_verifier: "provider-verifier".to_string(),
@@ -2152,6 +2321,7 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
                 client_state: "client-abc".to_string(),
+                native_poll_token_hash: None,
                 resource: "https://lab.example.com/mcp".to_string(),
                 scope: "lab".to_string(),
                 provider_code_verifier: "provider-verifier".to_string(),
@@ -2459,6 +2629,7 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
                 client_state: "client-state".to_string(),
+                native_poll_token_hash: None,
                 resource: "https://lab.example.com/mcp".to_string(),
                 scope: "lab".to_string(),
                 provider_code_verifier: "provider-verifier".to_string(),
@@ -2514,6 +2685,9 @@ pub mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "test-google-provider-encryption-key",
+            )),
             ..AuthConfig::default()
         }
     }
@@ -2561,6 +2735,7 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
                 client_state: "client-state".to_string(),
+                native_poll_token_hash: None,
                 resource: "https://lab.example.com/mcp".to_string(),
                 scope: "lab".to_string(),
                 provider_code_verifier: "provider-verifier".to_string(),
@@ -2633,6 +2808,7 @@ pub mod tests {
                 client_id: "native-client".to_string(),
                 redirect_uri: native_callback_endpoint,
                 client_state: "native-client-state".to_string(),
+                native_poll_token_hash: Some(native_poll_token_hash_for("legitimate-poll-token")),
                 resource: "https://lab.example.com/mcp".to_string(),
                 scope: "lab".to_string(),
                 provider_code_verifier: "provider-verifier".to_string(),
@@ -2901,6 +3077,7 @@ pub mod tests {
                     client_id: "client".to_string(),
                     redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
                     client_state: "client-xyz".to_string(),
+                    native_poll_token_hash: None,
                     resource: "https://lab.example.com/mcp".to_string(),
                     scope: "lab".to_string(),
                     provider_code_verifier: "provider-verifier".to_string(),

@@ -173,6 +173,28 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
+    if current < 10 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        add_column_if_missing(
+            &transaction,
+            "authorization_requests",
+            "native_poll_token_hash",
+            "TEXT",
+        )?;
+        transaction
+            .execute_batch(
+                "DROP TABLE IF EXISTS native_authorization_results;
+                 CREATE TABLE native_authorization_results (
+                   poll_token_hash TEXT PRIMARY KEY,
+                   code TEXT NOT NULL,
+                   created_at INTEGER NOT NULL,
+                   expires_at INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = 10;",
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+    }
     Ok(())
 }
 

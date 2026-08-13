@@ -352,7 +352,8 @@ impl SqliteStore {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase);
-        let encrypted_refresh_token = maybe_encrypt(self.enc_key.as_deref(), refresh_token)?;
+        let encrypted_refresh_token =
+            crate::at_rest::require_encrypt(self.enc_key.as_deref(), refresh_token)?;
         let now = now_unix();
         self.with_conn(move |conn| {
             conn.execute(

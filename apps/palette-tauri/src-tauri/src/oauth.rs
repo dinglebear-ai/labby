@@ -411,8 +411,14 @@ async fn run_login(
     // `http://localhost:PORT` redirect to HTTPS, breaking a plain-HTTP
     // loopback listener). Fall back to the RFC 8252 loopback listener for a
     // server that doesn't support it.
-    match (&meta.native_callback_endpoint, &meta.native_poll_endpoint) {
-        (Some(native_callback_endpoint), Some(native_poll_endpoint)) => {
+    match (
+        &meta.native_callback_endpoint,
+        &meta.native_poll_endpoint_v2,
+        &meta.native_authorization_start_media_type,
+    ) {
+        (Some(native_callback_endpoint), Some(native_poll_endpoint), Some(start_media_type))
+            if start_media_type == "application/vnd.labby.native-oauth-start+json" =>
+        {
             flow::require_secure_url(native_callback_endpoint)?;
             flow::require_secure_url(native_poll_endpoint)?;
             run_login_via_native_poll(
@@ -452,16 +458,45 @@ async fn run_login_via_native_poll(
         &challenge,
     )?;
 
-    if let Err(err) = open::that(&authorize_url) {
+    let start = client
+        .get(&authorize_url)
+        .header(
+            reqwest::header::ACCEPT,
+            "application/vnd.labby.native-oauth-start+json",
+        )
+        .send()
+        .await
+        .map_err(|err| format!("failed to start native OAuth: {err}"))?;
+    if !start.status().is_success() {
         return Err(format!(
-            "failed to open the system browser — open this URL manually to sign in:\n{authorize_url}\n({err})"
+            "native OAuth start returned HTTP {}",
+            start.status()
+        ));
+    }
+    let start: flow::NativeAuthorizationStartResponse = start
+        .json()
+        .await
+        .map_err(|err| format!("native OAuth start returned an invalid response: {err}"))?;
+
+    if let Err(err) = open::that(&start.authorization_url) {
+        return Err(format!(
+            "failed to open the system browser — open this URL manually to sign in:\n{}\n({err})",
+            start.authorization_url
         ));
     }
 
-    let code = flow::poll_native_code(client, native_poll_endpoint, &state, LOGIN_TIMEOUT)
+    let code = flow::poll_native_code(
+        client,
+        native_poll_endpoint,
+        &start.poll_token,
+        LOGIN_TIMEOUT,
+    )
         .await
         .map_err(|err| {
-            format!("{err}. If the browser did not open, sign in here:\n{authorize_url}")
+            format!(
+                "{err}. If the browser did not open, sign in here:\n{}",
+                start.authorization_url
+            )
         })?;
 
     let token = flow::exchange_code(

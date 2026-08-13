@@ -204,11 +204,13 @@ async fn auth_register(
 async fn auth_authorize(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     query: Query<labby_auth::types::AuthorizeQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::authorize::authorize(
         State(app_auth_state_with_protected_routes(&state).await?),
         ConnectInfo(addr),
+        headers,
         query,
     )
     .await?)
@@ -265,16 +267,16 @@ async fn auth_revoke(
 }
 
 async fn auth_native_callback(
-    query: Query<labby_auth::types::NativePollQuery>,
+    query: Query<labby_auth::types::NativeCallbackQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::authorize::native_callback(query).await?)
 }
 
 async fn auth_native_poll(
     State(state): State<AppState>,
-    query: Query<labby_auth::types::NativePollQuery>,
+    body: Json<labby_auth::types::NativePollQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), query).await?)
+    Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), body).await?)
 }
 
 fn auth_error_response_with_challenge(
@@ -1243,7 +1245,7 @@ pub(crate) fn build_router_with_external_auth(
             .route("/auth/login", get(auth_browser_login))
             .route("/auth/google/callback", get(auth_callback))
             .route("/native/callback", get(auth_native_callback))
-            .route("/native/poll", get(auth_native_poll))
+            .route("/native/poll", post(auth_native_poll))
             .route("/token", post(auth_token))
             .route("/revoke", post(auth_revoke))
             .layer(axum::middleware::from_fn(
@@ -3738,6 +3740,12 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
             ..labby_auth::config::AuthConfig::default()
         };
         labby_auth::state::AuthState::new(config).await.unwrap()

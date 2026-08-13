@@ -1075,6 +1075,12 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
             ..AuthConfig::default()
         };
         AuthState::new(config).await.unwrap()
