@@ -357,3 +357,214 @@ async fn skills_get_treats_invalid_params_as_not_a_skill() {
         .expect("a -32602 is a successful negative answer");
     assert!(answer.is_none());
 }
+
+// ── The cached, exposure-filtered entry point ────────────────────────────────
+
+fn skills_config(
+    name: &str,
+    expose: Option<Vec<&str>>,
+) -> labby_runtime::gateway_config::UpstreamConfig {
+    labby_runtime::gateway_config::UpstreamConfig {
+        proxy_skills: true,
+        expose_skills: expose.map(|p| p.into_iter().map(str::to_string).collect()),
+        ..named_test_upstream_config(name)
+    }
+}
+
+#[tokio::test]
+async fn skills_are_not_fetched_at_all_unless_the_upstream_opts_in() {
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "alpha")] })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let config = labby_runtime::gateway_config::UpstreamConfig {
+        proxy_skills: false,
+        ..named_test_upstream_config("up")
+    };
+    let exposed = pool.upstream_skills(&config, None).await.expect("no error");
+
+    assert!(exposed.skills.is_empty());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "opt-out must not touch the wire"
+    );
+}
+
+#[tokio::test]
+async fn an_upstream_without_the_extension_is_empty_not_an_error() {
+    // Not a failure: recording one would put phantom failures on the circuit
+    // breaker for every non-skills upstream in the catalog.
+    let server = SkillsServer::new(vec![json!({ "skills": [] })]).without_extension();
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let exposed = pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .expect("absence of the extension is not an error");
+    assert!(exposed.skills.is_empty());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "never asks a server that did not declare it"
+    );
+}
+
+#[tokio::test]
+async fn a_second_read_is_served_from_cache() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+    ]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+
+    let first = pool
+        .upstream_skills(&config, None)
+        .await
+        .expect("first read");
+    let second = pool
+        .upstream_skills(&config, None)
+        .await
+        .expect("second read");
+
+    assert_eq!(first.skills.len(), 1);
+    assert_eq!(second.skills.len(), 1);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the second read hits the cache"
+    );
+}
+
+#[tokio::test]
+async fn expose_skills_filters_and_fails_closed_on_an_empty_allowlist() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 600000
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let all = pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .expect("no allowlist exposes everything");
+    assert_eq!(all.skills.len(), 2);
+
+    let narrowed = pool
+        .upstream_skills(&skills_config("up", Some(vec!["alpha"])), None)
+        .await
+        .expect("allowlist applies");
+    assert_eq!(narrowed.skills.len(), 1);
+    assert_eq!(narrowed.skills[0].name, "alpha");
+
+    // An empty allowlist hides everything rather than degrading to "expose all".
+    let empty = pool
+        .upstream_skills(&skills_config("up", Some(vec![])), None)
+        .await
+        .expect("empty allowlist is honored");
+    assert!(
+        empty.skills.is_empty(),
+        "an empty allowlist must fail closed"
+    );
+}
+
+#[tokio::test]
+async fn narrowing_the_allowlist_takes_effect_without_waiting_for_the_ttl() {
+    // The exposure gate runs on read, not at fetch, so an operator tightening
+    // the allowlist is not stuck behind a long TTL.
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 3600000
+    })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let before = pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .expect("populate the cache");
+    assert_eq!(before.skills.len(), 2);
+
+    let after = pool
+        .upstream_skills(&skills_config("up", Some(vec!["alpha"])), None)
+        .await
+        .expect("policy change applies to the cached snapshot");
+    assert_eq!(after.skills.len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "no refetch was needed");
+}
+
+#[tokio::test]
+async fn two_subjects_never_share_a_cached_catalog() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+    ]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+
+    pool.upstream_skills(&config, Some("alice"))
+        .await
+        .expect("alice");
+    pool.upstream_skills(&config, Some("bob"))
+        .await
+        .expect("bob");
+    pool.upstream_skills(&config, Some("alice"))
+        .await
+        .expect("alice again");
+
+    // One fetch each for alice and bob; alice's repeat is cached. If the cache
+    // were not subject-keyed, bob would have been served alice's catalog.
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn excluded_and_truncated_bookkeeping_reaches_the_caller() {
+    let bad = json!({
+        "uri": "skill://up/broken/SKILL.md",
+        "frontmatter": { "name": "broken", "description": "d" },
+        "resources": []
+    });
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "alpha"), bad], "ttlMs": 600000 }),
+    ]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let exposed = pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .expect("read");
+    assert_eq!(exposed.skills.len(), 1);
+    assert_eq!(
+        exposed.excluded_count, 1,
+        "the caller can report incompleteness"
+    );
+    assert!(!exposed.truncated);
+}
+
+#[tokio::test]
+async fn invalidation_drops_every_subject_for_one_upstream() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+    ]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+
+    pool.upstream_skills(&config, Some("alice"))
+        .await
+        .expect("alice");
+    pool.upstream_skills(&config, Some("bob"))
+        .await
+        .expect("bob");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    // A snapshot outliving its connection would serve a catalog Labby can no
+    // longer honor a read against.
+    pool.invalidate_upstream_skills("up").await;
+    assert!(pool.upstreams_with_cached_skills().await.is_empty());
+
+    pool.upstream_skills(&config, Some("alice"))
+        .await
+        .expect("refetch");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}

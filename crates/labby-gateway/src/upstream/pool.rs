@@ -60,6 +60,7 @@ mod relay_cancellation_tests;
 mod resources_exposure_tests;
 mod resources_list;
 mod resources_read;
+mod skills;
 mod skills_cache;
 mod skills_list;
 mod skills_tests;
@@ -151,6 +152,13 @@ pub struct UpstreamPool {
     call_concurrency: usize,
     /// Per-upstream lazy connection gates to prevent duplicate cold starts.
     lazy_connect_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Cached upstream skill catalogs, keyed by `(upstream, subject)`.
+    ///
+    /// Sharded per authorization context unconditionally — see
+    /// `skills_cache.rs` for why a declared `cacheScope` never widens this.
+    skills_cache: Arc<RwLock<HashMap<skills_cache::SkillsCacheKey, skills_cache::CachedSkills>>>,
+    /// Per-key single-flight guards for skill-catalog fetches.
+    skills_fetch_locks: Arc<skills_cache::SkillsFetchLocks>,
     /// Per-`(upstream, subject)` cached connections for the OAuth / subject-scoped
     /// proxy path.  Reused across calls for the same subject so we pay TLS +
     /// `initialize` + `tools/list` only once per idle-TTL window (P-C1 fix).
@@ -381,6 +389,8 @@ impl UpstreamPool {
             call_semaphores: Arc::new(RwLock::new(HashMap::new())),
             call_concurrency: helpers::upstream_call_concurrency(),
             lazy_connect_locks: Arc::new(RwLock::new(HashMap::new())),
+            skills_cache: Arc::new(RwLock::new(HashMap::new())),
+            skills_fetch_locks: Arc::new(skills_cache::SkillsFetchLocks::default()),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
