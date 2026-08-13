@@ -3293,7 +3293,8 @@ async fn list_tools_paginates_large_builtin_catalog() {
             .last_listed_tool_contract
             .read()
             .await
-            .is_none(),
+            .candidate_count(&None)
+            == 0,
         "a partial first page must not publish a complete contract baseline"
     );
     let wire = serde_json::to_value(&first).expect("serialize tool list");
@@ -3329,7 +3330,8 @@ async fn list_tools_paginates_large_builtin_catalog() {
             .last_listed_tool_contract
             .read()
             .await
-            .is_none(),
+            .candidate_count(&None)
+            == 0,
         "an intermediate page must not publish a complete contract baseline"
     );
     let third_request = PaginatedRequestParams::default().with_cursor(second.next_cursor.clone());
@@ -3349,7 +3351,8 @@ async fn list_tools_paginates_large_builtin_catalog() {
             .last_listed_tool_contract
             .read()
             .await
-            .is_some(),
+            .candidate_count(&None)
+            == 1,
         "only the final revision-validated page publishes the baseline"
     );
     assert!(

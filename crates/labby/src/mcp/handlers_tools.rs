@@ -396,8 +396,12 @@ impl LabMcpServer {
         };
         let page_tool_count = tools.len();
         let has_next_cursor = next_cursor.is_some();
-        if !has_next_cursor {
-            *self.last_listed_tool_contract.write().await = Some(complete_contract);
+        if !has_next_cursor && self.transport_label != "http" {
+            let subject_key = self.request_subject(&context).map(str::to_owned);
+            self.last_listed_tool_contract
+                .write()
+                .await
+                .publish(subject_key, complete_contract);
         }
 
         let elapsed_ms = start.elapsed().as_millis();

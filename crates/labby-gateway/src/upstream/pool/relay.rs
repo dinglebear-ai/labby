@@ -71,6 +71,9 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
 
 use super::super::types::UpstreamCapability;
+#[cfg(test)]
+use super::UpstreamConnection;
+use super::UpstreamPool;
 use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
 use super::connect::connect_upstream_with_handler;
 use super::entries::{
@@ -88,11 +91,13 @@ use super::logging::{
     log_upstream_request_start,
 };
 use super::notifications::UpstreamNotificationEvent;
+use super::relay_cache::{
+    RelayCacheKey, RelayCachedConnection, capability_fingerprint, evict_relay_lru_over_cap,
+};
 use super::relay_cancellation::{
     PendingRelayRequestId, RelayPermitOutcome, RelaySendOutcome, await_relay_permit,
     await_relay_send, dispatch_relay_cancellation, spawn_bounded_handle_cancellation,
 };
-use super::{UpstreamConnection, UpstreamPool};
 
 const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 const PROGRESS_NOTIFICATION_DELIVERY_GRACE: std::time::Duration =
@@ -741,87 +746,6 @@ fn downstream_cancelled(reason: &str) -> String {
         reason: Some(reason.to_string()),
     }
     .to_string()
-}
-
-pub(super) fn capability_fingerprint(capabilities: &ClientCapabilities) -> String {
-    serde_json::to_string(capabilities)
-        .expect("MCP client capabilities must serialize to a JSON object")
-}
-
-/// Relay connection identity. Capabilities are part of the identity because
-/// rmcp fixes client metadata when the connection is initialized. Keeping a
-/// superseded fingerprint under a distinct key lets in-flight calls retain
-/// their original connection while later calls establish the new generation.
-pub(super) type RelayCacheKey = (String, u64, Option<String>, String);
-
-/// A cached relay connection, keyed in the pool by
-/// `(upstream, session_id, subject, capability_fingerprint)`.
-///
-/// The `RelayClientHandler` inside `_connection` is bound to **one** downstream
-/// agent peer (the session identified by the key) and authenticated as **one**
-/// OAuth subject. Because the key includes the downstream session id, a cached
-/// entry is only ever reused by the same agent — never shared across sessions.
-/// Because it also includes the subject, a connection authenticated as one
-/// identity is never reused for a call made as another.
-pub(super) struct RelayCachedConnection {
-    /// Keeps the relay-served running service (and any stdio child) alive.
-    pub(super) _connection: UpstreamConnection<RelayClientHandler>,
-    /// Pre-cloned upstream peer for the cache-hit fast path.
-    pub(super) peer: Peer<RoleClient>,
-    /// Capability snapshot used to initialize this connection.
-    pub(super) capability_fingerprint: String,
-    /// Request/progress/task identifier translations owned by this connection.
-    pub(super) routes: Arc<RelayRouteState>,
-    /// Explicit cancellation POST sender for HTTP and Unix-socket transports.
-    pub(super) cancellation_sender: Option<HttpCancellationSender>,
-    /// Wall-clock instant when this entry was last used.
-    pub(super) last_used: Instant,
-}
-impl RelayCachedConnection {
-    pub(super) async fn rebind_downstream(&self, downstream: Peer<RoleServer>) {
-        self._connection
-            ._client_service
-            .service()
-            .rebind_downstream(downstream)
-            .await;
-    }
-
-    pub(super) async fn flush_task_status_notifications(
-        &self,
-        notifications: Vec<TaskStatusNotificationParams>,
-    ) {
-        let handler = self._connection._client_service.service();
-        for params in notifications {
-            handler.forward_task_status(params).await;
-        }
-    }
-}
-
-/// Evict least-recently-used relay connections until the map holds at most
-/// `max_entries`, sparing the about-to-be-inserted `protect` key. Mirrors
-/// `connection::evict_lru_over_cap` for the relay-typed cache.
-fn evict_relay_lru_over_cap(
-    cache: &mut HashMap<RelayCacheKey, RelayCachedConnection>,
-    max_entries: usize,
-    protect: &RelayCacheKey,
-) -> Vec<(String, UpstreamConnection<RelayClientHandler>)> {
-    let mut evicted = Vec::new();
-    while cache.len() > max_entries {
-        let lru_key = cache
-            .iter()
-            .filter(|(k, _)| *k != protect)
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(k, _)| k.clone());
-        match lru_key {
-            Some(key) => {
-                if let Some(entry) = cache.remove(&key) {
-                    evicted.push((key.0, entry._connection));
-                }
-            }
-            None => break,
-        }
-    }
-    evicted
 }
 
 impl UpstreamPool {

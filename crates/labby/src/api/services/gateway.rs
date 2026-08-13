@@ -51,8 +51,11 @@ fn has_admin_scope(auth: Option<&Extension<AuthContext>>) -> bool {
 
 fn http_oauth_subject(auth: Option<&AuthContext>, request_subject: Option<&str>) -> Option<String> {
     auth.and_then(|auth| {
-        crate::api::oauth::oauth_upstream_subject_for_request(Some(auth), request_subject)
-            .map(|subject| subject.into_owned())
+        crate::dispatch::oauth_subject::oauth_upstream_subject_for_request(
+            Some(auth),
+            request_subject,
+        )
+        .map(|subject| subject.into_owned())
     })
 }
 

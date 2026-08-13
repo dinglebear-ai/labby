@@ -55,6 +55,7 @@ mod prompts_get;
 mod prompts_list;
 mod registration;
 mod relay;
+mod relay_cache;
 mod relay_cancellation;
 #[cfg(test)]
 mod relay_cancellation_tests;
@@ -66,6 +67,7 @@ mod spawn_lock;
 mod stdio_stderr;
 mod stdio_transport;
 mod subscription_schedule;
+mod task_route;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]
 mod testsupport;
@@ -89,7 +91,7 @@ pub(crate) use helpers::{
 pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
-pub use tasks::TaskRouteAuthorization;
+pub use task_route::TaskRouteAuthorization;
 pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
@@ -182,10 +184,11 @@ pub struct UpstreamPool {
     /// fingerprint is also part of the key so a newly negotiated snapshot
     /// cannot drop a connection still serving an older in-flight request.
     /// See `pool/relay.rs`.
-    relay_connections: Arc<RwLock<HashMap<relay::RelayCacheKey, relay::RelayCachedConnection>>>,
+    relay_connections:
+        Arc<RwLock<HashMap<relay_cache::RelayCacheKey, relay_cache::RelayCachedConnection>>>,
     /// Single-flight locks for the relay-connection cache, mirroring
     /// `subject_connect_locks`. Keyed identically to `relay_connections`.
-    relay_connect_locks: Arc<RwLock<HashMap<relay::RelayCacheKey, Arc<Mutex<()>>>>>,
+    relay_connect_locks: Arc<RwLock<HashMap<relay_cache::RelayCacheKey, Arc<Mutex<()>>>>>,
     /// Gateway-owned task handles and the relay connections that created them.
     /// Shared across stateless HTTP requests through the pool.
     task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,

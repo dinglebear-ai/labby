@@ -1,6 +1,6 @@
 //! Routing for task handles returned by upstream MCP servers.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -18,7 +18,8 @@ use super::UpstreamPool;
 use super::capability_call::timed_capability_call_str;
 use super::helpers::estimate_task_response_size;
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
-use super::relay::RelayCachedConnection;
+use super::relay_cache::RelayCachedConnection;
+use super::task_route::TaskRouteAuthorization;
 
 const TASK_ROUTE_IDLE_TTL: Duration = Duration::from_hours(24);
 const TASK_ROUTE_MAX_ENTRIES: usize = 4096;
@@ -33,26 +34,6 @@ pub(super) struct TaskRoute {
     authorization: TaskRouteAuthorization,
     connection: RelayCachedConnection,
     last_used: Instant,
-}
-
-/// Surface-neutral snapshot of the protected MCP route that minted a task.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TaskRouteAuthorization {
-    route_key: String,
-    allowed_upstreams: Option<BTreeSet<String>>,
-}
-
-impl TaskRouteAuthorization {
-    pub fn new(route_key: impl Into<String>, allowed_upstreams: Option<BTreeSet<String>>) -> Self {
-        Self {
-            route_key: route_key.into(),
-            allowed_upstreams,
-        }
-    }
-
-    pub fn root() -> Self {
-        Self::new("root", None)
-    }
 }
 
 fn mint_task_handle() -> String {
@@ -152,7 +133,7 @@ impl UpstreamPool {
     /// general relay cache and retained for the task lifecycle.
     pub async fn register_task_response(
         &self,
-        relay_key: &super::relay::RelayCacheKey,
+        relay_key: &super::relay_cache::RelayCacheKey,
         caller_subject: Option<&str>,
         authorization: TaskRouteAuthorization,
         response: CallToolResponse,
@@ -409,9 +390,8 @@ mod tests {
     use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
     use tokio::sync::Mutex;
 
-    use super::super::relay::{
-        RelayCachedConnection, RelayClientHandler, RelayRouteState, capability_fingerprint,
-    };
+    use super::super::relay::{RelayClientHandler, RelayRouteState};
+    use super::super::relay_cache::{RelayCachedConnection, capability_fingerprint};
     use super::super::{UpstreamConnection, UpstreamPool};
 
     const NATIVE_TASK_ID: &str = "native-task-1";
@@ -486,7 +466,7 @@ mod tests {
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
-        super::super::relay::RelayCacheKey,
+        super::super::relay_cache::RelayCacheKey,
     ) {
         task_pool_with_store(None).await
     }
@@ -497,7 +477,7 @@ mod tests {
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
-        super::super::relay::RelayCacheKey,
+        super::super::relay_cache::RelayCacheKey,
     ) {
         let capabilities = ClientCapabilities::builder().enable_tasks().build();
 
@@ -752,9 +732,9 @@ mod tests {
 
     async fn rekey_relay_for_oauth_subject(
         pool: &UpstreamPool,
-        relay_key: &super::super::relay::RelayCacheKey,
+        relay_key: &super::super::relay_cache::RelayCacheKey,
         oauth_subject: &str,
-    ) -> super::super::relay::RelayCacheKey {
+    ) -> super::super::relay_cache::RelayCacheKey {
         let connection = pool
             .relay_connections
             .write()

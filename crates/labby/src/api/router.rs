@@ -94,7 +94,7 @@ async fn auth_authorization_server_metadata(
 async fn auth_protected_resource_metadata(
     State(state): State<AppState>,
     request: Request<Body>,
-) -> Result<impl IntoResponse, LabAuthError> {
+) -> Result<axum::response::Response, LabAuthError> {
     #[cfg(feature = "gateway")]
     if let (Some(manager), Some(host)) = (state.gateway_manager.as_ref(), request_host(&request))
         && let Some(route) = manager
@@ -115,14 +115,29 @@ async fn auth_protected_resource_metadata(
             .public_url
             .as_ref()
             .ok_or_else(|| LabAuthError::Config("LABBY_PUBLIC_URL is required".to_string()))?;
-        return Ok(Json(labby_auth::types::ProtectedResourceMetadata {
-            resource: route.public_resource(),
-            authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
-            scopes_supported: route.scopes,
-            bearer_methods_supported: vec!["header".to_string()],
-        }));
+        return Ok(protected_resource_metadata_response(
+            labby_auth::types::ProtectedResourceMetadata {
+                resource: route.public_resource(),
+                authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
+                scopes_supported: route.scopes,
+                bearer_methods_supported: vec!["header".to_string()],
+            },
+        ));
     }
-    Ok(labby_auth::metadata::protected_resource_metadata(State(app_auth_state(&state)?)).await)
+    let auth_state = app_auth_state(&state)?;
+    let public_url = auth_state
+        .config
+        .public_url
+        .as_ref()
+        .ok_or_else(|| LabAuthError::Config("LABBY_PUBLIC_URL is required".to_string()))?;
+    Ok(protected_resource_metadata_response(
+        labby_auth::types::ProtectedResourceMetadata {
+            resource: labby_auth::metadata::canonical_resource_url(&auth_state),
+            authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
+            scopes_supported: auth_state.config.scopes_supported.clone(),
+            bearer_methods_supported: vec!["header".to_string()],
+        },
+    ))
 }
 
 #[cfg(feature = "gateway")]
@@ -172,13 +187,18 @@ async fn protected_route_metadata_response(
         );
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let mut response = Json(labby_auth::types::ProtectedResourceMetadata {
+    protected_resource_metadata_response(labby_auth::types::ProtectedResourceMetadata {
         resource: route.public_resource(),
         authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
         scopes_supported: route.scopes,
         bearer_methods_supported: vec!["header".to_string()],
     })
-    .into_response();
+}
+
+fn protected_resource_metadata_response(
+    metadata: labby_auth::types::ProtectedResourceMetadata,
+) -> axum::response::Response {
+    let mut response = Json(metadata).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=3600"),
@@ -3575,7 +3595,8 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let app = build_router(state, None, Some(auth_state), None, &[]);
 
-        let response = app
+        let root_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -3586,12 +3607,39 @@ mod tests {
             )
             .await
             .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let compatibility_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/telemetry/.well-known/oauth-protected-resource")
+                    .header(header::HOST, "mcp.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(root_response.status(), StatusCode::OK);
+        assert_eq!(compatibility_response.status(), StatusCode::OK);
+        for response in [&root_response, &compatibility_response] {
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "application/json"
+            );
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=3600"
+            );
+        }
+        let root_body = axum::body::to_bytes(root_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let compatibility_body =
+            axum::body::to_bytes(compatibility_response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+        assert_eq!(root_body, compatibility_body);
+        let json: serde_json::Value = serde_json::from_slice(&root_body).unwrap();
         assert_eq!(json["resource"], "https://mcp.example.com/telemetry");
     }
 

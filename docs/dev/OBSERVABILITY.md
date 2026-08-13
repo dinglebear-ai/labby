@@ -301,6 +301,8 @@ shared by the gateway and MCP crates:
 | `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
 | `mcp.call.mcp_app` | explicit Code Mode MCP App visibility change made through the `mcp_app` control tool |
 | `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
+| `upstream.subscription` | scoped list-change signal from one live upstream subscription |
+| `upstream.notification_lag` | bounded authoritative catalog reconciliation after the subscription receiver skipped events |
 | `coalesced` | several emitters converged on one net change; see the `catalog.notify.flush` event for the contributors |
 | `unknown` | unattributed — means a new emitter shipped without a label |
 
@@ -315,7 +317,21 @@ everyone else sees the constant `codemode` tool. So `tools_changed` reaching
 `notify_catalog_peers` is a **hint** ("something happened that could move a tool
 list"), and the verdict is computed per peer by re-deriving that peer's
 `PeerContract` and comparing it to the contract the peer was last told about.
-Resources and prompts remain global signals and are forwarded unchanged.
+Resource and prompt signals from a named upstream are filtered by each peer's
+route scope. A protected route never receives list-change timing from an
+upstream it cannot list or call. Global reconcile signals remain conservative
+and reach every accepting peer because the skipped upstream identity is unknown.
+
+When the upstream broadcast receiver reports lag, Labby emits
+`action = "catalog.reconcile.start"`, refreshes tools, resources, and prompts
+from authoritative upstream state under a 30-second bound, then emits
+`action = "catalog.reconcile.finish"` with `outcome`, `skipped`, `elapsed_ms`,
+and either `refreshed_tools`, `resource_count`, and `prompt_count`, or
+`timeout_ms`. Both success and timeout schedule one coalesced global signal with
+`source = "upstream.notification_lag"`: refresh futures may have mutated only
+part of the caches before the outer deadline. Timeout uses
+`outcome = "timeout_partial_unknown"` and `convergence_scheduled = true` so an
+operator can distinguish bounded partial recovery from a clean refresh.
 
 A trigger that moves nobody's contract emits `action = "catalog.notify.skipped"`
 at `DEBUG` and is **not** counted as a notification — the healthy outcome for
