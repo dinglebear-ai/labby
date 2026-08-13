@@ -23,6 +23,7 @@ use super::helpers::{
     AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR, DISCOVERY_TIMEOUT, auth_error_should_backoff_aggressively,
     classify_upstream_error, upstream_transport,
 };
+use super::paginate::list_tools_bounded;
 
 #[cfg(any(test, feature = "testkit"))]
 static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
@@ -207,11 +208,19 @@ impl UpstreamPool {
         };
 
         if let Some(peer) = existing_peer {
-            match tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await {
-                Ok(Ok(tools)) => {
+            match tokio::time::timeout(DISCOVERY_TIMEOUT, list_tools_bounded(&peer, &config.name))
+                .await
+            {
+                Ok(Ok((tools, truncation))) => {
                     self.replace_catalog_tools(config, tools).await;
                     self.record_success_for(&config.name, UpstreamCapability::Tools)
                         .await;
+                    self.record_listing_truncation_for(
+                        &config.name,
+                        UpstreamCapability::Tools,
+                        truncation,
+                    )
+                    .await;
                     tracing::info!(
                         surface = "dispatch",
                         service = "upstream.pool",

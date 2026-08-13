@@ -36,8 +36,8 @@ use super::logging::{
     log_upstream_request_finish, log_upstream_request_start,
 };
 use super::paginate::{
-    list_resource_templates_bounded, list_resources_bounded, listing_catalog_timeout,
-    with_listing_timeout,
+    list_resource_templates_bounded, list_resources_bounded, list_tools_bounded,
+    listing_catalog_timeout, with_listing_timeout,
 };
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
@@ -163,7 +163,14 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             started,
-            peer.list_all_tools(),
+            // Subject-scoped OAuth discovery never lands in `self.catalog`, so
+            // there is no entry to record a truncation note on — the WARN
+            // inside the bounded helper is the visibility here.
+            async {
+                list_tools_bounded(&peer, &config.name)
+                    .await
+                    .map(|(tools, _truncation)| tools)
+            },
             |tools| serde_json::to_vec(tools).map_or(usize::MAX, |body| body.len()),
             Some(subject),
             |error| format!("upstream `{}` tools/list failed: {error}", config.name),

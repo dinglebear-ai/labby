@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rmcp::RoleClient;
-use rmcp::model::{PaginatedRequestParams, Prompt, Resource, ResourceTemplate};
+use rmcp::model::{PaginatedRequestParams, Prompt, Resource, ResourceTemplate, Tool};
 use rmcp::service::{Peer, ServiceError};
 
 /// Page budget per upstream per listing pass. Mirrors the `MAX_LIST_PAGES`
@@ -109,6 +109,20 @@ pub(super) async fn list_resource_templates_bounded(
             Ok((result.resource_templates, result.next_cursor))
         },
     )
+    .await
+}
+
+/// Bounded replacement for `Peer::list_all_tools`.
+pub(super) async fn list_tools_bounded(
+    peer: &Peer<RoleClient>,
+    upstream_name: &str,
+) -> Result<(Vec<Tool>, Option<ListTruncation>), ServiceError> {
+    paginate_bounded(upstream_name, "tools/list", |cursor| async move {
+        let result = peer
+            .list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+            .await?;
+        Ok((result.tools, result.next_cursor))
+    })
     .await
 }
 

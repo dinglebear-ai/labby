@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use rmcp::model::{
     ErrorData, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-    PaginatedRequestParams, Prompt, Resource, ResourceTemplate, ServerCapabilities, ServerInfo,
+    ListToolsResult, PaginatedRequestParams, Prompt, Resource, ResourceTemplate,
+    ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -157,6 +158,34 @@ impl ServerHandler for LoopingCursorPromptServer {
             format!("page-{page}"),
             Some("looping page"),
             None,
+        )]);
+        result.next_cursor = Some("loop".to_string());
+        Ok(result)
+    }
+}
+
+/// A malicious/buggy upstream whose tool `nextCursor` always points back at
+/// the same cursor value.
+#[derive(Clone, Default)]
+struct LoopingCursorToolServer {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ServerHandler for LoopingCursorToolServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let page = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut result = ListToolsResult::with_all_items(vec![Tool::new(
+            format!("tool-page-{page}"),
+            "looping page",
+            Arc::new(serde_json::Map::new()),
         )]);
         result.next_cursor = Some("loop".to_string());
         Ok(result)
@@ -380,6 +409,29 @@ async fn subject_scoped_prompt_owner_is_bounded_on_a_looping_cursor() {
 
     assert_eq!(owner.as_deref(), Some("looping"));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// Pins the notification-driven tool re-listing (a catalog publication path)
+/// to the bounded helper, and truncation to the status channel.
+#[tokio::test]
+async fn tool_refresh_breaks_a_looping_cursor() {
+    let server = LoopingCursorToolServer::default();
+    let calls = Arc::clone(&server.calls);
+    let pool = catalog_pool_with_server("looping", server).await;
+
+    let refreshed = pool.refresh_tools_after_list_changed("looping").await;
+
+    assert!(refreshed, "a truncated listing still refreshes the catalog");
+    // Page 1 introduces the cursor, page 2 repeats it — no third fetch.
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let catalog = pool.catalog.read().await;
+    let entry = catalog.get("looping").expect("looping catalog entry");
+    assert_eq!(entry.tools.len(), 2);
+    assert!(entry.tool_health.is_routable());
+    assert_eq!(
+        entry.tool_last_error.as_deref(),
+        Some("tools/list truncated (cursor_loop) after 2 pages — upstream catalog is partial")
+    );
 }
 
 #[tokio::test]

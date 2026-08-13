@@ -20,6 +20,7 @@ use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
     LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
 };
+use super::paginate::list_tools_bounded;
 use super::stdio_stderr::{
     StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
 };
@@ -319,7 +320,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     );
 
     // INVARIANT: arm the process-tree guard immediately after spawn. If any
-    // subsequent `?` propagates (serve fails, list_all_tools fails, the outer
+    // subsequent `?` propagates (serve fails, tool discovery fails, the outer
     // future is dropped on timeout), `Drop` on this guard reaps grandchildren
     // (npx → node, sh -c → python) that rmcp's per-PID TokioChildProcess Drop
     // would otherwise miss.
@@ -365,8 +366,8 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     let peer = service.peer().clone();
 
     // Discover tools
-    let tools = match peer.list_all_tools().await {
-        Ok(tools) => tools,
+    let (tools, _truncation) = match list_tools_bounded(&peer, &command.name).await {
+        Ok(listing) => listing,
         Err(error) => return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await),
     };
     tracing::info!(

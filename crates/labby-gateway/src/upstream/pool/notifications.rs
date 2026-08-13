@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri, cached_upstream_tool};
+use super::paginate::list_tools_bounded;
 
 const NOTIFICATION_EVENT_CAPACITY: usize = 1024;
 const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -77,9 +78,10 @@ impl UpstreamPool {
             return false;
         };
 
-        let listed = tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await;
-        let tools = match listed {
-            Ok(Ok(tools)) => tools,
+        let listed =
+            tokio::time::timeout(DISCOVERY_TIMEOUT, list_tools_bounded(&peer, upstream)).await;
+        let (tools, truncation) = match listed {
+            Ok(Ok(listing)) => listing,
             Ok(Err(error)) => {
                 let error = format!("tool-list refresh after list-changed signal failed: {error}");
                 self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
@@ -122,6 +124,8 @@ impl UpstreamPool {
         }
 
         self.record_success_for(upstream, UpstreamCapability::Tools)
+            .await;
+        self.record_listing_truncation_for(upstream, UpstreamCapability::Tools, truncation)
             .await;
         tracing::debug!(
             upstream,

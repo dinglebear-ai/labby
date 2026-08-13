@@ -40,6 +40,7 @@ use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
     LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
 };
+use super::paginate::list_tools_bounded;
 use super::{UpstreamClientService, UpstreamConnection};
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
@@ -324,7 +325,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
         ),
     };
     let peer = service.peer().clone();
-    let tools = peer.list_all_tools().await?;
+    let (tools, _truncation) = list_tools_bounded(&peer, &config.name).await?;
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "websocket",
@@ -495,7 +496,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             ),
         };
         let peer = service.peer().clone();
-        let tools = peer.list_all_tools().await?;
+        let (tools, _truncation) = list_tools_bounded(&peer, &config.name).await?;
         return Ok((
             UpstreamConnection {
                 _client_service: service,
@@ -535,7 +536,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         ),
     };
     let peer = service.peer().clone();
-    let tools = peer.list_all_tools().await?;
+    let (tools, _truncation) = list_tools_bounded(&peer, &config.name).await?;
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = upstream_transport(config),
