@@ -885,6 +885,17 @@ async fn disabled_oauth_upstream_is_not_eligible_for_subject_discovery() {
 }
 
 #[tokio::test]
+async fn non_positive_priority_oauth_upstream_is_not_eligible_for_subject_discovery() {
+    let manager = test_manager();
+    let mut upstream = oauth_upstream_fixture("linear", true);
+    upstream.priority = 0.0;
+    manager.replace_config_for_tests(vec![upstream]).await;
+
+    assert!(manager.oauth_upstream_config("linear").await.is_none());
+    assert!(manager.oauth_upstream_configs().await.is_empty());
+}
+
+#[tokio::test]
 async fn gateway_servers_marks_oauth_catalog_rows_as_request_scoped_not_healthy_zero() {
     let dir = tempfile::tempdir().expect("tempdir");
     let runtime = GatewayRuntimeHandle::default();

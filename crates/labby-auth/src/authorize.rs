@@ -354,7 +354,7 @@ pub async fn authorize(
     debug!(
         client_id = %query.client_id,
         oauth_state_id = %oauth_state_id,
-        location = %location,
+        provider_authorization_endpoint = %sanitized_authorization_endpoint(&location),
         "oauth authorize redirect URL generated"
     );
 
@@ -375,6 +375,15 @@ pub async fn authorize(
         )
             .into_response())
     }
+}
+
+fn sanitized_authorization_endpoint(location: &url::Url) -> String {
+    let mut endpoint = location.clone();
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    let _ = endpoint.set_username("");
+    let _ = endpoint.set_password(None);
+    endpoint.to_string()
 }
 
 fn authorization_error_redirect(
@@ -1769,6 +1778,64 @@ pub mod tests {
             .unwrap();
         assert!(location.contains("accounts.google.com"));
         assert!(location.contains("prompt=consent"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn authorize_logs_only_sanitized_provider_endpoint_and_state_fingerprint() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let app = router(test_auth_state_with_registered_client().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=raw-client-state&scope=lab&code_challenge=raw-client-verifier&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let location = Url::parse(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let query: std::collections::HashMap<_, _> = location.query_pairs().into_owned().collect();
+        let provider_state = query.get("state").expect("provider state");
+        let provider_code_challenge = query
+            .get("code_challenge")
+            .expect("provider PKCE challenge");
+        let logs = crate::test_support::captured_logs(buf);
+
+        for secret in [
+            "raw-client-state",
+            "raw-client-verifier",
+            provider_state,
+            provider_code_challenge,
+        ] {
+            assert!(
+                !logs.contains(secret),
+                "OAuth authorization secret leaked into logs: {secret}\n{logs}"
+            );
+            let encoded: String = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect();
+            assert!(
+                !logs.contains(&encoded),
+                "encoded OAuth authorization secret leaked into logs: {encoded}\n{logs}"
+            );
+        }
+        assert!(
+            logs.contains(
+                "\"provider_authorization_endpoint\":\"https://accounts.google.com/o/oauth2/v2/auth\""
+            ),
+            "{logs}"
+        );
+        assert!(logs.contains("\"oauth_state_id\":"), "{logs}");
+        assert!(!logs.contains("\"location\":"), "{logs}");
     }
 
     #[tokio::test]

@@ -49,6 +49,10 @@ pub(super) fn should_use_dynamic_registration(
 }
 
 impl GatewayManager {
+    fn is_routable_oauth_upstream(upstream: &UpstreamConfig) -> bool {
+        upstream.enabled && upstream.priority > 0.0 && upstream.oauth.is_some()
+    }
+
     fn google_provider_upstream_names(
         config: &labby_runtime::gateway_config::GatewayConfig,
     ) -> Vec<String> {
@@ -71,7 +75,7 @@ impl GatewayManager {
             .await
             .upstream
             .iter()
-            .filter(|upstream| upstream.enabled && upstream.oauth.is_some())
+            .filter(|upstream| Self::is_routable_oauth_upstream(upstream))
             .cloned()
             .collect()
     }
@@ -83,7 +87,7 @@ impl GatewayManager {
             .upstream
             .iter()
             .find(|upstream| {
-                upstream.name == upstream_name && upstream.enabled && upstream.oauth.is_some()
+                upstream.name == upstream_name && Self::is_routable_oauth_upstream(upstream)
             })
             .cloned()
     }

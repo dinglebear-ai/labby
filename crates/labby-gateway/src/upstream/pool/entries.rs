@@ -162,7 +162,7 @@ pub(super) fn resolve_exposure_policy(
 /// static config typo into an unbounded WARN stream, and a config defect is not a
 /// per-request caller error (see the level conventions in the root `CLAUDE.md`).
 /// The fail-closed behavior is identical; only the log level differs.
-pub(super) fn resolve_request_exposure_policy(
+pub fn resolve_request_exposure_policy(
     upstream_name: &str,
     expose_tools: Option<Vec<String>>,
 ) -> ToolExposurePolicy {
@@ -208,7 +208,7 @@ pub(super) fn resolve_resource_exposure_policy(
 /// Resource listing, direct reads, MRTR-relayed reads, and completion all
 /// resolve from live config per request, so they need the same WARN-suppression
 /// the tools request path has.
-pub(super) fn resolve_request_resource_exposure_policy(
+pub fn resolve_request_resource_exposure_policy(
     upstream_name: &str,
     expose_resources: Option<Vec<String>>,
 ) -> ToolExposurePolicy {
@@ -229,7 +229,7 @@ pub(super) fn resolve_prompt_exposure_policy(
 }
 
 /// [`resolve_prompt_exposure_policy`] for paths that run once per request.
-pub(super) fn resolve_request_prompt_exposure_policy(
+pub fn resolve_request_prompt_exposure_policy(
     upstream_name: &str,
     expose_prompts: Option<Vec<String>>,
 ) -> ToolExposurePolicy {
@@ -310,11 +310,7 @@ fn resolve_named_exposure_policy_inner(
 /// (`github/summarize`). Operators copy allowlist entries from either surface,
 /// so both are accepted. This is a spelling accommodation, not a widening: the
 /// pattern still has to match one of the two names for this one upstream.
-pub(super) fn prompt_exposed(
-    policy: &ToolExposurePolicy,
-    upstream_name: &str,
-    prompt_name: &str,
-) -> bool {
+pub fn prompt_exposed(policy: &ToolExposurePolicy, upstream_name: &str, prompt_name: &str) -> bool {
     if matches!(policy, ToolExposurePolicy::All) {
         return true;
     }
@@ -332,7 +328,7 @@ pub(super) fn prompt_exposed(
 /// `lab://upstream/{name}/` gateway prefix first, so a `ui://` MCP App URI and
 /// a plain `file:///…` URI are both matched in the form the operator sees in
 /// `gateway.discovered_resources`.
-pub(super) fn resource_exposed(policy: &ToolExposurePolicy, resource_uri: &str) -> bool {
+pub fn resource_exposed(policy: &ToolExposurePolicy, resource_uri: &str) -> bool {
     policy.matches(resource_uri)
 }
 

@@ -34,7 +34,7 @@ mod connect_unix_tests;
 mod connection;
 mod discover;
 mod ensure;
-mod entries;
+pub mod entries;
 mod health;
 mod helpers;
 mod http_cancellation;

@@ -150,10 +150,11 @@ async fn effective_access_token(
     // holding the credential cache across network or disk I/O.
     let _refresh_guard = state.refresh.lock().await;
     let (snapshot_revision, snapshot) = credential_snapshot_with_revision(state).await;
-    if let Some(creds) = snapshot.as_ref() {
-        if creds.matches_server(server_url) && !creds.is_expired(now_unix(), EXPIRY_SKEW_SECS) {
-            return Some(creds.access_token.expose().to_string());
-        }
+    if let Some(creds) = snapshot.as_ref()
+        && creds.matches_server(server_url)
+        && !creds.is_expired(now_unix(), EXPIRY_SKEW_SECS)
+    {
+        return Some(creds.access_token.expose().to_string());
     }
     match refresh_snapshot(app, client, server_url, state, snapshot_revision, snapshot).await {
         RefreshResult::Refreshed(token) => Some(token),

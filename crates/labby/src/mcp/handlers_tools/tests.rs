@@ -3128,6 +3128,46 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
 }
 
 #[tokio::test]
+async fn call_tool_rejects_priority_zero_oauth_subject_scoped_callbacks() {
+    let upstream_name: Arc<str> = Arc::from("oauth_apps");
+    let ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_search_ui",
+        Some("ui://oauth-apps/youtube-search.html"),
+    );
+    let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "oauth_apps",
+        fixture_upstream_entry(
+            "oauth_apps",
+            HashMap::from([
+                ("youtube_search_ui".to_string(), ui_tool),
+                ("youtube_probe".to_string(), plain_tool),
+            ]),
+        ),
+    )
+    .await;
+    let mut upstream = fixture_oauth_upstream_config("oauth_apps");
+    upstream.priority = 0.0;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+
+    let text = call_tool_error_text(server, "youtube_probe").await;
+    let envelope: Value = serde_json::from_str(&text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "not_found");
+    assert!(
+        !text.contains("oauth_apps"),
+        "non-routable OAuth upstream must not be selected or disclosed, got {text}"
+    );
+}
+
+#[tokio::test]
 async fn list_tools_paginates_large_builtin_catalog() {
     let manager = code_mode_manager(false).await;
     let server = test_server(
