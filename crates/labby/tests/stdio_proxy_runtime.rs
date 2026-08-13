@@ -1,3 +1,6 @@
+// These integration tests drive the labby stdio proxy (a trusted server)
+// with the raw rmcp helpers on purpose.
+#![allow(clippy::disallowed_methods)]
 #![cfg(all(feature = "gateway", feature = "proxy-testkit"))]
 
 use std::ffi::OsString;

@@ -167,6 +167,7 @@ dbg_macro = "warn"
 print_stderr = "allow"
 mod_module_files = "deny"                    # forbid mod.rs — enforce foo.rs sibling to foo/ style
 disallowed_macros = "deny"                   # see /clippy.toml — bans `#[async_trait]` in our code
+disallowed_methods = "deny"                  # see /clippy.toml — bans rmcp's unbounded `Peer::list_all_*`
 missing_safety_doc = "deny"
 
 # allow some pedantic noise

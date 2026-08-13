@@ -351,7 +351,11 @@ impl UpstreamPool {
             }
 
             // Open a new connection, reusing the pool-level shared HTTP client.
-            let (conn, tools) = connect_upstream_with_client(
+            // A truncated listing here is a per-subject view with no shared
+            // catalog entry to annotate — the WARN inside the bounded helper
+            // is the visibility (and the cached tools stay partial for the
+            // connection's lifetime).
+            let (conn, tools, _truncation) = connect_upstream_with_client(
                 config,
                 Some(subject),
                 self.oauth_client_cache.as_ref(),
