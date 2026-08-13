@@ -1,8 +1,8 @@
 # Implementation plan — Legacy resource subscription passthrough
 
 - **Issue:** [#211](https://github.com/dinglebear-ai/labby/issues/211) · **Epic:** `lab-n27j2`
-- **Base:** `132448802` · **Branch:** `feat/resource-subscriptions-211`
-- **Status:** Revised after review. **P0 is approved; Phases A–E are deferred.**
+- **Integrated base:** `origin/main` at `313e58969` · **Branch:** `feat/resource-subscriptions-211`
+- **Status:** Revised after review. **P0 is implemented; Phases A–E are deferred.**
 
 Read [FINDINGS.md](FINDINGS.md) first, then [SPEC.md](SPEC.md) and
 [CONTRACT.md](CONTRACT.md). Code marked **(current)** is verbatim from
@@ -15,7 +15,7 @@ not a patch to apply blindly.
 
 | Bead | Work | Status | Size |
 |---|---|---|---|
-| **P0** | Version-conditional capability advertisement + comment fixes | **approved** | ~1 day |
+| **P0** | Version-conditional capability advertisement + comment fixes | **implemented** | done |
 | **S1–S6** | Split-out beads (see [SPEC §3.3](SPEC.md#33-split-out--unblocked-independently-valuable)) | unblocked | ~half day each |
 | **A–E** | Handler build, pool API, bridge | **blocked on demand** | — |
 
@@ -23,7 +23,7 @@ not a patch to apply blindly.
 
 # P0 — Restore capability honesty
 
-**File:** `crates/labby/src/mcp/server.rs` · **Bead:** new (supersedes `lab-n27j2.1` as the first deliverable)
+**File:** `crates/labby/src/mcp/server.rs` · **Bead:** `lab-n27j2.4` (supersedes `lab-n27j2.1` as the first deliverable)
 
 ## P0.1 Why this shape
 
@@ -87,11 +87,11 @@ HTTP POST under stateless mode, all sharing the peer registry
 
 ## P0.4 Tests
 
-- [ ] Legacy `initialize` response does **not** advertise `resources.subscribe`
-- [ ] Modern `discover` response **does**
-- [ ] Modern `subscriptions/listen` with `resource_subscriptions` still delivers
+- [x] Legacy `initialize` response does **not** advertise `resources.subscribe`
+- [x] Modern `discover` remains unmodified
+- [x] Modern `subscriptions/listen` with `resource_subscriptions` still delivers
       `resources/updated` end to end — this is the regression guard for R0.2
-- [ ] Upstream negotiation unaffected: `SubscriptionFilter::supported_by` still
+- [x] Upstream negotiation unaffected: `SubscriptionFilter::supported_by` still
       sees the flag (`pool/notifications.rs:270`)
 
 ## P0.5 Docs
@@ -277,7 +277,7 @@ snippets.
 | Future refactor reintroduces HTTP silent-accept | G-0 as a structural transport check, not config |
 | Implementer reaches for the prefix shortcut in `accepted_subscription_filter` | C-3, and B0 building on `resources_read.rs:95-150` |
 | `audit/mcp-2026-07-28-capabilities` conflict | **Overstated in the first draft.** It touches neither `LegacyPeer`, the prune logic, nor subscribe. Textual merge noise in `server.rs`/`bridge.rs` only; re-diff before the PR |
-| Base has advanced | `origin/main` moved past `132448802` during review; re-verify citations before implementing |
+| Base has advanced | Rebased cleanly onto `origin/main` at `313e58969` on 2026-08-13; citations were rechecked during implementation |
 
 ## Definition of done — P0
 

@@ -4,8 +4,8 @@ Planning artifacts for MCP resource subscription passthrough in the Labby
 gateway.
 
 - **Issue:** [dinglebear-ai/labby#211](https://github.com/dinglebear-ai/labby/issues/211)
-- **Epic bead:** `lab-n27j2` · **Branch:** `feat/resource-subscriptions-211` · **Base:** `132448802`
-- **Status:** Planned and reviewed. **Scope changed after review — see the verdict below.** No implementation code written.
+- **Epic bead:** `lab-n27j2` · **P0 bead:** `lab-n27j2.4` · **Branch:** `feat/resource-subscriptions-211`
+- **Status:** **P0 implemented.** The broader legacy handler build remains deferred pending a product decision to support the legacy transport era.
 
 ---
 
@@ -18,7 +18,7 @@ The original framing was *"the handlers are missing — add them."* The accurate
 framing is *"Labby advertises a capability it cannot deliver on its primary
 network transport."* Those call for different fixes.
 
-**Ship this instead — a ~1 day PR:**
+**Shipped by this branch:**
 
 > Clear `capabilities.resources.subscribe` for legacy sessions inside
 > `compat_legacy_initialize` (`crates/labby/src/mcp/server.rs:378-384`), so
@@ -31,13 +31,13 @@ strict *prerequisite* for the full build rather than a competitor to it: if a
 real legacy consumer is ever identified, the advertisement predicate gains one
 clause — nothing is wasted.
 
-**Then stop and check demand.** The full handler build serves clients that are
-(a) on a pre-`2026-07-28` protocol, (b) connected over stdio specifically — HTTP
-can never work — and (c) using `resources/subscribe` rather than the modern
-`subscriptions/listen` path that already works. Nobody has reported such a
-client. Building a gated, tested, documented feature for a hypothetical
-consumer is the wrong trade, especially in an area that has already required
-three corrections to one migration.
+**Then stop and check demand.** The full handler build serves clients using a
+pre-`2026-07-28` protocol and `resources/subscribe` rather than the modern
+`subscriptions/listen` path that already works. Supporting those clients over
+HTTP also requires the legacy GET/SSE transport and session model; no consumer
+requiring that product expansion has been identified. Building it for a
+hypothetical consumer is the wrong trade, especially in an area that has
+already required three corrections to one migration.
 
 ## Why — the finding that changed everything
 
@@ -80,7 +80,7 @@ Full evidence, including the spec correction and five agent claims that did
 
 | Priority | Work | Size |
 |---|---|---|
-| **P0** | Version-conditional capability advertisement; fix the two false session-lifetime comments (`serve.rs:1693`, `server.rs:38`) | ~1 day |
+| **P0** | Version-conditional capability advertisement; fix the two false session-lifetime comments (`serve.rs`, `server.rs`) | **implemented** |
 | **P1** | File the missing auth gate as its own bead — live on `main`, modern path (FINDINGS §5) | file now |
 | **P1** | Correct the G-3/G-4 gate ordering in [CONTRACT.md](CONTRACT.md); record F-0 here and in [PROGRESS.md](PROGRESS.md) so this plan cannot re-mislead | done |
 | **P2** | Observability: standard fields on the `Lagged` warn; any tracing at all in `notify_resource_update_peers` | ~20 lines |

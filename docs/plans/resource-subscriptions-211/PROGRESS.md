@@ -1,9 +1,9 @@
 # Progress — Legacy resource subscription passthrough
 
 - **Issue:** [#211](https://github.com/dinglebear-ai/labby/issues/211) · **Epic:** `lab-n27j2`
-- **Branch:** `feat/resource-subscriptions-211` · **Base:** `132448802`
-- **Status:** Researched, reviewed, **rescoped**. P0 approved; handler build deferred.
-- **Last updated:** 2026-08-05
+- **Branch:** `feat/resource-subscriptions-211` · **Integrated base:** `origin/main` at `313e58969`
+- **Status:** Researched, reviewed, **rescoped, and P0 implemented**; handler build deferred.
+- **Last updated:** 2026-08-13
 
 This is the handoff surface. Anyone picking this up should read
 [FINDINGS.md](FINDINGS.md) and this page and know exactly where things stand.
@@ -14,7 +14,7 @@ This is the handoff surface. Anyone picking this up should read
 
 | Priority | Work | Bead | Status |
 |---|---|---|---|
-| **P0** | Version-conditional capability advertisement + two comment fixes | to create | ☐ Not started |
+| **P0** | Version-conditional capability advertisement + two comment fixes | `lab-n27j2.4` | ☑ done |
 | **S1** | Missing auth-scope gate on subscription acceptance (modern path, live on `main`) | to create | ☐ |
 | **S2** | `ui://` route-scope bypass | `lab-1415y` | ☐ open |
 | **S3** | `Lagged` warn fields; tracing in `notify_resource_update_peers` | to create | ☐ |
@@ -139,6 +139,11 @@ Evidence, not intentions.
 | 2026-08-05 | `labby docs check` | `checked 17 docs artifacts: fresh` |
 | 2026-08-05 | `cargo check -p labby --no-default-features --features gateway` | builds |
 | 2026-08-05 | `cargo clippy --workspace --all-features --all-targets` | **2 errors — PRE-EXISTING, not from P0.** `clippy::panic` at `crates/labby-runtime/tests/agent_error_schema.rs:88,96`. That crate is byte-identical to `origin/main` (`git diff origin/main -- crates/labby-runtime/` is empty), and `just lint` does **not** pass `--all-targets`, so the repo's gate never sees it. Issue #211's text asks for the stricter form, under which `main` is already red. Worth its own bead; deliberately not folded into P0 |
+| 2026-08-13 | Rebase onto `origin/main` (`313e58969`) | clean; P0 implementation and tests retained |
+| 2026-08-13 | `just lint` | clean |
+| 2026-08-13 | `just test` | **2732 passed, 3 failed, 7 skipped.** The three `xtask::proxy_verify_cli` failures were shared-target interference: `CARGO_BIN_EXE_xtask` disappeared while other worktrees built. Immediate rerun in an isolated `CARGO_TARGET_DIR` passed 3/3. |
+| 2026-08-13 | `CARGO_TARGET_DIR=/tmp/labby-resource-subscriptions-target cargo nextest run -p xtask --test proxy_verify_cli` | **3 passed**; confirms the full-suite failures were environmental rather than branch regressions |
+| 2026-08-13 | focused P0 tests, gateway feature slice, `just docs-check` | both P0 tests passed; slice built; 17 generated docs artifacts fresh |
 
 ---
 
@@ -161,3 +166,4 @@ before implementing.
 | 2026-08-05 | Planning | Researched #211; found the issue's plan stale. Created epic `lab-n27j2` + children, bug `lab-1415y`. Wrote the artifact set. Created worktree. No code. |
 | 2026-08-05 | Research (9 agents) | Found **F-0**: the feature cannot work on HTTP, and HTTP is the likely path. Also: rmcp already gates modern sessions; `prune_closed_peers` never runs in the target deployment; two planned pool helpers don't exist; a missing auth gate; a contract gate-ordering leak. Five agent claims refuted on verification (FINDINGS §7). |
 | 2026-08-05 | Eng review (4 agents) | Converged on **do not build as scoped**. Established the version-conditional P0 fix, that Phase D is dead in both branches, that gate G-4 cannot currently fire, and that most performance findings evaporate at n=1. Rewrote all artifacts. |
+| 2026-08-13 | P0 implementation | Withheld `resources.subscribe` only from legacy `initialize`, preserved modern `discover`/`subscriptions/listen`, corrected HTTP instance-lifetime comments, added regression tests and surface documentation, and rebased onto current `origin/main`. |
