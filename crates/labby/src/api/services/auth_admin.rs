@@ -427,6 +427,7 @@ async fn delete_allowed_email(
     // Preflight the runtime boundary and exclude new OAuth client/peer
     // publication before committing the durable revocation. Holding this
     // write guard through the drain closes the DB-to-runtime reuse window.
+    #[cfg(feature = "gateway")]
     let gateway_manager = if email.eq_ignore_ascii_case(admin_email) {
         None
     } else {
@@ -447,6 +448,7 @@ async fn delete_allowed_email(
             }
         }
     };
+    #[cfg(feature = "gateway")]
     let _oauth_lifecycle_guard = match &gateway_manager {
         Some(manager) => manager.google_provider_lifecycle_write_guard().await,
         None => None,
@@ -480,6 +482,7 @@ async fn delete_allowed_email(
     };
 
     let mut invalidated_runtime_sessions = 0;
+    #[cfg(feature = "gateway")]
     if let Some(manager) = &gateway_manager {
         for subject in &revocation.subjects {
             invalidated_runtime_sessions += manager
