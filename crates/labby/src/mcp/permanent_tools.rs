@@ -135,6 +135,9 @@ pub(crate) fn code_mode_full_annotations() -> ToolAnnotations {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PermanentToolRegistry;
 
+// The one legitimate `Tool::new` site: this registry IS the sole construction
+// point the clippy.toml `disallowed-methods` entry directs everyone to.
+#[allow(clippy::disallowed_methods)]
 impl PermanentToolRegistry {
     #[must_use]
     pub(crate) const fn new() -> Self {

@@ -108,6 +108,7 @@ impl ToolCatalogSnapshot {
 
     #[cfg(test)]
     #[must_use]
+    #[allow(clippy::disallowed_methods)] // test helper constructs bare Tool values directly
     pub(crate) fn from_names(tools: BTreeSet<String>) -> Self {
         let descriptors = tools
             .iter()
@@ -479,6 +480,7 @@ impl LabMcpServer {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
 

@@ -708,6 +708,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::{
         LauncherEntryView, append_labby_actions, catalog_fingerprint, entry_id, search_entries,

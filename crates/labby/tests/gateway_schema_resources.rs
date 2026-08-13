@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 #![allow(
     clippy::bool_assert_comparison,
     clippy::err_expect,

@@ -886,6 +886,7 @@ fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str
 // upstream proxy so both surfaces emit the same model-facing kind.
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
     use crate::gateway::runtime::GatewayRuntimeHandle;

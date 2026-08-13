@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Tests for tool-list/catalog visibility + upstream-pool resolution.
 //! Distributed from `server.rs` (bead `lab-kvji.24.1.6`). Duplicates the
 //! small `completion_test_registry` fixture to keep this `tests.rs`

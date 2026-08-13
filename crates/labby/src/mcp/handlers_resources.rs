@@ -1559,6 +1559,7 @@ fn build_app_resource_meta(
 
 #[cfg(all(test, feature = "gateway"))]
 #[allow(clippy::panic)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
     use crate::dispatch::upstream::pool::{

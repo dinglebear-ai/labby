@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Shared fixtures for the `GatewayManager` test suite. The tests themselves
 //! live in the `tests/` child modules, split by concern; each child does
 //! `use super::*;` to inherit these fixtures and imports.

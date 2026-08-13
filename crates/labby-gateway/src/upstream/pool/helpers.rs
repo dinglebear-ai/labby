@@ -466,6 +466,7 @@ pub(super) fn cached_upstream_tool(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
 

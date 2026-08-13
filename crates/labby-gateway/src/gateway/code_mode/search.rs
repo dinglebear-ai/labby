@@ -353,6 +353,7 @@ fn normalize_path(path: &Path) -> String {
 }
 
 #[cfg(all(test, unix))]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
     use std::sync::Arc;

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Upstream process cleanup pattern + matcher tests.
 #![allow(clippy::panic)]
 
