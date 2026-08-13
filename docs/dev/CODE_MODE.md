@@ -329,14 +329,24 @@ Builtin Labby services (`gateway`, `doctor`, `setup`, …) join the Code Mode
 catalog as in-process upstream peers under synthetic
 `__in_process__<service>` namespaces, so the dispatch-envelope
 `outputSchema` and the callable capability arrive together (issue #210
-FU-1). Registration is lazy and idempotent — it happens on the root-scope
-catalog build; protected MCP routes never see them, because a route's
-upstream allowlist cannot contain the synthetic names (fail closed).
+FU-1). Registration is lazy, single-flighted, and idempotent — it happens
+on the root-scope catalog build, with a cooldown so a failing peer is not
+retried on every call. Protected MCP routes never see them: the
+`__in_process__` prefix is **rejected at config load** both as an upstream
+name and in a route's `target.upstreams`, so the exclusion is enforced,
+not merely conventional.
 Authorization matches ordinary upstream tools: builtin peers carry no
 annotations, so they fail closed as destructive (Code Mode execute
 permission required) and are excluded from read-only Code Mode unless
 operator-trusted. Each peer serves exactly its own service, pinned to Raw
 mode regardless of the process-wide Code Mode flag.
+
+The peer transport carries no `AuthContext` — there is no HTTP layer to
+inject one — so it does **not** inherit the stdio trust model. Actions
+marked `requires_admin`, and the stdio-only `setup` actions, are refused
+over this transport; only non-admin actions are reachable through Code
+Mode. Without that guard a caller holding just `lab` (enough for Code Mode
+execute, deliberately not enough for admin) could reach admin builtins.
 
 ## Catalog Freshness
 

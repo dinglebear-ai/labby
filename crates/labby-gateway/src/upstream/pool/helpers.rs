@@ -111,7 +111,12 @@ pub(super) fn upstream_call_concurrency() -> usize {
 }
 
 pub fn in_process_upstream_name(service_name: &str) -> String {
-    format!("__in_process__{service_name}")
+    // The prefix is reserved in config validation (labby-runtime), so a
+    // configured upstream can never collide with a builtin peer's entry.
+    format!(
+        "{}{service_name}",
+        labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX
+    )
 }
 
 /// A `Write` sink that counts bytes without allocating.
