@@ -244,6 +244,16 @@ pub(crate) fn next_relay_session_id() -> u64 {
     RELAY_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Transports on which a missing `AuthContext` means "trusted local
+/// operator" rather than "this hop carries no auth layer".
+///
+/// Owned here, beside the `transport_label` field it interprets, so the
+/// policy has one home and does not depend on any feature-gated module.
+/// Adding a transport is an explicit trust decision: an unlisted label
+/// fails closed, and `requires_admin` builtin actions are refused on it.
+/// See [`LabMcpServer::trusts_absent_auth`] and bead lab-m01gl.
+pub(crate) const TRANSPORTS_TRUSTING_ABSENT_AUTH: &[&str] = &["stdio", "http", "test"];
+
 /// MCP server handler — one tool per registered service.
 pub struct LabMcpServer {
     pub registry: Arc<ToolRegistry>,
@@ -768,15 +778,22 @@ impl LabMcpServer {
     /// Whether an ABSENT `AuthContext` on this server's transport means
     /// "trusted local operator" rather than "unauthenticated hop".
     ///
-    /// True for every real client transport: stdio carries no per-request
+    /// **Allow-list, deliberately.** A transport earns this only by being
+    /// named in [`TRANSPORTS_TRUSTING_ABSENT_AUTH`]; anything else fails
+    /// closed. An exclusion list was the obvious shape and is the wrong one:
+    /// it would silently extend stdio trust to every transport added later,
+    /// which is the same "absence read as trust" mistake this guard exists
+    /// to fix (bead lab-m01gl).
+    ///
+    /// The listed transports earn it honestly — stdio carries no per-request
     /// auth by design, and the HTTP surfaces inject one whenever auth is
     /// configured (`cli/serve.rs` refuses to bind non-loopback without it).
-    /// False for the in-process service peers, whose duplex transport has no
-    /// HTTP layer to inject auth — treating that absence as trust let a
+    /// The in-process service peers do not: their duplex transport has no
+    /// HTTP layer to inject auth, so treating that absence as trust let a
     /// caller holding only `lab` reach `requires_admin` builtin actions
-    /// through Code Mode's `__in_process__*` namespaces (bead lab-m01gl).
+    /// through Code Mode's `__in_process__*` namespaces.
     pub(crate) fn trusts_absent_auth(&self) -> bool {
-        self.transport_label != crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL
+        TRANSPORTS_TRUSTING_ABSENT_AUTH.contains(&self.transport_label)
     }
 
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.

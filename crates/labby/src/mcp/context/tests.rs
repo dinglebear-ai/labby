@@ -456,13 +456,46 @@ fn absent_auth_is_not_trusted_on_the_in_process_transport() {
     );
 }
 
-/// The transport label the guard keys on is a contract between
-/// `in_process_peer.rs` and `LabMcpServer::trusts_absent_auth`.
+/// The allow-list is the security boundary, so pin its POLARITY, not just a
+/// string: the in-process label must be absent from it, and the guard must
+/// fail closed for a transport nobody has thought of yet.
 #[test]
-fn in_process_transport_label_is_the_only_untrusted_surface() {
-    assert_eq!(
-        crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL,
-        "in-process",
-        "changing this label silently re-grants stdio trust to in-process peers"
+fn absent_auth_trust_is_an_allow_list_that_fails_closed() {
+    use crate::mcp::server::TRANSPORTS_TRUSTING_ABSENT_AUTH;
+
+    assert!(
+        !TRANSPORTS_TRUSTING_ABSENT_AUTH
+            .contains(&crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL),
+        "the in-process transport must never be granted stdio trust"
+    );
+    assert!(
+        TRANSPORTS_TRUSTING_ABSENT_AUTH.contains(&"stdio"),
+        "local stdio must keep the documented trust model"
+    );
+    assert!(
+        !TRANSPORTS_TRUSTING_ABSENT_AUTH.contains(&"some-future-bridge"),
+        "an unlisted transport must fail closed — this is an allow-list, not an exclusion list"
+    );
+}
+
+/// End-to-end wiring: a server built the way the in-process peer builds one
+/// reports NO trust, and an ordinary test server does. Without this, a
+/// refactor could pass a literal `true` at the `call_tool` call sites and the
+/// suite would stay green while the escalation returned.
+#[test]
+fn in_process_peer_server_reports_no_absent_auth_trust() {
+    let peer_server =
+        crate::mcp::in_process_peer::build_peer_server(&crate::registry::RegisteredService {
+            name: "setup",
+            description: "Setup",
+            category: "bootstrap",
+            kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+            status: "available",
+            actions: crate::dispatch::setup::ACTIONS,
+            dispatch: |_action, _params| Box::pin(async { Ok(serde_json::json!({})) }),
+        });
+    assert!(
+        !peer_server.trusts_absent_auth(),
+        "a server built by the in-process peer path must refuse stdio trust"
     );
 }

@@ -22,11 +22,11 @@ const IN_PROCESS_PEER_BUFFER_BYTES: usize = 256 * 1024;
 
 /// Transport label for the in-process service peers.
 ///
-/// Load-bearing beyond logging: this is the signal
-/// `LabMcpServer::trusts_absent_auth` uses to refuse the stdio trust model.
-/// Requests arriving over this duplex transport carry no `AuthContext`
-/// because there is no HTTP layer to inject one — that means "unauthenticated
-/// hop", not "trusted local operator". See bead lab-m01gl.
+/// Load-bearing beyond logging: it is deliberately absent from
+/// `mcp::server::TRANSPORTS_TRUSTING_ABSENT_AUTH`, so this transport does not
+/// inherit the stdio trust model. Requests arriving over the duplex carry no
+/// `AuthContext` because there is no HTTP layer to inject one — that means
+/// "unauthenticated hop", not "trusted local operator" (bead lab-m01gl).
 pub(crate) const IN_PROCESS_TRANSPORT_LABEL: &str = "in-process";
 
 pub(crate) fn connector() -> InProcessConnector {
@@ -47,21 +47,24 @@ pub(crate) fn connector() -> InProcessConnector {
     })
 }
 
-async fn connect_in_process_service_peer(
-    service: RegisteredService,
-) -> anyhow::Result<InProcessRegistration> {
-    tracing::info!(
-        service = service.name,
-        phase = "in_process.connect.start",
-        "connecting in-process peer"
-    );
-    let upstream_name = in_process_upstream_name(service.name);
-    let entry_name: Arc<str> = Arc::from(upstream_name.as_str());
-    let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+/// Build the mini server that fronts one builtin service.
+///
+/// Extracted so the trust-boundary test exercises the same construction
+/// production uses — a test that hand-rolled an equivalent server could drift
+/// from this one and keep passing.
+pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
     let mut registry = ToolRegistry::new();
     registry.register(service.clone());
-    let server = LabMcpServer {
+    LabMcpServer {
         registry: Arc::new(registry),
+        // MUST stay `None`, and the route scope below MUST keep
+        // `expose_code_mode: false`. Together they are the only thing stopping
+        // this mini-server's `list_tools` from re-entering
+        // `code_mode_catalog_tools_allowed` — which would call
+        // `ensure_in_process_service_peers` from inside the registration that
+        // already holds its (non-reentrant) single-flight guard, deadlocking
+        // the whole catalog path. Giving the peer a manager handle is
+        // plausible-looking and would be a runtime-only hang.
         gateway_manager: None,
         peers: Arc::new(RwLock::new(Vec::new())),
         code_mode_app_state: Default::default(),
@@ -85,7 +88,21 @@ async fn connect_in_process_service_peer(
         relay_session_id: crate::mcp::server::next_relay_session_id(),
         #[cfg(test)]
         code_mode_widget_callbacks_enabled_for_test: false,
-    };
+    }
+}
+
+async fn connect_in_process_service_peer(
+    service: RegisteredService,
+) -> anyhow::Result<InProcessRegistration> {
+    tracing::info!(
+        service = service.name,
+        phase = "in_process.connect.start",
+        "connecting in-process peer"
+    );
+    let upstream_name = in_process_upstream_name(service.name);
+    let entry_name: Arc<str> = Arc::from(upstream_name.as_str());
+    let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+    let server = build_peer_server(&service);
     let service_name = service.name;
     let server_task = tokio::spawn(async move {
         tracing::info!(

@@ -151,12 +151,18 @@ pub(crate) fn code_mode_read_scope_allowed(auth: Option<&AuthContext>) -> bool {
 
 /// Whether `action` on builtin `entry` may execute for this caller.
 ///
-/// `trust_absent_auth` comes from
-/// [`McpRouteScope::trusts_absent_auth`](crate::mcp::route_scope::McpRouteScope::trusts_absent_auth):
-/// `true` only on the root surface, where a missing `AuthContext` means local
-/// stdio. On any other surface a missing context means the request reached
-/// builtin dispatch over a transport that carries no auth — today the
-/// in-process service peers — and is treated as UNPRIVILEGED, not trusted.
+/// `trust_absent_auth` comes from `LabMcpServer::trusts_absent_auth` and is
+/// keyed on the **transport**, not the route scope: it is `true` only for the
+/// transports in `TRANSPORTS_TRUSTING_ABSENT_AUTH`, where a missing
+/// `AuthContext` means a local operator. On any other transport a missing
+/// context means the request reached builtin dispatch over a hop that carries
+/// no auth layer — today the in-process service peers — and is treated as
+/// UNPRIVILEGED.
+///
+/// Do not "simplify" this to a route-scope check: protected routes on an
+/// auth-less loopback gateway legitimately run admin actions with no
+/// `AuthContext`, and scoping the guard that way breaks them (that attempt
+/// was made and reverted; see `context/tests.rs`).
 pub(crate) fn tool_execute_builtin_action_allowed(
     entry: &crate::registry::RegisteredService,
     action: &str,
