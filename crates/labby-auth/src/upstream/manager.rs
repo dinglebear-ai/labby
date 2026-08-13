@@ -53,6 +53,21 @@ use crate::upstream::types::{BeginAuthorization, GoogleCredentialBrokerStatus, O
 const TOKEN_EXPIRY_WARNING_SECS: i64 = 300;
 const PROACTIVE_REFRESH_WINDOW_SECS: i64 = 30;
 
+#[derive(Clone, Copy)]
+enum AuthClientTransport {
+    Default,
+    Supplied,
+}
+
+impl AuthClientTransport {
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::Default => "",
+            Self::Supplied => " (with_client)",
+        }
+    }
+}
+
 /// Upstream OAuth manager for a single upstream MCP server.
 ///
 /// Cheap to clone — all mutable state is behind `Arc`.
@@ -389,7 +404,7 @@ impl UpstreamOauthManager {
             .revoke_google_provider_credential(account.as_deref())
             .await
             .map_err(|error| OauthError::Internal(error.to_string()))?;
-        tracing::warn!(
+        tracing::info!(
             upstream = %self.upstream.name,
             invalidated = invalidation.invalidated,
             revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
@@ -456,131 +471,9 @@ impl UpstreamOauthManager {
         &self,
         subject: &str,
     ) -> Result<AuthClient<reqwest::Client>, OauthError> {
-        let started = std::time::Instant::now();
-        let lock = self.acquire_refresh_lock(subject).await?;
-        let _guard = lock.lock().await;
-        self.preflight_shared_google_credential().await?;
-
-        let mut manager = self
-            .configured_authorization_manager(
-                subject,
-                DynamicClientRegistrationUse::StoredCredentials,
-            )
-            .await
-            .inspect_err(|e| {
-                tracing::warn!(
-                    upstream = %self.upstream.name,
-                    provider = %self.oauth_provider_label(),
-                    subject,
-                    scope = %self.oauth_scope_label(),
-                    kind = e.kind(),
-                    elapsed_ms = started.elapsed().as_millis(),
-                    fallback = "reauthorization_required",
-                    "upstream oauth: failed to build auth client manager"
-                );
-            })?;
-        let initialized = manager.initialize_from_store().await.map_err(|e| {
-            tracing::warn!(
-                upstream = %self.upstream.name,
-                provider = %self.oauth_provider_label(),
-                subject,
-                scope = %self.oauth_scope_label(),
-                kind = "internal_error",
-                elapsed_ms = started.elapsed().as_millis(),
-                fallback = "reauthorization_required",
-                "upstream oauth: failed to initialize auth client from credential store"
-            );
-            OauthError::Internal(format!("initialize from store: {e}"))
-        })?;
-
-        if !initialized {
-            tracing::warn!(
-                upstream = %self.upstream.name,
-                provider = %self.oauth_provider_label(),
-                subject,
-                scope = %self.oauth_scope_label(),
-                kind = "oauth_needs_reauth",
-                elapsed_ms = started.elapsed().as_millis(),
-                fallback = "reauthorization_required",
-                "upstream oauth: no stored credentials for auth client"
-            );
-            return Err(OauthError::NeedsReauth(format!(
-                "no stored credentials for upstream '{}' subject '{subject}'",
-                self.upstream.name
-            )));
-        }
-
-        self.reconfigure_client_after_store_init(&mut manager, subject)
+        let manager = self
+            .prepare_stored_authorization_manager(subject, AuthClientTransport::Default)
             .await?;
-
-        let credential_row = self.credential_row(subject).await?;
-        let refresh_state = credential_row
-            .as_ref()
-            .and_then(|row| TokenRefreshState::from_row(row, now_unix().ok()?));
-        let refresh_due = refresh_state
-            .as_ref()
-            .is_some_and(TokenRefreshState::refresh_due);
-        if let Some(state) = refresh_state.as_ref() {
-            self.log_expiring_token(subject, state, started.elapsed().as_millis());
-            self.log_refresh_attempt(subject, state, started.elapsed().as_millis());
-        }
-
-        if refresh_due
-            && self
-                .refresh_failures
-                .recently_failed(&self.upstream.name, subject)
-        {
-            tracing::warn!(
-                upstream = %self.upstream.name,
-                provider = %self.oauth_provider_label(),
-                subject,
-                scope = %self.oauth_scope_label(),
-                kind = "oauth_needs_reauth",
-                elapsed_ms = started.elapsed().as_millis(),
-                fallback = "reauthorization_required",
-                "upstream oauth: token refresh skipped, recently failed"
-            );
-            return Err(OauthError::NeedsReauth(format!(
-                "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
-                self.upstream.name
-            )));
-        }
-
-        if let Err(error) = manager.get_access_token().await {
-            let mapped = self.map_refresh_error_and_maybe_invalidate(error).await;
-            if refresh_due {
-                self.refresh_failures
-                    .record_failure(&self.upstream.name, subject);
-                tracing::warn!(
-                    upstream = %self.upstream.name,
-                    provider = %self.oauth_provider_label(),
-                    subject,
-                    scope = %self.oauth_scope_label(),
-                    kind = mapped.kind(),
-                    elapsed_ms = started.elapsed().as_millis(),
-                    fallback = "reauthorization_required",
-                    "upstream oauth: token refresh failed"
-                );
-            }
-            return Err(mapped);
-        }
-
-        self.refresh_failures.clear(&self.upstream.name, subject);
-        if refresh_due {
-            tracing::info!(
-                upstream = %self.upstream.name,
-                provider = %self.oauth_provider_label(),
-                subject,
-                scope = %self.oauth_scope_label(),
-                elapsed_ms = started.elapsed().as_millis(),
-                fallback = "none",
-                "upstream oauth: token refresh succeeded"
-            );
-        }
-
-        // See google.rs::GoogleProvider::new for why this call is needed
-        // under "rustls-no-provider" -- idempotent, safe to ignore Err.
-        drop(rustls::crypto::ring::default_provider().install_default());
         Ok(AuthClient::new(reqwest::Client::new(), manager))
     }
 
@@ -598,6 +491,19 @@ impl UpstreamOauthManager {
     where
         C: StreamableHttpClient,
     {
+        let manager = self
+            .prepare_stored_authorization_manager(subject, AuthClientTransport::Supplied)
+            .await?;
+        Ok(AuthClient::new(http_client, manager))
+    }
+
+    /// Prepare the canonical stored-credential authorization manager shared by
+    /// every HTTP transport wrapper.
+    async fn prepare_stored_authorization_manager(
+        &self,
+        subject: &str,
+        transport: AuthClientTransport,
+    ) -> Result<AuthorizationManager, OauthError> {
         let started = std::time::Instant::now();
         let lock = self.acquire_refresh_lock(subject).await?;
         let _guard = lock.lock().await;
@@ -618,7 +524,8 @@ impl UpstreamOauthManager {
                     kind = e.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
                     fallback = "reauthorization_required",
-                    "upstream oauth: failed to build auth client manager (with_client)"
+                    "upstream oauth: failed to build auth client manager{}",
+                    transport.suffix()
                 );
             })?;
         let initialized = manager.initialize_from_store().await.map_err(|e| {
@@ -630,7 +537,8 @@ impl UpstreamOauthManager {
                 kind = "internal_error",
                 elapsed_ms = started.elapsed().as_millis(),
                 fallback = "reauthorization_required",
-                "upstream oauth: failed to initialize auth client from credential store (with_client)"
+                "upstream oauth: failed to initialize auth client from credential store{}",
+                transport.suffix()
             );
             OauthError::Internal(format!("initialize from store: {e}"))
         })?;
@@ -644,7 +552,8 @@ impl UpstreamOauthManager {
                 kind = "oauth_needs_reauth",
                 elapsed_ms = started.elapsed().as_millis(),
                 fallback = "reauthorization_required",
-                "upstream oauth: no stored credentials for auth client (with_client)"
+                "upstream oauth: no stored credentials for auth client{}",
+                transport.suffix()
             );
             return Err(OauthError::NeedsReauth(format!(
                 "no stored credentials for upstream '{}' subject '{subject}'",
@@ -680,7 +589,8 @@ impl UpstreamOauthManager {
                 kind = "oauth_needs_reauth",
                 elapsed_ms = started.elapsed().as_millis(),
                 fallback = "reauthorization_required",
-                "upstream oauth: token refresh skipped, recently failed (with_client)"
+                "upstream oauth: token refresh skipped, recently failed{}",
+                transport.suffix()
             );
             return Err(OauthError::NeedsReauth(format!(
                 "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
@@ -701,7 +611,8 @@ impl UpstreamOauthManager {
                     kind = mapped.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
                     fallback = "reauthorization_required",
-                    "upstream oauth: token refresh failed (with_client)"
+                    "upstream oauth: token refresh failed{}",
+                    transport.suffix()
                 );
             }
             return Err(mapped);
@@ -716,11 +627,12 @@ impl UpstreamOauthManager {
                 scope = %self.oauth_scope_label(),
                 elapsed_ms = started.elapsed().as_millis(),
                 fallback = "none",
-                "upstream oauth: token refresh succeeded (with_client)"
+                "upstream oauth: token refresh succeeded{}",
+                transport.suffix()
             );
         }
 
-        Ok(AuthClient::new(http_client, manager))
+        Ok(manager)
     }
 
     /// Force a refresh for stored credentials.
@@ -728,11 +640,53 @@ impl UpstreamOauthManager {
     /// `AuthorizationManager::get_access_token()` only refreshes inside rmcp's
     /// short refresh buffer. Status checks need an explicit refresh so UI state
     /// cannot report a stale credential row as connected.
-    pub async fn refresh_auth_client(&self, subject: &str) -> Result<(), OauthError> {
+    pub async fn refresh_auth_client_if_due(&self, subject: &str) -> Result<bool, OauthError> {
         let started = std::time::Instant::now();
         let lock = self.acquire_refresh_lock(subject).await?;
         let _guard = lock.lock().await;
         self.preflight_shared_google_credential().await?;
+
+        // A status caller may have waited behind another status/request refresh.
+        // Re-read inside the single-flight lock and do not replay the refresh
+        // against a token that is no longer near expiry.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let still_due = self
+            .credential_row(subject)
+            .await?
+            .is_some_and(|row| row.access_token_expires_at - now <= 300);
+        if !still_due {
+            tracing::debug!(
+                upstream = %self.upstream.name,
+                provider = %self.oauth_provider_label(),
+                subject,
+                scope = %self.oauth_scope_label(),
+                elapsed_ms = started.elapsed().as_millis(),
+                coalesced = true,
+                "upstream oauth: status refresh satisfied by concurrent caller"
+            );
+            return Ok(false);
+        }
+        if self
+            .refresh_failures
+            .recently_failed(&self.upstream.name, subject)
+        {
+            tracing::debug!(
+                upstream = %self.upstream.name,
+                provider = %self.oauth_provider_label(),
+                subject,
+                scope = %self.oauth_scope_label(),
+                elapsed_ms = started.elapsed().as_millis(),
+                cooldown = true,
+                "upstream oauth: status refresh skipped during failure cooldown"
+            );
+            return Err(OauthError::NeedsReauth(format!(
+                "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
+                self.upstream.name
+            )));
+        }
 
         let mut manager = self
             .configured_authorization_manager(
@@ -777,8 +731,12 @@ impl UpstreamOauthManager {
             .await?;
 
         if let Err(error) = manager.refresh_token().await {
-            return Err(self.map_refresh_error_and_maybe_invalidate(error).await);
+            let mapped = self.map_refresh_error_and_maybe_invalidate(error).await;
+            self.refresh_failures
+                .record_failure(&self.upstream.name, subject);
+            return Err(mapped);
         }
+        self.refresh_failures.clear(&self.upstream.name, subject);
         tracing::info!(
             upstream = %self.upstream.name,
             provider = %self.oauth_provider_label(),
@@ -787,7 +745,7 @@ impl UpstreamOauthManager {
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: status refresh succeeded"
         );
-        Ok(())
+        Ok(true)
     }
 
     pub async fn credential_row(
@@ -1688,7 +1646,12 @@ fn map_auth_error(e: rmcp::transport::AuthError) -> OauthError {
 
 #[cfg(test)]
 mod url_tests {
-    use super::{google_offline_access_url, map_auth_error};
+    use super::{UpstreamOauthManager, google_offline_access_url, map_auth_error};
+    use labby_runtime::gateway_config::{
+        UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+    };
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn rejected_refresh_token_maps_to_reauthorization() {
@@ -1696,6 +1659,76 @@ mod url_tests {
             "invalid_grant".to_string(),
         ));
         assert!(matches!(error, super::OauthError::NeedsReauth(_)));
+    }
+
+    #[tokio::test]
+    async fn default_and_supplied_transports_share_missing_credential_policy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sqlite = crate::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+            .await
+            .expect("sqlite store");
+        let key = crate::upstream::encryption::load_key(&base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [0_u8; 32],
+        ))
+        .expect("encryption key");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": server.uri(),
+                "authorization_endpoint": format!("{}/authorize", server.uri()),
+                "token_endpoint": format!("{}/token", server.uri()),
+                "code_challenge_methods_supported": ["S256"]
+            })))
+            .mount(&server)
+            .await;
+        let manager = UpstreamOauthManager::new(
+            sqlite,
+            key,
+            UpstreamConfig {
+                enabled: true,
+                name: "transport-parity".to_string(),
+                url: Some(format!("{}/mcp", server.uri())),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
+                command: None,
+                args: vec![],
+                bearer_token_env: None,
+                env: Default::default(),
+                proxy_resources: false,
+                proxy_prompts: false,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                code_mode_hint: None,
+                oauth: Some(UpstreamOauthConfig {
+                    mode: UpstreamOauthMode::AuthorizationCodePkce,
+                    registration: UpstreamOauthRegistration::Preregistered {
+                        client_id: "client-id".to_string(),
+                        client_secret_env: None,
+                    },
+                    scopes: None,
+                    credential: Default::default(),
+                    prefer_client_metadata_document: None,
+                }),
+                imported_from: None,
+                priority: 1.0,
+            },
+            "http://127.0.0.1:12345/auth/upstream/callback".to_string(),
+        );
+
+        let default_error = manager
+            .build_auth_client("alice")
+            .await
+            .expect_err("default transport must require credentials");
+        let supplied_error = manager
+            .build_auth_client_with("alice", reqwest::Client::new())
+            .await
+            .expect_err("supplied transport must require credentials");
+
+        assert_eq!(default_error.kind(), "oauth_needs_reauth");
+        assert_eq!(supplied_error.kind(), default_error.kind());
     }
 
     #[test]

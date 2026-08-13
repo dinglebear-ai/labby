@@ -117,7 +117,7 @@ test('logoutBrowserSession resets local state after POST', async () => {
   assert.deepEqual(getBrowserSessionState(), { status: 'unauthenticated' })
 })
 
-test('logoutBrowserSession clears local state even when /auth/logout fails', async () => {
+test('logoutBrowserSession preserves the authenticated state when server revocation fails', async () => {
   __setBrowserSessionStateForTests({
     status: 'authenticated',
     user: { sub: 'browser-user', email: 'browser@example.com' },
@@ -131,6 +131,46 @@ test('logoutBrowserSession clears local state even when /auth/logout fails', asy
     logoutBrowserSession(),
     /Failed to logout browser session/,
   )
+  assert.deepEqual(getBrowserSessionState(), {
+    status: 'authenticated',
+    user: { sub: 'browser-user', email: 'browser@example.com' },
+    expiresAt: 123,
+    csrfToken: 'csrf-123',
+  })
+})
+
+test('a session load started before successful logout cannot restore the revoked session', async () => {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'browser-user', email: 'browser@example.com' },
+    expiresAt: 123,
+    csrfToken: 'csrf-123',
+  })
+
+  let releaseSessionLoad: (() => void) | undefined
+  const sessionLoadBlocked = new Promise<void>((resolve) => {
+    releaseSessionLoad = resolve
+  })
+  globalThis.fetch = (async (input) => {
+    if (input === '/auth/logout') {
+      return new Response(null, { status: 204 })
+    }
+    await sessionLoadBlocked
+    return new Response(JSON.stringify({
+      authenticated: true,
+      user: { sub: 'browser-user', email: 'browser@example.com' },
+      expires_at: 456,
+      csrf_token: 'stale-csrf',
+      is_admin: true,
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as FetchMock
+
+  const staleLoad = loadBrowserSession()
+  await logoutBrowserSession()
+  releaseSessionLoad?.()
+  const loadResult = await staleLoad
+
+  assert.deepEqual(loadResult, { status: 'unauthenticated' })
   assert.deepEqual(getBrowserSessionState(), { status: 'unauthenticated' })
 })
 

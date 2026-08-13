@@ -24,6 +24,7 @@ use super::types::{UpstreamEntry, UpstreamRuntimeMetadata, UpstreamRuntimeOwner}
 mod cache_repair;
 mod capability;
 mod capability_call;
+mod catalog_pagination;
 mod completion;
 mod connect;
 mod connect_stdio;
@@ -34,22 +35,18 @@ mod connect_unix_tests;
 mod connection;
 mod discover;
 mod ensure;
-mod entries;
+pub mod entries;
 mod health;
 mod helpers;
 mod http_cancellation;
 mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
-#[cfg(test)]
-mod listing_bounds_tests;
-#[cfg(test)]
-mod listing_timeout_tests;
 mod logging;
 mod notifications;
 #[cfg(test)]
 mod notifications_tests;
-mod paginate;
+mod oauth_invalidation;
 mod probe;
 mod prompts_exposure;
 #[cfg(test)]
@@ -58,6 +55,7 @@ mod prompts_get;
 mod prompts_list;
 mod registration;
 mod relay;
+mod relay_cache;
 mod relay_cancellation;
 #[cfg(test)]
 mod relay_cancellation_tests;
@@ -69,8 +67,9 @@ mod spawn_lock;
 mod stdio_stderr;
 mod stdio_transport;
 mod subscription_schedule;
+mod task_route;
 mod tasks;
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 mod testsupport;
 mod tools;
 mod tools_call;
@@ -90,7 +89,9 @@ pub(crate) use helpers::{
     upstream_discovery_concurrency,
 };
 pub use notifications::UpstreamNotificationEvent;
+pub use oauth_invalidation::OAuthSessionInvalidation;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
+pub use task_route::TaskRouteAuthorization;
 pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
@@ -123,6 +124,9 @@ pub struct UpstreamPool {
     /// Live client connections, keyed by upstream name.
     /// Each is an `Arc<Peer<RoleClient>>` that can `call_tool` / `list_tools`.
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
+    /// OAuth subject provenance for entries in the generic connection map.
+    /// Absence means the generic peer was connected without upstream OAuth.
+    generic_oauth_subjects: Arc<RwLock<HashMap<String, String>>>,
     /// Names of upstreams that have `proxy_resources=true`.
     resource_upstreams: Arc<RwLock<Vec<String>>>,
     /// Normalized notification events produced by upstream subscription streams.
@@ -140,11 +144,18 @@ pub struct UpstreamPool {
     /// Per-upstream OAuth managers, keyed by upstream name.
     /// `None` when the server was started without OAuth support.
     oauth_client_cache: Option<OauthClientCache>,
+    /// Shared with `OauthClientCache`: readers cover the entire authenticated
+    /// connect-and-publish path; credential mutation takes the sole writer.
+    oauth_invalidation_barrier: Arc<RwLock<()>>,
     /// Background reprobe task cancellation tokens, keyed by upstream name.
     probe_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
     /// independent schedules, but only a bounded number may probe concurrently.
     reprobe_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Shared gate for cold subject-scoped catalog fan-outs. Unlike the
+    /// per-upstream call bulkheads, this bounds simultaneous OAuth connection
+    /// acquisition across the entire fleet and across concurrent callers.
+    catalog_fanout_semaphore: Arc<tokio::sync::Semaphore>,
     /// Per-upstream RPC bulkheads. Each upstream receives an independent
     /// semaphore so one slow or reconnecting peer cannot absorb unbounded
     /// concurrent retries.
@@ -173,12 +184,15 @@ pub struct UpstreamPool {
     /// never reused across agents; the `Option<String>` subject component
     /// guarantees it is never reused across OAuth identities within a session,
     /// so a connection authenticated as subject A can never serve a call made
-    /// as subject B (`None` = the non-OAuth/raw proxy path). See `pool/relay.rs`.
+    /// as subject B (`None` = the non-OAuth/raw proxy path). The capability
+    /// fingerprint is also part of the key so a newly negotiated snapshot
+    /// cannot drop a connection still serving an older in-flight request.
+    /// See `pool/relay.rs`.
     relay_connections:
-        Arc<RwLock<HashMap<(String, u64, Option<String>), relay::RelayCachedConnection>>>,
+        Arc<RwLock<HashMap<relay_cache::RelayCacheKey, relay_cache::RelayCachedConnection>>>,
     /// Single-flight locks for the relay-connection cache, mirroring
     /// `subject_connect_locks`. Keyed identically to `relay_connections`.
-    relay_connect_locks: Arc<RwLock<HashMap<(String, u64, Option<String>), Arc<Mutex<()>>>>>,
+    relay_connect_locks: Arc<RwLock<HashMap<relay_cache::RelayCacheKey, Arc<Mutex<()>>>>>,
     /// Gateway-owned task handles and the relay connections that created them.
     /// Shared across stateless HTTP requests through the pool.
     task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,
@@ -368,6 +382,7 @@ impl UpstreamPool {
         Self {
             catalog: Arc::new(RwLock::new(HashMap::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
+            generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
@@ -376,8 +391,12 @@ impl UpstreamPool {
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),
             subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             oauth_client_cache: None,
+            oauth_invalidation_barrier: Arc::new(RwLock::new(())),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                upstream_discovery_concurrency(None),
+            )),
+            catalog_fanout_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 upstream_discovery_concurrency(None),
             )),
             call_semaphores: Arc::new(RwLock::new(HashMap::new())),
@@ -415,6 +434,7 @@ impl UpstreamPool {
     /// Must be called before `discover_all` for OAuth upstreams to connect successfully.
     #[must_use]
     pub fn with_oauth_client_cache(mut self, cache: OauthClientCache) -> Self {
+        self.oauth_invalidation_barrier = cache.invalidation_barrier();
         self.oauth_client_cache = Some(cache);
         self
     }
@@ -444,6 +464,15 @@ impl UpstreamPool {
         self.call_concurrency = limit.clamp(1, 128);
         self.call_semaphores = Arc::new(RwLock::new(HashMap::new()));
         self
+    }
+
+    pub(super) async fn acquire_catalog_fanout_permit(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        Arc::clone(&self.catalog_fanout_semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|_| "subject catalog concurrency gate was closed".to_string())
     }
 
     pub(super) async fn acquire_upstream_call_permit(
@@ -509,7 +538,8 @@ impl UpstreamPool {
         self
     }
 
-    #[cfg(any(test, feature = "testkit"))]
+    /// Configured wall-clock request budget used by surface adapters that must
+    /// compose multiple upstream passes under one absolute deadline.
     pub fn request_timeout(&self) -> Duration {
         self.request_timeout
     }

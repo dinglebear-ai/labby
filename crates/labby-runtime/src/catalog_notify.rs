@@ -43,6 +43,13 @@ pub const SOURCE_MCP_CALL_MCP_APP: &str = "mcp.call.mcp_app";
 /// mid-turn caveat as [`SOURCE_MCP_CALL_CODEMODE`].
 pub const SOURCE_MCP_CALL_UPSTREAM: &str = "mcp.call.upstream";
 
+/// A live upstream subscription reported a scoped catalog change.
+pub const SOURCE_UPSTREAM_SUBSCRIPTION: &str = "upstream.subscription";
+
+/// The upstream event receiver lagged and reconciled all authoritative
+/// catalogs before conservatively signalling downstream peers.
+pub const SOURCE_UPSTREAM_NOTIFICATION_LAG: &str = "upstream.notification_lag";
+
 /// Several emitters converged on one net visible change and were delivered as
 /// a single notification. The contributing emitters are listed on the
 /// `catalog.notify.flush` event.
@@ -62,6 +69,8 @@ pub const SOURCES: &[&str] = &[
     SOURCE_MCP_CALL_CODEMODE,
     SOURCE_MCP_CALL_MCP_APP,
     SOURCE_MCP_CALL_UPSTREAM,
+    SOURCE_UPSTREAM_SUBSCRIPTION,
+    SOURCE_UPSTREAM_NOTIFICATION_LAG,
     SOURCE_COALESCED,
     SOURCE_UNKNOWN,
 ];

@@ -309,3 +309,26 @@ async fn absent_expose_prompts_leaves_subject_scoped_prompts_alone() {
     .await
     .expect("every prompt stays fetchable when no allowlist is configured");
 }
+
+/// Holding the fleet-wide catalog permit must stop even a cache-hot subject
+/// listing from entering its acquisition/listing job. This directly pins the
+/// subject prompt path to the shared global fan-out gate.
+#[tokio::test]
+async fn subject_prompt_listing_waits_for_global_catalog_fanout_permit() {
+    let pool = static_catalog_pool("static").await;
+    seed_subject_connection(&pool, "static", "alice").await;
+    let permits = pool.catalog_fanout_semaphore.available_permits() as u32;
+    let held = Arc::clone(&pool.catalog_fanout_semaphore)
+        .acquire_many_owned(permits)
+        .await
+        .expect("hold every global permit");
+    let config = oauth_upstream_config("static", None);
+    let deadline_at = tokio::time::Instant::now() + std::time::Duration::from_millis(25);
+
+    let prompts = pool
+        .subject_scoped_prompts_until(std::slice::from_ref(&config), "alice", &[], deadline_at)
+        .await;
+
+    assert!(prompts.is_empty());
+    drop(held);
+}

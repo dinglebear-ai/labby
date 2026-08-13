@@ -200,6 +200,17 @@ passes. This makes a slow catalog refresh attributable to the exact upstream
 and distinguishes connection acquisition, timeout, upstream error, and success.
 Each shared or subject-scoped fan-out phase has a 10-second ceiling (or the
 smaller configured upstream request timeout), and preserves partial results.
+The combined MCP `prompts/list` path is stricter: raw and subject-scoped OAuth
+passes share one absolute upstream request deadline, including cold connection
+acquisition, concurrency-gate wait, and cursor pagination. Deadline warnings
+use `kind = "timeout"`, identify the phase, and set `partial_result = true`;
+the request returns all prompts completed before the deadline.
+
+Cold subject-scoped tool, prompt, and resource discovery shares the configured
+fleet-wide discovery concurrency gate. Resource aggregation additionally emits
+a warning when its global item or serialized-byte cap truncates the partial
+catalog; the event includes `limit` and the accepted item or byte count. These
+events must not include the OAuth subject.
 
 Resource subscription reconciliation is not part of the caller's
 `resources/list` latency budget. It runs as a coalesced background batch with:
@@ -301,6 +312,8 @@ shared by the gateway and MCP crates:
 | `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
 | `mcp.call.mcp_app` | explicit Code Mode MCP App visibility change made through the `mcp_app` control tool |
 | `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
+| `upstream.subscription` | scoped list-change signal from one live upstream subscription |
+| `upstream.notification_lag` | bounded authoritative catalog reconciliation after the subscription receiver skipped events |
 | `coalesced` | several emitters converged on one net change; see the `catalog.notify.flush` event for the contributors |
 | `unknown` | unattributed — means a new emitter shipped without a label |
 
@@ -315,7 +328,21 @@ everyone else sees the constant `codemode` tool. So `tools_changed` reaching
 `notify_catalog_peers` is a **hint** ("something happened that could move a tool
 list"), and the verdict is computed per peer by re-deriving that peer's
 `PeerContract` and comparing it to the contract the peer was last told about.
-Resources and prompts remain global signals and are forwarded unchanged.
+Resource and prompt signals from a named upstream are filtered by each peer's
+route scope. A protected route never receives list-change timing from an
+upstream it cannot list or call. Global reconcile signals remain conservative
+and reach every accepting peer because the skipped upstream identity is unknown.
+
+When the upstream broadcast receiver reports lag, Labby emits
+`action = "catalog.reconcile.start"`, refreshes tools, resources, and prompts
+from authoritative upstream state under a 30-second bound, then emits
+`action = "catalog.reconcile.finish"` with `outcome`, `skipped`, `elapsed_ms`,
+and either `refreshed_tools`, `resource_count`, and `prompt_count`, or
+`timeout_ms`. Both success and timeout schedule one coalesced global signal with
+`source = "upstream.notification_lag"`: refresh futures may have mutated only
+part of the caches before the outer deadline. Timeout uses
+`outcome = "timeout_partial_unknown"` and `convergence_scheduled = true` so an
+operator can distinguish bounded partial recovery from a clean refresh.
 
 A trigger that moves nobody's contract emits `action = "catalog.notify.skipped"`
 at `DEBUG` and is **not** counted as a notification — the healthy outcome for
@@ -585,6 +612,15 @@ A terminal refresh failure must log whether compare-and-delete invalidation
 succeeded and the counts of dependent Labby refresh tokens and authorization
 codes revoked. It must not log the deleted row. Explicit shared revocation must
 log the same count-only audit shape.
+
+Credential replacement, proactive refresh, clear, and shared-provider
+revocation must also emit `action = "session.invalidate"` after the live
+gateway runtime has been invalidated. Required fields are `upstream`, a bounded
+non-secret `reason`, `subject_connections`, `relay_connections`, `task_routes`,
+`generic_connections`, and `invalidated_total`. This event must never contain the raw OAuth subject;
+when caller correlation is available at the surface, use only its bound
+`actor_key`. A successful credential mutation is not complete until every
+matching initialized MCP peer and task-retained peer has been closed.
 
 ## Level Rules
 

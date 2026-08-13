@@ -41,6 +41,13 @@ unusually large catalog, the pool enforces hard caps on returned catalog sizes:
 | `MAX_UPSTREAM_RESOURCES`| 1000  | `list_upstream_resources()` |
 | `MAX_UPSTREAM_PROMPTS`  | 1000  | `collect_upstream_prompts()` |
 
+Catalog pages are bounded while they are fetched, before combined results are
+materialized. Each upstream listing has one total deadline and rejects repeated cursors,
+more than 64 pages, pages larger than 1000 items, or aggregate serialized bytes above
+`LABBY_UPSTREAM_MAX_RESPONSE_BYTES`. Fetching stops as soon as the applicable downstream
+item cap is satisfied. A structured warning includes the upstream and stable failure kind
+without logging opaque cursor values.
+
 When the combined catalog across all upstreams exceeds a cap, the excess is dropped and
 a `tracing::warn!` is emitted at the truncation site.
 

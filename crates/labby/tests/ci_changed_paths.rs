@@ -498,6 +498,19 @@ fn ci_workflow_yaml(text: &str) -> serde_yaml::Value {
     serde_yaml::from_str(text).expect("parse ci.yml")
 }
 
+#[test]
+fn fork_pull_requests_are_blocked_before_self_hosted_ci() {
+    let workflow = ci_workflow_yaml(include_str!("../../../.github/workflows/ci.yml"));
+    let changes = &workflow["jobs"]["changes"];
+    assert_eq!(changes["runs-on"].as_str(), Some("ci-pool-ops"));
+    assert_eq!(
+        changes["if"].as_str(),
+        Some(
+            "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
+        )
+    );
+}
+
 /// Adding a routing key to `changed_paths.py` and gating a job on it are only
 /// safe together when the key is also declared as a `changes` job output, is
 /// forwarded from the identically-named classifier output, and is emitted by

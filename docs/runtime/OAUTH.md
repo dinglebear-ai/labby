@@ -27,6 +27,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 |----------|----------|-------------|
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
+| `LABBY_TOKEN_ENCRYPTION_KEY` | OAuth mode | 32-byte key encoded as 64 hex digits or 43 base64url characters; encrypts reusable Google provider credentials in `auth.db`. |
 | `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
 | `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
@@ -49,8 +50,13 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 
 When OAuth mode is configured, `labby serve` performs these steps at startup:
 
-1. Validate that `LABBY_PUBLIC_URL`, Google credentials, and `LABBY_AUTH_ADMIN_EMAIL` are present.
-2. Open the SQLite auth store in WAL mode with a non-zero busy timeout.
+1. Validate that `LABBY_PUBLIC_URL`, Google credentials, `LABBY_AUTH_ADMIN_EMAIL`,
+   and a valid `LABBY_TOKEN_ENCRYPTION_KEY` are present. OAuth startup fails
+   closed before the database can persist a reusable Google credential if the
+   encryption key is absent or invalid.
+2. Open the SQLite auth store in WAL mode with a non-zero busy timeout. Legacy
+   plaintext Google provider rows are atomically encrypted before they can be
+   served.
 3. Load or generate the persisted Ed25519 signing key. Legacy RSA key files are
    quarantined and rotated on first startup after upgrade.
 4. Use `LABBY_GOOGLE_CALLBACK_URL` when configured; otherwise build the
@@ -73,6 +79,8 @@ OAuth mode exposes:
 - `POST /register`
 - `GET /authorize`
 - `GET /auth/google/callback`
+- `GET /native/callback`
+- `POST /native/poll`
 - `POST /token`
 
 Registration rules in the initial launch:
@@ -126,6 +134,35 @@ Flow summary:
 7. The client exchanges that local code at `/token` for a `lab` access token and, when Google granted offline access, a `lab` refresh token.
 
 Google access and refresh tokens remain server-side only.
+
+### Server-hosted native callback polling
+
+Native clients that register Labby's advertised `native_callback_endpoint`
+start authorization by requesting `/authorize` with
+`Accept: application/vnd.labby.native-oauth-start+json`. Labby returns a
+no-store JSON object containing `authorization_url` and an independent,
+high-entropy `poll_token`. The client opens `authorization_url`, then sends
+`POST native_poll_endpoint_v2` with JSON `{ "poll_token": "..." }` until it receives the one-shot local
+authorization code.
+
+The caller-provided OAuth `state` remains CSRF and callback correlation only;
+it is never accepted as a polling credential. Labby stores only a SHA-256 hash
+of `poll_token`, binds that hash to the pending client/redirect/PKCE request,
+and transfers it to the one-shot result only after the provider callback has
+redeemed the matching server state. A request that knows `state` but not the
+server-generated `poll_token` receives `202 Accepted` and cannot retrieve the
+code.
+
+The polling credential never appears in a URI or redirect and therefore does
+not enter access logs, browser history, proxy request targets, or Referer
+headers. Both start and poll responses use `Cache-Control: no-store`.
+
+This contract is advertised only through `native_poll_endpoint_v2` plus
+`native_authorization_start_media_type`. The legacy `native_poll_endpoint`
+field is deliberately absent. Older Palette releases consequently fall back
+to their loopback OAuth flow instead of attempting state-keyed polling. Deploy
+the Labby server first; upgraded Palette clients then discover v2
+automatically. Old and new clients remain safe during a rolling upgrade.
 
 Google-specific notes:
 
@@ -436,6 +473,22 @@ Browser-session introspection semantics:
 - internal failures from session lookup, persistence, signing, or provider
   coordination remain structured 5xx responses instead of collapsing into
   `authenticated: false`
+
+Allowlist removal is an immediate revocation boundary for renewable browser
+and upstream credentials. `DELETE /v1/auth/allowed-emails/{email}` resolves
+every subject associated with the email, then atomically removes the allowlist
+entry, browser sessions, local refresh grants, pending authorization codes, and
+central Google provider credentials while advancing the provider revocation
+epochs. Before the request succeeds, Labby also evicts the subjects from its
+OAuth client cache and drains their generic, subject-scoped, relay, and
+task-retained upstream peers. A later upstream use must therefore authorize
+again instead of reusing an old credential or connection.
+
+Already-issued signed access tokens are stateless and therefore remain usable
+only until their configured `LABBY_AUTH_ACCESS_TOKEN_TTL_SECS` expiry (3600
+seconds by default); removal prevents them from being renewed. This bounded
+residual lifetime is the only intentionally non-immediate part of allowlist
+revocation.
 
 ### Frontend Expectations
 
@@ -830,6 +883,8 @@ LABBY_PUBLIC_URL=https://lab.example.com
 # LABBY_GOOGLE_CALLBACK_URL=https://labby.example.com/auth/google/callback
 LABBY_GOOGLE_CLIENT_ID=google-client-id
 LABBY_GOOGLE_CLIENT_SECRET=google-client-secret
+# Generate and persist this secret as described below; do not use this placeholder.
+LABBY_TOKEN_ENCRYPTION_KEY=<64-lowercase-hex-digits>
 
 # Start
 labby serve
@@ -851,6 +906,57 @@ curl -H "Authorization: Bearer eyJhbG..." \
 ```
 
 ## Verifying Auth Configuration
+
+### Credential-encryption key lifecycle
+
+Generate the key from the operating-system CSPRNG and write it directly to the
+owner-only environment file; never paste it into logs, tickets, or command
+output. A compatible value is 32 random bytes encoded as lowercase hex:
+
+```bash
+umask 077
+key="$(openssl rand -hex 32)"
+# Merge LABBY_TOKEN_ENCRYPTION_KEY=$key into /home/labby/.labby/.env using
+# `labby setup` or another backup-first atomic secret-file editor.
+unset key
+```
+
+`labby setup --provision`, host-service install, and host-service restart
+preflight an existing `/home/labby/.labby/.env`. When OAuth is active and the
+key is missing, setup creates a timestamped `.env.bak.*` first, atomically
+merges a generated key with mode `0600`, restores `labby:labby` ownership, and
+only then restarts the service. Existing valid keys are preserved byte for byte.
+An invalid configured key aborts the restart rather than replacing it.
+
+Back up the following as one recovery set before upgrades and before changing
+OAuth configuration:
+
+- the effective `.env`, including `LABBY_TOKEN_ENCRYPTION_KEY`;
+- `auth.db` via SQLite's backup API or while the service is stopped;
+- the JWT signing key at `LABBY_AUTH_KEY_PATH`.
+
+Store the recovery set in an encrypted secret backup with access controls at
+least as strict as the production environment. A database copy without the
+matching token-encryption key cannot decrypt provider credentials. Loss of the
+key is intentionally unrecoverable: stop the service, restore a matching
+database/key backup or revoke the affected Google grants and rebuild the auth
+database, then require users to authorize again. Do not generate a replacement
+over the existing encrypted database and expect old credentials to survive.
+
+Key rotation is an offline migration, not an environment-only edit:
+
+1. Stop or drain Labby OAuth writes.
+2. Create and verify a consistent backup of the database, old key, environment,
+   and JWT signing key.
+3. Decrypt every encrypted provider credential with the old key and re-encrypt
+   it with the new key in one transaction using a supported migration tool.
+4. Atomically update the environment to the new key, restart, run `labby doctor`,
+   and perform a read-only OAuth smoke test.
+5. Retain the old recovery set until the new database/key pair is verified.
+
+There is currently no supported online key-rotation command. Never rotate by
+editing only `LABBY_TOKEN_ENCRYPTION_KEY`; that makes existing ciphertext
+undecryptable and OAuth startup/use will fail closed.
 
 Two complementary verification surfaces exist:
 

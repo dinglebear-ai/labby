@@ -1,7 +1,97 @@
 use super::{
+    OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN, OAUTH_STATUS_DISCOVERY_FRESHNESS,
+    OauthStatusDiscoverySnapshot, oauth_status_discovery_is_fresh,
     probe::{probe_manager_key, validate_probe_upstream_name, validate_probe_url},
     should_use_dynamic_registration,
 };
+
+fn discovery_snapshot(age: std::time::Duration, failed: bool) -> OauthStatusDiscoverySnapshot {
+    OauthStatusDiscoverySnapshot {
+        completed_at: tokio::time::Instant::now() - age,
+        summary: None,
+        tool_error: failed.then(|| "unavailable".to_string()),
+        error: None,
+    }
+}
+
+#[test]
+fn successful_oauth_status_discovery_has_short_freshness_window() {
+    assert!(oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FRESHNESS
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("freshness exceeds one second"),
+        false,
+    )));
+    assert!(!oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FRESHNESS + std::time::Duration::from_secs(1),
+        false,
+    )));
+}
+
+#[test]
+fn failed_oauth_status_discovery_observes_retry_cooldown() {
+    assert!(oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("cooldown exceeds one second"),
+        true,
+    )));
+    assert!(!oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN + std::time::Duration::from_secs(1),
+        true,
+    )));
+}
+use labby_runtime::gateway_config::{
+    GatewayConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthCredentialSource,
+    UpstreamOauthMode, UpstreamOauthRegistration,
+};
+
+fn lifecycle_test_upstream(name: &str, oauth: bool) -> UpstreamConfig {
+    UpstreamConfig {
+        enabled: true,
+        name: name.to_string(),
+        url: Some(format!("https://{name}.example/mcp")),
+        transport: None,
+        socket_path: None,
+        headers: Default::default(),
+        bearer_token_env: None,
+        command: None,
+        args: vec![],
+        env: Default::default(),
+        proxy_resources: false,
+        proxy_prompts: false,
+        expose_tools: None,
+        expose_resources: None,
+        expose_prompts: None,
+        code_mode_hint: None,
+        oauth: oauth.then(|| UpstreamOauthConfig {
+            mode: UpstreamOauthMode::AuthorizationCodePkce,
+            registration: UpstreamOauthRegistration::Dynamic,
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        }),
+        imported_from: None,
+        priority: 1.0,
+    }
+}
+
+#[test]
+fn shared_provider_scope_excludes_dedicated_and_non_oauth_upstreams() {
+    let mut shared = lifecycle_test_upstream("shared", true);
+    shared.oauth.as_mut().unwrap().credential =
+        UpstreamOauthCredentialSource::GoogleProvider { account: None };
+    let dedicated = lifecycle_test_upstream("dedicated", true);
+    let raw = lifecycle_test_upstream("raw", false);
+
+    assert_eq!(
+        super::GatewayManager::google_provider_upstream_names(&GatewayConfig {
+            upstream: vec![shared, dedicated, raw],
+            ..GatewayConfig::default()
+        }),
+        vec!["shared".to_string()]
+    );
+}
 
 #[test]
 fn validate_probe_url_rejects_userinfo() {

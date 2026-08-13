@@ -9,8 +9,9 @@
 //! # Atomic writes
 //!
 //! `settings.json` writes use an atomic rename pattern: write to a per-write
-//! unique temp file, fsync, then `rename` to the target. On Unix the target file
-//! is created with mode `0o600`.
+//! unique temp file, fsync, then atomically replace the target on every supported
+//! platform. Secret-bearing directories get an explicit user-only Windows ACL;
+//! Unix files are created with mode `0o600`.
 
 use std::{
     fs, io,
@@ -92,43 +93,94 @@ pub(crate) fn value_for(key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-/// Write `data` to `path` atomically: write to a per-write unique temp file,
-/// then rename.
+/// Write `data` to `path` atomically, replacing an existing destination.
 ///
 /// The temp name carries a UUID so two concurrent writers of the same `path`
 /// (e.g. a login racing a refresh writing `oauth.json`) do not collide on a
 /// fixed `<path>.tmp`. If any step fails the temp file is best-effort removed
 /// so unique temps don't accumulate on error.
 ///
-/// On Unix, the temp file is created with mode `0o600` atomically via
-/// `OpenOptions::mode`, so it is never world-readable even momentarily (no
-/// umask window between `open` and a separate `chmod`). On Windows no explicit
-/// permission change is applied; rely on the directory ACL to restrict access.
+/// On Unix, the temp file is created with mode `0o600`. On Windows the parent
+/// directory is first hardened to an explicit current-user-only inheritable ACL,
+/// so the library's temporary file and committed destination are protected for
+/// their entire lifetime.
 pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    let write = || -> Result<(), Box<dyn std::error::Error>> {
-        {
-            let mut opts = fs::OpenOptions::new();
-            opts.write(true).create(true).truncate(true);
+    let parent = path
+        .parent()
+        .ok_or("credential path has no parent directory")?;
+    harden_secret_directory(parent)?;
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
+        .write_with_options(
+            |file| {
+                use std::io::Write;
+                file.write_all(data)
+            },
+            options,
+        )
+        .map_err(io::Error::from)?;
+    Ok(())
+}
 
-            let mut file = opts.open(&tmp)?;
+#[cfg(not(windows))]
+pub(crate) fn harden_secret_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
 
-            use std::io::Write;
-            file.write_all(data)?;
-            file.sync_all()?;
-        }
-        fs::rename(&tmp, path)?;
-        Ok(())
-    };
-    write().inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
+#[cfg(windows)]
+pub(crate) fn harden_secret_directory(path: &Path) -> io::Result<()> {
+    use std::process::Command;
+
+    let whoami = Command::new("whoami").output()?;
+    if !whoami.status.success() {
+        return Err(io::Error::other(
+            "whoami failed while hardening secret directory",
+        ));
+    }
+    let principal = String::from_utf8(whoami.stdout)
+        .map_err(|_| io::Error::other("whoami returned non-UTF-8 output"))?;
+    let principal = principal.trim();
+    if principal.is_empty() {
+        return Err(io::Error::other("whoami returned an empty principal"));
+    }
+    // Build a new protected DACL rather than editing the inherited/existing
+    // one. `icacls /grant:r` only replaces ACEs for that principal and would
+    // leave an explicit Everyone/Users (or arbitrary third-party) grant alive.
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$path = $args[0]
+$user = $args[1]
+$acl = [System.Security.AccessControl.DirectorySecurity]::new()
+$acl.SetAccessRuleProtection($true, $false)
+$inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+$propagate = [System.Security.AccessControl.PropagationFlags]::None
+$allow = [System.Security.AccessControl.AccessControlType]::Allow
+foreach ($identity in @($user, 'S-1-5-18', 'S-1-5-32-544')) {
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $identity, [System.Security.AccessControl.FileSystemRights]::FullControl,
+    $inherit, $propagate, $allow)
+  $acl.AddAccessRule($rule) | Out-Null
+}
+Set-Acl -LiteralPath $path -AclObject $acl
+"#;
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .arg(path)
+        .arg(principal)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(
+            "PowerShell failed while installing the authoritative secret-directory ACL",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -148,5 +200,33 @@ mod async_tests {
         let (write_result, timer_result) = tokio::join!(write, timer);
         assert!(write_result.is_ok());
         assert!(timer_result.is_ok(), "disk work stalled the async executor");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_acl_tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn hardening_removes_preexisting_everyone_grant() {
+        let dir = std::env::temp_dir().join(format!("labby-acl-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let status = Command::new("icacls")
+            .arg(&dir)
+            .args(["/grant", "*S-1-1-0:(OI)(CI)F"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        harden_secret_directory(&dir).unwrap();
+        let script = r#"$acl=Get-Acl -LiteralPath $args[0]; $sids=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }); if ($sids -contains 'S-1-1-0') { exit 2 }; if (-not $acl.AreAccessRulesProtected) { exit 3 }"#;
+        let checked = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .arg(&dir)
+            .status()
+            .unwrap();
+        assert!(checked.success(), "broad ACE survived authoritative ACL");
+        fs::remove_dir_all(dir).ok();
     }
 }

@@ -34,7 +34,13 @@ pub async fn authorization_server_metadata(
         revocation_endpoint: format!("{base}/revoke"),
         registration_endpoint: format!("{base}/register"),
         native_callback_endpoint: Some(native_callback_endpoint(&state)),
-        native_poll_endpoint: Some(native_poll_endpoint(&state)),
+        // Keep the legacy field absent so pre-v2 Palette releases safely fall
+        // back to loopback rather than polling caller-controlled `state`.
+        native_poll_endpoint: None,
+        native_poll_endpoint_v2: Some(native_poll_endpoint(&state)),
+        native_authorization_start_media_type: Some(
+            "application/vnd.labby.native-oauth-start+json".to_string(),
+        ),
         jwks_uri: format!("{base}/jwks"),
         response_types_supported: vec!["code".to_string()],
         scopes_supported: state.config.scopes_supported.clone(),
@@ -144,6 +150,15 @@ mod tests {
             "RFC 9207 issuer binding must remain the default"
         );
         assert_eq!(json["client_id_metadata_document_supported"], true);
+        assert!(json.get("native_poll_endpoint").is_none());
+        assert_eq!(
+            json["native_poll_endpoint_v2"],
+            "https://lab.example.com/native/poll"
+        );
+        assert_eq!(
+            json["native_authorization_start_media_type"],
+            "application/vnd.labby.native-oauth-start+json"
+        );
         assert_eq!(
             json["revocation_endpoint"],
             "https://lab.example.com/revoke"
@@ -255,6 +270,9 @@ mod tests {
                 callback_path: "/auth/google/callback".into(),
                 scopes: vec!["openid".into(), "email".into()],
             },
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "metadata-test-provider-key",
+            )),
             scopes_supported: vec!["syslog:read".to_string(), "syslog:admin".to_string()],
             resource_path: "/syslog/mcp".to_string(),
             ..AuthConfig::default()

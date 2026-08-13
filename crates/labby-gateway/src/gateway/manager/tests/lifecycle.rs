@@ -438,8 +438,8 @@ async fn reload_unaffected_upstream_catalog_entry_survives_single_upstream_chang
     );
 
     assert!(
-        Arc::ptr_eq(&pool_after_first, &pool_after_second),
-        "single-upstream changes must selectively reconcile without swapping the pool"
+        !Arc::ptr_eq(&pool_after_first, &pool_after_second),
+        "single-upstream changes must publish a privately reconciled pool"
     );
 }
 
@@ -547,6 +547,40 @@ async fn cancelled_reload_keeps_old_pool_available_while_replacement_probe_is_bl
         Arc::ptr_eq(&old_pool, &still_live),
         "cancellation before replacement readiness must keep the old pool serving"
     );
+}
+
+#[tokio::test]
+async fn publication_barrier_hides_mixed_pool_and_config_revisions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager.seed_config(GatewayConfig::default()).await;
+
+    let publication = manager.publication_barrier.write().await;
+    manager
+        .runtime
+        .swap(Some(Arc::new(UpstreamPool::new())))
+        .await;
+
+    // Pause after the first component changes. A multi-component reader must
+    // not observe this mixed revision while publication is in flight.
+    let reading_manager = manager.clone();
+    let reader = tokio::spawn(async move { reading_manager.published_config_and_pool().await });
+    tokio::task::yield_now().await;
+    assert!(
+        !reader.is_finished(),
+        "reader must wait at deterministic mid-publication pause"
+    );
+
+    manager.config.write().await.code_mode.enabled = true;
+    manager.store.set_process_code_mode_enabled(true);
+    drop(publication);
+
+    let (config, pool) = reader.await.expect("reader joins");
+    assert!(config.code_mode.enabled);
+    assert!(pool.is_some());
 }
 
 #[tokio::test]

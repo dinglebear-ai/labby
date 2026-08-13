@@ -153,14 +153,16 @@ impl GatewayManager {
         let mut entries = Vec::new();
         let mut schema_bytes = 0usize;
 
-        let cfg = self.config.read().await.clone();
         self.refresh_code_mode_catalog_allowed(
             Some(&caller.owner),
             Some(&caller.oauth_subject),
             caller.allowed_upstreams(),
         )
         .await?;
-        if let Some(pool) = self.current_pool().await {
+        // Refresh can publish a new pool, so take a new coherent revision for
+        // rendering rather than pairing the pre-refresh config with it.
+        let (cfg, pool) = self.published_config_and_pool().await;
+        if let Some(pool) = pool {
             for upstream in cfg.upstream.iter().filter(|upstream| {
                 upstream.enabled
                     && upstream.priority > 0.0

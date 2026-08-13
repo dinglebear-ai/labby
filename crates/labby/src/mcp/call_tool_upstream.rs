@@ -182,19 +182,14 @@ fn upstream_transport_error_envelope(
 /// A failed upstream tool call, keeping the failure class when the pooled
 /// path produced one.
 ///
-/// The relay path (`call_tool_relayed`) is intentionally string-preserving, so
-/// its errors keep flowing through the string classifier
-/// (`upstream_transport_error_envelope`); the pooled paths surface the typed
-/// [`CapabilityCallError`] so kind fidelity survives the pool boundary.
-/// Either way the pool has already done all circuit-breaker recording for the
-/// call — see the module docs.
+/// Both pooled and relay paths preserve [`CapabilityCallError`] so structured
+/// MCP kinds and retry guidance survive the gateway boundary.
 ///
 /// The classified error is boxed to keep the `Result` error arm small
 /// (`clippy::result_large_err` — `CapabilityCallError::Mcp` carries a full
 /// `ErrorData`).
 enum UpstreamCallFailure {
     Classified(Box<CapabilityCallError>),
-    Relayed(String),
 }
 
 impl UpstreamCallFailure {
@@ -210,9 +205,6 @@ fn upstream_call_failure_envelope(
     failure: &UpstreamCallFailure,
 ) -> (serde_json::Value, &'static str) {
     match failure {
-        UpstreamCallFailure::Relayed(raw) => {
-            upstream_transport_error_envelope(service, action, upstream_name, raw)
-        }
         UpstreamCallFailure::Classified(error) => {
             upstream_classified_error_envelope(service, action, upstream_name, error)
         }
@@ -469,9 +461,10 @@ impl LabMcpServer {
                             self.relay_session_id,
                             capabilities,
                             self.request_subject(context),
+                            self.route_scope.task_authorization(),
                         )
                         .await
-                        .map(|result| result.map_err(UpstreamCallFailure::Relayed))
+                        .map(|result| result.map_err(UpstreamCallFailure::classified))
                     }
                     _ => pool
                         .call_tool_once_classified(&upstream_name, upstream_params)
@@ -729,13 +722,18 @@ impl LabMcpServer {
                                 self.relay_session_id,
                                 capabilities,
                                 self.request_subject(context),
+                                self.route_scope.task_authorization(),
                             )
                             .await
                         {
-                            Some(result) => result.map_err(UpstreamCallFailure::Relayed),
-                            None => Err(UpstreamCallFailure::Relayed(format!(
-                                "relayed upstream `{upstream_name}` connect failed"
-                            ))),
+                            Some(result) => result.map_err(UpstreamCallFailure::classified),
+                            None => Err(UpstreamCallFailure::classified(
+                                CapabilityCallError::Transport {
+                                    message: format!(
+                                        "relayed upstream `{upstream_name}` connect failed"
+                                    ),
+                                },
+                            )),
                         }
                     } else {
                         pool.subject_scoped_call_tool_once_classified(

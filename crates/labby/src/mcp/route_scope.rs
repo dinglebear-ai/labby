@@ -94,6 +94,16 @@ impl McpRouteScope {
             Self::ProtectedSubset { upstreams, .. } => Some(upstreams),
         }
     }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn task_authorization(
+        &self,
+    ) -> labby_gateway::upstream::pool::TaskRouteAuthorization {
+        labby_gateway::upstream::pool::TaskRouteAuthorization::new(
+            self.label(),
+            self.allowed_upstreams().cloned(),
+        )
+    }
 }
 
 #[cfg(test)]

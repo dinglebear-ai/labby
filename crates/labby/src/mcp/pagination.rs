@@ -1,6 +1,10 @@
 use rmcp::ErrorData;
 use rmcp::model::PaginatedRequestParams;
 
+use labby_runtime::agent_error::AgentErrorContext;
+
+use crate::mcp::agent_error::invalid_params as invalid_params_agent_error;
+
 pub(crate) const MCP_LIST_PAGE_SIZE: usize = 100;
 
 pub(crate) struct PageCollector<T> {
@@ -155,12 +159,11 @@ fn parse_cursor(cursor: &str) -> Result<(usize, Option<String>), ErrorData> {
 }
 
 fn invalid_cursor(message: &str) -> ErrorData {
-    ErrorData::invalid_params(
-        message.to_string(),
-        Some(serde_json::json!({
-            "kind": "invalid_cursor",
-            "message": message,
-        })),
+    invalid_params_agent_error(
+        "invalid_cursor",
+        message,
+        None,
+        &AgentErrorContext::default(),
     )
 }
 
@@ -222,6 +225,12 @@ mod tests {
             err.data.as_ref().expect("error data")["kind"],
             serde_json::json!("invalid_cursor")
         );
+        let data = err.data.as_ref().expect("error data");
+        assert_eq!(data["contract_version"], 1);
+        assert_eq!(data["origin"], "discovery");
+        assert_eq!(data["recovery"]["action"], "rediscover");
+        assert_eq!(data["recovery"]["same_arguments"], "never");
+        assert_eq!(data["side_effects"], "none_expected");
     }
 
     #[test]

@@ -169,8 +169,8 @@ impl GatewayManager {
                     ToolError::internal_message(format!("discovery task panicked: {e}"))
                 })?;
 
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
 
         let mut queued = 0usize;
         let mut skipped = 0usize;
@@ -197,7 +197,7 @@ impl GatewayManager {
 
         if queued > 0 {
             cap_pending_imports(&mut cfg);
-            self.persist_config(cfg).await?;
+            self.persist_config_owned(_mutation_guard, cfg).await?;
         }
 
         Ok(PendingDiscoveryOutcome { queued, skipped })
@@ -225,8 +225,8 @@ impl GatewayManager {
         enrichment_scope: GatewayEnrichmentScope,
     ) -> Result<PendingImportView, ToolError> {
         let mut view = {
-            let _mutation_guard = self.config_mutation.lock().await;
-            let mut cfg = self.config.read().await.clone();
+            let _mutation_guard = self.acquire_config_mutation().await?;
+            let mut cfg = self.load_config_for_mutation().await?;
 
             let idx = cfg
                 .upstream_pending
@@ -242,7 +242,7 @@ impl GatewayManager {
 
             spec.enabled = false;
             cfg.upstream.push(spec);
-            self.persist_config(cfg).await?;
+            self.persist_config_owned(_mutation_guard, cfg).await?;
 
             view
         };
@@ -256,8 +256,8 @@ impl GatewayManager {
 
     /// Reject a pending import by name: tombstone it so it never re-appears.
     pub async fn reject_pending_import(&self, name: &str) -> Result<PendingImportView, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
 
         let idx = cfg
             .upstream_pending
@@ -278,7 +278,7 @@ impl GatewayManager {
             cap_import_tombstones(&mut cfg);
         }
 
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
 
         Ok(view)
     }
@@ -295,8 +295,8 @@ impl GatewayManager {
         &self,
         selector: ImportTombstoneSelector,
     ) -> Result<Vec<ImportTombstoneView>, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let before = cfg.upstream_import_tombstones.len();
         cfg.upstream_import_tombstones
             .retain(|tombstone| !selector.matches_tombstone(tombstone));
@@ -312,7 +312,7 @@ impl GatewayManager {
             .iter()
             .map(import_tombstone_view)
             .collect();
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         Ok(views)
     }
 
@@ -334,8 +334,9 @@ impl GatewayManager {
                     ToolError::internal_message(format!("discovery task panicked: {e}"))
                 })?;
 
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let previous = self.load_config_for_mutation().await?;
+        let mut cfg = previous.clone();
         if !cfg
             .upstream_import_tombstones
             .iter()
@@ -366,14 +367,15 @@ impl GatewayManager {
         {
             cfg.upstream_import_tombstones
                 .retain(|tombstone| !selector.matches_tombstone(tombstone));
-            self.persist_config(cfg).await?;
+            self.persist_config_owned(_mutation_guard, cfg).await?;
             return self.get(&server.spec.name).await;
         }
 
         let restored_name = server.spec.name.clone();
         insert_upstream(&mut cfg, server.spec)?;
-        self.write_config_file(&cfg).await?;
-        let diff = self.reload_with_origin_unlocked(origin, owner).await?;
+        let diff = self
+            .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+            .await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",

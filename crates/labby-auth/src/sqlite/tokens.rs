@@ -13,6 +13,26 @@ use crate::util::now_unix;
 use super::{SqliteStore, hash_token, sqlite_error};
 
 impl SqliteStore {
+    #[cfg(test)]
+    pub(crate) async fn refresh_claim_state(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<(String, i64)>, AuthError> {
+        let hash = hash_token(refresh_token);
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT refresh_claim_id, refresh_claim_expires_at
+                 FROM refresh_tokens
+                 WHERE refresh_token_hash = ?1 AND refresh_claim_id IS NOT NULL",
+                params![hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     /// Atomically lease a refresh token before contacting the upstream
     /// provider. A stale lease can be recovered after `lease_expires_at`.
     pub async fn claim_refresh_token(
@@ -87,6 +107,33 @@ impl SqliteStore {
             )
             .map_err(sqlite_error)?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Extend a live refresh-token lease only while `claim_id` owns it.
+    /// A false result means ownership or token validity was lost.
+    pub async fn renew_refresh_claim(
+        &self,
+        refresh_token: &str,
+        claim_id: &str,
+        lease_expires_at: i64,
+    ) -> Result<bool, AuthError> {
+        let hash = hash_token(refresh_token);
+        let claim_id = claim_id.to_string();
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE refresh_tokens
+                 SET refresh_claim_expires_at = ?3
+                 WHERE refresh_token_hash = ?1
+                   AND refresh_claim_id = ?2
+                   AND refresh_claim_expires_at > ?4
+                   AND expires_at > ?4",
+                params![hash, claim_id, lease_expires_at, now],
+            )
+            .map(|updated| updated == 1)
+            .map_err(sqlite_error)
         })
         .await
     }
@@ -305,7 +352,8 @@ impl SqliteStore {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase);
-        let encrypted_refresh_token = maybe_encrypt(self.enc_key.as_deref(), refresh_token)?;
+        let encrypted_refresh_token =
+            crate::at_rest::require_encrypt(self.enc_key.as_deref(), refresh_token)?;
         let now = now_unix();
         self.with_conn(move |conn| {
             conn.execute(
@@ -423,6 +471,26 @@ impl SqliteStore {
             if invalidated == 0 {
                 return Ok(GoogleProviderInvalidation::default());
             }
+            transaction
+                .execute(
+                    "INSERT INTO google_provider_revocations (subject, epoch, updated_at)
+                     VALUES (?1, 1, ?2)
+                     ON CONFLICT(subject) DO UPDATE SET
+                       epoch = google_provider_revocations.epoch + 1,
+                       updated_at = excluded.updated_at",
+                    params![subject, now_unix()],
+                )
+                .map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO google_provider_revocations (subject, epoch, updated_at)
+                     VALUES ('*', 1, ?1)
+                     ON CONFLICT(subject) DO UPDATE SET
+                       epoch = google_provider_revocations.epoch + 1,
+                       updated_at = excluded.updated_at",
+                    params![now_unix()],
+                )
+                .map_err(sqlite_error)?;
             let revoked_authorization_codes = transaction
                 .execute(
                     "DELETE FROM authorization_codes WHERE subject = ?1",

@@ -22,13 +22,13 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::timed_capability_call_str;
+use super::catalog_pagination;
 use super::entries::{log_exposure_filter, prompt_exposed, resolve_request_prompt_exposure_policy};
 use super::helpers::{
     bare_upstream_prompt_name, merge_upstream_prompts, prefixed_upstream_prompt_name,
     upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
-use super::paginate::{list_prompts_bounded, listing_catalog_timeout, with_listing_timeout};
 
 impl UpstreamPool {
     /// Discover prompts from all OAuth upstreams visible to `subject`.
@@ -41,6 +41,19 @@ impl UpstreamPool {
         configs: &[UpstreamConfig],
         subject: &str,
         builtin_names: &[&str],
+    ) -> Vec<Prompt> {
+        let deadline_at = tokio::time::Instant::now() + self.request_timeout;
+        self.subject_scoped_prompts_until(configs, subject, builtin_names, deadline_at)
+            .await
+    }
+
+    /// Discover OAuth prompts within a caller-owned absolute deadline.
+    pub async fn subject_scoped_prompts_until(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        builtin_names: &[&str],
+        deadline_at: tokio::time::Instant,
     ) -> Vec<Prompt> {
         let mut futures = FuturesUnordered::new();
         for config in configs.iter().filter(|config| config.oauth.is_some()) {
@@ -55,69 +68,110 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_prompts.clone(),
                 );
-                let acquire_timeout = listing_catalog_timeout(pool.request_timeout);
-                let result = match tokio::time::timeout(
-                    acquire_timeout,
-                    pool.acquire_or_connect_subject(&config, &subject),
+                let _fanout_permit = match tokio::time::timeout_at(
+                    deadline_at,
+                    pool.acquire_catalog_fanout_permit(),
                 )
                 .await
                 {
-                    Ok(result) => result.map(|(peer, _tools)| peer),
-                    Err(_) => Err(anyhow::anyhow!(
-                        "subject-scoped upstream connection timed out after {}ms",
-                        acquire_timeout.as_millis()
-                    )),
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            upstream = %config.name,
+                            kind = "queue_closed",
+                            error = %error,
+                            "subject-scoped upstream prompt discovery failed"
+                        );
+                        return (config.name.clone(), policy, None);
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            upstream = %config.name,
+                            kind = "timeout",
+                            phase = "oauth_fanout_gate",
+                            partial_result = true,
+                            "subject-scoped prompt fanout permit wait exceeded request deadline"
+                        );
+                        return (config.name.clone(), policy, None);
+                    }
                 };
-                (config.name.clone(), policy, result)
+                let result = tokio::time::timeout_at(
+                    deadline_at,
+                    pool.acquire_or_connect_subject(&config, &subject),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("subject-scoped prompt acquisition exceeded request deadline")
+                })
+                .and_then(|result| result.map(|(peer, _tools)| peer));
+                (config.name.clone(), policy, Some(result))
             });
         }
 
         let mut upstream_prompts = Vec::new();
         while let Some((name, policy, result)) = futures.next().await {
+            let Some(result) = result else {
+                continue;
+            };
             let peer = match result {
                 Ok(peer) => peer,
                 Err(error) => {
+                    let error_text = error.to_string();
                     tracing::warn!(
                         upstream = %name,
-                        error = %error,
-                        "subject-scoped prompt discovery skipped upstream — connect failed"
+                        kind = super::helpers::classify_upstream_error(&error_text),
+                        phase = "oauth_acquisition",
+                        partial_result = true,
+                        error = %error_text,
+                        "subject-scoped prompt acquisition failed within shared request deadline"
                     );
                     continue;
                 }
             };
-            // A subject-scoped listing is a per-subject view; annotating the
-            // shared entry's status with its truncation would misattribute
-            // partial state to the shared catalog — the WARN inside the
-            // bounded helper is the visibility here.
-            let listing = with_listing_timeout(
-                listing_catalog_timeout(self.request_timeout),
-                list_prompts_bounded(&peer, &name),
+            let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    upstream = %name,
+                    kind = "timeout",
+                    phase = "oauth_pagination",
+                    partial_result = true,
+                    "subject-scoped prompt pagination skipped after request deadline"
+                );
+                continue;
+            }
+            match catalog_pagination::list_prompts(
+                &peer,
+                remaining,
+                super::tools::MAX_UPSTREAM_PROMPTS,
             )
-            .await;
-            let (prompts, _truncation) = match listing {
-                Ok(listing) => listing,
+            .await
+            {
+                Ok(prompts) => {
+                    let discovered_count = prompts.len();
+                    let exposed: Vec<Prompt> = prompts
+                        .into_iter()
+                        .filter(|prompt| prompt_exposed(&policy, &name, &prompt.name))
+                        .collect();
+                    log_exposure_filter(
+                        &name,
+                        "prompts",
+                        discovered_count - exposed.len(),
+                        exposed.len(),
+                        true,
+                    );
+                    upstream_prompts.push((name, exposed));
+                }
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
-                        error = %error,
+                        kind = error.kind(),
+                        phase = "oauth_pagination",
+                        partial_result = true,
+                        error = %error.bounded_text(),
                         "subject-scoped upstream prompt discovery failed"
                     );
-                    continue;
                 }
-            };
-            let discovered_count = prompts.len();
-            let exposed: Vec<Prompt> = prompts
-                .into_iter()
-                .filter(|prompt| prompt_exposed(&policy, &name, &prompt.name))
-                .collect();
-            log_exposure_filter(
-                &name,
-                "prompts",
-                discovered_count - exposed.len(),
-                exposed.len(),
-                true,
-            );
-            upstream_prompts.push((name, exposed));
+            }
         }
 
         let (prompts, _) = merge_upstream_prompts(builtin_names, upstream_prompts);
@@ -144,64 +198,52 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_prompts.clone(),
                 );
-                let acquire_timeout = listing_catalog_timeout(pool.request_timeout);
-                let result = match tokio::time::timeout(
-                    acquire_timeout,
-                    pool.acquire_or_connect_subject(&config, &subject),
-                )
-                .await
-                {
-                    Ok(result) => result.map(|(peer, _tools)| peer),
-                    Err(_) => Err(anyhow::anyhow!(
-                        "subject-scoped upstream connection timed out after {}ms",
-                        acquire_timeout.as_millis()
-                    )),
+                let _fanout_permit = match pool.acquire_catalog_fanout_permit().await {
+                    Ok(permit) => permit,
+                    Err(_) => return (config.name.clone(), policy, target_prompt, None),
                 };
-                (config.name.clone(), policy, target_prompt, result)
+                let result = pool
+                    .acquire_or_connect_subject(&config, &subject)
+                    .await
+                    .map(|(peer, _tools)| peer);
+                (config.name.clone(), policy, target_prompt, Some(result))
             });
         }
 
         while let Some((name, policy, target_prompt, result)) = futures.next().await {
-            let peer = match result {
-                Ok(peer) => peer,
-                Err(error) => {
-                    tracing::warn!(
-                        upstream = %name,
-                        error = %error,
-                        "subject-scoped prompt owner lookup skipped upstream — connect failed"
-                    );
-                    continue;
-                }
+            let Some(result) = result else {
+                continue;
             };
-            // A listing error must not silently read as "prompt not found" —
-            // that hides an erroring upstream behind a lookup miss with no
-            // diagnostic trail.
-            let listing = with_listing_timeout(
-                listing_catalog_timeout(self.request_timeout),
-                list_prompts_bounded(&peer, &name),
+            let Ok(peer) = result else {
+                continue;
+            };
+            match catalog_pagination::list_prompts(
+                &peer,
+                self.request_timeout,
+                super::tools::MAX_UPSTREAM_PROMPTS,
             )
-            .await;
-            let (prompts, _truncation) = match listing {
-                Ok(listing) => listing,
-                Err(error) => {
-                    tracing::warn!(
-                        upstream = %name,
-                        error = %error,
-                        "subject-scoped prompt owner lookup failed to list prompts"
-                    );
-                    continue;
+            .await
+            {
+                Ok(prompts)
+                    if prompts.iter().any(|prompt| {
+                        // The requested name is namespaced as `{upstream}/{name}`;
+                        // the upstream advertises the bare name, so compare against
+                        // the prefixed form. A prompt `expose_prompts` hides must not
+                        // resolve an owner either, or the caller would route a fetch
+                        // at a prompt it is not allowed to see.
+                        prefixed_upstream_prompt_name(&name, &prompt.name) == target_prompt
+                            && prompt_exposed(&policy, &name, &prompt.name)
+                    }) =>
+                {
+                    return Some(name);
                 }
-            };
-            if prompts.iter().any(|prompt| {
-                // The requested name is namespaced as `{upstream}/{name}`;
-                // the upstream advertises the bare name, so compare against
-                // the prefixed form. A prompt `expose_prompts` hides must not
-                // resolve an owner either, or the caller would route a fetch
-                // at a prompt it is not allowed to see.
-                prefixed_upstream_prompt_name(&name, &prompt.name) == target_prompt
-                    && prompt_exposed(&policy, &name, &prompt.name)
-            }) {
-                return Some(name);
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    upstream = %name,
+                    kind = error.kind(),
+                    error = %error.bounded_text(),
+                    "subject-scoped upstream prompt ownership discovery failed"
+                ),
             }
         }
         None

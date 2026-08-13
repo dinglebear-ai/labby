@@ -473,6 +473,7 @@ async fn oauth_doctor(home: &Path, server: &MockServer) -> (Output, Value) {
         .env("PATH", launcher_path(home, true))
         .env("LABBY_MCP_HTTP_HOST", url.host_str().unwrap())
         .env("LABBY_MCP_HTTP_PORT", url.port().unwrap().to_string())
+        .env("LABBY_TOKEN_ENCRYPTION_KEY", "11".repeat(32))
         .output()
         .await
         .unwrap();
@@ -571,7 +572,8 @@ fn oauth_preflight_reports_missing_stable_issuer_and_unreachable_daemon_dependen
             .args(["--json", "doctor", "proxy"])
             .env("PATH", launcher_path(home.path(), true))
             .env("LABBY_MCP_HTTP_HOST", "127.0.0.1")
-            .env("LABBY_MCP_HTTP_PORT", "9"),
+            .env("LABBY_MCP_HTTP_PORT", "9")
+            .env("LABBY_TOKEN_ENCRYPTION_KEY", "11".repeat(32)),
     );
     assert_eq!(output.status.code(), Some(2));
     assert_severity(&report, "proxy:oauth-stable-issuer", "fail");

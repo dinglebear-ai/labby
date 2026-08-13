@@ -241,7 +241,7 @@ async fn exercise_unix_socket(socket_path: &str, listener: UnixListener) {
         .insert("x-labby-test".to_string(), "present".to_string());
     config.validate().expect("valid Unix upstream config");
 
-    let (connection, tools, _truncation) = connect_upstream(&config, None, None, None, None)
+    let (connection, tools) = connect_upstream(&config, None, None, None, None)
         .await
         .expect("Unix socket upstream should connect");
     assert_eq!(tools.len(), 1);

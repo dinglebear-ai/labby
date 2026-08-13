@@ -15,6 +15,8 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use url::form_urlencoded;
 
+const MAX_CALLBACK_QUERY_BYTES: usize = 8 * 1024;
+
 use crate::oauth::error::OauthRelayError;
 use crate::oauth::target::{
     ResolvedTarget, build_forward_url, filter_hop_by_hop_request_headers,
@@ -106,6 +108,23 @@ async fn relay_callback(
         return json_error(
             StatusCode::METHOD_NOT_ALLOWED,
             "oauth relay only supports GET and POST callback requests",
+        );
+    }
+    if uri
+        .query()
+        .is_some_and(|query| query.len() > MAX_CALLBACK_QUERY_BYTES)
+    {
+        tracing::warn!(
+            surface = "oauth_relay",
+            method = %method,
+            path = %uri.path(),
+            query_bytes = uri.query().map_or(0, str::len),
+            max_query_bytes = MAX_CALLBACK_QUERY_BYTES,
+            "oauth relay rejected oversized callback query"
+        );
+        return json_error(
+            StatusCode::URI_TOO_LONG,
+            "oauth callback query is too large",
         );
     }
 
@@ -269,6 +288,8 @@ fn parse_query_items(query: Option<&str>) -> Vec<(String, String)> {
 
 fn redact_forward_target(url: &reqwest::Url) -> String {
     let mut redacted = url.clone();
+    let _ = redacted.set_username("");
+    let _ = redacted.set_password(None);
     redacted.set_query(None);
     redacted.set_fragment(None);
     redacted.to_string()
@@ -611,6 +632,35 @@ mod tests {
         assert!(matches!(result, Err(OauthRelayError::Bind { .. })));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn oauth_local_relay_rejects_oversized_callback_query_before_forwarding() {
+        let relay_addr = available_loopback_addr().await;
+        let relay = spawn_relay(LocalRelayConfig {
+            bind_addr: relay_addr,
+            resolved_target: resolve_explicit_target(
+                "http://127.0.0.1:9/callback/node-a",
+                Some(relay_addr.port()),
+            )
+            .unwrap(),
+            request_timeout: Duration::from_millis(100),
+        })
+        .await;
+
+        let response = reqwest::Client::new()
+            .get(format!(
+                "http://{relay_addr}/callback/node-a?code={}",
+                "x".repeat(MAX_CALLBACK_QUERY_BYTES + 1)
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::URI_TOO_LONG);
+        let body = response.text().await.unwrap();
+        assert!(!body.contains(&"x".repeat(128)));
+
+        relay.abort();
+    }
+
     #[test]
     fn redact_forward_target_strips_query_and_fragment() {
         // The relay logs `%redact_forward_target(...)` for the target field.
@@ -634,6 +684,18 @@ mod tests {
             redacted.contains("/callback/node-a"),
             "path missing: {redacted}"
         );
+    }
+
+    #[test]
+    fn redact_forward_target_strips_userinfo() {
+        let url = reqwest::Url::parse(
+            "http://operator:super-secret@127.0.0.1:38935/callback?code=secret",
+        )
+        .unwrap();
+        let redacted = redact_forward_target(&url);
+        assert!(!redacted.contains("operator"));
+        assert!(!redacted.contains("super-secret"));
+        assert!(!redacted.contains("code=secret"));
     }
 
     #[test]

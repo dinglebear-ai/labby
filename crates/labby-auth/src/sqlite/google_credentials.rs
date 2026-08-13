@@ -3,10 +3,20 @@
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteStore, sqlite_error};
-use crate::at_rest::{maybe_decrypt, maybe_encrypt};
+use crate::at_rest::{maybe_decrypt, maybe_encrypt, require_encrypt};
 use crate::error::AuthError;
 use crate::google::merge_google_scopes;
 use crate::types::{GoogleProviderCredentialRow, GoogleProviderCredentialUpdate};
+
+#[cfg(test)]
+type EncryptionSnapshotHook = (
+    std::sync::mpsc::SyncSender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+#[cfg(test)]
+pub(super) static LEGACY_ENCRYPTION_SNAPSHOT_HOOK: std::sync::LazyLock<
+    std::sync::Mutex<Option<EncryptionSnapshotHook>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 fn normalize_scopes(scopes: &[String]) -> Vec<String> {
     merge_google_scopes(&[], scopes)
@@ -16,6 +26,11 @@ fn decode_row(
     enc_key: Option<&crate::at_rest::TokenEncryptionKey>,
     mut row: GoogleProviderCredentialRow,
 ) -> Result<GoogleProviderCredentialRow, AuthError> {
+    if enc_key.is_none() {
+        return Err(AuthError::Config(
+            "TOKEN_ENCRYPTION_KEY is required to read Google provider credentials".to_string(),
+        ));
+    }
     row.refresh_token = maybe_decrypt(enc_key, &row.refresh_token)?;
     if let Some(access_token) = row.access_token.as_deref() {
         row.access_token = Some(maybe_decrypt(enc_key, access_token)?);
@@ -24,6 +39,24 @@ fn decode_row(
 }
 
 impl SqliteStore {
+    pub async fn google_provider_revocation_epoch(&self, subject: &str) -> Result<i64, AuthError> {
+        let subject = subject.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT epoch FROM google_provider_revocations WHERE subject = ?1",
+                params![subject],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|epoch| epoch.unwrap_or(0))
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    pub async fn google_provider_fence_epoch(&self) -> Result<i64, AuthError> {
+        self.google_provider_revocation_epoch("*").await
+    }
     /// Encrypt legacy plaintext Google provider tokens when an at-rest key is available.
     ///
     /// Schema v7 deployments could persist the central refresh credential before
@@ -37,8 +70,11 @@ impl SqliteStore {
             return Ok(0);
         };
         self.with_conn(move |conn| {
+            let transaction = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(sqlite_error)?;
             let rows = {
-                let mut statement = conn
+                let mut statement = transaction
                     .prepare(
                         "SELECT subject, access_token, refresh_token
                          FROM google_provider_credentials",
@@ -56,8 +92,16 @@ impl SqliteStore {
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(sqlite_error)?
             };
+            #[cfg(test)]
+            if let Some((reached, resume)) = LEGACY_ENCRYPTION_SNAPSHOT_HOOK
+                .lock()
+                .expect("legacy encryption hook lock")
+                .take()
+            {
+                reached.send(()).expect("signal encryption snapshot");
+                resume.recv().expect("resume encryption snapshot");
+            }
 
-            let transaction = conn.transaction().map_err(sqlite_error)?;
             let mut updated = 0_u64;
             for (subject, access_token, refresh_token) in rows {
                 let next_access = access_token
@@ -218,8 +262,8 @@ impl SqliteStore {
         let granted_scopes = normalize_scopes(&granted_scopes);
         let granted_scopes_json = serde_json::to_string(&granted_scopes)
             .map_err(|error| AuthError::Storage(format!("serialize Google scopes: {error}")))?;
-        let encrypted_access_token = maybe_encrypt(self.enc_key.as_deref(), &access_token)?;
-        let encrypted_refresh_token = maybe_encrypt(self.enc_key.as_deref(), &refresh_token)?;
+        let encrypted_access_token = require_encrypt(self.enc_key.as_deref(), &access_token)?;
+        let encrypted_refresh_token = require_encrypt(self.enc_key.as_deref(), &refresh_token)?;
         let now = crate::util::now_unix();
         let refreshed = i64::from(refreshed);
         let scope_upgraded = i64::from(scope_upgraded);
@@ -268,6 +312,147 @@ impl SqliteStore {
             )
             .map_err(sqlite_error)?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Replace an existing provider token bundle only when the caller observed
+    /// the current generation.
+    ///
+    /// This is the persistence boundary for read-modify-write provider flows.
+    /// A `false` result means another callback or refresh installed a newer
+    /// bundle and the caller must not publish its stale exchange.
+    pub async fn replace_google_provider_token_bundle_if_generation(
+        &self,
+        update: GoogleProviderCredentialUpdate,
+        expected_generation: i64,
+    ) -> Result<bool, AuthError> {
+        let GoogleProviderCredentialUpdate {
+            subject,
+            email,
+            client_id,
+            granted_scopes,
+            access_token,
+            refresh_token,
+            token_received_at,
+            access_token_expires_at,
+            issuer,
+            refreshed,
+            scope_upgraded,
+        } = update;
+        let email = email
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty());
+        let granted_scopes_json = serde_json::to_string(&normalize_scopes(&granted_scopes))
+            .map_err(|error| AuthError::Storage(format!("serialize Google scopes: {error}")))?;
+        let encrypted_access_token = require_encrypt(self.enc_key.as_deref(), &access_token)?;
+        let encrypted_refresh_token = require_encrypt(self.enc_key.as_deref(), &refresh_token)?;
+        let now = crate::util::now_unix();
+        let refreshed = i64::from(refreshed);
+        let scope_upgraded = i64::from(scope_upgraded);
+
+        self.with_conn(move |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE google_provider_credentials SET
+                        email = COALESCE(?2, email),
+                        client_id = ?3,
+                        granted_scopes_json = ?4,
+                        access_token = ?5,
+                        refresh_token = ?6,
+                        token_received_at = ?7,
+                        access_token_expires_at = ?8,
+                        issuer = COALESCE(?9, issuer),
+                        last_refresh_at = CASE WHEN ?10 != 0 THEN ?12 ELSE last_refresh_at END,
+                        last_scope_upgrade_at = CASE WHEN ?11 != 0 THEN ?12
+                            ELSE last_scope_upgrade_at END,
+                        generation = generation + 1,
+                        updated_at = ?12
+                     WHERE subject = ?1 AND generation = ?13",
+                    params![
+                        subject,
+                        email,
+                        client_id,
+                        granted_scopes_json,
+                        encrypted_access_token,
+                        encrypted_refresh_token,
+                        token_received_at,
+                        access_token_expires_at,
+                        issuer,
+                        refreshed,
+                        scope_upgraded,
+                        now,
+                        expected_generation,
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            Ok(updated == 1)
+        })
+        .await
+    }
+
+    /// Install the first bundle for a subject without overwriting a bundle
+    /// concurrently created by another process.
+    pub async fn insert_google_provider_token_bundle_if_absent(
+        &self,
+        update: GoogleProviderCredentialUpdate,
+        expected_revocation_epoch: i64,
+    ) -> Result<bool, AuthError> {
+        let GoogleProviderCredentialUpdate {
+            subject,
+            email,
+            client_id,
+            granted_scopes,
+            access_token,
+            refresh_token,
+            token_received_at,
+            access_token_expires_at,
+            issuer,
+            refreshed,
+            scope_upgraded,
+        } = update;
+        let email = email
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty());
+        let granted_scopes_json = serde_json::to_string(&normalize_scopes(&granted_scopes))
+            .map_err(|error| AuthError::Storage(format!("serialize Google scopes: {error}")))?;
+        let encrypted_access_token = require_encrypt(self.enc_key.as_deref(), &access_token)?;
+        let encrypted_refresh_token = require_encrypt(self.enc_key.as_deref(), &refresh_token)?;
+        let now = crate::util::now_unix();
+        let refreshed = i64::from(refreshed);
+        let scope_upgraded = i64::from(scope_upgraded);
+        self.with_conn(move |conn| {
+            let inserted = conn
+                .execute(
+                    "INSERT OR IGNORE INTO google_provider_credentials (
+                    subject, email, client_id, granted_scopes_json, access_token,
+                    refresh_token, token_received_at, access_token_expires_at, issuer,
+                    last_refresh_at, last_scope_upgrade_at, generation, created_at, updated_at
+                 ) SELECT
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                    CASE WHEN ?10 != 0 THEN ?12 ELSE NULL END,
+                    CASE WHEN ?11 != 0 THEN ?12 ELSE NULL END,
+                    1, ?12, ?12
+                 WHERE COALESCE((SELECT epoch FROM google_provider_revocations
+                                 WHERE subject = '*'), 0) = ?13",
+                    params![
+                        subject,
+                        email,
+                        client_id,
+                        granted_scopes_json,
+                        encrypted_access_token,
+                        encrypted_refresh_token,
+                        token_received_at,
+                        access_token_expires_at,
+                        issuer,
+                        refreshed,
+                        scope_upgraded,
+                        now,
+                        expected_revocation_epoch
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            Ok(inserted == 1)
         })
         .await
     }

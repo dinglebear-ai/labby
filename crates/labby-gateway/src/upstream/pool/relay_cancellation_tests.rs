@@ -14,8 +14,8 @@ use crate::MCP_RELAY_CANCELLATION_REQUEST_METHOD;
 
 use super::http_cancellation::build_http_cancellation_sender;
 use super::relay_cancellation::{
-    PendingRelayRequestId, RelaySendOutcome, await_relay_send, deliver_http_relay_cancellation,
-    spawn_bounded_handle_cancellation,
+    PendingRelayRequestId, RelayPermitOutcome, RelaySendOutcome, await_relay_permit,
+    await_relay_send, deliver_http_relay_cancellation, spawn_bounded_handle_cancellation,
 };
 
 #[derive(Clone)]
@@ -135,6 +135,66 @@ async fn downstream_cancellation_interrupts_a_delayed_relay_send() {
     assert!(
         !send_completed.load(Ordering::SeqCst),
         "cancellation must drop the blocked send future before it can enqueue"
+    );
+}
+
+#[tokio::test]
+async fn downstream_cancellation_interrupts_queued_permit_acquisition() {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let held = Arc::clone(&semaphore)
+        .acquire_owned()
+        .await
+        .expect("initial permit");
+    let cancellation = CancellationToken::new();
+    let cancellation_for_wait = cancellation.clone();
+    let queued = tokio::spawn(async move {
+        await_relay_permit(
+            semaphore.acquire_owned(),
+            &cancellation_for_wait,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+    });
+
+    tokio::task::yield_now().await;
+    cancellation.cancel();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), queued)
+        .await
+        .expect("cancelled queue wait exits promptly")
+        .expect("queue task joins");
+    assert!(matches!(outcome, RelayPermitOutcome::Cancelled));
+    drop(held);
+}
+
+#[tokio::test]
+async fn permit_wait_and_send_share_one_absolute_deadline() {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(120);
+    let cancellation = CancellationToken::new();
+    let permit = await_relay_permit(
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            Ok::<_, ()>(())
+        },
+        &cancellation,
+        deadline,
+    )
+    .await;
+    assert!(matches!(permit, RelayPermitOutcome::Acquired(Ok(()))));
+
+    let started_send = Instant::now();
+    let send = await_relay_send(
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            Ok::<_, ServiceError>(())
+        },
+        &cancellation,
+        deadline,
+    )
+    .await;
+    assert!(matches!(send, RelaySendOutcome::TimedOut));
+    assert!(
+        started_send.elapsed() < std::time::Duration::from_millis(75),
+        "send receives only the remaining absolute-deadline budget"
     );
 }
 

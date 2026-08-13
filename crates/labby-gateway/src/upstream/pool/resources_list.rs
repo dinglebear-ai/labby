@@ -6,7 +6,7 @@
 //! resources. `cached_upstream_resource_uris` exposes the cached snapshot.
 
 use std::collections::BTreeSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -22,24 +22,27 @@ use super::capability_call::{
     CapabilityCallError, bounded_service_error_text, timed_capability_call,
     timed_capability_call_with_timeout,
 };
+use super::catalog_pagination;
 use super::discover::routable_upstream_peers;
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
 };
 use super::helpers::{
-    bare_upstream_resource_uri, classify_upstream_error, rewrite_resource_uri,
+    bare_upstream_resource_uri, classify_upstream_error, max_response_bytes, rewrite_resource_uri,
     upstream_discovery_timeout, upstream_transport,
 };
 use super::logging::{
     UpstreamRequestLog, is_capability_unsupported, log_upstream_request_error,
     log_upstream_request_finish, log_upstream_request_start,
 };
-use super::paginate::{
-    list_resource_templates_bounded, list_resources_bounded, list_tools_bounded,
-    listing_catalog_timeout, with_listing_timeout,
-};
 use super::tools::MAX_UPSTREAM_RESOURCES;
+
+const RESOURCE_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
+    request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
+}
 
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
     template.name = format!("{upstream_name}/{}", template.name);
@@ -163,13 +166,14 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             started,
-            // Subject-scoped OAuth discovery never lands in `self.catalog`, so
-            // there is no entry to record a truncation note on — the WARN
-            // inside the bounded helper is the visibility here.
             async {
-                list_tools_bounded(&peer, &config.name)
-                    .await
-                    .map(|(tools, _truncation)| tools)
+                catalog_pagination::list_tools(
+                    &peer,
+                    self.request_timeout,
+                    super::tools::MAX_UPSTREAM_TOOLS,
+                )
+                .await
+                .map_err(|error| error.into_service_error(&config.name))
             },
             |tools| serde_json::to_vec(tools).map_or(usize::MAX, |body| body.len()),
             Some(subject),
@@ -249,24 +253,21 @@ impl UpstreamPool {
         // failing upstream.
         //
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
-        let listing_timeout = listing_catalog_timeout(self.request_timeout);
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
+            let request_timeout = resource_catalog_timeout(self.request_timeout);
             futures.push(async move {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);
                 log_upstream_request_start(event);
-                // Raw `tokio::time::timeout` rather than `with_listing_timeout`:
-                // this site logs the expiry itself (`kind = "timeout"` with a
-                // listing-budget message) instead of routing a synthesized
-                // `ServiceError` through the generic error arm.
-                let result = match tokio::time::timeout(
-                    listing_timeout,
-                    list_resources_bounded(&peer, &name),
+                let result = match catalog_pagination::list_resources(
+                    &peer,
+                    request_timeout,
+                    MAX_UPSTREAM_RESOURCES,
                 )
                 .await
                 {
-                    Ok(Ok((resources, truncation))) => {
+                    Ok(resources) => {
                         let response_bytes =
                             serde_json::to_vec(&resources).map_or(usize::MAX, |body| body.len());
                         log_upstream_request_finish(
@@ -274,38 +275,25 @@ impl UpstreamPool {
                             started.elapsed().as_millis(),
                             Some(response_bytes),
                         );
-                        Ok((resources, truncation))
+                        Ok(resources)
                     }
-                    Ok(Err(error)) if is_capability_unsupported(&error) => {
+                    Err(catalog_pagination::CatalogPaginationError::Service(error))
+                        if is_capability_unsupported(&error) =>
+                    {
                         log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
                         tracing::debug!(
                             upstream = %name,
                             "upstream does not implement resources/list — capability absent"
                         );
-                        Ok((Vec::new(), None))
+                        Ok(Vec::new())
                     }
-                    Ok(Err(error)) => {
-                        let error_text = bounded_service_error_text(&error);
+                    Err(error) => {
+                        let error_text = error.bounded_text();
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
-                            classify_upstream_error(&error_text),
+                            error.kind(),
                             Some(&error_text),
-                            None,
-                            None,
-                        );
-                        Err(error_text)
-                    }
-                    Err(_) => {
-                        let error_text = format!(
-                            "upstream resource listing timed out after {}ms",
-                            listing_timeout.as_millis()
-                        );
-                        log_upstream_request_error(
-                            event,
-                            started.elapsed().as_millis(),
-                            "timeout",
-                            None,
                             None,
                             None,
                         );
@@ -326,13 +314,9 @@ impl UpstreamPool {
         let mut subscription_refreshes = Vec::new();
         for (name, result) in results {
             match result {
-                Ok((upstream_resources, truncation)) => {
-                    self.record_listing_success_for(
-                        &name,
-                        UpstreamCapability::Resources,
-                        truncation,
-                    )
-                    .await;
+                Ok(upstream_resources) => {
+                    self.record_success_for(&name, UpstreamCapability::Resources)
+                        .await;
                     let resource_uris = upstream_resources
                         .iter()
                         .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
@@ -436,13 +420,13 @@ impl UpstreamPool {
 
         // Deliberate bulkhead exception + partial-result semantics — same
         // contract as `list_upstream_resources_allowed` above.
-        let listing_timeout = listing_catalog_timeout(self.request_timeout);
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
             futures.push(async move {
-                let result = with_listing_timeout(
-                    listing_timeout,
-                    list_resource_templates_bounded(&peer, &name),
+                let result = catalog_pagination::list_resource_templates(
+                    &peer,
+                    self.request_timeout,
+                    MAX_UPSTREAM_RESOURCES,
                 )
                 .await;
                 (name, result)
@@ -458,13 +442,9 @@ impl UpstreamPool {
         let mut templates = Vec::new();
         for (name, result) in results {
             match result {
-                Ok((upstream_templates, truncation)) => {
-                    self.record_listing_success_for(
-                        &name,
-                        UpstreamCapability::Resources,
-                        truncation,
-                    )
-                    .await;
+                Ok(upstream_templates) => {
+                    self.record_success_for(&name, UpstreamCapability::Resources)
+                        .await;
                     for mut template in upstream_templates {
                         if templates.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
@@ -478,17 +458,19 @@ impl UpstreamPool {
                         templates.push(template);
                     }
                 }
-                Err(error) if is_capability_unsupported(&error) => {
+                Err(catalog_pagination::CatalogPaginationError::Service(error))
+                    if is_capability_unsupported(&error) =>
+                {
                     self.record_success_for(&name, UpstreamCapability::Resources)
                         .await;
                     tracing::debug!(
                         upstream = %name,
-                        error = %error,
+                        error = %bounded_service_error_text(&error),
                         "upstream does not implement resources/templates/list — capability absent"
                     );
                 }
                 Err(error) => {
-                    let error_text = bounded_service_error_text(&error);
+                    let error_text = error.bounded_text();
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Resources,
@@ -497,7 +479,7 @@ impl UpstreamPool {
                     .await;
                     tracing::warn!(
                         upstream = %name,
-                        kind = classify_upstream_error(&error_text),
+                        kind = error.kind(),
                         error = %error_text,
                         "failed to list resource templates from upstream"
                     );
@@ -523,7 +505,7 @@ impl UpstreamPool {
             let pool = self.clone();
             futures.push(async move {
                 let started = Instant::now();
-                let listing_timeout = listing_catalog_timeout(pool.request_timeout);
+                let request_timeout = resource_catalog_timeout(pool.request_timeout);
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -536,8 +518,24 @@ impl UpstreamPool {
                 let event = UpstreamRequestLog::resources_list(&config.name, true)
                     .with_transport(upstream_transport(&config));
                 log_upstream_request_start(event);
+                let _fanout_permit = match tokio::time::timeout(
+                    request_timeout,
+                    pool.acquire_catalog_fanout_permit(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(error)) => return (config.name, policy, Err(error)),
+                    Err(_) => {
+                        return (
+                            config.name,
+                            policy,
+                            Err("subject catalog concurrency wait timed out".to_string()),
+                        );
+                    }
+                };
                 let peer = match tokio::time::timeout(
-                    listing_timeout,
+                    request_timeout,
                     pool.acquire_or_connect_subject(&config, &subject),
                 )
                 .await
@@ -563,7 +561,7 @@ impl UpstreamPool {
                     Err(_) => {
                         let error = format!(
                             "subject-scoped upstream connection timed out after {}ms",
-                            listing_timeout.as_millis()
+                            request_timeout.as_millis()
                         );
                         pool.record_failure_for(
                             &config.name,
@@ -582,22 +580,22 @@ impl UpstreamPool {
                         return (config.name, policy, Err(error));
                     }
                 };
-                let timeout_ms = listing_timeout.as_millis();
+                let timeout_ms = request_timeout.as_millis();
                 let result = timed_capability_call_with_timeout(
                     &pool,
-                    listing_timeout,
+                    request_timeout,
                     &config.name,
                     UpstreamCapability::Resources,
                     event,
                     started,
-                    // A subject-scoped listing is a per-subject view;
-                    // annotating the shared entry's status with its truncation
-                    // would misattribute partial state to the shared catalog —
-                    // the WARN inside the bounded helper is the visibility here.
                     async {
-                        list_resources_bounded(&peer, &config.name)
-                            .await
-                            .map(|(resources, _truncation)| resources)
+                        catalog_pagination::list_resources(
+                            &peer,
+                            request_timeout,
+                            MAX_UPSTREAM_RESOURCES,
+                        )
+                        .await
+                        .map_err(|error| error.into_service_error(&config.name))
                     },
                     |resources| serde_json::to_vec(resources).map_or(usize::MAX, |body| body.len()),
                     Some(&subject),
@@ -616,36 +614,70 @@ impl UpstreamPool {
         // connection cache and execute concurrently under the ordinary request
         // budget. One slow or broken OAuth upstream therefore degrades to a
         // partial catalog without delaying every other upstream.
-        let mut resources = Vec::new();
+        let mut results = Vec::new();
         while let Some((name, policy, result)) = futures.next().await {
-            match result {
-                Ok(upstream_resources) => {
-                    let mut hidden_count = 0usize;
-                    let mut exposed_count = 0usize;
-                    for mut resource in upstream_resources {
-                        if !resource_exposed(&policy, bare_upstream_resource_uri(&resource.uri)) {
-                            hidden_count += 1;
-                            continue;
-                        }
-                        rewrite_resource_uri(&mut resource, &name);
-                        resources.push(resource);
-                        exposed_count += 1;
+            results.push((name, policy, result));
+        }
+        results.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, max_response_bytes())
+    }
+}
+
+type SubjectResourceResult = (String, ToolExposurePolicy, Result<Vec<Resource>, String>);
+
+fn aggregate_subject_resources(
+    results: Vec<SubjectResourceResult>,
+    item_limit: usize,
+    byte_limit: usize,
+) -> Vec<Resource> {
+    let mut resources = Vec::new();
+    let mut serialized_bytes = 0usize;
+    for (name, policy, result) in results {
+        match result {
+            Ok(upstream_resources) => {
+                let mut hidden_count = 0usize;
+                let mut exposed_count = 0usize;
+                for mut resource in upstream_resources {
+                    if !resource_exposed(&policy, bare_upstream_resource_uri(&resource.uri)) {
+                        hidden_count += 1;
+                        continue;
                     }
-                    log_exposure_filter(&name, "resources", hidden_count, exposed_count, true);
+                    if resources.len() >= item_limit {
+                        tracing::warn!(
+                            limit = item_limit,
+                            accepted_items = resources.len(),
+                            "subject-scoped resource catalog exceeds global item limit"
+                        );
+                        return resources;
+                    }
+                    rewrite_resource_uri(&mut resource, &name);
+                    let resource_bytes =
+                        serde_json::to_vec(&resource).map_or(usize::MAX, |body| body.len());
+                    if serialized_bytes.saturating_add(resource_bytes) > byte_limit {
+                        tracing::warn!(
+                            limit = byte_limit,
+                            accepted_bytes = serialized_bytes,
+                            "subject-scoped resource catalog exceeds global byte limit"
+                        );
+                        return resources;
+                    }
+                    serialized_bytes = serialized_bytes.saturating_add(resource_bytes);
+                    resources.push(resource);
+                    exposed_count += 1;
                 }
-                Err(error_text) => {
-                    tracing::warn!(
-                        upstream = %name,
-                        kind = classify_upstream_error(&error_text),
-                        error = %error_text,
-                        "subject-scoped upstream resource discovery failed"
-                    );
-                }
+                log_exposure_filter(&name, "resources", hidden_count, exposed_count, true);
+            }
+            Err(error_text) => {
+                tracing::warn!(
+                    upstream = %name,
+                    kind = classify_upstream_error(&error_text),
+                    error = %error_text,
+                    "subject-scoped upstream resource discovery failed"
+                );
             }
         }
-
-        resources
     }
+    resources
 }
 
 fn render_subject_scoped_gateway_schema(
@@ -736,6 +768,79 @@ mod tests {
     use super::super::testsupport::{StaticCatalogServer, catalog_pool_with_server};
     use super::*;
 
+    #[test]
+    fn subject_resource_aggregation_enforces_global_item_cap() {
+        let policy = ToolExposurePolicy::All;
+        let results = vec![
+            (
+                "alpha".to_string(),
+                policy.clone(),
+                Ok((0..700)
+                    .map(|index| Resource::new(format!("file:///alpha/{index}"), "resource"))
+                    .collect()),
+            ),
+            (
+                "beta".to_string(),
+                policy,
+                Ok((0..700)
+                    .map(|index| Resource::new(format!("file:///beta/{index}"), "resource"))
+                    .collect()),
+            ),
+        ];
+
+        let resources = aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, usize::MAX);
+
+        assert_eq!(resources.len(), MAX_UPSTREAM_RESOURCES);
+    }
+
+    #[test]
+    fn subject_resource_aggregation_enforces_global_byte_cap() {
+        let policy = ToolExposurePolicy::All;
+        let results = vec![(
+            "alpha".to_string(),
+            policy,
+            Ok(vec![
+                Resource::new("file:///alpha/one", "x".repeat(128)),
+                Resource::new("file:///alpha/two", "y".repeat(128)),
+            ]),
+        )];
+
+        let resources = aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, 300);
+
+        assert_eq!(resources.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn subject_catalog_fanout_gate_is_global_and_bounded() {
+        let pool = UpstreamPool::new();
+        let permit_count = pool.catalog_fanout_semaphore.available_permits() as u32;
+        let held = Arc::clone(&pool.catalog_fanout_semaphore)
+            .acquire_many_owned(permit_count)
+            .await
+            .expect("hold every permit");
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                pool.acquire_catalog_fanout_permit()
+            )
+            .await
+            .is_err(),
+            "a second catalog job must wait behind the fleet-wide gate"
+        );
+
+        drop(held);
+        drop(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                pool.acquire_catalog_fanout_permit(),
+            )
+            .await
+            .expect("permit becomes available")
+            .expect("gate remains open"),
+        );
+    }
+
     #[derive(Clone)]
     struct SchemaToolServer {
         tool_name: &'static str,
@@ -777,6 +882,18 @@ mod tests {
                 Arc::new(serde_json::Map::new()),
             )]))
         }
+    }
+
+    #[test]
+    fn resource_catalog_timeout_caps_the_general_upstream_budget() {
+        assert_eq!(
+            resource_catalog_timeout(Duration::from_mins(1)),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            resource_catalog_timeout(Duration::from_millis(25)),
+            Duration::from_millis(25)
+        );
     }
 
     fn oauth_schema_config(name: &str) -> UpstreamConfig {
@@ -1239,7 +1356,7 @@ mod tests {
             "a timed-out upstream yields partial data"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_millis(100),
             "a stalled upstream exceeded the request budget: {:?}",
             started.elapsed()
         );
@@ -1270,7 +1387,7 @@ mod tests {
             "a timed-out connect yields partial data"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_millis(100),
             "connection acquisition exceeded the request budget: {:?}",
             started.elapsed()
         );
@@ -1292,7 +1409,7 @@ mod tests {
             "a timed-out upstream yields partial data"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_millis(100),
             "a stalled upstream exceeded the request budget: {:?}",
             started.elapsed()
         );

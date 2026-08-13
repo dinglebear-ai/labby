@@ -30,10 +30,9 @@ use crate::dispatch::error::ToolError;
 /// Timeout for the initial reachability probe. This runs on every thin-client
 /// startup, so an unreachable host must fail over quickly rather than hang.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
-// Deliberately no blanket request timeout on the client: some actions block
-// server-side by design (e.g. `gateway.oauth.wait` with a caller-supplied
-// `--wait-timeout-secs`, which can legitimately run past two minutes). Only
-// the reachability probe gets an explicit short timeout below.
+/// Bound ordinary thin-client dispatches after the short reachability probe.
+/// Long-poll actions opt out explicitly in `dispatch_timeout_for_action`.
+const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A reachable, already-running `labby serve` daemon.
 #[derive(Clone)]
@@ -41,6 +40,7 @@ pub struct LiveGateway {
     base_url: String,
     token: Option<String>,
     client: reqwest::Client,
+    dispatch_timeout: Duration,
 }
 
 /// Candidate base URLs to try, in priority order: the local bind address
@@ -114,6 +114,7 @@ pub async fn detect(config: &LabConfig) -> Option<LiveGateway> {
                 base_url,
                 token,
                 client,
+                dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
             });
         }
     }
@@ -345,14 +346,14 @@ impl LiveGateway {
             .client
             .post(format!("{}/v1/gateway", self.base_url))
             .json(&serde_json::json!({ "action": action, "params": params }));
+        if let Some(timeout) = dispatch_timeout_for_action(action, self.dispatch_timeout) {
+            request = request.timeout(timeout);
+        }
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
 
-        let response = request.send().await.map_err(|e| ToolError::Sdk {
-            sdk_kind: "network_error".to_string(),
-            message: format!("request to live gateway daemon failed: {e}"),
-        })?;
+        let response = request.send().await.map_err(live_gateway_network_error)?;
         let status = response.status();
         let body: Value = response.json().await.unwrap_or(Value::Null);
 
@@ -441,10 +442,23 @@ impl LiveGateway {
     }
 }
 
+fn dispatch_timeout_for_action(action: &str, default: Duration) -> Option<Duration> {
+    if labby_gateway::gateway::requires_authoritative_result(action) {
+        None
+    } else {
+        Some(default)
+    }
+}
+
 fn live_gateway_network_error(error: reqwest::Error) -> ToolError {
+    let message = if error.is_timeout() {
+        "request to live gateway daemon timed out".to_string()
+    } else {
+        format!("request to live gateway daemon failed: {error}")
+    };
     ToolError::Sdk {
         sdk_kind: "network_error".to_string(),
-        message: format!("request to live gateway daemon failed: {error}"),
+        message,
     }
 }
 
@@ -489,6 +503,7 @@ mod tests {
             base_url,
             token,
             client: reqwest::Client::new(),
+            dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
         }
     }
 
@@ -576,6 +591,136 @@ mod tests {
             .expect_err("dispatch should fail");
         assert_eq!(error.kind(), "missing_param");
         assert_eq!(error.user_message(), "upstream is required");
+    }
+
+    #[tokio::test]
+    async fn dispatch_action_times_out_when_live_daemon_stalls() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(json!({ "ok": true })),
+            )
+            .mount(&server)
+            .await;
+
+        let mut gateway = test_gateway(server.uri(), None);
+        gateway.dispatch_timeout = Duration::from_millis(20);
+        let error = gateway
+            .dispatch_action("gateway.list", json!({}))
+            .await
+            .expect_err("ordinary live dispatch must be bounded");
+
+        assert_eq!(error.kind(), "network_error");
+        assert!(error.user_message().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn detached_mutation_waits_for_unambiguous_server_result() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .and(wiremock::matchers::body_json(json!({
+                "action": "gateway.add",
+                "params": {"name": "fixture"}
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(75))
+                    .set_body_json(json!({ "committed": true })),
+            )
+            .mount(&server)
+            .await;
+
+        let mut gateway = test_gateway(server.uri(), None);
+        gateway.dispatch_timeout = Duration::from_millis(10);
+        let result = gateway
+            .dispatch_action("gateway.add", json!({"name": "fixture"}))
+            .await
+            .expect("detached mutation must wait for its authoritative server result");
+
+        assert_eq!(result, json!({ "committed": true }));
+    }
+
+    #[test]
+    fn long_poll_and_detached_mutations_opt_out_of_default_dispatch_timeout() {
+        for action in [
+            "gateway.oauth.wait",
+            "gateway.code_mode.set",
+            "gateway.enrich.apply",
+            "gateway.protected_route.add",
+            "gateway.protected_route.update",
+            "gateway.protected_route.remove",
+            "gateway.virtual_server.enable",
+            "gateway.virtual_server.disable",
+            "gateway.virtual_server.remove",
+            "gateway.virtual_server.quarantine.restore",
+            "gateway.virtual_server.set_surface",
+            "gateway.virtual_server.set_mcp_policy",
+            "gateway.service_config.set",
+            "gateway.discover",
+            "gateway.add",
+            "gateway.update",
+            "gateway.remove",
+            "gateway.import",
+            "gateway.import_pending.approve",
+            "gateway.import_pending.reject",
+            "gateway.import_tombstones.clear",
+            "gateway.import_tombstones.restore",
+            "gateway.reload",
+            "gateway.mcp.enable",
+            "gateway.mcp.disable",
+        ] {
+            assert_eq!(
+                dispatch_timeout_for_action(action, Duration::from_secs(30)),
+                None,
+                "{action} must not report a client timeout while server work may commit"
+            );
+        }
+        assert_eq!(
+            dispatch_timeout_for_action("gateway.list", Duration::from_secs(30)),
+            Some(Duration::from_secs(30))
+        );
+
+        let classified = labby_gateway::gateway::ACTIONS
+            .iter()
+            .filter(|spec| {
+                dispatch_timeout_for_action(spec.name, Duration::from_secs(30)).is_none()
+            })
+            .map(|spec| spec.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = [
+            "gateway.oauth.wait",
+            "gateway.code_mode.set",
+            "gateway.enrich.apply",
+            "gateway.protected_route.add",
+            "gateway.protected_route.update",
+            "gateway.protected_route.remove",
+            "gateway.virtual_server.enable",
+            "gateway.virtual_server.disable",
+            "gateway.virtual_server.remove",
+            "gateway.virtual_server.quarantine.restore",
+            "gateway.virtual_server.set_surface",
+            "gateway.virtual_server.set_mcp_policy",
+            "gateway.service_config.set",
+            "gateway.discover",
+            "gateway.add",
+            "gateway.update",
+            "gateway.remove",
+            "gateway.import",
+            "gateway.import_pending.approve",
+            "gateway.import_pending.reject",
+            "gateway.import_tombstones.clear",
+            "gateway.import_tombstones.restore",
+            "gateway.reload",
+            "gateway.mcp.enable",
+            "gateway.mcp.disable",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(classified, expected);
     }
 
     #[tokio::test]

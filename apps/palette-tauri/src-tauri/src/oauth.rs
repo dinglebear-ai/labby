@@ -101,10 +101,47 @@ pub(crate) async fn labby_oauth_login(
 #[tauri::command]
 pub(crate) async fn labby_oauth_logout(
     app: AppHandle,
+    bridge: tauri::State<'_, BridgeClient>,
     oauth_state: tauri::State<'_, OauthState>,
 ) -> Result<OauthStatus, String> {
+    // Serialize logout against both interactive login and token rotation. The
+    // server grant is revoked before local deletion; on a transport/server
+    // failure the durable credentials remain available for a retry.
+    let _login_guard = oauth_state.login.lock().await;
+    let _refresh_guard = oauth_state.refresh.lock().await;
+    ensure_loaded(&app, &oauth_state).await;
+    if let Some(credentials) = credential_snapshot(&oauth_state).await {
+        revoke_stored_credentials(bridge.client(), &credentials).await?;
+    }
     replace_and_persist(&app, &oauth_state, None).await?;
+    emit_oauth_changed(&app);
     Ok(OauthStatus::signed_out())
+}
+
+async fn revoke_stored_credentials(
+    client: &reqwest::Client,
+    credentials: &StoredCredentials,
+) -> Result<(), String> {
+    let Some(refresh_token) = credentials.refresh_token.as_ref() else {
+        return Ok(());
+    };
+    let endpoint = match credentials.revocation_endpoint.as_deref() {
+        Some(endpoint) => endpoint.to_string(),
+        None => flow::discover(client, &credentials.server_url)
+            .await?
+            .revocation_endpoint
+            .ok_or_else(|| {
+                "OAuth server does not advertise a revocation endpoint; local credentials were retained"
+                    .to_string()
+            })?,
+    };
+    flow::revoke_refresh_token(
+        client,
+        &endpoint,
+        &credentials.client_id,
+        refresh_token.expose(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -150,14 +187,15 @@ async fn effective_access_token(
     // holding the credential cache across network or disk I/O.
     let _refresh_guard = state.refresh.lock().await;
     let (snapshot_revision, snapshot) = credential_snapshot_with_revision(state).await;
-    if let Some(creds) = snapshot.as_ref() {
-        if creds.matches_server(server_url) && !creds.is_expired(now_unix(), EXPIRY_SKEW_SECS) {
-            return Some(creds.access_token.expose().to_string());
-        }
+    if let Some(creds) = snapshot.as_ref()
+        && creds.matches_server(server_url)
+        && !creds.is_expired(now_unix(), EXPIRY_SKEW_SECS)
+    {
+        return Some(creds.access_token.expose().to_string());
     }
     match refresh_snapshot(app, client, server_url, state, snapshot_revision, snapshot).await {
         RefreshResult::Refreshed(token) => Some(token),
-        RefreshResult::Cleared | RefreshResult::Kept => None,
+        RefreshResult::Cleared | RefreshResult::Kept | RefreshResult::PersistenceFailed => None,
     }
 }
 
@@ -180,6 +218,9 @@ enum RefreshResult {
     Cleared,
     /// No change — no OAuth session for this server, a transient failure, or a timeout.
     Kept,
+    /// Rotation/revocation succeeded remotely but the matching durable local
+    /// mutation failed. The old in-memory credentials remain untouched.
+    PersistenceFailed,
 }
 
 /// Classify a refresh result into an outcome. Pure (no I/O, no clock).
@@ -188,6 +229,7 @@ fn classify_refresh(
     client_id: String,
     server_url: &str,
     token_endpoint: String,
+    revocation_endpoint: Option<String>,
     prior_refresh_token: Option<crate::oauth::secret::Secret>,
     now_unix: i64,
 ) -> RefreshOutcome {
@@ -196,6 +238,7 @@ fn classify_refresh(
             client_id,
             server_url,
             token_endpoint,
+            revocation_endpoint,
             prior_refresh_token,
             token,
             now_unix,
@@ -227,6 +270,7 @@ async fn refresh_snapshot(
                 (
                     creds.client_id.clone(),
                     creds.token_endpoint.clone(),
+                    creds.revocation_endpoint.clone(),
                     rt.expose().to_string(),
                     // Owned copy of the prior token so a refresh response that
                     // omits refresh_token can reuse it (RFC 6749 §6).
@@ -234,7 +278,8 @@ async fn refresh_snapshot(
                 )
             })
         });
-    let Some((client_id, token_endpoint, refresh_token, prior_refresh_token)) = refresh_parts
+    let Some((client_id, token_endpoint, revocation_endpoint, refresh_token, prior_refresh_token)) =
+        refresh_parts
     else {
         return RefreshResult::Kept;
     };
@@ -255,53 +300,70 @@ async fn refresh_snapshot(
         client_id,
         server_url,
         token_endpoint,
+        revocation_endpoint,
         prior_refresh_token,
         now_unix(),
     ) {
         RefreshOutcome::Refreshed(refreshed) => {
             let access = refreshed.access_token.expose().to_string();
+            let _persist_guard = state.persist.lock().await;
+            {
+                let cache = state.creds.lock().await;
+                if state.revision.load(Ordering::Acquire) != snapshot_revision
+                    || !cache_matches_access(&cache, prior_access_token.as_deref())
+                {
+                    return RefreshResult::Kept;
+                }
+            }
+            let Ok(path) = store::credentials_path(app) else {
+                return RefreshResult::PersistenceFailed;
+            };
+            let durable = refreshed.clone();
+            if let Err(err) =
+                crate::persistence::run_blocking_io(move || store::save(&path, &durable)).await
+            {
+                crate::warn(format!("OAuth refresh persistence failed: {err}"));
+                return RefreshResult::PersistenceFailed;
+            }
             let mut cache = state.creds.lock().await;
-            let current_matches = state.revision.load(Ordering::Acquire) == snapshot_revision
-                && cache_matches_access(&cache, prior_access_token.as_deref());
-            if !current_matches {
+            if state.revision.load(Ordering::Acquire) != snapshot_revision
+                || !cache_matches_access(&cache, prior_access_token.as_deref())
+            {
                 return RefreshResult::Kept;
             }
             *cache = CredCache::Loaded(Some(refreshed));
-            let applied_revision = state.revision.fetch_add(1, Ordering::AcqRel) + 1;
+            state.revision.fetch_add(1, Ordering::AcqRel);
             drop(cache);
-            if let Err(err) = persist_cached_credentials(app, state).await {
-                crate::warn(format!("refreshed OAuth token not persisted: {err}"));
-            }
-            if state.revision.load(Ordering::Acquire) != applied_revision {
-                return credential_snapshot(state)
-                    .await
-                    .filter(|current| current.matches_server(server_url))
-                    .map(|current| {
-                        RefreshResult::Refreshed(current.access_token.expose().to_string())
-                    })
-                    .unwrap_or(RefreshResult::Kept);
-            }
             emit_oauth_changed(app);
             RefreshResult::Refreshed(access)
         }
         RefreshOutcome::Cleared => {
+            let _persist_guard = state.persist.lock().await;
+            {
+                let cache = state.creds.lock().await;
+                if state.revision.load(Ordering::Acquire) != snapshot_revision
+                    || !cache_matches_access(&cache, prior_access_token.as_deref())
+                {
+                    return RefreshResult::Kept;
+                }
+            }
+            let Ok(path) = store::credentials_path(app) else {
+                return RefreshResult::PersistenceFailed;
+            };
+            if let Err(err) = crate::persistence::run_blocking_io(move || store::clear(&path)).await
+            {
+                crate::warn(format!("OAuth credential clearing failed: {err}"));
+                return RefreshResult::PersistenceFailed;
+            }
             let mut cache = state.creds.lock().await;
-            let current_matches = state.revision.load(Ordering::Acquire) == snapshot_revision
-                && cache_matches_access(&cache, prior_access_token.as_deref());
-            if !current_matches {
+            if state.revision.load(Ordering::Acquire) != snapshot_revision
+                || !cache_matches_access(&cache, prior_access_token.as_deref())
+            {
                 return RefreshResult::Kept;
             }
             *cache = CredCache::Loaded(None);
-            let applied_revision = state.revision.fetch_add(1, Ordering::AcqRel) + 1;
+            state.revision.fetch_add(1, Ordering::AcqRel);
             drop(cache);
-            if let Err(err) = persist_cached_credentials(app, state).await {
-                crate::warn(format!(
-                    "failed to clear dead OAuth session from disk: {err}"
-                ));
-            }
-            if state.revision.load(Ordering::Acquire) != applied_revision {
-                return RefreshResult::Kept;
-            }
             emit_oauth_changed(app);
             RefreshResult::Cleared
         }
@@ -323,12 +385,19 @@ async fn force_refresh(
     client: &reqwest::Client,
     server_url: &str,
     state: &OauthState,
+    failed_access_token: Option<&str>,
 ) -> RefreshResult {
     if flow::require_secure_url(server_url).is_err() {
         return RefreshResult::Kept;
     }
     ensure_loaded(app, state).await;
     let _refresh_guard = state.refresh.lock().await;
+    if let Some(failed_access_token) = failed_access_token {
+        let cache = state.creds.lock().await;
+        if let Some(rotated) = refreshed_token_after_wait(&cache, failed_access_token, server_url) {
+            return RefreshResult::Refreshed(rotated);
+        }
+    }
     let (snapshot_revision, snapshot) = credential_snapshot_with_revision(state).await;
     refresh_snapshot(app, client, server_url, state, snapshot_revision, snapshot).await
 }
@@ -349,13 +418,13 @@ where
     F: Fn(Option<&str>) -> reqwest::RequestBuilder,
 {
     let oauth = effective_access_token(app, client, server_url, state).await;
-    let token = pick_token(oauth, static_token.map(str::to_string));
+    let token = pick_token(oauth.clone(), static_token.map(str::to_string));
     let response = make(token.as_deref())
         .send()
         .await
         .map_err(|err| err.to_string())?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        match force_refresh(app, client, server_url, state).await {
+        match force_refresh(app, client, server_url, state, oauth.as_deref()).await {
             RefreshResult::Refreshed(fresh) => {
                 return make(Some(&fresh))
                     .send()
@@ -377,6 +446,12 @@ where
                 );
             }
             RefreshResult::Kept => {}
+            RefreshResult::PersistenceFailed => {
+                return Err(
+                    "OAuth credentials could not be saved securely; the prior session was retained. Check the Palette config directory permissions and retry."
+                        .to_string(),
+                );
+            }
         }
     }
     Ok(response)
@@ -411,8 +486,14 @@ async fn run_login(
     // `http://localhost:PORT` redirect to HTTPS, breaking a plain-HTTP
     // loopback listener). Fall back to the RFC 8252 loopback listener for a
     // server that doesn't support it.
-    match (&meta.native_callback_endpoint, &meta.native_poll_endpoint) {
-        (Some(native_callback_endpoint), Some(native_poll_endpoint)) => {
+    match (
+        &meta.native_callback_endpoint,
+        &meta.native_poll_endpoint_v2,
+        &meta.native_authorization_start_media_type,
+    ) {
+        (Some(native_callback_endpoint), Some(native_poll_endpoint), Some(start_media_type))
+            if start_media_type == "application/vnd.labby.native-oauth-start+json" =>
+        {
             flow::require_secure_url(native_callback_endpoint)?;
             flow::require_secure_url(native_poll_endpoint)?;
             run_login_via_native_poll(
@@ -452,17 +533,46 @@ async fn run_login_via_native_poll(
         &challenge,
     )?;
 
-    if let Err(err) = open::that(&authorize_url) {
+    let start = client
+        .get(&authorize_url)
+        .header(
+            reqwest::header::ACCEPT,
+            "application/vnd.labby.native-oauth-start+json",
+        )
+        .send()
+        .await
+        .map_err(|err| format!("failed to start native OAuth: {err}"))?;
+    if !start.status().is_success() {
         return Err(format!(
-            "failed to open the system browser — open this URL manually to sign in:\n{authorize_url}\n({err})"
+            "native OAuth start returned HTTP {}",
+            start.status()
+        ));
+    }
+    let start: flow::NativeAuthorizationStartResponse = start
+        .json()
+        .await
+        .map_err(|err| format!("native OAuth start returned an invalid response: {err}"))?;
+
+    if let Err(err) = open::that(&start.authorization_url) {
+        return Err(format!(
+            "failed to open the system browser — open this URL manually to sign in:\n{}\n({err})",
+            start.authorization_url
         ));
     }
 
-    let code = flow::poll_native_code(client, native_poll_endpoint, &state, LOGIN_TIMEOUT)
-        .await
-        .map_err(|err| {
-            format!("{err}. If the browser did not open, sign in here:\n{authorize_url}")
-        })?;
+    let code = flow::poll_native_code(
+        client,
+        native_poll_endpoint,
+        &start.poll_token,
+        LOGIN_TIMEOUT,
+    )
+    .await
+    .map_err(|err| {
+        format!(
+            "{err}. If the browser did not open, sign in here:\n{}",
+            start.authorization_url
+        )
+    })?;
 
     let token = flow::exchange_code(
         client,
@@ -478,6 +588,7 @@ async fn run_login_via_native_poll(
         client_id,
         server_url,
         meta.token_endpoint.clone(),
+        meta.revocation_endpoint.clone(),
         None,
         token,
         now_unix(),
@@ -534,6 +645,7 @@ async fn run_login_via_loopback(
         client_id,
         server_url,
         meta.token_endpoint.clone(),
+        meta.revocation_endpoint.clone(),
         None,
         token,
         now_unix(),
@@ -544,6 +656,7 @@ fn credentials_from_token(
     client_id: String,
     server_url: &str,
     token_endpoint: String,
+    revocation_endpoint: Option<String>,
     prior_refresh_token: Option<crate::oauth::secret::Secret>,
     token: flow::TokenResponse,
     now_unix: i64,
@@ -555,6 +668,7 @@ fn credentials_from_token(
         // the prior one. Falling through to None would break all later refreshes.
         refresh_token: token.refresh_token.or(prior_refresh_token),
         token_endpoint,
+        revocation_endpoint,
         // Clamp so a malformed huge `expires_in` can't wrap negative (→ permanently expired).
         expires_at_unix: now_unix.saturating_add(token.expires_in.min(i64::MAX as u64) as i64),
         scope: token.scope,
@@ -580,6 +694,22 @@ async fn credential_snapshot_with_revision(state: &OauthState) -> (u64, Option<S
 
 fn cache_matches_access(cache: &CredCache, expected: Option<&str>) -> bool {
     matches!(cache, CredCache::Loaded(Some(current)) if Some(current.access_token.expose()) == expected)
+}
+
+fn refreshed_token_after_wait(
+    cache: &CredCache,
+    failed_access_token: &str,
+    server_url: &str,
+) -> Option<String> {
+    match cache {
+        CredCache::Loaded(Some(current))
+            if current.matches_server(server_url)
+                && current.access_token.expose() != failed_access_token =>
+        {
+            Some(current.access_token.expose().to_string())
+        }
+        CredCache::Unloaded | CredCache::Loaded(_) => None,
+    }
 }
 
 /// Populate the cache from disk on first use without holding the cache mutex

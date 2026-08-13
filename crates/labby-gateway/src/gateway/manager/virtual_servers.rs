@@ -39,8 +39,8 @@ impl GatewayManager {
     }
 
     pub async fn remove_virtual_server(&self, id: &str) -> Result<ServerView, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let index = cfg
             .virtual_servers
             .iter()
@@ -58,7 +58,7 @@ impl GatewayManager {
             self.builtin_service_registry().as_ref(),
         );
 
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         Ok(removed_view)
     }
 
@@ -84,8 +84,8 @@ impl GatewayManager {
         &self,
         id: &str,
     ) -> Result<ServerView, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let index = cfg
             .quarantined_virtual_servers
             .iter()
@@ -123,7 +123,7 @@ impl GatewayManager {
             self.builtin_service_registry().as_ref(),
         );
         cfg.virtual_servers.push(restored);
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         Ok(restored_view)
     }
 
@@ -133,8 +133,8 @@ impl GatewayManager {
         surface: &str,
         enabled: bool,
     ) -> Result<ServerView, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let virtual_server = cfg
             .virtual_servers
             .iter_mut()
@@ -157,7 +157,7 @@ impl GatewayManager {
             }
         }
 
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         let cfg = self.config.read().await;
         let virtual_server = find_virtual_server(&cfg, id)?;
         Ok(server_view_from_virtual_server(
@@ -189,8 +189,8 @@ impl GatewayManager {
         id: &str,
         allowed_actions: &[String],
     ) -> Result<VirtualServerMcpPolicyView, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let virtual_server = cfg
             .virtual_servers
             .iter_mut()
@@ -210,7 +210,7 @@ impl GatewayManager {
             )
         };
 
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         Ok(VirtualServerMcpPolicyView {
             allowed_actions: allowed_actions.to_vec(),
         })
@@ -221,8 +221,8 @@ impl GatewayManager {
         id: &str,
         enabled: bool,
     ) -> Result<ServerView, ToolError> {
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
         let existing_index = cfg
             .virtual_servers
             .iter()
@@ -275,7 +275,7 @@ impl GatewayManager {
             virtual_server.surfaces.mcp = true;
         }
 
-        self.persist_config(cfg).await?;
+        self.persist_config_owned(_mutation_guard, cfg).await?;
         let cfg = self.config.read().await;
         let virtual_server = find_virtual_server(&cfg, id)?;
         Ok(server_view_from_virtual_server(

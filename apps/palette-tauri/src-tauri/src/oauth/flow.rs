@@ -11,7 +11,7 @@ use crate::oauth::secret::Secret;
 /// Subset of the RFC 8414 authorization-server metadata the client needs.
 /// Extra fields in the document are ignored. `registration_endpoint` is
 /// optional — a DCR-disabled server omits it. `native_callback_endpoint`/
-/// `native_poll_endpoint` are Labby's RFC 8252 §7.1-style extension: when
+/// `native_poll_endpoint_v2` are Labby's versioned RFC 8252-style extension: when
 /// present, the redirect_uri is the *server's own* HTTPS route rather than a
 /// client-run loopback listener, sidestepping browser HTTP↔HTTPS loopback
 /// quirks entirely (see `crates/labby-auth`'s `native_callback`/`native_poll`
@@ -21,16 +21,26 @@ pub(crate) struct AuthServerMetadata {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     #[serde(default)]
+    pub revocation_endpoint: Option<String>,
+    #[serde(default)]
     pub registration_endpoint: Option<String>,
     #[serde(default)]
     pub native_callback_endpoint: Option<String>,
     #[serde(default)]
-    pub native_poll_endpoint: Option<String>,
+    pub native_poll_endpoint_v2: Option<String>,
+    #[serde(default)]
+    pub native_authorization_start_media_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct NativePollResponse {
     code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct NativeAuthorizationStartResponse {
+    pub authorization_url: String,
+    pub poll_token: String,
 }
 
 /// The `/token` success response (lab-auth omits `refresh_token` when the
@@ -156,6 +166,36 @@ pub(crate) fn refresh_form(client_id: &str, refresh_token: &str) -> Vec<(&'stati
     ]
 }
 
+pub(crate) fn revocation_form(client_id: &str, refresh_token: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("token", refresh_token.to_string()),
+        ("token_type_hint", "refresh_token".to_string()),
+        ("client_id", client_id.to_string()),
+    ]
+}
+
+pub(crate) async fn revoke_refresh_token(
+    client: &reqwest::Client,
+    revocation_endpoint: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<(), String> {
+    let endpoint = require_secure_url(revocation_endpoint)?;
+    let response = client
+        .post(endpoint)
+        .form(&revocation_form(client_id, refresh_token))
+        .send()
+        .await
+        .map_err(|err| format!("OAuth revocation request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "OAuth revocation returned HTTP {} — local credentials were retained so sign-out can be retried",
+            response.status()
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn discover(
     client: &reqwest::Client,
     base_url: &str,
@@ -220,14 +260,14 @@ pub(crate) async fn exchange_code(
     .map_err(|e| e.message)
 }
 
-/// Poll `{server}/native/poll?state=...` until the server has stashed the
+/// POST a JSON polling credential to `{server}/native/poll` until the server has stashed the
 /// authorization code (the browser completed sign-in against the server's own
 /// `native_callback_endpoint`), or `timeout` elapses. A `202 Accepted` with no
 /// code means "not yet" — keep polling; any other non-success status is fatal.
 pub(crate) async fn poll_native_code(
     client: &reqwest::Client,
     poll_endpoint: &str,
-    state: &str,
+    poll_token: &str,
     timeout: Duration,
 ) -> Result<String, String> {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -240,8 +280,8 @@ pub(crate) async fn poll_native_code(
         let response = tokio::time::timeout(
             remaining,
             client
-                .get(poll_endpoint)
-                .query(&[("state", state)])
+                .post(poll_endpoint)
+                .json(&serde_json::json!({ "poll_token": poll_token }))
                 .header(reqwest::header::ACCEPT, "application/json")
                 .send(),
         )

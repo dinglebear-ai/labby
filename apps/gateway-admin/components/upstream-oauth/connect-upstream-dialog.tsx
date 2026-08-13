@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { upstreamOauthApi } from '@/lib/api/upstream-oauth-client'
+import { openIsolatedOauthPopup } from '@/lib/oauth-popup'
 import { isAbortError } from '@/lib/api/service-action-client'
 import { useUpstreamOauthStatus } from '@/lib/hooks/use-upstream-oauth'
 import type { ProbeResponse } from '@/lib/types/upstream-oauth'
@@ -91,7 +92,7 @@ export function ConnectUpstreamDialog({ open, onOpenChange, onConnected }: Conne
 
     // Open a blank tab synchronously — must happen directly in the click handler
     // before any await, otherwise browsers treat it as an unsolicited popup and block it.
-    const authTab = window.open('about:blank', '_blank')
+    const authTab = openIsolatedOauthPopup()
     if (!authTab) {
       setPhase({ kind: 'error', message: 'Popup blocked — allow popups for this site and try again' })
       return

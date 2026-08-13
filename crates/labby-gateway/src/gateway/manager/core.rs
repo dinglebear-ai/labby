@@ -129,12 +129,15 @@ impl GatewayManager {
             store,
             runtime,
             config: Arc::new(RwLock::new(GatewayConfig::default())),
+            publication_barrier: Arc::new(RwLock::new(())),
             config_mutation: Arc::new(Mutex::new(())),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
             notifier: None,
             oauth_client_cache: None,
             upstream_oauth_managers: None,
+            oauth_status_discovery_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            oauth_status_discovery_locks: Arc::new(dashmap::DashMap::new()),
             builtin_service_registry: Arc::new(ArcSwap::from_pointee(registry)),
             oauth_sqlite: None,
             oauth_key: None,
@@ -343,6 +346,7 @@ impl GatewayManager {
     }
 
     async fn seed_config_unchecked(&self, config: GatewayConfig) {
+        let _publication = self.publication_barrier.write().await;
         self.store
             .set_process_code_mode_enabled(config.code_mode.enabled);
         self.code_mode_app_state
@@ -362,6 +366,16 @@ impl GatewayManager {
 
     pub async fn current_pool(&self) -> Option<Arc<UpstreamPool>> {
         self.runtime.current_pool().await
+    }
+
+    /// Clone the config and pool from one published gateway revision.
+    pub(crate) async fn published_config_and_pool(
+        &self,
+    ) -> (GatewayConfig, Option<Arc<UpstreamPool>>) {
+        let _publication = self.publication_barrier.read().await;
+        let config = self.config.read().await.clone();
+        let pool = self.runtime.current_pool_sync();
+        (config, pool)
     }
 
     /// Build a base [`UpstreamPool`] wired with the manager's OAuth client

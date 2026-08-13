@@ -117,6 +117,58 @@ struct FlowOutcome {
     message: String,
 }
 
+/// Removes every in-memory and durable artifact when an authorization future
+/// is dropped, including Tokio task cancellation while it is awaiting the
+/// browser callback.
+struct PendingFlowGuard<'a> {
+    coordinator: &'a StdioOauthCoordinator,
+    state: String,
+    armed: bool,
+}
+
+impl<'a> PendingFlowGuard<'a> {
+    fn new(coordinator: &'a StdioOauthCoordinator, state: String) -> Self {
+        Self {
+            coordinator,
+            state,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingFlowGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let pending_removed = self.coordinator.pending.remove(&self.state).is_some();
+        self.coordinator.outcomes.remove(&self.state);
+        let sqlite = self.coordinator.sqlite.clone();
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            match sqlite.delete_upstream_oauth_state(&state).await {
+                Ok(()) => tracing::info!(
+                    subsystem = "gateway_client",
+                    phase = "oauth.stdio.pending.cleanup",
+                    pending_removed,
+                    "cleaned abandoned native stdio OAuth flow"
+                ),
+                Err(error) => tracing::warn!(
+                    subsystem = "gateway_client",
+                    phase = "oauth.stdio.pending.cleanup",
+                    kind = error.kind(),
+                    pending_removed,
+                    "failed to clean abandoned native stdio OAuth flow"
+                ),
+            }
+        });
+    }
+}
+
 /// Host-owned interactive OAuth coordinator for one stdio process.
 struct StdioOauthCoordinator {
     managers: Arc<DashMap<String, UpstreamOauthManager>>,
@@ -198,9 +250,9 @@ impl StdioOauthCoordinator {
                 notify: Arc::clone(&notify),
             },
         );
+        let mut pending_guard = PendingFlowGuard::new(self, state.clone());
 
         if let Err(error) = open_in_browser(&authorization.authorization_url).await {
-            self.pending.remove(&state);
             return Err(OauthError::Internal(format!(
                 "open OAuth authorization in browser: {error}"
             )));
@@ -215,6 +267,7 @@ impl StdioOauthCoordinator {
         let deadline = Instant::now() + AUTHORIZATION_TIMEOUT;
         loop {
             if let Some((_, outcome)) = self.outcomes.remove(&state) {
+                pending_guard.disarm();
                 return if outcome.success {
                     Ok(())
                 } else {
@@ -222,7 +275,6 @@ impl StdioOauthCoordinator {
                 };
             }
             if timeout_at(deadline, notify.notified()).await.is_err() {
-                self.pending.remove(&state);
                 return Err(OauthError::NeedsReauth(
                     "stdio OAuth authorization timed out".to_string(),
                 ));
@@ -406,7 +458,18 @@ async fn open_in_browser(url: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CALLBACK_PATH, authorization_state};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use dashmap::DashMap;
+    use labby_auth::at_rest::TokenEncryptionKey;
+    use labby_auth::sqlite::SqliteStore;
+    use labby_auth::types::UpstreamOauthStateRow;
+
+    use super::{
+        CALLBACK_PATH, PendingFlow, PendingFlowGuard, StdioOauthCoordinator, authorization_state,
+        unix_now,
+    };
 
     #[test]
     fn callback_path_is_loopback_only_surface() {
@@ -425,5 +488,69 @@ mod tests {
     #[test]
     fn authorization_state_is_required() {
         assert!(authorization_state("https://issuer.example/authorize?client_id=client").is_err());
+    }
+
+    #[tokio::test]
+    async fn aborting_native_flow_removes_pending_memory_and_durable_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let sqlite = SqliteStore::open_with_key(
+            directory.path().join("oauth.db"),
+            Some(
+                TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        let now = unix_now();
+        sqlite
+            .save_upstream_oauth_state(UpstreamOauthStateRow {
+                upstream_name: "cancelled-upstream".to_string(),
+                subject: "gateway".to_string(),
+                csrf_token: "cancelled-state".to_string(),
+                pkce_verifier: "cancelled-verifier".to_string(),
+                created_at: now,
+                expires_at: now + 300,
+            })
+            .await
+            .unwrap();
+        let coordinator = StdioOauthCoordinator::new(Arc::new(DashMap::new()), sqlite.clone());
+        let task_coordinator = Arc::clone(&coordinator);
+        let task = tokio::spawn(async move {
+            task_coordinator.pending.insert(
+                "cancelled-state".to_string(),
+                PendingFlow {
+                    upstream: "cancelled-upstream".to_string(),
+                    notify: Arc::new(tokio::sync::Notify::new()),
+                },
+            );
+            let _guard = PendingFlowGuard::new(&task_coordinator, "cancelled-state".to_string());
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(coordinator.pending.contains_key("cancelled-state"));
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if sqlite
+                    .find_upstream_oauth_state_owner("cancelled-state", now)
+                    .await
+                    .unwrap()
+                    .is_none()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancellation cleanup");
+
+        assert!(!coordinator.pending.contains_key("cancelled-state"));
+        assert!(!coordinator.outcomes.contains_key("cancelled-state"));
     }
 }

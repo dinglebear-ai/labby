@@ -197,7 +197,7 @@ pub(super) async fn dispatch_command(
                     return run_action_command(
                         "gateway",
                         "gateway.oauth.status".to_string(),
-                        json!({ "upstream": args.name, "subject": args.subject }),
+                        json!({ "upstream": args.name }),
                         format,
                         |action, params| async move {
                             dispatch_gateway_action(manager, config, action, params).await
@@ -209,7 +209,7 @@ pub(super) async fn dispatch_command(
                     return run_action_command(
                         "gateway",
                         "gateway.oauth.clear".to_string(),
-                        json!({ "upstream": args.name, "subject": args.subject }),
+                        json!({ "upstream": args.name }),
                         format,
                         |action, params| async move {
                             dispatch_gateway_action(manager, config, action, params).await
