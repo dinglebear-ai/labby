@@ -54,7 +54,6 @@ fn flattened_contract_text() -> String {
         .collect::<Vec<_>>()
         .join(" ");
     unmarked
-        .replace("**", "")
         .replace('*', "")
         .split_whitespace()
         .collect::<Vec<_>>()

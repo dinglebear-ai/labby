@@ -23,7 +23,7 @@ that carries that exact text is `9f55cd3`, whose message is literally
 `docs: sync SEP copy with upstream commit 0eb05fe (#119)`. Pin `9f55cd3`; it is
 the revision whose bytes this implementation was written against.
 
-**Drift as of 2026-08-13.** One commit has landed on the mirror since the pin:
+**Drift as of 2026-08-12.** One commit has landed on the mirror since the pin:
 `967120e7` (2026-08-11) adds `docs/rationale.md` and one README line. The SEP
 draft text and threat model are byte-unchanged, so everything below holds
 against current `main`.

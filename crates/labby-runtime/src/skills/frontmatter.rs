@@ -166,18 +166,24 @@ pub fn parse_skill_md_frontmatter(content: &str) -> Result<Map<String, Value>, T
         .ok_or_else(|| invalid("SKILL.md must open with a `---` frontmatter delimiter"))?;
 
     let mut raw = Vec::new();
+    let mut budget = 0usize;
     let mut closed = false;
     for line in rest.lines() {
-        if line.trim_end_matches('\r') == "---" {
+        let line = line.trim_end_matches('\r');
+        if line == "---" {
             closed = true;
             break;
         }
-        raw.push(line.trim_end_matches('\r'));
-        if raw.iter().map(|l| l.len() + 1).sum::<usize>() > MAX_SKILL_MD_FRONTMATTER_BYTES {
+        // Running total rather than re-summing the accumulated lines: this loop
+        // exists to bound a hostile input, so it must not itself be quadratic in
+        // the number of lines that input supplies.
+        budget += line.len() + 1;
+        if budget > MAX_SKILL_MD_FRONTMATTER_BYTES {
             return Err(invalid(format!(
                 "SKILL.md frontmatter exceeds {MAX_SKILL_MD_FRONTMATTER_BYTES} bytes"
             )));
         }
+        raw.push(line);
     }
     if !closed {
         return Err(invalid(

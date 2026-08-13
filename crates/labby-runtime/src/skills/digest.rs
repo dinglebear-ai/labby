@@ -71,6 +71,13 @@ fn hex_lower(bytes: &[u8]) -> String {
         })
 }
 
+fn invalid(message: impl Into<String>) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "invalid_param".to_string(),
+        message: message.into(),
+    }
+}
+
 /// Parse a digest string from a skill entry.
 ///
 /// Rejects any algorithm other than `sha256`, any length other than 64, and
@@ -80,21 +87,15 @@ fn hex_lower(bytes: &[u8]) -> String {
 pub fn parse_digest(raw: &str) -> Result<ResourceDigest, ToolError> {
     let Some(hex) = raw.strip_prefix(DIGEST_PREFIX) else {
         let algorithm = raw.split_once(':').map_or(raw, |(alg, _)| alg);
-        return Err(ToolError::Sdk {
-            sdk_kind: "invalid_param".to_string(),
-            message: format!(
-                "unsupported skill resource digest algorithm `{algorithm}`: only `{DIGEST_ALGORITHM}` is accepted"
-            ),
-        });
+        return Err(invalid(format!(
+            "unsupported skill resource digest algorithm `{algorithm}`: only `{DIGEST_ALGORITHM}` is accepted"
+        )));
     };
     if hex.len() != SHA256_HEX_LEN {
-        return Err(ToolError::Sdk {
-            sdk_kind: "invalid_param".to_string(),
-            message: format!(
-                "skill resource digest must carry exactly {SHA256_HEX_LEN} hex characters, found {}",
-                hex.len()
-            ),
-        });
+        return Err(invalid(format!(
+            "skill resource digest must carry exactly {SHA256_HEX_LEN} hex characters, found {}",
+            hex.len()
+        )));
     }
     // `is_ascii_hexdigit` accepts `A-F`, so lowercase is asserted separately;
     // uppercase input is rejected rather than folded, keeping one digest to one
@@ -103,10 +104,9 @@ pub fn parse_digest(raw: &str) -> Result<ResourceDigest, ToolError> {
         .chars()
         .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     {
-        return Err(ToolError::Sdk {
-            sdk_kind: "invalid_param".to_string(),
-            message: "skill resource digest must be lowercase hexadecimal".to_string(),
-        });
+        return Err(invalid(
+            "skill resource digest must be lowercase hexadecimal",
+        ));
     }
     Ok(ResourceDigest {
         hex: hex.to_string(),

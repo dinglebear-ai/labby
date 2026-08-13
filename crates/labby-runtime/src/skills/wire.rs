@@ -41,7 +41,7 @@ pub const SKILL_MD_MIME_TYPE: &str = "text/markdown";
 pub struct SkillsCapability {
     /// Whether the server implements `resources/directory/read`. Clients MUST
     /// NOT call that method against a server that has not set this.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(rename = "directoryRead", default, skip_serializing_if = "is_false")]
     pub directory_read: bool,
 }
 
@@ -240,5 +240,27 @@ mod tests {
             serde_json::to_value(capability).expect("serializes"),
             json!({})
         );
+    }
+
+    #[test]
+    fn capability_uses_the_camel_case_wire_key() {
+        // A snake_case key would serialize to something no spec-compliant peer
+        // recognizes, and would silently deserialize a real server's
+        // `directoryRead: true` as false via the field default — so the wrong
+        // key fails open, toward calling a method the server never offered.
+        let declared = SkillsCapability {
+            directory_read: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&declared).expect("serializes"),
+            json!({ "directoryRead": true })
+        );
+
+        let parsed: SkillsCapability =
+            serde_json::from_value(json!({ "directoryRead": true })).expect("deserializes");
+        assert!(parsed.directory_read);
+
+        let absent: SkillsCapability = serde_json::from_value(json!({})).expect("deserializes");
+        assert!(!absent.directory_read);
     }
 }
