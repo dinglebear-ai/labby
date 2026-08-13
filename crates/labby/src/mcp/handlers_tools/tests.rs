@@ -1870,6 +1870,97 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
 }
 
 #[tokio::test]
+async fn raw_oauth_list_tools_uses_only_the_subject_cache() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let mut upstream = fixture_oauth_upstream_config("cold-oauth");
+    upstream.url = Some(format!("http://{address}/mcp"));
+    let pool = Arc::new(UpstreamPool::new());
+    let manager = code_mode_manager_with_pool(false, upstream, Arc::clone(&pool)).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        running
+            .service()
+            .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"])),
+    )
+    .await
+    .expect("cached tools/list must return promptly")
+    .expect("list tools");
+
+    assert!(
+        result
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "remote")
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "root tools/list must not open an OAuth upstream connection"
+    );
+}
+
+#[tokio::test]
+async fn raw_oauth_list_tools_preserves_cached_subject_tools() {
+    let mut upstream = fixture_oauth_upstream_config("warm-oauth");
+    upstream.expose_tools = Some(vec!["visible".to_string()]);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "reader",
+        vec![
+            Tool::new("visible", "visible", Arc::new(serde_json::Map::new())),
+            Tool::new("hidden", "hidden", Arc::new(serde_json::Map::new())),
+        ],
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(false, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("list tools");
+
+    assert!(
+        result
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "visible")
+    );
+    assert!(
+        result
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "hidden")
+    );
+}
+
+#[tokio::test]
 async fn list_tools_does_not_promote_upstream_mcp_app_tools_when_resources_are_not_proxied() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(

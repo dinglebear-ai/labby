@@ -42,6 +42,14 @@ pub use super::runtime::GatewayRuntimeHandle;
 use super::service_registry::GatewayServiceRegistry;
 use super::types::CatalogChangeNotifier;
 
+#[derive(Clone)]
+pub(super) struct OauthStatusDiscoverySnapshot {
+    pub(super) completed_at: Instant,
+    pub(super) summary: Option<crate::upstream::pool::UpstreamCachedSummary>,
+    pub(super) tool_error: Option<String>,
+    pub(super) error: Option<String>,
+}
+
 mod code_mode_resolve;
 mod code_mode_runtime;
 mod config_ops;
@@ -91,6 +99,10 @@ pub struct GatewayManager {
     notifier: Option<CatalogChangeNotifier>,
     pub(super) oauth_client_cache: Option<OauthClientCache>,
     pub(super) upstream_oauth_managers: Option<Arc<dashmap::DashMap<String, UpstreamOauthManager>>>,
+    pub(super) oauth_status_discovery_cache:
+        Arc<Mutex<std::collections::HashMap<(String, String), OauthStatusDiscoverySnapshot>>>,
+    pub(super) oauth_status_discovery_locks:
+        Arc<dashmap::DashMap<(String, String), Arc<Mutex<()>>>>,
     builtin_service_registry: Arc<ArcSwap<Arc<dyn GatewayServiceRegistry>>>,
     pub(super) oauth_sqlite: Option<labby_auth::sqlite::SqliteStore>,
     pub(super) oauth_key: Option<EncryptionKey>,

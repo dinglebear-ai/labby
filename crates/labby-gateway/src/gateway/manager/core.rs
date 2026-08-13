@@ -135,6 +135,8 @@ impl GatewayManager {
             notifier: None,
             oauth_client_cache: None,
             upstream_oauth_managers: None,
+            oauth_status_discovery_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            oauth_status_discovery_locks: Arc::new(dashmap::DashMap::new()),
             builtin_service_registry: Arc::new(ArcSwap::from_pointee(registry)),
             oauth_sqlite: None,
             oauth_key: None,

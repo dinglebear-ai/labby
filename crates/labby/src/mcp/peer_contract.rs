@@ -314,7 +314,7 @@ impl PeerContract {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, tools) in pool
-                    .subject_scoped_tools_bounded(&configs, subject, subject_tool_limit)
+                    .cached_subject_scoped_tools_bounded(&configs, subject, subject_tool_limit)
                     .await
                 {
                     for tool in tools {
@@ -345,6 +345,7 @@ mod tests {
     use super::{PeerCatalogAudience, PeerContract};
     use crate::mcp::route_scope::McpRouteScope;
     use crate::registry::ToolRegistry;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     fn contract(route_scope: McpRouteScope) -> PeerContract {
@@ -384,5 +385,87 @@ mod tests {
         .visible_contract()
         .await;
         assert!(scoped.tools.is_subset(&root.tools));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn cold_oauth_peer_contract_does_not_connect_upstream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let upstream = crate::config::UpstreamConfig {
+            enabled: true,
+            name: "cold-oauth-contract".to_string(),
+            url: Some(format!("http://{address}/mcp")),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: Some(crate::config::UpstreamOauthConfig {
+                mode: crate::config::UpstreamOauthMode::AuthorizationCodePkce,
+                registration: crate::config::UpstreamOauthRegistration::Preregistered {
+                    client_id: "client-id".to_string(),
+                    client_secret_env: None,
+                },
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            }),
+            imported_from: None,
+            priority: 1.0,
+        };
+        let pool = Arc::new(crate::dispatch::upstream::pool::UpstreamPool::new());
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool)).await;
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        manager
+            .seed_config_unchecked_for_tests(
+                crate::config::LabConfig {
+                    upstream: vec![upstream],
+                    ..crate::config::LabConfig::default()
+                }
+                .to_gateway_config(),
+            )
+            .await;
+        let peer_contract = PeerContract {
+            registry: Arc::new(ToolRegistry::default()),
+            gateway_manager: Some(manager),
+            route_scope: McpRouteScope::Root,
+            code_mode_app_state: Default::default(),
+            audience: PeerCatalogAudience {
+                code_mode_read_allowed: false,
+                code_mode_execute_allowed: false,
+                admin_apps_visible: false,
+                oauth_subject: Some("reader".to_string()),
+            },
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            peer_contract.visible_contract(),
+        )
+        .await
+        .expect("peer contract must return from cached state");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "peer contract rebuild must not cold-connect an OAuth upstream"
+        );
     }
 }

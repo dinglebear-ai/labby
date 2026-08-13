@@ -1,7 +1,46 @@
 use super::{
+    OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN, OAUTH_STATUS_DISCOVERY_FRESHNESS,
+    OauthStatusDiscoverySnapshot, oauth_status_discovery_is_fresh,
     probe::{probe_manager_key, validate_probe_upstream_name, validate_probe_url},
     should_use_dynamic_registration,
 };
+
+fn discovery_snapshot(age: std::time::Duration, failed: bool) -> OauthStatusDiscoverySnapshot {
+    OauthStatusDiscoverySnapshot {
+        completed_at: tokio::time::Instant::now() - age,
+        summary: None,
+        tool_error: failed.then(|| "unavailable".to_string()),
+        error: None,
+    }
+}
+
+#[test]
+fn successful_oauth_status_discovery_has_short_freshness_window() {
+    assert!(oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FRESHNESS
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("freshness exceeds one second"),
+        false,
+    )));
+    assert!(!oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FRESHNESS + std::time::Duration::from_secs(1),
+        false,
+    )));
+}
+
+#[test]
+fn failed_oauth_status_discovery_observes_retry_cooldown() {
+    assert!(oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("cooldown exceeds one second"),
+        true,
+    )));
+    assert!(!oauth_status_discovery_is_fresh(&discovery_snapshot(
+        OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN + std::time::Duration::from_secs(1),
+        true,
+    )));
+}
 use labby_runtime::gateway_config::{
     GatewayConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthCredentialSource,
     UpstreamOauthMode, UpstreamOauthRegistration,

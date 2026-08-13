@@ -37,7 +37,10 @@ impl SqliteStore {
             let transaction = conn.transaction().map_err(sqlite_error)?;
             transaction
                 .execute(
-                    "DELETE FROM assertion_jtis WHERE expires_at <= ?1",
+                    "DELETE FROM assertion_jtis WHERE (issuer, jti) IN (
+                        SELECT issuer, jti FROM assertion_jtis
+                        WHERE expires_at <= ?1 LIMIT 256
+                     )",
                     params![now],
                 )
                 .map_err(sqlite_error)?;

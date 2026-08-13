@@ -728,11 +728,53 @@ impl UpstreamOauthManager {
     /// `AuthorizationManager::get_access_token()` only refreshes inside rmcp's
     /// short refresh buffer. Status checks need an explicit refresh so UI state
     /// cannot report a stale credential row as connected.
-    pub async fn refresh_auth_client(&self, subject: &str) -> Result<(), OauthError> {
+    pub async fn refresh_auth_client_if_due(&self, subject: &str) -> Result<bool, OauthError> {
         let started = std::time::Instant::now();
         let lock = self.acquire_refresh_lock(subject).await?;
         let _guard = lock.lock().await;
         self.preflight_shared_google_credential().await?;
+
+        // A status caller may have waited behind another status/request refresh.
+        // Re-read inside the single-flight lock and do not replay the refresh
+        // against a token that is no longer near expiry.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let still_due = self
+            .credential_row(subject)
+            .await?
+            .is_some_and(|row| row.access_token_expires_at - now <= 300);
+        if !still_due {
+            tracing::debug!(
+                upstream = %self.upstream.name,
+                provider = %self.oauth_provider_label(),
+                subject,
+                scope = %self.oauth_scope_label(),
+                elapsed_ms = started.elapsed().as_millis(),
+                coalesced = true,
+                "upstream oauth: status refresh satisfied by concurrent caller"
+            );
+            return Ok(false);
+        }
+        if self
+            .refresh_failures
+            .recently_failed(&self.upstream.name, subject)
+        {
+            tracing::debug!(
+                upstream = %self.upstream.name,
+                provider = %self.oauth_provider_label(),
+                subject,
+                scope = %self.oauth_scope_label(),
+                elapsed_ms = started.elapsed().as_millis(),
+                cooldown = true,
+                "upstream oauth: status refresh skipped during failure cooldown"
+            );
+            return Err(OauthError::NeedsReauth(format!(
+                "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
+                self.upstream.name
+            )));
+        }
 
         let mut manager = self
             .configured_authorization_manager(
@@ -777,8 +819,12 @@ impl UpstreamOauthManager {
             .await?;
 
         if let Err(error) = manager.refresh_token().await {
-            return Err(self.map_refresh_error_and_maybe_invalidate(error).await);
+            let mapped = self.map_refresh_error_and_maybe_invalidate(error).await;
+            self.refresh_failures
+                .record_failure(&self.upstream.name, subject);
+            return Err(mapped);
         }
+        self.refresh_failures.clear(&self.upstream.name, subject);
         tracing::info!(
             upstream = %self.upstream.name,
             provider = %self.oauth_provider_label(),
@@ -787,7 +833,7 @@ impl UpstreamOauthManager {
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: status refresh succeeded"
         );
-        Ok(())
+        Ok(true)
     }
 
     pub async fn credential_row(

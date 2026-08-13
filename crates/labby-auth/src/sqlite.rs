@@ -79,7 +79,7 @@ impl SqliteStore {
             enc_key: enc_key.map(Arc::new),
         })?;
 
-        store.cleanup_expired().await?;
+        store.cleanup_expired_bounded(256).await?;
         let encrypted_legacy_rows = store.encrypt_legacy_google_provider_credentials().await?;
         if encrypted_legacy_rows > 0 {
             warn!(
@@ -543,40 +543,72 @@ impl SqliteStore {
     /// credential rows whose access token has expired AND have no refresh token
     /// available for re-use (SEC-9). Returns the total number of deleted rows.
     pub async fn cleanup_expired(&self) -> Result<u64, AuthError> {
+        self.cleanup_expired_bounded(u32::MAX).await
+    }
+
+    /// Delete at most `limit` expired rows from each short-lived table.
+    ///
+    /// The fixed table set gives the operation a hard upper bound while ensuring
+    /// a busy table cannot starve cleanup of the tables that follow it.
+    pub async fn cleanup_expired_bounded(&self, limit: u32) -> Result<u64, AuthError> {
         let now = now_unix();
         self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
             let mut total: u64 = 0;
-            for table in [
-                "authorization_requests",
-                "authorization_codes",
-                "refresh_tokens",
-                "browser_sessions",
-                "browser_login_states",
-                "native_authorization_results",
+            for (table, key) in [
+                ("authorization_requests", "state"),
+                ("authorization_codes", "code"),
+                ("refresh_tokens", "refresh_token_hash"),
+                ("browser_sessions", "session_id"),
+                ("browser_login_states", "state"),
+                ("native_authorization_results", "poll_token_hash"),
             ] {
-                let deleted = conn
+                let deleted = transaction
                     .execute(
-                        &format!("DELETE FROM {table} WHERE expires_at <= ?1"),
-                        params![now],
+                        &format!(
+                            "DELETE FROM {table} WHERE {key} IN (
+                                SELECT {key} FROM {table} WHERE expires_at <= ?1 LIMIT ?2
+                             )"
+                        ),
+                        params![now, i64::from(limit)],
                     )
                     .map_err(sqlite_error)?;
                 total += deleted as u64;
             }
-            let deleted = conn
+            let deleted = transaction
                 .execute(
-                    "DELETE FROM upstream_oauth_state WHERE expires_at <= ?1",
-                    params![now],
+                    "DELETE FROM assertion_jtis WHERE (issuer, jti) IN (
+                            SELECT issuer, jti FROM assertion_jtis
+                            WHERE expires_at <= ?1 LIMIT ?2
+                         )",
+                    params![now, i64::from(limit)],
                 )
                 .map_err(sqlite_error)?;
             total += deleted as u64;
-            let deleted = conn
+            let deleted = transaction
+                .execute(
+                    "DELETE FROM upstream_oauth_state
+                         WHERE (upstream_name, subject, csrf_token) IN (
+                            SELECT upstream_name, subject, csrf_token FROM upstream_oauth_state
+                            WHERE expires_at <= ?1 LIMIT ?2
+                         )",
+                    params![now, i64::from(limit)],
+                )
+                .map_err(sqlite_error)?;
+            total += deleted as u64;
+            let deleted = transaction
                 .execute(
                     "DELETE FROM upstream_oauth_credentials
-                     WHERE access_token_expires_at <= ?1 AND refresh_token_present = 0",
-                    params![now],
+                         WHERE (upstream_name, subject) IN (
+                            SELECT upstream_name, subject FROM upstream_oauth_credentials
+                            WHERE access_token_expires_at <= ?1 AND refresh_token_present = 0
+                            LIMIT ?2
+                         )",
+                    params![now, i64::from(limit)],
                 )
                 .map_err(sqlite_error)?;
             total += deleted as u64;
+            transaction.commit().map_err(sqlite_error)?;
             Ok(total)
         })
         .await
@@ -754,6 +786,20 @@ impl SqliteStore {
                  WHERE csrf_token = ?1
                    AND expires_at > ?2",
                 params![csrf_token, now],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Delete a pending upstream OAuth state regardless of its expiry.
+    pub async fn delete_upstream_oauth_state(&self, csrf_token: &str) -> Result<(), AuthError> {
+        let csrf_token = csrf_token.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM upstream_oauth_state WHERE csrf_token = ?1",
+                params![csrf_token],
             )
             .map_err(sqlite_error)?;
             Ok(())
@@ -2795,6 +2841,23 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_cleanup_expired_honors_per_table_batch_limit() {
+        let store = temp_store().await;
+        let now = now_unix();
+        register_test_client(&store, "client").await;
+        for index in 0..3 {
+            let mut code = sample_code();
+            code.code = format!("expired-code-{index}");
+            code.expires_at = now - 1;
+            store.insert_auth_code(code).await.unwrap();
+        }
+
+        assert_eq!(store.cleanup_expired_bounded(2).await.unwrap(), 2);
+        assert_eq!(store.cleanup_expired_bounded(2).await.unwrap(), 1);
+        assert_eq!(store.cleanup_expired_bounded(2).await.unwrap(), 0);
     }
 
     async fn temp_store() -> SqliteStore {

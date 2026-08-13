@@ -1,13 +1,13 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::Mutex;
 #[cfg(feature = "http-axum")]
 use tokio::sync::Semaphore;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::config::{AuthConfig, AuthMode};
@@ -26,6 +26,62 @@ const RATE_LIMIT_IDLE_TTL_SECS: u64 = 10 * 60;
 /// coalesce duplicate requests without serializing independent documents.
 #[cfg(feature = "http-axum")]
 const REMOTE_FETCH_MAX_CONCURRENT: usize = 16;
+const EXPIRED_RECORD_CLEANUP_INTERVAL: Duration = Duration::from_mins(5);
+const EXPIRED_RECORD_CLEANUP_BATCH: u32 = 256;
+
+struct CleanupTask {
+    abort: tokio::task::AbortHandle,
+}
+
+impl Drop for CleanupTask {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+fn spawn_expired_record_cleanup(
+    store: SqliteStore,
+    interval: Duration,
+    batch_limit: u32,
+) -> CleanupTask {
+    let task = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let started = Instant::now();
+            match store.cleanup_expired_bounded(batch_limit).await {
+                Ok(0) => debug!(
+                    crate_name = "lab-auth",
+                    phase = "auth.cleanup_expired.finish",
+                    deleted_rows = 0_u64,
+                    batch_limit,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "bounded expired auth record cleanup completed"
+                ),
+                Ok(deleted_rows) => info!(
+                    crate_name = "lab-auth",
+                    phase = "auth.cleanup_expired.finish",
+                    deleted_rows,
+                    batch_limit,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "bounded expired auth record cleanup completed"
+                ),
+                Err(error) => warn!(
+                    crate_name = "lab-auth",
+                    phase = "auth.cleanup_expired.error",
+                    kind = error.kind(),
+                    batch_limit,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "bounded expired auth record cleanup failed"
+                ),
+            }
+        }
+    });
+    CleanupTask {
+        abort: task.abort_handle(),
+    }
+}
 
 /// Per-request parameters for rate-limiting. Each bucket is independent.
 struct RateLimiterInner {
@@ -180,6 +236,7 @@ pub struct AuthState {
     pub store: SqliteStore,
     pub signing_keys: Arc<SigningKeys>,
     pub google: Arc<GoogleProvider>,
+    _cleanup_task: Arc<CleanupTask>,
     resource_registry: ResourceRegistry,
     authorize_limiter: PerIpRateLimiter,
     register_limiter: PerIpRateLimiter,
@@ -272,11 +329,17 @@ impl AuthState {
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
         let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
+        let cleanup_task = Arc::new(spawn_expired_record_cleanup(
+            store.clone(),
+            EXPIRED_RECORD_CLEANUP_INTERVAL,
+            EXPIRED_RECORD_CLEANUP_BATCH,
+        ));
         Ok(Self {
             config: Arc::new(config),
             store,
             signing_keys: Arc::new(signing_keys),
             google: Arc::new(google),
+            _cleanup_task: cleanup_task,
             resource_registry,
             authorize_limiter,
             register_limiter,
@@ -444,11 +507,17 @@ impl AuthState {
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
         let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
+        let cleanup_task = Arc::new(spawn_expired_record_cleanup(
+            store.clone(),
+            EXPIRED_RECORD_CLEANUP_INTERVAL,
+            EXPIRED_RECORD_CLEANUP_BATCH,
+        ));
         Self {
             config: Arc::new(config),
             store,
             signing_keys: Arc::new(signing_keys),
             google: Arc::new(google),
+            _cleanup_task: cleanup_task,
             resource_registry: ResourceRegistry::new(),
             authorize_limiter,
             register_limiter,
@@ -551,6 +620,45 @@ mod tests {
                 .await
         );
         assert_eq!(limiter.bucket_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn periodic_cleanup_removes_expired_records_after_interval() {
+        let directory = tempdir().unwrap();
+        let store = SqliteStore::open_with_key(
+            directory.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "periodic-cleanup-test-key",
+            )),
+        )
+        .await
+        .unwrap();
+        let now = now_unix();
+        store
+            .save_upstream_oauth_state(crate::types::UpstreamOauthStateRow {
+                upstream_name: "expired-upstream".to_string(),
+                subject: "expired-subject".to_string(),
+                csrf_token: "expired-csrf".to_string(),
+                pkce_verifier: "expired-verifier".to_string(),
+                created_at: now - 20,
+                expires_at: now - 1,
+            })
+            .await
+            .unwrap();
+
+        let task = spawn_expired_record_cleanup(store.clone(), Duration::from_secs(30), 1);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            store
+                .find_upstream_oauth_state_owner("expired-csrf", now)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        drop(task);
     }
 
     /// Builds a minimal `AuthState` for unit-testing `resolve_allowed_emails`.
