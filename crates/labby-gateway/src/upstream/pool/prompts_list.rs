@@ -19,6 +19,7 @@ use super::capability_call::bounded_service_error_text;
 use super::discover::routable_upstream_peers;
 use super::helpers::{classify_upstream_error, merge_upstream_prompts};
 use super::logging::is_capability_unsupported;
+use super::paginate::list_prompts_bounded;
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
 impl UpstreamPool {
@@ -48,7 +49,7 @@ impl UpstreamPool {
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
             futures.push(async move {
-                let result = peer.list_all_prompts().await;
+                let result = list_prompts_bounded(&peer, &name).await;
                 (name, result)
             });
         }
@@ -336,6 +337,60 @@ mod tests {
             }
             Ok(result)
         }
+    }
+
+    /// A malicious/buggy upstream whose `nextCursor` always points back at the
+    /// same cursor value.
+    #[derive(Clone, Default)]
+    struct LoopingCursorPromptServer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ServerHandler for LoopingCursorPromptServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        }
+
+        async fn list_prompts(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListPromptsResult, ErrorData> {
+            let page = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut result = ListPromptsResult::with_all_items(vec![Prompt::new(
+                format!("page-{page}"),
+                Some("looping page"),
+                None,
+            )]);
+            result.next_cursor = Some("loop".to_string());
+            Ok(result)
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_catalog_breaks_a_looping_cursor() {
+        let server = LoopingCursorPromptServer::default();
+        let calls = Arc::clone(&server.calls);
+        let pool = catalog_pool_with_server("looping", server).await;
+
+        let prompts = pool.list_upstream_prompts(&[]).await;
+        let names = prompts
+            .iter()
+            .map(|prompt| prompt.name.as_str())
+            .collect::<Vec<_>>();
+
+        // Page 1 introduces the cursor, page 2 repeats it — no third fetch.
+        assert_eq!(names, vec!["looping/page-1", "looping/page-2"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            pool.catalog
+                .read()
+                .await
+                .get("looping")
+                .expect("looping catalog entry")
+                .prompt_count,
+            2
+        );
     }
 
     #[tokio::test]

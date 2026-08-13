@@ -45,6 +45,7 @@ mod logging;
 mod notifications;
 #[cfg(test)]
 mod notifications_tests;
+mod paginate;
 mod probe;
 mod prompts_exposure;
 #[cfg(test)]

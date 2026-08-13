@@ -28,6 +28,7 @@ use super::helpers::{
     upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+use super::paginate::list_prompts_bounded;
 
 impl UpstreamPool {
     /// Discover prompts from all OAuth upstreams visible to `subject`.
@@ -67,7 +68,7 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
-            match peer.list_all_prompts().await {
+            match list_prompts_bounded(&peer, &name).await {
                 Ok(prompts) => {
                     let discovered_count = prompts.len();
                     let exposed: Vec<Prompt> = prompts
@@ -129,7 +130,7 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
-            if let Ok(prompts) = peer.list_all_prompts().await
+            if let Ok(prompts) = list_prompts_bounded(&peer, &name).await
                 && prompts.iter().any(|prompt| {
                     // The requested name is namespaced as `{upstream}/{name}`;
                     // the upstream advertises the bare name, so compare against
