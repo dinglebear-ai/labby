@@ -21,8 +21,9 @@ use super::connect::connect_upstream_with_client;
 use super::connect::stable_jitter_seed;
 use super::helpers::{
     AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR, DISCOVERY_TIMEOUT, auth_error_should_backoff_aggressively,
-    classify_upstream_error, upstream_transport,
+    classify_upstream_error, upstream_discovery_timeout, upstream_transport,
 };
+use super::paginate::list_tools_bounded;
 
 #[cfg(any(test, feature = "testkit"))]
 static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
@@ -207,11 +208,17 @@ impl UpstreamPool {
         };
 
         if let Some(peer) = existing_peer {
-            match tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await {
-                Ok(Ok(tools)) => {
+            match tokio::time::timeout(DISCOVERY_TIMEOUT, list_tools_bounded(&peer, &config.name))
+                .await
+            {
+                Ok(Ok((tools, truncation))) => {
                     self.replace_catalog_tools(config, tools).await;
-                    self.record_success_for(&config.name, UpstreamCapability::Tools)
-                        .await;
+                    self.record_listing_success_for(
+                        &config.name,
+                        UpstreamCapability::Tools,
+                        truncation,
+                    )
+                    .await;
                     tracing::info!(
                         surface = "dispatch",
                         service = "upstream.pool",
@@ -295,21 +302,32 @@ impl UpstreamPool {
 
         let subject = config.oauth.as_ref().and(oauth_subject);
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
-        let (conn, tools) = connect_upstream_with_client(
-            config,
-            subject,
-            self.oauth_client_cache.as_ref(),
-            self.runtime_origin.as_deref(),
-            runtime_owner,
-            Some(&self.shared_http_client),
+        let discovery_timeout = upstream_discovery_timeout(config, self.request_timeout);
+        let (conn, tools, truncation) = match tokio::time::timeout(
+            discovery_timeout,
+            connect_upstream_with_client(
+                config,
+                subject,
+                self.oauth_client_cache.as_ref(),
+                self.runtime_origin.as_deref(),
+                runtime_owner,
+                Some(&self.shared_http_client),
+            ),
         )
-        .await?;
+        .await
+        {
+            Ok(connected) => connected?,
+            Err(_) => anyhow::bail!(
+                "upstream reprobe reconnect timed out after {}s",
+                discovery_timeout.as_secs()
+            ),
+        };
         {
             let mut connections = self.connections.write().await;
             connections.insert(config.name.clone(), conn);
         }
         self.replace_catalog_tools(config, tools).await;
-        self.record_success_for(&config.name, UpstreamCapability::Tools)
+        self.record_listing_success_for(&config.name, UpstreamCapability::Tools, truncation)
             .await;
         tracing::info!(
             surface = "dispatch",

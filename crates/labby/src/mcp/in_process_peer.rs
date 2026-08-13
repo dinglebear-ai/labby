@@ -156,6 +156,9 @@ async fn connect_in_process_service_peer(
         process_code_mode_enabled = crate::config::process_code_mode_enabled(),
         "requesting in-process tool list"
     );
+    // The in-process peer is labby's own trusted server — no adversarial
+    // `nextCursor` is possible, so the unbounded helper is safe here.
+    #[allow(clippy::disallowed_methods)]
     let tools = peer.list_all_tools().await?;
     tracing::info!(
         service = service.name,
