@@ -604,3 +604,96 @@ pub(crate) mod tests_support {
         }
     }
 }
+
+impl LabMcpServer {
+    /// Serve one file of a proxied skill.
+    ///
+    /// Enforces the same three gates the listing does — the upstream must opt
+    /// in, the skill must pass `expose_skills`, and the caller's route must be
+    /// allowed to reach that upstream — before the pool performs the
+    /// manifest-bound, digest-verified read. Filtering only the listing would
+    /// leave the file fetchable by URI, which is a bypass rather than a
+    /// restriction.
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn read_proxied_skill_file_impl(
+        &self,
+        uri: &str,
+        redacted_uri: &str,
+        subject: &str,
+        start: std::time::Instant,
+    ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        let parsed = parse_skill_uri(uri)
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let origin = parsed.origin().to_string();
+
+        let unknown = || {
+            ErrorData::invalid_params(
+                format!("`{redacted_uri}` is not a skill file this server serves"),
+                None,
+            )
+        };
+
+        let Some(manager) = self.gateway_manager.as_ref() else {
+            return Err(unknown());
+        };
+        // Route scope first: an upstream this route cannot reach must look
+        // absent, not forbidden.
+        if !self.route_scope.allows_upstream(&origin) {
+            return Err(unknown());
+        }
+        let Some(config) = manager.upstream_config(&origin).await else {
+            return Err(unknown());
+        };
+        if !config.enabled || !config.proxy_skills {
+            return Err(unknown());
+        }
+        let Some(pool) = self.current_upstream_pool().await else {
+            return Err(unknown());
+        };
+
+        let caller_subject = if subject.is_empty() {
+            None
+        } else {
+            Some(subject)
+        };
+        let verified = pool
+            .read_proxied_skill_file(&config, caller_subject, parsed.path())
+            .await
+            .map_err(|error| {
+                ErrorData::invalid_params(
+                    serde_json::to_string(&error).unwrap_or_else(|_| error.to_string()),
+                    None,
+                )
+            })?;
+
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            resource_uri = %redacted_uri,
+            upstream = %origin,
+            elapsed_ms = start.elapsed().as_millis(),
+            "dispatch finish"
+        );
+        let mut contents = rmcp::model::ResourceContents::text(verified.text, uri.to_string());
+        if let Some(mime) = verified.mime_type {
+            contents = contents.with_mime_type(mime);
+        }
+        Ok(rmcp::model::ReadResourceResult::new(vec![contents]).into())
+    }
+
+    #[cfg(not(feature = "gateway"))]
+    pub(crate) async fn read_proxied_skill_file_impl(
+        &self,
+        _uri: &str,
+        redacted_uri: &str,
+        _subject: &str,
+        _start: std::time::Instant,
+    ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        Err(ErrorData::invalid_params(
+            format!("`{redacted_uri}` is not a skill file this server serves"),
+            None,
+        ))
+    }
+}

@@ -699,13 +699,15 @@ impl LabMcpServer {
         // resolved first and never falls through to a lab:// handler.
         #[cfg(feature = "skills")]
         if crate::mcp::skills::is_skill_uri(&uri) {
-            let Some(body) = crate::mcp::skills::read_first_party_skill_file(&uri) else {
-                // A skill:// URI Labby does not serve. Proxied origins arrive
-                // here once aggregation lands; until then, unknown is unknown.
-                return Err(ErrorData::invalid_params(
-                    format!("`{resource_uri_log}` is not a skill file this server serves"),
-                    None,
-                ));
+            let body = match crate::mcp::skills::read_first_party_skill_file(&uri) {
+                Some(body) => body.to_string(),
+                // Not one of Labby's own: route it to the upstream that owns
+                // the origin label, with the manifest-bound digest check.
+                None => {
+                    return self
+                        .read_proxied_skill_file_impl(&uri, &resource_uri_log, &subject, start)
+                        .await;
+                }
             };
             tracing::info!(
                 surface = "mcp",

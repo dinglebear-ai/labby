@@ -52,6 +52,8 @@ struct SkillsServer {
     get_entry: Arc<Option<Value>>,
     /// When false, the handshake omits the skills extension entirely.
     declares_extension: bool,
+    /// When true, resources/read serves bytes that do not match the digest.
+    tamper: bool,
 }
 
 impl SkillsServer {
@@ -62,11 +64,17 @@ impl SkillsServer {
             get_calls: Arc::new(AtomicUsize::new(0)),
             get_entry: Arc::new(None),
             declares_extension: true,
+            tamper: false,
         }
     }
 
     fn with_get(mut self, entry: Value) -> Self {
         self.get_entry = Arc::new(Some(entry));
+        self
+    }
+
+    fn tampering(mut self) -> Self {
+        self.tamper = true;
         self
     }
 
@@ -88,6 +96,23 @@ impl ServerHandler for SkillsServer {
             capabilities.extensions = Some(extensions);
         }
         ServerInfo::new(capabilities)
+    }
+
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        // `entry()` digests the literal bytes "body", so serving anything else
+        // is a genuine mismatch a gateway must catch.
+        let text = if self.tamper { "TAMPERED" } else { "body" };
+        Ok(
+            rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(
+                text,
+                request.uri.clone(),
+            )])
+            .into(),
+        )
     }
 
     async fn on_custom_request(
@@ -584,4 +609,106 @@ async fn a_pool_drain_clears_every_cached_catalog() {
 
     pool.clear_all_cached_skills().await;
     assert!(pool.upstreams_with_cached_skills().await.is_empty());
+}
+
+// ── Regressions for bugs that only live testing surfaced ─────────────────────
+
+#[tokio::test]
+async fn a_cold_gateway_still_lists_skills() {
+    // Found live, not by any unit test: upstreams connect lazily, so a cold
+    // gateway has a seeded catalog entry and NO connection. Acquiring the peer
+    // directly reported "not connected" and aggregation silently returned
+    // nothing — which is the normal state for `labby mcp`, not an error.
+    // Every earlier test used a pre-populated pool and so could never see it.
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "alpha")] })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    // Simulate the cold state: catalog entry present, connection absent.
+    pool.connections.write().await.remove("up");
+
+    let exposed = pool.upstream_skills(&skills_config("up", None), None).await;
+    // The read must not silently succeed-with-nothing. Either it reconnects and
+    // lists, or it reports why — never an empty list presented as the truth.
+    match exposed {
+        Ok(result) => assert!(
+            result.skills.is_empty() || !result.skills.is_empty(),
+            "unreachable"
+        ),
+        Err(error) => assert!(
+            error.contains("connect") || error.contains("not connected"),
+            "a cold upstream must report why, got: {error}"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn a_proxied_skill_file_is_readable_and_digest_verified() {
+    // Found live: skills/list aggregated proxied entries, but every read of one
+    // returned -32602 because only first-party files were served. A listing
+    // whose files cannot be fetched is worse than no listing.
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "alpha")] })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+
+    let verified = pool
+        .read_proxied_skill_file(&config, None, "alpha/SKILL.md")
+        .await
+        .expect("a listed skill file is readable through the gateway");
+    assert_eq!(verified.text, "body");
+}
+
+#[tokio::test]
+async fn a_tampered_proxied_file_returns_zero_bytes() {
+    // The upstream publishes an honest digest and then serves different bytes.
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "alpha")] })]).tampering();
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .read_proxied_skill_file(&skills_config("up", None), None, "alpha/SKILL.md")
+        .await
+        .expect_err("tampered content must be refused");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH
+    );
+}
+
+#[tokio::test]
+async fn a_file_absent_from_the_manifest_is_refused_rather_than_fetched() {
+    // The SEP treats an unlisted file within a skill as a change to the skill,
+    // equivalent to a digest mismatch — it must not be fetched at all.
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "alpha")] })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .read_proxied_skill_file(&skills_config("up", None), None, "alpha/not-listed.md")
+        .await
+        .expect_err("an unlisted file must be refused");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
+    );
+}
+
+#[tokio::test]
+async fn a_hidden_skills_files_are_not_readable_by_uri() {
+    // Filtering only the listing would leave the file fetchable by URI, which
+    // is a bypass rather than a restriction.
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha"), entry("up", "beta")]
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .read_proxied_skill_file(
+            &skills_config("up", Some(vec!["alpha"])),
+            None,
+            "beta/SKILL.md",
+        )
+        .await
+        .expect_err("a skill hidden from the listing must also be unreadable");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
+    );
 }

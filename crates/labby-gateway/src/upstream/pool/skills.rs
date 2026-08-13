@@ -13,12 +13,17 @@
 
 use std::collections::BTreeSet;
 
+use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
-use labby_runtime::skills::ValidatedSkill;
+use labby_runtime::skills::{ValidatedSkill, parse_skill_uri};
 
 use super::UpstreamPool;
 use super::entries::{log_exposure_filter, resolve_request_skill_exposure_policy};
 use super::skills_cache::{CachedSkills, evict};
+use std::time::Instant;
+
+use super::capability_call::timed_capability_call_str;
+use super::logging::{UpstreamRequestLog, log_upstream_request_start};
 use super::skills_list::{UpstreamSkills, peer_declares_skills};
 
 /// One upstream's exposed skills, plus the completeness bookkeeping a caller
@@ -91,6 +96,25 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         subject: Option<&str>,
     ) -> Result<CachedSkills, String> {
+        // Upstreams connect lazily: a cold gateway has a seeded catalog entry but
+        // no live connection until something asks for one, so acquiring the peer
+        // directly reports "not connected" on every first read — the normal
+        // state for `labby mcp`, not an error.
+        //
+        // Gated on the connection actually being absent, not on the upstream
+        // having healthy tools. `ensure_tools_for_upstream` tears down and
+        // reconnects whenever an upstream has no healthy tools, and a
+        // skills-only upstream never has any — routing through it
+        // unconditionally would reconnect on every single read.
+        let connected = self.connections.read().await.contains_key(&config.name);
+        if !connected
+            && let Err(error) = self.ensure_tools_for_upstream(config, subject, None).await
+        {
+            return Err(format!(
+                "upstream `{}` could not be connected for skills: {error}",
+                config.name
+            ));
+        }
         let peer = self
             .acquire_peer(
                 &config.name,
@@ -257,5 +281,159 @@ impl UpstreamPool {
             .keys()
             .map(|(name, _)| name.clone())
             .collect()
+    }
+}
+
+/// Bytes of one proxied skill file, verified against the manifest that
+/// published it.
+#[derive(Debug, Clone)]
+pub struct VerifiedSkillFile {
+    pub text: String,
+    pub mime_type: Option<String>,
+}
+
+impl UpstreamPool {
+    /// Read one file of a proxied skill, by the path Labby minted for it.
+    ///
+    /// `path` is the URI remainder after Labby's origin label. The upstream
+    /// knows the file under its *own* origin, so the cached entry is what maps
+    /// one to the other — Labby never guesses the upstream's label.
+    ///
+    /// Every read is manifest-bound and digest-verified. A URI the manifest does
+    /// not list is refused rather than fetched: the SEP treats an unlisted file
+    /// within a skill as a change to the skill, equivalent to a digest mismatch.
+    pub async fn read_proxied_skill_file(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        path: &str,
+    ) -> Result<VerifiedSkillFile, ToolError> {
+        let exposed = self
+            .upstream_skills(config, subject)
+            .await
+            .map_err(|error| ToolError::Sdk {
+                sdk_kind: "upstream_error".to_string(),
+                message: error,
+            })?;
+
+        // Match on the path remainder, since the origin label differs between
+        // what Labby published and what the upstream serves.
+        let mut found: Option<(&str, &str)> = None;
+        for skill in &exposed.skills {
+            let Some(resources) = skill.entry.resources.as_ref() else {
+                continue;
+            };
+            for resource in resources {
+                if let Ok(parsed) = parse_skill_uri(&resource.uri)
+                    && parsed.path() == path
+                {
+                    found = Some((resource.uri.as_str(), resource.digest.as_str()));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+
+        let Some((upstream_uri, digest)) = found else {
+            return Err(ToolError::Sdk {
+                sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
+                message: format!(
+                    "no exposed skill on upstream `{}` lists `{path}`; refresh the skill entry and retry",
+                    config.name
+                ),
+            });
+        };
+
+        // Read from the owning upstream directly, preserving its native
+        // `skill://` URI. The URI-routed helpers resolve a `lab://upstream/…`
+        // gateway namespace and cannot place a native skill URI.
+        let peer = self
+            .acquire_peer(
+                &config.name,
+                super::super::types::UpstreamCapability::Skills,
+                "skill.read",
+            )
+            .await
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "upstream_error".to_string(),
+                message: format!("upstream `{}` is not connected", config.name),
+            })?;
+
+        let start = Instant::now();
+        let redacted = super::helpers::redact_resource_uri_for_logging(upstream_uri);
+        let event = UpstreamRequestLog::skill(&config.name, redacted, subject.is_some());
+        log_upstream_request_start(event);
+        let timeout_ms = self.request_timeout.as_millis();
+        let contents = timed_capability_call_str(
+            self,
+            &config.name,
+            super::super::types::UpstreamCapability::Skills,
+            event,
+            start,
+            peer.read_resource(rmcp::model::ReadResourceRequestParams::new(upstream_uri)),
+            |_| 0,
+            subject,
+            |error| format!("upstream `{}` skill read failed: {error}", config.name),
+            format!(
+                "upstream `{}` skill read timed out after {timeout_ms}ms",
+                config.name
+            ),
+        )
+        .await
+        .map_err(|message| ToolError::Sdk {
+            sdk_kind: "upstream_error".to_string(),
+            message,
+        })?;
+
+        // Exactly one content block: the digest model is one URI to one blob.
+        let [content] = contents.contents.as_slice() else {
+            return Err(ToolError::Sdk {
+                sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                message: format!(
+                    "upstream `{}` returned {} content blocks for one skill file",
+                    config.name,
+                    contents.contents.len()
+                ),
+            });
+        };
+        let (text, mime_type) = match content {
+            rmcp::model::ResourceContents::TextResourceContents {
+                text, mime_type, ..
+            } => (text.clone(), mime_type.clone()),
+            // Anything else — a blob today, a new variant tomorrow — cannot be
+            // digest-verified as text, so it is refused rather than relayed.
+            _ => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                    message: "skill files are served as text; this content cannot be verified"
+                        .to_string(),
+                });
+            }
+        };
+
+        let parsed_digest =
+            labby_runtime::skills::parse_digest(digest).map_err(|error| ToolError::Sdk {
+                sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                message: format!(
+                    "upstream `{}` published an unusable digest: {error}",
+                    config.name
+                ),
+            })?;
+        if !parsed_digest.matches(text.as_bytes()) {
+            // Zero bytes reach the caller. A digest match is a consistency
+            // check, not proof of trustworthiness, but a mismatch is proof of
+            // inconsistency and the content must not be used.
+            return Err(ToolError::Sdk {
+                sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                message: format!(
+                    "content of `{path}` from upstream `{}` does not match the digest its entry published",
+                    config.name
+                ),
+            });
+        }
+
+        Ok(VerifiedSkillFile { text, mime_type })
     }
 }
