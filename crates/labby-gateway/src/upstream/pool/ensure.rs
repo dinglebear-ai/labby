@@ -152,7 +152,7 @@ impl UpstreamPool {
             ),
         )
         .await;
-        let (conn, tools) = match connect_result {
+        let (conn, tools, truncation) = match connect_result {
             Ok(Ok(connected)) => connected,
             Ok(Err(error)) => {
                 self.record_failure_for(
@@ -181,7 +181,7 @@ impl UpstreamPool {
             .await
             .insert(config.name.clone(), conn);
         self.replace_catalog_tools(config, tools).await;
-        self.record_success_for(&config.name, UpstreamCapability::Tools)
+        self.record_listing_success_for(&config.name, UpstreamCapability::Tools, truncation)
             .await;
         if config.proxy_resources {
             self.refresh_resource_cache_for_upstream(&config.name).await;

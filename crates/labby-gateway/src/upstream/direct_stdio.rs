@@ -87,6 +87,9 @@ pub async fn connect_direct_stdio<H>(
 where
     H: ClientHandler + Clone,
 {
-    let (connection, tools) = super::pool::connect_direct_stdio(command, handler).await?;
+    // A truncated listing on the direct proxy has no catalog to annotate —
+    // the WARN inside the bounded helper is the visibility.
+    let (connection, tools, _truncation) =
+        super::pool::connect_direct_stdio(command, handler).await?;
     Ok((DirectStdioConnection::new(connection), tools))
 }

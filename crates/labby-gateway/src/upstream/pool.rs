@@ -43,6 +43,8 @@ mod lifecycle;
 mod lifecycle_compat;
 #[cfg(test)]
 mod listing_bounds_tests;
+#[cfg(test)]
+mod listing_timeout_tests;
 mod logging;
 mod notifications;
 #[cfg(test)]

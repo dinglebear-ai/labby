@@ -40,7 +40,7 @@ use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
     LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
 };
-use super::paginate::list_tools_bounded;
+use super::paginate::{ListTruncation, list_tools_bounded};
 use super::{UpstreamClientService, UpstreamConnection};
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
@@ -57,7 +57,11 @@ pub(super) async fn connect_upstream_with_client(
     runtime_origin: Option<&str>,
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     shared_client: Option<&reqwest::Client>,
-) -> anyhow::Result<(UpstreamConnection, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     connect_upstream_with_handler(
         config,
         subject,
@@ -84,7 +88,11 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     shared_client: Option<&reqwest::Client>,
     handler: H,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     let started = Instant::now();
     tracing::debug!(
         surface = "dispatch",
@@ -145,7 +153,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
         )),
     };
     match &result {
-        Ok((_, tools)) => tracing::info!(
+        Ok((_, tools, _)) => tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
             action = "upstream.connect",
@@ -184,7 +192,11 @@ pub(super) async fn connect_upstream(
     oauth_client_cache: Option<&OauthClientCache>,
     runtime_origin: Option<&str>,
     runtime_owner: Option<&UpstreamRuntimeOwner>,
-) -> anyhow::Result<(UpstreamConnection, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     connect_upstream_with_client(
         config,
         subject,
@@ -219,7 +231,11 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
     handler: H,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     let socket_path = config.socket_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "upstream {} Unix socket transport has no socket_path",
@@ -262,7 +278,11 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     _subject: Option<&str>,
     _oauth_client_cache: Option<&OauthClientCache>,
     _handler: H,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     anyhow::bail!(
         "upstream {} uses unix_socket, which is unsupported on this platform",
         config.name
@@ -273,7 +293,11 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
     handler: H,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     match connect_websocket_upstream_once(url, config, handler.clone(), LifecycleAttempt::Modern)
         .await
     {
@@ -293,7 +317,11 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     config: &UpstreamConfig,
     handler: H,
     lifecycle: LifecycleAttempt,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "websocket",
@@ -325,7 +353,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
         ),
     };
     let peer = service.peer().clone();
-    let (tools, _truncation) = list_tools_bounded(&peer, &config.name).await?;
+    let (tools, truncation) = list_tools_bounded(&peer, &config.name).await?;
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "websocket",
@@ -340,6 +368,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
             runtime: UpstreamRuntimeMetadata::default(),
         },
         tools,
+        truncation,
     ))
 }
 
@@ -365,7 +394,11 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     oauth_client_cache: Option<&OauthClientCache>,
     shared_client: Option<&reqwest::Client>,
     handler: H,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     match connect_http_upstream_once(
         url,
         config,
@@ -435,7 +468,11 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
     lifecycle: LifecycleAttempt,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = upstream_transport(config),
@@ -496,7 +533,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             ),
         };
         let peer = service.peer().clone();
-        let (tools, _truncation) = list_tools_bounded(&peer, &config.name).await?;
+        let (tools, truncation) = list_tools_bounded(&peer, &config.name).await?;
         return Ok((
             UpstreamConnection {
                 _client_service: service,
@@ -505,6 +542,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
                 runtime: UpstreamRuntimeMetadata::default(),
             },
             tools,
+            truncation,
         ));
     }
 
@@ -536,7 +574,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         ),
     };
     let peer = service.peer().clone();
-    let (tools, _truncation) = list_tools_bounded(&peer, &config.name).await?;
+    let (tools, truncation) = list_tools_bounded(&peer, &config.name).await?;
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = upstream_transport(config),
@@ -552,6 +590,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             runtime: UpstreamRuntimeMetadata::default(),
         },
         tools,
+        truncation,
     ))
 }
 

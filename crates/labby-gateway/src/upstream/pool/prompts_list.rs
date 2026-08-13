@@ -61,14 +61,8 @@ impl UpstreamPool {
         while let Some((name, result)) = futures.next().await {
             match result {
                 Ok((prompts, truncation)) => {
-                    self.record_success_for(&name, UpstreamCapability::Prompts)
+                    self.record_listing_success_for(&name, UpstreamCapability::Prompts, truncation)
                         .await;
-                    self.record_listing_truncation_for(
-                        &name,
-                        UpstreamCapability::Prompts,
-                        truncation,
-                    )
-                    .await;
                     prompt_name_updates.insert(name.clone(), Vec::new());
                     {
                         let mut catalog = self.catalog.write().await;

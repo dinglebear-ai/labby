@@ -83,6 +83,31 @@ impl UpstreamPool {
 
     /// Record a success for a specific upstream capability, resetting the circuit breaker.
     pub async fn record_success_for(&self, upstream_name: &str, capability: UpstreamCapability) {
+        self.record_listing_success_for(upstream_name, capability, None)
+            .await;
+    }
+
+    /// Record a successful listing pass for an upstream capability, carrying
+    /// its truncation state, in one atomic catalog write.
+    ///
+    /// A truncated pass — cursor loop broken or page cap hit — still returned
+    /// usable data, so the upstream becomes healthy/routable exactly like an
+    /// ordinary success. But it must not read as a clean bill of health
+    /// either: the truncation note lands in the capability's `last_error`, the
+    /// channel `gateway.status` surfaces, so operators can see the catalog is
+    /// partial. The single write keeps health and `last_error` consistent — a
+    /// concurrent failure recorded between two separate writes could otherwise
+    /// end up unhealthy with a truncation note masking its real error.
+    ///
+    /// The note is deliberately ephemeral: the next `record_success_for` on
+    /// the same capability (e.g. a successful tool call) clears it, and each
+    /// truncated listing pass re-records it.
+    pub(super) async fn record_listing_success_for(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+        truncation: Option<ListTruncation>,
+    ) {
         let mut catalog = self.catalog.write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
             if !entry.health_for(capability).is_routable() {
@@ -94,29 +119,10 @@ impl UpstreamPool {
             }
             entry.set_health_for(capability, UpstreamHealth::Healthy);
             entry.set_unhealthy_since_for(capability, None);
-            entry.set_last_error_for(capability, None);
-        }
-    }
-
-    /// Record a truncated (partial) listing pass for an upstream capability;
-    /// no-op when the pass was not truncated.
-    ///
-    /// A truncated pass — cursor loop broken or page cap hit — still returned
-    /// usable data, so the upstream stays healthy/routable and the circuit
-    /// breaker is untouched. But it must not read as a clean bill of health
-    /// either: the note lands in the capability's `last_error`, the channel
-    /// `gateway.status` surfaces, so operators can see the catalog is partial.
-    /// Call this *after* `record_success_for`, which clears `last_error`.
-    pub(super) async fn record_listing_truncation_for(
-        &self,
-        upstream_name: &str,
-        capability: UpstreamCapability,
-        truncation: Option<ListTruncation>,
-    ) {
-        let Some(truncation) = truncation else { return };
-        let mut catalog = self.catalog.write().await;
-        if let Some(entry) = catalog.get_mut(upstream_name) {
-            entry.set_last_error_for(capability, Some(truncation.status_note()));
+            entry.set_last_error_for(
+                capability,
+                truncation.map(|truncation| truncation.status_note()),
+            );
         }
     }
 
@@ -294,6 +300,39 @@ mod tests {
             pool.upstream_tool_last_error("github").await.as_deref(),
             Some("tool listing returned 500 internal error")
         );
+    }
+
+    #[tokio::test]
+    async fn listing_success_records_truncation_note_and_health_atomically() {
+        let pool = UpstreamPool::new();
+        let entry = healthy_in_process_entry(Arc::from("looping"), HashMap::new());
+        pool.catalog
+            .write()
+            .await
+            .insert("looping".to_string(), entry);
+        pool.record_failure_for("looping", UpstreamCapability::Tools, "listing failed")
+            .await;
+
+        let truncation =
+            super::super::paginate::ListTruncation::for_tests("tools/list", "cursor_loop", 2);
+        pool.record_listing_success_for("looping", UpstreamCapability::Tools, Some(truncation))
+            .await;
+
+        // One write: the breaker resets AND the truncation note lands,
+        // replacing the failure error rather than leaving a clean slate.
+        let catalog = pool.catalog.read().await;
+        let entry = catalog.get("looping").expect("entry present");
+        assert!(entry.tool_health.is_routable());
+        assert_eq!(
+            entry.tool_last_error.as_deref(),
+            Some("tools/list truncated (cursor_loop) after 2 pages — upstream catalog is partial")
+        );
+        drop(catalog);
+
+        // An untruncated success clears the note again.
+        pool.record_success_for("looping", UpstreamCapability::Tools)
+            .await;
+        assert_eq!(pool.upstream_tool_last_error("looping").await, None);
     }
 
     /// Helper: read the current tool-capability health for an upstream.

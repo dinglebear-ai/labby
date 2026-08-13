@@ -20,7 +20,7 @@ use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
     LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
 };
-use super::paginate::list_tools_bounded;
+use super::paginate::{ListTruncation, list_tools_bounded};
 use super::stdio_stderr::{
     StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
 };
@@ -73,7 +73,11 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
     runtime_origin: Option<&str>,
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     handler: H,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     let mut env = config
         .env
         .iter()
@@ -101,7 +105,11 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
 pub(crate) async fn connect_direct_stdio<H: ClientHandler + Clone>(
     command: crate::upstream::direct_stdio::DirectStdioCommand,
     handler: H,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     let spec = StdioCommandSpec {
         program: command.program,
         args: command.args,
@@ -133,7 +141,11 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     command: StdioCommandSpec,
     handler: H,
     allow_cache_repair: bool,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+) -> anyhow::Result<(
+    UpstreamConnection<H>,
+    Vec<rmcp::model::Tool>,
+    Option<ListTruncation>,
+)> {
     // Cross-process spawn lock: stdio servers launched via `npx -y`/`uvx` install
     // into a shared package cache on first cold spawn; two processes installing
     // the same package at once corrupt it. Hold an advisory file lock (keyed on
@@ -215,7 +227,14 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     command: &StdioCommandSpec,
     handler: H,
     lifecycle: LifecycleAttempt,
-) -> Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>), StdioConnectError> {
+) -> Result<
+    (
+        UpstreamConnection<H>,
+        Vec<rmcp::model::Tool>,
+        Option<ListTruncation>,
+    ),
+    StdioConnectError,
+> {
     use process_wrap::tokio::CommandWrap;
     #[cfg(unix)]
     use process_wrap::tokio::ProcessGroup;
@@ -366,7 +385,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     let peer = service.peer().clone();
 
     // Discover tools
-    let (tools, _truncation) = match list_tools_bounded(&peer, &command.name).await {
+    let (tools, truncation) = match list_tools_bounded(&peer, &command.name).await {
         Ok(listing) => listing,
         Err(error) => return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await),
     };
@@ -418,7 +437,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         },
     );
 
-    Ok((conn, tools))
+    Ok((conn, tools, truncation))
 }
 
 #[cfg(test)]

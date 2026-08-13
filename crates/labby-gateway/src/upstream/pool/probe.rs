@@ -213,9 +213,7 @@ impl UpstreamPool {
             {
                 Ok(Ok((tools, truncation))) => {
                     self.replace_catalog_tools(config, tools).await;
-                    self.record_success_for(&config.name, UpstreamCapability::Tools)
-                        .await;
-                    self.record_listing_truncation_for(
+                    self.record_listing_success_for(
                         &config.name,
                         UpstreamCapability::Tools,
                         truncation,
@@ -304,7 +302,7 @@ impl UpstreamPool {
 
         let subject = config.oauth.as_ref().and(oauth_subject);
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
-        let (conn, tools) = connect_upstream_with_client(
+        let (conn, tools, truncation) = connect_upstream_with_client(
             config,
             subject,
             self.oauth_client_cache.as_ref(),
@@ -318,7 +316,7 @@ impl UpstreamPool {
             connections.insert(config.name.clone(), conn);
         }
         self.replace_catalog_tools(config, tools).await;
-        self.record_success_for(&config.name, UpstreamCapability::Tools)
+        self.record_listing_success_for(&config.name, UpstreamCapability::Tools, truncation)
             .await;
         tracing::info!(
             surface = "dispatch",

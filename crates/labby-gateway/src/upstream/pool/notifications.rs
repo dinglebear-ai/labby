@@ -123,9 +123,7 @@ impl UpstreamPool {
             return false;
         }
 
-        self.record_success_for(upstream, UpstreamCapability::Tools)
-            .await;
-        self.record_listing_truncation_for(upstream, UpstreamCapability::Tools, truncation)
+        self.record_listing_success_for(upstream, UpstreamCapability::Tools, truncation)
             .await;
         tracing::debug!(
             upstream,

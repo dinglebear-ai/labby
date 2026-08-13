@@ -1,8 +1,8 @@
 //! Focused regressions for bounded upstream catalog listing passes: the
-//! `MAX_LIST_PAGES` pagination cap, repeated-cursor loop breaking, truncation
-//! visibility in the status channel, and the per-upstream listing wall-clock
-//! bound. Kept here rather than in the capability listing modules so those
-//! files stay near the 500-LOC target.
+//! `MAX_LIST_PAGES` pagination cap, repeated-cursor loop breaking, and
+//! truncation visibility in the status channel. Wall-clock-bound regressions
+//! live in `listing_timeout_tests.rs`. Kept here rather than in the
+//! capability listing modules so those files stay near the 500-LOC target.
 
 #![cfg(test)]
 
@@ -189,44 +189,6 @@ impl ServerHandler for LoopingCursorToolServer {
         )]);
         result.next_cursor = Some("loop".to_string());
         Ok(result)
-    }
-}
-
-/// A server whose listings stall long past the listing wall-clock budget.
-struct SlowListServer;
-
-impl ServerHandler for SlowListServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_resources()
-                .enable_prompts()
-                .build(),
-        )
-    }
-
-    async fn list_prompts(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListPromptsResult, ErrorData> {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
-            "slow",
-            Some("slow prompt"),
-            None,
-        )]))
-    }
-
-    async fn list_resource_templates(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(ListResourceTemplatesResult::with_all_items(vec![
-            ResourceTemplate::new("file:///{path}", "slow"),
-        ]))
     }
 }
 
@@ -434,46 +396,25 @@ async fn tool_refresh_breaks_a_looping_cursor() {
     );
 }
 
+/// Pins the subject-scoped gateway schema discovery to the bounded helper.
+/// This path is request-scoped and caller-triggered (every read of
+/// `lab://gateway/<name>/schema` re-lists), so a revert to rmcp's unbounded
+/// `list_all_tools` here has the widest repeat-exposure window of the tools
+/// listing paths — and no catalog-tier test can catch it.
 #[tokio::test]
-async fn prompt_catalog_bounds_a_stalled_upstream() {
-    let pool = catalog_pool_with_server("slow", SlowListServer).await;
-    let mut pool = Arc::try_unwrap(pool)
-        .ok()
-        .expect("fixture pool has one owner");
-    pool.request_timeout = Duration::from_millis(25);
+async fn subject_scoped_schema_breaks_a_looping_cursor() {
+    let server = LoopingCursorToolServer::default();
+    let calls = Arc::clone(&server.calls);
+    let pool = catalog_pool_with_server("looping", server).await;
+    seed_subject_connection(&pool, "looping", "alice").await;
+    let config = oauth_config("looping");
 
-    let started = Instant::now();
-    let prompts = pool.list_upstream_prompts(&[]).await;
+    let schema = pool
+        .subject_scoped_gateway_server_schema(&config, "alice")
+        .await
+        .expect("schema discovery truncates instead of failing");
 
-    assert!(
-        prompts.is_empty(),
-        "a timed-out upstream yields partial data"
-    );
-    assert!(
-        started.elapsed() < Duration::from_millis(100),
-        "a stalled prompt listing exceeded the request budget: {:?}",
-        started.elapsed()
-    );
-}
-
-#[tokio::test]
-async fn resource_template_catalog_bounds_a_stalled_upstream() {
-    let pool = catalog_pool_with_server("slow", SlowListServer).await;
-    let mut pool = Arc::try_unwrap(pool)
-        .ok()
-        .expect("fixture pool has one owner");
-    pool.request_timeout = Duration::from_millis(25);
-
-    let started = Instant::now();
-    let templates = pool.list_upstream_resource_templates_allowed(None).await;
-
-    assert!(
-        templates.is_empty(),
-        "a timed-out upstream yields partial data"
-    );
-    assert!(
-        started.elapsed() < Duration::from_millis(100),
-        "a stalled template listing exceeded the request budget: {:?}",
-        started.elapsed()
-    );
+    // Page 1 introduces the cursor, page 2 repeats it — no third fetch.
+    assert_eq!(schema["tools"].as_array().expect("tools array").len(), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

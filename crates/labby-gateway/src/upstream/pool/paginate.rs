@@ -7,14 +7,19 @@
 //! before the `MAX_UPSTREAM_*` item caps apply. These wrappers fetch at most
 //! [`MAX_LIST_PAGES`] pages per upstream per listing pass and stop early on a
 //! repeated cursor, truncating with a WARN and a [`ListTruncation`] report
-//! instead of looping. Catalog callers record that report through
-//! `UpstreamPool::record_listing_truncation_for` so `gateway.status` does not
-//! present a truncated catalog as complete.
+//! instead of looping. Callers that publish a catalog entry surface that
+//! report — refresh passes via `UpstreamPool::record_listing_success_for`,
+//! connect-time discovery via the entry's `tool_last_error` — so
+//! `gateway.status` does not present a truncated catalog as complete.
+//! Subject-scoped per-subject listings have no shared entry to annotate and
+//! rely on the truncation WARN alone.
 //!
 //! The page cap bounds RPC *count*, not bytes: worst-case memory per listing
 //! pass is still `MAX_LIST_PAGES` × the per-response byte cap, per upstream,
-//! concurrently across upstreams. The wall clock is bounded separately by
-//! [`listing_catalog_timeout`] at the call sites.
+//! concurrently across upstreams. Wall clock is bounded per call site: the
+//! catalog fan-outs use [`listing_catalog_timeout`], discovery/refresh paths
+//! use their `DISCOVERY_TIMEOUT`-family budgets, and subject-scoped calls run
+//! under `timed_capability_call` request budgets or [`with_listing_timeout`].
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,7 +36,8 @@ pub(super) const MAX_LIST_PAGES: usize = 16;
 /// Wall-clock cap for one upstream catalog listing pass (resources, resource
 /// templates, or prompts). Catalog fan-outs wrap each per-upstream bounded
 /// listing in `min(request_timeout, LISTING_CATALOG_TIMEOUT)` so one stalled
-/// upstream cannot hold the merged listing open.
+/// upstream cannot hold the merged listing open. The subject-scoped resource
+/// pass also reuses this budget for its connection acquisition.
 pub(super) const LISTING_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) fn listing_catalog_timeout(request_timeout: Duration) -> Duration {
@@ -59,18 +65,29 @@ static LIST_TRUNCATIONS: AtomicU64 = AtomicU64::new(0);
 /// partial items so callers can surface the truncation in the status channel
 /// instead of recording the pass as an ordinary full success.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ListTruncation {
+pub(crate) struct ListTruncation {
     method: &'static str,
     reason: &'static str,
     pages: usize,
 }
 
 impl ListTruncation {
+    #[cfg(test)]
+    pub(super) fn for_tests(method: &'static str, reason: &'static str, pages: usize) -> Self {
+        Self {
+            method,
+            reason,
+            pages,
+        }
+    }
+
     /// Operator-facing note for the capability's `last_error` status field.
     ///
     /// Must not match the `is_nonessential_capability_error` prefixes in
-    /// `gateway/projection.rs`, or `gateway.status` would filter it out.
-    pub(super) fn status_note(&self) -> String {
+    /// `gateway/projection.rs` (mirrored by the doctor finding filter in
+    /// `crates/labby/src/dispatch/doctor/gateway.rs`), or `gateway.status`
+    /// and doctor would filter it out.
+    pub(crate) fn status_note(&self) -> String {
         format!(
             "{} truncated ({}) after {} pages — upstream catalog is partial",
             self.method, self.reason, self.pages

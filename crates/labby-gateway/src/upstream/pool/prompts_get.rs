@@ -28,7 +28,7 @@ use super::helpers::{
     upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
-use super::paginate::list_prompts_bounded;
+use super::paginate::{list_prompts_bounded, listing_catalog_timeout, with_listing_timeout};
 
 impl UpstreamPool {
     /// Discover prompts from all OAuth upstreams visible to `subject`.
@@ -68,7 +68,7 @@ impl UpstreamPool {
             let peer = match result {
                 Ok(peer) => peer,
                 Err(error) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         upstream = %name,
                         error = %error,
                         "subject-scoped prompt discovery skipped upstream — connect failed"
@@ -76,10 +76,16 @@ impl UpstreamPool {
                     continue;
                 }
             };
-            // Subject-scoped listings never land in `self.catalog`, so there
-            // is no entry to record a truncation note on — the WARN inside
-            // the bounded helper is the visibility here.
-            let (prompts, _truncation) = match list_prompts_bounded(&peer, &name).await {
+            // A subject-scoped listing is a per-subject view; annotating the
+            // shared entry's status with its truncation would misattribute
+            // partial state to the shared catalog — the WARN inside the
+            // bounded helper is the visibility here.
+            let listing = with_listing_timeout(
+                listing_catalog_timeout(self.request_timeout),
+                list_prompts_bounded(&peer, &name),
+            )
+            .await;
+            let (prompts, _truncation) = match listing {
                 Ok(listing) => listing,
                 Err(error) => {
                     tracing::warn!(
@@ -141,7 +147,7 @@ impl UpstreamPool {
             let peer = match result {
                 Ok(peer) => peer,
                 Err(error) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         upstream = %name,
                         error = %error,
                         "subject-scoped prompt owner lookup skipped upstream — connect failed"
@@ -152,7 +158,12 @@ impl UpstreamPool {
             // A listing error must not silently read as "prompt not found" —
             // that hides an erroring upstream behind a lookup miss with no
             // diagnostic trail.
-            let (prompts, _truncation) = match list_prompts_bounded(&peer, &name).await {
+            let listing = with_listing_timeout(
+                listing_catalog_timeout(self.request_timeout),
+                list_prompts_bounded(&peer, &name),
+            )
+            .await;
+            let (prompts, _truncation) = match listing {
                 Ok(listing) => listing,
                 Err(error) => {
                     tracing::warn!(
