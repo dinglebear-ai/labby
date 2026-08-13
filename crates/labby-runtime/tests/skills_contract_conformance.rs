@@ -220,8 +220,12 @@ fn contract_records_the_non_obvious_spec_requirements() {
             "merely because its URI carries a particular scheme",
         ),
         (
-            "T3 residual is documented, not closed",
-            "documented, not closed",
+            "the T3 allowed-tools mitigation names its _meta key",
+            "ai.dinglebear.labby/skillOrigin",
+        ),
+        (
+            "provenance rides in _meta rather than frontmatter",
+            "never in `frontmatter`",
         ),
     ] {
         assert!(

@@ -225,11 +225,15 @@ server's tools or against Labby's own privileged tools. Labby emits a structured
 origin label on every aggregated entry so a client can scope the field to its
 origin.
 
-**This mitigation does not hold under Code Mode.** With Code Mode enabled, raw
-upstream tools are hidden from `tools/list` entirely, so there is no downstream
-tool name to scope against and the origin label is advisory only. Without Code
-Mode, the flattened catalog can still be ambiguous across upstreams. Treat T3 as
-**documented, not closed**.
+Each aggregated entry carries an `ai.dinglebear.labby/skillOrigin` block in
+`_meta` naming the origin, how its tools are reachable (`direct` or
+`code_mode_only`), and — when direct — the downstream tool names it accounts
+for. Under Code Mode those names do not exist, so the list is omitted rather
+than emitted empty.
+
+This rides in `_meta`, never in `frontmatter`, because the SEP requires
+frontmatter to be verbatim and requires hosts to refuse a skill whose
+frontmatter disagrees with its `SKILL.md`.
 
 ## URI grammar
 

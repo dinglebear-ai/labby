@@ -68,6 +68,15 @@ pub struct SkillEntry {
     /// content-bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Vec<SkillResource>>,
+    /// Implementation metadata about where this entry came from.
+    ///
+    /// Deliberately **not** part of `frontmatter`: the SEP requires frontmatter
+    /// to be the author's YAML verbatim, and a host is required to compare it
+    /// field by field against the fetched `SKILL.md` and refuse the skill on any
+    /// discrepancy. Anything Labby adds must therefore live outside it, which is
+    /// what `_meta` is for. A client that does not recognize the key ignores it.
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Map<String, Value>>,
 }
 
 impl SkillEntry {

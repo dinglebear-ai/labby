@@ -175,18 +175,36 @@ Labby is exactly that intermediary. Verification here is a **consistency check**
 is not tamper detection, and the doctor counter that reports failures should be
 read as a consistency counter.
 
-### Known residual: `allowed-tools` through a gateway
+### `allowed-tools` through a gateway
 
 A skill's `allowed-tools` frontmatter names tools in its *origin's* namespace.
-Downstream of Labby the catalog is aggregated, so those names may resolve
-against a different server's tools or against Labby's own privileged tools.
-Every aggregated entry carries its origin label so a client can scope the field.
+Downstream of Labby the catalog is aggregated, so those names could otherwise
+resolve against a different server's tools — or against Labby's own privileged
+ones.
 
-**This does not hold under Code Mode.** With Code Mode enabled, raw upstream
-tools are hidden from `tools/list` entirely, so there is no downstream tool name
-to scope against and the origin label is advisory only. Without Code Mode, the
-flattened catalog can still be ambiguous across upstreams. Treat this as
-documented, not closed.
+Every aggregated entry therefore carries an `_meta` block under
+`ai.dinglebear.labby/skillOrigin` describing what the origin actually accounts
+for downstream:
+
+| Field | Meaning |
+|-------|---------|
+| `label` | The host-assigned origin label, also the first URI segment |
+| `toolAccess` | `direct` or `code_mode_only` |
+| `reachableTools` | Present only when `direct`: the downstream tool names this origin accounts for |
+| `note` | Present only when `code_mode_only`: why there is nothing to scope against |
+
+Under Code Mode, raw upstream tools are hidden from `tools/list`, so
+`reachableTools` is deliberately **omitted** rather than emitted empty —
+publishing downstream names that do not exist would be a worse answer than
+saying so plainly.
+
+This lives in `_meta`, never in `frontmatter`. The SEP requires frontmatter to
+be the author's YAML verbatim and requires a host to refuse the skill on any
+field-by-field discrepancy against the fetched `SKILL.md`, so anything Labby
+adds has to sit outside it.
+
+Every value here is a fact about Labby's own catalog, never an interpretation of
+skill content — the skill remains data, not directives.
 
 ### Enabling skills proxying is a trust decision
 

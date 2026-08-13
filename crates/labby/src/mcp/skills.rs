@@ -167,6 +167,7 @@ fn build_first_party_skills() -> BTreeMap<String, FirstPartySkill> {
                     uri: skill_md_uri,
                     frontmatter,
                     resources: Some(resources),
+                    meta: None,
                 },
                 files: contents,
             },
@@ -418,6 +419,15 @@ impl LabMcpServer {
         let subject = self.request_subject(context);
         let scope = self.route_scope.clone();
 
+        // With Code Mode on, raw upstream tools are hidden from tools/list, so
+        // no downstream name exists for a skill's `allowed-tools` to resolve
+        // against. Computed once: it is a gateway-wide setting.
+        let tool_access = if manager.code_mode_enabled().await {
+            aggregate::ToolAccess::CodeModeOnly
+        } else {
+            aggregate::ToolAccess::Direct
+        };
+
         let mut entries = Vec::new();
         for config in manager.current_config().await.upstream {
             if !config.enabled || !config.proxy_skills {
@@ -428,7 +438,25 @@ impl LabMcpServer {
             }
             match pool.upstream_skills(&config, subject).await {
                 Ok(exposed) => {
-                    entries.extend(aggregate::mint_proxied_entries(&config, &exposed.skills));
+                    // Facts about Labby's own catalog, so a client can scope
+                    // `allowed-tools` to this origin instead of resolving it
+                    // against the flattened aggregate (threat model T3).
+                    let reachable_tools: Vec<String> = match tool_access {
+                        aggregate::ToolAccess::Direct => pool
+                            .healthy_tools_for_upstream(&config.name)
+                            .await
+                            .into_iter()
+                            .map(|tool| tool.tool.name.to_string())
+                            .collect(),
+                        aggregate::ToolAccess::CodeModeOnly => Vec::new(),
+                    };
+                    let meta =
+                        aggregate::origin_meta(&config.name, None, tool_access, &reachable_tools);
+                    entries.extend(aggregate::mint_proxied_entries(
+                        &config,
+                        &exposed.skills,
+                        Some(&meta),
+                    ));
                 }
                 Err(error) => {
                     // Partial results: one unreachable upstream must not empty
