@@ -40,6 +40,10 @@ pub struct ExposedSkills {
     pub truncated: bool,
     /// Age of the underlying snapshot, for operator display.
     pub age_secs: u64,
+    /// Remaining lifetime of this snapshot, clamped from the upstream's
+    /// untrusted `ttlMs`. A downstream listing that folds these entries in must
+    /// not advertise a longer TTL than the data behind it actually has.
+    pub ttl_ms: Option<u64>,
 }
 
 impl UpstreamPool {
@@ -239,7 +243,59 @@ impl UpstreamPool {
             excluded_count: cached.skills.excluded_count(),
             truncated: cached.skills.truncated,
             age_secs: cached.age().as_secs(),
+            ttl_ms: Some(cached.remaining_ttl().as_millis() as u64),
         }
+    }
+
+    /// Fetch one skill by URI from an upstream that did not list it.
+    ///
+    /// SEP-2640 requires a host to load a skill given only its URI, and says an
+    /// empty or partial listing is never proof a server has no skills. Without
+    /// this, a skill absent from a cached or budget-truncated listing is
+    /// permanently unreachable even though the upstream would serve it.
+    ///
+    /// Still gated: the upstream must opt in, and the returned entry passes the
+    /// same ingest validation and `expose_skills` allowlist a listed skill does,
+    /// so unlisted does not mean unfiltered.
+    pub async fn fetch_unlisted_skill(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        uri: &str,
+    ) -> Option<ValidatedSkill> {
+        if !config.proxy_skills {
+            return None;
+        }
+        let peer = self
+            .acquire_peer(
+                &config.name,
+                super::super::types::UpstreamCapability::Skills,
+                "skills.get",
+            )
+            .await?;
+        if !peer_declares_skills(&peer) {
+            return None;
+        }
+        let skill = match self
+            .fetch_upstream_skill(&config.name, &peer, uri, subject)
+            .await
+        {
+            Ok(skill) => skill?,
+            Err(error) => {
+                tracing::warn!(
+                    upstream = %config.name,
+                    error = %error,
+                    "skills/get for an unlisted skill failed"
+                );
+                return None;
+            }
+        };
+
+        // The allowlist applies to a skill fetched by URI exactly as it does to
+        // a listed one; filtering only the listing would be a bypass.
+        let policy =
+            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
+        policy.matches(&skill.name).then_some(skill)
     }
 
     /// Drop every cached skill catalog for one upstream, across all subjects.
@@ -318,7 +374,9 @@ impl UpstreamPool {
 
         // Match on the path remainder, since the origin label differs between
         // what Labby published and what the upstream serves.
-        let mut found: Option<(&str, &str)> = None;
+        // The owning skill travels with the match: verifying a `SKILL.md`
+        // needs the frontmatter its own entry published, not another skill's.
+        let mut found: Option<(&str, &str, &ValidatedSkill)> = None;
         for skill in &exposed.skills {
             let Some(resources) = skill.entry.resources.as_ref() else {
                 continue;
@@ -327,7 +385,7 @@ impl UpstreamPool {
                 if let Ok(parsed) = parse_skill_uri(&resource.uri)
                     && parsed.path() == path
                 {
-                    found = Some((resource.uri.as_str(), resource.digest.as_str()));
+                    found = Some((resource.uri.as_str(), resource.digest.as_str(), skill));
                     break;
                 }
             }
@@ -336,7 +394,7 @@ impl UpstreamPool {
             }
         }
 
-        let Some((upstream_uri, digest)) = found else {
+        let Some((upstream_uri, digest, skill)) = found else {
             return Err(ToolError::Sdk {
                 sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
                 message: format!(
@@ -434,6 +492,45 @@ impl UpstreamPool {
             });
         }
 
+        // A digest match does not subsume the frontmatter check, and this is
+        // the gap that check exists to close: an upstream may publish benign
+        // `frontmatter` in its `skills/list` entry while the real `SKILL.md`
+        // body carries something else — `allowed-tools: ["*"]`, say. The digest
+        // is computed over the real body, so it matches, and the body a client
+        // acts on grants capabilities the entry a user approved never declared.
+        // That is threat-model T3, and only a field-by-field comparison of the
+        // served bytes against the published entry catches it.
+        if is_skill_md(&skill.entry.uri, path) {
+            let served =
+                labby_runtime::skills::parse_skill_md_frontmatter(&text).map_err(|error| {
+                    ToolError::Sdk {
+                        sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                        message: format!(
+                            "`SKILL.md` from upstream `{}` has unparseable frontmatter: {error}",
+                            config.name
+                        ),
+                    }
+                })?;
+            labby_runtime::skills::compare_frontmatter(&skill.entry.frontmatter, &served).map_err(
+                |error| ToolError::Sdk {
+                    sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                    message: format!(
+                        "`SKILL.md` from upstream `{}` disagrees with the frontmatter its entry published: {error}",
+                        config.name
+                    ),
+                },
+            )?;
+        }
+
         Ok(VerifiedSkillFile { text, mime_type })
     }
+}
+
+/// Whether `path` addresses the `SKILL.md` of the skill rooted at `entry_uri`.
+///
+/// Compared against the entry's own URI rather than by matching the `SKILL.md`
+/// suffix, so a nested `references/SKILL.md` is not mistaken for the skill's
+/// own definition and cross-verified against the wrong frontmatter.
+fn is_skill_md(entry_uri: &str, path: &str) -> bool {
+    parse_skill_uri(entry_uri).is_ok_and(|parsed| parsed.path() == path)
 }

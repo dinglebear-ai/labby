@@ -122,6 +122,72 @@ pub struct SkillsListResult {
         skip_serializing_if = "Option::is_none"
     )]
     pub cache_scope: Option<String>,
+    /// Listing-level metadata. Carries the completeness bookkeeping an agent
+    /// needs to know the listing is partial — see [`SkillsListResult::absorb`].
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Map<String, Value>>,
+}
+
+/// The strictest cache scope: shareable by any client, gateway, or proxy.
+pub const CACHE_SCOPE_PUBLIC: &str = "public";
+/// Cache scope for a listing whose contents depend on who asked.
+pub const CACHE_SCOPE_PRIVATE: &str = "private";
+
+impl SkillsListResult {
+    /// Fold entries from another source into this listing.
+    ///
+    /// Merging two listings is not concatenation. Each carries freshness and
+    /// sharing terms that describe *its own* entries, and the combined listing
+    /// can only honor the strictest of them:
+    ///
+    /// - `cacheScope` collapses to `private` unless every source was `public`.
+    ///   Appending per-caller entries to a `public` listing tells every
+    ///   downstream cache it may serve one caller's entries to another — the
+    ///   exact over-sharing Labby's own per-subject cache sharding exists to
+    ///   prevent. A gateway that refuses to over-share internally must not
+    ///   instruct its clients to over-share on its behalf.
+    /// - `ttlMs` takes the minimum, since the combined listing goes stale as
+    ///   soon as its shortest-lived component does.
+    ///
+    /// Concatenating `skills` directly is what makes this go wrong silently,
+    /// so prefer this over extending the field in place.
+    pub fn absorb(&mut self, entries: Vec<SkillEntry>, scope: Option<&str>, ttl_ms: Option<u64>) {
+        // Absorbing nothing changes nothing. A gateway with no skills-proxying
+        // upstreams still calls this, and downgrading a purely first-party
+        // listing to `private` would discard a correct, useful caching hint on
+        // content that genuinely is caller-independent.
+        if entries.is_empty() {
+            return;
+        }
+        self.skills.extend(entries);
+
+        // Absent is not public: a source that declined to state its terms
+        // cannot be assumed to permit the widest sharing.
+        let both_public = matches!(self.cache_scope.as_deref(), Some(CACHE_SCOPE_PUBLIC))
+            && matches!(scope, Some(CACHE_SCOPE_PUBLIC));
+        if !both_public {
+            self.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_string());
+        }
+
+        self.ttl_ms = match (self.ttl_ms, ttl_ms) {
+            (Some(current), Some(incoming)) => Some(current.min(incoming)),
+            (current, incoming) => current.or(incoming),
+        };
+    }
+
+    /// Record that this listing is known to be incomplete.
+    ///
+    /// The SEP is explicit that an empty or partial listing is never proof a
+    /// server has no skills, but a client can only act on that if it is told
+    /// which case it is looking at. Without this, a listing missing four
+    /// unreachable upstreams is byte-identical to one where those upstreams
+    /// genuinely had nothing — and an agent concludes the skill it needs does
+    /// not exist.
+    pub fn note_incomplete(&mut self, key: &str, value: Value) {
+        self.meta
+            .get_or_insert_with(Map::new)
+            .insert(key.to_string(), value);
+    }
 }
 
 /// `skills/get` request parameters.

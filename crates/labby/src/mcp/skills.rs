@@ -23,10 +23,13 @@
 pub(crate) mod aggregate;
 pub(crate) mod local;
 
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use labby_runtime::skills::wire::{SkillEntry, SkillResource, SkillsListResult};
+use labby_runtime::skills::wire::{
+    CACHE_SCOPE_PRIVATE, CACHE_SCOPE_PUBLIC, SkillEntry, SkillResource, SkillsListResult,
+};
 use labby_runtime::skills::{
     FIRST_PARTY_ORIGIN, ResourceDigest, SkillUri, parse_skill_md_frontmatter, parse_skill_uri,
 };
@@ -227,8 +230,11 @@ pub(crate) fn list_first_party_skills() -> SkillsListResult {
         // Embedded and immutable for the life of the process, so a client may
         // cache the listing for as long as it likes.
         ttl_ms: Some(3_600_000),
-        // Labby's own skills carry no per-caller data.
-        cache_scope: Some("public".to_string()),
+        // Labby's own skills carry no per-caller data. This holds only for
+        // the first-party set — `absorb` downgrades it the moment per-caller
+        // proxied entries are folded in.
+        cache_scope: Some(CACHE_SCOPE_PUBLIC.to_string()),
+        meta: None,
     }
 }
 
@@ -396,6 +402,47 @@ impl LabMcpServer {
         request: &CustomRequest,
         context: &RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
+        // OBSERVABILITY.md requires one structured dispatch event per
+        // user-visible action. Wrapping the whole handler — rather than logging
+        // inside it — is what makes the scope denial observable too; a refused
+        // caller is exactly the event an operator needs and the easiest one to
+        // leave untraced by logging only the success paths.
+        let start = std::time::Instant::now();
+        let action = if request.method == SKILLS_GET_METHOD {
+            "skills.get"
+        } else {
+            "skills.list"
+        };
+        let subject_log = self.request_subject_log_tag(context);
+        let outcome = self.dispatch_skills_request(request, context).await;
+
+        match &outcome {
+            Ok(_) => tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action,
+                subject = %subject_log,
+                elapsed_ms = start.elapsed().as_millis(),
+                "dispatch finish"
+            ),
+            Err(error) => tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action,
+                subject = %subject_log,
+                elapsed_ms = start.elapsed().as_millis(),
+                kind = %error.code.0,
+                "dispatch error"
+            ),
+        }
+        outcome
+    }
+
+    async fn dispatch_skills_request(
+        &self,
+        request: &CustomRequest,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CustomResult, ErrorData> {
         let auth = auth_context_from_extensions(&context.extensions);
         if !code_mode_read_scope_allowed(auth) {
             return Err(ErrorData::new(
@@ -410,14 +457,26 @@ impl LabMcpServer {
                 .params_as::<SkillsGetParams>()
                 .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
                 .ok_or_else(|| ErrorData::invalid_params("skills/get requires `uri`", None))?;
-            // -32602 is the spec's answer for a URI this server does not serve
-            // as a skill. `invalid_params` is that code.
-            let entry = first_party_skill_entry(&params.uri).ok_or_else(|| {
-                ErrorData::invalid_params(
-                    format!("`{}` is not a skill this server serves", params.uri),
-                    None,
-                )
-            })?;
+            // Proxied entries must resolve here too. Answering -32602 for a URI
+            // this same server just published in `skills/list` tells a
+            // conforming client the skill was withdrawn — the code means "not a
+            // skill I serve", which a client acts on by dropping it. Resolving
+            // against the same aggregate the listing is built from is what
+            // keeps the two answers from diverging.
+            let entry = match first_party_skill_entry(&params.uri) {
+                Some(entry) => entry,
+                None => self
+                    .proxied_skill_entry(context, &params.uri)
+                    .await
+                    .ok_or_else(|| {
+                        // -32602 is the spec's answer for a URI this server does
+                        // not serve as a skill. `invalid_params` is that code.
+                        ErrorData::invalid_params(
+                            format!("`{}` is not a skill this server serves", params.uri),
+                            None,
+                        )
+                    })?,
+            };
             let result = SkillsGetResult { skill: entry };
             return serde_json::to_value(result)
                 .map(CustomResult::new)
@@ -425,12 +484,96 @@ impl LabMcpServer {
         }
 
         let mut listing = list_first_party_skills();
-        listing
-            .skills
-            .extend(self.proxied_skill_entries(context).await);
+        let proxied = self.proxied_skill_entries(context).await;
+
+        // Proxied entries are fetched per OAuth subject and filtered by the
+        // caller's route scope, so folding them into a listing that advertises
+        // `cacheScope: public` would tell every downstream cache it may serve
+        // one caller's entries to another. `absorb` collapses the scope and
+        // takes the shorter TTL rather than inheriting the first-party terms.
+        listing.absorb(
+            proxied.entries,
+            proxied.cache_scope.as_deref(),
+            proxied.ttl_ms,
+        );
+
+        // An agent cannot act on "this listing may be partial" unless it is
+        // told so. Without these, a listing missing four unreachable upstreams
+        // is byte-identical to one where they genuinely had no skills.
+        if proxied.unreachable_upstreams > 0 {
+            listing.note_incomplete(
+                "unreachableUpstreams",
+                Value::from(proxied.unreachable_upstreams),
+            );
+        }
+        if proxied.excluded_count > 0 {
+            listing.note_incomplete("excludedSkills", Value::from(proxied.excluded_count));
+        }
+        if proxied.truncated {
+            listing.note_incomplete("truncated", Value::Bool(true));
+        }
+
         serde_json::to_value(listing)
             .map(CustomResult::new)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    }
+
+    /// One proxied skill entry by URI, resolved against the same aggregate
+    /// `skills/list` is built from.
+    ///
+    /// Deliberately not a separate upstream fetch: two independent resolution
+    /// paths are exactly how a server ends up publishing a URI in one and
+    /// denying it in the other. Reusing the aggregate makes agreement
+    /// structural rather than something two code paths have to maintain.
+    #[cfg(feature = "gateway")]
+    async fn proxied_skill_entry(
+        &self,
+        context: &RequestContext<RoleServer>,
+        uri: &str,
+    ) -> Option<SkillEntry> {
+        if let Some(entry) = self
+            .proxied_skill_entries(context)
+            .await
+            .entries
+            .into_iter()
+            .find(|entry| entry.uri == uri)
+        {
+            return Some(entry);
+        }
+
+        // Not in the listing. The SEP requires a host to load a skill given
+        // only its URI, and says an empty or partial listing is never proof a
+        // server has no skills — a budget-truncated walk or a narrowed cache
+        // would otherwise make a servable skill permanently unreachable.
+        let parsed = parse_skill_uri(uri).ok()?;
+        let origin = parsed.origin().to_string();
+        if !self.route_scope.allows_upstream(&origin) {
+            return None;
+        }
+        let manager = self.gateway_manager.as_ref()?;
+        let config = manager.upstream_config(&origin).await?;
+        if !config.enabled || !config.proxy_skills {
+            return None;
+        }
+        let pool = self.current_upstream_pool().await?;
+
+        // Ask the upstream under the URI it knows, then relabel the answer back
+        // into this origin exactly as the listing does.
+        let upstream_uri = parsed.with_origin(&config.name).ok()?.to_uri();
+        let skill = pool
+            .fetch_unlisted_skill(&config, self.request_subject(context), &upstream_uri)
+            .await?;
+        aggregate::mint_proxied_entry(&config.name, &skill, None)
+    }
+
+    /// Without the gateway feature there are no proxied skills to resolve.
+    #[cfg(not(feature = "gateway"))]
+    async fn proxied_skill_entry(
+        &self,
+        _context: &RequestContext<RoleServer>,
+        _uri: &str,
+    ) -> Option<SkillEntry> {
+        None
     }
 
     /// Skills aggregated from upstreams, relabelled under each origin.
@@ -440,12 +583,12 @@ impl LabMcpServer {
     /// A restricted route must not see skills from an upstream it cannot reach,
     /// or the agent's skill world would not match its tool world.
     #[cfg(feature = "gateway")]
-    async fn proxied_skill_entries(&self, context: &RequestContext<RoleServer>) -> Vec<SkillEntry> {
+    async fn proxied_skill_entries(&self, context: &RequestContext<RoleServer>) -> ProxiedSkills {
         let Some(manager) = self.gateway_manager.as_ref() else {
-            return Vec::new();
+            return ProxiedSkills::default();
         };
         let Some(pool) = self.current_upstream_pool().await else {
-            return Vec::new();
+            return ProxiedSkills::default();
         };
         let subject = self.request_subject(context);
         let scope = self.route_scope.clone();
@@ -459,7 +602,8 @@ impl LabMcpServer {
             aggregate::ToolAccess::Direct
         };
 
-        let mut entries = Vec::new();
+        let mut aggregated = ProxiedSkills::default();
+        let entries = &mut aggregated.entries;
         for config in manager.current_config().await.upstream {
             if !config.enabled || !config.proxy_skills {
                 continue;
@@ -469,6 +613,15 @@ impl LabMcpServer {
             }
             match pool.upstream_skills(&config, subject).await {
                 Ok(exposed) => {
+                    // Completeness bookkeeping the pool computed. Dropping it
+                    // here is what makes a partial listing indistinguishable
+                    // from a complete one.
+                    aggregated.excluded_count += exposed.excluded_count;
+                    aggregated.truncated |= exposed.truncated;
+                    // Every proxied entry is subject- and scope-dependent, so
+                    // one is enough to make the whole listing non-shareable.
+                    aggregated.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_string());
+                    aggregated.ttl_ms = min_ttl(aggregated.ttl_ms, exposed.ttl_ms);
                     // Facts about Labby's own catalog, so a client can scope
                     // `allowed-tools` to this origin instead of resolving it
                     // against the flattened aggregate (threat model T3).
@@ -492,7 +645,10 @@ impl LabMcpServer {
                 Err(error) => {
                     // Partial results: one unreachable upstream must not empty
                     // the whole listing. The failure is already recorded on the
-                    // circuit breaker by the pool.
+                    // circuit breaker by the pool. Counted, not just logged —
+                    // an operator sees the log, but the agent acting on the
+                    // listing sees only what rides on the wire.
+                    aggregated.unreachable_upstreams += 1;
                     tracing::warn!(
                         upstream = %config.name,
                         error = %error,
@@ -501,7 +657,7 @@ impl LabMcpServer {
                 }
             }
         }
-        entries
+        aggregated
     }
 
     #[cfg(not(feature = "gateway"))]
@@ -605,6 +761,39 @@ pub(crate) mod tests_support {
     }
 }
 
+/// Skills aggregated from upstreams, with the bookkeeping that says how
+/// complete the set is.
+///
+/// The counts are the point. A listing that silently omits four unreachable
+/// upstreams is byte-identical to one where those upstreams genuinely had no
+/// skills, and an agent reading it concludes the skill it needs does not
+/// exist. The SEP is explicit that an empty or partial listing is never proof
+/// of absence — which a client can only honor if it is told which case it has.
+#[cfg(feature = "gateway")]
+#[derive(Debug, Default)]
+pub(crate) struct ProxiedSkills {
+    pub(crate) entries: Vec<SkillEntry>,
+    /// Upstreams that failed and were skipped rather than emptying the listing.
+    pub(crate) unreachable_upstreams: usize,
+    /// Skills dropped for integrity or budget reasons, summed across upstreams.
+    pub(crate) excluded_count: usize,
+    /// Whether any upstream's walk was cut short by a budget.
+    pub(crate) truncated: bool,
+    /// Strictest cache scope across the folded-in sources.
+    pub(crate) cache_scope: Option<String>,
+    /// Shortest remaining lifetime across the folded-in snapshots.
+    pub(crate) ttl_ms: Option<u64>,
+}
+
+/// Shorter of two optional TTLs, preferring whichever is present.
+#[cfg(feature = "gateway")]
+fn min_ttl(current: Option<u64>, incoming: Option<u64>) -> Option<u64> {
+    match (current, incoming) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 impl LabMcpServer {
     /// Serve one file of a proxied skill.
     ///
@@ -614,12 +803,17 @@ impl LabMcpServer {
     /// manifest-bound, digest-verified read. Filtering only the listing would
     /// leave the file fetchable by URI, which is a bypass rather than a
     /// restriction.
+    ///
+    /// `subject` is the caller's real OAuth identity, used to key the
+    /// per-subject skills cache and select the upstream token. `subject_log` is
+    /// its redacted form and is only ever logged — the two must not be swapped.
     #[cfg(feature = "gateway")]
     pub(crate) async fn read_proxied_skill_file_impl(
         &self,
         uri: &str,
         redacted_uri: &str,
-        subject: &str,
+        subject: Option<&str>,
+        subject_log: &str,
         start: std::time::Instant,
     ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
         let parsed = parse_skill_uri(uri)
@@ -651,26 +845,32 @@ impl LabMcpServer {
             return Err(unknown());
         };
 
-        let caller_subject = if subject.is_empty() {
-            None
-        } else {
-            Some(subject)
-        };
         let verified = pool
-            .read_proxied_skill_file(&config, caller_subject, parsed.path())
+            .read_proxied_skill_file(&config, subject, parsed.path())
             .await
             .map_err(|error| {
-                ErrorData::invalid_params(
-                    serde_json::to_string(&error).unwrap_or_else(|_| error.to_string()),
-                    None,
-                )
+                let payload = serde_json::to_string(&error).unwrap_or_else(|_| error.to_string());
+                // -32602 is this server's answer for "not a skill I serve" —
+                // an authoritative negative a conforming client acts on by
+                // dropping the skill. An integrity failure is the opposite
+                // claim: the skill exists and something is wrong with it.
+                // Collapsing the two would make tampering indistinguishable
+                // from a typo, and would teach a client to forget the skill
+                // rather than refresh it.
+                match error.kind() {
+                    labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH
+                    | labby_runtime::skills::KIND_SKILL_MANIFEST_STALE => {
+                        ErrorData::internal_error(payload, None)
+                    }
+                    _ => ErrorData::invalid_params(payload, None),
+                }
             })?;
 
         tracing::info!(
             surface = "mcp",
             service = "labby",
             action = "read_resource",
-            subject,
+            subject = %subject_log,
             resource_uri = %redacted_uri,
             upstream = %origin,
             elapsed_ms = start.elapsed().as_millis(),

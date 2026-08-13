@@ -72,6 +72,26 @@ impl UpstreamSkills {
     }
 }
 
+/// Whether an error string is an upstream's `-32602 Invalid params` answer.
+///
+/// The capability call flattens the structured error into a formatted string
+/// before we see it, so this matches the code only where an error renderer put
+/// it. A looser match — a bare `-32602`, or the words "invalid params" anywhere
+/// — also fires on an upstream's *nested* error text (a proxying upstream
+/// relaying an inner error, or a chained Labby serializing a `ToolError`),
+/// silently reclassifying a real transport or auth failure as a definitive
+/// "this skill does not exist".
+///
+/// Both renderings are accepted because rmcp emits `Mcp error:` for a peer's
+/// error response and `JSON-RPC error:` elsewhere; anchoring on only one is how
+/// this check silently stops matching.
+fn is_invalid_params_error(message: &str) -> bool {
+    const INVALID_PARAMS: i32 = -32602;
+    ["Mcp error: ", "JSON-RPC error: "]
+        .iter()
+        .any(|prefix| message.contains(&format!("{prefix}{INVALID_PARAMS}")))
+}
+
 /// True when the upstream declared the skills extension in its handshake.
 ///
 /// Capability is read from the recorded `initialize` result rather than probed:
@@ -259,7 +279,17 @@ impl UpstreamPool {
                 // -32602 is the spec's answer for "not a skill this server
                 // serves". Treating it as a transport failure would open the
                 // circuit for an upstream that answered correctly.
-                if message.contains("-32602") || message.to_lowercase().contains("invalid params") {
+                //
+                // Matched on the rendered JSON-RPC prefix rather than a bare
+                // `-32602` substring or the phrase "invalid params". Those
+                // appear inside *any* upstream's nested error text — a proxying
+                // upstream relaying an inner error, or a chained Labby
+                // serializing a `ToolError` — and would convert a genuine
+                // transport or auth failure into `Ok(None)`, which this
+                // function's callers read as an authoritative "no such skill".
+                // A false negative here makes a client drop a skill that
+                // exists; the ambiguous case must fail toward the error.
+                if is_invalid_params_error(&message) {
                     return Ok(None);
                 }
                 return Err(message);

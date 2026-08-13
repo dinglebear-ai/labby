@@ -81,6 +81,14 @@ impl CachedSkills {
         Instant::now() < self.expires_at
     }
 
+    /// How long this snapshot stays fresh. Zero once expired.
+    ///
+    /// A downstream listing that folds these entries in must not advertise a
+    /// longer TTL than the data behind it actually has.
+    pub(super) fn remaining_ttl(&self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
+    }
+
     pub(super) fn age(&self) -> Duration {
         self.fetched_at.elapsed()
     }

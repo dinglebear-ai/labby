@@ -193,8 +193,8 @@ match as a security boundary."*
 
 Labby is exactly that intermediary. Verification here is a **consistency check**
 — it catches corruption, truncation, and staleness after a skill is updated. It
-is not tamper detection, and the doctor counter that reports failures should be
-read as a consistency counter.
+is not tamper detection. A digest match proves the bytes are the ones the entry
+described; it proves nothing about whether those bytes are safe.
 
 ### `allowed-tools` through a gateway
 
@@ -233,4 +233,5 @@ skill content — the skill remains data, not directives.
 and therefore not elicitation-gated the way `gateway.remove` is. Config mutation
 is reversible and backup-first, so that classification stands — but enabling
 skills aggregation means an upstream's instructions reach agents through Labby.
-Doctor surfaces which upstreams have it on.
+`gateway.skills.list` shows which upstreams have it on, along with each
+catalog's cache age and what was excluded or truncated.

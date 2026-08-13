@@ -699,13 +699,38 @@ impl LabMcpServer {
         // resolved first and never falls through to a lab:// handler.
         #[cfg(feature = "skills")]
         if crate::mcp::skills::is_skill_uri(&uri) {
+            // Same scope `skills/list` and `skills/get` require. Gating only
+            // the enumerating methods would leave every skill file fetchable by
+            // URI, and skill URIs are not secret — they appear in listings,
+            // docs, and any prior authorized session. That is a bypass, not a
+            // restriction, and it is the rule this repo already applies to
+            // `expose_skills` on the listing-and-access pair.
+            if !code_mode_read_scope_allowed(auth_context_from_extensions(&context.extensions)) {
+                return Err(forbidden_resource_error(
+                    &uri,
+                    "skill resources require one of scopes: lab:read, lab, lab:admin",
+                    &["lab:read", "lab", "lab:admin"],
+                ));
+            }
             let body = match crate::mcp::skills::read_first_party_skill_file(&uri) {
                 Some(body) => body.to_string(),
                 // Not one of Labby's own: route it to the upstream that owns
                 // the origin label, with the manifest-bound digest check.
                 None => {
+                    // `subject` above is the *redacted* logging tag. Routing a
+                    // proxied read needs the real OAuth identity: it keys the
+                    // per-subject skills cache and picks the token the upstream
+                    // is connected with. Passing the tag would miss the cache
+                    // `skills/list` populated and resolve a subject no upstream
+                    // has ever heard of.
                     return self
-                        .read_proxied_skill_file_impl(&uri, &resource_uri_log, &subject, start)
+                        .read_proxied_skill_file_impl(
+                            &uri,
+                            &resource_uri_log,
+                            self.request_subject(&context),
+                            &subject,
+                            start,
+                        )
                         .await;
                 }
             };

@@ -1359,7 +1359,10 @@ mod tests {
 
 /// True when `upstream` names one of Labby's own in-process service peers.
 fn is_in_process_upstream(upstream: &str) -> bool {
-    upstream.starts_with("__in_process__")
+    // Same constant the name is minted from, and the one `UpstreamConfig`
+    // reserves — a literal here is how a third-party upstream ends up silently
+    // treated as in-process and handed the caller's identity.
+    upstream.starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
 }
 
 /// A Code Mode caller's authorization facts, in propagatable form.

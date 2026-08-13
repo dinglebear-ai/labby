@@ -675,8 +675,9 @@ this surface:
 - **Ingest exclusions are `WARN` with a stable reason code**
   (`invalid_frontmatter`, `manifest_uri_out_of_namespace`, `missing_manifest`,
   …) plus the upstream and the redacted skill URI. One malformed skill never
-  fails an upstream, so the log line is the only place that loss is visible
-  until an operator reads the doctor row.
+  fails an upstream, so the log line is the only place the *cause* is visible;
+  the count reaches operators through `gateway.skills.list` and agents through
+  the listing's `_meta.excludedSkills`.
 
 | Event | Level | Notes |
 |-------|-------|-------|

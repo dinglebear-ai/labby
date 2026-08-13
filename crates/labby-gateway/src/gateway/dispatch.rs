@@ -1062,8 +1062,11 @@ async fn handle_skills_list(
     _manager: &GatewayManager,
     _params_value: Value,
 ) -> Result<Value, ToolError> {
+    // Not `unknown_action`: that kind's recovery advice is "rediscover", and
+    // rediscovery re-advertises this same action, so an agent would loop. The
+    // action is real and permanently unavailable in this build.
     Err(ToolError::Sdk {
-        sdk_kind: "unknown_action".to_string(),
-        message: "this build was compiled without the `skills` feature".to_string(),
+        sdk_kind: "feature_not_compiled".to_string(),
+        message: "this build of Labby was compiled without the `skills` feature".to_string(),
     })
 }

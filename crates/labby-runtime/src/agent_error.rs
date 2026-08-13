@@ -326,6 +326,10 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "oauth_scope_upgrade_required"
         | "oauth_shared_credential_protected"
         | "route_scope_denied" => AgentErrorOrigin::Policy,
+        // A capability the operator did not build in. Policy rather than
+        // discovery: the action is genuinely unavailable here, and no amount of
+        // rediscovery changes that.
+        "feature_not_compiled" => AgentErrorOrigin::Policy,
         "rate_limited"
         | "queue_saturated"
         | "quota_exceeded"
@@ -497,6 +501,12 @@ pub fn recovery_for_kind(
                 retry_after_ms: None,
             }
         }
+        "feature_not_compiled" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::DoNotRetry,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "This build of Labby was compiled without the feature backing this action. Rediscovery will keep advertising it, so retrying cannot succeed — the operator must run a build that includes the feature.".to_string(),
+            retry_after_ms: None,
+        },
         "cancelled" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::DoNotRetry,
             same_arguments: AgentSameArgumentsRetry::Never,
