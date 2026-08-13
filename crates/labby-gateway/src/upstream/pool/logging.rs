@@ -85,6 +85,20 @@ impl<'a> UpstreamRequestLog<'a> {
         }
     }
 
+    /// `skill_uri` must already be redacted by the caller, exactly like
+    /// [`Self::resource`] — a skill URI carries the same path-shaped detail.
+    pub(super) fn skill(upstream: &'a str, skill_uri: &'a str, subject_scoped: bool) -> Self {
+        Self {
+            upstream,
+            capability: "skills",
+            operation: "skill.get",
+            subject_scoped,
+            transport: None,
+            item_kind: Some("skill_uri"),
+            item: Some(skill_uri),
+        }
+    }
+
     pub(super) fn resources_list(upstream: &'a str, subject_scoped: bool) -> Self {
         Self {
             upstream,
