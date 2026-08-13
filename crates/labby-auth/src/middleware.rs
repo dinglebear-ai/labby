@@ -603,10 +603,7 @@ fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Op
 }
 
 fn metadata_url_for_resource(resource: &str) -> String {
-    format!(
-        "{}/.well-known/oauth-protected-resource",
-        resource.trim_end_matches('/')
-    )
+    crate::auth_context::protected_resource_metadata_url(resource)
 }
 
 fn csrf_error_response(message: &str) -> Response {
@@ -683,8 +680,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn missing_bearer_token_returns_401_with_www_authenticate() {
-        let layer =
-            AuthLayer::new().with_resource_url(Some(Arc::<str>::from("https://lab.example.com")));
+        let layer = AuthLayer::new().with_resource_url(Some(Arc::<str>::from(
+            "https://lab.example.com:9443/reverse-proxy/base/mcp?ignored=secret",
+        )));
         let app = echo_app(layer);
         let response = app
             .oneshot(
@@ -701,9 +699,12 @@ mod tests {
             .get(header::WWW_AUTHENTICATE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
-        assert!(
-            www.contains("resource_metadata="),
-            "missing resource_metadata in WWW-Authenticate: `{www}`"
+        assert_eq!(
+            www,
+            concat!(
+                "Bearer resource_metadata=\"https://lab.example.com:9443/",
+                ".well-known/oauth-protected-resource\", scope=\"\""
+            )
         );
     }
 

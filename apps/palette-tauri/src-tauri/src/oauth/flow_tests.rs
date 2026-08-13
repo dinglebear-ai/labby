@@ -4,6 +4,7 @@ fn meta() -> AuthServerMetadata {
     AuthServerMetadata {
         authorization_endpoint: "https://axon.example.com/authorize".to_string(),
         token_endpoint: "https://axon.example.com/token".to_string(),
+        revocation_endpoint: Some("https://axon.example.com/revoke".to_string()),
         registration_endpoint: Some("https://axon.example.com/register".to_string()),
         native_callback_endpoint: None,
         native_poll_endpoint_v2: None,
@@ -25,12 +26,17 @@ fn metadata_deserializes_ignoring_extra_fields_and_optional_registration() {
         "issuer": "https://axon.example.com",
         "authorization_endpoint": "https://axon.example.com/authorize",
         "token_endpoint": "https://axon.example.com/token",
+        "revocation_endpoint": "https://axon.example.com/revoke",
         "registration_endpoint": "https://axon.example.com/register",
         "jwks_uri": "https://axon.example.com/jwks",
         "response_types_supported": ["code"]
     }"#;
     let parsed: AuthServerMetadata = serde_json::from_str(json).unwrap();
     assert_eq!(parsed.token_endpoint, "https://axon.example.com/token");
+    assert_eq!(
+        parsed.revocation_endpoint.as_deref(),
+        Some("https://axon.example.com/revoke")
+    );
     assert_eq!(
         parsed.registration_endpoint.as_deref(),
         Some("https://axon.example.com/register")
@@ -44,6 +50,7 @@ fn metadata_deserializes_ignoring_extra_fields_and_optional_registration() {
     }"#;
     let parsed: AuthServerMetadata = serde_json::from_str(no_dcr).unwrap();
     assert!(parsed.registration_endpoint.is_none());
+    assert!(parsed.revocation_endpoint.is_none());
 }
 
 #[test]
@@ -127,6 +134,18 @@ fn token_forms_have_required_fields() {
     assert!(refresh.contains(&("grant_type", "refresh_token".to_string())));
     assert!(refresh.contains(&("refresh_token", "refresh-1".to_string())));
     assert!(refresh.contains(&("client_id", "client-123".to_string())));
+}
+
+#[test]
+fn revocation_form_identifies_refresh_grant_without_exposing_it_elsewhere() {
+    assert_eq!(
+        revocation_form("client-123", "refresh-1"),
+        vec![
+            ("token", "refresh-1".to_string()),
+            ("token_type_hint", "refresh_token".to_string()),
+            ("client_id", "client-123".to_string()),
+        ]
+    );
 }
 
 #[test]

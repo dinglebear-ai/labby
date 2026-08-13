@@ -602,14 +602,18 @@ async fn callback(
         }
     }
 
-    if let Some(auth_error) = &query.error {
+    if query.error.is_some() {
         warn!(
             surface = "api",
             service = "upstream_oauth",
             action = "callback",
             upstream = %upstream,
-            error = %auth_error,
-            error_description = ?query.error_description,
+            kind = "authorization_failed",
+            error_present = true,
+            error_description_present = query.error_description.is_some(),
+            error_code_bytes = query.error.as_deref().map_or(0, str::len),
+            error_description_bytes = query.error_description.as_deref().map_or(0, str::len),
+            elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth callback received error from authorization server"
         );
         if let Err(revoke_err) = sqlite

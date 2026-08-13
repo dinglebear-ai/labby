@@ -12,6 +12,8 @@ fn parse_request_target_extracts_path_and_query() {
     assert_eq!(parse_request_target("GET / HTTP/1.1"), Some("/"));
     assert_eq!(parse_request_target("garbage"), None);
     assert_eq!(parse_request_target("GET notapath HTTP/1.1"), None);
+    let oversized = format!("GET /callback?code={} HTTP/1.1", "x".repeat(5000));
+    assert_eq!(parse_request_target(&oversized), None);
 }
 
 #[test]
@@ -93,4 +95,27 @@ async fn await_code_returns_error_for_matching_state_denial() {
         .await
         .unwrap_err();
     assert!(err.contains("denied"), "unexpected error: {err}");
+}
+
+#[tokio::test]
+async fn slow_partial_client_cannot_hold_callback_listener_for_flow_timeout() {
+    let listener = bind().await.unwrap();
+    let port = listener.listener.local_addr().unwrap().port();
+    let slow = tokio::spawn(async move {
+        let mut stream = TcpStream::connect(("localhost", port)).await.unwrap();
+        stream.write_all(b"GET /callback?").await.unwrap();
+        tokio::time::sleep(CONNECTION_READ_TIMEOUT + Duration::from_millis(100)).await;
+    });
+    let legitimate = tokio::spawn(async move {
+        tokio::time::sleep(CONNECTION_READ_TIMEOUT + Duration::from_millis(250)).await;
+        send_request(port, "GET /callback?code=real&state=expected HTTP/1.1").await;
+    });
+
+    let code = listener
+        .await_code("expected", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(code, "real");
+    slow.await.unwrap();
+    legitimate.await.unwrap();
 }

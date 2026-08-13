@@ -21,6 +21,8 @@ pub(crate) struct AuthServerMetadata {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     #[serde(default)]
+    pub revocation_endpoint: Option<String>,
+    #[serde(default)]
     pub registration_endpoint: Option<String>,
     #[serde(default)]
     pub native_callback_endpoint: Option<String>,
@@ -162,6 +164,36 @@ pub(crate) fn refresh_form(client_id: &str, refresh_token: &str) -> Vec<(&'stati
         ("refresh_token", refresh_token.to_string()),
         ("client_id", client_id.to_string()),
     ]
+}
+
+pub(crate) fn revocation_form(client_id: &str, refresh_token: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("token", refresh_token.to_string()),
+        ("token_type_hint", "refresh_token".to_string()),
+        ("client_id", client_id.to_string()),
+    ]
+}
+
+pub(crate) async fn revoke_refresh_token(
+    client: &reqwest::Client,
+    revocation_endpoint: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<(), String> {
+    let endpoint = require_secure_url(revocation_endpoint)?;
+    let response = client
+        .post(endpoint)
+        .form(&revocation_form(client_id, refresh_token))
+        .send()
+        .await
+        .map_err(|err| format!("OAuth revocation request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "OAuth revocation returned HTTP {} — local credentials were retained so sign-out can be retried",
+            response.status()
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn discover(

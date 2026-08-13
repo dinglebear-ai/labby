@@ -7,6 +7,7 @@ fn creds(server: &str) -> StoredCredentials {
         access_token: "a".into(),
         refresh_token: None,
         token_endpoint: format!("{server}/token"),
+        revocation_endpoint: Some(format!("{server}/revoke")),
         expires_at_unix: 4_102_444_800,
         scope: "axon:read axon:write".to_string(),
         server_url: server.to_string(),
@@ -59,6 +60,7 @@ fn credentials_from_token_clamps_huge_expires_in_and_trims_server_url() {
         "https://x/",
         "https://x/token".to_string(),
         None,
+        None,
         token,
         1000,
     );
@@ -86,6 +88,7 @@ fn classify_refresh_maps_each_result_to_the_right_outcome() {
             "https://x",
             "https://x/token".to_string(),
             None,
+            None,
             1000
         ),
         RefreshOutcome::Refreshed(_)
@@ -100,6 +103,7 @@ fn classify_refresh_maps_each_result_to_the_right_outcome() {
             "https://x",
             "t".to_string(),
             None,
+            None,
             1000
         ),
         RefreshOutcome::Cleared
@@ -113,6 +117,7 @@ fn classify_refresh_maps_each_result_to_the_right_outcome() {
             "c".to_string(),
             "https://x",
             "t".to_string(),
+            None,
             None,
             1000
         ),
@@ -132,6 +137,7 @@ fn credentials_from_token_preserves_prior_refresh_token_when_omitted() {
         "c".to_string(),
         "https://x",
         "https://x/token".to_string(),
+        None,
         prior,
         token,
         1000,
@@ -151,6 +157,7 @@ fn credentials_from_token_preserves_prior_refresh_token_when_omitted() {
         "c".to_string(),
         "https://x",
         "https://x/token".to_string(),
+        None,
         prior,
         token,
         1000,
@@ -176,4 +183,21 @@ fn refresh_generation_check_rejects_stale_access_token_snapshot() {
         "a refresh based on an older token must not replace a newer login"
     );
     assert!(!cache_matches_access(&CredCache::Loaded(None), Some("a")));
+}
+
+#[test]
+fn concurrent_unauthorized_call_reuses_rotation_completed_while_waiting() {
+    let mut rotated = creds("https://axon.example.com");
+    rotated.access_token = "rotated-access".into();
+    let cache = CredCache::Loaded(Some(rotated));
+
+    assert_eq!(
+        refreshed_token_after_wait(&cache, "a", "https://axon.example.com"),
+        Some("rotated-access".to_string())
+    );
+    assert_eq!(
+        refreshed_token_after_wait(&cache, "rotated-access", "https://axon.example.com"),
+        None,
+        "the caller that observed the current token must perform the rotation"
+    );
 }

@@ -13,6 +13,8 @@ pub enum OauthRelayError {
         value: String,
         source: url::ParseError,
     },
+    #[error("invalid oauth relay target: {detail}")]
+    InvalidTargetPolicy { detail: &'static str },
     #[error("failed to bind local oauth relay on {bind_addr}: {source}")]
     Bind {
         bind_addr: String,
