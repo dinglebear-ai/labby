@@ -92,8 +92,12 @@ process environment.** The following invariants are NON-NEGOTIABLE:
    cause labby to spawn arbitrary commands. This is a documented trust boundary,
    not a vulnerability, but it means:
    - Never execute gateway add/update actions without confirmed auth.
-   - The `destructive: true` annotation on remove/update actions triggers MCP
-     elicitation and HTTP `confirm: true` gating.
+   - `requires_admin: true` — not `destructive` — is the gate here. `add`,
+     `update`, and `test` are admin-only but NOT destructive: they spawn
+     processes without causing unrecoverable data loss. Only `gateway.remove`
+     and `gateway.oauth.google_revoke` are destructive, which triggers MCP
+     elicitation and CLI `-y`. HTTP does not gate on `destructive` at all
+     (see `api/services/helpers.rs`).
    - `pool/connect_stdio.rs` sets a process-group guard so spawned children are
      reaped on drop.
 
