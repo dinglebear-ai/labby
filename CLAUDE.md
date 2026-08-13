@@ -187,7 +187,9 @@ marketplace({ "action": "schema", "params": { "action": "mcp.install" } })  // p
   request's `inputResponses`.
 - **CLI:** requires `-y` / `--yes` to run non-interactively. `--no-confirm` and `--dry-run` are also honored.
 
-Mark actions `destructive: true` whenever they delete, overwrite, spawn local processes, or push state that cannot be trivially reversed, including `gateway.test`, `gateway.remove`, protected-route mutation, and setup repair actions.
+Mark actions `destructive: true` only when they can cause permanent loss of data that cannot be quickly and easily regenerated — deleting a source tree, hard-resetting away unrecoverable work, wiping an irreplaceable folder. This is deliberately narrower than "mutates state": restarting a process, toggling a gateway, spawning a local upstream command, or clearing an OAuth token all change state without being destructive. Across the whole catalog only `gateway.remove`, `gateway.oauth.google_revoke`, `snippets.remove`/`snippets.promote`, and the `setup` repair/plugin/settings actions qualify. The canonical definition is the doc comment on `ActionSpec::destructive` in `crates/labby-primitives/src/action.rs`; keep this file in sync with it, not the other way round.
+
+`gateway.test`, `gateway.add`, and `gateway.update` spawn local subprocesses for stdio upstreams and are still **not** destructive — this is deliberate, not drift. Their gate is `requires_admin: true` plus the spawn allowlist, because the security boundary for stdio upstreams is who can configure the gateway, not what commands it runs. See `docs/GATEWAY.md` § "Stdio Upstream Security Model" before re-proposing a confirmation gate there.
 
 ### Structured error envelopes
 

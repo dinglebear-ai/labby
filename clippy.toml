@@ -13,3 +13,17 @@
 disallowed-macros = [
     { path = "async_trait::async_trait", reason = "Use native `async fn in trait` (Rust 1.75+). See crates/lab-apis/CLAUDE.md." },
 ]
+
+# The rmcp `Peer::list_all_*` helpers follow `nextCursor` in an unbounded
+# loop, so a malicious or buggy upstream can stream pages into memory until
+# a timeout (or forever). Gateway code must use the bounded wrappers in
+# `crates/labby-gateway/src/upstream/pool/paginate.rs` instead. The trusted
+# in-process peer and MCP conformance/regression fixtures carry explicit
+# `#[allow(clippy::disallowed_methods)]`.
+# Activated via `disallowed_methods = "deny"` in [workspace.lints.clippy].
+disallowed-methods = [
+    { path = "rmcp::service::Peer::list_all_tools", reason = "Unbounded nextCursor loop — use paginate.rs list_tools_bounded." },
+    { path = "rmcp::service::Peer::list_all_prompts", reason = "Unbounded nextCursor loop — use paginate.rs list_prompts_bounded." },
+    { path = "rmcp::service::Peer::list_all_resources", reason = "Unbounded nextCursor loop — use paginate.rs list_resources_bounded." },
+    { path = "rmcp::service::Peer::list_all_resource_templates", reason = "Unbounded nextCursor loop — use paginate.rs list_resource_templates_bounded." },
+]

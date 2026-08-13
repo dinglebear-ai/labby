@@ -88,7 +88,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.code_mode.set",
         description: "Configure gateway Code Mode exposure and execution limits",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "CodeModeConfig",
         params: &[
@@ -176,7 +176,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.enrich.preview",
         description: "Preview Code Mode upstream hint proposals from cached gateway metadata",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "GatewayEnrichmentPreviewView",
         params: &[
@@ -215,7 +215,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.enrich.apply",
         description: "Persist an operator-approved Code Mode upstream hint after hash validation",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "GatewayHintApplyView",
         params: &[
@@ -614,7 +614,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.import",
         description: "Import discovered MCP servers into the gateway config as disabled-by-default entries. Servers are marked with their discovery source.",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "ImportResultView",
         params: &[
@@ -649,7 +649,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.import_pending.approve",
         description: "Approve a pending discovered server and add it to the gateway config as disabled-by-default",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "PendingImportView",
         params: &[ParamSpec {
@@ -662,7 +662,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.import_pending.reject",
         description: "Reject a pending discovered server and tombstone it so it never re-appears",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "PendingImportView",
         params: &[ParamSpec {
@@ -683,7 +683,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.import_tombstones.clear",
         description: "Clear one import tombstone so a previously deleted imported server can be imported again",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "ImportTombstoneView[]",
         params: &[
@@ -717,7 +717,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.import_tombstones.restore",
         description: "Atomically clear one import tombstone and restore the matching discovered server as disabled",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "GatewayView",
         params: &[
@@ -936,7 +936,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.oauth.resource_lease.release",
         description: "Release an active in-memory OAuth protected-resource lease",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "ResourceLeaseReleaseView",
         params: &[ParamSpec {
@@ -1094,7 +1094,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.mcp.cleanup",
         description: "Kill or preview running processes associated with one upstream MCP server",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "GatewayCleanupView",
         params: &[
@@ -1131,22 +1131,25 @@ mod tests {
 
     use super::ACTIONS;
 
+    /// `destructive` means "can cause permanent loss of data that cannot be
+    /// quickly and easily regenerated" — see the doc comment on
+    /// `ActionSpec::destructive`. It is deliberately narrower than "mutates
+    /// state", so config writes, imports of disabled-by-default entries,
+    /// reversible tombstone operations, process kills, and in-memory lease
+    /// releases are all NOT destructive. Only two gateway actions clear the
+    /// bar:
+    ///
+    /// - `gateway.remove` deletes an operator-authored upstream config entry
+    ///   (command line, args, token env bindings) with no undo path.
+    /// - `gateway.oauth.google_revoke` revokes a credential at Google and
+    ///   cascades to dependent inbound grants; recovery requires a fresh
+    ///   interactive consent flow, which is not "quick and easy".
+    ///
+    /// Do not re-add an action here because it merely feels dangerous. The
+    /// gate for admin-only-but-not-destructive actions is `requires_admin`.
     #[test]
     fn gateway_destructive_actions_are_intentional() {
-        let expected = BTreeSet::from([
-            "gateway.code_mode.set",
-            "gateway.enrich.preview",
-            "gateway.enrich.apply",
-            "gateway.import",
-            "gateway.import_pending.approve",
-            "gateway.import_pending.reject",
-            "gateway.import_tombstones.clear",
-            "gateway.import_tombstones.restore",
-            "gateway.remove",
-            "gateway.mcp.cleanup",
-            "gateway.oauth.google_revoke",
-            "gateway.oauth.resource_lease.release",
-        ]);
+        let expected = BTreeSet::from(["gateway.remove", "gateway.oauth.google_revoke"]);
         let actual = ACTIONS
             .iter()
             .filter(|spec| spec.destructive)
@@ -1168,7 +1171,7 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "gateway.code_mode.set")
             .expect("gateway.code_mode.set catalog entry");
-        assert!(set.destructive);
+        assert!(!set.destructive);
         let params: Vec<&str> = set.params.iter().map(|param| param.name).collect();
         for param in [
             "enabled",
@@ -1201,7 +1204,7 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "gateway.code_mode.set")
             .expect("gateway.code_mode.set catalog entry");
-        assert!(set.destructive);
+        assert!(!set.destructive);
     }
 
     // ── A-H2 / S5: requires_admin field tests ────────────────────────────────

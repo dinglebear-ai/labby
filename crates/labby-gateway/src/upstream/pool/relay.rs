@@ -1782,7 +1782,7 @@ impl UpstreamPool {
             self.notification_tx.clone(),
             subject.is_none(),
         );
-        let (conn, _tools) = match connect_upstream_with_handler(
+        let (conn, _tools, _truncation) = match connect_upstream_with_handler(
             config,
             subject,
             self.oauth_client_cache.as_ref(),
