@@ -149,36 +149,59 @@ pub(crate) fn code_mode_read_scope_allowed(auth: Option<&AuthContext>) -> bool {
     })
 }
 
+/// Whether an absent `AuthContext` may be read as "trusted local stdio".
+///
+/// The stdio trust model treats a missing per-request auth context as a local
+/// operator at a terminal. That inference is only sound on a transport that
+/// *would* have carried auth for a remote caller. The in-process peer
+/// (`mcp/in_process_peer.rs`) is served over `tokio::io::duplex`, which has no
+/// HTTP layer, so `auth_context_from_extensions` finds no `Parts` and resolves
+/// to `None` for **every** caller — including a remote, non-admin OAuth caller
+/// who reached it through Code Mode. On that transport an absent context proves
+/// nothing and must not be trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbsentAuth {
+    /// No auth context means a local stdio caller. Applies to transports that
+    /// inject one for every authenticated remote caller.
+    TrustedLocal,
+    /// No auth context proves nothing about the caller. Applies to the
+    /// in-process peer, whose transport cannot carry auth at all.
+    Untrusted,
+}
+
 pub(crate) fn tool_execute_builtin_action_allowed(
     entry: &crate::registry::RegisteredService,
     action: &str,
     auth: Option<&AuthContext>,
+    absent_auth: AbsentAuth,
 ) -> bool {
     let bare = action
         .strip_prefix(&format!("{}.", entry.name))
         .unwrap_or(action);
-    if entry.name == "setup"
-        && crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare)
-        && auth.is_some()
-    {
-        // MCP-over-HTTP always carries AuthContext. Only trusted local stdio
-        // (represented by no per-request auth context) may mint credentials or
-        // ask the host to probe a caller-selected URL.
-        return false;
+    if entry.name == "setup" && crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare) {
+        // These mint credentials or ask the host to probe a caller-selected
+        // URL, so they are for trusted local stdio only. MCP-over-HTTP always
+        // carries an AuthContext, and the in-process peer can never prove it is
+        // local — both are refused.
+        return auth.is_none() && absent_auth == AbsentAuth::TrustedLocal;
     }
     if !builtin_action_requires_admin(entry, action) {
         return true;
     }
     // INTENTIONAL ASYMMETRY with the HTTP API gate (`api/services/gateway.rs`,
-    // which uses `is_some_and` — absent auth = DENIED). Here `is_none_or` means
-    // absent auth = ALLOWED. That is the stdio trust model: a `None` AuthContext
-    // on the MCP surface means a local stdio caller (trusted), not an anonymous
-    // network request. Remote MCP-over-HTTP cannot reach here unauthenticated
-    // because `cli/serve.rs` refuses to bind a non-loopback address without auth
+    // which uses `is_some_and` — absent auth = DENIED). Here absent auth is
+    // allowed *only* on a transport where it genuinely implies local stdio.
+    // Remote MCP-over-HTTP cannot reach here unauthenticated because
+    // `cli/serve.rs` refuses to bind a non-loopback address without auth
     // configured, and the `/mcp` route carries the bearer/OAuth layer when auth
-    // is configured. Do NOT "align" this to `is_some_and` without also proving
-    // every reachable transport injects an AuthContext for authenticated callers.
-    auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"))
+    // is configured. The in-process peer is the transport that broke that
+    // inference, which is why `absent_auth` is a parameter rather than a
+    // constant. Do NOT widen this without proving the new transport injects an
+    // AuthContext for every authenticated caller.
+    match auth {
+        None => absent_auth == AbsentAuth::TrustedLocal,
+        Some(auth) => auth.scopes.iter().any(|scope| scope == "lab:admin"),
+    }
 }
 
 pub(crate) fn builtin_action_requires_admin(

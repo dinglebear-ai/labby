@@ -4,9 +4,9 @@
 #[cfg(feature = "gateway")]
 use super::oauth_upstream_subject_for_request;
 use super::{
-    actor_key_from_extensions, builtin_action_requires_admin, code_mode_read_scope_allowed,
-    forwardable_client_capabilities, subject_from_extensions, tool_execute_builtin_action_allowed,
-    tool_execute_scope_allowed,
+    AbsentAuth, actor_key_from_extensions, builtin_action_requires_admin,
+    code_mode_read_scope_allowed, forwardable_client_capabilities, subject_from_extensions,
+    tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
 use crate::dispatch::error::ToolError;
 use crate::registry::RegisteredService;
@@ -115,22 +115,26 @@ fn gateway_builtin_actions_require_admin_scope() {
     assert!(tool_execute_builtin_action_allowed(
         &entry,
         "gateway.help",
-        Some(&read_only)
+        Some(&read_only),
+        AbsentAuth::TrustedLocal
     ));
     assert!(!tool_execute_builtin_action_allowed(
         &entry,
         "gateway.import",
-        Some(&read_only)
+        Some(&read_only),
+        AbsentAuth::TrustedLocal
     ));
     assert!(tool_execute_builtin_action_allowed(
         &entry,
         "gateway.import",
-        Some(&admin)
+        Some(&admin),
+        AbsentAuth::TrustedLocal
     ));
     assert!(tool_execute_builtin_action_allowed(
         &entry,
         "gateway.import",
-        None
+        None,
+        AbsentAuth::TrustedLocal
     ));
 }
 
@@ -158,12 +162,22 @@ fn snippets_builtin_actions_require_catalog_admin_scope() {
         );
         if spec.requires_admin {
             assert!(
-                !tool_execute_builtin_action_allowed(&entry, spec.name, Some(&read_only)),
+                !tool_execute_builtin_action_allowed(
+                    &entry,
+                    spec.name,
+                    Some(&read_only),
+                    AbsentAuth::TrustedLocal
+                ),
                 "`{}` should reject non-admin MCP callers",
                 spec.name
             );
             assert!(
-                tool_execute_builtin_action_allowed(&entry, spec.name, Some(&admin)),
+                tool_execute_builtin_action_allowed(
+                    &entry,
+                    spec.name,
+                    Some(&admin),
+                    AbsentAuth::TrustedLocal
+                ),
                 "`{}` should allow admin MCP callers",
                 spec.name
             );
@@ -188,12 +202,14 @@ fn doctor_relay_check_uses_catalog_admin_gate() {
     assert!(!tool_execute_builtin_action_allowed(
         &entry,
         "oauth.relay.check",
-        Some(&read_only)
+        Some(&read_only),
+        AbsentAuth::TrustedLocal
     ));
     assert!(tool_execute_builtin_action_allowed(
         &entry,
         "doctor.oauth.relay.check",
-        Some(&admin)
+        Some(&admin),
+        AbsentAuth::TrustedLocal
     ));
 }
 
@@ -278,22 +294,26 @@ fn setup_state_and_destructive_actions_require_admin_scope() {
     assert!(!tool_execute_builtin_action_allowed(
         entry,
         "state",
-        Some(&read_only)
+        Some(&read_only),
+        AbsentAuth::TrustedLocal
     ));
     assert!(tool_execute_builtin_action_allowed(
         entry,
         "state",
-        Some(&admin)
+        Some(&admin),
+        AbsentAuth::TrustedLocal
     ));
     assert!(!tool_execute_builtin_action_allowed(
         entry,
         "repair",
-        Some(&read_only)
+        Some(&read_only),
+        AbsentAuth::TrustedLocal
     ));
     assert!(tool_execute_builtin_action_allowed(
         entry,
         "repair",
-        Some(&admin)
+        Some(&admin),
+        AbsentAuth::TrustedLocal
     ));
 }
 
@@ -380,5 +400,97 @@ fn code_mode_resources_allow_lab_read_but_tool_calls_require_lab() {
     assert!(
         !tool_execute_scope_allowed(Some(&read_only)),
         "tool_execute must reject lab:read — requires lab or lab:admin"
+    );
+}
+
+/// The FU-1 escalation: a transport that cannot carry auth must not inherit the
+/// stdio trust model.
+///
+/// `auth_context_from_extensions` resolves auth by reading `http::request::Parts`
+/// out of the rmcp extensions. The in-process peer is served over a duplex pipe
+/// with no HTTP layer, so it yields `None` for *every* caller — including a
+/// remote `lab`-scoped OAuth caller who arrived through Code Mode. Before this
+/// gate took `AbsentAuth`, that `None` hit the stdio-trust branch and allowed
+/// `requires_admin` builtins outright.
+#[test]
+#[cfg(feature = "gateway")]
+fn absent_auth_on_the_in_process_transport_is_not_trusted() {
+    let entry = RegisteredService {
+        name: "gateway",
+        description: "Gateway",
+        category: "bootstrap",
+        kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+        status: "available",
+        actions: crate::dispatch::gateway::ACTIONS,
+        dispatch: noop_dispatch,
+    };
+
+    // Real stdio: absent auth still means a local operator, unchanged.
+    assert!(tool_execute_builtin_action_allowed(
+        &entry,
+        "gateway.import",
+        None,
+        AbsentAuth::TrustedLocal
+    ));
+
+    // In-process peer: the same `None` proves nothing and must be refused.
+    assert!(
+        !tool_execute_builtin_action_allowed(&entry, "gateway.import", None, AbsentAuth::Untrusted),
+        "a requires_admin builtin must not be reachable through the in-process peer \
+         on absent auth alone"
+    );
+
+    // Non-admin actions stay reachable — this closes an escalation, not the door.
+    assert!(tool_execute_builtin_action_allowed(
+        &entry,
+        "gateway.help",
+        None,
+        AbsentAuth::Untrusted
+    ));
+
+    // An explicit admin scope still works over the in-process peer, so the fix
+    // does not depend on the transport when the caller actually proved scope.
+    let admin = labby_auth::auth_context::AuthContext {
+        sub: "admin".to_string(),
+        actor_key: None,
+        scopes: vec!["lab:admin".to_string()],
+        issuer: "https://lab.example.com".to_string(),
+        via_session: true,
+        csrf_token: None,
+        email: None,
+    };
+    assert!(tool_execute_builtin_action_allowed(
+        &entry,
+        "gateway.import",
+        Some(&admin),
+        AbsentAuth::Untrusted
+    ));
+}
+
+/// The second half of the same gap: `LOCAL_ONLY_ACTIONS` were guarded by
+/// `auth.is_some()`, so the in-process peer's absent auth satisfied them too.
+/// These mint credentials and probe caller-selected URLs.
+#[test]
+fn setup_local_only_actions_are_refused_on_the_in_process_transport() {
+    let entry = RegisteredService {
+        name: "setup",
+        description: "Setup",
+        category: "bootstrap",
+        kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+        status: "available",
+        actions: crate::dispatch::setup::ACTIONS,
+        dispatch: noop_dispatch,
+    };
+    let Some(local_only) = crate::dispatch::setup::LOCAL_ONLY_ACTIONS.first() else {
+        return;
+    };
+
+    assert!(
+        tool_execute_builtin_action_allowed(&entry, local_only, None, AbsentAuth::TrustedLocal),
+        "trusted local stdio keeps its access"
+    );
+    assert!(
+        !tool_execute_builtin_action_allowed(&entry, local_only, None, AbsentAuth::Untrusted),
+        "the in-process peer must not reach a local-only setup action"
     );
 }

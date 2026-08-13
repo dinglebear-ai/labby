@@ -238,7 +238,7 @@ impl UpstreamPool {
             SKILLS_GET_METHOD,
             Some(json!({ "uri": uri })),
         ));
-        let timeout_ms = self.request_timeout().as_millis();
+        let timeout_ms = self.request_timeout.as_millis();
         let result = timed_capability_call_str(
             self,
             upstream_name,

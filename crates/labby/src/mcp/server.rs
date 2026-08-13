@@ -764,7 +764,27 @@ impl ServerHandler for LabMcpServer {
 
 use crate::mcp::catalog::CatalogChangeSet;
 
+/// Transport label used by the in-process service peer. Shared so the
+/// constructor in `mcp/in_process_peer.rs` and the trust check here cannot
+/// drift apart into a silently-trusted transport.
+pub(crate) const IN_PROCESS_TRANSPORT_LABEL: &str = "in-process";
+
 impl LabMcpServer {
+    /// Whether a missing per-request `AuthContext` may be read as trusted local
+    /// stdio on *this* server's transport.
+    ///
+    /// The in-process peer is served over a duplex pipe with no HTTP layer, so
+    /// it produces `None` for every caller — including a remote non-admin one
+    /// arriving through Code Mode. Only transports that would have carried auth
+    /// for a remote caller may treat its absence as proof of locality.
+    pub(crate) fn absent_auth_trust(&self) -> crate::mcp::context::AbsentAuth {
+        if self.transport_label == IN_PROCESS_TRANSPORT_LABEL {
+            crate::mcp::context::AbsentAuth::Untrusted
+        } else {
+            crate::mcp::context::AbsentAuth::TrustedLocal
+        }
+    }
+
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
     /// Per-call sites pass their own label so a notification triggered by a
     /// tool call is never confused with a gateway reconcile.
