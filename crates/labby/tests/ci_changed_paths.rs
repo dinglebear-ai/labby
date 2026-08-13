@@ -505,7 +505,9 @@ fn fork_pull_requests_are_blocked_before_self_hosted_ci() {
     assert_eq!(changes["runs-on"].as_str(), Some("ci-pool-ops"));
     assert_eq!(
         changes["if"].as_str(),
-        Some("${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}")
+        Some(
+            "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
+        )
     );
 }
 
