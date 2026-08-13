@@ -698,6 +698,7 @@ mod tests {
         .expect("auth state")
     }
 
+    #[cfg(feature = "http-axum")]
     #[tokio::test]
     async fn auth_state_refuses_oauth_without_provider_credential_encryption() {
         let mut config = crate::authorize::tests::test_auth_config();
