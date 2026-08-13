@@ -209,6 +209,13 @@ pub fn parse_skill_md_frontmatter(content: &str) -> Result<Map<String, Value>, T
 /// equivalent to a digest mismatch. The comparison is exact and total: a key
 /// present on one side and absent on the other is a discrepancy, as is any
 /// differing value.
+///
+/// One representational caveat: YAML admits non-finite floats (`.nan`, `.inf`)
+/// and JSON does not, so parsing collapses them to `null`. A `SKILL.md` field
+/// written as `.nan` therefore compares equal to a literal `null` in the entry.
+/// This cannot mask a meaningful change — `entry.frontmatter` arrives as JSON,
+/// which has no way to spell a non-finite float in the first place — but the
+/// comparison is exact over JSON values, not over the YAML that produced them.
 pub fn compare_frontmatter(
     entry: &Map<String, Value>,
     skill_md: &Map<String, Value>,

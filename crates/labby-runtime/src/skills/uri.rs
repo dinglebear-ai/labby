@@ -96,12 +96,28 @@ impl SkillUri {
     /// Re-render this URI under a different origin label, leaving the remainder
     /// byte-identical. Used when minting proxied URIs: the *content* is
     /// untouched, so digests computed by the upstream stay valid.
-    #[must_use]
-    pub fn with_origin(&self, origin: &str) -> Self {
-        Self {
+    ///
+    /// Fallible on purpose. The label arrives from upstream configuration, and
+    /// an unvalidated one is a namespace-impersonation vector rather than a
+    /// cosmetic problem: `with_origin("labby/evil")` would render
+    /// `skill://labby/evil/…`, which re-parses with `labby` — the reserved
+    /// first-party origin — as the origin and `evil` as an ordinary path
+    /// segment. An empty label would render `skill:///…`, which does not
+    /// re-parse at all, breaking the round-trip.
+    pub fn with_origin(&self, origin: &str) -> Result<Self, ToolError> {
+        if !is_valid_origin_label(origin) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "invalid_param".to_string(),
+                message: format!(
+                    "`{origin}` is not a usable skill origin label: expected lowercase \
+                     alphanumeric characters with interior hyphens"
+                ),
+            });
+        }
+        Ok(Self {
             origin: origin.to_string(),
             path: self.path.clone(),
-        }
+        })
     }
 }
 
@@ -112,7 +128,28 @@ fn invalid(uri: &str, why: &str) -> ToolError {
     }
 }
 
-/// Reject a path segment that is empty, a dot-segment, or over-long.
+/// True for characters that must never appear inside a skill URI path segment.
+///
+/// The parser splits only on `/`, so anything else survives inside a segment.
+/// Three classes are refused:
+///
+/// - `\` and `:` — a segment is opaque here but is a plausible path component
+///   later. On Windows both are separators, and `Path::join` discards the base
+///   entirely when the joined fragment looks absolute or carries a drive prefix,
+///   so `..\..\..\Windows\win.ini` inside one "segment" would escape a cache
+///   root while satisfying every check in this module.
+/// - control characters (C0 and C1) — no legitimate Agent Skills file path
+///   contains them, and NUL in particular truncates in C string handling.
+/// - bidirectional formatting overrides — byte equality is unaffected, but a
+///   path can be made to *render* as a different one in an operator UI.
+fn is_forbidden_segment_char(c: char) -> bool {
+    matches!(c, '\\' | ':')
+        || c.is_control()
+        || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}')
+}
+
+/// Reject a path segment that is empty, a dot-segment, over-long, or carries a
+/// character that has no place in a skill file path.
 ///
 /// Dot-segments are rejected rather than normalized: a skill URI is a stable
 /// identifier that gets compared against a manifest, and silently collapsing
@@ -128,6 +165,12 @@ fn check_segment(uri: &str, segment: &str) -> Result<(), ToolError> {
         return Err(invalid(
             uri,
             &format!("path segment exceeds {MAX_URI_SEGMENT_CHARS} characters"),
+        ));
+    }
+    if segment.chars().any(is_forbidden_segment_char) {
+        return Err(invalid(
+            uri,
+            "path segment contains a backslash, colon, control, or bidirectional formatting character",
         ));
     }
     Ok(())
@@ -298,10 +341,41 @@ mod tests {
     #[test]
     fn with_origin_rewrites_only_the_label() {
         let uri = parse_skill_uri("skill://upstream-a/billing/refunds/SKILL.md").expect("valid");
-        let rewritten = uri.with_origin("gh");
+        let rewritten = uri.with_origin("gh").expect("valid label");
         assert_eq!(rewritten.origin(), "gh");
         assert_eq!(rewritten.path(), uri.path());
         assert_eq!(rewritten.to_uri(), "skill://gh/billing/refunds/SKILL.md");
+        // Round-trips: minting a proxied URI must not produce something the
+        // parser then reads back differently.
+        assert_eq!(
+            parse_skill_uri(&rewritten.to_uri()).expect("re-parses"),
+            rewritten
+        );
+    }
+
+    #[test]
+    fn with_origin_refuses_a_label_that_would_impersonate_another_origin() {
+        let uri = parse_skill_uri("skill://upstream-a/x/SKILL.md").expect("valid");
+        // Smuggling a separator would render skill://labby/evil/... which
+        // re-parses with the reserved first-party origin in front.
+        assert!(uri.with_origin("labby/evil").is_err());
+        assert!(uri.with_origin("").is_err());
+        assert!(uri.with_origin("Upstream").is_err());
+        assert!(uri.with_origin("has space").is_err());
+    }
+
+    #[test]
+    fn rejects_separator_and_formatting_characters_in_segments() {
+        // A backslash segment satisfies every other check and prefix test, but
+        // encodes traversal on any platform that treats `\` as a separator.
+        for uri in [
+            r"skill://labby/x/..\..\..\Windows\win.ini",
+            "skill://labby/x/C:/evil.md",
+            "skill://labby/x/nul\u{0}byte.md",
+            "skill://labby/x/spoof\u{202e}dm.md",
+        ] {
+            assert!(parse_skill_uri(uri).is_err(), "should reject {uri:?}");
+        }
     }
 
     #[test]
