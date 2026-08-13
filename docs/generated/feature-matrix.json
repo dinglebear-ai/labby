@@ -95,7 +95,9 @@
     {
       "crate_name": "labby",
       "feature": "proxy-testkit",
-      "dependencies": [],
+      "dependencies": [
+        "labby-gateway/testkit"
+      ],
       "included_in_default": false,
       "included_in_all": false,
       "classification": "intentional_exception",

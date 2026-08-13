@@ -1181,12 +1181,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             }
           ],
           "returns": "BeginAuthorization"
@@ -1205,12 +1199,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             }
           ],
           "returns": "UpstreamOauthStatusView"
@@ -1229,12 +1217,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             }
           ],
           "returns": "ok"
@@ -1277,12 +1259,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name to wait on"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             },
             {
               "name": "timeout_secs",

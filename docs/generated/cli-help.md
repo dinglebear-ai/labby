@@ -2263,7 +2263,7 @@ Options:
       --json
           Emit JSON instead of human-readable tables
 
-      --subject <SUBJECT>
+      --open
 
 
       --color <COLOR>
@@ -2271,9 +2271,6 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
-
-      --open
-
 
       --wait
 
@@ -2300,7 +2297,7 @@ Options:
       --json
           Emit JSON instead of human-readable tables
 
-      --subject <SUBJECT>
+      --open
 
 
       --color <COLOR>
@@ -2308,9 +2305,6 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
-
-      --open
-
 
       --wait
 
@@ -2337,7 +2331,7 @@ Options:
       --json
           Emit JSON instead of human-readable tables
 
-      --subject <SUBJECT>
+      --open
 
 
       --color <COLOR>
@@ -2345,9 +2339,6 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
-
-      --open
-
 
       --wait
 
@@ -2374,7 +2365,7 @@ Options:
       --json
           Emit JSON instead of human-readable tables
 
-      --subject <SUBJECT>
+      --open
 
 
       --color <COLOR>
@@ -2382,9 +2373,6 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
-
-      --open
-
 
       --wait
 

@@ -42,15 +42,15 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin |  | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `ok` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string` | `ok` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.resource_lease.release` | false | true | true | lab:admin | `id*: string` | `ResourceLeaseReleaseView` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.resource_lease.renew` | false | false | true | lab:admin | `id*: string`<br>`ttl_secs*: integer` | `ResourceLease` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `BeginAuthorization` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `UpstreamOauthStatusView` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `upstream*: string` | `BeginAuthorization` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `upstream*: string` | `UpstreamOauthStatusView` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `upstream*: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.get` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.list` | false | false | true | lab:admin |  | `ProtectedMcpRouteConfig[]` | cli, mcp, api, web |
