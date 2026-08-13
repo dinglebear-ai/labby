@@ -142,6 +142,27 @@ Skills methods inherit the same per-client throttling posture as every other MCP
 method. Labby has no generic MCP rate limiter, so they are not specially
 protected — nor specially exposed.
 
+### Operator-provided skills
+
+Drop a skill directory into `$LABBY_HOME/skills/<name>/` and it is served under
+the same reserved `labby` origin as the bundled ones — one first-party namespace
+from a client's point of view. A bundled skill wins a name collision, so a
+dropped-in directory cannot redefine what an existing `skill://labby/…` URI
+means.
+
+The tree is read **once at startup**, and each file's digest is computed from
+the bytes read in that same pass. Adding or editing a skill therefore needs a
+restart. That is deliberate: re-reading per request would let a file change
+between publishing a digest and serving the file it describes, which is exactly
+the mismatch a conforming client must refuse.
+
+A skill is skipped, with a logged reason, when it contains a symlink at any
+depth (the target could sit outside the root and would be served as first-party
+content), has no `SKILL.md`, has a directory name disagreeing with its
+frontmatter `name`, holds a file over 1 MiB, or holds more files than the
+per-skill manifest cap. One bad directory never costs an operator their other
+skills.
+
 ### Origin namespacing
 
 Proxied skills are relabelled as `skill://<upstream-name>/…`. The label is

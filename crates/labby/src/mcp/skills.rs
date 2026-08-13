@@ -21,6 +21,7 @@
 //! wire and nowhere else.
 
 pub(crate) mod aggregate;
+pub(crate) mod local;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -178,7 +179,37 @@ fn build_first_party_skills() -> BTreeMap<String, FirstPartySkill> {
 
 fn first_party_skills() -> &'static BTreeMap<String, FirstPartySkill> {
     static SKILLS: OnceLock<BTreeMap<String, FirstPartySkill>> = OnceLock::new();
-    SKILLS.get_or_init(build_first_party_skills)
+    SKILLS.get_or_init(|| {
+        let mut skills = build_first_party_skills();
+        // Operator skills join the same reserved origin, so from a client's
+        // view there is one first-party namespace. An embedded skill wins a
+        // name collision: a dropped-in directory must not be able to redefine
+        // what `skill://labby/using-labby` means.
+        for (name, local) in local::load_local_skills() {
+            if skills.contains_key(&name) {
+                tracing::warn!(
+                    skill = %name,
+                    "an operator skill shadows a bundled skill of the same name — keeping the bundled one"
+                );
+                continue;
+            }
+            skills.insert(
+                name,
+                FirstPartySkill {
+                    entry: local.entry,
+                    // Operator files are owned Strings; embedded ones are
+                    // 'static. Leaking here is deliberate and bounded: the set
+                    // is built once at startup and lives for the process.
+                    files: local
+                        .files
+                        .into_iter()
+                        .map(|(uri, body)| (uri, &*Box::leak(body.into_boxed_str())))
+                        .collect(),
+                },
+            );
+        }
+        skills
+    })
 }
 
 /// The `skills/list` result for Labby's own skills.
