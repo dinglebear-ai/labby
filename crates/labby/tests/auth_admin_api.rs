@@ -9,6 +9,7 @@
     clippy::single_char_pattern,
     clippy::unnested_or_patterns
 )]
+#![cfg(feature = "gateway")]
 //! Integration tests for the admin-only allowlist API.
 //!
 //! Coverage:

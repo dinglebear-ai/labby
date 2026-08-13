@@ -1915,6 +1915,7 @@ async fn raw_oauth_list_tools_uses_only_the_subject_cache() {
 }
 
 #[tokio::test]
+#[cfg(feature = "proxy-testkit")]
 async fn raw_oauth_list_tools_preserves_cached_subject_tools() {
     let mut upstream = fixture_oauth_upstream_config("warm-oauth");
     upstream.expose_tools = Some(vec!["visible".to_string()]);
@@ -3164,6 +3165,7 @@ async fn call_tool_honors_route_scope_for_mcp_app_sibling_callbacks() {
 }
 
 #[tokio::test]
+#[cfg(feature = "proxy-testkit")]
 async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks() {
     let upstream_name: Arc<str> = Arc::from("oauth_apps");
     let ui_tool = fixture_upstream_tool(
