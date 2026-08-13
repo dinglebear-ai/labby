@@ -568,3 +568,20 @@ async fn invalidation_drops_every_subject_for_one_upstream() {
         .expect("refetch");
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
+
+#[tokio::test]
+async fn a_pool_drain_clears_every_cached_catalog() {
+    // Reload replaces connections and config wholesale; a catalog that survived
+    // would describe skills belonging to peers the pool no longer holds.
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+    ]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+
+    pool.upstream_skills(&config, None).await.expect("populate");
+    assert!(!pool.upstreams_with_cached_skills().await.is_empty());
+
+    pool.clear_all_cached_skills().await;
+    assert!(pool.upstreams_with_cached_skills().await.is_empty());
+}

@@ -228,6 +228,27 @@ impl UpstreamPool {
         cache.retain(|(upstream, _), _| upstream != name);
     }
 
+    /// Drop every cached skill catalog, across all upstreams and subjects.
+    ///
+    /// Called on pool drain (config reload / swap). Skills are cached against a
+    /// connection and a config; when both are replaced wholesale, so is the
+    /// cache.
+    pub async fn clear_all_cached_skills(&self) {
+        let mut cache = self.skills_cache.write().await;
+        let count = cache.len();
+        cache.clear();
+        drop(cache);
+        self.skills_fetch_locks.prune().await;
+        if count > 0 {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                cleared = count,
+                "cleared cached upstream skill catalogs"
+            );
+        }
+    }
+
     /// Names of upstreams with a cached skill catalog, for operator display.
     pub async fn upstreams_with_cached_skills(&self) -> BTreeSet<String> {
         self.skills_cache
