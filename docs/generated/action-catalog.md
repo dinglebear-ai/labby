@@ -66,6 +66,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.service_actions` | false | false | true | lab:admin | `service*: string` | `ServiceActionView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `service*: string` | `ServiceConfigView` | cli, mcp, api, web |
 | `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `service*: string`<br>`values*: json` | `ServiceConfigView` | cli, mcp, api, web |
+| `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.status` | false | false | true | lab:admin | `name: string` | `GatewayRuntimeView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin |  | `SupportedServiceView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |

@@ -13,6 +13,8 @@ categories = ["development-tools"]
 publish = false
 
 [features]
+# Upstream Agent Skills aggregation (SEP-2640).
+skills = []
 # Exposes the pool's `*_for_tests` inspection helpers as part of the public API
 # so downstream crates (notably `lab`'s gateway integration tests) can drive the
 # pool. Off by default; enabled only from dev/test builds.

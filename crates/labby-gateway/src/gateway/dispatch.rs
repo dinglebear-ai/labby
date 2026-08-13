@@ -58,6 +58,7 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
+        "gateway.skills.list" => handle_skills_list(manager, params_value).await,
         "gateway.code_mode.get" | "gateway.code_mode.set" => {
             handle_tool_actions(manager, action, params_value).await
         }
@@ -972,3 +973,100 @@ pub async fn dispatch(action: &str, params_value: Value) -> Result<Value, ToolEr
 #[allow(clippy::panic)]
 #[path = "dispatch_tests.rs"]
 mod tests;
+
+/// Operator view of aggregated upstream skills.
+///
+/// Deliberately richer than the agent-facing listing: an operator needs to see
+/// *why* a catalog looks the way it does — which upstreams opted in, how stale
+/// each snapshot is, and what was dropped. Exclusion causes are operator-only;
+/// an agent receives a count, never the reasons, because the reasons describe
+/// the shape of an operator's configuration.
+#[cfg(feature = "skills")]
+async fn handle_skills_list(
+    manager: &GatewayManager,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    struct Params {
+        #[serde(default)]
+        upstream: Option<String>,
+    }
+
+    let params: Params = if params_value.is_null() {
+        Params::default()
+    } else {
+        parse_params(params_value)?
+    };
+
+    let Some(pool) = manager.current_pool().await else {
+        return to_json(Vec::<Value>::new());
+    };
+
+    let mut rows = Vec::new();
+    for config in manager.current_config().await.upstream {
+        if let Some(filter) = params.upstream.as_deref()
+            && config.name != filter
+        {
+            continue;
+        }
+        if !config.proxy_skills {
+            continue;
+        }
+        let (skills, excluded, truncated, age_secs, error) =
+            match pool.upstream_skills(&config, None).await {
+                Ok(exposed) => (
+                    exposed
+                        .skills
+                        .iter()
+                        .map(|skill| {
+                            serde_json::json!({
+                                "name": skill.name,
+                                "uri": skill.entry.uri,
+                                "description": skill
+                                    .entry
+                                    .frontmatter
+                                    .get("description")
+                                    .and_then(|value| value.as_str()),
+                                "resource_count": skill
+                                    .entry
+                                    .resources
+                                    .as_ref()
+                                    .map_or(0, Vec::len),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    exposed.excluded_count,
+                    exposed.truncated,
+                    exposed.age_secs,
+                    None,
+                ),
+                Err(error) => (Vec::new(), 0, false, 0, Some(error)),
+            };
+
+        rows.push(serde_json::json!({
+            "upstream": config.name,
+            "enabled": config.enabled,
+            "skills": skills,
+            "excluded_count": excluded,
+            "truncated": truncated,
+            "cache_age_secs": age_secs,
+            "error": error,
+        }));
+    }
+    to_json(rows)
+}
+
+#[cfg(not(feature = "skills"))]
+async fn handle_skills_list(
+    _manager: &GatewayManager,
+    _params_value: Value,
+) -> Result<Value, ToolError> {
+    // Not `unknown_action`: that kind's recovery advice is "rediscover", and
+    // rediscovery re-advertises this same action, so an agent would loop. The
+    // action is real and permanently unavailable in this build.
+    Err(ToolError::Sdk {
+        sdk_kind: "feature_not_compiled".to_string(),
+        message: "this build of Labby was compiled without the `skills` feature".to_string(),
+    })
+}

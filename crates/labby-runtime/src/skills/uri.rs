@@ -37,73 +37,118 @@ pub const SKILL_MD_FILE: &str = "SKILL.md";
 /// it; enforced at config-validation time for upstreams with skills proxying on.
 pub const FIRST_PARTY_ORIGIN: &str = "labby";
 
-/// A parsed `skill://` URI: an origin label plus an unsplit remainder.
+/// A parsed `skill://` URI.
+///
+/// Stores the whole `<skill-path>/<file-path>` and derives the first-segment
+/// split, because the SEP's `<skill-path>` spans the first segment too: the
+/// skill name is the last segment of the path as a whole, and a one-segment
+/// path is legal. Keeping only a post-first-segment remainder made the
+/// one-segment form unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillUri {
-    origin: String,
-    path: String,
+    full: String,
+    /// Byte index of the first `/`, or `full.len()` when there is none.
+    split: usize,
 }
 
 impl SkillUri {
-    /// The first path segment — Labby's origin label for the serving side.
-    #[must_use]
-    pub fn origin(&self) -> &str {
-        &self.origin
+    fn from_full(full: String) -> Self {
+        let split = full.find('/').unwrap_or(full.len());
+        Self { full, split }
     }
 
-    /// Everything after the origin label, unsplit. Resolve skill-vs-file
+    /// The first path segment.
+    ///
+    /// For a URI Labby minted this is the host-assigned origin label it
+    /// prepended. For a URI as an upstream published it, this is simply the
+    /// first `<skill-path>` segment and carries no routing meaning.
+    #[must_use]
+    pub fn origin(&self) -> &str {
+        &self.full[..self.split]
+    }
+
+    /// Everything after the first segment, unsplit. Resolve skill-vs-file
     /// against a manifest; do not slice this positionally.
+    ///
+    /// For a URI Labby minted, this equals the owning upstream's own full path
+    /// — that is the inverse of the label prepended by [`with_origin`], and the
+    /// value a proxied read is routed on.
     #[must_use]
     pub fn path(&self) -> &str {
-        &self.path
+        if self.split >= self.full.len() {
+            ""
+        } else {
+            &self.full[self.split + 1..]
+        }
     }
 
     /// True when this URI names a skill root document (`.../SKILL.md`).
     #[must_use]
     pub fn is_skill_md(&self) -> bool {
-        self.path == SKILL_MD_FILE || self.path.ends_with(concat!("/", "SKILL.md"))
+        self.full == SKILL_MD_FILE || self.full.ends_with(concat!("/", "SKILL.md"))
     }
 
     /// For a canonical `.../SKILL.md` URI, the `(skill_path, name)` pair the SEP
     /// guarantees is readable without fetching frontmatter. `None` for any other
     /// file, where the split requires a manifest.
     ///
-    /// `skill_path` is relative to the origin label: for
-    /// `skill://acme/billing/refunds/SKILL.md` parsed with origin `acme`, the
-    /// skill path is `billing/refunds` and the name is `refunds`.
+    /// `skill_path` spans every segment before the trailing `/SKILL.md`,
+    /// including the first. The SEP is explicit that the first segment is part
+    /// of `<skill-path>` and "carries no special semantics" — so
+    /// `skill://git-workflow/SKILL.md` is a one-segment skill path naming
+    /// `git-workflow`, and `skill://acme/billing/refunds/SKILL.md` is
+    /// `acme/billing/refunds` naming `refunds`. Computing this over the
+    /// remainder alone dropped the first segment and rejected the one-segment
+    /// form outright, which is the SEP's own first example.
     #[must_use]
     pub fn skill_md_parts(&self) -> Option<(&str, &str)> {
-        let skill_path = self.path.strip_suffix(SKILL_MD_FILE)?;
+        let skill_path = self.full.strip_suffix(SKILL_MD_FILE)?;
         let skill_path = skill_path.strip_suffix('/').unwrap_or(skill_path);
         if skill_path.is_empty() {
-            // `skill://<origin>/SKILL.md` carries an origin label and no skill
-            // path, so there is no name to recover. Treating the origin label as
-            // the name would let a routing label masquerade as a skill — exactly
-            // the cross-origin confusion the per-origin namespace exists to
-            // prevent — so this is malformed rather than a special case.
+            // `skill://SKILL.md` names no skill at all.
             return None;
         }
         let name = skill_path.rsplit('/').next().unwrap_or(skill_path);
         Some((skill_path, name))
     }
 
+    /// The whole `<skill-path>/<file-path>` after the scheme.
+    ///
+    /// This is what a *server* published. For a URI Labby minted, [`path`] is
+    /// this same value as the owning upstream serves it — stripping the label
+    /// Labby prepended — which is what makes the mapping invertible.
+    #[must_use]
+    pub fn full_path(&self) -> &str {
+        &self.full
+    }
+
     /// Render back to canonical `skill://origin/path` form.
     #[must_use]
     pub fn to_uri(&self) -> String {
-        format!("{SKILL_URI_SCHEME}{}/{}", self.origin, self.path)
+        format!("{SKILL_URI_SCHEME}{}", self.full)
     }
 
-    /// Re-render this URI under a different origin label, leaving the remainder
-    /// byte-identical. Used when minting proxied URIs: the *content* is
-    /// untouched, so digests computed by the upstream stay valid.
+    /// Mint this URI under a host-assigned origin label, **prepending** the
+    /// label as an additional `<skill-path>` prefix segment.
+    ///
+    /// Prepending, not replacing. The SEP defines `<skill-path>` as one or more
+    /// segments whose *final* segment is the skill's name, with preceding
+    /// segments a server-chosen organizational prefix carrying no semantics.
+    /// Prepending therefore stays inside the convention, preserves the
+    /// name-is-the-last-segment invariant at any depth, and — unlike replacing
+    /// the first segment — is lossless: stripping the label recovers the
+    /// upstream's URI exactly, which is what lets a read be routed back.
+    ///
+    /// Replacing silently discarded a real prefix segment:
+    /// `skill://acme/billing/refunds/SKILL.md` became
+    /// `skill://<label>/billing/refunds/SKILL.md`, losing `acme`.
     ///
     /// Fallible on purpose. The label arrives from upstream configuration, and
     /// an unvalidated one is a namespace-impersonation vector rather than a
     /// cosmetic problem: `with_origin("labby/evil")` would render
     /// `skill://labby/evil/…`, which re-parses with `labby` — the reserved
-    /// first-party origin — as the origin and `evil` as an ordinary path
-    /// segment. An empty label would render `skill:///…`, which does not
-    /// re-parse at all, breaking the round-trip.
+    /// first-party origin — as the first segment. An empty label would render
+    /// `skill:///…`, which does not re-parse at all.
     pub fn with_origin(&self, origin: &str) -> Result<Self, ToolError> {
         if !is_valid_origin_label(origin) {
             return Err(ToolError::Sdk {
@@ -114,10 +159,7 @@ impl SkillUri {
                 ),
             });
         }
-        Ok(Self {
-            origin: origin.to_string(),
-            path: self.path.clone(),
-        })
+        Ok(Self::from_full(format!("{origin}/{}", self.full)))
     }
 }
 
@@ -215,29 +257,24 @@ pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
     let mut segments = rest.split('/');
     let origin = segments
         .next()
-        .ok_or_else(|| invalid(uri, "missing origin segment"))?;
-    if !is_valid_origin_label(origin) {
-        return Err(invalid(
-            uri,
-            "origin label must be lowercase alphanumeric with interior hyphens",
-        ));
-    }
+        .ok_or_else(|| invalid(uri, "missing first path segment"))?;
+    // Every segment is checked for the same hostile characters, but the first
+    // is NOT held to Labby's own origin-label grammar. The SEP says the first
+    // segment is an ordinary `<skill-path>` segment that SHOULD be a valid RFC
+    // 3986 reg-name, which permits far more than lowercase-and-hyphens.
+    // Enforcing Labby's minting rules on inbound URIs rejected conforming
+    // upstreams outright. Labby's own labels are still validated where they are
+    // minted, in `with_origin`.
+    check_segment(uri, origin)?;
 
-    let path_segments: Vec<&str> = segments.collect();
-    if path_segments.is_empty() {
-        return Err(invalid(
-            uri,
-            "URI names only an origin, with no path to a skill file",
-        ));
-    }
-    for segment in &path_segments {
+    // A one-segment skill path is legal and is the SEP's primary example:
+    // `skill://git-workflow/SKILL.md` names the skill `git-workflow`. Requiring
+    // a second segment rejected it.
+    for segment in segments {
         check_segment(uri, segment)?;
     }
 
-    Ok(SkillUri {
-        origin: origin.to_string(),
-        path: path_segments.join("/"),
-    })
+    Ok(SkillUri::from_full(rest.to_string()))
 }
 
 #[cfg(test)]
@@ -250,7 +287,12 @@ mod tests {
         assert_eq!(uri.origin(), "labby");
         assert_eq!(uri.path(), "using-labby/SKILL.md");
         assert!(uri.is_skill_md());
-        assert_eq!(uri.skill_md_parts(), Some(("using-labby", "using-labby")));
+        // `<skill-path>` spans the first segment too, so it is `labby/using-labby`
+        // and the name is its final segment.
+        assert_eq!(
+            uri.skill_md_parts(),
+            Some(("labby/using-labby", "using-labby"))
+        );
     }
 
     #[test]
@@ -268,15 +310,29 @@ mod tests {
         // The SEP's own example: prefix `billing`, name `refunds`.
         let uri = parse_skill_uri("skill://acme/billing/refunds/SKILL.md").expect("valid");
         assert_eq!(uri.origin(), "acme");
-        assert_eq!(uri.skill_md_parts(), Some(("billing/refunds", "refunds")));
+        // The SEP names this skill path `acme/billing/refunds` — the first
+        // segment is part of it, not a label sitting outside it.
+        assert_eq!(
+            uri.skill_md_parts(),
+            Some(("acme/billing/refunds", "refunds"))
+        );
     }
 
     #[test]
-    fn origin_label_is_never_treated_as_a_skill_name() {
-        // Parses structurally, but names no skill: the origin label must not be
-        // able to stand in for one.
-        let uri = parse_skill_uri("skill://labby/SKILL.md").expect("parses");
+    fn a_one_segment_skill_path_names_that_segment() {
+        // Per the SEP this is a one-segment `<skill-path>` naming the skill
+        // `git-workflow` — its primary example. Labby previously read the first
+        // segment as a routing label and rejected the form outright, silently
+        // dropping every such skill from a conforming upstream.
+        let uri = parse_skill_uri("skill://git-workflow/SKILL.md").expect("parses");
         assert!(uri.is_skill_md());
+        assert_eq!(uri.skill_md_parts(), Some(("git-workflow", "git-workflow")));
+    }
+
+    #[test]
+    fn a_uri_naming_only_skill_md_names_no_skill() {
+        // The one genuinely nameless case: no `<skill-path>` at all.
+        let uri = parse_skill_uri("skill://SKILL.md").expect("parses");
         assert_eq!(uri.skill_md_parts(), None);
     }
 
@@ -304,20 +360,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_origin_only_uri() {
-        assert!(parse_skill_uri("skill://labby").is_err());
+    fn a_bare_single_segment_uri_parses_but_names_no_skill_md() {
+        // `skill://labby` is a skill *root* (the SEP's directory form), not a
+        // `SKILL.md`, so it parses and simply yields no name.
+        let uri = parse_skill_uri("skill://labby").expect("parses as a skill root");
+        assert!(!uri.is_skill_md());
+        assert_eq!(uri.skill_md_parts(), None);
     }
 
     #[test]
-    fn rejects_malformed_origin_labels() {
+    fn labbys_minting_grammar_binds_minting_not_inbound_parsing() {
+        // These are legal for an upstream to serve: the SEP only says the first
+        // segment SHOULD be a valid RFC 3986 reg-name. Rejecting them at parse
+        // time applied Labby's own label rules to other servers' URIs.
         for uri in [
             "skill://Labby/x/SKILL.md",
-            "skill://-labby/x/SKILL.md",
-            "skill://labby-/x/SKILL.md",
             "skill://lab_by/x/SKILL.md",
             "skill://lab.by/x/SKILL.md",
         ] {
-            assert!(parse_skill_uri(uri).is_err(), "should reject {uri}");
+            assert!(parse_skill_uri(uri).is_ok(), "should accept {uri}");
+        }
+        // But Labby still refuses to *mint* under a label of that shape.
+        let uri = parse_skill_uri("skill://x/SKILL.md").expect("valid");
+        for label in ["Labby", "-labby", "labby-", "lab_by", "lab.by"] {
+            assert!(
+                uri.with_origin(label).is_err(),
+                "should refuse to mint {label}"
+            );
         }
     }
 
@@ -339,12 +408,16 @@ mod tests {
     }
 
     #[test]
-    fn with_origin_rewrites_only_the_label() {
+    fn with_origin_prepends_and_preserves_the_upstreams_own_prefix() {
         let uri = parse_skill_uri("skill://upstream-a/billing/refunds/SKILL.md").expect("valid");
         let rewritten = uri.with_origin("gh").expect("valid label");
         assert_eq!(rewritten.origin(), "gh");
-        assert_eq!(rewritten.path(), uri.path());
-        assert_eq!(rewritten.to_uri(), "skill://gh/billing/refunds/SKILL.md");
+        // The remainder is the upstream's whole path, so the mapping inverts.
+        assert_eq!(rewritten.path(), uri.full_path());
+        assert_eq!(
+            rewritten.to_uri(),
+            "skill://gh/upstream-a/billing/refunds/SKILL.md"
+        );
         // Round-trips: minting a proxied URI must not produce something the
         // parser then reads back differently.
         assert_eq!(

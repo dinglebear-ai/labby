@@ -24,10 +24,10 @@ use labby_runtime::skills::{
 
 /// Mirror commit the contract is pinned to. Changing the pin means re-reading
 /// the draft, so it is asserted in both places deliberately.
-const PINNED_COMMIT: &str = "9f55cd349932ba00fc18402873c9eb2d2c2e78cb";
+const PINNED_COMMIT: &str = "d29bd05222b4732d7b665b552abee532a8c200fa";
 
-/// Upstream commit the mirror synced from.
-const UPSTREAM_COMMIT: &str = "0eb05fe9fbd6";
+/// Branch the pinned revision lives on.
+const UPSTREAM_COMMIT: &str = "sep/skills-extension";
 
 fn contract_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -220,8 +220,12 @@ fn contract_records_the_non_obvious_spec_requirements() {
             "merely because its URI carries a particular scheme",
         ),
         (
-            "T3 residual is documented, not closed",
-            "documented, not closed",
+            "the T3 allowed-tools mitigation names its _meta key",
+            "ai.dinglebear.labby/skillOrigin",
+        ),
+        (
+            "provenance rides in _meta rather than frontmatter",
+            "never in `frontmatter`",
         ),
     ] {
         assert!(

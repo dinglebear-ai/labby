@@ -395,6 +395,14 @@ pub enum UpstreamTransport {
     UnixSocket,
 }
 
+/// Name prefix Labby mints for its own in-process service peers.
+///
+/// Load-bearing for caller-identity propagation: only upstreams whose name
+/// carries this prefix receive the caller's authorization in `_meta`. Shared so
+/// the minting site and the trust check cannot drift apart into a third-party
+/// upstream that is silently treated as in-process.
+pub const IN_PROCESS_UPSTREAM_PREFIX: &str = "__in_process__";
+
 /// Configuration for a single upstream MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
@@ -455,6 +463,17 @@ pub struct UpstreamConfig {
     /// Optional allowlist of prompt names/patterns to expose from this upstream.
     #[serde(default)]
     pub expose_prompts: Option<Vec<String>>,
+    /// Whether to proxy Agent Skills (SEP-2640) from this upstream.
+    ///
+    /// Defaults to **false**, unlike `proxy_resources`/`proxy_prompts`. Skills
+    /// carry instructions an agent will act on, so aggregating them from an
+    /// upstream is a trust decision an operator should make deliberately —
+    /// and the extension is still an unmerged draft.
+    #[serde(default)]
+    pub proxy_skills: bool,
+    /// Optional allowlist of skill names/patterns to expose from this upstream.
+    #[serde(default)]
+    pub expose_skills: Option<Vec<String>>,
     /// Optional short model-visible capability hint for this upstream in Code Mode.
     ///
     /// This is operator-approved display metadata only. It must not affect
@@ -660,6 +679,22 @@ impl UpstreamConfig {
     /// Validate the upstream name and mutually-exclusive auth shapes.
     /// `bearer_token_env` and `oauth` both configured is a config error.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // Reserved: `code_mode_host` decides whether to attach the caller's
+        // OAuth identity to an upstream call by testing this prefix. A
+        // configured upstream allowed to claim it would be handed the caller's
+        // `sub` and scopes and sent them over the network — the caller identity
+        // leak that guard exists to prevent. Names permit `_`, so nothing else
+        // stops it.
+        if self.name.starts_with(IN_PROCESS_UPSTREAM_PREFIX) {
+            return Err(ConfigError::InvalidName {
+                name: self.name.clone(),
+                reason: format!(
+                    "`{IN_PROCESS_UPSTREAM_PREFIX}` is reserved for Labby's in-process \
+                     services and cannot prefix an upstream name"
+                ),
+            });
+        }
+
         // Name must not be empty.
         if self.name.trim().is_empty() {
             return Err(ConfigError::InvalidName {
@@ -685,6 +720,32 @@ impl UpstreamConfig {
                 reason: "must contain only ASCII letters, digits, hyphens, underscores, and dots"
                     .to_string(),
             });
+        }
+        // When this upstream proxies skills, its name additionally becomes the
+        // origin label in every `skill://` URI minted for it, so it must satisfy
+        // the tighter origin-label grammar. Enforced only under `proxy_skills`
+        // on purpose: the general name rules above already accept uppercase,
+        // `_`, and `.`, and existing deployments must keep loading. Upstreams
+        // that do not proxy skills are untouched.
+        if self.proxy_skills {
+            if self.name == crate::skills::FIRST_PARTY_ORIGIN {
+                return Err(ConfigError::InvalidName {
+                    name: self.name.clone(),
+                    reason: format!(
+                        "`{}` is reserved for Labby's own skills and cannot be used by an \
+                         upstream with `proxy_skills` enabled",
+                        crate::skills::FIRST_PARTY_ORIGIN
+                    ),
+                });
+            }
+            if !crate::skills::is_valid_origin_label(&self.name) {
+                return Err(ConfigError::InvalidName {
+                    name: self.name.clone(),
+                    reason: "must be lowercase ASCII letters, digits, and interior hyphens to be \
+                             usable as a skill origin label with `proxy_skills` enabled"
+                        .to_string(),
+                });
+            }
         }
         if self.bearer_token_env.is_some() && self.oauth.is_some() {
             return Err(ConfigError::ConflictingAuth {
@@ -1522,6 +1583,60 @@ mod tests {
         assert!(cfg.enabled);
         assert!((cfg.priority - default_upstream_priority()).abs() < f32::EPSILON);
         assert!(cfg.oauth.is_none());
+    }
+
+    #[test]
+    fn skills_proxying_is_opt_in_and_does_not_disturb_existing_configs() {
+        let cfg: UpstreamConfig = toml::from_str("name=\"axon\"\nurl=\"https://x/mcp\"\n").unwrap();
+        // Deliberately unlike proxy_resources/proxy_prompts, which default true.
+        assert!(!cfg.proxy_skills);
+        assert!(cfg.expose_skills.is_none());
+
+        // An upstream name the general rules allow but the origin-label grammar
+        // does not must keep loading and validating while skills are off — the
+        // whole point of gating the tighter rule on proxy_skills.
+        let legacy: UpstreamConfig =
+            toml::from_str("name=\"My_Server.v2\"\nurl=\"https://x/mcp\"\n").unwrap();
+        legacy
+            .validate()
+            .expect("an existing config must not start failing because skills exist");
+    }
+
+    #[test]
+    fn skills_proxying_requires_a_usable_origin_label() {
+        // With proxy_skills on, the name becomes the origin label in every
+        // minted skill:// URI, so it must satisfy the tighter grammar.
+        for name in ["My_Server.v2", "UPPER", "trailing-", "has space"] {
+            let cfg: UpstreamConfig = toml::from_str(&format!(
+                "name=\"{name}\"\nurl=\"https://x/mcp\"\nproxy_skills=true\n"
+            ))
+            .unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "`{name}` must be rejected as an origin label"
+            );
+        }
+
+        let ok: UpstreamConfig =
+            toml::from_str("name=\"upstream-2\"\nurl=\"https://x/mcp\"\nproxy_skills=true\n")
+                .unwrap();
+        ok.validate().expect("a conforming label is accepted");
+    }
+
+    #[test]
+    fn the_first_party_origin_label_is_reserved_from_upstreams() {
+        let cfg: UpstreamConfig =
+            toml::from_str("name=\"labby\"\nurl=\"https://x/mcp\"\nproxy_skills=true\n").unwrap();
+        let error = cfg
+            .validate()
+            .expect_err("an upstream must not claim Labby's own skill namespace");
+        assert!(format!("{error}").contains("reserved"));
+
+        // ...but only when it actually proxies skills; the name is otherwise
+        // unremarkable and must not break an existing deployment.
+        let without: UpstreamConfig =
+            toml::from_str("name=\"labby\"\nurl=\"https://x/mcp\"\n").unwrap();
+        without.validate().expect("no skills, no reservation");
     }
 
     #[test]

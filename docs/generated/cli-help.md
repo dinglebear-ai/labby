@@ -1716,8 +1716,16 @@ Options:
           [default: true]
           [possible values: true, false]
 
+      --proxy-skills <PROXY_SKILLS>
+          Aggregate this upstream's Agent Skills (SEP-2640) through the gateway.
+
+          Defaults to false, unlike the other proxy flags: an upstream's skills carry instructions an agent will act on, so aggregating them is a deliberate trust decision. Without this flag there is no way to turn it on from the CLI at all.
+
+          [default: false]
+          [possible values: true, false]
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `labby gateway update`
@@ -1766,6 +1774,11 @@ Options:
           Clear the upstream bearer token environment variable name
 
       --proxy-resources <PROXY_RESOURCES>
+          [possible values: true, false]
+
+      --proxy-skills <PROXY_SKILLS>
+          Turn Agent Skills aggregation on or off for this upstream
+
           [possible values: true, false]
 
   -h, --help

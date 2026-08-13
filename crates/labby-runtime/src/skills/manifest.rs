@@ -210,6 +210,7 @@ mod tests {
                 .expect("object")
                 .clone(),
             resources,
+            meta: None,
         }
     }
 

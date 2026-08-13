@@ -269,6 +269,8 @@ pub enum UpstreamCapability {
     Prompts,
     /// Resource listing and resource reads.
     Resources,
+    /// Agent Skills enumeration and retrieval (SEP-2640).
+    Skills,
 }
 
 /// Health state of an upstream connection.
@@ -335,6 +337,8 @@ pub struct UpstreamEntry {
     pub prompt_count: usize,
     /// Last successfully discovered upstream resource count.
     pub resource_count: usize,
+    /// Number of skills last enumerated from this upstream (SEP-2640).
+    pub skill_count: usize,
     /// Cached upstream prompt names from the last successful list operation.
     pub prompt_names: Vec<String>,
     /// Cached upstream resource URIs from the last successful list operation.
@@ -345,18 +349,24 @@ pub struct UpstreamEntry {
     pub prompt_health: UpstreamHealth,
     /// Current resource capability health state.
     pub resource_health: UpstreamHealth,
+    /// Health of this upstream's skills capability.
+    pub skill_health: UpstreamHealth,
     /// When the tools capability last became unhealthy.
     pub tool_unhealthy_since: Option<std::time::Instant>,
     /// When the prompts capability last became unhealthy.
     pub prompt_unhealthy_since: Option<std::time::Instant>,
     /// When the resources capability last became unhealthy.
     pub resource_unhealthy_since: Option<std::time::Instant>,
+    /// When the skills capability first went unhealthy.
+    pub skill_unhealthy_since: Option<std::time::Instant>,
     /// Most recent tools-capability failure detail.
     pub tool_last_error: Option<String>,
     /// Most recent prompts-capability failure detail.
     pub prompt_last_error: Option<String>,
     /// Most recent resources-capability failure detail.
     pub resource_last_error: Option<String>,
+    /// Last skills-capability failure detail.
+    pub skill_last_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -447,6 +457,7 @@ impl UpstreamEntry {
             UpstreamCapability::Tools => self.tool_health,
             UpstreamCapability::Prompts => self.prompt_health,
             UpstreamCapability::Resources => self.resource_health,
+            UpstreamCapability::Skills => self.skill_health,
         }
     }
 
@@ -456,6 +467,7 @@ impl UpstreamEntry {
             UpstreamCapability::Tools => self.tool_health = health,
             UpstreamCapability::Prompts => self.prompt_health = health,
             UpstreamCapability::Resources => self.resource_health = health,
+            UpstreamCapability::Skills => self.skill_health = health,
         }
     }
 
@@ -469,6 +481,7 @@ impl UpstreamEntry {
             UpstreamCapability::Tools => self.tool_unhealthy_since,
             UpstreamCapability::Prompts => self.prompt_unhealthy_since,
             UpstreamCapability::Resources => self.resource_unhealthy_since,
+            UpstreamCapability::Skills => self.skill_unhealthy_since,
         }
     }
 
@@ -482,6 +495,7 @@ impl UpstreamEntry {
             UpstreamCapability::Tools => self.tool_unhealthy_since = unhealthy_since,
             UpstreamCapability::Prompts => self.prompt_unhealthy_since = unhealthy_since,
             UpstreamCapability::Resources => self.resource_unhealthy_since = unhealthy_since,
+            UpstreamCapability::Skills => self.skill_unhealthy_since = unhealthy_since,
         }
     }
 
@@ -492,6 +506,7 @@ impl UpstreamEntry {
             UpstreamCapability::Tools => self.tool_last_error.as_deref(),
             UpstreamCapability::Prompts => self.prompt_last_error.as_deref(),
             UpstreamCapability::Resources => self.resource_last_error.as_deref(),
+            UpstreamCapability::Skills => self.skill_last_error.as_deref(),
         }
     }
 
@@ -505,6 +520,7 @@ impl UpstreamEntry {
             UpstreamCapability::Tools => self.tool_last_error = last_error,
             UpstreamCapability::Prompts => self.prompt_last_error = last_error,
             UpstreamCapability::Resources => self.resource_last_error = last_error,
+            UpstreamCapability::Skills => self.skill_last_error = last_error,
         }
     }
 }

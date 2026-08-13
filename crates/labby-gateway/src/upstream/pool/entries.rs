@@ -46,17 +46,21 @@ pub(super) fn lazy_upstream_entry(config: &UpstreamConfig, name: Arc<str>) -> Up
         proxy_resources: config.proxy_resources,
         prompt_count: 0,
         resource_count: 0,
+        skill_count: 0,
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,
         prompt_health: UpstreamHealth::Healthy,
         resource_health: UpstreamHealth::Healthy,
+        skill_health: UpstreamHealth::Healthy,
         tool_unhealthy_since: None,
         prompt_unhealthy_since: None,
         resource_unhealthy_since: None,
+        skill_unhealthy_since: None,
         tool_last_error: None,
         prompt_last_error: None,
         resource_last_error: None,
+        skill_last_error: None,
     }
 }
 
@@ -73,17 +77,21 @@ pub(super) fn healthy_in_process_entry(
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
+        skill_count: 0,
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,
         prompt_health: UpstreamHealth::Healthy,
         resource_health: UpstreamHealth::Healthy,
+        skill_health: UpstreamHealth::Healthy,
         tool_unhealthy_since: None,
         prompt_unhealthy_since: None,
         resource_unhealthy_since: None,
+        skill_unhealthy_since: None,
         tool_last_error: None,
         prompt_last_error: None,
         resource_last_error: None,
+        skill_last_error: None,
     }
 }
 
@@ -97,6 +105,7 @@ pub(super) fn failed_in_process_entry(name: Arc<str>, error_message: String) -> 
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
+        skill_count: 0,
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Unhealthy {
@@ -108,12 +117,17 @@ pub(super) fn failed_in_process_entry(name: Arc<str>, error_message: String) -> 
         resource_health: UpstreamHealth::Unhealthy {
             consecutive_failures: 1,
         },
+        skill_health: UpstreamHealth::Unhealthy {
+            consecutive_failures: 1,
+        },
         tool_unhealthy_since: Some(Instant::now()),
         prompt_unhealthy_since: Some(Instant::now()),
         resource_unhealthy_since: Some(Instant::now()),
+        skill_unhealthy_since: Some(Instant::now()),
         tool_last_error: Some(error_message.clone()),
         prompt_last_error: Some(error_message.clone()),
-        resource_last_error: Some(error_message),
+        resource_last_error: Some(error_message.clone()),
+        skill_last_error: Some(error_message),
     }
 }
 
@@ -130,12 +144,17 @@ pub(super) fn failed_in_process_entry_from_existing(
     existing.resource_health = UpstreamHealth::Unhealthy {
         consecutive_failures: 1,
     };
+    existing.skill_health = UpstreamHealth::Unhealthy {
+        consecutive_failures: 1,
+    };
     existing.tool_unhealthy_since = Some(Instant::now());
     existing.prompt_unhealthy_since = Some(Instant::now());
     existing.resource_unhealthy_since = Some(Instant::now());
+    existing.skill_unhealthy_since = Some(Instant::now());
     existing.tool_last_error = Some(error_message.clone());
     existing.prompt_last_error = Some(error_message.clone());
-    existing.resource_last_error = Some(error_message);
+    existing.resource_last_error = Some(error_message.clone());
+    existing.skill_last_error = Some(error_message);
     existing
 }
 
@@ -241,7 +260,23 @@ pub(super) fn resolve_request_prompt_exposure_policy(
     )
 }
 
-/// The one fail-closed allowlist compiler shared by all three capabilities.
+/// Compile `expose_skills` into the shared exposure policy (catalog-build).
+pub(super) fn resolve_skill_exposure_policy(
+    upstream_name: &str,
+    expose_skills: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_named_exposure_policy(upstream_name, "expose_skills", "skills", expose_skills)
+}
+
+/// [`resolve_skill_exposure_policy`] for paths that run once per request.
+pub(super) fn resolve_request_skill_exposure_policy(
+    upstream_name: &str,
+    expose_skills: Option<Vec<String>>,
+) -> ToolExposurePolicy {
+    resolve_request_named_exposure_policy(upstream_name, "expose_skills", "skills", expose_skills)
+}
+
+/// The one fail-closed allowlist compiler shared by all four capabilities.
 ///
 /// `field` names the operator-facing config key and `capability` names what
 /// gets hidden — both are log-only. An invalid allowlist collapses to an empty

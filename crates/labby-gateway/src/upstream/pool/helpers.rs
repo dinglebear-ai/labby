@@ -111,7 +111,10 @@ pub(super) fn upstream_call_concurrency() -> usize {
 }
 
 pub fn in_process_upstream_name(service_name: &str) -> String {
-    format!("__in_process__{service_name}")
+    format!(
+        "{}{service_name}",
+        labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX
+    )
 }
 
 /// A `Write` sink that counts bytes without allocating.
@@ -521,6 +524,8 @@ mod tests {
             expose_tools: None,
             expose_resources: None,
             expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
             code_mode_hint: None,
             oauth: None,
             imported_from: None,

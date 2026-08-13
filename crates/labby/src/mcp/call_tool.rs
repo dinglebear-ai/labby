@@ -39,7 +39,8 @@ use crate::mcp::catalog_coalesce::schedule_catalog_notification;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_notifications::CatalogNotificationChanges;
 use crate::mcp::context::{
-    auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+    auth_context_from_extensions, propagated_caller_auth, resolve_caller_authorization,
+    tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
@@ -535,8 +536,15 @@ impl LabMcpServer {
                                 build_error(&service, synthetic_action, "internal_error", message);
                             return Ok(error_result_from_envelope(envelope).into());
                         };
-                        if !tool_execute_builtin_action_allowed(gateway_entry, gateway_action, auth)
-                        {
+                        if !tool_execute_builtin_action_allowed(
+                            gateway_entry,
+                            gateway_action,
+                            &resolve_caller_authorization(
+                                auth,
+                                self.absent_auth_trust(),
+                                propagated_caller_auth(request.meta.as_ref()),
+                            ),
+                        ) {
                             let message =
                                 format!("action `{gateway_action}` requires `lab:admin` scope");
                             self.log_add_server_failure(
@@ -803,7 +811,11 @@ impl LabMcpServer {
             && !tool_execute_builtin_action_allowed(
                 entry,
                 &action,
-                auth_context_from_extensions(&context.extensions),
+                &resolve_caller_authorization(
+                    auth_context_from_extensions(&context.extensions),
+                    self.absent_auth_trust(),
+                    propagated_caller_auth(request.meta.as_ref()),
+                ),
             )
         {
             let envelope = build_error_extra(

@@ -58,7 +58,7 @@ async fn connect_in_process_service_peer(
         code_mode_app_state: Default::default(),
         last_listed_tool_contract: Default::default(),
         client_registry: Default::default(),
-        transport_label: "in-process",
+        transport_label: crate::mcp::server::IN_PROCESS_TRANSPORT_LABEL,
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: crate::mcp::server::next_relay_session_id(),

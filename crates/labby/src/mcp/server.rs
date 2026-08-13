@@ -12,7 +12,8 @@ use dashmap::DashMap;
 use labby_primitives::mcp::{
     MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
 };
-#[cfg(feature = "gateway")]
+// Not feature-gated: `mcp_extensions()` is unconditional so a build with one
+// extension and not another still advertises the one it has.
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams,
@@ -324,10 +325,25 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
     extensions
 }
 
-#[cfg(feature = "gateway")]
+/// Extension capabilities advertised in `initialize`.
+///
+/// Deliberately not gated as a whole: each extension carries its own `cfg` so a
+/// build that enables one and not another still advertises the one it has. The
+/// previous whole-function gate meant a `--features skills` build without
+/// `gateway` advertised no extensions block at all, and so could never announce
+/// skills support.
 fn mcp_extensions() -> ExtensionCapabilities {
     let mut extensions = ExtensionCapabilities::new();
+    #[cfg(feature = "gateway")]
     extensions.extend(mcp_apps_ui_extension());
+    #[cfg(feature = "skills")]
+    extensions.insert(
+        labby_runtime::skills::wire::SKILLS_EXTENSION_KEY.to_string(),
+        // Empty object: supported, with no optional features. Labby does not
+        // implement `resources/directory/read`, and a client must not call it
+        // against a server that has not declared `directoryRead`.
+        serde_json::Map::new(),
+    );
     extensions
 }
 
@@ -413,7 +429,6 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts()
             .enable_prompts_list_changed()
             .enable_completions();
-        #[cfg(feature = "gateway")]
         let builder = builder.enable_extensions_with(mcp_extensions());
         #[cfg(feature = "gateway")]
         let builder = if gateway_manager_configured {
@@ -427,6 +442,16 @@ impl ServerHandler for LabMcpServer {
         let capabilities = builder.build();
         let mut info = ServerInfo::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
+        // A pointer, not skill content. It reaches clients that never parse the
+        // capability map, which is the population most likely to miss an
+        // extension entirely.
+        #[cfg(feature = "skills")]
+        {
+            info.instructions = Some(
+                "This server implements the MCP Skills extension                  (io.modelcontextprotocol/skills). Call `skills/list` to enumerate its Agent                  Skills, or `skills/get` with a `skill://` URI to fetch one entry. The contract                  this server implements is readable at `lab://contracts/skills-extension`."
+                    .to_string(),
+            );
+        }
         info
     }
 
@@ -450,8 +475,22 @@ impl ServerHandler for LabMcpServer {
     async fn on_custom_request(
         &self,
         request: CustomRequest,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
+        // `context` is threaded rather than ignored: the skills methods below
+        // are scope-gated, and once proxied skills land they route per OAuth
+        // subject. A context-blind custom-request handler is how the in-process
+        // peer ended up trusting every caller (lab-m01gl) — do not reintroduce
+        // that shape here.
+        #[cfg(feature = "skills")]
+        if matches!(
+            request.method.as_str(),
+            labby_runtime::skills::wire::SKILLS_LIST_METHOD
+                | labby_runtime::skills::wire::SKILLS_GET_METHOD
+        ) {
+            return self.handle_skills_request(&request, &context).await;
+        }
+
         if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode::METHOD_NOT_FOUND,
@@ -764,7 +803,33 @@ impl ServerHandler for LabMcpServer {
 
 use crate::mcp::catalog::CatalogChangeSet;
 
+/// Transport label used by the in-process service peer. Shared so the
+/// constructor in `mcp/in_process_peer.rs` and the trust check here cannot
+/// drift apart into a silently-trusted transport.
+pub(crate) const IN_PROCESS_TRANSPORT_LABEL: &str = "in-process";
+
+/// Extension capability map, for tests that assert what `initialize` declares.
+#[cfg(test)]
+pub(crate) fn mcp_extensions_for_test() -> ExtensionCapabilities {
+    mcp_extensions()
+}
+
 impl LabMcpServer {
+    /// Whether a missing per-request `AuthContext` may be read as trusted local
+    /// stdio on *this* server's transport.
+    ///
+    /// The in-process peer is served over a duplex pipe with no HTTP layer, so
+    /// it produces `None` for every caller — including a remote non-admin one
+    /// arriving through Code Mode. Only transports that would have carried auth
+    /// for a remote caller may treat its absence as proof of locality.
+    pub(crate) fn absent_auth_trust(&self) -> crate::mcp::context::AbsentAuth {
+        if self.transport_label == IN_PROCESS_TRANSPORT_LABEL {
+            crate::mcp::context::AbsentAuth::Untrusted
+        } else {
+            crate::mcp::context::AbsentAuth::TrustedLocal
+        }
+    }
+
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
     /// Per-call sites pass their own label so a notification triggered by a
     /// tool call is never confused with a gateway reconcile.

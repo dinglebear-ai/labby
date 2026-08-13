@@ -58,6 +58,17 @@ const AGENT_ERROR_CONTRACT_SCHEMA: &str =
 const CODE_MODE_CALL_ERROR_CONTRACT_SCHEMA: &str =
     include_str!("../../../../docs/contracts/schemas/code-mode-call-error.schema.json");
 const CONTRACT_SCHEMA_MIME: &str = "application/schema+json";
+/// In-band discovery for the Skills extension (SEP-2640).
+///
+/// Published so a client that does not speak the extension can still discover
+/// that skills exist, what the URI grammar is, and which methods to call — via
+/// `resources/list`, which every client already reads. This is protocol
+/// metadata, not skill content, and lists no `skill://` URI.
+#[cfg(feature = "skills")]
+pub(crate) const SKILLS_EXTENSION_CONTRACT_URI: &str = "lab://contracts/skills-extension";
+#[cfg(feature = "skills")]
+const SKILLS_EXTENSION_CONTRACT: &str =
+    include_str!("../../../../docs/contracts/skills-extension.md");
 
 /// MCP Apps (Claude / SEP-1724) MIME — bound via the tool's `_meta.ui.resourceUri`.
 pub(crate) const CODE_MODE_APP_MIME: &str = "text/html;profile=mcp-app";
@@ -402,6 +413,17 @@ impl LabMcpServer {
 
         // Error-contract schemas: always listed so agents can discover the
         // envelope contract in-band instead of relying on out-of-band docs.
+        #[cfg(feature = "skills")]
+        if !resources.finished() {
+            resources.accept(
+                Resource::new(SKILLS_EXTENSION_CONTRACT_URI, "contracts/skills-extension")
+                    .with_description(
+                        "The MCP Skills extension (SEP-2640) contract this server implements: \
+                         pinned draft revision, URI grammar, and verification requirements",
+                    )
+                    .with_mime_type("text/markdown"),
+            );
+        }
         if !resources.finished() {
             resources.accept(
                 Resource::new(AGENT_ERROR_CONTRACT_URI, "contracts/agent-error")
@@ -672,6 +694,60 @@ impl LabMcpServer {
             "dispatch start"
         );
 
+        // Branch -1: first-party skill files. The `skill://` namespace is
+        // exact-match and disjoint from every other prefix here, so it is
+        // resolved first and never falls through to a lab:// handler.
+        #[cfg(feature = "skills")]
+        if crate::mcp::skills::is_skill_uri(&uri) {
+            // Same scope `skills/list` and `skills/get` require. Gating only
+            // the enumerating methods would leave every skill file fetchable by
+            // URI, and skill URIs are not secret — they appear in listings,
+            // docs, and any prior authorized session. That is a bypass, not a
+            // restriction, and it is the rule this repo already applies to
+            // `expose_skills` on the listing-and-access pair.
+            if !code_mode_read_scope_allowed(auth_context_from_extensions(&context.extensions)) {
+                return Err(forbidden_resource_error(
+                    &uri,
+                    "skill resources require one of scopes: lab:read, lab, lab:admin",
+                    &["lab:read", "lab", "lab:admin"],
+                ));
+            }
+            let body = match crate::mcp::skills::read_first_party_skill_file(&uri) {
+                Some(body) => body.to_string(),
+                // Not one of Labby's own: route it to the upstream that owns
+                // the origin label, with the manifest-bound digest check.
+                None => {
+                    // `subject` above is the *redacted* logging tag. Routing a
+                    // proxied read needs the real OAuth identity: it keys the
+                    // per-subject skills cache and picks the token the upstream
+                    // is connected with. Passing the tag would miss the cache
+                    // `skills/list` populated and resolve a subject no upstream
+                    // has ever heard of.
+                    return self
+                        .read_proxied_skill_file_impl(
+                            &uri,
+                            &resource_uri_log,
+                            self.request_subject(&context),
+                            &subject,
+                            start,
+                        )
+                        .await;
+                }
+            };
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                resource_uri = %resource_uri_log,
+                elapsed_ms = start.elapsed().as_millis(),
+                "dispatch finish"
+            );
+            return Ok(
+                ReadResourceResult::new(vec![ResourceContents::text(body, uri.clone())]).into(),
+            );
+        }
+
         // Branch 0: MCP Apps UI resources. This must precede all lab://
         // fallbacks so ui:// has its own exact lookup semantics.
         //
@@ -744,6 +820,23 @@ impl LabMcpServer {
         // agent-error / Code Mode call-error contracts, served from the
         // embedded schemas. Read-only, no scope requirement — the contract is
         // documentation, exactly like `lab://catalog`.
+        #[cfg(feature = "skills")]
+        if uri == SKILLS_EXTENSION_CONTRACT_URI {
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                resource_uri = %resource_uri_log,
+                elapsed_ms = start.elapsed().as_millis(),
+                "dispatch finish"
+            );
+            return Ok(ReadResourceResult::new(vec![
+                ResourceContents::text(SKILLS_EXTENSION_CONTRACT, uri.to_string())
+                    .with_mime_type("text/markdown"),
+            ])
+            .into());
+        }
         if uri == AGENT_ERROR_CONTRACT_URI || uri == CODE_MODE_CALL_ERROR_CONTRACT_URI {
             return self
                 .read_contract_schema_resource(&uri, &subject, start, &context)
@@ -1886,6 +1979,8 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
                         expose_tools: None,
                         expose_resources: None,
                         expose_prompts: None,
+                        proxy_skills: false,
+                        expose_skills: None,
                         code_mode_hint: None,
                         oauth: None,
                         imported_from: None,

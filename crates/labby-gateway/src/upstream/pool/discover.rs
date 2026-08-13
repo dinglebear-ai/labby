@@ -60,7 +60,9 @@ pub(super) async fn routable_upstream_peers(
                     .cloned()
                     .collect::<Vec<_>>()
             }
-            UpstreamCapability::Tools | UpstreamCapability::Prompts => catalog
+            UpstreamCapability::Tools
+            | UpstreamCapability::Prompts
+            | UpstreamCapability::Skills => catalog
                 .iter()
                 .filter(|(_, entry)| entry.health_for(capability).is_routable())
                 .map(|(name, _)| name.clone())
@@ -371,18 +373,22 @@ impl UpstreamPool {
                         proxy_resources,
                         prompt_count,
                         resource_count,
+                        skill_count: 0,
                         prompt_names: Vec::new(),
                         resource_uris: Vec::new(),
                         tool_health: UpstreamHealth::Healthy,
                         prompt_health,
                         resource_health,
+                        skill_health: UpstreamHealth::Healthy,
                         tool_unhealthy_since: None,
                         prompt_unhealthy_since: (!prompt_health.is_routable()).then(Instant::now),
                         resource_unhealthy_since: (!resource_health.is_routable())
                             .then(Instant::now),
+                        skill_unhealthy_since: None,
                         tool_last_error: None,
                         prompt_last_error,
                         resource_last_error,
+                        skill_last_error: None,
                     };
 
                     self.catalog.write().await.insert(name.clone(), entry);
@@ -399,6 +405,7 @@ impl UpstreamPool {
                         proxy_resources: true,
                         prompt_count: 0,
                         resource_count: 0,
+                        skill_count: 0,
                         prompt_names: Vec::new(),
                         resource_uris: Vec::new(),
                         tool_health: UpstreamHealth::Unhealthy {
@@ -410,12 +417,17 @@ impl UpstreamPool {
                         resource_health: UpstreamHealth::Unhealthy {
                             consecutive_failures: 1,
                         },
+                        skill_health: UpstreamHealth::Unhealthy {
+                            consecutive_failures: 1,
+                        },
                         tool_unhealthy_since: Some(Instant::now()),
                         prompt_unhealthy_since: Some(Instant::now()),
                         resource_unhealthy_since: Some(Instant::now()),
+                        skill_unhealthy_since: None,
                         tool_last_error: Some(error_message.clone()),
                         prompt_last_error: Some(error_message.clone()),
                         resource_last_error: Some(error_message),
+                        skill_last_error: None,
                     };
                     self.catalog.write().await.insert(name, entry);
                 }

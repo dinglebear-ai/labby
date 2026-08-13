@@ -662,3 +662,26 @@ Illustrative failure fields:
   "elapsed_ms": 311
 }
 ```
+
+## Skills (SEP-2640)
+
+Skills events follow the standard dispatch field set. Two rules are specific to
+this surface:
+
+- **URIs are redacted before they reach a log line.** A skill URI is
+  path-shaped, exactly like a resource URI, and goes through
+  `redact_resource_uri_for_logging` at every site. Skill *content* is never
+  logged at any level — only bounded identifiers (URI, name, digest, counts).
+- **Ingest exclusions are `WARN` with a stable reason code**
+  (`invalid_frontmatter`, `manifest_uri_out_of_namespace`, `missing_manifest`,
+  …) plus the upstream and the redacted skill URI. One malformed skill never
+  fails an upstream, so the log line is the only place the *cause* is visible;
+  the count reaches operators through `gateway.skills.list` and agents through
+  the listing's `_meta.excludedSkills`.
+
+| Event | Level | Notes |
+|-------|-------|-------|
+| upstream skills discovery start/finish | `INFO` | per upstream, with count and `elapsed_ms` |
+| skill excluded at ingest | `WARN` | reason code + redacted URI |
+| snapshot truncated by a budget | `WARN` | which cap engaged |
+| `skills/list`, `skills/get`, skill `resources/read` | `INFO` | one dispatch event each |

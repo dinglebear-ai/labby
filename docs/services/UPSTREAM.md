@@ -114,9 +114,11 @@ clients without elicitation run without a parameter gate. See
 | `bearer_token_env` | string | no | Name of an env var holding a bearer token for HTTP or Unix-socket transport. Not the token itself. |
 | `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. |
 | `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
+| `proxy_skills` | bool | no | Whether to aggregate this upstream's Agent Skills (SEP-2640). Default: **`false`**, unlike the other `proxy_*` flags — see below. |
 | `expose_tools` | string[] | no | Optional allowlist of tool names/patterns to expose from this upstream. Supports exact names and `*` wildcards. |
 | `expose_resources` | string[] | no | Optional allowlist of bare upstream resource URIs/patterns to expose. Same matching rules as `expose_tools`. |
 | `expose_prompts` | string[] | no | Optional allowlist of prompt names/patterns to expose. Accepts the bare or `{upstream}/{name}` spelling. |
+| `expose_skills` | string[] | no | Optional allowlist of skill names/patterns to expose. An empty list exposes nothing; omit the key to expose all. |
 
 When `transport` is omitted, an HTTP/WebSocket `url` or stdio `command` preserves legacy inference. `unix_socket` must be explicit and requires both `socket_path` and an HTTP(S) `url`; it cannot also configure `command`.
 
@@ -520,6 +522,90 @@ Failed resource listings from individual upstreams are logged as warnings. Other
 The same graceful-degradation rule applies to prompt/resource discovery and
 reads: one upstream failure must not prevent healthy upstreams from serving
 partial results.
+
+## Skills Aggregation
+
+Skills aggregation implements [SEP-2640](../contracts/skills-extension.md), an
+**unmerged** draft. The contract doc pins the exact revision this code was
+written against; read it before changing anything here.
+
+It is opt-in per upstream via `proxy_skills = true`, and unlike every other
+`proxy_*` flag it defaults to **`false`**. That asymmetry is deliberate: a
+skill is a set of instructions an agent will act on, so aggregating one is a
+trust decision about the upstream, not a convenience toggle.
+
+```toml
+[[upstream]]
+name = "acme"
+command = "acme-mcp-server"
+proxy_skills = true
+expose_skills = ["refunds"]   # omit to expose all
+```
+
+Enable it from the CLI with:
+
+```bash
+labby gateway add --name acme --command acme-mcp-server --proxy-skills true
+```
+
+### Per-origin namespacing
+
+Every aggregated skill is relabelled under the upstream's host-assigned origin,
+so two upstreams may each publish a skill named `refunds` without collision:
+
+```text
+skill://{origin}/{skill}/{file}
+skill://acme/refunds/SKILL.md
+```
+
+`labby` is **reserved** for Labby's own first-party skills and can never be
+claimed by an upstream. Nothing is ever deduplicated by skill name — two
+origins publishing the same name are two distinct skills.
+
+Provenance travels in the entry's `_meta` under
+`ai.dinglebear.labby/skillOrigin`, never in `frontmatter`. Frontmatter is
+content the upstream authored; putting provenance there would let an upstream
+forge its own origin.
+
+### Verified reads
+
+A skill entry publishes a per-file sha256 digest. When a client reads one of
+those files, the bytes are hashed and compared against the digest the entry
+published **before any byte reaches the client**:
+
+- content that does not match its digest → `skill_digest_mismatch`, zero bytes
+  served
+- a file the manifest does not list → `skill_manifest_stale`; an unlisted file
+  is a *changed skill*, not a fetchable one, so it is refused rather than
+  fetched
+
+Both classify as `validation` / `rediscover` / `same_arguments: never` — an
+agent must refresh the entry rather than replay the identical read, because a
+changed resource set revokes any approval bound to the previous content.
+
+Digests are an integrity check against drift and corruption, **not a security
+boundary**: an upstream that serves malicious content can publish a matching
+digest for it. The trust decision is `proxy_skills`.
+
+### Degradation
+
+One unreachable upstream is skipped rather than emptying the listing, and
+per-upstream errors surface in `gateway.skills.list` rather than being folded
+into a silent empty result. Per the SEP, an empty or partial listing is never
+proof that a server has no skills — an unlisted skill may still be loadable by
+URI.
+
+### Labby's own skills
+
+Labby serves first-party skills under the reserved `labby` origin: those
+embedded in the binary, plus any operator-provided skill directories under
+`$LABBY_HOME/skills`. Operator skills are read and digested in a single pass at
+startup, so adding one requires a restart — re-reading per request would let a
+file change between publishing a digest and serving the file it describes,
+which is exactly the mismatch a conforming client must refuse. A skill is
+skipped, with a logged reason, if it contains a symlink at any depth, omits
+`SKILL.md`, exceeds the size or file-count caps, or its directory name
+disagrees with its frontmatter `name`.
 
 ## What Is Exposed Where
 
