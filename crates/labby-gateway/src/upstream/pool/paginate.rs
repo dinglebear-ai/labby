@@ -38,6 +38,17 @@ pub(super) fn listing_catalog_timeout(request_timeout: Duration) -> Duration {
     request_timeout.min(LISTING_CATALOG_TIMEOUT)
 }
 
+/// Wrap one bounded listing pass in its wall-clock budget, mapping expiry to
+/// the same `ServiceError::Timeout` the caller's error arm already classifies.
+pub(super) async fn with_listing_timeout<T>(
+    timeout: Duration,
+    listing: impl Future<Output = Result<T, ServiceError>>,
+) -> Result<T, ServiceError> {
+    tokio::time::timeout(timeout, listing)
+        .await
+        .unwrap_or_else(|_| Err(ServiceError::Timeout { timeout }))
+}
+
 /// Process-wide count of truncated listing passes (page cap hit or cursor
 /// loop detected), across all upstreams and list methods. Included in every
 /// truncation WARN so accumulating truncations are visible across refreshes;

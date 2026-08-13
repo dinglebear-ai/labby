@@ -11,6 +11,7 @@ use std::time::Instant;
 use super::super::types;
 use super::super::types::{UpstreamCapability, UpstreamEntry, UpstreamHealth};
 use super::UpstreamPool;
+use super::paginate::ListTruncation;
 
 impl UpstreamPool {
     pub async fn record_failure(&self, upstream_name: &str, error: impl Into<String>) {
@@ -97,7 +98,8 @@ impl UpstreamPool {
         }
     }
 
-    /// Record a truncated (partial) listing pass for an upstream capability.
+    /// Record a truncated (partial) listing pass for an upstream capability;
+    /// no-op when the pass was not truncated.
     ///
     /// A truncated pass — cursor loop broken or page cap hit — still returned
     /// usable data, so the upstream stays healthy/routable and the circuit
@@ -105,15 +107,16 @@ impl UpstreamPool {
     /// either: the note lands in the capability's `last_error`, the channel
     /// `gateway.status` surfaces, so operators can see the catalog is partial.
     /// Call this *after* `record_success_for`, which clears `last_error`.
-    pub async fn record_listing_truncation_for(
+    pub(super) async fn record_listing_truncation_for(
         &self,
         upstream_name: &str,
         capability: UpstreamCapability,
-        note: impl Into<String>,
+        truncation: Option<ListTruncation>,
     ) {
+        let Some(truncation) = truncation else { return };
         let mut catalog = self.catalog.write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
-            entry.set_last_error_for(capability, Some(note.into()));
+            entry.set_last_error_for(capability, Some(truncation.status_note()));
         }
     }
 

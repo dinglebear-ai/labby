@@ -79,30 +79,30 @@ impl UpstreamPool {
             // Subject-scoped listings never land in `self.catalog`, so there
             // is no entry to record a truncation note on — the WARN inside
             // the bounded helper is the visibility here.
-            match list_prompts_bounded(&peer, &name).await {
-                Ok((prompts, _truncation)) => {
-                    let discovered_count = prompts.len();
-                    let exposed: Vec<Prompt> = prompts
-                        .into_iter()
-                        .filter(|prompt| prompt_exposed(&policy, &name, &prompt.name))
-                        .collect();
-                    log_exposure_filter(
-                        &name,
-                        "prompts",
-                        discovered_count - exposed.len(),
-                        exposed.len(),
-                        true,
-                    );
-                    upstream_prompts.push((name, exposed));
-                }
+            let (prompts, _truncation) = match list_prompts_bounded(&peer, &name).await {
+                Ok(listing) => listing,
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
                         error = %error,
                         "subject-scoped upstream prompt discovery failed"
                     );
+                    continue;
                 }
-            }
+            };
+            let discovered_count = prompts.len();
+            let exposed: Vec<Prompt> = prompts
+                .into_iter()
+                .filter(|prompt| prompt_exposed(&policy, &name, &prompt.name))
+                .collect();
+            log_exposure_filter(
+                &name,
+                "prompts",
+                discovered_count - exposed.len(),
+                exposed.len(),
+                true,
+            );
+            upstream_prompts.push((name, exposed));
         }
 
         let (prompts, _) = merge_upstream_prompts(builtin_names, upstream_prompts);
@@ -149,30 +149,30 @@ impl UpstreamPool {
                     continue;
                 }
             };
-            match list_prompts_bounded(&peer, &name).await {
-                Ok((prompts, _truncation)) => {
-                    if prompts.iter().any(|prompt| {
-                        // The requested name is namespaced as `{upstream}/{name}`;
-                        // the upstream advertises the bare name, so compare against
-                        // the prefixed form. A prompt `expose_prompts` hides must not
-                        // resolve an owner either, or the caller would route a fetch
-                        // at a prompt it is not allowed to see.
-                        prefixed_upstream_prompt_name(&name, &prompt.name) == target_prompt
-                            && prompt_exposed(&policy, &name, &prompt.name)
-                    }) {
-                        return Some(name);
-                    }
-                }
-                // A listing error must not silently read as "prompt not
-                // found" — that hides an erroring upstream behind a lookup
-                // miss with no diagnostic trail.
+            // A listing error must not silently read as "prompt not found" —
+            // that hides an erroring upstream behind a lookup miss with no
+            // diagnostic trail.
+            let (prompts, _truncation) = match list_prompts_bounded(&peer, &name).await {
+                Ok(listing) => listing,
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
                         error = %error,
                         "subject-scoped prompt owner lookup failed to list prompts"
                     );
+                    continue;
                 }
+            };
+            if prompts.iter().any(|prompt| {
+                // The requested name is namespaced as `{upstream}/{name}`;
+                // the upstream advertises the bare name, so compare against
+                // the prefixed form. A prompt `expose_prompts` hides must not
+                // resolve an owner either, or the caller would route a fetch
+                // at a prompt it is not allowed to see.
+                prefixed_upstream_prompt_name(&name, &prompt.name) == target_prompt
+                    && prompt_exposed(&policy, &name, &prompt.name)
+            }) {
+                return Some(name);
             }
         }
         None

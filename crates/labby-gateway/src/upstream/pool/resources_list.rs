@@ -37,6 +37,7 @@ use super::logging::{
 };
 use super::paginate::{
     list_resource_templates_bounded, list_resources_bounded, listing_catalog_timeout,
+    with_listing_timeout,
 };
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
@@ -241,15 +242,19 @@ impl UpstreamPool {
         // failing upstream.
         //
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
+        let listing_timeout = listing_catalog_timeout(self.request_timeout);
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
-            let request_timeout = listing_catalog_timeout(self.request_timeout);
             futures.push(async move {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);
                 log_upstream_request_start(event);
+                // Raw `tokio::time::timeout` rather than `with_listing_timeout`:
+                // this site logs the expiry itself (`kind = "timeout"` with a
+                // listing-budget message) instead of routing a synthesized
+                // `ServiceError` through the generic error arm.
                 let result = match tokio::time::timeout(
-                    request_timeout,
+                    listing_timeout,
                     list_resources_bounded(&peer, &name),
                 )
                 .await
@@ -287,7 +292,7 @@ impl UpstreamPool {
                     Err(_) => {
                         let error_text = format!(
                             "upstream resource listing timed out after {}ms",
-                            request_timeout.as_millis()
+                            listing_timeout.as_millis()
                         );
                         log_upstream_request_error(
                             event,
@@ -317,16 +322,12 @@ impl UpstreamPool {
                 Ok((upstream_resources, truncation)) => {
                     self.record_success_for(&name, UpstreamCapability::Resources)
                         .await;
-                    // A truncated pass still returned data, but must not read
-                    // as a clean success in `gateway.status`.
-                    if let Some(truncation) = truncation {
-                        self.record_listing_truncation_for(
-                            &name,
-                            UpstreamCapability::Resources,
-                            truncation.status_note(),
-                        )
-                        .await;
-                    }
+                    self.record_listing_truncation_for(
+                        &name,
+                        UpstreamCapability::Resources,
+                        truncation,
+                    )
+                    .await;
                     let resource_uris = upstream_resources
                         .iter()
                         .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
@@ -430,21 +431,15 @@ impl UpstreamPool {
 
         // Deliberate bulkhead exception + partial-result semantics — same
         // contract as `list_upstream_resources_allowed` above.
+        let listing_timeout = listing_catalog_timeout(self.request_timeout);
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
-            let request_timeout = listing_catalog_timeout(self.request_timeout);
             futures.push(async move {
-                let result = match tokio::time::timeout(
-                    request_timeout,
+                let result = with_listing_timeout(
+                    listing_timeout,
                     list_resource_templates_bounded(&peer, &name),
                 )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(rmcp::ServiceError::Timeout {
-                        timeout: request_timeout,
-                    }),
-                };
+                .await;
                 (name, result)
             });
         }
@@ -461,14 +456,12 @@ impl UpstreamPool {
                 Ok((upstream_templates, truncation)) => {
                     self.record_success_for(&name, UpstreamCapability::Resources)
                         .await;
-                    if let Some(truncation) = truncation {
-                        self.record_listing_truncation_for(
-                            &name,
-                            UpstreamCapability::Resources,
-                            truncation.status_note(),
-                        )
-                        .await;
-                    }
+                    self.record_listing_truncation_for(
+                        &name,
+                        UpstreamCapability::Resources,
+                        truncation,
+                    )
+                    .await;
                     for mut template in upstream_templates {
                         if templates.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
@@ -527,7 +520,7 @@ impl UpstreamPool {
             let pool = self.clone();
             futures.push(async move {
                 let started = Instant::now();
-                let request_timeout = listing_catalog_timeout(pool.request_timeout);
+                let listing_timeout = listing_catalog_timeout(pool.request_timeout);
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -541,7 +534,7 @@ impl UpstreamPool {
                     .with_transport(upstream_transport(&config));
                 log_upstream_request_start(event);
                 let peer = match tokio::time::timeout(
-                    request_timeout,
+                    listing_timeout,
                     pool.acquire_or_connect_subject(&config, &subject),
                 )
                 .await
@@ -567,7 +560,7 @@ impl UpstreamPool {
                     Err(_) => {
                         let error = format!(
                             "subject-scoped upstream connection timed out after {}ms",
-                            request_timeout.as_millis()
+                            listing_timeout.as_millis()
                         );
                         pool.record_failure_for(
                             &config.name,
@@ -586,10 +579,10 @@ impl UpstreamPool {
                         return (config.name, policy, Err(error));
                     }
                 };
-                let timeout_ms = request_timeout.as_millis();
+                let timeout_ms = listing_timeout.as_millis();
                 let result = timed_capability_call_with_timeout(
                     &pool,
-                    request_timeout,
+                    listing_timeout,
                     &config.name,
                     UpstreamCapability::Resources,
                     event,

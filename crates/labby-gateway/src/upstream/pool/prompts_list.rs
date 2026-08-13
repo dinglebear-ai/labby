@@ -19,7 +19,7 @@ use super::capability_call::bounded_service_error_text;
 use super::discover::routable_upstream_peers;
 use super::helpers::{classify_upstream_error, merge_upstream_prompts};
 use super::logging::is_capability_unsupported;
-use super::paginate::{list_prompts_bounded, listing_catalog_timeout};
+use super::paginate::{list_prompts_bounded, listing_catalog_timeout, with_listing_timeout};
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
 impl UpstreamPool {
@@ -46,19 +46,12 @@ impl UpstreamPool {
         //
         // Issue RPCs in parallel. merge_upstream_prompts sorts internally,
         // so completion order does not affect the final result.
+        let listing_timeout = listing_catalog_timeout(self.request_timeout);
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
-            let request_timeout = listing_catalog_timeout(self.request_timeout);
             futures.push(async move {
                 let result =
-                    match tokio::time::timeout(request_timeout, list_prompts_bounded(&peer, &name))
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(_) => Err(rmcp::ServiceError::Timeout {
-                            timeout: request_timeout,
-                        }),
-                    };
+                    with_listing_timeout(listing_timeout, list_prompts_bounded(&peer, &name)).await;
                 (name, result)
             });
         }
@@ -70,16 +63,12 @@ impl UpstreamPool {
                 Ok((prompts, truncation)) => {
                     self.record_success_for(&name, UpstreamCapability::Prompts)
                         .await;
-                    // A truncated pass still returned data, but must not read
-                    // as a clean success in `gateway.status`.
-                    if let Some(truncation) = truncation {
-                        self.record_listing_truncation_for(
-                            &name,
-                            UpstreamCapability::Prompts,
-                            truncation.status_note(),
-                        )
-                        .await;
-                    }
+                    self.record_listing_truncation_for(
+                        &name,
+                        UpstreamCapability::Prompts,
+                        truncation,
+                    )
+                    .await;
                     prompt_name_updates.insert(name.clone(), Vec::new());
                     {
                         let mut catalog = self.catalog.write().await;
