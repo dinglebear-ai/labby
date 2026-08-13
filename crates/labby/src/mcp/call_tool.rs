@@ -811,6 +811,22 @@ impl LabMcpServer {
                 self.trusts_absent_auth(),
             )
         {
+            // This return precedes the `dispatch start` log, so without this
+            // the denial produces NO server-side telemetry at all. `transport`
+            // is the field that makes it diagnosable: the in-process peer
+            // transport denies every `requires_admin` builtin by design, and
+            // "why is gateway.add forbidden under codemode" is otherwise
+            // unanswerable from the logs.
+            tracing::warn!(
+                surface = "mcp",
+                service = %service,
+                action = %action,
+                subject = self.request_subject_log_tag(&context),
+                transport = self.transport_label,
+                elapsed_ms = start.elapsed().as_millis(),
+                kind = "forbidden",
+                "builtin action denied by admin gate"
+            );
             let envelope = build_error_extra(
                 &service,
                 &action,

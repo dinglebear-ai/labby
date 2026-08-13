@@ -53,7 +53,13 @@ impl UpstreamPool {
     ///   peer costs one bounded attempt per window instead of adding up to
     ///   `IN_PROCESS_DISCOVERY_TIMEOUT` to every catalog build.
     pub async fn ensure_in_process_service_peers(&self, registry: &dyn InProcessServiceRegistry) {
-        let missing_names: Vec<String> = {
+        // Claim the attempt under the guard, then DROP it before registering.
+        // An earlier version bound the guard for the whole block, so it was
+        // still held across `register_in_process_service_list().await` — the
+        // exact head-of-line blocking the comment claimed to avoid (caught in
+        // review; the `connect_count == 1` test could not tell the two apart,
+        // which is why `..._releases_the_guard_while_registering` exists).
+        let missing: Vec<Box<dyn InProcessService>> = {
             let mut last_attempt = self.in_process_ensure_state.lock().await;
             let missing: Vec<Box<dyn InProcessService>> = {
                 let catalog = self.catalog.read().await;
@@ -69,26 +75,31 @@ impl UpstreamPool {
             if missing.is_empty() {
                 return;
             }
-            if last_attempt
-                .is_some_and(|attempted| attempted.elapsed() < IN_PROCESS_ENSURE_RETRY_COOLDOWN)
+            if let Some(attempted) = *last_attempt
+                && attempted.elapsed() < IN_PROCESS_ENSURE_RETRY_COOLDOWN
             {
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "in_process.ensure",
+                    missing_count = missing.len(),
+                    remaining_ms = IN_PROCESS_ENSURE_RETRY_COOLDOWN
+                        .checked_sub(attempted.elapsed())
+                        .unwrap_or_default()
+                        .as_millis(),
+                    "in-process peer re-registration suppressed by cooldown"
+                );
                 return;
             }
-            // Stamp the attempt and RELEASE the guard before registering.
-            // Holding it across `register_in_process_service_list` would block
-            // every concurrent catalog build for up to
-            // `IN_PROCESS_DISCOVERY_TIMEOUT` — on data the healthy peers have
-            // already published, since the catalog is written per-peer as each
-            // completes. Concurrent callers now hit the cooldown branch above
-            // and return immediately with whatever is already registered.
             *last_attempt = Some(std::time::Instant::now());
-            let names = missing
-                .iter()
-                .map(|service| in_process_upstream_name(service.service_name()))
-                .collect();
-            self.register_in_process_service_list(missing).await;
-            names
+            missing
         };
+
+        let missing_names: Vec<String> = missing
+            .iter()
+            .map(|service| in_process_upstream_name(service.service_name()))
+            .collect();
+        self.register_in_process_service_list(missing).await;
 
         // Clear the cooldown when every attempted peer is now serving, so a
         // peer that breaks moments after a successful pass is repaired on the
@@ -122,7 +133,16 @@ impl UpstreamPool {
 
     async fn register_in_process_service_list(&self, services: Vec<Box<dyn InProcessService>>) {
         let Some(connector) = self.in_process_connector.clone() else {
-            tracing::warn!(
+            // A wiring bug, not a runtime degradation: the surface built a
+            // pool without a connector, so builtin services are absent from
+            // the Code Mode catalog for this pool's whole lifetime and no
+            // catalog entry records why. ERROR, not WARN — a WARN here read
+            // as ordinary noise while FU-1 was silently dead.
+            tracing::error!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "in_process.register",
+                kind = "internal_error",
                 service_count = services.len(),
                 "in-process peer registration skipped: no connector was provided by the surface"
             );
@@ -412,6 +432,70 @@ mod tests {
             connect_count.load(Ordering::SeqCst),
             1,
             "8 concurrent callers must produce exactly one registration"
+        );
+    }
+
+    /// The property `connect_count == 1` CANNOT distinguish "guard released,
+    /// siblings hit the cooldown branch" from "guard held, siblings queued
+    /// behind a 15s registration" — both yield one registration. This test
+    /// pins the one that matters: a sibling caller returns while the first
+    /// registration is still in flight. It fails against a guard held across
+    /// `register_in_process_service_list`.
+    #[tokio::test]
+    async fn ensure_releases_the_guard_while_registering() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    let upstream_name: Arc<str> =
+                        Arc::from(in_process_upstream_name(service.service_name()));
+                    Ok(InProcessRegistration {
+                        connection: None,
+                        tools: vec![rmcp::model::Tool::new(
+                            "gateway-alpha",
+                            "Gateway alpha",
+                            Arc::new(serde_json::Map::new()),
+                        )],
+                        entry_name: Arc::clone(&upstream_name),
+                        upstream_name: upstream_name.to_string(),
+                    })
+                });
+            future
+        });
+        let pool = Arc::new(UpstreamPool::new().with_in_process_connector(connector));
+
+        let slow = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                pool.ensure_in_process_service_peers(&StubRegistry(&["gateway-alpha"]))
+                    .await;
+            })
+        };
+        // Let the first caller claim the attempt and enter registration.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let started = std::time::Instant::now();
+        pool.ensure_in_process_service_peers(&StubRegistry(&["gateway-alpha"]))
+            .await;
+        let sibling_elapsed = started.elapsed();
+
+        assert!(
+            sibling_elapsed < Duration::from_millis(200),
+            "a concurrent caller must not block on the in-flight registration; \
+             it waited {sibling_elapsed:?}"
+        );
+        slow.await.expect("registration task");
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            1,
+            "the sibling must not start a second registration either"
         );
     }
 

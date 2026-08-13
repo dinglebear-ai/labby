@@ -5,10 +5,10 @@ Design and implementation package for
 
 | | |
 |---|---|
-| Epic bead | `lab-41e7m` (children `.1`–`.4`, plus security beads to file) |
+| Epic bead | `lab-41e7m` (children `.1`–`.7`; security beads filed and closed) |
 | Branch | `feat/mcp-output-schema-210` |
 | Base | `origin/main` @ `132448802` |
-| Phase | Planning **revised after a 10-agent research pass** — no code written yet |
+| Phase | **Implemented** — see [PROGRESS.md](PROGRESS.md) §1 |
 | MCP revisions | 2025-06-18 → 2026-07-28 |
 | SDK | `rmcp` `=3.1.0` (no bump; all 9 API claims verified) |
 
@@ -25,7 +25,7 @@ Design and implementation package for
 | 5 | [MODELS.md](MODELS.md) | Rust types on the path, with definition sites |
 | 6 | [TYPES.md](TYPES.md) | Wire ↔ Rust ↔ TypeScript views |
 | 7 | [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) | Step-by-step with real code |
-| 8 | [PROGRESS.md](PROGRESS.md) | Status, audit table, decisions D1–D13, findings F1–F23 |
+| 8 | [PROGRESS.md](PROGRESS.md) | Status, audit table, decisions D1–D16, findings F1–F23 |
 
 ---
 

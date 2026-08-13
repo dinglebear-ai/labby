@@ -252,6 +252,9 @@ pub(crate) fn next_relay_session_id() -> u64 {
 /// Adding a transport is an explicit trust decision: an unlisted label
 /// fails closed, and `requires_admin` builtin actions are refused on it.
 /// See [`LabMcpServer::trusts_absent_auth`] and bead lab-m01gl.
+/// `"test"` is used only by `#[cfg(test)]` server fixtures, so the suite
+/// exercises the stdio branch; verify with `rg 'transport_label: "test"'`
+/// before any production site adopts it.
 pub(crate) const TRANSPORTS_TRUSTING_ABSENT_AUTH: &[&str] = &["stdio", "http", "test"];
 
 /// MCP server handler — one tool per registered service.

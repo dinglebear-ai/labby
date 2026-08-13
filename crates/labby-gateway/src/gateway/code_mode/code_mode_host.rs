@@ -1363,7 +1363,7 @@ mod tests {
     // (docs/contracts/mcp-tool-output.md §C6). These tests pin the
     // behavior; they do not define it. Rule 0 (`is_error`) is handled by the
     // caller before the unwrap — its conversion to `CodeModeCallError` is
-    // pinned by `tool_error.rs::adapter_preserves_shared_analysis`.
+    // pinned by `gateway/code_mode/tool_error.rs::adapter_preserves_shared_analysis`.
 
     /// C6 rule 1: a present-but-falsy structured value MUST NOT be treated as
     /// absent — `if let Some(..)` tests presence, not truthiness.

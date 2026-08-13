@@ -361,7 +361,7 @@ mod tests {
     // ── Issue #210 (lab-41e7m.3): catalog output-shape coverage ─────────────
     //
     // These pin the sanitize → ToolDescriptor::tool path that the cache-miss
-    // branch of `build_catalog_entries` runs per upstream tool.
+    // branch of `catalog_from_tools` runs per upstream tool.
 
     /// An upstream `output_schema` reaches the descriptor and renders a real
     /// `Promise<T>` in both the one-line signature and the `.d.ts`.
@@ -422,7 +422,9 @@ mod tests {
     }
 
     /// Pathological schemas must not panic or leak: an oversized schema is
-    /// dropped to `None` by `sanitize_schema`'s render-time gate (and the type
+    /// dropped to `None` by `sanitize_schema`'s 512 KB input-size gate
+    /// (`MAX_SCHEMA_BYTES`) — a different mechanism from the type renderer's
+    /// expansion budget (and the type
     /// falls back to `unknown`); a malformed one renders defensively.
     #[test]
     fn pathological_output_schemas_degrade_without_panic() {

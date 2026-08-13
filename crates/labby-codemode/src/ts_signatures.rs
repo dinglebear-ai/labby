@@ -109,7 +109,7 @@ fn json_schema_to_type_labeled(schema: Option<&Value>, label: Option<&str>) -> S
 
 /// FR-9b (issue #210, lab-41e7m.7): recursion state for one type render.
 ///
-/// `schema_to_type` removes a `$ref` from `seen_refs` on return, so shared
+/// `schema_to_type_unbudgeted` removes a `$ref` from `seen_refs` on return, so shared
 /// non-cyclic refs re-expand at every occurrence — O(B^depth). The depth cap
 /// alone does not bound the OUTPUT: the function returns a `String` built by
 /// concatenation, so a hostile wide-and-deep `$defs` graph produces a
@@ -133,10 +133,19 @@ struct TypeRenderBudget {
 const MAX_TYPE_RENDER_NODES: usize = 100_000;
 
 /// Accumulated rendered bytes, charged per node and therefore depth-weighted:
-/// a final string of `n` bytes at nesting depth `d` charges ~`n × d`. A
-/// legitimate 100 KB render at depth ~10 accumulates ~1 MB; a hostile
-/// expansion heads to gigabytes.
-const MAX_TYPE_RENDER_BYTES: usize = 4 * 1024 * 1024;
+/// a final string of `n` bytes at nesting depth `d` charges ~`n × d`.
+///
+/// Sized against the input gate, not picked round. Schemas reaching this
+/// renderer already passed `sanitize_schema`'s 512 KB ceiling
+/// (`MAX_SCHEMA_BYTES` in labby-gateway), and that ceiling was itself *raised*
+/// from 16 KB precisely because the smaller value collapsed legitimate
+/// action-routed schemas (cortex, axon) to `unknown`. A 512 KB schema can
+/// render a few hundred KB of TypeScript at depth ~10, which charges several
+/// MB — so a 4 MB budget would have re-introduced that same collapse for the
+/// same tools. 64 MB leaves ~2 orders of magnitude of headroom over any
+/// legitimate input while still bounding the hostile case, which heads to
+/// gigabytes (an OOM kill, not a slow request).
+const MAX_TYPE_RENDER_BYTES: usize = 64 * 1024 * 1024;
 
 impl TypeRenderBudget {
     fn new() -> Self {
@@ -187,7 +196,7 @@ fn schema_to_type_unbudgeted(
     schema: &Value,
     root: &Value,
     depth: usize,
-    seen_refs: &mut TypeRenderBudget,
+    budget: &mut TypeRenderBudget,
 ) -> String {
     if let Some(value) = schema.as_bool() {
         return if value { "unknown" } else { "never" }.to_string();
@@ -200,13 +209,13 @@ fn schema_to_type_unbudgeted(
     };
 
     if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-        if !seen_refs.seen_refs.insert(reference.to_string()) {
+        if !budget.seen_refs.insert(reference.to_string()) {
             return "unknown".to_string();
         }
         let resolved = resolve_ref(root, reference)
-            .map(|schema| schema_to_type(schema, root, depth + 1, seen_refs))
+            .map(|schema| schema_to_type(schema, root, depth + 1, budget))
             .unwrap_or_else(|| "unknown".to_string());
-        seen_refs.seen_refs.remove(reference);
+        budget.seen_refs.remove(reference);
         return resolved;
     }
 
@@ -220,7 +229,7 @@ fn schema_to_type_unbudgeted(
         base.remove("oneOf");
         base.remove("allOf");
         base.remove("nullable");
-        let base_type = schema_to_type(&Value::Object(base), root, depth + 1, seen_refs);
+        let base_type = schema_to_type(&Value::Object(base), root, depth + 1, budget);
         if base_type != "unknown" {
             parts.push((base_type, false));
         }
@@ -230,7 +239,7 @@ fn schema_to_type_unbudgeted(
                 let rendered = union(
                     values
                         .iter()
-                        .map(|value| schema_to_type(value, root, depth + 1, seen_refs)),
+                        .map(|value| schema_to_type(value, root, depth + 1, budget)),
                 );
                 if rendered != "unknown" {
                     parts.push((rendered, true));
@@ -239,7 +248,7 @@ fn schema_to_type_unbudgeted(
         }
         if let Some(values) = object.get("allOf").and_then(Value::as_array) {
             parts.extend(values.iter().filter_map(|value| {
-                let rendered = schema_to_type(value, root, depth + 1, seen_refs);
+                let rendered = schema_to_type(value, root, depth + 1, budget);
                 (rendered != "unknown").then_some((rendered, false))
             }));
         }
@@ -277,15 +286,15 @@ fn schema_to_type_unbudgeted(
         Some(Value::Array(types)) => union(types.iter().map(|value| {
             value
                 .as_str()
-                .map(|kind| schema_type_to_type(kind, schema, root, depth, seen_refs))
+                .map(|kind| schema_type_to_type(kind, schema, root, depth, budget))
                 .unwrap_or_else(|| "unknown".to_string())
         })),
-        Some(Value::String(kind)) => schema_type_to_type(kind, schema, root, depth, seen_refs),
+        Some(Value::String(kind)) => schema_type_to_type(kind, schema, root, depth, budget),
         _ if object.contains_key("properties") || object.contains_key("additionalProperties") => {
-            object_type(schema, root, depth, seen_refs)
+            object_type(schema, root, depth, budget)
         }
         _ if object.contains_key("items") || object.contains_key("prefixItems") => {
-            array_type(schema, root, depth, seen_refs)
+            array_type(schema, root, depth, budget)
         }
         _ => "unknown".to_string(),
     };
@@ -307,11 +316,11 @@ fn schema_type_to_type(
     schema: &Value,
     root: &Value,
     depth: usize,
-    seen_refs: &mut TypeRenderBudget,
+    budget: &mut TypeRenderBudget,
 ) -> String {
     match kind {
-        "object" => object_type(schema, root, depth, seen_refs),
-        "array" => array_type(schema, root, depth, seen_refs),
+        "object" => object_type(schema, root, depth, budget),
+        "array" => array_type(schema, root, depth, budget),
         "string" if schema.get("format").and_then(Value::as_str) == Some("binary") => {
             "Uint8Array | ArrayBuffer".to_string()
         }
@@ -327,7 +336,7 @@ fn object_type(
     schema: &Value,
     root: &Value,
     depth: usize,
-    seen_refs: &mut TypeRenderBudget,
+    budget: &mut TypeRenderBudget,
 ) -> String {
     let Some(object) = schema.as_object() else {
         return "Record<string, unknown>".to_string();
@@ -352,7 +361,7 @@ fn object_type(
             if let Some(comment) = property_jsdoc(property, 2) {
                 lines.push(comment.trim_end().to_string());
             }
-            let property_type = schema_to_type(property, root, depth + 1, seen_refs);
+            let property_type = schema_to_type(property, root, depth + 1, budget);
             let is_required = required.contains(key.as_str());
             let optional = if is_required { "" } else { "?" };
             push_union_parts(&mut property_index_types, &property_type);
@@ -371,7 +380,7 @@ fn object_type(
     match object.get("additionalProperties") {
         Some(Value::Object(_)) => {
             let additional_type =
-                schema_to_type(&object["additionalProperties"], root, depth + 1, seen_refs);
+                schema_to_type(&object["additionalProperties"], root, depth + 1, budget);
             if property_index_types.is_empty() {
                 lines.push(format!("  [key: string]: {additional_type};"));
             } else {
@@ -402,12 +411,7 @@ fn object_type(
     format!("{{\n{}\n}}", lines.join("\n"))
 }
 
-fn array_type(
-    schema: &Value,
-    root: &Value,
-    depth: usize,
-    seen_refs: &mut TypeRenderBudget,
-) -> String {
+fn array_type(schema: &Value, root: &Value, depth: usize, budget: &mut TypeRenderBudget) -> String {
     let Some(object) = schema.as_object() else {
         return "unknown[]".to_string();
     };
@@ -420,7 +424,7 @@ fn array_type(
     {
         let items = tuple
             .iter()
-            .map(|item| schema_to_type(item, root, depth + 1, seen_refs))
+            .map(|item| schema_to_type(item, root, depth + 1, budget))
             .collect::<Vec<_>>()
             .join(", ");
         return format!("[{items}]");
@@ -428,7 +432,7 @@ fn array_type(
 
     let item_type = object
         .get("items")
-        .map(|items| schema_to_type(items, root, depth + 1, seen_refs))
+        .map(|items| schema_to_type(items, root, depth + 1, budget))
         .unwrap_or_else(|| "unknown".to_string());
     format!("Array<{item_type}>")
 }

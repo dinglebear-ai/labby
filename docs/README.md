@@ -157,6 +157,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - [ERRORS.md](./dev/ERRORS.md)
   Shared error taxonomy, stable `kind` values, MCP and HTTP error envelopes, and status mapping.
 - [contracts/mcp-tool-output.md](./contracts/mcp-tool-output.md)
+  Normative MCP `outputSchema`/`structuredContent` contract: dispatch envelope, Code Mode trace, upstream relay, and the in-sandbox `callTool` unwrap precedence.
 - [contracts/agent-error-contract.md](./contracts/agent-error-contract.md)
   Versioned agent-facing error contract: required envelope fields, origins, recovery/retry semantics, and surface rules.
 - [contracts/code-mode-tool-errors.md](./contracts/code-mode-tool-errors.md)

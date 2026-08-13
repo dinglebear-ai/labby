@@ -5,7 +5,7 @@ duplicating existing sources (see [RESEARCH.md](RESEARCH.md) §11).
 
 | File | Advertised as `outputSchema`? | Runtime source of truth |
 |---|---|---|
-| [`dispatch-envelope.schema.json`](schemas/dispatch-envelope.schema.json) | **Yes** — builtin service tools (new work, Raw mode only) | To be added: `dispatch_envelope_output_schema()` on `PermanentToolRegistry` |
+| [`dispatch-envelope.schema.json`](../../contracts/schemas/dispatch-envelope.schema.json) — **promoted** to `docs/contracts/schemas/` | **Yes** — builtin service tools (Raw mode on `tools/list`; Code Mode catalog via in-process peers) | `dispatch_envelope_output_schema()`, a private free function in `crates/labby/src/mcp/permanent_tools.rs` (privacy is load-bearing — see the plan's Encapsulation note) |
 | [`code-mode-trace.schema.json`](schemas/code-mode-trace.schema.json) | **Yes** — already live for `codemode`/`codemode_ui` | `code_mode_trace_output_schema()` (`crates/labby/src/mcp/handlers_tools.rs:686-765`) |
 
 **Removed:**

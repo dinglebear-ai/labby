@@ -80,8 +80,11 @@ Scope and caveats:
 - **`mcp_app` advertises no schema** — its control payload is
   `{"kind": "mcp_app_control", …}`, not the envelope, and an inaccurate
   schema is a hard client-side error in strict SDKs.
-- Upstream tools relay their own `outputSchema` (and results) byte-identically;
-  only documentation-bearing metadata is sanitized.
+- Upstream tools relay their own `outputSchema` **shape** unchanged and their
+  **result payloads** byte-identically. Documentation strings inside those
+  schemas (`description`, `title`, `$comment`) are sanitized; schema-semantic
+  keywords (`enum`, `const`, `default`, `examples`, `pattern`, `format`,
+  `$ref`, property names) are not.
 
 ## Gateway And Code Mode
 

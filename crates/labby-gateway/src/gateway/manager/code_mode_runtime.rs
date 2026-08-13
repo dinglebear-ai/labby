@@ -44,6 +44,30 @@ fn upstream_allowed(upstream: &str, allowed_upstreams: Option<&BTreeSet<String>>
     allowed_upstreams.is_none_or(|allowed| allowed.contains(upstream))
 }
 
+/// Whether the catalog holds no tools from a REAL upstream.
+///
+/// The all-upstreams-down hard error is gated on the healthy tool set being
+/// empty. FU-1 plants synthetic `__in_process__*` builtin peers into that same
+/// catalog, so a plain `is_empty()` check silently went dead the moment one
+/// builtin registered — turning "every upstream you configured is
+/// unreachable" into a normal-looking `Ok` with a builtin-only catalog, on
+/// both the cold-connect and the warm branch. Excluding the synthetic entries
+/// keeps the error contract intact for real upstreams while still letting the
+/// builtin catalog serve (which is the point of registering before the
+/// refresh).
+async fn no_real_upstream_tools(
+    pool: &UpstreamPool,
+    allowed_upstreams: Option<&BTreeSet<String>>,
+) -> bool {
+    pool.healthy_tools_allowed(allowed_upstreams)
+        .await
+        .iter()
+        .all(|tool| {
+            tool.upstream_name
+                .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+        })
+}
+
 impl GatewayManager {
     pub async fn code_mode_config(&self) -> CodeModeConfig {
         self.config.read().await.code_mode.clone()
@@ -142,12 +166,7 @@ impl GatewayManager {
                     });
                 }
             }
-            if !failures.is_empty()
-                && pool
-                    .healthy_tools_allowed(allowed_upstreams)
-                    .await
-                    .is_empty()
-            {
+            if !failures.is_empty() && no_real_upstream_tools(&pool, allowed_upstreams).await {
                 let details = failures
                     .iter()
                     .map(|failure| format!("{}: {}", failure.upstream, failure.message))
@@ -493,12 +512,7 @@ impl GatewayManager {
         }
         crate::gateway::code_mode::catalog_cache::merge_and_store(cache_updates).await;
 
-        if !failures.is_empty()
-            && pool
-                .healthy_tools_allowed(allowed_upstreams)
-                .await
-                .is_empty()
-        {
+        if !failures.is_empty() && no_real_upstream_tools(&pool, allowed_upstreams).await {
             let details = failures
                 .iter()
                 .map(|failure| format!("{}: {}", failure.upstream, failure.message))

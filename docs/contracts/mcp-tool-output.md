@@ -17,7 +17,8 @@ Normative contract for `outputSchema` and `structuredContent` on Labby MCP surfa
 the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 
 - **Contract version:** 1
-- **MCP revisions:** 2025-06-18 → 2026-07-28 (rmcp 3.1.0 negotiates all four)
+- **MCP revisions:** 2025-06-18 → 2026-07-28 (three revisions; rmcp 3.1.0 additionally
+  negotiates 2024-11-05 and 2025-03-26)
 - Acceptance criteria live in [SPEC.md](../plans/210-mcp-output-schema/SPEC.md) §6 — this document does not restate them.
 
 ---
@@ -178,15 +179,19 @@ contract). The detectability that `false` would buy is obtained internally inste
 (`handlers_tools.rs:686-765`) and MUST advertise the **same** schema — one execution backend,
 differing only in MCP App metadata.
 
-- Success results MUST satisfy it, including `logs_count` (`labby-codemode/src/trace.rs:134`).
+- Success results MUST satisfy it, including `logs_count`
+  (`crates/labby-codemode/src/trace.rs`).
 - `result` is deliberately unconstrained (`{}`), so a truncation marker is conforming.
-- The **error** trace (`call_tool_codemode.rs:659-670`) omits `logs_count`. Because it carries
-  `isError: true`, this is **not** a conformance violation under C3.2 — it is an internal
-  inconsistency for trace consumers (the inline inspector reads `structuredContent` on both
-  paths). SPEC FR-7 reconciles it by adding `logs_count: 0`.
-- `result_shaping` is present **only** when the result-shape policy is non-`Off`
-  (`labby-codemode/src/execute.rs:112-116`); `Off` is the default. Consumers MUST NOT treat its
-  absence as "not truncated" — see C7.
+- The **error** trace (`crates/labby/src/mcp/call_tool_codemode.rs`, the `isError` structured
+  payload) sets `logs_count: 0`. It carries `isError: true`, so it is exempt from conformance
+  under C3.2 regardless — the field is there for internal consistency with trace consumers
+  (the inline inspector reads `structuredContent` on both paths), not to satisfy the schema.
+  Implemented as SPEC FR-7.
+- `result_shaping` is present when the result-shape policy is non-`Off`, **or** when the soft
+  large-result warning fired under any policy — including the default `Off`
+  (`crates/labby-codemode/src/execute.rs`, and `shape_final_result` in `shape.rs`, which
+  computes the warning before matching on policy). Consumers MUST NOT treat its presence as
+  evidence that shaping is enabled, nor its absence as "not truncated" — see C7.
 
 ---
 
@@ -202,18 +207,24 @@ differing only in MCP App metadata.
 - On a builtin/upstream name collision the builtin answers, and the advertised schema MUST be
   the builtin's.
 
-### C5.1 Sanitization gap — MUST NOT be codified as-is
+### C5.1 Metadata sanitization (keyword-scoped)
 
-Upstream `description`, `inputSchema`, and `outputSchema` currently reach `tools/list`
-**unsanitized** (`handlers_tools.rs:288`, `peer_contract.rs:290`; stored verbatim by
-`cached_upstream_tool`, `upstream/pool/helpers.rs:420-448`).
-`sanitize_tool_text`/`sanitize_schema` (`gateway/projection.rs:57-155`) run **only** on the
-Code Mode catalog path (`search.rs:135-141`).
+"Relay as declared" above describes *fidelity of shape*. It is NOT licence to forward
+unsanitized upstream text into a client's context: upstream-authored `description` fields at
+any nesting depth are a prompt-injection surface.
 
-"Relay as declared" above describes *fidelity of shape*, and MUST NOT be read as licence to
-forward unsanitized upstream text into a client's context. Upstream-authored schema
-`description` fields at any nesting depth are a prompt-injection surface. Closing this is
-SPEC FR-9a.
+Documentation-bearing upstream metadata — `description`, `title`, `$comment`, and the
+annotations title, at any schema nesting depth — MUST be sanitized once at the relay cache
+chokepoint (`upstream/pool/helpers.rs::cached_upstream_tool` →
+`gateway/projection.rs::sanitize_upstream_tool_metadata`), so the Raw `tools/list` relay and
+the Code Mode catalog path are covered by one implementation.
+
+Schema-semantic keyword values — `enum`, `const`, `default`, `examples`, `pattern`, `format`,
+`$ref`, and property names — MUST relay byte-identically. Rewriting them would make Labby
+advertise a schema that its own byte-identical relayed results (C5.2) then violate, so strict
+clients would reject *conforming* upstream results.
+
+Implemented as SPEC FR-9a.
 
 ### C5.2 Redaction non-goal (explicit)
 
@@ -289,14 +300,12 @@ results are never truncated.
 3. MUST NOT `#[derive(Serialize)]` on `ToolError`.
 4. MUST NOT add an error `kind` without variant + `IntoResponse` arm + `docs/dev/ERRORS.md`.
 5. MUST NOT let descriptor builders — or the gating booleans that feed them — disagree.
-6. MUST NOT admit unsanitized upstream schema text into an LLM-facing surface (see C5.1 for
-   the currently-open instance).
+6. MUST NOT admit unsanitized upstream schema text into an LLM-facing surface (C5.1).
 7. MUST NOT construct a Labby-owned descriptor outside the shared registry builder.
-   **Enforceability note:** this is true today only for `codemode`. `codemode_ui`, `mcp_app`,
-   `add_server`, and `gateway_status` are still built with bare `Tool::new` at both
-   `handlers_tools.rs` (~`:198-247`) and `peer_contract.rs:229-273`. SPEC AC-17 gates their
-   migration precisely so this clause does not remain aspirational — without it, the rule is
-   false for four of the five Labby-owned tools.
+   **Enforced, not aspirational:** all five Labby-owned descriptors are built in
+   `crates/labby/src/mcp/permanent_tools.rs`, and `/clippy.toml` bans `Tool::new` elsewhere
+   via `disallowed_methods = "deny"` — reintroducing a second construction site is a compile
+   error, not a review catch.
 
 ---
 

@@ -57,14 +57,15 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
     registry.register(service.clone());
     LabMcpServer {
         registry: Arc::new(registry),
-        // MUST stay `None`, and the route scope below MUST keep
-        // `expose_code_mode: false`. Together they are the only thing stopping
-        // this mini-server's `list_tools` from re-entering
-        // `code_mode_catalog_tools_allowed` — which would call
-        // `ensure_in_process_service_peers` from inside the registration that
-        // already holds its (non-reentrant) single-flight guard, deadlocking
-        // the whole catalog path. Giving the peer a manager handle is
-        // plausible-looking and would be a runtime-only hang.
+        // Each of these INDEPENDENTLY closes the re-entrancy path:
+        // `expose_code_mode: false` (below) short-circuits
+        // `code_mode_visibility` to `Raw` before the manager is consulted, and
+        // `gateway_manager: None` makes `current_upstream_pool()` return
+        // `None`. Keep BOTH — the redundancy is deliberate, and neither is
+        // pinned by a test. Losing both would let this mini-server's
+        // `list_tools` re-enter `code_mode_catalog_tools_allowed` and call
+        // `ensure_in_process_service_peers` from inside a registration, which
+        // is a runtime-only hang rather than a compile error.
         gateway_manager: None,
         peers: Arc::new(RwLock::new(Vec::new())),
         code_mode_app_state: Default::default(),
