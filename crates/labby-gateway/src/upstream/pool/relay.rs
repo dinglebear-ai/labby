@@ -30,7 +30,9 @@
 //!
 //! [`UpstreamPool::call_tool_relayed`] uses the pool's `relay_timeout`
 //! (default 5 minutes, `upstream_relay_timeout_ms`) instead of the normal
-//! upstream request timeout.
+//! upstream request timeout. One absolute deadline spans bulkhead queueing and
+//! the upstream send/response phase; downstream cancellation also interrupts
+//! queueing before any upstream request is issued.
 //!
 //! ## Scope — `call_tool` only
 //!
@@ -87,8 +89,8 @@ use super::logging::{
 };
 use super::notifications::UpstreamNotificationEvent;
 use super::relay_cancellation::{
-    PendingRelayRequestId, RelaySendOutcome, await_relay_send, dispatch_relay_cancellation,
-    spawn_bounded_handle_cancellation,
+    PendingRelayRequestId, RelayPermitOutcome, RelaySendOutcome, await_relay_permit,
+    await_relay_send, dispatch_relay_cancellation, spawn_bounded_handle_cancellation,
 };
 use super::{UpstreamConnection, UpstreamPool};
 
@@ -118,6 +120,10 @@ pub(super) struct RelayRouteState {
     progress_notification_notify: Notify,
     task_notification_sequence: AtomicU64,
     task_notification_notify: Notify,
+    #[cfg(test)]
+    relay_watcher_finish_sequence: AtomicU64,
+    #[cfg(test)]
+    relay_watcher_finish_notify: Notify,
 }
 
 impl RelayRouteState {
@@ -276,6 +282,31 @@ impl RelayRouteState {
         }
         tokio::time::timeout(timeout, notified).await.is_ok()
             && self.task_notification_sequence() > previous
+    }
+
+    #[cfg(test)]
+    async fn wait_for_relay_watcher_finish_after(&self, previous: u64) {
+        if self.relay_watcher_finish_sequence.load(Ordering::Acquire) > previous {
+            return;
+        }
+        let notified = self.relay_watcher_finish_notify.notified();
+        if self.relay_watcher_finish_sequence.load(Ordering::Acquire) > previous {
+            return;
+        }
+        notified.await;
+    }
+}
+
+#[cfg(test)]
+struct RelayWatcherFinishGuard(Arc<RelayRouteState>);
+
+#[cfg(test)]
+impl Drop for RelayWatcherFinishGuard {
+    fn drop(&mut self) {
+        self.0
+            .relay_watcher_finish_sequence
+            .fetch_add(1, Ordering::AcqRel);
+        self.0.relay_watcher_finish_notify.notify_waiters();
     }
 }
 
@@ -539,6 +570,7 @@ async fn send_relay_request(
     downstream_request_id: RequestId,
     downstream_cancel: CancellationToken,
     timeout: std::time::Duration,
+    deadline: tokio::time::Instant,
 ) -> Result<ServerResult, ServiceError> {
     let cancellation_token = uuid::Uuid::new_v4().to_string();
     request_meta
@@ -562,7 +594,6 @@ async fn send_relay_request(
     let options = request_meta
         .map(|meta| PeerRequestOptions::no_options().with_meta(meta))
         .unwrap_or_else(PeerRequestOptions::no_options);
-    let deadline = tokio::time::Instant::now() + timeout;
     let mut handle = match await_relay_send(
         peer.send_cancellable_request(request, options),
         &downstream_cancel,
@@ -592,7 +623,11 @@ async fn send_relay_request(
         let downstream_cancel = downstream_cancel.clone();
         let relay_finished = relay_finished.clone();
         let cancellation_dispatched = Arc::clone(&cancellation_dispatched);
+        #[cfg(test)]
+        let routes = Arc::clone(routes);
         tokio::spawn(async move {
+            #[cfg(test)]
+            let _finish_guard = RelayWatcherFinishGuard(routes);
             tokio::select! {
                 () = downstream_cancel.cancelled() => {
                     dispatch_relay_cancellation(
@@ -644,13 +679,11 @@ async fn send_relay_request(
 
     let result = tokio::select! {
         response = &mut handle.rx => {
+            // Always retire the detached watcher when the response channel
+            // resolves, including upstream cancellation and transport close.
+            // Its bounded grace still preserves the late downstream-cancel race.
+            relay_finished.cancel();
             let response = response.map_err(|_| ServiceError::TransportClosed)?;
-            if !matches!(
-                &response,
-                Err(ServiceError::Cancelled { .. } | ServiceError::TransportClosed)
-            ) {
-                relay_finished.cancel();
-            }
             if expects_progress && response.is_ok() {
                 routes
                     .wait_for_progress_notification_after(
@@ -701,6 +734,13 @@ async fn send_relay_request(
 
     routes.schedule_unregister_request(upstream_request_id);
     result
+}
+
+fn downstream_cancelled(reason: &str) -> String {
+    ServiceError::Cancelled {
+        reason: Some(reason.to_string()),
+    }
+    .to_string()
 }
 
 pub(super) fn capability_fingerprint(capabilities: &ClientCapabilities) -> String {
@@ -829,6 +869,11 @@ impl UpstreamPool {
                 config, &tool_name,
             )));
         }
+        if downstream_cancel.is_cancelled() {
+            return Some(Err(downstream_cancelled(
+                "downstream request was already cancelled",
+            )));
+        }
         let relay_key = (config.name.clone(), session_id, subject.map(str::to_owned));
         let request_meta = params.meta.clone();
         let (peer, routes, cancellation_sender, generation) = self
@@ -853,27 +898,44 @@ impl UpstreamPool {
         // 30s `request_timeout` the pooled path uses — otherwise a confirmation
         // dialog left open for a minute would abort the whole upstream call.
         let timeout = self.relay_timeout;
-        let _permit =
-            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(error)) => return Some(Err(error)),
-                Err(_) => {
-                    log_upstream_request_error(
-                        event,
-                        started.elapsed().as_millis(),
-                        "queue_saturated",
-                        None,
-                        None,
-                        None,
-                    );
-                    return Some(Err(format!(
-                        "upstream `{}` relay concurrency queue timed out",
-                        config.name
-                    )));
-                }
-            };
+        let deadline = tokio::time::Instant::now() + timeout;
+        let _permit = match await_relay_permit(
+            self.acquire_upstream_call_permit(&config.name),
+            &downstream_cancel,
+            deadline,
+        )
+        .await
+        {
+            RelayPermitOutcome::Acquired(Ok(permit)) => permit,
+            RelayPermitOutcome::Acquired(Err(error)) => return Some(Err(error)),
+            RelayPermitOutcome::Cancelled => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(downstream_cancelled(
+                    "downstream request cancelled while queued",
+                )));
+            }
+            RelayPermitOutcome::TimedOut => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_saturated",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(format!(
+                    "upstream `{}` relay concurrency queue timed out",
+                    config.name
+                )));
+            }
+        };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -883,6 +945,7 @@ impl UpstreamPool {
             downstream_request_id,
             downstream_cancel,
             timeout,
+            deadline,
         )
         .await;
         match response {
@@ -1016,6 +1079,11 @@ impl UpstreamPool {
                 config.name
             )));
         }
+        if downstream_cancel.is_cancelled() {
+            return Some(Err(downstream_cancelled(
+                "downstream request was already cancelled",
+            )));
+        }
         let request_meta = params.meta.clone();
         let (peer, routes, cancellation_sender, generation) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
@@ -1026,27 +1094,44 @@ impl UpstreamPool {
         let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         let timeout = self.relay_timeout;
-        let _permit =
-            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(error)) => return Some(Err(error)),
-                Err(_) => {
-                    log_upstream_request_error(
-                        event,
-                        started.elapsed().as_millis(),
-                        "queue_saturated",
-                        None,
-                        None,
-                        None,
-                    );
-                    return Some(Err(format!(
-                        "upstream `{}` relay concurrency queue timed out",
-                        config.name
-                    )));
-                }
-            };
+        let deadline = tokio::time::Instant::now() + timeout;
+        let _permit = match await_relay_permit(
+            self.acquire_upstream_call_permit(&config.name),
+            &downstream_cancel,
+            deadline,
+        )
+        .await
+        {
+            RelayPermitOutcome::Acquired(Ok(permit)) => permit,
+            RelayPermitOutcome::Acquired(Err(error)) => return Some(Err(error)),
+            RelayPermitOutcome::Cancelled => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(downstream_cancelled(
+                    "downstream request cancelled while queued",
+                )));
+            }
+            RelayPermitOutcome::TimedOut => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_saturated",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(format!(
+                    "upstream `{}` relay concurrency queue timed out",
+                    config.name
+                )));
+            }
+        };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -1056,6 +1141,7 @@ impl UpstreamPool {
             downstream_request_id,
             downstream_cancel,
             timeout,
+            deadline,
         )
         .await;
         match response {
@@ -1161,6 +1247,11 @@ impl UpstreamPool {
                 config.name
             )));
         }
+        if downstream_cancel.is_cancelled() {
+            return Some(Err(downstream_cancelled(
+                "downstream request was already cancelled",
+            )));
+        }
         let request_meta = params.meta.clone();
         let (peer, routes, cancellation_sender, generation) = self
             .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
@@ -1172,27 +1263,44 @@ impl UpstreamPool {
         let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         let timeout = self.relay_timeout;
-        let _permit =
-            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(error)) => return Some(Err(error)),
-                Err(_) => {
-                    log_upstream_request_error(
-                        event,
-                        started.elapsed().as_millis(),
-                        "queue_saturated",
-                        None,
-                        None,
-                        None,
-                    );
-                    return Some(Err(format!(
-                        "upstream `{}` relay concurrency queue timed out",
-                        config.name
-                    )));
-                }
-            };
+        let deadline = tokio::time::Instant::now() + timeout;
+        let _permit = match await_relay_permit(
+            self.acquire_upstream_call_permit(&config.name),
+            &downstream_cancel,
+            deadline,
+        )
+        .await
+        {
+            RelayPermitOutcome::Acquired(Ok(permit)) => permit,
+            RelayPermitOutcome::Acquired(Err(error)) => return Some(Err(error)),
+            RelayPermitOutcome::Cancelled => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(downstream_cancelled(
+                    "downstream request cancelled while queued",
+                )));
+            }
+            RelayPermitOutcome::TimedOut => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_saturated",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(format!(
+                    "upstream `{}` relay concurrency queue timed out",
+                    config.name
+                )));
+            }
+        };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -1202,6 +1310,7 @@ impl UpstreamPool {
             downstream_request_id,
             downstream_cancel,
             timeout,
+            deadline,
         )
         .await;
         match response {
@@ -1958,6 +2067,16 @@ mod tests {
         let capabilities = agent.get_info().capabilities;
         let (pool, config, downstream_server) =
             cached_relay_pool(ProgressCancelUpstream, agent.clone(), capabilities.clone()).await;
+        let routes = {
+            let connections = pool.relay_connections.read().await;
+            Arc::clone(
+                &connections
+                    .get(&(config.name.clone(), 1, None))
+                    .expect("cached relay connection")
+                    .routes,
+            )
+        };
+        let watcher_sequence = routes.relay_watcher_finish_sequence.load(Ordering::Acquire);
         let downstream_request_id = RequestId::String("downstream-request".into());
         let downstream_progress_token = ProgressToken(rmcp::model::NumberOrString::String(
             "downstream-progress".into(),
@@ -1990,6 +2109,12 @@ mod tests {
             matches!(result, Err(ref message) if message.contains("upstream cancelled")),
             "upstream cancellation should terminate the relayed request: {result:?}"
         );
+        tokio::time::timeout(
+            RELAY_ROUTE_CLEANUP_GRACE + std::time::Duration::from_secs(1),
+            routes.wait_for_relay_watcher_finish_after(watcher_sequence),
+        )
+        .await
+        .expect("cancelled response retires its detached relay watcher after bounded grace");
 
         wait_for_recorded_count(&agent.progress, 1).await;
         wait_for_recorded_count(&agent.cancellations, 1).await;
@@ -2077,9 +2202,11 @@ mod tests {
             .await
             .expect("cached relay exists");
 
-        assert!(
-            matches!(result, Err(ref message) if message.contains("already cancelled")),
-            "pre-cancelled request must fail locally: {result:?}"
+        let message = result.expect_err("pre-cancelled relay must fail locally");
+        assert_eq!(
+            message,
+            downstream_cancelled("downstream request was already cancelled"),
+            "pre-cancelled request must preserve the canonical cancellation error"
         );
         tokio::task::yield_now().await;
         assert!(

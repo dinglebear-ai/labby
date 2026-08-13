@@ -928,20 +928,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "BeginAuthorization",
-        params: &[
-            ParamSpec {
-                name: "upstream",
-                ty: "string",
-                required: true,
-                description: "Configured upstream name",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
-            },
-        ],
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: true,
+            description: "Configured upstream name",
+        }],
     },
     ActionSpec {
         name: "gateway.oauth.status",
@@ -949,20 +941,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "UpstreamOauthStatusView",
-        params: &[
-            ParamSpec {
-                name: "upstream",
-                ty: "string",
-                required: true,
-                description: "Configured upstream name",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
-            },
-        ],
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: true,
+            description: "Configured upstream name",
+        }],
     },
     ActionSpec {
         name: "gateway.oauth.clear",
@@ -970,20 +954,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "ok",
-        params: &[
-            ParamSpec {
-                name: "upstream",
-                ty: "string",
-                required: true,
-                description: "Configured upstream name",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
-            },
-        ],
+        params: &[ParamSpec {
+            name: "upstream",
+            ty: "string",
+            required: true,
+            description: "Configured upstream name",
+        }],
     },
     ActionSpec {
         name: "gateway.oauth.google_revoke",
@@ -1020,12 +996,6 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: true,
                 description: "Configured upstream name to wait on",
-            },
-            ParamSpec {
-                name: "subject",
-                ty: "string",
-                required: false,
-                description: "Optional credential owner key. Defaults to the shared gateway subject `gateway`.",
             },
             ParamSpec {
                 name: "timeout_secs",
@@ -1272,5 +1242,24 @@ mod tests {
             param_names.contains(&"timeout_secs"),
             "missing timeout_secs param"
         );
+    }
+
+    #[test]
+    fn shared_gateway_oauth_actions_do_not_advertise_subject_overrides() {
+        for action in [
+            "gateway.oauth.start",
+            "gateway.oauth.status",
+            "gateway.oauth.clear",
+            "gateway.oauth.wait",
+        ] {
+            let spec = ACTIONS
+                .iter()
+                .find(|spec| spec.name == action)
+                .expect("shared OAuth action should be in the catalog");
+            assert!(
+                spec.params.iter().all(|param| param.name != "subject"),
+                "{action} must not advertise an unsupported subject override"
+            );
+        }
     }
 }

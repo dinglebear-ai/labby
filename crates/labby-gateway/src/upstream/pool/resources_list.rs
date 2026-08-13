@@ -22,6 +22,7 @@ use super::capability_call::{
     CapabilityCallError, bounded_service_error_text, timed_capability_call,
     timed_capability_call_with_timeout,
 };
+use super::catalog_pagination;
 use super::discover::routable_upstream_peers;
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
@@ -165,7 +166,15 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             started,
-            peer.list_all_tools(),
+            async {
+                catalog_pagination::list_tools(
+                    &peer,
+                    self.request_timeout,
+                    super::tools::MAX_UPSTREAM_TOOLS,
+                )
+                .await
+                .map_err(|error| error.into_service_error(&config.name))
+            },
             |tools| serde_json::to_vec(tools).map_or(usize::MAX, |body| body.len()),
             Some(subject),
             |error| format!("upstream `{}` tools/list failed: {error}", config.name),
@@ -251,10 +260,14 @@ impl UpstreamPool {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);
                 log_upstream_request_start(event);
-                let result = match tokio::time::timeout(request_timeout, peer.list_all_resources())
-                    .await
+                let result = match catalog_pagination::list_resources(
+                    &peer,
+                    request_timeout,
+                    MAX_UPSTREAM_RESOURCES,
+                )
+                .await
                 {
-                    Ok(Ok(resources)) => {
+                    Ok(resources) => {
                         let response_bytes =
                             serde_json::to_vec(&resources).map_or(usize::MAX, |body| body.len());
                         log_upstream_request_finish(
@@ -264,7 +277,9 @@ impl UpstreamPool {
                         );
                         Ok(resources)
                     }
-                    Ok(Err(error)) if is_capability_unsupported(&error) => {
+                    Err(catalog_pagination::CatalogPaginationError::Service(error))
+                        if is_capability_unsupported(&error) =>
+                    {
                         log_upstream_request_finish(event, started.elapsed().as_millis(), Some(0));
                         tracing::debug!(
                             upstream = %name,
@@ -272,28 +287,13 @@ impl UpstreamPool {
                         );
                         Ok(Vec::new())
                     }
-                    Ok(Err(error)) => {
-                        let error_text = bounded_service_error_text(&error);
+                    Err(error) => {
+                        let error_text = error.bounded_text();
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
-                            classify_upstream_error(&error_text),
+                            error.kind(),
                             Some(&error_text),
-                            None,
-                            None,
-                        );
-                        Err(error_text)
-                    }
-                    Err(_) => {
-                        let error_text = format!(
-                            "upstream resource listing timed out after {}ms",
-                            request_timeout.as_millis()
-                        );
-                        log_upstream_request_error(
-                            event,
-                            started.elapsed().as_millis(),
-                            "timeout",
-                            None,
                             None,
                             None,
                         );
@@ -423,7 +423,12 @@ impl UpstreamPool {
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
             futures.push(async move {
-                let result = peer.list_all_resource_templates().await;
+                let result = catalog_pagination::list_resource_templates(
+                    &peer,
+                    self.request_timeout,
+                    MAX_UPSTREAM_RESOURCES,
+                )
+                .await;
                 (name, result)
             });
         }
@@ -453,17 +458,19 @@ impl UpstreamPool {
                         templates.push(template);
                     }
                 }
-                Err(error) if is_capability_unsupported(&error) => {
+                Err(catalog_pagination::CatalogPaginationError::Service(error))
+                    if is_capability_unsupported(&error) =>
+                {
                     self.record_success_for(&name, UpstreamCapability::Resources)
                         .await;
                     tracing::debug!(
                         upstream = %name,
-                        error = %error,
+                        error = %bounded_service_error_text(&error),
                         "upstream does not implement resources/templates/list — capability absent"
                     );
                 }
                 Err(error) => {
-                    let error_text = bounded_service_error_text(&error);
+                    let error_text = error.bounded_text();
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Resources,
@@ -472,7 +479,7 @@ impl UpstreamPool {
                     .await;
                     tracing::warn!(
                         upstream = %name,
-                        kind = classify_upstream_error(&error_text),
+                        kind = error.kind(),
                         error = %error_text,
                         "failed to list resource templates from upstream"
                     );
@@ -565,7 +572,15 @@ impl UpstreamPool {
                     UpstreamCapability::Resources,
                     event,
                     started,
-                    peer.list_all_resources(),
+                    async {
+                        catalog_pagination::list_resources(
+                            &peer,
+                            request_timeout,
+                            MAX_UPSTREAM_RESOURCES,
+                        )
+                        .await
+                        .map_err(|error| error.into_service_error(&config.name))
+                    },
                     |resources| serde_json::to_vec(resources).map_or(usize::MAX, |body| body.len()),
                     Some(&subject),
                     |error| format!("subject-scoped upstream resource discovery failed: {error}"),

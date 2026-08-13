@@ -307,6 +307,25 @@ pub(super) enum RelaySendOutcome<T> {
     TimedOut,
 }
 
+pub(super) enum RelayPermitOutcome<T, E> {
+    Acquired(Result<T, E>),
+    Cancelled,
+    TimedOut,
+}
+
+pub(super) async fn await_relay_permit<T, E>(
+    acquire: impl Future<Output = Result<T, E>>,
+    downstream_cancel: &CancellationToken,
+    deadline: tokio::time::Instant,
+) -> RelayPermitOutcome<T, E> {
+    tokio::select! {
+        biased;
+        () = downstream_cancel.cancelled() => RelayPermitOutcome::Cancelled,
+        () = tokio::time::sleep_until(deadline) => RelayPermitOutcome::TimedOut,
+        result = acquire => RelayPermitOutcome::Acquired(result),
+    }
+}
+
 pub(super) async fn await_relay_send<T>(
     send: impl Future<Output = Result<T, ServiceError>>,
     downstream_cancel: &CancellationToken,

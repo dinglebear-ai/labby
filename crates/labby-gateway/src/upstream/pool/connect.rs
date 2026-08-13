@@ -32,14 +32,17 @@ use super::super::transport::websocket::{
     WebSocketTransportConfig, connect as connect_websocket_transport, parse_ws_url,
 };
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
+use super::catalog_pagination;
 use super::connect_stdio::connect_stdio_upstream;
 use super::helpers::{
-    DEFAULT_REQUEST_TIMEOUT, max_response_bytes, upstream_target_redacted, upstream_transport,
+    DEFAULT_REQUEST_TIMEOUT, DISCOVERY_TIMEOUT, max_response_bytes, upstream_target_redacted,
+    upstream_transport,
 };
 use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
     LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
 };
+use super::tools::MAX_UPSTREAM_TOOLS;
 use super::{UpstreamClientService, UpstreamConnection};
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
@@ -324,7 +327,9 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
         ),
     };
     let peer = service.peer().clone();
-    let tools = peer.list_all_tools().await?;
+    let tools = catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.bounded_text()))?;
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "websocket",
@@ -495,7 +500,9 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             ),
         };
         let peer = service.peer().clone();
-        let tools = peer.list_all_tools().await?;
+        let tools = catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.bounded_text()))?;
         return Ok((
             UpstreamConnection {
                 _client_service: service,
@@ -535,7 +542,9 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         ),
     };
     let peer = service.peer().clone();
-    let tools = peer.list_all_tools().await?;
+    let tools = catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.bounded_text()))?;
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = upstream_transport(config),

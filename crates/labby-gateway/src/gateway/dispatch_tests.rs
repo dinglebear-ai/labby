@@ -321,6 +321,35 @@ async fn enrich_preview_dispatch_rejects_empty_selection() {
 }
 
 #[tokio::test]
+async fn shared_gateway_oauth_actions_reject_subject_overrides_without_echoing_them() {
+    let manager = test_manager();
+
+    for action in [
+        "gateway.oauth.start",
+        "gateway.oauth.status",
+        "gateway.oauth.clear",
+        "gateway.oauth.wait",
+    ] {
+        let error = dispatch_with_manager(
+            &manager,
+            action,
+            json!({
+                "upstream": "example",
+                "subject": "private-subject-marker",
+            }),
+        )
+        .await
+        .expect_err("shared OAuth actions must reject subject overrides before execution");
+
+        assert_eq!(error.kind(), "invalid_param", "{action}");
+        assert!(
+            !error.to_string().contains("private-subject-marker"),
+            "{action}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn enrich_apply_dispatch_persists_hint() {
     let manager = test_manager();
     manager

@@ -22,6 +22,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::timed_capability_call_str;
+use super::catalog_pagination;
 use super::entries::{log_exposure_filter, prompt_exposed, resolve_request_prompt_exposure_policy};
 use super::helpers::{
     bare_upstream_prompt_name, merge_upstream_prompts, prefixed_upstream_prompt_name,
@@ -67,7 +68,13 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
-            match peer.list_all_prompts().await {
+            match catalog_pagination::list_prompts(
+                &peer,
+                self.request_timeout,
+                super::tools::MAX_UPSTREAM_PROMPTS,
+            )
+            .await
+            {
                 Ok(prompts) => {
                     let discovered_count = prompts.len();
                     let exposed: Vec<Prompt> = prompts
@@ -86,7 +93,8 @@ impl UpstreamPool {
                 Err(error) => {
                     tracing::warn!(
                         upstream = %name,
-                        error = %error,
+                        kind = error.kind(),
+                        error = %error.bounded_text(),
                         "subject-scoped upstream prompt discovery failed"
                     );
                 }
@@ -129,18 +137,33 @@ impl UpstreamPool {
             let Ok(peer) = result else {
                 continue;
             };
-            if let Ok(prompts) = peer.list_all_prompts().await
-                && prompts.iter().any(|prompt| {
-                    // The requested name is namespaced as `{upstream}/{name}`;
-                    // the upstream advertises the bare name, so compare against
-                    // the prefixed form. A prompt `expose_prompts` hides must not
-                    // resolve an owner either, or the caller would route a fetch
-                    // at a prompt it is not allowed to see.
-                    prefixed_upstream_prompt_name(&name, &prompt.name) == target_prompt
-                        && prompt_exposed(&policy, &name, &prompt.name)
-                })
+            match catalog_pagination::list_prompts(
+                &peer,
+                self.request_timeout,
+                super::tools::MAX_UPSTREAM_PROMPTS,
+            )
+            .await
             {
-                return Some(name);
+                Ok(prompts)
+                    if prompts.iter().any(|prompt| {
+                        // The requested name is namespaced as `{upstream}/{name}`;
+                        // the upstream advertises the bare name, so compare against
+                        // the prefixed form. A prompt `expose_prompts` hides must not
+                        // resolve an owner either, or the caller would route a fetch
+                        // at a prompt it is not allowed to see.
+                        prefixed_upstream_prompt_name(&name, &prompt.name) == target_prompt
+                            && prompt_exposed(&policy, &name, &prompt.name)
+                    }) =>
+                {
+                    return Some(name);
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    upstream = %name,
+                    kind = error.kind(),
+                    error = %error.bounded_text(),
+                    "subject-scoped upstream prompt ownership discovery failed"
+                ),
             }
         }
         None

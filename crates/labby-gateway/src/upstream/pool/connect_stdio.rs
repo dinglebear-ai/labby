@@ -15,7 +15,9 @@ use std::sync::{OnceLock, RwLock};
 
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
+use super::catalog_pagination;
 use super::connect::runtime_origin_label;
+use super::helpers::STDIO_DISCOVERY_TIMEOUT;
 use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
     LifecycleAttempt, compatibility_retry, legacy_protocol_version, log_fallback,
@@ -23,6 +25,7 @@ use super::lifecycle_compat::{
 use super::stdio_stderr::{
     StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
 };
+use super::tools::MAX_UPSTREAM_TOOLS;
 use super::{UpstreamClientService, UpstreamConnection};
 
 static LEGACY_STDIO_LIFECYCLE: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
@@ -319,7 +322,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     );
 
     // INVARIANT: arm the process-tree guard immediately after spawn. If any
-    // subsequent `?` propagates (serve fails, list_all_tools fails, the outer
+    // subsequent `?` propagates (serve fails, bounded tools/list fails, the outer
     // future is dropped on timeout), `Drop` on this guard reaps grandchildren
     // (npx → node, sh -c → python) that rmcp's per-PID TokioChildProcess Drop
     // would otherwise miss.
@@ -365,10 +368,19 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     let peer = service.peer().clone();
 
     // Discover tools
-    let tools = match peer.list_all_tools().await {
-        Ok(tools) => tools,
-        Err(error) => return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await),
-    };
+    let tools =
+        match catalog_pagination::list_tools(&peer, STDIO_DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
+            .await
+        {
+            Ok(tools) => tools,
+            Err(error) => {
+                return Err(StdioConnectError::with_diagnostics(
+                    error.into_service_error(&command.name),
+                    &stderr_capture,
+                )
+                .await);
+            }
+        };
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %command.name, transport = "stdio",

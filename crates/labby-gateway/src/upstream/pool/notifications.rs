@@ -12,7 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::catalog_pagination;
 use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri, cached_upstream_tool};
+use super::tools::MAX_UPSTREAM_TOOLS;
 
 const NOTIFICATION_EVENT_CAPACITY: usize = 1024;
 const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -77,24 +79,23 @@ impl UpstreamPool {
             return false;
         };
 
-        let listed = tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await;
-        let tools = match listed {
-            Ok(Ok(tools)) => tools,
-            Ok(Err(error)) => {
-                let error = format!("tool-list refresh after list-changed signal failed: {error}");
-                self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
-                    .await;
-                tracing::warn!(upstream, error = %error, "upstream tool-list refresh failed");
-                return false;
-            }
-            Err(_) => {
+        let tools = match catalog_pagination::list_tools(
+            &peer,
+            DISCOVERY_TIMEOUT,
+            MAX_UPSTREAM_TOOLS,
+        )
+        .await
+        {
+            Ok(tools) => tools,
+            Err(error) => {
+                let kind = error.kind();
                 let error = format!(
-                    "tool-list refresh after list-changed signal timed out after {}s",
-                    DISCOVERY_TIMEOUT.as_secs()
+                    "tool-list refresh after list-changed signal failed: {}",
+                    error.bounded_text()
                 );
                 self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
                     .await;
-                tracing::warn!(upstream, error = %error, "upstream tool-list refresh failed");
+                tracing::warn!(upstream, kind, error = %error, "upstream tool-list refresh failed");
                 return false;
             }
         };

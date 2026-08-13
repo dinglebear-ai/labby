@@ -15,9 +15,9 @@ use rmcp::model::Prompt;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::bounded_service_error_text;
+use super::catalog_pagination;
 use super::discover::routable_upstream_peers;
-use super::helpers::{classify_upstream_error, merge_upstream_prompts};
+use super::helpers::merge_upstream_prompts;
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
@@ -48,7 +48,12 @@ impl UpstreamPool {
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
             futures.push(async move {
-                let result = peer.list_all_prompts().await;
+                let result = catalog_pagination::list_prompts(
+                    &peer,
+                    self.request_timeout,
+                    MAX_UPSTREAM_PROMPTS,
+                )
+                .await;
                 (name, result)
             });
         }
@@ -69,7 +74,9 @@ impl UpstreamPool {
                     }
                     upstream_prompts.push((name, prompts));
                 }
-                Err(e) if is_capability_unsupported(&e) => {
+                Err(catalog_pagination::CatalogPaginationError::Service(e))
+                    if is_capability_unsupported(&e) =>
+                {
                     // The upstream simply doesn't implement `prompts/list`
                     // (JSON-RPC -32601). This is expected capability negotiation,
                     // not a failure: treat it like an empty, successful listing so
@@ -90,7 +97,7 @@ impl UpstreamPool {
                     );
                 }
                 Err(e) => {
-                    let error_text = bounded_service_error_text(&e);
+                    let error_text = e.bounded_text();
                     self.record_failure_for(
                         &name,
                         UpstreamCapability::Prompts,
@@ -105,7 +112,7 @@ impl UpstreamPool {
                     }
                     tracing::warn!(
                         upstream = %name,
-                        kind = classify_upstream_error(&error_text),
+                        kind = e.kind(),
                         error = %error_text,
                         "failed to list prompts from upstream"
                     );

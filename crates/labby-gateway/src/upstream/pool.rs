@@ -24,6 +24,7 @@ use super::types::{UpstreamEntry, UpstreamRuntimeMetadata, UpstreamRuntimeOwner}
 mod cache_repair;
 mod capability;
 mod capability_call;
+mod catalog_pagination;
 mod completion;
 mod connect;
 mod connect_stdio;
