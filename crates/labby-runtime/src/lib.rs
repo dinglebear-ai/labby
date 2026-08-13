@@ -15,6 +15,7 @@
 
 pub mod agent_error;
 pub mod backoff;
+pub mod caller_auth;
 pub mod catalog_notify;
 pub mod client_registry;
 pub mod code_mode_app;
