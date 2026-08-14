@@ -23,7 +23,7 @@ use labby_runtime::gateway_config::{UpstreamConfig, UpstreamOauthRegistration};
 use rmcp::transport::AuthClient;
 use rmcp::transport::streamable_http_client::StreamableHttpClient;
 use rmcp_client as rmcp;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::upstream::manager::UpstreamOauthManager;
 use crate::upstream::types::OauthError;
@@ -61,6 +61,10 @@ pub struct OauthClientCache {
     /// Per-`(upstream, subject)` build lock so concurrent first-request
     /// tasks don't issue duplicate token exchanges against the AS.
     build_locks: Arc<DashMap<(String, String), Arc<Mutex<()>>>>,
+    /// Process-wide credential lifecycle barrier shared with every upstream
+    /// pool built from this cache. Connection builders take a read guard for
+    /// their complete build-and-publish path; revocation takes the write guard.
+    invalidation_barrier: Arc<RwLock<()>>,
     /// Optional host-owned interactive reauthorization hook.
     reauth_handler: Option<OauthReauthHandler>,
 }
@@ -73,8 +77,15 @@ impl OauthClientCache {
             clients: Arc::new(DashMap::new()),
             managers,
             build_locks: Arc::new(DashMap::new()),
+            invalidation_barrier: Arc::new(RwLock::new(())),
             reauth_handler: None,
         }
+    }
+
+    /// Shared lifecycle barrier used by gateway pools and credential mutation.
+    #[must_use]
+    pub fn invalidation_barrier(&self) -> Arc<RwLock<()>> {
+        Arc::clone(&self.invalidation_barrier)
     }
 
     /// Install a host-owned interactive reauthorization hook.
@@ -111,6 +122,7 @@ impl OauthClientCache {
         config: &UpstreamConfig,
         subject: &str,
     ) -> Result<Arc<AuthClient<reqwest::Client>>, OauthError> {
+        let _lifecycle = self.invalidation_barrier.read().await;
         // For Dynamic upstreams, include the stored client_id in the
         // fingerprint so a re-registration is detected (lab-77y5.13).
         let dynamic_client_id: Option<String> = if config

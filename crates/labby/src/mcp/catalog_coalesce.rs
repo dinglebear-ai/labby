@@ -116,7 +116,7 @@ pub(crate) fn schedule_catalog_notification(
 
     let start_flush = {
         let mut pending = pending();
-        pending.changes = Some(match pending.changes {
+        pending.changes = Some(match pending.changes.take() {
             Some(existing) => existing.merged_with(changes),
             None => changes,
         });

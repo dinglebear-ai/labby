@@ -122,6 +122,121 @@ pub(super) fn sanitize_schema(schema: Option<serde_json::Value>) -> Option<serde
     })
 }
 
+/// FR-9a (issue #210, lab-41e7m.6): keyword-scoped sanitization of one
+/// upstream tool descriptor before it is cached for relay on `tools/list`.
+///
+/// Only documentation-bearing text is rewritten — `description`, `title`,
+/// `$comment`, and the annotations title — because that is where prompt
+/// injection, bidi overrides, and leaked secrets can reach model context.
+/// Schema-semantic keyword VALUES (`enum`, `const`, `default`, `examples`,
+/// `pattern`, `format`, `$ref`, property names) are relayed verbatim:
+/// rewriting them would make Labby advertise a schema that its own
+/// byte-identical relayed results violate, so strict clients would reject
+/// CONFORMING upstream results (the failure class this fix must not create).
+///
+/// Idempotent for legitimate content, so the Code Mode catalog path applying
+/// `sanitize_schema` on top of an already-sanitized cache entry is harmless.
+pub(crate) fn sanitize_upstream_tool_metadata(tool: &mut rmcp::model::Tool) {
+    if let Some(description) = tool.description.take() {
+        tool.description = Some(sanitize_tool_text(&description, 2048).into());
+    }
+    if let Some(title) = tool.title.take() {
+        tool.title = Some(sanitize_tool_text(&title, 512));
+    }
+    if let Some(annotations) = tool.annotations.as_mut()
+        && let Some(title) = annotations.title.take()
+    {
+        annotations.title = Some(sanitize_tool_text(&title, 512));
+    }
+    if schema_has_doc_text(&tool.input_schema) {
+        let mut schema = (*tool.input_schema).clone();
+        sanitize_schema_doc_text(&mut schema, 0);
+        tool.input_schema = std::sync::Arc::new(schema);
+    }
+    if let Some(output_schema) = tool.output_schema.as_ref()
+        && schema_has_doc_text(output_schema)
+    {
+        let mut schema = (**output_schema).clone();
+        sanitize_schema_doc_text(&mut schema, 0);
+        tool.output_schema = Some(std::sync::Arc::new(schema));
+    }
+}
+
+/// Keywords whose values are DATA, not subschemas. Recursion must not
+/// descend into them: `default: {"description": "…"}` is a literal value the
+/// upstream's results may reproduce byte-identically.
+const SCHEMA_VALUE_KEYWORDS: [&str; 4] = ["enum", "const", "default", "examples"];
+
+/// String-valued keys that carry human/model-facing documentation.
+const SCHEMA_DOC_KEYS: [&str; 3] = ["description", "title", "$comment"];
+
+/// Depth backstop for adversarially nested schemas; deeper doc text is left
+/// as-is rather than risking the stack (such schemas already collapse to
+/// `unknown` in the type renderer's own budget).
+const MAX_SCHEMA_DOC_DEPTH: usize = 128;
+
+fn schema_has_doc_text(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    map.iter().any(|(key, value)| {
+        if SCHEMA_VALUE_KEYWORDS.contains(&key.as_str()) {
+            return false;
+        }
+        (SCHEMA_DOC_KEYS.contains(&key.as_str()) && value.is_string())
+            || schema_doc_value_present(value, 1)
+    })
+}
+
+fn schema_doc_value_present(value: &serde_json::Value, depth: usize) -> bool {
+    if depth > MAX_SCHEMA_DOC_DEPTH {
+        return false;
+    }
+    match value {
+        serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+            if SCHEMA_VALUE_KEYWORDS.contains(&key.as_str()) {
+                return false;
+            }
+            (SCHEMA_DOC_KEYS.contains(&key.as_str()) && value.is_string())
+                || schema_doc_value_present(value, depth + 1)
+        }),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| schema_doc_value_present(value, depth + 1)),
+        _ => false,
+    }
+}
+
+fn sanitize_schema_doc_text(map: &mut serde_json::Map<String, serde_json::Value>, depth: usize) {
+    if depth > MAX_SCHEMA_DOC_DEPTH {
+        return;
+    }
+    for (key, value) in map.iter_mut() {
+        if SCHEMA_VALUE_KEYWORDS.contains(&key.as_str()) {
+            continue;
+        }
+        if SCHEMA_DOC_KEYS.contains(&key.as_str())
+            && let serde_json::Value::String(text) = value
+        {
+            *text = sanitize_tool_text(text, 2048);
+            continue;
+        }
+        sanitize_schema_doc_value(value, depth + 1);
+    }
+}
+
+fn sanitize_schema_doc_value(value: &mut serde_json::Value, depth: usize) {
+    if depth > MAX_SCHEMA_DOC_DEPTH {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => sanitize_schema_doc_text(map, depth),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                sanitize_schema_doc_value(value, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn redacted_gateway_target(upstream: &UpstreamConfig) -> Option<String> {
     upstream.url.as_deref().map(redact_url).or_else(|| {
         upstream.command.as_deref().map(|command| {

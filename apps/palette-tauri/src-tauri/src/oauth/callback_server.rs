@@ -12,6 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const MAX_REQUEST_BYTES: usize = 8192;
+const MAX_REQUEST_TARGET_BYTES: usize = 4096;
+const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 const SUCCESS_PAGE: &str = "<!doctype html><html><body style=\"font-family:sans-serif;background:#07131c;color:#e6f4fb;\
      text-align:center;padding-top:4rem\"><h2>Signed in to Labby</h2>\
@@ -103,11 +105,30 @@ impl CallbackListener {
 }
 
 async fn read_request_target(socket: &mut TcpStream) -> Option<String> {
-    let mut buf = vec![0u8; MAX_REQUEST_BYTES];
-    let n = socket.read(&mut buf).await.ok()?;
-    let head = String::from_utf8_lossy(&buf[..n]);
-    let request_line = head.lines().next()?;
-    parse_request_target(request_line).map(str::to_string)
+    tokio::time::timeout(CONNECTION_READ_TIMEOUT, async {
+        let mut request = Vec::with_capacity(1024);
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let n = socket.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            if request.len().saturating_add(n) > MAX_REQUEST_BYTES {
+                return None;
+            }
+            request.extend_from_slice(&chunk[..n]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n")
+                || request.windows(2).any(|window| window == b"\n\n")
+            {
+                let head = String::from_utf8_lossy(&request);
+                let request_line = head.lines().next()?;
+                return parse_request_target(request_line).map(str::to_string);
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 async fn respond(socket: &mut TcpStream, status: &str, body: &str) {
@@ -126,7 +147,7 @@ pub(crate) fn parse_request_target(request_line: &str) -> Option<&str> {
     let mut parts = request_line.split_whitespace();
     let _method = parts.next()?;
     let target = parts.next()?;
-    target.starts_with('/').then_some(target)
+    (target.starts_with('/') && target.len() <= MAX_REQUEST_TARGET_BYTES).then_some(target)
 }
 
 /// Parse `code`/`state`/`error` from a `/callback?...` target.

@@ -9,6 +9,7 @@
     clippy::single_char_pattern,
     clippy::unnested_or_patterns
 )]
+#![cfg(feature = "gateway")]
 //! Integration tests for the admin-only allowlist API.
 //!
 //! Coverage:
@@ -30,10 +31,22 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use labby::api::{router::build_router, state::AppState};
+use labby::config::LabConfig;
+use labby::dispatch::gateway::config_store::LabConfigStore;
 use labby_auth::{
+    at_rest::TokenEncryptionKey,
     config::{AuthConfig, AuthMode, GoogleConfig},
     state::AuthState,
-    types::BrowserSessionRow,
+    types::{
+        AuthorizationCodeRow, BrowserSessionRow, GoogleProviderCredentialUpdate, RefreshTokenRow,
+        RegisteredClient,
+    },
+    util::now_unix,
+};
+use labby_gateway::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+use labby_runtime::gateway_config::{
+    GatewayConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthCredentialSource,
+    UpstreamOauthMode, UpstreamOauthRegistration,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -47,6 +60,7 @@ struct Harness {
     auth_state: AuthState,
     /// Admin email configured in the harness.
     admin_email: String,
+    gateway_manager: std::sync::Arc<GatewayManager>,
 }
 
 impl Harness {
@@ -60,6 +74,12 @@ impl Harness {
             key_path: tmp.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("secret".to_string()),
             admin_email: admin_email.clone(),
+            token_encryption_key: Some(
+                TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
             google: GoogleConfig {
                 client_id: "id".to_string(),
                 client_secret: "secret".to_string(),
@@ -70,15 +90,68 @@ impl Harness {
             ..AuthConfig::default()
         };
         let auth_state = AuthState::new(config).await.expect("auth state");
+        let gateway_path = tmp.path().join("gateway.toml");
+        let gateway_manager = std::sync::Arc::new(GatewayManager::with_store(
+            gateway_path.clone(),
+            GatewayRuntimeHandle::default(),
+            std::sync::Arc::new(LabConfigStore::new(
+                std::sync::Arc::new(std::sync::RwLock::new(LabConfig::default())),
+                gateway_path,
+            )),
+        ));
+        gateway_manager
+            .seed_config(GatewayConfig {
+                upstream: vec![UpstreamConfig {
+                    enabled: true,
+                    name: "shared-google".to_string(),
+                    url: Some("https://google.example/mcp".to_string()),
+                    transport: None,
+                    socket_path: None,
+                    headers: Default::default(),
+                    bearer_token_env: None,
+                    command: None,
+                    args: Vec::new(),
+                    env: Default::default(),
+                    proxy_resources: false,
+                    proxy_prompts: false,
+                    proxy_skills: false,
+                    expose_tools: None,
+                    expose_resources: None,
+                    expose_prompts: None,
+                    expose_skills: None,
+                    code_mode_hint: None,
+                    oauth: Some(UpstreamOauthConfig {
+                        mode: UpstreamOauthMode::AuthorizationCodePkce,
+                        registration: UpstreamOauthRegistration::Preregistered {
+                            client_id: "test-client".to_string(),
+                            client_secret_env: Some("TEST_GOOGLE_CLIENT_SECRET".to_string()),
+                        },
+                        scopes: Some(vec![
+                            "https://www.googleapis.com/auth/drive.readonly".to_string(),
+                        ]),
+                        credential: UpstreamOauthCredentialSource::GoogleProvider { account: None },
+                        prefer_client_metadata_document: None,
+                    }),
+                    imported_from: None,
+                    priority: 1.0,
+                }],
+                ..GatewayConfig::default()
+            })
+            .await;
         Self {
             _tmp: tmp,
             auth_state,
             admin_email,
+            gateway_manager,
         }
     }
 
     /// Build a router with OAuth auth state and auth_config attached.
     fn router(&self) -> axum::Router {
+        self.router_with_manager(true)
+    }
+
+    fn router_with_manager(&self, attach_manager: bool) -> axum::Router {
         let auth_config = AuthConfig {
             mode: AuthMode::OAuth,
             public_url: Some(url::Url::parse("https://lab.example.com").unwrap()),
@@ -86,6 +159,12 @@ impl Harness {
             key_path: self._tmp.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("secret".to_string()),
             admin_email: self.admin_email.clone(),
+            token_encryption_key: Some(
+                TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
             google: GoogleConfig {
                 client_id: "id".to_string(),
                 client_secret: "secret".to_string(),
@@ -95,9 +174,12 @@ impl Harness {
             },
             ..AuthConfig::default()
         };
-        let state = AppState::new()
+        let mut state = AppState::new()
             .with_oauth_state(self.auth_state.clone())
             .with_auth_config(auth_config);
+        if attach_manager {
+            state = state.with_gateway_manager(std::sync::Arc::clone(&self.gateway_manager));
+        }
         build_router(state, None, Some(self.auth_state.clone()), None, &[])
     }
 
@@ -385,6 +467,217 @@ async fn delete_admin_session_removes_email_returns_204() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Revocation is scoped to the removed email and must not terminate the
+    // administrator who performed the removal.
+    let response = h
+        .router()
+        .oneshot(Harness::get_with_session(
+            "/v1/auth/allowed-emails",
+            &session,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn delete_allowed_email_revokes_subject_session_and_refresh_grants() {
+    let h = Harness::new().await;
+    let admin_session = h.seed_admin_session().await;
+    let removed_email = "removed@example.com";
+    let removed_subject = "removed-subject";
+    let removed_session = BrowserSessionRow {
+        session_id: "sess-removed".to_string(),
+        subject: removed_subject.to_string(),
+        email: Some(removed_email.to_string()),
+        csrf_token: "csrf-removed".to_string(),
+        created_at: 1,
+        expires_at: i64::MAX,
+    };
+    h.auth_state
+        .store
+        .add_allowed_user(removed_email, "admin", 1)
+        .await
+        .unwrap();
+    h.auth_state
+        .store
+        .upsert_browser_session(removed_session.clone())
+        .await
+        .unwrap();
+    for (session_id, email) in [
+        ("sess-removed-null-email", None),
+        ("sess-removed-stale-email", Some("stale@example.com")),
+    ] {
+        h.auth_state
+            .store
+            .upsert_browser_session(BrowserSessionRow {
+                session_id: session_id.to_string(),
+                subject: removed_subject.to_string(),
+                email: email.map(ToOwned::to_owned),
+                csrf_token: format!("csrf-{session_id}"),
+                created_at: 1,
+                expires_at: i64::MAX,
+            })
+            .await
+            .unwrap();
+    }
+    h.auth_state
+        .store
+        .register_client(RegisteredClient {
+            client_id: "removed-client".to_string(),
+            redirect_uris: vec!["http://127.0.0.1/callback".to_string()],
+            created_at: now_unix(),
+            token_endpoint_auth_method: "none".to_string(),
+            token_endpoint_auth_methods: Vec::new(),
+            jwks: None,
+            jwks_uri: None,
+        })
+        .await
+        .unwrap();
+    h.auth_state
+        .store
+        .upsert_refresh_token(RefreshTokenRow {
+            refresh_token: "refresh-removed".to_string(),
+            client_id: "removed-client".to_string(),
+            subject: removed_subject.to_string(),
+            resource: "https://lab.example.com/mcp".to_string(),
+            scope: "lab lab:admin".to_string(),
+            provider_refresh_token: None,
+            created_at: now_unix(),
+            expires_at: now_unix() + 3600,
+        })
+        .await
+        .unwrap();
+    h.auth_state
+        .store
+        .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+            subject: removed_subject.to_string(),
+            email: Some(removed_email.to_string()),
+            client_id: "google-client".to_string(),
+            granted_scopes: vec!["openid".to_string(), "email".to_string()],
+            access_token: "old-access-token".to_string(),
+            refresh_token: "old-provider-refresh".to_string(),
+            token_received_at: now_unix(),
+            access_token_expires_at: now_unix() + 3600,
+            issuer: Some("https://accounts.google.com".to_string()),
+            refreshed: false,
+            scope_upgraded: false,
+        })
+        .await
+        .unwrap();
+    h.auth_state
+        .store
+        .insert_auth_code(AuthorizationCodeRow {
+            code: "pending-removed-code".to_string(),
+            client_id: "removed-client".to_string(),
+            subject: removed_subject.to_string(),
+            redirect_uri: "http://127.0.0.1/callback".to_string(),
+            resource: "https://lab.example.com/mcp".to_string(),
+            scope: "lab lab:admin".to_string(),
+            code_challenge: "challenge".to_string(),
+            code_challenge_method: "S256".to_string(),
+            provider_refresh_token: None,
+            created_at: now_unix(),
+            expires_at: now_unix() + 300,
+        })
+        .await
+        .unwrap();
+
+    let response = h
+        .router()
+        .oneshot(Harness::delete_with_session(
+            "/v1/auth/allowed-emails/removed@example.com",
+            &admin_session,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let session_response = h
+        .router()
+        .oneshot(Harness::get_with_session(
+            "/v1/auth/allowed-emails",
+            &removed_session,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(session_response.status(), StatusCode::UNAUTHORIZED);
+    for session_id in ["sess-removed-null-email", "sess-removed-stale-email"] {
+        assert!(
+            h.auth_state
+                .store
+                .find_browser_session(session_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "all sessions for the revoked subject must be removed regardless of stored email"
+        );
+    }
+    assert!(
+        h.auth_state
+            .store
+            .claim_refresh_token("refresh-removed", "claim-after-removal", now_unix() + 30)
+            .await
+            .unwrap()
+            .is_none(),
+        "allowlist removal must make the subject's refresh grants unusable"
+    );
+    assert!(
+        h.auth_state
+            .store
+            .find_google_provider_credential_by_selector(Some(removed_subject))
+            .await
+            .unwrap()
+            .is_none(),
+        "the next upstream use must not recover the removed provider credential"
+    );
+    assert!(
+        h.auth_state
+            .store
+            .redeem_verified_auth_code(
+                "pending-removed-code",
+                "removed-client",
+                "http://127.0.0.1/callback",
+                Some("https://lab.example.com/mcp"),
+                "challenge",
+                "S256",
+            )
+            .await
+            .is_err(),
+        "pending authorization codes for the removed subject must be fenced"
+    );
+}
+
+#[tokio::test]
+async fn delete_allowed_email_without_gateway_manager_does_not_commit_removal() {
+    let h = Harness::new().await;
+    let admin_session = h.seed_admin_session().await;
+    let removed_email = "runtime-required@example.com";
+    h.auth_state
+        .store
+        .add_allowed_user(removed_email, "admin", 1)
+        .await
+        .unwrap();
+
+    let response = h
+        .router_with_manager(false)
+        .oneshot(Harness::delete_with_session(
+            "/v1/auth/allowed-emails/runtime-required@example.com",
+            &admin_session,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        h.auth_state
+            .store
+            .list_allowed_users()
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.email == removed_email)
+    );
 }
 
 #[tokio::test]

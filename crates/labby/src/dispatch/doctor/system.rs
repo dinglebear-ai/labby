@@ -468,6 +468,38 @@ pub fn run_auth_checks() -> Vec<Finding> {
         gsec_message,
     ));
 
+    // --- Google provider credential encryption ---
+    let token_encryption_key = std::env::var("LABBY_TOKEN_ENCRYPTION_KEY").unwrap_or_default();
+    let (encryption_severity, encryption_message) = if token_encryption_key.trim().is_empty() {
+        if is_oauth {
+            (
+                Severity::Fail,
+                "LABBY_TOKEN_ENCRYPTION_KEY not set — required for OAuth Google provider credential encryption at rest".to_string(),
+            )
+        } else {
+            (
+                Severity::Ok,
+                "LABBY_TOKEN_ENCRYPTION_KEY not set — not required in bearer-only mode".to_string(),
+            )
+        }
+    } else {
+        match labby_auth::at_rest::TokenEncryptionKey::from_encoded(&token_encryption_key) {
+            Ok(_) => (
+                Severity::Ok,
+                "LABBY_TOKEN_ENCRYPTION_KEY is set and valid".to_string(),
+            ),
+            Err(_) => (
+                Severity::Fail,
+                "LABBY_TOKEN_ENCRYPTION_KEY is invalid — expected 64 hex digits or 43 base64url characters".to_string(),
+            ),
+        }
+    };
+    findings.push(auth_finding(
+        "auth:token-encryption-key",
+        encryption_severity,
+        encryption_message,
+    ));
+
     // --- Auth store files (only meaningful when OAuth is configured) ---
     if is_oauth || has_google {
         let sqlite_path = std::env::var("LABBY_AUTH_SQLITE_PATH")

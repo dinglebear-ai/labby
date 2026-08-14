@@ -1,13 +1,13 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::Mutex;
 #[cfg(feature = "http-axum")]
 use tokio::sync::Semaphore;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::config::{AuthConfig, AuthMode};
@@ -26,6 +26,62 @@ const RATE_LIMIT_IDLE_TTL_SECS: u64 = 10 * 60;
 /// coalesce duplicate requests without serializing independent documents.
 #[cfg(feature = "http-axum")]
 const REMOTE_FETCH_MAX_CONCURRENT: usize = 16;
+const EXPIRED_RECORD_CLEANUP_INTERVAL: Duration = Duration::from_mins(5);
+const EXPIRED_RECORD_CLEANUP_BATCH: u32 = 256;
+
+struct CleanupTask {
+    abort: tokio::task::AbortHandle,
+}
+
+impl Drop for CleanupTask {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+fn spawn_expired_record_cleanup(
+    store: SqliteStore,
+    interval: Duration,
+    batch_limit: u32,
+) -> CleanupTask {
+    let task = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let started = Instant::now();
+            match store.cleanup_expired_bounded(batch_limit).await {
+                Ok(0) => debug!(
+                    crate_name = "lab-auth",
+                    phase = "auth.cleanup_expired.finish",
+                    deleted_rows = 0_u64,
+                    batch_limit,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "bounded expired auth record cleanup completed"
+                ),
+                Ok(deleted_rows) => info!(
+                    crate_name = "lab-auth",
+                    phase = "auth.cleanup_expired.finish",
+                    deleted_rows,
+                    batch_limit,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "bounded expired auth record cleanup completed"
+                ),
+                Err(error) => warn!(
+                    crate_name = "lab-auth",
+                    phase = "auth.cleanup_expired.error",
+                    kind = error.kind(),
+                    batch_limit,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "bounded expired auth record cleanup failed"
+                ),
+            }
+        }
+    });
+    CleanupTask {
+        abort: task.abort_handle(),
+    }
+}
 
 /// Per-request parameters for rate-limiting. Each bucket is independent.
 struct RateLimiterInner {
@@ -180,18 +236,34 @@ pub struct AuthState {
     pub store: SqliteStore,
     pub signing_keys: Arc<SigningKeys>,
     pub google: Arc<GoogleProvider>,
+    _cleanup_task: Arc<CleanupTask>,
     resource_registry: ResourceRegistry,
     authorize_limiter: PerIpRateLimiter,
     register_limiter: PerIpRateLimiter,
     token_limiter: PerIpRateLimiter,
     #[cfg(feature = "http-axum")]
     pub(crate) cimd_cache: Arc<DashMap<String, (RegisteredClient, i64)>>,
+    /// Short-lived failures for untrusted CIMD URLs. This prevents a caller
+    /// from repeatedly turning the same invalid document into outbound I/O.
+    #[cfg(feature = "http-axum")]
+    pub(crate) cimd_negative_cache: Arc<DashMap<String, i64>>,
+    #[cfg(feature = "http-axum")]
+    pub(crate) cimd_cache_maintenance: Arc<std::sync::Mutex<()>>,
     #[cfg(feature = "http-axum")]
     pub(crate) jwks_cache: Arc<DashMap<String, (jsonwebtoken::jwk::JwkSet, i64)>>,
+    /// Short-lived failures and unknown-key results, keyed by JWKS document
+    /// rather than attacker-controlled `kid` values.
+    #[cfg(feature = "http-axum")]
+    pub(crate) jwks_negative_cache: Arc<DashMap<String, i64>>,
+    #[cfg(feature = "http-axum")]
+    pub(crate) jwks_cache_maintenance: Arc<std::sync::Mutex<()>>,
     /// Per-document single-flight locks. Never hold one global lock across
     /// remote I/O: an unrelated slow metadata endpoint must not block OAuth.
     #[cfg(feature = "http-axum")]
     pub(crate) remote_fetch_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Serializes bounded maintenance of the attacker-keyed single-flight map.
+    #[cfg(feature = "http-axum")]
+    pub(crate) remote_fetch_lock_maintenance: Arc<std::sync::Mutex<()>>,
     /// Global concurrency cap for untrusted remote metadata fetches. This is a
     /// semaphore, not a mutex: unrelated documents may still fetch in parallel.
     #[cfg(feature = "http-axum")]
@@ -210,6 +282,13 @@ impl AuthState {
         if !matches!(config.mode, AuthMode::OAuth) {
             return Err(AuthError::Config(format!(
                 "AuthState requires {prefix}_AUTH_MODE=oauth",
+                prefix = config.env_prefix
+            )));
+        }
+        if config.token_encryption_key.is_none() {
+            return Err(AuthError::Config(format!(
+                "{prefix}_TOKEN_ENCRYPTION_KEY is required when {prefix}_AUTH_MODE=oauth; \
+                 Google provider credentials must be encrypted at rest",
                 prefix = config.env_prefix
             )));
         }
@@ -250,11 +329,17 @@ impl AuthState {
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
         let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
+        let cleanup_task = Arc::new(spawn_expired_record_cleanup(
+            store.clone(),
+            EXPIRED_RECORD_CLEANUP_INTERVAL,
+            EXPIRED_RECORD_CLEANUP_BATCH,
+        ));
         Ok(Self {
             config: Arc::new(config),
             store,
             signing_keys: Arc::new(signing_keys),
             google: Arc::new(google),
+            _cleanup_task: cleanup_task,
             resource_registry,
             authorize_limiter,
             register_limiter,
@@ -262,9 +347,19 @@ impl AuthState {
             #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
+            cimd_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            cimd_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
+            jwks_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            jwks_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(feature = "http-axum")]
             remote_fetch_locks: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_fetch_lock_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
         })
@@ -412,11 +507,17 @@ impl AuthState {
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
         let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
+        let cleanup_task = Arc::new(spawn_expired_record_cleanup(
+            store.clone(),
+            EXPIRED_RECORD_CLEANUP_INTERVAL,
+            EXPIRED_RECORD_CLEANUP_BATCH,
+        ));
         Self {
             config: Arc::new(config),
             store,
             signing_keys: Arc::new(signing_keys),
             google: Arc::new(google),
+            _cleanup_task: cleanup_task,
             resource_registry: ResourceRegistry::new(),
             authorize_limiter,
             register_limiter,
@@ -424,9 +525,19 @@ impl AuthState {
             #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
+            cimd_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            cimd_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
+            jwks_negative_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            jwks_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(feature = "http-axum")]
             remote_fetch_locks: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_fetch_lock_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
         }
@@ -511,6 +622,45 @@ mod tests {
         assert_eq!(limiter.bucket_count(), 1);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn periodic_cleanup_removes_expired_records_after_interval() {
+        let directory = tempdir().unwrap();
+        let store = SqliteStore::open_with_key(
+            directory.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "periodic-cleanup-test-key",
+            )),
+        )
+        .await
+        .unwrap();
+        let now = now_unix();
+        store
+            .save_upstream_oauth_state(crate::types::UpstreamOauthStateRow {
+                upstream_name: "expired-upstream".to_string(),
+                subject: "expired-subject".to_string(),
+                csrf_token: "expired-csrf".to_string(),
+                pkce_verifier: "expired-verifier".to_string(),
+                created_at: now - 20,
+                expires_at: now - 1,
+            })
+            .await
+            .unwrap();
+
+        let task = spawn_expired_record_cleanup(store.clone(), Duration::from_secs(30), 1);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            store
+                .find_upstream_oauth_state_owner("expired-csrf", now)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        drop(task);
+    }
+
     /// Builds a minimal `AuthState` for unit-testing `resolve_allowed_emails`.
     async fn resolve_state(admin_email: &str) -> AuthState {
         let dir = tempdir().expect("tempdir");
@@ -533,6 +683,9 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "state-test-google-provider-key",
+            )),
             access_token_ttl: Duration::from_hours(1),
             refresh_token_ttl: Duration::from_hours(1),
             auth_code_ttl: Duration::from_mins(5),
@@ -543,6 +696,19 @@ mod tests {
         })
         .await
         .expect("auth state")
+    }
+
+    #[cfg(feature = "http-axum")]
+    #[tokio::test]
+    async fn auth_state_refuses_oauth_without_provider_credential_encryption() {
+        let mut config = crate::authorize::tests::test_auth_config();
+        config.token_encryption_key = None;
+        let error = AuthState::new(config)
+            .await
+            .err()
+            .expect("OAuth without provider encryption must fail closed");
+        assert!(error.to_string().contains("TOKEN_ENCRYPTION_KEY"));
+        assert!(error.to_string().contains("encrypted at rest"));
     }
 
     #[tokio::test]
@@ -614,6 +780,9 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "state-test-google-provider-key",
+            )),
             access_token_ttl: Duration::from_hours(1),
             refresh_token_ttl: Duration::from_hours(1),
             auth_code_ttl: Duration::from_mins(5),
@@ -645,6 +814,10 @@ mod tests {
                 ("LAB_GOOGLE_CLIENT_ID", "client-id"),
                 ("LAB_GOOGLE_CLIENT_SECRET", "client-secret"),
                 ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+                (
+                    "LAB_TOKEN_ENCRYPTION_KEY",
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                ),
                 (
                     "LAB_AUTH_SQLITE_PATH",
                     temp.path().join("auth.db").to_str().expect("sqlite path"),

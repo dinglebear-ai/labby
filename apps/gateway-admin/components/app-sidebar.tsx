@@ -70,6 +70,43 @@ export const secondarySidebarNavigation = [
   },
 ]
 
+export function BrowserSignOutButton() {
+  const [isSigningOut, setIsSigningOut] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const signOut = async () => {
+    setIsSigningOut(true)
+    setError(null)
+    try {
+      await logoutBrowserSession()
+    } catch {
+      setError('Sign out failed. Your session is still active.')
+    } finally {
+      setIsSigningOut(false)
+    }
+  }
+
+  return (
+    <>
+      <button
+        className="mt-3 text-xs text-aurora-text-muted transition hover:text-aurora-text-primary disabled:cursor-wait disabled:opacity-60"
+        disabled={isSigningOut}
+        onClick={() => {
+          void signOut()
+        }}
+        type="button"
+      >
+        {isSigningOut ? 'Signing out…' : 'Sign out'}
+      </button>
+      {error ? (
+        <p className="mt-2 text-xs text-aurora-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
 export function AppSidebar() {
   const pathname = usePathname()
   const session = useBrowserSession()
@@ -155,15 +192,7 @@ export function AppSidebar() {
                     </p>
                   </div>
                 </div>
-                <button
-                  className="mt-3 text-xs text-aurora-text-muted transition hover:text-aurora-text-primary"
-                  onClick={() => {
-                    void logoutBrowserSession()
-                  }}
-                  type="button"
-                >
-                  Sign out
-                </button>
+                <BrowserSignOutButton />
               </div>
             </SidebarMenuItem>
           ) : null}

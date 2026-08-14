@@ -16,6 +16,8 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+#[cfg(feature = "gateway")]
+use futures::StreamExt;
 use tower::ServiceExt;
 use tower_http::{
     compression::CompressionLayer,
@@ -40,9 +42,7 @@ use crate::app_manifest::{
     SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_DATA_API_PREFIX,
 };
 
-use super::router_middleware::{
-    derive_actor_key, lab_auth_deriver, parse_bearer_token, percent_encode_path, tokens_equal,
-};
+use super::router_middleware::{derive_actor_key, lab_auth_deriver, parse_bearer_token};
 
 use super::app_routes::{
     apps_launcher_page, apps_manifest, labby_app_host_js, server_logs_app_page,
@@ -94,7 +94,7 @@ async fn auth_authorization_server_metadata(
 async fn auth_protected_resource_metadata(
     State(state): State<AppState>,
     request: Request<Body>,
-) -> Result<impl IntoResponse, LabAuthError> {
+) -> Result<axum::response::Response, LabAuthError> {
     #[cfg(feature = "gateway")]
     if let (Some(manager), Some(host)) = (state.gateway_manager.as_ref(), request_host(&request))
         && let Some(route) = manager
@@ -115,14 +115,29 @@ async fn auth_protected_resource_metadata(
             .public_url
             .as_ref()
             .ok_or_else(|| LabAuthError::Config("LABBY_PUBLIC_URL is required".to_string()))?;
-        return Ok(Json(labby_auth::types::ProtectedResourceMetadata {
-            resource: route.public_resource(),
-            authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
-            scopes_supported: route.scopes,
-            bearer_methods_supported: vec!["header".to_string()],
-        }));
+        return Ok(protected_resource_metadata_response(
+            labby_auth::types::ProtectedResourceMetadata {
+                resource: route.public_resource(),
+                authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
+                scopes_supported: route.scopes,
+                bearer_methods_supported: vec!["header".to_string()],
+            },
+        ));
     }
-    Ok(labby_auth::metadata::protected_resource_metadata(State(app_auth_state(&state)?)).await)
+    let auth_state = app_auth_state(&state)?;
+    let public_url = auth_state
+        .config
+        .public_url
+        .as_ref()
+        .ok_or_else(|| LabAuthError::Config("LABBY_PUBLIC_URL is required".to_string()))?;
+    Ok(protected_resource_metadata_response(
+        labby_auth::types::ProtectedResourceMetadata {
+            resource: labby_auth::metadata::canonical_resource_url(&auth_state),
+            authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
+            scopes_supported: auth_state.config.scopes_supported.clone(),
+            bearer_methods_supported: vec!["header".to_string()],
+        },
+    ))
 }
 
 #[cfg(feature = "gateway")]
@@ -172,13 +187,18 @@ async fn protected_route_metadata_response(
         );
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let mut response = Json(labby_auth::types::ProtectedResourceMetadata {
+    protected_resource_metadata_response(labby_auth::types::ProtectedResourceMetadata {
         resource: route.public_resource(),
         authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
         scopes_supported: route.scopes,
         bearer_methods_supported: vec!["header".to_string()],
     })
-    .into_response();
+}
+
+fn protected_resource_metadata_response(
+    metadata: labby_auth::types::ProtectedResourceMetadata,
+) -> axum::response::Response {
+    let mut response = Json(metadata).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=3600"),
@@ -206,11 +226,13 @@ async fn auth_register(
 async fn auth_authorize(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     query: Query<labby_auth::types::AuthorizeQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::authorize::authorize(
         State(app_auth_state_with_protected_routes(&state).await?),
         ConnectInfo(addr),
+        headers,
         query,
     )
     .await?)
@@ -267,42 +289,16 @@ async fn auth_revoke(
 }
 
 async fn auth_native_callback(
-    query: Query<labby_auth::types::NativePollQuery>,
+    query: Query<labby_auth::types::NativeCallbackQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::authorize::native_callback(query).await?)
 }
 
 async fn auth_native_poll(
     State(state): State<AppState>,
-    query: Query<labby_auth::types::NativePollQuery>,
+    body: Json<labby_auth::types::NativePollQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), query).await?)
-}
-
-fn auth_error_response(
-    message: &str,
-    resource_url: Option<&str>,
-    scopes: &[String],
-) -> axum::response::Response {
-    let err = ToolError::Sdk {
-        sdk_kind: "auth_failed".into(),
-        message: message.into(),
-    };
-    let mut response = ApiError::new(err).into_response();
-    if let Some(url) = resource_url {
-        let scope = scopes.join(" ");
-        let www_auth = format!(
-            "{}, scope=\"{}\"",
-            crate::api::oauth::www_authenticate_value(url),
-            scope
-        );
-        if let Ok(value) = HeaderValue::from_str(&www_auth) {
-            response
-                .headers_mut()
-                .insert(header::WWW_AUTHENTICATE, value);
-        }
-    }
-    response
+    Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), body).await?)
 }
 
 fn auth_error_response_with_challenge(
@@ -493,7 +489,7 @@ async fn proxy_protected_mcp_route(
         .strip_prefix(&route.public_path)
         .unwrap_or("");
 
-    let (mut upstream, upstream_auth_token, upstream_target) =
+    let (mut upstream, upstream_auth_token, upstream_target, exposure_config) =
         match protected_route_upstream_target(state, &route).await {
             Ok(target) => target,
             Err(response) => return response,
@@ -533,12 +529,41 @@ async fn proxy_protected_mcp_route(
             .into_response();
         }
     };
-    let body_method = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|value| {
-            let method = value.get("method")?.as_str()?;
-            HeaderValue::from_str(method).ok()
-        });
+    let mut body_json = serde_json::from_slice::<serde_json::Value>(&body).ok();
+    if exposure_config.is_some()
+        && method == Method::POST
+        && !body.is_empty()
+        && body_json.is_none()
+    {
+        tracing::warn!(
+            route = %route.name,
+            resource = %route.public_resource(),
+            kind = "bad_request",
+            "protected MCP route rejected malformed JSON before policy evaluation"
+        );
+        return ApiError::new(ToolError::Sdk {
+            sdk_kind: "bad_request".into(),
+            message: "protected MCP route request body must be valid JSON".into(),
+        })
+        .into_response();
+    }
+    let body_method = body_json.as_ref().and_then(|value| {
+        let method = value.get("method")?.as_str()?;
+        HeaderValue::from_str(method).ok()
+    });
+    let mut policy_errors = Vec::new();
+    if let (Some(config), Some(request_json)) = (exposure_config.as_ref(), body_json.take()) {
+        let prepared = prepare_protected_route_request(config, request_json);
+        policy_errors = prepared.errors;
+        let Some(forwarded) = prepared.forwarded else {
+            return protected_route_policy_only_response(policy_errors);
+        };
+        body_json = Some(forwarded);
+    }
+    let outbound_body = body_json
+        .as_ref()
+        .and_then(|value| serde_json::to_vec(value).ok())
+        .unwrap_or_else(|| body.to_vec());
     tracing::info!(
         route = %route.name,
         resource = %route.public_resource(),
@@ -568,7 +593,7 @@ async fn proxy_protected_mcp_route(
     if let Some(method) = body_method {
         builder = builder.header(HeaderName::from_static("mcp-method"), method);
     }
-    let upstream_response = match builder.body(body).send().await {
+    let upstream_response = match builder.body(outbound_body).send().await {
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(
@@ -611,29 +636,130 @@ async fn proxy_protected_mcp_route(
             response = response.header(&header_name, value);
         }
     }
-    response
-        .body(Body::from_stream(upstream_response.bytes_stream()))
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                route = %route.name,
-                resource = %route.public_resource(),
-                elapsed_ms = started.elapsed().as_millis(),
-                error = %error,
-                "protected MCP route proxy failed: response build failed"
+    let is_sse = upstream_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"));
+    let response_body = if let (Some(config), Some(request_json)) =
+        (exposure_config.as_ref(), body_json.as_ref())
+        && protected_route_has_list_request(request_json)
+    {
+        if is_sse {
+            let filtered = filter_protected_route_sse_stream(
+                upstream_response.bytes_stream(),
+                config.clone(),
+                request_json.clone(),
             );
-            ApiError::new(ToolError::Sdk {
-                sdk_kind: "bad_gateway".into(),
-                message: format!("failed to build protected MCP response: {error}"),
-            })
-            .into_response()
+            let errors = futures::stream::iter(
+                policy_errors
+                    .iter()
+                    .filter_map(|error| {
+                        serde_json::to_string(error).ok().map(|json| {
+                            Ok(bytes::Bytes::from(format!(
+                                "event: message\ndata: {json}\n\n"
+                            )))
+                        })
+                    })
+                    .collect::<Vec<Result<bytes::Bytes, std::io::Error>>>(),
+            );
+            Body::from_stream(errors.chain(filtered))
+        } else {
+            match read_bounded_protected_response(upstream_response, 1024 * 1024).await {
+                Ok(bytes) => {
+                    match filter_protected_route_list_response(config, request_json, &bytes) {
+                        Some(mut filtered) => {
+                            merge_protected_route_policy_errors(&mut filtered, &policy_errors);
+                            Body::from(filtered)
+                        }
+                        None => {
+                            tracing::warn!(
+                                route = %route.name,
+                                upstream = %config.name,
+                                kind = "bad_gateway",
+                                "protected MCP route rejected malformed list response before exposure filtering"
+                            );
+                            return ApiError::new(ToolError::Sdk {
+                                sdk_kind: "bad_gateway".into(),
+                                message: "protected MCP backend returned an invalid list response"
+                                    .into(),
+                            })
+                            .into_response();
+                        }
+                    }
+                }
+                Err(error) => {
+                    return ApiError::new(ToolError::Sdk {
+                        sdk_kind: "bad_gateway".into(),
+                        message: format!("failed to read protected MCP response: {error}"),
+                    })
+                    .into_response();
+                }
+            }
+        }
+    } else if !policy_errors.is_empty() && !is_sse {
+        match read_bounded_protected_response(upstream_response, 1024 * 1024).await {
+            Ok(bytes) => {
+                let mut body = if bytes.is_empty() {
+                    response = response.status(StatusCode::OK);
+                    serde_json::to_vec(&if policy_errors.len() == 1 {
+                        policy_errors[0].clone()
+                    } else {
+                        serde_json::Value::Array(policy_errors.clone())
+                    })
+                    .unwrap_or_default()
+                } else {
+                    bytes.to_vec()
+                };
+                if !bytes.is_empty() {
+                    let before = body.clone();
+                    merge_protected_route_policy_errors(&mut body, &policy_errors);
+                    if body == before {
+                        return ApiError::new(ToolError::Sdk { sdk_kind: "bad_gateway".into(), message: "protected MCP backend returned malformed JSON while policy errors were pending".into() }).into_response();
+                    }
+                }
+                Body::from(body)
+            }
+            Err(error) => {
+                return ApiError::new(ToolError::Sdk {
+                    sdk_kind: "bad_gateway".into(),
+                    message: error.to_string(),
+                })
+                .into_response();
+            }
+        }
+    } else {
+        Body::from_stream(upstream_response.bytes_stream())
+    };
+    response.body(response_body).unwrap_or_else(|error| {
+        tracing::warn!(
+            route = %route.name,
+            resource = %route.public_resource(),
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "protected MCP route proxy failed: response build failed"
+        );
+        ApiError::new(ToolError::Sdk {
+            sdk_kind: "bad_gateway".into(),
+            message: format!("failed to build protected MCP response: {error}"),
         })
+        .into_response()
+    })
 }
 
 #[cfg(feature = "gateway")]
 async fn protected_route_upstream_target(
     state: &AppState,
     route: &crate::config::ProtectedMcpRouteConfig,
-) -> Result<(reqwest::Url, Option<String>, String), axum::response::Response> {
+) -> Result<
+    (
+        reqwest::Url,
+        Option<String>,
+        String,
+        Option<crate::config::UpstreamConfig>,
+    ),
+    axum::response::Response,
+> {
     let upstream_name = match route.effective_target() {
         ProtectedMcpRouteEffectiveTarget::BackendUrl { url } => {
             let url = reqwest::Url::parse(&url).map_err(|error| {
@@ -649,7 +775,7 @@ async fn protected_route_upstream_target(
                 })
                 .into_response()
             })?;
-            return Ok((url, None, "backend_url".to_string()));
+            return Ok((url, None, "backend_url".to_string(), None));
         }
         ProtectedMcpRouteEffectiveTarget::Upstream { name } => name,
         ProtectedMcpRouteEffectiveTarget::GatewaySubset(_) => {
@@ -692,6 +818,16 @@ async fn protected_route_upstream_target(
         })
         .into_response());
     };
+    if !upstream_config.enabled
+        || upstream_config.priority.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+    {
+        tracing::warn!(route = %route.name, upstream = %upstream_name, enabled = upstream_config.enabled, priority = upstream_config.priority, kind = "not_found", "protected MCP route target is not routable");
+        return Err(ApiError::new(ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: format!("upstream `{upstream_name}` is not routable for protected MCP route"),
+        })
+        .into_response());
+    }
     let Some(raw_url) = upstream_config.url.as_deref() else {
         tracing::warn!(
             route = %route.name,
@@ -774,7 +910,528 @@ async fn protected_route_upstream_target(
             .and_then(configured_bearer_token)
     };
 
-    Ok((url, token, format!("upstream:{upstream_name}")))
+    Ok((
+        url,
+        token,
+        format!("upstream:{upstream_name}"),
+        Some(upstream_config),
+    ))
+}
+
+#[cfg(feature = "gateway")]
+#[derive(Debug)]
+struct ProtectedRouteExposureDenial {
+    capability: &'static str,
+    item: String,
+}
+
+#[cfg(feature = "gateway")]
+enum ProtectedRouteExposureDecision {
+    NotApplicable,
+    Allowed,
+    Denied(ProtectedRouteExposureDenial),
+    Malformed { capability: &'static str },
+}
+
+#[cfg(feature = "gateway")]
+struct PreparedProtectedRouteRequest {
+    forwarded: Option<serde_json::Value>,
+    errors: Vec<serde_json::Value>,
+}
+
+#[cfg(feature = "gateway")]
+fn prepare_protected_route_request(
+    config: &crate::config::UpstreamConfig,
+    request: serde_json::Value,
+) -> PreparedProtectedRouteRequest {
+    let is_batch = request.is_array();
+    let members = match request {
+        serde_json::Value::Array(items) => items,
+        other => vec![other],
+    };
+    let mut forwarded = Vec::new();
+    let mut errors = Vec::new();
+    for member in members {
+        let id = member.get("id").cloned();
+        match protected_route_exposure_decision(config, &member) {
+            ProtectedRouteExposureDecision::NotApplicable
+            | ProtectedRouteExposureDecision::Allowed => forwarded.push(member),
+            ProtectedRouteExposureDecision::Denied(denial) => {
+                if let Some(id) = id {
+                    errors.push(protected_route_json_rpc_error(
+                        id,
+                        -32601,
+                        "route_exposure_denied",
+                        denial.capability,
+                        format!(
+                            "{} `{}` is not exposed by this route",
+                            denial.capability, denial.item
+                        ),
+                    ));
+                }
+            }
+            ProtectedRouteExposureDecision::Malformed { capability } => {
+                if let Some(id) = id {
+                    errors.push(protected_route_json_rpc_error(
+                        id,
+                        -32602,
+                        "invalid_params",
+                        capability,
+                        format!("{capability} request has a missing or invalid selector"),
+                    ));
+                }
+            }
+        }
+    }
+    let forwarded = if forwarded.is_empty() {
+        None
+    } else if is_batch {
+        Some(serde_json::Value::Array(forwarded))
+    } else {
+        forwarded.pop()
+    };
+    PreparedProtectedRouteRequest { forwarded, errors }
+}
+
+#[cfg(feature = "gateway")]
+fn protected_route_json_rpc_error(
+    id: serde_json::Value,
+    code: i32,
+    kind: &str,
+    capability: &str,
+    message: String,
+) -> serde_json::Value {
+    serde_json::json!({"jsonrpc":"2.0", "id":id, "error":{"code":code, "message":message, "data":{"kind":kind, "capability":capability}}})
+}
+
+#[cfg(feature = "gateway")]
+fn protected_route_policy_only_response(
+    errors: Vec<serde_json::Value>,
+) -> axum::response::Response {
+    if errors.is_empty() {
+        return StatusCode::ACCEPTED.into_response();
+    }
+    let body = if errors.len() == 1 {
+        errors.into_iter().next().expect("one error")
+    } else {
+        serde_json::Value::Array(errors)
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+#[cfg(feature = "gateway")]
+fn merge_protected_route_policy_errors(body: &mut Vec<u8>, errors: &[serde_json::Value]) {
+    if errors.is_empty() {
+        return;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return;
+    };
+    let mut combined = match value {
+        serde_json::Value::Array(items) => items,
+        other => vec![other],
+    };
+    combined.extend_from_slice(errors);
+    if let Ok(encoded) = serde_json::to_vec(&serde_json::Value::Array(combined)) {
+        *body = encoded;
+    }
+}
+
+#[cfg(feature = "gateway")]
+async fn read_bounded_protected_response(
+    response: reqwest::Response,
+    max: usize,
+) -> Result<bytes::Bytes, String> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        if body.len().saturating_add(chunk.len()) > max {
+            return Err(format!("protected MCP response exceeds {max} byte limit"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(bytes::Bytes::from(body))
+}
+
+#[cfg(feature = "gateway")]
+fn filter_protected_route_sse_stream(
+    stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + Unpin + 'static,
+    config: crate::config::UpstreamConfig,
+    request: serde_json::Value,
+) -> impl futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send {
+    const MAX_EVENT_BYTES: usize = 1024 * 1024;
+    futures::stream::unfold(
+        (stream.boxed(), Vec::<u8>::new(), false),
+        move |(mut stream, mut buffer, done)| {
+            let config = config.clone();
+            let request = request.clone();
+            async move {
+                loop {
+                    if let Some(end) = find_sse_event_end(&buffer) {
+                        if end > MAX_EVENT_BYTES {
+                            buffer.clear();
+                            return Some((
+                                Err(std::io::Error::other(
+                                    "protected MCP SSE event exceeds 1 MiB",
+                                )),
+                                (stream, buffer, true),
+                            ));
+                        }
+                        let event = buffer.drain(..end).collect::<Vec<_>>();
+                        return Some((
+                            filter_protected_route_sse_event(&config, &request, &event),
+                            (stream, buffer, done),
+                        ));
+                    }
+                    if done {
+                        if buffer.is_empty() {
+                            return None;
+                        }
+                        let event = std::mem::take(&mut buffer);
+                        if event.len() > MAX_EVENT_BYTES {
+                            return Some((
+                                Err(std::io::Error::other(
+                                    "protected MCP SSE event exceeds 1 MiB",
+                                )),
+                                (stream, buffer, true),
+                            ));
+                        }
+                        return Some((
+                            filter_protected_route_sse_event(&config, &request, &event),
+                            (stream, buffer, true),
+                        ));
+                    }
+                    match stream.next().await {
+                        Some(Ok(chunk)) => {
+                            buffer.extend_from_slice(&chunk);
+                            if find_sse_event_end(&buffer).is_none()
+                                && buffer.len() > MAX_EVENT_BYTES
+                            {
+                                buffer.clear();
+                                return Some((
+                                    Err(std::io::Error::other(
+                                        "protected MCP SSE event exceeds 1 MiB",
+                                    )),
+                                    (stream, buffer, true),
+                                ));
+                            }
+                        }
+                        Some(Err(error)) => {
+                            return Some((
+                                Err(std::io::Error::other(error)),
+                                (stream, buffer, true),
+                            ));
+                        }
+                        None => {
+                            if buffer.is_empty() {
+                                return None;
+                            }
+                            let event = std::mem::take(&mut buffer);
+                            if event.len() > MAX_EVENT_BYTES {
+                                return Some((
+                                    Err(std::io::Error::other(
+                                        "protected MCP SSE event exceeds 1 MiB",
+                                    )),
+                                    (stream, buffer, true),
+                                ));
+                            }
+                            return Some((
+                                filter_protected_route_sse_event(&config, &request, &event),
+                                (stream, buffer, true),
+                            ));
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+#[cfg(feature = "gateway")]
+fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
+    let lf = buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|index| index + 2);
+    let crlf = buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4);
+    match (lf, crlf) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(end), None) | (None, Some(end)) => Some(end),
+        (None, None) => None,
+    }
+}
+
+#[cfg(feature = "gateway")]
+fn filter_protected_route_sse_event(
+    config: &crate::config::UpstreamConfig,
+    request: &serde_json::Value,
+    event: &[u8],
+) -> Result<bytes::Bytes, std::io::Error> {
+    let text = std::str::from_utf8(event).map_err(std::io::Error::other)?;
+    let mut output = String::new();
+    let mut data_lines = Vec::new();
+    for line in text.split_inclusive('\n') {
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start().trim_end_matches(['\r', '\n']));
+        } else {
+            output.push_str(line);
+        }
+    }
+    if !data_lines.is_empty() {
+        let data = data_lines.join("\n");
+        let filtered = filter_protected_route_list_response(config, request, data.as_bytes())
+            .ok_or_else(|| std::io::Error::other("invalid protected MCP SSE JSON payload"))?;
+        output = output.trim_end_matches(['\r', '\n']).to_string();
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str("data: ");
+        output.push_str(std::str::from_utf8(&filtered).map_err(std::io::Error::other)?);
+        output.push_str("\n\n");
+    }
+    Ok(bytes::Bytes::from(output))
+}
+
+#[cfg(feature = "gateway")]
+fn protected_route_exposure_decision(
+    config: &crate::config::UpstreamConfig,
+    request: &serde_json::Value,
+) -> ProtectedRouteExposureDecision {
+    use labby_gateway::upstream::pool::entries::{
+        prompt_exposed, resolve_request_exposure_policy, resolve_request_prompt_exposure_policy,
+        resolve_request_resource_exposure_policy, resource_exposed,
+    };
+    let Some(method) = request.get("method").and_then(serde_json::Value::as_str) else {
+        return ProtectedRouteExposureDecision::NotApplicable;
+    };
+    let capability = match method {
+        "tools/call" => "tools",
+        "resources/read" | "resources/subscribe" | "resources/unsubscribe" => "resources",
+        "prompts/get" => "prompts",
+        "completion/complete" => "completion",
+        _ => return ProtectedRouteExposureDecision::NotApplicable,
+    };
+    let Some(params) = request.get("params").and_then(serde_json::Value::as_object) else {
+        return ProtectedRouteExposureDecision::Malformed { capability };
+    };
+    let (capability, item, exposed) = match method {
+        "tools/call" => {
+            let Some(item) = params.get("name").and_then(serde_json::Value::as_str) else {
+                return ProtectedRouteExposureDecision::Malformed { capability };
+            };
+            let policy = resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+            ("tools", item, policy.matches(item))
+        }
+        "resources/read" | "resources/subscribe" | "resources/unsubscribe" => {
+            let Some(item) = params.get("uri").and_then(serde_json::Value::as_str) else {
+                return ProtectedRouteExposureDecision::Malformed { capability };
+            };
+            let policy = resolve_request_resource_exposure_policy(
+                &config.name,
+                config.expose_resources.clone(),
+            );
+            ("resources", item, resource_exposed(&policy, item))
+        }
+        "prompts/get" => {
+            let Some(item) = params.get("name").and_then(serde_json::Value::as_str) else {
+                return ProtectedRouteExposureDecision::Malformed { capability };
+            };
+            let policy =
+                resolve_request_prompt_exposure_policy(&config.name, config.expose_prompts.clone());
+            ("prompts", item, prompt_exposed(&policy, &config.name, item))
+        }
+        "completion/complete" => {
+            let Some(reference) = params.get("ref").and_then(serde_json::Value::as_object) else {
+                return ProtectedRouteExposureDecision::Malformed { capability };
+            };
+            let Some(reference_type) = reference.get("type").and_then(serde_json::Value::as_str)
+            else {
+                return ProtectedRouteExposureDecision::Malformed { capability };
+            };
+            match reference_type {
+                "ref/prompt" => {
+                    let Some(item) = reference.get("name").and_then(serde_json::Value::as_str)
+                    else {
+                        return ProtectedRouteExposureDecision::Malformed { capability };
+                    };
+                    let policy = resolve_request_prompt_exposure_policy(
+                        &config.name,
+                        config.expose_prompts.clone(),
+                    );
+                    ("prompts", item, prompt_exposed(&policy, &config.name, item))
+                }
+                "ref/resource" => {
+                    let Some(item) = reference.get("uri").and_then(serde_json::Value::as_str)
+                    else {
+                        return ProtectedRouteExposureDecision::Malformed { capability };
+                    };
+                    let policy = resolve_request_resource_exposure_policy(
+                        &config.name,
+                        config.expose_resources.clone(),
+                    );
+                    ("resources", item, resource_exposed(&policy, item))
+                }
+                _ => return ProtectedRouteExposureDecision::Malformed { capability },
+            }
+        }
+        _ => unreachable!(),
+    };
+    if exposed {
+        ProtectedRouteExposureDecision::Allowed
+    } else {
+        ProtectedRouteExposureDecision::Denied(ProtectedRouteExposureDenial {
+            capability,
+            item: item.to_string(),
+        })
+    }
+}
+
+#[cfg(feature = "gateway")]
+fn protected_route_has_list_request(request: &serde_json::Value) -> bool {
+    request
+        .as_array()
+        .is_some_and(|batch| batch.iter().any(protected_route_has_list_request))
+        || request
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|method| {
+                matches!(method, "tools/list" | "resources/list" | "prompts/list")
+            })
+}
+
+#[cfg(feature = "gateway")]
+fn filter_protected_route_list_response(
+    config: &crate::config::UpstreamConfig,
+    request: &serde_json::Value,
+    bytes: &[u8],
+) -> Option<Vec<u8>> {
+    let mut response = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
+    if let (Some(requests), Some(responses)) = (request.as_array(), response.as_array_mut()) {
+        let request_ids = requests
+            .iter()
+            .filter_map(|request| request.get("id"))
+            .collect::<Vec<_>>();
+        if responses.iter().any(|response| {
+            response
+                .get("id")
+                .is_none_or(|id| !request_ids.contains(&id))
+        }) {
+            return None;
+        }
+        for req in requests {
+            if let Some(id) = req.get("id")
+                && protected_route_has_list_request(req)
+            {
+                let matches = responses
+                    .iter_mut()
+                    .filter(|candidate| candidate.get("id") == Some(id))
+                    .collect::<Vec<_>>();
+                if matches.len() != 1 {
+                    return None;
+                }
+                if !filter_protected_route_list_result(
+                    config,
+                    req,
+                    matches.into_iter().next().expect("one response"),
+                ) {
+                    return None;
+                }
+            }
+        }
+    } else if let Some(requests) = request.as_array() {
+        if let Some(id) = response.get("id")
+            && let Some(req) = requests.iter().find(|req| req.get("id") == Some(id))
+        {
+            if !filter_protected_route_list_result(config, req, &mut response) {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    } else if !filter_protected_route_list_result(config, request, &mut response) {
+        return None;
+    }
+    serde_json::to_vec(&response).ok()
+}
+
+#[cfg(feature = "gateway")]
+fn filter_protected_route_list_result(
+    config: &crate::config::UpstreamConfig,
+    req: &serde_json::Value,
+    response: &mut serde_json::Value,
+) -> bool {
+    let Some(method) = req.get("method").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(result) = response.get_mut("result") else {
+        return false;
+    };
+    let (key, policy): (&str, Box<dyn Fn(&serde_json::Value) -> bool>) = match method {
+        "tools/list" => {
+            let policy = labby_gateway::upstream::pool::entries::resolve_request_exposure_policy(
+                &config.name,
+                config.expose_tools.clone(),
+            );
+            (
+                "tools",
+                Box::new(move |item| {
+                    item.get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|name| policy.matches(name))
+                }),
+            )
+        }
+        "resources/list" => {
+            let policy =
+                labby_gateway::upstream::pool::entries::resolve_request_resource_exposure_policy(
+                    &config.name,
+                    config.expose_resources.clone(),
+                );
+            (
+                "resources",
+                Box::new(move |item| {
+                    item.get("uri")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|uri| {
+                            labby_gateway::upstream::pool::entries::resource_exposed(&policy, uri)
+                        })
+                }),
+            )
+        }
+        "prompts/list" => {
+            let policy =
+                labby_gateway::upstream::pool::entries::resolve_request_prompt_exposure_policy(
+                    &config.name,
+                    config.expose_prompts.clone(),
+                );
+            let name = config.name.clone();
+            (
+                "prompts",
+                Box::new(move |item| {
+                    item.get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|prompt| {
+                            labby_gateway::upstream::pool::entries::prompt_exposed(
+                                &policy, &name, prompt,
+                            )
+                        })
+                }),
+            )
+        }
+        _ => return false,
+    };
+    let Some(items) = result
+        .get_mut(key)
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+    items.retain(policy);
+    true
 }
 
 #[cfg(feature = "gateway")]
@@ -890,179 +1547,6 @@ async fn protected_mcp_intercept(
 
 fn is_public_relay_reserved_path(path: &str) -> bool {
     crate::oauth::public_relay::is_reserved_public_relay_path(path)
-}
-
-fn csrf_error_response(message: &str) -> axum::response::Response {
-    ApiError::new(ToolError::Sdk {
-        sdk_kind: "validation_failed".into(),
-        message: message.into(),
-    })
-    .into_response()
-}
-
-async fn authenticate_request(
-    mut request: Request<Body>,
-    next: Next,
-    static_token: Option<Arc<str>>,
-    auth_state: Option<Arc<labby_auth::state::AuthState>>,
-    actor_key_deriver: Option<Arc<crate::observability::activity::ActorKeyDeriver>>,
-    resource_url: Option<Arc<str>>,
-    allow_session_cookie: bool,
-) -> Result<axum::response::Response, std::convert::Infallible> {
-    let auth_header = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_bearer_token);
-
-    if let Some(token) = auth_header {
-        if let Some(ref expected) = static_token
-            && tokens_equal(&token, expected.as_ref())
-        {
-            let sub = "static-bearer".to_string();
-            let actor_key = derive_actor_key(actor_key_deriver.as_deref(), &sub);
-            request
-                .extensions_mut()
-                .insert(crate::api::oauth::AuthContext {
-                    sub,
-                    actor_key,
-                    scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
-                    issuer: "local".to_string(),
-                    via_session: false,
-                    csrf_token: None,
-                    email: None,
-                });
-            return Ok(next.run(request).await);
-        }
-
-        if let Some(ref auth_state) = auth_state {
-            let Some(expected_issuer) = auth_state
-                .config
-                .public_url
-                .as_ref()
-                .map(|url| url.as_str().trim_end_matches('/').to_string())
-            else {
-                return Ok(auth_error_response(
-                    "server misconfigured: LABBY_PUBLIC_URL required for JWT validation",
-                    resource_url.as_deref(),
-                    &auth_state.config.scopes_supported,
-                ));
-            };
-            let expected_aud = labby_auth::metadata::canonical_resource_url(auth_state);
-            match auth_state.signing_keys.validate_access_token_with_issuer(
-                &token,
-                &expected_aud,
-                &expected_issuer,
-            ) {
-                Ok(claims) => {
-                    request
-                        .extensions_mut()
-                        .insert(crate::api::oauth::AuthContext {
-                            actor_key: derive_actor_key(actor_key_deriver.as_deref(), &claims.sub),
-                            sub: claims.sub,
-                            scopes: claims
-                                .scope
-                                .split_whitespace()
-                                .filter(|scope| !scope.is_empty())
-                                .map(ToOwned::to_owned)
-                                .collect(),
-                            issuer: claims.iss,
-                            via_session: false,
-                            csrf_token: None,
-                            email: None,
-                        });
-                    return Ok(next.run(request).await);
-                }
-                Err(error) => {
-                    tracing::debug!(error = %error, "lab-auth JWT validation failed");
-                }
-            }
-        }
-
-        return Ok(auth_error_response(
-            "invalid bearer token",
-            resource_url.as_deref(),
-            auth_state
-                .as_ref()
-                .map_or(&[], |state| state.config.scopes_supported.as_slice()),
-        ));
-    }
-
-    if allow_session_cookie
-        && let Some(auth_state) = auth_state.as_ref()
-        && let Some(session_id) = labby_auth::session::read_cookie(
-            request.headers(),
-            &auth_state.config.session_cookie_name,
-        )
-    {
-        match auth_state.store.find_browser_session(&session_id).await {
-            Ok(Some(session)) => {
-                if !matches!(
-                    *request.method(),
-                    Method::GET | Method::HEAD | Method::OPTIONS
-                ) {
-                    let csrf = request
-                        .headers()
-                        .get(labby_auth::session::BROWSER_CSRF_HEADER_NAME)
-                        .and_then(|value| value.to_str().ok());
-                    if csrf != Some(session.csrf_token.as_str()) {
-                        return Ok(csrf_error_response("missing or invalid csrf token"));
-                    }
-                }
-
-                request
-                    .extensions_mut()
-                    .insert(crate::api::oauth::AuthContext {
-                        actor_key: derive_actor_key(actor_key_deriver.as_deref(), &session.subject),
-                        sub: session.subject,
-                        scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
-                        issuer: "browser-session".to_string(),
-                        via_session: true,
-                        csrf_token: Some(session.csrf_token),
-                        email: session.email,
-                    });
-                return Ok(next.run(request).await);
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::debug!(error = %error, "browser session lookup failed");
-            }
-        }
-    }
-
-    // For browser GET requests with no bearer token and no valid session cookie,
-    // redirect to /auth/login so the Google OAuth flow can establish a session.
-    // Only fires on v1 routes (allow_session_cookie=true); the MCP endpoint uses bearer-only.
-    if allow_session_cookie
-        && auth_state.is_some()
-        && *request.method() == Method::GET
-        && request
-            .headers()
-            .get(header::ACCEPT)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|accept| accept.contains("text/html"))
-    {
-        let return_to = request
-            .uri()
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/");
-        let encoded = percent_encode_path(return_to);
-        let login_url = format!("/auth/login?return_to={encoded}");
-        return Ok(axum::response::Redirect::to(&login_url).into_response());
-    }
-
-    Ok(auth_error_response(
-        if allow_session_cookie {
-            "missing bearer token or session cookie"
-        } else {
-            "missing bearer token"
-        },
-        resource_url.as_deref(),
-        auth_state
-            .as_ref()
-            .map_or(&[], |state| state.config.scopes_supported.as_slice()),
-    ))
 }
 
 /// Build the `/v1` sub-router with all feature-gated service routes.
@@ -1347,6 +1831,13 @@ pub(crate) fn build_router_with_external_auth(
             .with_static_token(static_token.clone())
             .with_actor_key_deriver(layer_deriver.clone())
             .with_resource_url(resource_url.clone())
+            .with_error_response_mapper(|error| {
+                ApiError::new(ToolError::Sdk {
+                    sdk_kind: error.kind().to_string(),
+                    message: error.to_string(),
+                })
+                .into_response()
+            })
             .with_allow_session_cookie(allow_session_cookie);
         layer
     };
@@ -1356,25 +1847,9 @@ pub(crate) fn build_router_with_external_auth(
         v1_router
     };
 
-    let auth_state_for_mcp = auth_state.clone();
-    let static_token_for_mcp = static_token.clone();
-    let actor_key_deriver_for_mcp = state.actor_key_deriver.clone();
-    let resource_url_for_mcp = resource_url.clone();
     let mcp_protected = mcp_router.map(|mcp| {
         if credential_auth_configured {
-            mcp.route_layer(axum::middleware::from_fn(
-                move |request: Request<Body>, next: Next| {
-                    authenticate_request(
-                        request,
-                        next,
-                        static_token_for_mcp.clone(),
-                        auth_state_for_mcp.clone(),
-                        actor_key_deriver_for_mcp.clone(),
-                        resource_url_for_mcp.clone(),
-                        false,
-                    )
-                },
-            ))
+            mcp.route_layer(make_auth_layer(false))
         } else {
             mcp
         }
@@ -1453,7 +1928,7 @@ pub(crate) fn build_router_with_external_auth(
             .route("/auth/login", get(auth_browser_login))
             .route("/auth/google/callback", get(auth_callback))
             .route("/native/callback", get(auth_native_callback))
-            .route("/native/poll", get(auth_native_poll))
+            .route("/native/poll", post(auth_native_poll))
             .route("/token", post(auth_token))
             .route("/revoke", post(auth_revoke))
             .layer(axum::middleware::from_fn(
@@ -1759,6 +2234,63 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"], "auth_failed");
+    }
+
+    async fn assert_canonical_auth_failure(response: axum::response::Response) {
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("Bearer resource_metadata=\"")),
+            "missing RFC 9728 bearer challenge"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "auth_failed");
+        assert_eq!(json["contract_version"], 1);
+        assert_eq!(json["origin"], "policy");
+        assert_eq!(json["recovery"]["action"], "reauthenticate");
+        assert_eq!(json["recovery"]["same_arguments"], "never");
+        assert_eq!(json["side_effects"], "none_expected");
+    }
+
+    #[tokio::test]
+    async fn shared_auth_layer_preserves_canonical_contract_for_v1_and_mcp() {
+        let auth_state = test_lab_auth_state().await;
+        let mcp_router = Router::new().route("/mcp", get(|| async { StatusCode::OK }));
+        let app = build_router(
+            AppState::new(),
+            Some("secret-token".to_string()),
+            Some(auth_state),
+            Some(mcp_router),
+            &[],
+        );
+
+        for (path, authorization) in [
+            ("/v1/setup/actions", None),
+            ("/v1/setup/actions", Some("Bearer invalid")),
+            ("/mcp", None),
+            ("/mcp", Some("Bearer invalid")),
+        ] {
+            let mut request = Request::builder().method("GET").uri(path);
+            if let Some(authorization) = authorization {
+                request = request.header(header::AUTHORIZATION, authorization);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_canonical_auth_failure(response).await;
+        }
     }
 
     #[tokio::test]
@@ -2508,6 +3040,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_rejects_static_bearer_when_oauth_policy_disables_it() {
+        let state = AppState::new();
+        let mut auth_state = test_lab_auth_state().await;
+        Arc::make_mut(&mut auth_state.config).disable_static_token_with_oauth = true;
+        let mcp_router = Router::new().route("/mcp", get(|| async { StatusCode::OK }));
+        let app = build_router(
+            state,
+            Some("static-token".to_string()),
+            Some(auth_state),
+            Some(mcp_router),
+            &[],
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/mcp")
+                    .header(header::AUTHORIZATION, "Bearer static-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn v1_session_post_requires_csrf_header() {
         let state = AppState::new();
         let auth_state = test_lab_auth_state().await;
@@ -3036,7 +3595,8 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let app = build_router(state, None, Some(auth_state), None, &[]);
 
-        let response = app
+        let root_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -3047,12 +3607,39 @@ mod tests {
             )
             .await
             .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let compatibility_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/telemetry/.well-known/oauth-protected-resource")
+                    .header(header::HOST, "mcp.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(root_response.status(), StatusCode::OK);
+        assert_eq!(compatibility_response.status(), StatusCode::OK);
+        for response in [&root_response, &compatibility_response] {
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "application/json"
+            );
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=3600"
+            );
+        }
+        let root_body = axum::body::to_bytes(root_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let compatibility_body =
+            axum::body::to_bytes(compatibility_response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+        assert_eq!(root_body, compatibility_body);
+        let json: serde_json::Value = serde_json::from_slice(&root_body).unwrap();
         assert_eq!(json["resource"], "https://mcp.example.com/telemetry");
     }
 
@@ -3396,6 +3983,430 @@ mod tests {
             String::from_utf8(body.to_vec()).unwrap(),
             r#"{"jsonrpc":"2.0","result":{"upstream":true}}"#
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn named_protected_route_denies_hidden_direct_capabilities() {
+        for (method_name, params) in [
+            (
+                "tools/call",
+                serde_json::json!({"name": "danger.delete", "arguments": {}}),
+            ),
+            (
+                "resources/read",
+                serde_json::json!({"uri": "secret://credentials"}),
+            ),
+            (
+                "prompts/get",
+                serde_json::json!({"name": "admin-reset", "arguments": {}}),
+            ),
+        ] {
+            let backend = MockServer::start().await;
+            let tempdir = tempfile::tempdir().unwrap();
+            let manager = Arc::new(
+                crate::dispatch::gateway::config_store::test_gateway_manager(
+                    tempdir.path().join("gateway.toml"),
+                    crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+                ),
+            );
+            let config = protected_named_upstream_config(&backend.uri());
+            manager
+                .seed_config_unchecked_for_tests(config.to_gateway_config())
+                .await;
+            let state = AppState::new()
+                .with_config(config)
+                .with_gateway_manager(manager);
+            let auth_state = test_lab_auth_state().await;
+            let token = issue_test_route_token(&auth_state, "https://mcp.example.com/safe");
+            let app = build_router(
+                state,
+                Some("static-token".to_string()),
+                Some(auth_state),
+                None,
+                &[],
+            );
+            let response = app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/safe")
+                    .header(header::HOST, "mcp.example.com")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::json!({"jsonrpc":"2.0", "method": method_name, "id": 1, "params": params}).to_string()))
+                    .unwrap(),
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                body["error"]["data"]["kind"], "route_exposure_denied",
+                "{method_name}"
+            );
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn named_protected_route_rejects_disabled_or_non_positive_priority_target() {
+        for (enabled, priority) in [(false, 1.0), (true, 0.0), (true, f32::NAN)] {
+            let backend = MockServer::start().await;
+            let tempdir = tempfile::tempdir().unwrap();
+            let manager = Arc::new(
+                crate::dispatch::gateway::config_store::test_gateway_manager(
+                    tempdir.path().join("gateway.toml"),
+                    crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+                ),
+            );
+            let mut config = protected_named_upstream_config(&backend.uri());
+            config.upstream[0].enabled = enabled;
+            config.upstream[0].priority = priority;
+            manager
+                .seed_config_unchecked_for_tests(config.to_gateway_config())
+                .await;
+            let state = AppState::new()
+                .with_config(config)
+                .with_gateway_manager(manager);
+            let auth_state = test_lab_auth_state().await;
+            let token = issue_test_route_token(&auth_state, "https://mcp.example.com/safe");
+            let app = build_router(
+                state,
+                Some("static-token".into()),
+                Some(auth_state),
+                None,
+                &[],
+            );
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/safe")
+                        .header(header::HOST, "mcp.example.com")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            r#"{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{}}"#,
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn named_protected_route_returns_denial_when_allowed_notification_gets_204() {
+        let backend = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&backend)
+            .await;
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                tempdir.path().join("gateway.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let config = protected_named_upstream_config(&backend.uri());
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let auth_state = test_lab_auth_state().await;
+        let token = issue_test_route_token(&auth_state, "https://mcp.example.com/safe");
+        let app = build_router(
+            state,
+            Some("static-token".into()),
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let body = serde_json::json!([
+            {"jsonrpc":"2.0","method":"tools/call","id":7,"params":{"name":"danger.delete"}},
+            {"jsonrpc":"2.0","method":"notifications/initialized"}
+        ]);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/safe")
+                    .header(header::HOST, "mcp.example.com")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["error"]["data"]["kind"], "route_exposure_denied");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn named_protected_route_filters_all_capability_lists() {
+        for (method_name, collection, visible, hidden) in [
+            ("tools/list", "tools", "safe.search", "danger.delete"),
+            (
+                "resources/list",
+                "resources",
+                "public://status",
+                "secret://credentials",
+            ),
+            ("prompts/list", "prompts", "safe-summary", "admin-reset"),
+        ] {
+            let backend = MockServer::start().await;
+            let key = if collection == "resources" {
+                "uri"
+            } else {
+                "name"
+            };
+            Mock::given(method("POST")).and(path("/mcp")).respond_with(
+                ResponseTemplate::new(200).insert_header("content-type", "application/json").set_body_json(
+                    serde_json::json!({"jsonrpc":"2.0", "id":1, "result": {(collection): [{(key): visible}, {(key): hidden}]}}),
+                ),
+            ).mount(&backend).await;
+            let tempdir = tempfile::tempdir().unwrap();
+            let manager = Arc::new(
+                crate::dispatch::gateway::config_store::test_gateway_manager(
+                    tempdir.path().join("gateway.toml"),
+                    crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+                ),
+            );
+            let config = protected_named_upstream_config(&backend.uri());
+            manager
+                .seed_config_unchecked_for_tests(config.to_gateway_config())
+                .await;
+            let state = AppState::new()
+                .with_config(config)
+                .with_gateway_manager(manager);
+            let auth_state = test_lab_auth_state().await;
+            let token = issue_test_route_token(&auth_state, "https://mcp.example.com/safe");
+            let app = build_router(
+                state,
+                Some("static-token".to_string()),
+                Some(auth_state),
+                None,
+                &[],
+            );
+            let response = app.oneshot(Request::builder().method("POST").uri("/safe")
+                .header(header::HOST, "mcp.example.com")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::json!({"jsonrpc":"2.0", "method":method_name, "id":1, "params":{}}).to_string())).unwrap()).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                body["result"][collection].as_array().unwrap().len(),
+                1,
+                "{method_name}"
+            );
+            assert_eq!(body["result"][collection][0][key], visible, "{method_name}");
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn named_protected_route_batch_policy_and_list_filter_fail_closed() {
+        let config = protected_named_upstream_config("http://127.0.0.1:9");
+        let upstream = &config.upstream[0];
+        let batch = serde_json::json!([
+            {"jsonrpc":"2.0", "method":"tools/list", "id":1, "params":{}},
+            {"jsonrpc":"2.0", "method":"tools/call", "id":2, "params":{"name":"danger.delete"}}
+        ]);
+        let prepared = prepare_protected_route_request(upstream, batch.clone());
+        assert_eq!(prepared.errors.len(), 1);
+        assert_eq!(prepared.errors[0]["id"], 2);
+        assert_eq!(
+            prepared
+                .forwarded
+                .as_ref()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(
+            filter_protected_route_list_response(upstream, &batch[0], b"not-json").is_none(),
+            "an unfilterable list response must fail closed"
+        );
+
+        let notification_batch = serde_json::json!([
+            {"jsonrpc":"2.0", "method":"tools/call", "params":{"name":"danger.delete"}},
+            {"jsonrpc":"2.0", "method":"resources/read", "id":3, "params":{}},
+            {"jsonrpc":"2.0", "method":"tools/call", "id":4, "params":{"name":"safe.search"}}
+        ]);
+        let prepared = prepare_protected_route_request(upstream, notification_batch);
+        assert_eq!(prepared.errors.len(), 1, "denied notifications stay silent");
+        assert_eq!(prepared.errors[0]["id"], 3);
+        assert_eq!(prepared.errors[0]["error"]["code"], -32602);
+        assert_eq!(prepared.forwarded.unwrap().as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn named_protected_route_filters_sse_list_event_and_preserves_framing() {
+        let config = protected_named_upstream_config("http://127.0.0.1:9");
+        let request =
+            serde_json::json!({"jsonrpc":"2.0", "method":"tools/list", "id":1, "params":{}});
+        let event = b"event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"safe.search\"},{\"name\":\"danger.delete\"}]}}\n\n";
+        let filtered =
+            filter_protected_route_sse_event(&config.upstream[0], &request, event).unwrap();
+        let text = std::str::from_utf8(&filtered).unwrap();
+        assert!(text.starts_with("event: message\ndata: "));
+        assert!(text.ends_with("\n\n"));
+        assert!(text.contains("safe.search"));
+        assert!(!text.contains("danger.delete"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn named_protected_route_sse_filter_handles_split_stream_chunks() {
+        use futures::TryStreamExt;
+        let config = protected_named_upstream_config("http://127.0.0.1:9");
+        let request =
+            serde_json::json!({"jsonrpc":"2.0", "method":"tools/list", "id":1, "params":{}});
+        let chunks = futures::stream::iter(vec![
+            Ok::<_, reqwest::Error>(bytes::Bytes::from_static(b"event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,")),
+            Ok(bytes::Bytes::from_static(b"\"result\":{\"tools\":[{\"name\":\"safe.search\"},{\"name\":\"danger.delete\"}]}}\n\n")),
+        ]);
+        let output = filter_protected_route_sse_stream(chunks, config.upstream[0].clone(), request)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let text = String::from_utf8(output.into_iter().flatten().collect()).unwrap();
+        assert!(text.contains("safe.search"));
+        assert!(!text.contains("danger.delete"));
+        assert!(text.ends_with("\n\n"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn named_protected_route_sse_correlates_batch_id_and_multiline_data() {
+        let config = protected_named_upstream_config("http://127.0.0.1:9");
+        let request = serde_json::json!([
+            {"jsonrpc":"2.0", "method":"resources/list", "id":1, "params":{}},
+            {"jsonrpc":"2.0", "method":"tools/list", "id":2, "params":{}}
+        ]);
+        let event = b"data: {\"jsonrpc\":\"2.0\",\"id\":2,\ndata: \"result\":{\"tools\":[{\"name\":\"safe.search\"},{\"name\":\"danger.delete\"}]}}\n\n";
+        let filtered =
+            filter_protected_route_sse_event(&config.upstream[0], &request, event).unwrap();
+        let text = std::str::from_utf8(&filtered).unwrap();
+        assert!(text.contains("safe.search"));
+        assert!(!text.contains("danger.delete"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn named_protected_route_sse_caps_each_event_not_combined_chunk() {
+        use futures::TryStreamExt;
+        let config = protected_named_upstream_config("http://127.0.0.1:9");
+        let request =
+            serde_json::json!({"jsonrpc":"2.0", "method":"tools/list", "id":1, "params":{}});
+        let padding = " ".repeat(600_000);
+        let event = format!(
+            "data: {padding}{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"tools\":[]}}}}\n\n"
+        );
+        let chunk = event.repeat(2);
+        assert!(chunk.len() > 1024 * 1024);
+        let output = filter_protected_route_sse_stream(
+            futures::stream::iter(vec![Ok::<_, reqwest::Error>(bytes::Bytes::from(chunk))]),
+            config.upstream[0].clone(),
+            request,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+        assert_eq!(output.len(), 2);
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn named_protected_route_sse_includes_policy_errors() {
+        let errors = vec![protected_route_json_rpc_error(
+            serde_json::json!(7),
+            -32601,
+            "route_exposure_denied",
+            "tools",
+            "denied".into(),
+        )];
+        let events = errors
+            .iter()
+            .filter_map(|error| {
+                serde_json::to_string(error)
+                    .ok()
+                    .map(|json| format!("data: {json}\n\n"))
+            })
+            .collect::<String>();
+        assert!(events.contains("\"id\":7"));
+        assert!(events.contains("route_exposure_denied"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn named_protected_route_gates_completion_subscriptions_and_adversarial_lists() {
+        let config = protected_named_upstream_config("http://127.0.0.1:9");
+        let upstream = &config.upstream[0];
+        for request in [
+            serde_json::json!({"method":"completion/complete","id":1,"params":{"ref":{"type":"ref/prompt","name":"admin-reset"},"argument":{"name":"x","value":""}}}),
+            serde_json::json!({"method":"completion/complete","id":2,"params":{"ref":{"type":"ref/resource","uri":"secret://credentials"},"argument":{"name":"x","value":""}}}),
+            serde_json::json!({"method":"resources/subscribe","id":3,"params":{"uri":"secret://credentials"}}),
+            serde_json::json!({"method":"resources/unsubscribe","id":4,"params":{"uri":"secret://credentials"}}),
+        ] {
+            assert!(matches!(
+                protected_route_exposure_decision(upstream, &request),
+                ProtectedRouteExposureDecision::Denied(_)
+            ));
+        }
+        let batch = serde_json::json!([{"method":"tools/list","id":1,"params":{}}]);
+        assert!(
+            filter_protected_route_list_response(
+                upstream,
+                &batch,
+                br#"[{"id":99,"result":{"tools":[]}}]"#
+            )
+            .is_none()
+        );
+        assert!(
+            filter_protected_route_list_response(
+                upstream,
+                &batch,
+                br#"[{"id":1,"result":{"tools":{}}}]"#
+            )
+            .is_none()
+        );
+        assert!(
+            filter_protected_route_list_response(
+                upstream,
+                &batch,
+                br#"[{"id":1,"result":{"tools":[]}},{"id":1,"result":{"tools":[]}}]"#
+            )
+            .is_none()
+        );
+        let oversized = format!("data: {}\n\n", " ".repeat(1024 * 1024));
+        assert!(find_sse_event_end(oversized.as_bytes()).unwrap() > 1024 * 1024);
     }
 
     #[cfg(feature = "gateway")]
@@ -3866,6 +4877,12 @@ mod tests {
                     "profile".to_string(),
                 ],
             },
+            token_encryption_key: Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                )
+                .unwrap(),
+            ),
             ..labby_auth::config::AuthConfig::default()
         };
         labby_auth::state::AuthState::new(config).await.unwrap()
@@ -3921,6 +4938,48 @@ mod tests {
                 public_path: path.to_string(),
                 upstream: None,
                 backend_url,
+                backend_mcp_path: "/mcp".to_string(),
+                scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+                health_path: None,
+                target: None,
+            }],
+            ..crate::config::LabConfig::default()
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    fn protected_named_upstream_config(backend_url: &str) -> crate::config::LabConfig {
+        crate::config::LabConfig {
+            upstream: vec![crate::config::UpstreamConfig {
+                name: "restricted".to_string(),
+                enabled: true,
+                url: Some(format!("{}/mcp", backend_url.trim_end_matches('/'))),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
+                bearer_token_env: None,
+                command: None,
+                args: Vec::new(),
+                env: Default::default(),
+                proxy_resources: true,
+                proxy_prompts: true,
+                proxy_skills: false,
+                expose_tools: Some(vec!["safe.*".to_string()]),
+                expose_resources: Some(vec!["public://*".to_string()]),
+                expose_prompts: Some(vec!["safe-*".to_string()]),
+                expose_skills: None,
+                code_mode_hint: None,
+                oauth: None,
+                imported_from: None,
+                priority: 1.0,
+            }],
+            protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
+                name: "safe".to_string(),
+                enabled: true,
+                public_host: "mcp.example.com".to_string(),
+                public_path: "/safe".to_string(),
+                upstream: Some("restricted".to_string()),
+                backend_url: String::new(),
                 backend_mcp_path: "/mcp".to_string(),
                 scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
                 health_path: None,

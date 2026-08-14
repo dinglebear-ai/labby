@@ -472,8 +472,6 @@ pub enum GatewayMcpAuthCommand {
 #[derive(Debug, Args)]
 pub struct GatewayOauthUpstreamArgs {
     pub name: String,
-    #[arg(long)]
-    pub subject: Option<String>,
     #[arg(long, default_value_t = false)]
     pub open: bool,
     #[arg(long, default_value_t = false)]

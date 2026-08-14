@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Labby-native MCP multi-hop conformance driver.
 //!
 //! The driver launches this process as a synthetic leaf behind two real Labby
@@ -5,6 +6,9 @@
 //!
 //! client -> root Labby -> middle Labby -> synthetic leaf
 
+// The conformance client drives labby itself, not an untrusted upstream,
+// and deliberately exercises the raw rmcp helpers end to end.
+#![allow(clippy::disallowed_methods)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

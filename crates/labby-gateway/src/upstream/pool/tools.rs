@@ -17,7 +17,7 @@ use super::super::types::{
 };
 use super::UpstreamPool;
 use super::entries::resolve_request_exposure_policy;
-use super::helpers::UpstreamCachedSummary;
+use super::helpers::{SUBJECT_CONN_IDLE_TTL, UpstreamCachedSummary, cached_upstream_tool};
 
 /// Hard cap on the total number of tools returned by a single `healthy_tools()` call.
 ///
@@ -360,6 +360,86 @@ impl UpstreamPool {
             .await
     }
 
+    /// Return only already-cached OAuth tools for `subject`.
+    ///
+    /// Discovery surfaces must use this variant: a cache miss is intentionally
+    /// omitted instead of turning `tools/list` into a network/connect path.
+    pub async fn cached_subject_scoped_tools_bounded(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        limit: usize,
+    ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
+        let cache = self.subject_connections.read().await;
+        let mut bounded = Vec::new();
+        let mut candidate_count = 0usize;
+        for config in configs
+            .iter()
+            .filter(|config| config.enabled && config.oauth.is_some())
+        {
+            let key = (config.name.clone(), subject.to_string());
+            let Some(entry) = cache.get(&key) else {
+                continue;
+            };
+            if entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL {
+                continue;
+            }
+            let exposure_policy =
+                resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+            let mut exposed = entry
+                .tools
+                .iter()
+                .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
+                .cloned()
+                .collect::<Vec<_>>();
+            exposed.sort_by(|left, right| left.name.cmp(&right.name));
+            candidate_count = candidate_count.saturating_add(exposed.len());
+            for tool in exposed {
+                insert_bounded_subject_tool(&mut bounded, config.name.clone(), tool, limit);
+            }
+        }
+        drop(cache);
+        if candidate_count > limit {
+            tracing::warn!(
+                limit,
+                candidate_count,
+                "cached subject-scoped upstream tool list truncated"
+            );
+        }
+        let mut by_upstream = BTreeMap::<String, Vec<rmcp::model::Tool>>::new();
+        for (upstream, tool) in bounded {
+            by_upstream.entry(upstream).or_default().push(tool);
+        }
+        by_upstream.into_iter().collect()
+    }
+
+    /// Return the OAuth tools visible to one subject in the same routed form
+    /// used by the global catalog, without ever publishing them globally.
+    pub async fn subject_scoped_upstream_tools_allowed(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<UpstreamTool> {
+        let configs = configs
+            .iter()
+            .filter(|config| config.enabled && upstream_allowed(allowed, &config.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut routed = Vec::new();
+        for (upstream, tools) in self
+            .subject_scoped_tools_bounded(&configs, subject, MAX_UPSTREAM_TOOLS)
+            .await
+        {
+            let upstream_name = std::sync::Arc::<str>::from(upstream);
+            for tool in tools {
+                let (_, tool) = cached_upstream_tool(tool, &upstream_name);
+                insert_bounded_upstream_tool(&mut routed, tool, MAX_UPSTREAM_TOOLS);
+            }
+        }
+        routed
+    }
+
     async fn subject_scoped_tools_inner(
         &self,
         configs: &[UpstreamConfig],
@@ -367,13 +447,26 @@ impl UpstreamPool {
         limit: Option<usize>,
     ) -> Vec<(String, Vec<rmcp::model::Tool>)> {
         let mut futures = FuturesUnordered::new();
-        for config in configs.iter().filter(|config| config.oauth.is_some()) {
+        for config in configs
+            .iter()
+            .filter(|config| config.enabled && config.oauth.is_some())
+        {
             let config = config.clone();
             let subject = subject.to_string();
             let pool = self.clone();
             futures.push(async move {
                 let exposure_policy =
                     resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+                let _fanout_permit = match pool.acquire_catalog_fanout_permit().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        return (
+                            config.name.clone(),
+                            exposure_policy,
+                            Err(anyhow::anyhow!(error)),
+                        );
+                    }
+                };
                 let result = pool.acquire_or_connect_subject(&config, &subject).await;
                 (config.name.clone(), exposure_policy, result)
             });

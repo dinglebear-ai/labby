@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 use crate::gateway::enrichment::collector::MAX_MANUAL_UPSTREAMS;
 use crate::gateway::params::{
     GatewayEnrichApplyParams, GatewayEnrichPreviewParams, GatewayEnrichmentScope,

@@ -195,12 +195,13 @@ pub struct AuthConfig {
     /// token whenever OAuth is active. Defaults to `false` (lab keeps the
     /// historical break-glass behavior); syslog-mcp overrides to `true`.
     pub disable_static_token_with_oauth: bool,
-    /// Optional at-rest encryption key for upstream provider refresh tokens.
+    /// At-rest encryption key for upstream provider refresh tokens.
     ///
     /// When present, provider refresh tokens are encrypted with
     /// ChaCha20-Poly1305 before being written to SQLite.  Set via
     /// `{PREFIX}_TOKEN_ENCRYPTION_KEY` (64 hex digits or 43 base64url chars).
-    /// When absent, tokens are stored as plaintext (backward-compatible).
+    /// Required in OAuth mode because the central Google credential broker
+    /// never permits plaintext persistence. Bearer-only consumers may omit it.
     pub token_encryption_key: Option<TokenEncryptionKey>,
     /// Out-of-band machine identities authorized for the optional MCP OAuth
     /// Client Credentials extension.
@@ -356,6 +357,12 @@ impl AuthConfig {
                     "{prefix}_AUTH_ADMIN_EMAIL is required when {prefix}_AUTH_MODE=oauth — \
                      set the Google email of the bootstrap admin so no account \
                      can log in unless explicitly permitted"
+                )));
+            }
+            if self.token_encryption_key.is_none() {
+                return Err(AuthError::Config(format!(
+                    "{prefix}_TOKEN_ENCRYPTION_KEY is required when {prefix}_AUTH_MODE=oauth; \
+                     Google provider credentials must be encrypted at rest"
                 )));
             }
         }
@@ -743,6 +750,7 @@ mod tests {
             ("LAB_GOOGLE_CLIENT_ID", "id"),
             ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
             ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
         ]))
         .unwrap();
         assert_eq!(cfg.sqlite_path.file_name().unwrap(), "auth.db");
@@ -780,6 +788,7 @@ mod tests {
             ("LAB_GOOGLE_CLIENT_ID", "id"),
             ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
             ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
             (
                 "LAB_AUTH_MACHINE_CLIENTS_JSON",
                 r#"[{"client_id":"ci","client_secret":"secret","scopes":["lab"],"resources":["https://lab.example.com/mcp"]}]"#,
@@ -823,6 +832,20 @@ mod tests {
     }
 
     #[test]
+    fn oauth_mode_requires_provider_token_encryption_key() {
+        let error = AuthConfig::from_sources(fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "https://lab.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("LAB_TOKEN_ENCRYPTION_KEY"));
+        assert!(error.to_string().contains("encrypted at rest"));
+    }
+
+    #[test]
     fn admin_email_normalizes_case_and_trims_whitespace() {
         let cfg = AuthConfig::from_sources(fake_env_with_many([
             ("LAB_AUTH_MODE", "oauth"),
@@ -830,6 +853,7 @@ mod tests {
             ("LAB_GOOGLE_CLIENT_ID", "id"),
             ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
             ("LAB_AUTH_ADMIN_EMAIL", "  Admin@Example.COM  "),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
         ]))
         .unwrap();
         assert_eq!(cfg.admin_email, "admin@example.com");
@@ -843,6 +867,7 @@ mod tests {
             ("LAB_GOOGLE_CLIENT_ID", "id"),
             ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
             ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
             (
                 "LAB_AUTH_ALLOWED_REDIRECT_URIS",
                 "https://callback.example.com/callback/*,https://claude.ai/api/mcp/auth_callback",
@@ -893,6 +918,7 @@ mod tests {
                 ("SYSLOG_MCP_GOOGLE_CLIENT_ID", "id"),
                 ("SYSLOG_MCP_GOOGLE_CLIENT_SECRET", "secret"),
                 ("SYSLOG_MCP_AUTH_ADMIN_EMAIL", "admin@example.com"),
+                ("SYSLOG_MCP_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
             ]))
             .unwrap();
         assert!(matches!(cfg.mode, AuthMode::OAuth));
@@ -1000,6 +1026,9 @@ mod tests {
     fn fake_env_with(key: &'static str, value: &'static str) -> Vec<(String, String)> {
         vec![(key.to_string(), value.to_string())]
     }
+
+    const TEST_ENCRYPTION_KEY: &str =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
     fn fake_env_with_many<const N: usize>(
         pairs: [(&'static str, &'static str); N],

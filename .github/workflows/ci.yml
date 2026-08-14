@@ -41,6 +41,10 @@ jobs:
   changes:
     name: changes
     runs-on: ci-pool-ops
+    # Every executable CI job depends on this classifier. Fork pull requests
+    # are untrusted, so fail closed before any fork-controlled checkout or
+    # script can reach the homelab runner fleet.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 10
     outputs:
       # `all` and `docs` are exported for the run summary only — no job gates

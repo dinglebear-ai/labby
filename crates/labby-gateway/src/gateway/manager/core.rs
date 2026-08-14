@@ -129,12 +129,15 @@ impl GatewayManager {
             store,
             runtime,
             config: Arc::new(RwLock::new(GatewayConfig::default())),
+            publication_barrier: Arc::new(RwLock::new(())),
             config_mutation: Arc::new(Mutex::new(())),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
             notifier: None,
             oauth_client_cache: None,
             upstream_oauth_managers: None,
+            oauth_status_discovery_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            oauth_status_discovery_locks: Arc::new(dashmap::DashMap::new()),
             builtin_service_registry: Arc::new(ArcSwap::from_pointee(registry)),
             oauth_sqlite: None,
             oauth_key: None,
@@ -343,6 +346,7 @@ impl GatewayManager {
     }
 
     async fn seed_config_unchecked(&self, config: GatewayConfig) {
+        let _publication = self.publication_barrier.write().await;
         self.store
             .set_process_code_mode_enabled(config.code_mode.enabled);
         self.code_mode_app_state
@@ -364,6 +368,16 @@ impl GatewayManager {
         self.runtime.current_pool().await
     }
 
+    /// Clone the config and pool from one published gateway revision.
+    pub(crate) async fn published_config_and_pool(
+        &self,
+    ) -> (GatewayConfig, Option<Arc<UpstreamPool>>) {
+        let _publication = self.publication_barrier.read().await;
+        let config = self.config.read().await.clone();
+        let pool = self.runtime.current_pool_sync();
+        (config, pool)
+    }
+
     /// Build a base [`UpstreamPool`] wired with the manager's OAuth client
     /// cache (when present), the given upstream request timeout, and the
     /// (longer) relay timeout used by the elicitation-relay path.
@@ -375,13 +389,22 @@ impl GatewayManager {
         request_timeout: std::time::Duration,
         relay_timeout: std::time::Duration,
     ) -> UpstreamPool {
-        match &self.oauth_client_cache {
+        let pool = match &self.oauth_client_cache {
             Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
             None => UpstreamPool::new(),
         }
         .with_request_timeout(request_timeout)
         .with_relay_timeout(relay_timeout)
-        .with_usage_store(self.usage_store.clone())
+        .with_usage_store(self.usage_store.clone());
+        // Propagate the in-process connector so pools built on reload, lazy
+        // dispatch, OAuth lifecycle, and ephemeral gateway.test can register
+        // builtin service peers. Before this, the field was write-only and
+        // in-process registration silently died on the first full pool
+        // rebuild (review finding on lab-48z4k).
+        match &self.in_process_connector {
+            Some(connector) => pool.with_in_process_connector(connector.clone()),
+            None => pool,
+        }
     }
 
     #[doc(hidden)]

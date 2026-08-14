@@ -92,7 +92,11 @@ async fn build_manager_with_upstream_oauth_runtime(
             config_path,
             store,
             registry,
-            in_process_connector: None,
+            // Must match `cli/serve.rs`: `new_base_pool` now propagates this
+            // into every pool the manager builds, so leaving it `None` here
+            // means any manager-built pool on the CLI path silently loses
+            // in-process peer support (review finding on lab-48z4k).
+            in_process_connector: Some(crate::composition::in_process_connector()),
             oauth: upstream_oauth_runtime.map(|rt| GatewayOauthConfig {
                 managers: rt.managers,
                 cache: rt.cache,
@@ -408,6 +412,23 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["lab", "gateway", "usage", "metrics"]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "usage", "calls", "--limit", "10"]).is_ok());
+    }
+
+    #[test]
+    fn gateway_cli_rejects_shared_oauth_subject_override() {
+        let error = Cli::try_parse_from([
+            "lab",
+            "gateway",
+            "mcp",
+            "auth",
+            "start",
+            "fixture-http",
+            "--subject",
+            "private-subject-marker",
+        ])
+        .expect_err("shared gateway OAuth must not expose a subject override");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]

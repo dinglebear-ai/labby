@@ -23,7 +23,7 @@ use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 use crate::mcp::server::LabMcpServer;
 
 #[cfg(feature = "gateway")]
-pub(crate) use crate::api::oauth::oauth_upstream_subject_for_request;
+pub(crate) use crate::dispatch::oauth_subject::oauth_upstream_subject_for_request;
 
 pub(crate) fn redact_subject_for_logging(subject: &str) -> String {
     let digest = Sha256::digest(subject.as_bytes());

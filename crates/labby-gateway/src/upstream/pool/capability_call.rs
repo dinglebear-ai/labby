@@ -73,7 +73,7 @@ pub enum CapabilityCallError {
 }
 
 impl CapabilityCallError {
-    fn from_service_error(error: rmcp::ServiceError, message: String) -> Self {
+    pub(super) fn from_service_error(error: rmcp::ServiceError, message: String) -> Self {
         match error {
             rmcp::ServiceError::McpError(data) => Self::Mcp { data, message },
             rmcp::ServiceError::Timeout { .. } => Self::Timeout { message },

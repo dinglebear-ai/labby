@@ -30,7 +30,9 @@
 //!
 //! [`UpstreamPool::call_tool_relayed`] uses the pool's `relay_timeout`
 //! (default 5 minutes, `upstream_relay_timeout_ms`) instead of the normal
-//! upstream request timeout.
+//! upstream request timeout. One absolute deadline spans bulkhead queueing and
+//! the upstream send/response phase; downstream cancellation also interrupts
+//! queueing before any upstream request is issued.
 //!
 //! ## Scope — `call_tool` only
 //!
@@ -69,6 +71,9 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use crate::MCP_RELAY_CANCELLATION_TOKEN_META_KEY;
 
 use super::super::types::UpstreamCapability;
+#[cfg(test)]
+use super::UpstreamConnection;
+use super::UpstreamPool;
 use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
 use super::connect::connect_upstream_with_handler;
 use super::entries::{
@@ -86,11 +91,13 @@ use super::logging::{
     log_upstream_request_start,
 };
 use super::notifications::UpstreamNotificationEvent;
-use super::relay_cancellation::{
-    PendingRelayRequestId, RelaySendOutcome, await_relay_send, dispatch_relay_cancellation,
-    spawn_bounded_handle_cancellation,
+use super::relay_cache::{
+    RelayCacheKey, RelayCachedConnection, capability_fingerprint, evict_relay_lru_over_cap,
 };
-use super::{UpstreamConnection, UpstreamPool};
+use super::relay_cancellation::{
+    PendingRelayRequestId, RelayPermitOutcome, RelaySendOutcome, await_relay_permit,
+    await_relay_send, dispatch_relay_cancellation, spawn_bounded_handle_cancellation,
+};
 
 const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 const PROGRESS_NOTIFICATION_DELIVERY_GRACE: std::time::Duration =
@@ -118,6 +125,10 @@ pub(super) struct RelayRouteState {
     progress_notification_notify: Notify,
     task_notification_sequence: AtomicU64,
     task_notification_notify: Notify,
+    #[cfg(test)]
+    relay_watcher_finish_sequence: AtomicU64,
+    #[cfg(test)]
+    relay_watcher_finish_notify: Notify,
 }
 
 impl RelayRouteState {
@@ -276,6 +287,31 @@ impl RelayRouteState {
         }
         tokio::time::timeout(timeout, notified).await.is_ok()
             && self.task_notification_sequence() > previous
+    }
+
+    #[cfg(test)]
+    async fn wait_for_relay_watcher_finish_after(&self, previous: u64) {
+        if self.relay_watcher_finish_sequence.load(Ordering::Acquire) > previous {
+            return;
+        }
+        let notified = self.relay_watcher_finish_notify.notified();
+        if self.relay_watcher_finish_sequence.load(Ordering::Acquire) > previous {
+            return;
+        }
+        notified.await;
+    }
+}
+
+#[cfg(test)]
+struct RelayWatcherFinishGuard(Arc<RelayRouteState>);
+
+#[cfg(test)]
+impl Drop for RelayWatcherFinishGuard {
+    fn drop(&mut self) {
+        self.0
+            .relay_watcher_finish_sequence
+            .fetch_add(1, Ordering::AcqRel);
+        self.0.relay_watcher_finish_notify.notify_waiters();
     }
 }
 
@@ -539,6 +575,7 @@ async fn send_relay_request(
     downstream_request_id: RequestId,
     downstream_cancel: CancellationToken,
     timeout: std::time::Duration,
+    deadline: tokio::time::Instant,
 ) -> Result<ServerResult, ServiceError> {
     let cancellation_token = uuid::Uuid::new_v4().to_string();
     request_meta
@@ -562,7 +599,6 @@ async fn send_relay_request(
     let options = request_meta
         .map(|meta| PeerRequestOptions::no_options().with_meta(meta))
         .unwrap_or_else(PeerRequestOptions::no_options);
-    let deadline = tokio::time::Instant::now() + timeout;
     let mut handle = match await_relay_send(
         peer.send_cancellable_request(request, options),
         &downstream_cancel,
@@ -592,7 +628,11 @@ async fn send_relay_request(
         let downstream_cancel = downstream_cancel.clone();
         let relay_finished = relay_finished.clone();
         let cancellation_dispatched = Arc::clone(&cancellation_dispatched);
+        #[cfg(test)]
+        let routes = Arc::clone(routes);
         tokio::spawn(async move {
+            #[cfg(test)]
+            let _finish_guard = RelayWatcherFinishGuard(routes);
             tokio::select! {
                 () = downstream_cancel.cancelled() => {
                     dispatch_relay_cancellation(
@@ -644,13 +684,11 @@ async fn send_relay_request(
 
     let result = tokio::select! {
         response = &mut handle.rx => {
+            // Always retire the detached watcher when the response channel
+            // resolves, including upstream cancellation and transport close.
+            // Its bounded grace still preserves the late downstream-cancel race.
+            relay_finished.cancel();
             let response = response.map_err(|_| ServiceError::TransportClosed)?;
-            if !matches!(
-                &response,
-                Err(ServiceError::Cancelled { .. } | ServiceError::TransportClosed)
-            ) {
-                relay_finished.cancel();
-            }
             if expects_progress && response.is_ok() {
                 routes
                     .wait_for_progress_notification_after(
@@ -703,79 +741,11 @@ async fn send_relay_request(
     result
 }
 
-pub(super) fn capability_fingerprint(capabilities: &ClientCapabilities) -> String {
-    serde_json::to_string(capabilities)
-        .expect("MCP client capabilities must serialize to a JSON object")
-}
-
-/// A cached relay connection, keyed in the pool by
-/// `(upstream, session_id, subject)`.
-///
-/// The `RelayClientHandler` inside `_connection` is bound to **one** downstream
-/// agent peer (the session identified by the key) and authenticated as **one**
-/// OAuth subject. Because the key includes the downstream session id, a cached
-/// entry is only ever reused by the same agent — never shared across sessions.
-/// Because it also includes the subject, a connection authenticated as one
-/// identity is never reused for a call made as another.
-pub(super) struct RelayCachedConnection {
-    /// Keeps the relay-served running service (and any stdio child) alive.
-    pub(super) _connection: UpstreamConnection<RelayClientHandler>,
-    /// Pre-cloned upstream peer for the cache-hit fast path.
-    pub(super) peer: Peer<RoleClient>,
-    /// Capability snapshot used to initialize this connection.
-    pub(super) capability_fingerprint: String,
-    /// Request/progress/task identifier translations owned by this connection.
-    pub(super) routes: Arc<RelayRouteState>,
-    /// Explicit cancellation POST sender for HTTP and Unix-socket transports.
-    pub(super) cancellation_sender: Option<HttpCancellationSender>,
-    /// Wall-clock instant when this entry was last used.
-    pub(super) last_used: Instant,
-}
-impl RelayCachedConnection {
-    pub(super) async fn rebind_downstream(&self, downstream: Peer<RoleServer>) {
-        self._connection
-            ._client_service
-            .service()
-            .rebind_downstream(downstream)
-            .await;
+fn downstream_cancelled(reason: &str) -> String {
+    ServiceError::Cancelled {
+        reason: Some(reason.to_string()),
     }
-
-    pub(super) async fn flush_task_status_notifications(
-        &self,
-        notifications: Vec<TaskStatusNotificationParams>,
-    ) {
-        let handler = self._connection._client_service.service();
-        for params in notifications {
-            handler.forward_task_status(params).await;
-        }
-    }
-}
-
-/// Evict least-recently-used relay connections until the map holds at most
-/// `max_entries`, sparing the about-to-be-inserted `protect` key. Mirrors
-/// `connection::evict_lru_over_cap` for the relay-typed cache.
-fn evict_relay_lru_over_cap(
-    cache: &mut HashMap<(String, u64, Option<String>), RelayCachedConnection>,
-    max_entries: usize,
-    protect: &(String, u64, Option<String>),
-) -> Vec<(String, UpstreamConnection<RelayClientHandler>)> {
-    let mut evicted = Vec::new();
-    while cache.len() > max_entries {
-        let lru_key = cache
-            .iter()
-            .filter(|(k, _)| *k != protect)
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(k, _)| k.clone());
-        match lru_key {
-            Some(key) => {
-                if let Some(entry) = cache.remove(&key) {
-                    evicted.push((key.0, entry._connection));
-                }
-            }
-            None => break,
-        }
-    }
-    evicted
+    .to_string()
 }
 
 impl UpstreamPool {
@@ -813,7 +783,8 @@ impl UpstreamPool {
         session_id: u64,
         capabilities: ClientCapabilities,
         caller_subject: Option<&str>,
-    ) -> Option<Result<CallToolResponse, String>> {
+        task_authorization: super::TaskRouteAuthorization,
+    ) -> Option<Result<CallToolResponse, super::CapabilityCallError>> {
         let started = Instant::now();
         let tool_name = params.name.to_string();
         // Subject-scoped relay is the second OAuth execution entry point (the
@@ -824,15 +795,78 @@ impl UpstreamPool {
         if subject.is_some()
             && !super::tools_call::subject_scoped_tool_is_exposed(config, &tool_name)
         {
-            return Some(Err(super::tools_call::hidden_tool_error(
-                config, &tool_name,
-            )));
+            return Some(Err(super::CapabilityCallError::Other {
+                message: super::tools_call::hidden_tool_error(config, &tool_name),
+            }));
         }
-        let relay_key = (config.name.clone(), session_id, subject.map(str::to_owned));
+        if downstream_cancel.is_cancelled() {
+            return Some(Err(super::CapabilityCallError::Cancelled {
+                message: downstream_cancelled("downstream request was already cancelled"),
+            }));
+        }
+        // Keep credential invalidation outside the complete OAuth relay call,
+        // including the relay-cache -> task-route ownership transfer. Without
+        // this outer reader a revocation writer can remove the relay entry,
+        // scan an empty task map, and then let task registration publish a
+        // credential-backed route after revocation has returned.
+        let _oauth_lifecycle = if subject.is_some() {
+            Some(self.oauth_invalidation_barrier.read().await)
+        } else {
+            None
+        };
+        let relay_key = (
+            config.name.clone(),
+            session_id,
+            subject.map(str::to_owned),
+            capability_fingerprint(&capabilities),
+        );
         let request_meta = params.meta.clone();
-        let (peer, routes, cancellation_sender, generation) = self
-            .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
-            .await?;
+        let timeout = self.relay_timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let event = UpstreamRequestLog::tool(&config.name, &tool_name, subject.is_some())
+            .with_transport(upstream_transport(config));
+        log_upstream_request_start(event);
+        let connection = tokio::select! {
+            biased;
+            () = downstream_cancel.cancelled() => {
+                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                super::usage_record::record_usage_call(self, event, caller_subject, "connect_cancelled", started.elapsed().as_millis());
+                return Some(Err(super::CapabilityCallError::Cancelled {
+                    message: downstream_cancelled("downstream request cancelled while connecting"),
+                }));
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                let message = format!("upstream `{}` relay connection timed out", config.name);
+                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
+                super::usage_record::record_usage_call(self, event, caller_subject, "connect_timeout", started.elapsed().as_millis());
+                self.record_failure_for(&config.name, UpstreamCapability::Tools, message.clone()).await;
+                return Some(Err(super::CapabilityCallError::Timeout {
+                    message,
+                }));
+            }
+            connection = self.acquire_or_connect_relay_guarded(
+                config, subject, downstream, session_id, capabilities
+            ) => connection,
+        };
+        let Some(connection) = connection else {
+            log_upstream_request_error(
+                event,
+                started.elapsed().as_millis(),
+                "connect_error",
+                None,
+                None,
+                None,
+            );
+            super::usage_record::record_usage_call(
+                self,
+                event,
+                caller_subject,
+                "connect_error",
+                started.elapsed().as_millis(),
+            );
+            return None;
+        };
+        let (peer, routes, cancellation_sender, generation) = connection;
 
         // Mirror the pooled path's observability + circuit-breaker contract (see
         // `timed_capability_call`): emit `request.start`/`finish`/`error` and feed
@@ -842,37 +876,81 @@ impl UpstreamPool {
         // this, a failing OAuth upstream reached over the relay would never trip
         // the breaker. (`acquire_or_connect_relay` already records connect
         // failures, so the raw MCP `None` arm skips its record when relaying.)
-        let event = UpstreamRequestLog::tool(&config.name, &tool_name, subject.is_some())
-            .with_transport(upstream_transport(config));
-        log_upstream_request_start(event);
         let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         // Relayed calls block on a human answering the forwarded elicitation,
         // so they use the longer `relay_timeout` (default 5 min) rather than the
         // 30s `request_timeout` the pooled path uses — otherwise a confirmation
         // dialog left open for a minute would abort the whole upstream call.
-        let timeout = self.relay_timeout;
-        let _permit =
-            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(error)) => return Some(Err(error)),
-                Err(_) => {
-                    log_upstream_request_error(
-                        event,
-                        started.elapsed().as_millis(),
-                        "queue_saturated",
-                        None,
-                        None,
-                        None,
-                    );
-                    return Some(Err(format!(
-                        "upstream `{}` relay concurrency queue timed out",
-                        config.name
-                    )));
-                }
-            };
+        let _permit = match await_relay_permit(
+            self.acquire_upstream_call_permit(&config.name),
+            &downstream_cancel,
+            deadline,
+        )
+        .await
+        {
+            RelayPermitOutcome::Acquired(Ok(permit)) => permit,
+            RelayPermitOutcome::Acquired(Err(error)) => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_error",
+                    None,
+                    None,
+                    None,
+                );
+                super::usage_record::record_usage_call(
+                    self,
+                    event,
+                    caller_subject,
+                    "queue_error",
+                    started.elapsed().as_millis(),
+                );
+                return Some(Err(super::CapabilityCallError::Other { message: error }));
+            }
+            RelayPermitOutcome::Cancelled => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    None,
+                    None,
+                    None,
+                );
+                super::usage_record::record_usage_call(
+                    self,
+                    event,
+                    caller_subject,
+                    "cancelled",
+                    started.elapsed().as_millis(),
+                );
+                return Some(Err(super::CapabilityCallError::Cancelled {
+                    message: downstream_cancelled("downstream request cancelled while queued"),
+                }));
+            }
+            RelayPermitOutcome::TimedOut => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_saturated",
+                    None,
+                    None,
+                    None,
+                );
+                let message = format!(
+                    "upstream `{}` relay concurrency queue timed out",
+                    config.name
+                );
+                super::usage_record::record_usage_call(
+                    self,
+                    event,
+                    caller_subject,
+                    "queue_saturated",
+                    started.elapsed().as_millis(),
+                );
+                return Some(Err(super::CapabilityCallError::QueueSaturated { message }));
+            }
+        };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -882,6 +960,7 @@ impl UpstreamPool {
             downstream_request_id,
             downstream_cancel,
             timeout,
+            deadline,
         )
         .await;
         match response {
@@ -892,7 +971,34 @@ impl UpstreamPool {
                         CallToolResponse::InputRequired(result)
                     }
                     ServerResult::CreateTaskResult(result) => CallToolResponse::Task(result),
-                    _ => return Some(Err(ServiceError::UnexpectedResponse.to_string())),
+                    _ => {
+                        let error = ServiceError::UnexpectedResponse;
+                        let message =
+                            "relayed upstream returned an unexpected response".to_string();
+                        self.record_failure_for(
+                            &config.name,
+                            UpstreamCapability::Tools,
+                            message.clone(),
+                        )
+                        .await;
+                        self.evict_relay_connection(&relay_key).await;
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            "protocol_error",
+                            Some(&error),
+                            None,
+                            None,
+                        );
+                        super::usage_record::record_usage_call(
+                            self,
+                            event,
+                            caller_subject,
+                            "protocol_error",
+                            started.elapsed().as_millis(),
+                        );
+                        return Some(Err(super::CapabilityCallError::Protocol { message }));
+                    }
                 };
                 let response_size = estimate_call_tool_response_size(&result);
                 let max_bytes = max_response_bytes();
@@ -909,21 +1015,67 @@ impl UpstreamPool {
                         Some(response_size),
                         Some(max_bytes),
                     );
-                    return Some(Err(format!(
+                    let message = format!(
                         "upstream response too large ({response_size} bytes, max {max_bytes})"
-                    )));
+                    );
+                    super::usage_record::record_usage_call(
+                        self,
+                        event,
+                        caller_subject,
+                        "response_too_large",
+                        started.elapsed().as_millis(),
+                    );
+                    return Some(Err(super::CapabilityCallError::ResponseTooLarge {
+                        message,
+                    }));
                 }
-                self.record_success_for(&config.name, UpstreamCapability::Tools)
-                    .await;
-                log_upstream_request_finish(
-                    event,
-                    started.elapsed().as_millis(),
-                    Some(response_size),
-                );
                 let result = self
-                    .register_task_response(&relay_key, caller_subject, result)
+                    .register_task_response(&relay_key, caller_subject, task_authorization, result)
                     .await;
-                Some(Ok(result))
+                match result {
+                    Ok(result) => {
+                        self.record_success_for(&config.name, UpstreamCapability::Tools)
+                            .await;
+                        log_upstream_request_finish(
+                            event,
+                            started.elapsed().as_millis(),
+                            Some(response_size),
+                        );
+                        super::usage_record::record_usage_call(
+                            self,
+                            event,
+                            caller_subject,
+                            "ok",
+                            started.elapsed().as_millis(),
+                        );
+                        Some(Ok(result))
+                    }
+                    Err(message) => {
+                        let error = ServiceError::UnexpectedResponse;
+                        self.record_failure_for(
+                            &config.name,
+                            UpstreamCapability::Tools,
+                            message.clone(),
+                        )
+                        .await;
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            "protocol_error",
+                            Some(&error),
+                            None,
+                            None,
+                        );
+                        super::usage_record::record_usage_call(
+                            self,
+                            event,
+                            caller_subject,
+                            "protocol_error",
+                            started.elapsed().as_millis(),
+                        );
+                        Some(Err(super::CapabilityCallError::Protocol { message }))
+                    }
+                }
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
                 log_upstream_request_error(
@@ -934,7 +1086,16 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                Some(Err(error.to_string()))
+                super::usage_record::record_usage_call(
+                    self,
+                    event,
+                    caller_subject,
+                    "cancelled",
+                    started.elapsed().as_millis(),
+                );
+                Some(Err(super::CapabilityCallError::Cancelled {
+                    message: error.to_string(),
+                }))
             }
             Err(error) => {
                 let kind = if matches!(error, ServiceError::Timeout { .. }) {
@@ -955,8 +1116,7 @@ impl UpstreamPool {
                         message.clone(),
                     )
                     .await;
-                    self.evict_relay_connection(&config.name, session_id, subject)
-                        .await;
+                    self.evict_relay_connection(&relay_key).await;
                 } else {
                     // A valid MCP error response proves the relay connection is alive.
                     self.record_success_for(&config.name, UpstreamCapability::Tools)
@@ -970,7 +1130,16 @@ impl UpstreamPool {
                     None,
                     None,
                 );
-                Some(Err(message))
+                super::usage_record::record_usage_call(
+                    self,
+                    event,
+                    caller_subject,
+                    kind,
+                    started.elapsed().as_millis(),
+                );
+                Some(Err(super::CapabilityCallError::from_service_error(
+                    error, message,
+                )))
             }
         }
     }
@@ -1015,37 +1184,111 @@ impl UpstreamPool {
                 config.name
             )));
         }
+        if downstream_cancel.is_cancelled() {
+            return Some(Err(downstream_cancelled(
+                "downstream request was already cancelled",
+            )));
+        }
         let request_meta = params.meta.clone();
-        let (peer, routes, cancellation_sender, generation) = self
-            .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
-            .await?;
+        let timeout = self.relay_timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let relay_key = (
+            config.name.clone(),
+            session_id,
+            subject.map(str::to_owned),
+            capability_fingerprint(&capabilities),
+        );
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let connection = tokio::select! {
+            biased;
+            () = downstream_cancel.cancelled() => {
+                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
+                return Some(Err(downstream_cancelled(
+                    "downstream request cancelled while connecting",
+                )));
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                let message = format!("upstream `{}` relay connection timed out", config.name);
+                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
+                super::usage_record::record_usage_call(self, event, subject, "connect_timeout", started.elapsed().as_millis());
+                self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone()).await;
+                return Some(Err(message));
+            }
+            connection = self.acquire_or_connect_relay(
+                config, subject, downstream, session_id, capabilities
+            ) => connection,
+        };
+        let Some(connection) = connection else {
+            log_upstream_request_error(
+                event,
+                started.elapsed().as_millis(),
+                "connect_error",
+                None,
+                None,
+                None,
+            );
+            super::usage_record::record_usage_call(
+                self,
+                event,
+                subject,
+                "connect_error",
+                started.elapsed().as_millis(),
+            );
+            return None;
+        };
+        let (peer, routes, cancellation_sender, generation) = connection;
         let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
-        let timeout = self.relay_timeout;
-        let _permit =
-            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(error)) => return Some(Err(error)),
-                Err(_) => {
-                    log_upstream_request_error(
-                        event,
-                        started.elapsed().as_millis(),
-                        "queue_saturated",
-                        None,
-                        None,
-                        None,
-                    );
-                    return Some(Err(format!(
-                        "upstream `{}` relay concurrency queue timed out",
-                        config.name
-                    )));
-                }
-            };
+        let _permit = match await_relay_permit(
+            self.acquire_upstream_call_permit(&config.name),
+            &downstream_cancel,
+            deadline,
+        )
+        .await
+        {
+            RelayPermitOutcome::Acquired(Ok(permit)) => permit,
+            RelayPermitOutcome::Acquired(Err(error)) => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_error",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(error));
+            }
+            RelayPermitOutcome::Cancelled => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(downstream_cancelled(
+                    "downstream request cancelled while queued",
+                )));
+            }
+            RelayPermitOutcome::TimedOut => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_saturated",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(format!(
+                    "upstream `{}` relay concurrency queue timed out",
+                    config.name
+                )));
+            }
+        };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -1055,6 +1298,7 @@ impl UpstreamPool {
             downstream_request_id,
             downstream_cancel,
             timeout,
+            deadline,
         )
         .await;
         match response {
@@ -1064,7 +1308,27 @@ impl UpstreamPool {
                     ServerResult::InputRequiredResult(result) => {
                         GetPromptResponse::InputRequired(result)
                     }
-                    _ => return Some(Err(ServiceError::UnexpectedResponse.to_string())),
+                    _ => {
+                        let error = ServiceError::UnexpectedResponse;
+                        let message =
+                            "relayed upstream prompt returned an unexpected response".to_string();
+                        self.record_failure_for(
+                            &config.name,
+                            UpstreamCapability::Prompts,
+                            message.clone(),
+                        )
+                        .await;
+                        self.evict_relay_connection(&relay_key).await;
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            "protocol_error",
+                            Some(&error),
+                            None,
+                            None,
+                        );
+                        return Some(Err(message));
+                    }
                 };
                 self.record_success_for(&config.name, UpstreamCapability::Prompts)
                     .await;
@@ -1092,10 +1356,18 @@ impl UpstreamPool {
                     "relayed upstream prompt get failed: {}",
                     bounded_service_error_text(&error)
                 );
-                self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone())
+                if service_error_affects_connection_health(&error) {
+                    self.record_failure_for(
+                        &config.name,
+                        UpstreamCapability::Prompts,
+                        message.clone(),
+                    )
                     .await;
-                self.evict_relay_connection(&config.name, session_id, subject)
-                    .await;
+                    self.evict_relay_connection(&relay_key).await;
+                } else {
+                    self.record_success_for(&config.name, UpstreamCapability::Prompts)
+                        .await;
+                }
                 log_upstream_request_error(
                     event,
                     started.elapsed().as_millis(),
@@ -1160,38 +1432,112 @@ impl UpstreamPool {
                 config.name
             )));
         }
+        if downstream_cancel.is_cancelled() {
+            return Some(Err(downstream_cancelled(
+                "downstream request was already cancelled",
+            )));
+        }
         let request_meta = params.meta.clone();
-        let (peer, routes, cancellation_sender, generation) = self
-            .acquire_or_connect_relay(config, subject, downstream, session_id, capabilities)
-            .await?;
+        let timeout = self.relay_timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let relay_key = (
+            config.name.clone(),
+            session_id,
+            subject.map(str::to_owned),
+            capability_fingerprint(&capabilities),
+        );
         let redacted_uri = redact_resource_uri_for_logging(&gateway_uri);
         let event = UpstreamRequestLog::resource(&config.name, redacted_uri, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let connection = tokio::select! {
+            biased;
+            () = downstream_cancel.cancelled() => {
+                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
+                return Some(Err(downstream_cancelled(
+                    "downstream request cancelled while connecting",
+                )));
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                let message = format!("upstream `{}` relay connection timed out", config.name);
+                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_timeout", None, None, None);
+                super::usage_record::record_usage_call(self, event, subject, "connect_timeout", started.elapsed().as_millis());
+                self.record_failure_for(&config.name, UpstreamCapability::Resources, message.clone()).await;
+                return Some(Err(message));
+            }
+            connection = self.acquire_or_connect_relay(
+                config, subject, downstream, session_id, capabilities
+            ) => connection,
+        };
+        let Some(connection) = connection else {
+            log_upstream_request_error(
+                event,
+                started.elapsed().as_millis(),
+                "connect_error",
+                None,
+                None,
+                None,
+            );
+            super::usage_record::record_usage_call(
+                self,
+                event,
+                subject,
+                "connect_error",
+                started.elapsed().as_millis(),
+            );
+            return None;
+        };
+        let (peer, routes, cancellation_sender, generation) = connection;
         let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
-        let timeout = self.relay_timeout;
-        let _permit =
-            match tokio::time::timeout(timeout, self.acquire_upstream_call_permit(&config.name))
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(error)) => return Some(Err(error)),
-                Err(_) => {
-                    log_upstream_request_error(
-                        event,
-                        started.elapsed().as_millis(),
-                        "queue_saturated",
-                        None,
-                        None,
-                        None,
-                    );
-                    return Some(Err(format!(
-                        "upstream `{}` relay concurrency queue timed out",
-                        config.name
-                    )));
-                }
-            };
+        let _permit = match await_relay_permit(
+            self.acquire_upstream_call_permit(&config.name),
+            &downstream_cancel,
+            deadline,
+        )
+        .await
+        {
+            RelayPermitOutcome::Acquired(Ok(permit)) => permit,
+            RelayPermitOutcome::Acquired(Err(error)) => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_error",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(error));
+            }
+            RelayPermitOutcome::Cancelled => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "cancelled",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(downstream_cancelled(
+                    "downstream request cancelled while queued",
+                )));
+            }
+            RelayPermitOutcome::TimedOut => {
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "queue_saturated",
+                    None,
+                    None,
+                    None,
+                );
+                return Some(Err(format!(
+                    "upstream `{}` relay concurrency queue timed out",
+                    config.name
+                )));
+            }
+        };
         let response = send_relay_request(
             &peer,
             &routes,
@@ -1201,6 +1547,7 @@ impl UpstreamPool {
             downstream_request_id,
             downstream_cancel,
             timeout,
+            deadline,
         )
         .await;
         match response {
@@ -1212,7 +1559,27 @@ impl UpstreamPool {
                     ServerResult::InputRequiredResult(result) => {
                         ReadResourceResponse::InputRequired(result)
                     }
-                    _ => return Some(Err(ServiceError::UnexpectedResponse.to_string())),
+                    _ => {
+                        let error = ServiceError::UnexpectedResponse;
+                        let message =
+                            "relayed upstream resource returned an unexpected response".to_string();
+                        self.record_failure_for(
+                            &config.name,
+                            UpstreamCapability::Resources,
+                            message.clone(),
+                        )
+                        .await;
+                        self.evict_relay_connection(&relay_key).await;
+                        log_upstream_request_error(
+                            event,
+                            started.elapsed().as_millis(),
+                            "protocol_error",
+                            Some(&error),
+                            None,
+                            None,
+                        );
+                        return Some(Err(message));
+                    }
                 };
                 let response_size = match &result {
                     ReadResourceResponse::Complete(complete) => {
@@ -1228,12 +1595,8 @@ impl UpstreamPool {
                     let message = format!(
                         "upstream response too large ({response_size} bytes, max {max_bytes})"
                     );
-                    self.record_failure_for(
-                        &config.name,
-                        UpstreamCapability::Resources,
-                        message.clone(),
-                    )
-                    .await;
+                    self.record_success_for(&config.name, UpstreamCapability::Resources)
+                        .await;
                     log_upstream_request_error(
                         event,
                         started.elapsed().as_millis(),
@@ -1281,14 +1644,18 @@ impl UpstreamPool {
                     "relayed upstream resource read failed: {}",
                     bounded_service_error_text(&error)
                 );
-                self.record_failure_for(
-                    &config.name,
-                    UpstreamCapability::Resources,
-                    message.clone(),
-                )
-                .await;
-                self.evict_relay_connection(&config.name, session_id, subject)
+                if service_error_affects_connection_health(&error) {
+                    self.record_failure_for(
+                        &config.name,
+                        UpstreamCapability::Resources,
+                        message.clone(),
+                    )
                     .await;
+                    self.evict_relay_connection(&relay_key).await;
+                } else {
+                    self.record_success_for(&config.name, UpstreamCapability::Resources)
+                        .await;
+                }
                 log_upstream_request_error(
                     event,
                     started.elapsed().as_millis(),
@@ -1302,7 +1669,7 @@ impl UpstreamPool {
         }
     }
 
-    /// Return a cached relay peer for `(upstream, session_id)`, or open and
+    /// Return a cached relay peer for one full [`RelayCacheKey`], or open and
     /// cache a new relay connection. Mirrors `acquire_or_connect_subject`:
     /// write-locked fast path with inline TTL + dead-transport eviction, then a
     /// per-key single-flight slow path.
@@ -1319,11 +1686,38 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        // One shared reader/writer invariant covers subject, relay, task, and
+        // OAuth-client publication. Credential invalidation is the sole writer.
+        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
+        self.acquire_or_connect_relay_guarded(config, subject, downstream, session_id, capabilities)
+            .await
+    }
+
+    /// Relay acquisition when the caller already owns the OAuth lifecycle
+    /// reader for a larger atomic operation.
+    async fn acquire_or_connect_relay_guarded(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        downstream: Peer<RoleServer>,
+        session_id: u64,
+        capabilities: ClientCapabilities,
+    ) -> Option<(
+        Peer<RoleClient>,
+        Arc<RelayRouteState>,
+        Option<HttpCancellationSender>,
+        Option<u64>,
+    )> {
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
-        let key = (config.name.clone(), session_id, subject.map(str::to_owned));
         let requested_capability_fingerprint = capability_fingerprint(&capabilities);
+        let key = (
+            config.name.clone(),
+            session_id,
+            subject.map(str::to_owned),
+            requested_capability_fingerprint.clone(),
+        );
 
         // Fast path: fresh, live cached entry using the same per-request
         // capability snapshot. A changed capability set requires a new MCP
@@ -1333,7 +1727,6 @@ impl UpstreamPool {
             if let Some(entry) = cache.get_mut(&key) {
                 if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
                     && !entry.peer.is_transport_closed()
-                    && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
                     return Some((
@@ -1366,7 +1759,6 @@ impl UpstreamPool {
             if let Some(entry) = cache.get_mut(&key) {
                 if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
                     && !entry.peer.is_transport_closed()
-                    && entry.capability_fingerprint == requested_capability_fingerprint
                 {
                     entry.last_used = Instant::now();
                     return Some((
@@ -1466,22 +1858,12 @@ impl UpstreamPool {
     /// `(upstream, session, subject)` key (called on a failed/timed-out call).
     /// `subject` must match the one the connection was opened with (`None` on
     /// the raw path) or the wrong / no entry is removed.
-    pub(super) async fn evict_relay_connection(
-        &self,
-        upstream_name: &str,
-        session_id: u64,
-        subject: Option<&str>,
-    ) {
-        let key = (
-            upstream_name.to_string(),
-            session_id,
-            subject.map(str::to_owned),
-        );
-        let removed = self.relay_connections.write().await.remove(&key);
+    pub(super) async fn evict_relay_connection(&self, key: &RelayCacheKey) {
+        let removed = self.relay_connections.write().await.remove(key);
         if let Some(entry) = removed {
             entry
                 ._connection
-                .shutdown(upstream_name, "relay.cache.evict")
+                .shutdown(&key.0, "relay.cache.evict")
                 .await;
         }
     }
@@ -1492,14 +1874,14 @@ impl UpstreamPool {
             let mut cache = self.relay_connections.write().await;
             let keys = cache
                 .keys()
-                .filter(|(name, _, _)| name == upstream_name)
+                .filter(|(name, _, _, _)| name == upstream_name)
                 .cloned()
                 .collect::<Vec<_>>();
             keys.into_iter()
                 .filter_map(|key| cache.remove(&key).map(|entry| (key, entry)))
                 .collect()
         };
-        for ((name, _session, _subject), entry) in drained {
+        for ((name, _session, _subject, _fingerprint), entry) in drained {
             entry
                 ._connection
                 .shutdown(&name, "relay.cache.upstream_reconcile")
@@ -1510,7 +1892,7 @@ impl UpstreamPool {
     /// Evict all cached relay connections (called during pool drain).
     pub(super) async fn evict_all_relay_connections(&self) {
         let drained: Vec<_> = self.relay_connections.write().await.drain().collect();
-        for ((name, _session, _subject), entry) in drained {
+        for ((name, _session, _subject, _fingerprint), entry) in drained {
             entry._connection.shutdown(&name, "relay.cache.drain").await;
         }
     }
@@ -1522,7 +1904,7 @@ impl UpstreamPool {
     pub(super) async fn sweep_relay_connections(&self) -> (usize, usize) {
         let expired = {
             let mut cache = self.relay_connections.write().await;
-            let stale_keys: Vec<(String, u64, Option<String>)> = cache
+            let stale_keys: Vec<RelayCacheKey> = cache
                 .iter()
                 .filter(|(_, entry)| {
                     entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL
@@ -1553,6 +1935,7 @@ impl UpstreamPool {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use std::sync::Arc;
 
@@ -1578,6 +1961,24 @@ mod tests {
 
     fn relay_test_capabilities() -> ClientCapabilities {
         ClientCapabilities::builder().enable_elicitation().build()
+    }
+
+    fn relay_cache_key(name: &str, session: u64, subject: Option<&str>) -> RelayCacheKey {
+        relay_cache_key_for_capabilities(name, session, subject, &relay_test_capabilities())
+    }
+
+    fn relay_cache_key_for_capabilities(
+        name: &str,
+        session: u64,
+        subject: Option<&str>,
+        capabilities: &ClientCapabilities,
+    ) -> RelayCacheKey {
+        (
+            name.to_string(),
+            session,
+            subject.map(str::to_owned),
+            capability_fingerprint(capabilities),
+        )
     }
 
     #[tokio::test]
@@ -1788,7 +2189,7 @@ mod tests {
             .expect("relay client connects");
         let peer = client_service.peer().clone();
         pool.relay_connections.write().await.insert(
-            (config.name.clone(), 1, None),
+            relay_cache_key_for_capabilities(&config.name, 1, None, &capabilities),
             RelayCachedConnection {
                 _connection: UpstreamConnection::new(
                     client_service,
@@ -1954,6 +2355,20 @@ mod tests {
         let capabilities = agent.get_info().capabilities;
         let (pool, config, downstream_server) =
             cached_relay_pool(ProgressCancelUpstream, agent.clone(), capabilities.clone()).await;
+        let routes = {
+            let connections = pool.relay_connections.read().await;
+            let entry = connections
+                .get(&relay_cache_key_for_capabilities(
+                    &config.name,
+                    1,
+                    None,
+                    &capabilities,
+                ))
+                .expect("cached relay connection");
+            assert!(!entry.peer.is_transport_closed());
+            Arc::clone(&entry.routes)
+        };
+        let watcher_sequence = routes.relay_watcher_finish_sequence.load(Ordering::Acquire);
         let downstream_request_id = RequestId::String("downstream-request".into());
         let downstream_progress_token = ProgressToken(rmcp::model::NumberOrString::String(
             "downstream-progress".into(),
@@ -1978,13 +2393,20 @@ mod tests {
                 1,
                 capabilities,
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay exists");
         assert!(
-            matches!(result, Err(ref message) if message.contains("upstream cancelled")),
+            matches!(result, Err(ref error) if error.to_string().contains("upstream cancelled")),
             "upstream cancellation should terminate the relayed request: {result:?}"
         );
+        tokio::time::timeout(
+            RELAY_ROUTE_CLEANUP_GRACE + std::time::Duration::from_secs(1),
+            routes.wait_for_relay_watcher_finish_after(watcher_sequence),
+        )
+        .await
+        .expect("cancelled response retires its detached relay watcher after bounded grace");
 
         wait_for_recorded_count(&agent.progress, 1).await;
         wait_for_recorded_count(&agent.cancellations, 1).await;
@@ -2021,6 +2443,7 @@ mod tests {
                     1,
                     capabilities,
                     None,
+                    crate::upstream::pool::TaskRouteAuthorization::root(),
                 )
                 .await
         });
@@ -2035,7 +2458,7 @@ mod tests {
         cancellation.cancel();
         let result = call.await.expect("relay task joins").expect("relay exists");
         assert!(
-            matches!(result, Err(ref message) if message.contains("downstream request cancelled"))
+            matches!(result, Err(ref error) if error.to_string().contains("downstream request cancelled"))
         );
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !upstream.cancelled.load(Ordering::SeqCst) {
@@ -2066,13 +2489,16 @@ mod tests {
                 1,
                 capabilities,
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay exists");
 
-        assert!(
-            matches!(result, Err(ref message) if message.contains("already cancelled")),
-            "pre-cancelled request must fail locally: {result:?}"
+        let message = result.expect_err("pre-cancelled relay must fail locally");
+        assert_eq!(
+            message.to_string(),
+            downstream_cancelled("downstream request was already cancelled"),
+            "pre-cancelled request must preserve the canonical cancellation error"
         );
         tokio::task::yield_now().await;
         assert!(
@@ -2093,7 +2519,7 @@ mod tests {
         let peer = {
             let connections = pool.relay_connections.read().await;
             connections
-                .get(&(config.name, 1, None))
+                .get(&relay_cache_key(&config.name, 1, None))
                 .expect("cached relay connection")
                 .peer
                 .clone()
@@ -2138,6 +2564,7 @@ mod tests {
                 1,
                 capabilities,
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay exists")
@@ -2282,7 +2709,7 @@ mod tests {
         pool.relay_connections
             .write()
             .await
-            .insert((config.name.clone(), session_id, None), entry);
+            .insert(relay_cache_key(&config.name, session_id, None), entry);
 
         let prompt = pool
             .get_prompt_relayed(
@@ -2355,6 +2782,7 @@ mod tests {
                 1,
                 relay_test_capabilities(),
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await;
 
@@ -2441,11 +2869,414 @@ mod tests {
         pool.relay_connections
             .write()
             .await
-            .insert(("up".to_string(), 7, None), entry);
+            .insert(relay_cache_key("up", 7, None), entry);
         assert_eq!(pool.relay_connections.read().await.len(), 1);
 
         pool.evict_all_relay_connections().await;
         assert!(pool.relay_connections.read().await.is_empty());
+    }
+
+    /// A capability change creates a distinct relay generation. If establishing
+    /// that generation fails, the prior generation must remain alive because it
+    /// may still be serving a long-running call or elicitation.
+    #[tokio::test]
+    async fn capability_change_does_not_drop_active_relay_generation() {
+        let pool = UpstreamPool::new();
+        let config = super::super::testsupport::test_upstream_config();
+        let session_id = 7;
+        let (entry, keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let original_key = relay_cache_key(&config.name, session_id, None);
+        let original_peer = entry.peer.clone();
+        pool.relay_connections
+            .write()
+            .await
+            .insert(original_key.clone(), entry);
+
+        let changed_capabilities = ClientCapabilities::builder().enable_tasks().build();
+        let replacement = pool
+            .acquire_or_connect_relay(
+                &config,
+                None,
+                keepalive.peer().clone(),
+                session_id,
+                changed_capabilities,
+            )
+            .await;
+        assert!(
+            replacement.is_none(),
+            "fixture config cannot open a replacement"
+        );
+
+        let cache = pool.relay_connections.read().await;
+        assert!(
+            cache.contains_key(&original_key),
+            "a failed capability-generation replacement must not evict the active generation"
+        );
+        assert!(
+            !original_peer.is_transport_closed(),
+            "the original relay peer must remain usable by its in-flight call"
+        );
+    }
+
+    async fn relay_test_downstream() -> RunningService<RoleServer, TrivialServer> {
+        let (server_transport, agent_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        tokio::spawn(async move {
+            if let Ok(running) = ().serve(agent_transport).await {
+                running.waiting().await.ok();
+            }
+        });
+        TrivialServer
+            .serve(server_transport)
+            .await
+            .expect("downstream server connects")
+    }
+
+    async fn wait_for_usage_outcome(
+        store: &crate::usage::UsageStore,
+        outcome: &str,
+        expected_count: i64,
+    ) -> i64 {
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let expected = outcome.to_string();
+            let count = store
+                .with_conn(move |conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM upstream_calls WHERE outcome = ?1",
+                        [expected],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::usage::store::sqlite_error)
+                })
+                .await
+                .expect("usage query succeeds");
+            if count >= expected_count || Instant::now() >= deadline {
+                return count;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn usage_items_for_outcome(
+        store: &crate::usage::UsageStore,
+        outcome: &str,
+    ) -> Vec<String> {
+        let expected = outcome.to_string();
+        store
+            .with_conn(move |conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT tool_name FROM upstream_calls WHERE outcome = ?1 ORDER BY tool_name",
+                    )
+                    .map_err(crate::usage::store::sqlite_error)?;
+                statement
+                    .query_map([expected], |row| row.get(0))
+                    .map_err(crate::usage::store::sqlite_error)?
+                    .collect::<Result<Vec<String>, _>>()
+                    .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .expect("usage item query succeeds")
+    }
+
+    /// Cold relay establishment is part of the request's cancellation scope.
+    /// Holding the per-key single-flight lock models a stalled concurrent
+    /// connector without relying on a real network timeout.
+    #[tokio::test]
+    async fn cold_relay_connect_stops_on_downstream_cancellation() {
+        let dir = tempfile::tempdir().expect("usage tempdir");
+        let store = Arc::new(
+            crate::usage::UsageStore::open(dir.path().join("usage.db"))
+                .await
+                .expect("usage store opens"),
+        );
+        let pool = UpstreamPool::new()
+            .with_usage_store(Some(Arc::clone(&store)))
+            .with_relay_timeout(std::time::Duration::from_secs(30));
+        let config = super::super::testsupport::test_upstream_config();
+        let capabilities = relay_test_capabilities();
+        let key = relay_cache_key(&config.name, 41, None);
+        let connect_lock = Arc::new(Mutex::new(()));
+        pool.relay_connect_locks
+            .write()
+            .await
+            .insert(key, Arc::clone(&connect_lock));
+        let _held = connect_lock.lock().await;
+        let downstream = relay_test_downstream().await;
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            cancel.cancel();
+        });
+
+        let started = Instant::now();
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("blocked-connect"),
+                downstream.peer().clone(),
+                RequestId::Number(1),
+                cancellation,
+                41,
+                capabilities,
+                None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
+            )
+            .await
+            .expect("cancellation produces a classified result")
+            .expect_err("cold connect must cancel");
+        assert!(matches!(
+            result,
+            super::super::capability_call::CapabilityCallError::Cancelled { .. }
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(
+            wait_for_usage_outcome(&store, "connect_cancelled", 1).await,
+            1
+        );
+    }
+
+    /// The same absolute relay deadline covers cold connection establishment;
+    /// a blocked connector does not receive an extra timeout before queue/RPC.
+    #[test]
+    fn cold_relay_connect_obeys_absolute_deadline() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let timeout = std::time::Duration::from_millis(40);
+            let dir = tempfile::tempdir().expect("usage tempdir");
+            let store = Arc::new(
+                crate::usage::UsageStore::open(dir.path().join("usage.db"))
+                    .await
+                    .expect("usage store opens"),
+            );
+            let pool = UpstreamPool::new()
+                .with_usage_store(Some(Arc::clone(&store)))
+                .with_relay_timeout(timeout);
+            let config = super::super::testsupport::test_upstream_config();
+            let capabilities = relay_test_capabilities();
+            let key = relay_cache_key(&config.name, 42, None);
+            let connect_lock = Arc::new(Mutex::new(()));
+            pool.relay_connect_locks
+                .write()
+                .await
+                .insert(key, Arc::clone(&connect_lock));
+            let _held = connect_lock.lock().await;
+            let downstream = relay_test_downstream().await;
+
+            let started = Instant::now();
+            let result = pool
+                .call_tool_relayed(
+                    &config,
+                    None,
+                    CallToolRequestParams::new("blocked-connect"),
+                    downstream.peer().clone(),
+                    RequestId::Number(2),
+                    CancellationToken::new(),
+                    42,
+                    capabilities,
+                    None,
+                    crate::upstream::pool::TaskRouteAuthorization::root(),
+                )
+                .await
+                .expect("deadline produces a classified result")
+                .expect_err("cold connect must time out");
+            assert!(matches!(
+                result,
+                super::super::capability_call::CapabilityCallError::Timeout { .. }
+            ));
+            assert!(
+                started.elapsed() < timeout + std::time::Duration::from_secs(1),
+                "cold connect exceeded the absolute relay budget"
+            );
+            assert_eq!(
+                wait_for_usage_outcome(&store, "connect_timeout", 1).await,
+                1
+            );
+        });
+    }
+
+    #[derive(Clone, Copy)]
+    enum RelayTestCapability {
+        Tools,
+        Prompts,
+        Resources,
+    }
+
+    async fn invoke_cold_relay_path(
+        pool: &UpstreamPool,
+        config: &UpstreamConfig,
+        downstream: &Peer<RoleServer>,
+        session_id: u64,
+        cancellation: CancellationToken,
+        capability: RelayTestCapability,
+    ) {
+        let request_id = RequestId::Number(session_id as i64);
+        let capabilities = relay_test_capabilities();
+        match capability {
+            RelayTestCapability::Tools => {
+                let _result = pool
+                    .call_tool_relayed(
+                        config,
+                        None,
+                        CallToolRequestParams::new("cold-tool"),
+                        downstream.clone(),
+                        request_id,
+                        cancellation,
+                        session_id,
+                        capabilities,
+                        None,
+                        crate::upstream::pool::TaskRouteAuthorization::root(),
+                    )
+                    .await;
+            }
+            RelayTestCapability::Prompts => {
+                let _result = pool
+                    .get_prompt_relayed(
+                        config,
+                        None,
+                        GetPromptRequestParams::new(format!("{}/cold-prompt", config.name)),
+                        downstream.clone(),
+                        request_id,
+                        cancellation,
+                        session_id,
+                        capabilities,
+                    )
+                    .await;
+            }
+            RelayTestCapability::Resources => {
+                let _result = pool
+                    .read_resource_relayed(
+                        config,
+                        None,
+                        ReadResourceRequestParams::new(format!(
+                            "lab://upstream/{}/file:///cold-resource",
+                            config.name
+                        )),
+                        downstream.clone(),
+                        request_id,
+                        cancellation,
+                        session_id,
+                        capabilities,
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Exercise the real tool, prompt, and resource adapters instead of
+    /// inspecting their source text. Each cold-connect exit must reach the
+    /// shared request telemetry boundary with its classified outcome.
+    #[tokio::test]
+    async fn every_cold_relay_adapter_records_cancel_timeout_and_connect_error() {
+        let dir = tempfile::tempdir().expect("usage tempdir");
+        let store = Arc::new(
+            crate::usage::UsageStore::open(dir.path().join("usage.db"))
+                .await
+                .expect("usage store opens"),
+        );
+        let config = super::super::testsupport::test_upstream_config();
+        let downstream = relay_test_downstream().await;
+
+        let capabilities = [
+            RelayTestCapability::Tools,
+            RelayTestCapability::Prompts,
+            RelayTestCapability::Resources,
+        ];
+        for (index, capability) in capabilities.into_iter().enumerate() {
+            let session_id = 100 + index as u64;
+            let pool = UpstreamPool::new()
+                .with_usage_store(Some(Arc::clone(&store)))
+                .with_relay_timeout(std::time::Duration::from_secs(30));
+            let key = relay_cache_key(&config.name, session_id, None);
+            let connect_lock = Arc::new(Mutex::new(()));
+            pool.relay_connect_locks
+                .write()
+                .await
+                .insert(key, Arc::clone(&connect_lock));
+            let _held = connect_lock.lock().await;
+            let cancellation = CancellationToken::new();
+            let cancel = cancellation.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                cancel.cancel();
+            });
+            invoke_cold_relay_path(
+                &pool,
+                &config,
+                downstream.peer(),
+                session_id,
+                cancellation,
+                capability,
+            )
+            .await;
+        }
+        assert_eq!(
+            wait_for_usage_outcome(&store, "connect_cancelled", 3).await,
+            3
+        );
+        let expected_items = vec![
+            "cold-prompt".to_string(),
+            "cold-tool".to_string(),
+            "lab://upstream/test/file:///cold-resource".to_string(),
+        ];
+        assert_eq!(
+            usage_items_for_outcome(&store, "connect_cancelled").await,
+            expected_items
+        );
+
+        for (index, capability) in capabilities.into_iter().enumerate() {
+            let session_id = 200 + index as u64;
+            let pool = UpstreamPool::new()
+                .with_usage_store(Some(Arc::clone(&store)))
+                .with_relay_timeout(std::time::Duration::from_millis(20));
+            let key = relay_cache_key(&config.name, session_id, None);
+            let connect_lock = Arc::new(Mutex::new(()));
+            pool.relay_connect_locks
+                .write()
+                .await
+                .insert(key, Arc::clone(&connect_lock));
+            let _held = connect_lock.lock().await;
+            invoke_cold_relay_path(
+                &pool,
+                &config,
+                downstream.peer(),
+                session_id,
+                CancellationToken::new(),
+                capability,
+            )
+            .await;
+        }
+        assert_eq!(
+            wait_for_usage_outcome(&store, "connect_timeout", 3).await,
+            3
+        );
+        assert_eq!(
+            usage_items_for_outcome(&store, "connect_timeout").await,
+            expected_items
+        );
+
+        let pool = UpstreamPool::new().with_usage_store(Some(Arc::clone(&store)));
+        for (index, capability) in capabilities.into_iter().enumerate() {
+            invoke_cold_relay_path(
+                &pool,
+                &config,
+                downstream.peer(),
+                300 + index as u64,
+                CancellationToken::new(),
+                capability,
+            )
+            .await;
+        }
+        assert_eq!(wait_for_usage_outcome(&store, "connect_error", 3).await, 3);
+        assert_eq!(
+            usage_items_for_outcome(&store, "connect_error").await,
+            expected_items
+        );
     }
 
     /// `evict_relay_connection` removes only the targeted
@@ -2458,11 +3289,12 @@ mod tests {
         let (b, _kb) = live_relay_cached_connection(Instant::now()).await;
         {
             let mut cache = pool.relay_connections.write().await;
-            cache.insert(("up".to_string(), 1, None), a);
-            cache.insert(("up".to_string(), 2, None), b);
+            cache.insert(relay_cache_key("up", 1, None), a);
+            cache.insert(relay_cache_key("up", 2, None), b);
         }
 
-        pool.evict_relay_connection("up", 1, None).await;
+        pool.evict_relay_connection(&relay_cache_key("up", 1, None))
+            .await;
 
         let remaining: Vec<_> = pool
             .relay_connections
@@ -2471,7 +3303,7 @@ mod tests {
             .keys()
             .cloned()
             .collect();
-        assert_eq!(remaining, vec![("up".to_string(), 2, None)]);
+        assert_eq!(remaining, vec![relay_cache_key("up", 2, None)]);
     }
 
     /// The cache key includes the OAuth subject, so two identities sharing one
@@ -2486,8 +3318,8 @@ mod tests {
         // Same upstream AND same session id (1) — only the subject differs.
         {
             let mut cache = pool.relay_connections.write().await;
-            cache.insert(("up".to_string(), 1, Some("alice".to_string())), alice);
-            cache.insert(("up".to_string(), 1, Some("bob".to_string())), bob);
+            cache.insert(relay_cache_key("up", 1, Some("alice")), alice);
+            cache.insert(relay_cache_key("up", 1, Some("bob")), bob);
         }
         assert_eq!(
             pool.relay_connections.read().await.len(),
@@ -2496,7 +3328,8 @@ mod tests {
         );
 
         // Evicting alice's connection leaves bob's intact.
-        pool.evict_relay_connection("up", 1, Some("alice")).await;
+        pool.evict_relay_connection(&relay_cache_key("up", 1, Some("alice")))
+            .await;
         let remaining: Vec<_> = pool
             .relay_connections
             .read()
@@ -2506,9 +3339,111 @@ mod tests {
             .collect();
         assert_eq!(
             remaining,
-            vec![("up".to_string(), 1, Some("bob".to_string()))],
+            vec![relay_cache_key("up", 1, Some("bob"))],
             "only the targeted subject's connection should be evicted"
         );
+    }
+
+    /// Revoking one OAuth subject must close every relay peer authenticated as
+    /// that subject while preserving other subjects and unauthenticated peers.
+    /// This catches an invalidation path that only evicts `OauthClientCache` or
+    /// the ordinary subject-connection cache.
+    #[tokio::test]
+    async fn oauth_subject_invalidation_evicts_only_matching_relay_peers() {
+        let pool = UpstreamPool::new();
+        let (alice_a, _alice_a_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (alice_b, _alice_b_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (bob, _bob_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (anonymous, _anonymous_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        {
+            let mut cache = pool.relay_connections.write().await;
+            cache.insert(relay_cache_key("up", 1, Some("alice")), alice_a);
+            cache.insert(relay_cache_key("up", 2, Some("alice")), alice_b);
+            cache.insert(relay_cache_key("up", 3, Some("bob")), bob);
+            cache.insert(relay_cache_key("up", 4, None), anonymous);
+        }
+
+        let invalidated = pool
+            .invalidate_oauth_subject_sessions("up", "alice", "oauth.credentials.clear")
+            .await;
+
+        assert_eq!(invalidated.relay_connections, 2);
+        let mut remaining = pool
+            .relay_connections
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec![
+                relay_cache_key("up", 3, Some("bob")),
+                relay_cache_key("up", 4, None),
+            ]
+        );
+    }
+
+    /// Revoking a provider credential shared across upstream OAuth managers
+    /// must close every authenticated relay peer, while leaving raw relay
+    /// sessions alone.
+    #[tokio::test]
+    async fn shared_oauth_invalidation_preserves_independent_oauth_relay_peers() {
+        let pool = UpstreamPool::new();
+        let (alice, _alice_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (bob, _bob_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (anonymous, _anonymous_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        {
+            let mut cache = pool.relay_connections.write().await;
+            cache.insert(relay_cache_key("first", 1, Some("alice")), alice);
+            cache.insert(relay_cache_key("second", 2, Some("bob")), bob);
+            cache.insert(relay_cache_key("raw", 3, None), anonymous);
+        }
+
+        let invalidated = pool
+            .invalidate_oauth_upstream_sessions(
+                &["first".to_string()],
+                "oauth.google_provider.revoke",
+            )
+            .await;
+
+        assert_eq!(invalidated.relay_connections, 1);
+        let mut remaining = pool
+            .relay_connections
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        remaining.sort();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.contains(&relay_cache_key("second", 2, Some("bob"))));
+        assert!(remaining.contains(&relay_cache_key("raw", 3, None)));
+    }
+
+    #[tokio::test]
+    async fn subject_and_shared_oauth_invalidation_cannot_deadlock() {
+        let pool = UpstreamPool::new();
+        let subject_pool = pool.clone();
+        let shared_pool = pool.clone();
+        let shared_upstreams = ["first".to_string()];
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+            tokio::join!(
+                subject_pool.invalidate_oauth_subject_sessions(
+                    "first",
+                    "alice",
+                    "oauth.credentials.clear",
+                ),
+                shared_pool.invalidate_oauth_upstream_sessions(
+                    &shared_upstreams,
+                    "oauth.google_provider.revoke",
+                ),
+            )
+        })
+        .await
+        .expect("credential invalidations must share one deadlock-free barrier");
     }
 
     /// `sweep_relay_connections` evicts entries past the idle TTL while keeping
@@ -2525,8 +3460,8 @@ mod tests {
         let (fresh, _kf) = live_relay_cached_connection(Instant::now()).await;
         {
             let mut cache = pool.relay_connections.write().await;
-            cache.insert(("up".to_string(), 1, None), stale);
-            cache.insert(("up".to_string(), 2, None), fresh);
+            cache.insert(relay_cache_key("up", 1, None), stale);
+            cache.insert(relay_cache_key("up", 2, None), fresh);
         }
 
         let (evicted, _pruned) = pool.sweep_relay_connections().await;
@@ -2539,7 +3474,7 @@ mod tests {
             .keys()
             .cloned()
             .collect();
-        assert_eq!(remaining, vec![("up".to_string(), 2, None)]);
+        assert_eq!(remaining, vec![relay_cache_key("up", 2, None)]);
     }
 
     /// The relay path uses its own `relay_timeout` (default 5 min), distinct
@@ -2650,7 +3585,7 @@ mod tests {
             runtime: UpstreamRuntimeMetadata::default(),
         };
         pool.relay_connections.write().await.insert(
-            (config.name.clone(), 1, None),
+            relay_cache_key(&config.name, 1, None),
             RelayCachedConnection {
                 _connection: conn,
                 peer,
@@ -2672,11 +3607,17 @@ mod tests {
                 1,
                 relay_test_capabilities(),
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await;
         assert!(
-            matches!(result, Some(Err(_))),
-            "a failing relayed upstream call should surface as Some(Err)"
+            matches!(
+                result,
+                Some(Err(
+                    super::super::capability_call::CapabilityCallError::Mcp { .. }
+                ))
+            ),
+            "a valid MCP rejection must preserve its typed application-error class"
         );
 
         let status = pool.upstream_status().await;
@@ -2693,7 +3634,7 @@ mod tests {
             pool.relay_connections
                 .read()
                 .await
-                .contains_key(&(config.name.clone(), 1, None)),
+                .contains_key(&relay_cache_key(&config.name, 1, None)),
             "valid MCP error must not evict the relay connection"
         );
 
@@ -2781,7 +3722,7 @@ mod tests {
             runtime: UpstreamRuntimeMetadata::default(),
         };
         pool.relay_connections.write().await.insert(
-            (config.name.clone(), 1, None),
+            relay_cache_key(&config.name, 1, None),
             RelayCachedConnection {
                 _connection: conn,
                 peer,
@@ -2803,12 +3744,13 @@ mod tests {
                 1,
                 relay_test_capabilities(),
                 None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
             )
             .await
             .expect("cached relay connection is present")
             .expect_err("oversized relayed response should be rejected");
         assert!(
-            result.contains("too large"),
+            result.to_string().contains("too large"),
             "expected response cap error, got: {result}"
         );
 
@@ -2859,7 +3801,7 @@ mod tests {
         pool.relay_connections
             .write()
             .await
-            .insert((config.name.clone(), 1, Some("alice".to_string())), entry);
+            .insert(relay_cache_key(&config.name, 1, Some("alice")), entry);
 
         // alice → fast-path cache hit (Some, no connect attempt).
         let alice = pool

@@ -160,6 +160,6 @@ lab-admin = []
 # not silently drag the whole gateway in.
 skills = ["labby-gateway?/skills"]
 systemd = ["dep:sd-notify"]
-proxy-testkit = []
+proxy-testkit = ["labby-gateway/testkit"]
 [lints]
 workspace = true

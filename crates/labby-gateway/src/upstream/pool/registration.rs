@@ -22,6 +22,12 @@ use super::helpers::{
 };
 use super::{InProcessConnector, UpstreamPool};
 
+/// Minimum interval between registration attempts for peers that stay
+/// missing/failed. Mirrors the shape of `SEMANTIC_SEARCH_COOLDOWN`: long
+/// enough that a broken builtin is not re-spawned on every `codemode.search`,
+/// short enough that recovery lands within a working session.
+const IN_PROCESS_ENSURE_RETRY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl UpstreamPool {
     pub async fn register_in_process_service_peers(&self, registry: &dyn InProcessServiceRegistry) {
         let services: Vec<Box<dyn InProcessService>> = registry
@@ -32,9 +38,111 @@ impl UpstreamPool {
         self.register_in_process_service_list(services).await;
     }
 
+    /// Idempotent variant for hot paths: register only services whose
+    /// in-process entry is missing, circuit-open, or empty. (A re-registration
+    /// replaces the entry via `healthy_in_process_entry`, which also resets
+    /// breaker state — deliberate for local peers, which self-heal.) Safe to
+    /// call on every Code Mode catalog build:
+    ///
+    /// - Single-flight: concurrent builds serialize on the ensure mutex, so N
+    ///   simultaneous cold misses spawn each mini-server once, not N times —
+    ///   and never replace a just-registered live connection (which would
+    ///   abort in-flight builtin calls).
+    /// - Failure cooldown: an attempt that still leaves peers missing is not
+    ///   retried within [`IN_PROCESS_ENSURE_RETRY_COOLDOWN`], so a wedged
+    ///   peer costs one bounded attempt per window instead of adding up to
+    ///   `IN_PROCESS_DISCOVERY_TIMEOUT` to every catalog build.
+    pub async fn ensure_in_process_service_peers(&self, registry: &dyn InProcessServiceRegistry) {
+        // Claim the attempt under the guard, then DROP it before registering.
+        // An earlier version bound the guard for the whole block, so it was
+        // still held across `register_in_process_service_list().await` — the
+        // exact head-of-line blocking the comment claimed to avoid (caught in
+        // review; the `connect_count == 1` test could not tell the two apart,
+        // which is why `..._releases_the_guard_while_registering` exists).
+        let missing: Vec<Box<dyn InProcessService>> = {
+            let mut last_attempt = self.in_process_ensure_state.lock().await;
+            let missing: Vec<Box<dyn InProcessService>> = {
+                let catalog = self.catalog.read().await;
+                registry
+                    .in_process_services()
+                    .into_iter()
+                    .filter(|service| service.has_actions())
+                    .filter(|service| {
+                        !Self::in_process_entry_is_serving(&catalog, service.as_ref())
+                    })
+                    .collect()
+            };
+            if missing.is_empty() {
+                return;
+            }
+            if let Some(attempted) = *last_attempt
+                && attempted.elapsed() < IN_PROCESS_ENSURE_RETRY_COOLDOWN
+            {
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "in_process.ensure",
+                    missing_count = missing.len(),
+                    remaining_ms = IN_PROCESS_ENSURE_RETRY_COOLDOWN
+                        .checked_sub(attempted.elapsed())
+                        .unwrap_or_default()
+                        .as_millis(),
+                    "in-process peer re-registration suppressed by cooldown"
+                );
+                return;
+            }
+            *last_attempt = Some(std::time::Instant::now());
+            missing
+        };
+
+        let missing_names: Vec<String> = missing
+            .iter()
+            .map(|service| in_process_upstream_name(service.service_name()))
+            .collect();
+        self.register_in_process_service_list(missing).await;
+
+        // Clear the cooldown when every attempted peer is now serving, so a
+        // peer that breaks moments after a successful pass is repaired on the
+        // next catalog build instead of waiting out the window. A partial
+        // failure keeps the stamp, which is what the cooldown is for.
+        let all_recovered = {
+            let catalog = self.catalog.read().await;
+            missing_names.iter().all(|name| {
+                catalog
+                    .get(name)
+                    .is_some_and(|entry| entry.tool_health.is_routable() && !entry.tools.is_empty())
+            })
+        };
+        if all_recovered {
+            *self.in_process_ensure_state.lock().await = None;
+        }
+    }
+
+    /// Whether a catalog entry for an in-process peer is present, routable,
+    /// and actually carrying tools. A zero-tool entry counts as NOT serving —
+    /// that is the failure mode the registration WARN calls out.
+    fn in_process_entry_is_serving(
+        catalog: &HashMap<String, crate::upstream::types::UpstreamEntry>,
+        service: &dyn InProcessService,
+    ) -> bool {
+        let upstream_name = in_process_upstream_name(service.service_name());
+        catalog
+            .get(&upstream_name)
+            .is_some_and(|entry| entry.tool_health.is_routable() && !entry.tools.is_empty())
+    }
+
     async fn register_in_process_service_list(&self, services: Vec<Box<dyn InProcessService>>) {
         let Some(connector) = self.in_process_connector.clone() else {
-            tracing::warn!(
+            // A wiring bug, not a runtime degradation: the surface built a
+            // pool without a connector, so builtin services are absent from
+            // the Code Mode catalog for this pool's whole lifetime and no
+            // catalog entry records why. ERROR, not WARN — a WARN here read
+            // as ordinary noise while FU-1 was silently dead.
+            tracing::error!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "in_process.register",
+                kind = "internal_error",
                 service_count = services.len(),
                 "in-process peer registration skipped: no connector was provided by the surface"
             );
@@ -94,14 +202,25 @@ impl UpstreamPool {
                             .insert(registration.upstream_name.clone(), conn);
                     }
                     in_process_resource_names.push(registration.upstream_name.clone());
-                    tracing::info!(
-                        upstream = %registration.entry_name,
-                        service = service_name,
-                        tool_count,
-                        resource_count = 0,
-                        prompt_count = 0,
-                        "in-process peer registration succeeded"
-                    );
+                    if tool_count == 0 {
+                        // A zero-tool "success" re-qualifies as missing on the
+                        // next ensure pass, so without this signal the retry
+                        // loop is silent churn (review finding on lab-48z4k).
+                        tracing::warn!(
+                            upstream = %registration.entry_name,
+                            service = service_name,
+                            "in-process peer registered ZERO tools — it will be re-registered after the ensure cooldown"
+                        );
+                    } else {
+                        tracing::info!(
+                            upstream = %registration.entry_name,
+                            service = service_name,
+                            tool_count,
+                            resource_count = 0,
+                            prompt_count = 0,
+                            "in-process peer registration succeeded"
+                        );
+                    }
                 }
                 Ok(Err(error)) => {
                     failed_count += 1;
@@ -168,6 +287,7 @@ impl UpstreamPool {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use std::any::Any;
     use std::sync::Arc;
@@ -202,6 +322,266 @@ mod tests {
 
     fn service(name: &'static str) -> Box<dyn InProcessService> {
         Box::new(StubService { name })
+    }
+
+    struct StubRegistry(&'static [&'static str]);
+
+    impl InProcessServiceRegistry for StubRegistry {
+        fn in_process_services(&self) -> Vec<Box<dyn InProcessService>> {
+            self.0.iter().map(|name| service(name)).collect()
+        }
+    }
+
+    /// FU-1 (issue #210, lab-48z4k): `ensure_in_process_service_peers` runs on
+    /// every Code Mode catalog build, so it must not re-spawn mini-servers or
+    /// churn connections once a healthy, non-empty entry exists.
+    #[tokio::test]
+    async fn ensure_in_process_service_peers_is_idempotent() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    let upstream_name: Arc<str> =
+                        Arc::from(in_process_upstream_name(service.service_name()));
+                    Ok(InProcessRegistration {
+                        connection: None,
+                        tools: vec![rmcp::model::Tool::new(
+                            "gateway-alpha",
+                            "Gateway alpha",
+                            Arc::new(serde_json::Map::new()),
+                        )],
+                        entry_name: Arc::clone(&upstream_name),
+                        upstream_name: upstream_name.to_string(),
+                    })
+                });
+            future
+        });
+        let pool = UpstreamPool::new().with_in_process_connector(connector);
+        let registry = StubRegistry(&["gateway-alpha"]);
+
+        pool.ensure_in_process_service_peers(&registry).await;
+        pool.ensure_in_process_service_peers(&registry).await;
+
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            1,
+            "a healthy, non-empty peer entry must not be re-registered"
+        );
+        let tools = pool.healthy_tools_allowed(None).await;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].upstream_name.as_ref(),
+            in_process_upstream_name("gateway-alpha")
+        );
+    }
+
+    /// The single-flight guard's actual property: N CONCURRENT calls perform
+    /// one registration, not N. The sequential cooldown test below passes
+    /// with or without the mutex, so it does not cover this.
+    #[tokio::test]
+    async fn ensure_in_process_service_peers_single_flights_concurrent_callers() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    // Long enough that every sibling caller is inside
+                    // `ensure` while this registration is in flight.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let upstream_name: Arc<str> =
+                        Arc::from(in_process_upstream_name(service.service_name()));
+                    Ok(InProcessRegistration {
+                        connection: None,
+                        tools: vec![rmcp::model::Tool::new(
+                            "gateway-alpha",
+                            "Gateway alpha",
+                            Arc::new(serde_json::Map::new()),
+                        )],
+                        entry_name: Arc::clone(&upstream_name),
+                        upstream_name: upstream_name.to_string(),
+                    })
+                });
+            future
+        });
+        let pool = Arc::new(UpstreamPool::new().with_in_process_connector(connector));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let pool = Arc::clone(&pool);
+            handles.push(tokio::spawn(async move {
+                pool.ensure_in_process_service_peers(&StubRegistry(&["gateway-alpha"]))
+                    .await;
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("ensure task");
+        }
+
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            1,
+            "8 concurrent callers must produce exactly one registration"
+        );
+    }
+
+    /// The property `connect_count == 1` CANNOT distinguish "guard released,
+    /// siblings hit the cooldown branch" from "guard held, siblings queued
+    /// behind a 15s registration" — both yield one registration. This test
+    /// pins the one that matters: a sibling caller returns while the first
+    /// registration is still in flight. It fails against a guard held across
+    /// `register_in_process_service_list`.
+    #[tokio::test]
+    async fn ensure_releases_the_guard_while_registering() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    let upstream_name: Arc<str> =
+                        Arc::from(in_process_upstream_name(service.service_name()));
+                    Ok(InProcessRegistration {
+                        connection: None,
+                        tools: vec![rmcp::model::Tool::new(
+                            "gateway-alpha",
+                            "Gateway alpha",
+                            Arc::new(serde_json::Map::new()),
+                        )],
+                        entry_name: Arc::clone(&upstream_name),
+                        upstream_name: upstream_name.to_string(),
+                    })
+                });
+            future
+        });
+        let pool = Arc::new(UpstreamPool::new().with_in_process_connector(connector));
+
+        let slow = {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                pool.ensure_in_process_service_peers(&StubRegistry(&["gateway-alpha"]))
+                    .await;
+            })
+        };
+        // Let the first caller claim the attempt and enter registration.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let started = std::time::Instant::now();
+        pool.ensure_in_process_service_peers(&StubRegistry(&["gateway-alpha"]))
+            .await;
+        let sibling_elapsed = started.elapsed();
+
+        assert!(
+            sibling_elapsed < Duration::from_millis(200),
+            "a concurrent caller must not block on the in-flight registration; \
+             it waited {sibling_elapsed:?}"
+        );
+        slow.await.expect("registration task");
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            1,
+            "the sibling must not start a second registration either"
+        );
+    }
+
+    /// Review fix (lab-48z4k): a peer that keeps failing must not be
+    /// re-registered on every catalog build — one attempt per cooldown
+    /// window, so a wedged builtin cannot put its connect timeout on every
+    /// `codemode.search`.
+    #[tokio::test]
+    async fn ensure_in_process_service_peers_applies_failure_cooldown() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |_service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    anyhow::bail!("mini-server refuses to start");
+                });
+            future
+        });
+        let pool = UpstreamPool::new().with_in_process_connector(connector);
+        let registry = StubRegistry(&["gateway-alpha"]);
+
+        pool.ensure_in_process_service_peers(&registry).await;
+        pool.ensure_in_process_service_peers(&registry).await;
+        pool.ensure_in_process_service_peers(&registry).await;
+
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            1,
+            "a failing peer is retried at most once per cooldown window"
+        );
+    }
+
+    /// A FULLY successful attempt must clear the cooldown, so a peer that
+    /// breaks moments later is repaired on the next catalog build instead of
+    /// being invisible for the whole window.
+    #[tokio::test]
+    async fn successful_ensure_clears_the_cooldown() {
+        use futures::future::BoxFuture;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_connector = Arc::clone(&connect_count);
+        let connector: InProcessConnector = Arc::new(move |service| {
+            let connect_count = Arc::clone(&connect_count_for_connector);
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    connect_count.fetch_add(1, Ordering::SeqCst);
+                    let upstream_name: Arc<str> =
+                        Arc::from(in_process_upstream_name(service.service_name()));
+                    Ok(InProcessRegistration {
+                        connection: None,
+                        tools: vec![rmcp::model::Tool::new(
+                            "gateway-alpha",
+                            "Gateway alpha",
+                            Arc::new(serde_json::Map::new()),
+                        )],
+                        entry_name: Arc::clone(&upstream_name),
+                        upstream_name: upstream_name.to_string(),
+                    })
+                });
+            future
+        });
+        let pool = UpstreamPool::new().with_in_process_connector(connector);
+        let registry = StubRegistry(&["gateway-alpha"]);
+
+        pool.ensure_in_process_service_peers(&registry).await;
+        assert_eq!(connect_count.load(Ordering::SeqCst), 1);
+
+        // Simulate the peer breaking right after a successful pass.
+        pool.catalog
+            .write()
+            .await
+            .remove(&in_process_upstream_name("gateway-alpha"));
+
+        // Must re-register immediately — NOT wait out the cooldown.
+        pool.ensure_in_process_service_peers(&registry).await;
+        assert_eq!(
+            connect_count.load(Ordering::SeqCst),
+            2,
+            "a peer that breaks after a clean pass must be repaired at once"
+        );
     }
 
     #[tokio::test]

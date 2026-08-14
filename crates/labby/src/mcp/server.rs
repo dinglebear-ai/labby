@@ -245,6 +245,85 @@ pub(crate) fn next_relay_session_id() -> u64 {
     RELAY_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Transports on which a missing `AuthContext` means "trusted local
+/// operator" rather than "this hop carries no auth layer".
+///
+/// Owned here, beside the `transport_label` field it interprets, so the
+/// policy has one home and does not depend on any feature-gated module.
+/// Adding a transport is an explicit trust decision: an unlisted label
+/// fails closed, and `requires_admin` builtin actions are refused on it.
+/// See [`LabMcpServer::trusts_absent_auth`] and bead lab-m01gl.
+/// `"test"` is used only by `#[cfg(test)]` server fixtures, so the suite
+/// exercises the stdio branch; verify with `rg 'transport_label: "test"'`
+/// before any production site adopts it.
+pub(crate) const TRANSPORTS_TRUSTING_ABSENT_AUTH: &[&str] = &["stdio", "http", "test"];
+
+const MAX_TOOL_CONTRACT_SUBJECTS: usize = 256;
+const MAX_TOOL_CONTRACTS_PER_SUBJECT: usize = 8;
+
+#[derive(Default)]
+pub(crate) struct ToolContractBaselineStore {
+    subjects: std::collections::HashMap<
+        Option<String>,
+        std::collections::VecDeque<crate::mcp::catalog::ToolCatalogSnapshot>,
+    >,
+    subject_order: std::collections::VecDeque<Option<String>>,
+}
+
+impl ToolContractBaselineStore {
+    pub(crate) fn publish(
+        &mut self,
+        subject: Option<String>,
+        snapshot: crate::mcp::catalog::ToolCatalogSnapshot,
+    ) {
+        if !self.subjects.contains_key(&subject) {
+            while self.subjects.len() >= MAX_TOOL_CONTRACT_SUBJECTS {
+                if let Some(evicted) = self.subject_order.pop_front() {
+                    self.subjects.remove(&evicted);
+                }
+            }
+            self.subject_order.push_back(subject.clone());
+        }
+        let candidates = self.subjects.entry(subject).or_default();
+        while candidates.len() >= MAX_TOOL_CONTRACTS_PER_SUBJECT {
+            candidates.pop_front();
+        }
+        candidates.push_back(snapshot);
+    }
+
+    /// Claim a baseline only when one unambiguous completed list exists for
+    /// this subject. Stateless requests carry no conversation identifier; if
+    /// concurrent conversations produced multiple candidates, returning None
+    /// deliberately causes a conservative catch-up notification rather than
+    /// attributing another conversation's list and missing a real change.
+    pub(crate) fn claim_unambiguous(
+        &mut self,
+        subject: &Option<String>,
+    ) -> Option<crate::mcp::catalog::ToolCatalogSnapshot> {
+        let candidates = self.subjects.get_mut(subject)?;
+        let claimed = if candidates.len() == 1 {
+            candidates.pop_front()
+        } else {
+            candidates.clear();
+            None
+        };
+        if candidates.is_empty() {
+            self.subjects.remove(subject);
+            self.subject_order.retain(|candidate| candidate != subject);
+        }
+        claimed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn candidate_count(&self, subject: &Option<String>) -> usize {
+        self.subjects
+            .get(subject)
+            .map_or(0, std::collections::VecDeque::len)
+    }
+}
+
+pub(crate) type ToolContractBaselines = Arc<RwLock<ToolContractBaselineStore>>;
+
 /// MCP server handler — one tool per registered service.
 pub struct LabMcpServer {
     pub registry: Arc<ToolRegistry>,
@@ -255,10 +334,11 @@ pub struct LabMcpServer {
     pub peers: crate::mcp::peers::PeerRegistry,
     /// Gateway-wide switch for the explicit Code Mode MCP App surface.
     pub(crate) code_mode_app_state: crate::mcp::catalog::CodeModeAppState,
-    /// Complete tool contract most recently published to this MCP session.
-    /// Partial pagination never advances this baseline.
-    pub(crate) last_listed_tool_contract:
-        Arc<RwLock<Option<crate::mcp::catalog::ToolCatalogSnapshot>>>,
+    /// Complete tool contracts most recently published to callers of this MCP
+    /// route, keyed by authenticated subject. Stateless HTTP constructs a new
+    /// handler per request, so the factory shares this registry across those
+    /// handlers. Partial pagination never advances a baseline.
+    pub(crate) last_listed_tool_contract: ToolContractBaselines,
     /// Observed inbound MCP client registry — shared with `GatewayManager`
     /// via `with_client_registry` so `gateway.clients.list` can read it.
     #[cfg(feature = "gateway")]
@@ -378,7 +458,7 @@ fn connected_client_from_discovery(
 
 impl ServerHandler for LabMcpServer {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
+        Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
     }
 
     async fn initialize(
@@ -398,9 +478,9 @@ impl ServerHandler for LabMcpServer {
         );
         context.peer.set_peer_info(request.clone());
         let mut info = self.get_info();
-        // The legacy wire protocol requires echoing the negotiated version in
-        // initialize/result. This is an edge adapter only; internal handling
-        // remains stateless and all modern clients use server/discover.
+        // RMCP adapts subsequent request validation and wire behavior from the
+        // negotiated peer version. Echo the requested version because every
+        // SDK-known historical version is explicitly declared above.
         info.protocol_version = request.protocol_version;
         Ok(info)
     }
@@ -580,7 +660,23 @@ impl ServerHandler for LabMcpServer {
         // a client that subscribed before finishing pagination is owed the next
         // relevant list-changed signal.
         let contract = self.peer_contract_for_request(context.request_context());
-        let last_contract = self.last_listed_tool_contract.read().await.clone();
+        let last_contract = if self.transport_label == "http" {
+            // Each stateless HTTP request gets a fresh handler and MCP peer.
+            // Neither the authenticated subject nor anonymous `None` proves
+            // that this listen belongs to an earlier tools/list request. An
+            // abandoned request could otherwise suppress a real catch-up for
+            // a later conversation. Without transport-provided correlation,
+            // fail conservative and make the subscription catch up.
+            None
+        } else {
+            let subject_key = self
+                .request_subject(context.request_context())
+                .map(str::to_owned);
+            self.last_listed_tool_contract
+                .write()
+                .await
+                .claim_unambiguous(&subject_key)
+        };
         let route_scope_label = self.route_scope.label();
         let pruned_peer_count = crate::mcp::peers::prune_closed_peers(&self.peers).await;
         let mut peers = self.peers.write().await;
@@ -731,6 +827,7 @@ impl ServerHandler for LabMcpServer {
                 .get_task_routed(
                     request,
                     self.request_subject(&context),
+                    &self.route_scope.task_authorization(),
                     context.peer.clone(),
                 )
                 .await
@@ -758,6 +855,7 @@ impl ServerHandler for LabMcpServer {
                 .update_task_routed(
                     request,
                     self.request_subject(&context),
+                    &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
                 )
@@ -785,6 +883,7 @@ impl ServerHandler for LabMcpServer {
                 .cancel_task_routed(
                     request,
                     self.request_subject(&context),
+                    &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
                 )
@@ -803,11 +902,6 @@ impl ServerHandler for LabMcpServer {
 
 use crate::mcp::catalog::CatalogChangeSet;
 
-/// Transport label used by the in-process service peer. Shared so the
-/// constructor in `mcp/in_process_peer.rs` and the trust check here cannot
-/// drift apart into a silently-trusted transport.
-pub(crate) const IN_PROCESS_TRANSPORT_LABEL: &str = "in-process";
-
 /// Extension capability map, for tests that assert what `initialize` declares.
 #[cfg(test)]
 pub(crate) fn mcp_extensions_for_test() -> ExtensionCapabilities {
@@ -820,16 +914,15 @@ impl LabMcpServer {
     ///
     /// The in-process peer is served over a duplex pipe with no HTTP layer, so
     /// it produces `None` for every caller — including a remote non-admin one
-    /// arriving through Code Mode. Only transports that would have carried auth
-    /// for a remote caller may treat its absence as proof of locality.
+    /// arriving through Code Mode. This is an allow-list: any future transport
+    /// fails closed until it explicitly proves that absent auth means local.
     pub(crate) fn absent_auth_trust(&self) -> crate::mcp::context::AbsentAuth {
-        if self.transport_label == IN_PROCESS_TRANSPORT_LABEL {
-            crate::mcp::context::AbsentAuth::Untrusted
-        } else {
+        if TRANSPORTS_TRUSTING_ABSENT_AUTH.contains(&self.transport_label) {
             crate::mcp::context::AbsentAuth::TrustedLocal
+        } else {
+            crate::mcp::context::AbsentAuth::Untrusted
         }
     }
-
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
     /// Per-call sites pass their own label so a notification triggered by a
     /// tool call is never confused with a gateway reconcile.
@@ -889,6 +982,16 @@ mod tests {
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
         }
+    }
+
+    #[test]
+    fn initialize_support_declares_every_adapted_protocol() {
+        let server = stateless_test_server(Default::default());
+
+        assert_eq!(
+            server.supported_protocol_versions().as_ref(),
+            ProtocolVersion::KNOWN_VERSIONS
+        );
     }
 
     #[test]
@@ -1374,14 +1477,69 @@ mod tests {
         server_handle.abort();
     }
 
+    #[test]
+    fn concurrent_same_subject_conversations_cannot_claim_each_others_baseline() {
+        let subject = Some("same-subject".to_string());
+        let mut store = super::ToolContractBaselineStore::default();
+        for conversation in ["conversation-a", "conversation-b"] {
+            store.publish(
+                subject.clone(),
+                crate::mcp::catalog::ToolCatalogSnapshot::from_names(
+                    std::iter::once(conversation.to_string()).collect(),
+                ),
+            );
+        }
+
+        assert_eq!(store.candidate_count(&subject), 2);
+        assert!(
+            store.claim_unambiguous(&subject).is_none(),
+            "same-subject concurrent conversations must relist conservatively"
+        );
+        assert_eq!(store.candidate_count(&subject), 0);
+    }
+
+    #[test]
+    fn baseline_store_evicts_oldest_subject_and_claims_single_candidate() {
+        let mut store = super::ToolContractBaselineStore::default();
+        let crowded = Some("crowded-subject".to_string());
+        for index in 0..(super::MAX_TOOL_CONTRACTS_PER_SUBJECT + 3) {
+            store.publish(
+                crowded.clone(),
+                crate::mcp::catalog::ToolCatalogSnapshot::from_names(
+                    std::iter::once(format!("crowded-tool-{index}")).collect(),
+                ),
+            );
+        }
+        assert_eq!(
+            store.candidate_count(&crowded),
+            super::MAX_TOOL_CONTRACTS_PER_SUBJECT
+        );
+        for index in 0..=super::MAX_TOOL_CONTRACT_SUBJECTS {
+            store.publish(
+                Some(format!("subject-{index}")),
+                crate::mcp::catalog::ToolCatalogSnapshot::from_names(
+                    std::iter::once(format!("tool-{index}")).collect(),
+                ),
+            );
+        }
+
+        assert_eq!(store.subjects.len(), super::MAX_TOOL_CONTRACT_SUBJECTS);
+        assert_eq!(store.candidate_count(&Some("subject-0".to_string())), 0);
+        let newest = Some(format!("subject-{}", super::MAX_TOOL_CONTRACT_SUBJECTS));
+        assert!(store.claim_unambiguous(&newest).is_some());
+        assert_eq!(store.candidate_count(&newest), 0);
+    }
+
     #[tokio::test]
     async fn subscription_catches_up_when_change_flushed_before_registration() {
         let peers = std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new()));
         let server = stateless_test_server(std::sync::Arc::clone(&peers));
-        *server.last_listed_tool_contract.write().await =
-            Some(crate::mcp::catalog::ToolCatalogSnapshot::from_names(
+        server.last_listed_tool_contract.write().await.publish(
+            None,
+            crate::mcp::catalog::ToolCatalogSnapshot::from_names(
                 std::iter::once("tool-from-listed-contract-a".to_string()).collect(),
-            ));
+            ),
+        );
         let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
         let server_handle = tokio::spawn(async move {
             let running = server.serve(server_transport).await.expect("server starts");

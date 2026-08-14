@@ -75,7 +75,7 @@
         {
           "name": "gateway.code_mode.set",
           "description": "Configure gateway Code Mode exposure and execution limits",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -171,7 +171,7 @@
         {
           "name": "gateway.enrich.preview",
           "description": "Preview Code Mode upstream hint proposals from cached gateway metadata",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -213,7 +213,7 @@
         {
           "name": "gateway.enrich.apply",
           "description": "Persist an operator-approved Code Mode upstream hint after hash validation",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -738,7 +738,7 @@
         {
           "name": "gateway.import",
           "description": "Import discovered MCP servers into the gateway config as disabled-by-default entries. Servers are marked with their discovery source.",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -779,7 +779,7 @@
         {
           "name": "gateway.import_pending.approve",
           "description": "Approve a pending discovered server and add it to the gateway config as disabled-by-default",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -797,7 +797,7 @@
         {
           "name": "gateway.import_pending.reject",
           "description": "Reject a pending discovered server and tombstone it so it never re-appears",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -826,7 +826,7 @@
         {
           "name": "gateway.import_tombstones.clear",
           "description": "Clear one import tombstone so a previously deleted imported server can be imported again",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -868,7 +868,7 @@
         {
           "name": "gateway.import_tombstones.restore",
           "description": "Atomically clear one import tombstone and restore the matching discovered server as disabled",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -1152,7 +1152,7 @@
         {
           "name": "gateway.oauth.resource_lease.release",
           "description": "Release an active in-memory OAuth protected-resource lease",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -1199,12 +1199,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             }
           ],
           "returns": "BeginAuthorization"
@@ -1223,12 +1217,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             }
           ],
           "returns": "UpstreamOauthStatusView"
@@ -1247,12 +1235,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             }
           ],
           "returns": "ok"
@@ -1295,12 +1277,6 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name to wait on"
-            },
-            {
-              "name": "subject",
-              "ty": "string",
-              "required": false,
-              "description": "Optional credential owner key. Defaults to the shared gateway subject `gateway`."
             },
             {
               "name": "timeout_secs",
@@ -1384,7 +1360,7 @@
         {
           "name": "gateway.mcp.cleanup",
           "description": "Kill or preview running processes associated with one upstream MCP server",
-          "destructive": true,
+          "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Shared `#[cfg(test)]` fixtures and mock servers for the upstream-pool tests.
 //!
 //! These helpers are consumed by the co-located test modules across `pool/`
@@ -6,7 +7,7 @@
 //! in with `use super::super::testsupport::*;` (or `use super::testsupport::*;`
 //! from the pool.rs test module).
 
-#![cfg(test)]
+#![cfg(any(test, feature = "testkit"))]
 
 use std::collections::HashMap;
 use std::sync::Arc;

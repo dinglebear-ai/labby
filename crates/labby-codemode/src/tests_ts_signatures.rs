@@ -287,3 +287,91 @@ fn json_schema_to_type_renders_openapi_nullable_as_null_union() {
     assert!(ts.contains("note?: string | null;"), "{ts}");
     assert!(ts.contains("strict?: string;"), "{ts}");
 }
+
+// ── FR-9b (issue #210, lab-41e7m.7): bounded `$ref` expansion ───────────────
+
+/// Build a wide-and-deep `$defs` graph: each level is an object whose three
+/// properties each `$ref` the next level. Shared refs re-expand at every
+/// occurrence, so unbudgeted expansion is O(3^depth) — with depth 12 that is
+/// ~531k leaf renders and a rendered `String` in the hundreds of MB range.
+fn hostile_ref_bomb(levels: usize) -> serde_json::Value {
+    let mut defs = serde_json::Map::new();
+    for level in 0..levels {
+        let child = if level + 1 == levels {
+            json!({ "type": "string" })
+        } else {
+            let next = format!("#/$defs/L{}", level + 1);
+            json!({
+                "type": "object",
+                "properties": {
+                    "a": { "$ref": next },
+                    "b": { "$ref": next },
+                    "c": { "$ref": next }
+                }
+            })
+        };
+        defs.insert(format!("L{level}"), child);
+    }
+    json!({ "$defs": defs, "$ref": "#/$defs/L0" })
+}
+
+/// The budget must bound the rendered OUTPUT and the node count, not merely
+/// the wall clock: the pre-budget failure mode was a multi-GB `String`
+/// allocation (OOM kill), reachable N-fold concurrently because the render
+/// cache rebuilds outside its lock.
+#[test]
+fn hostile_ref_graph_collapses_to_unknown_with_bounded_output() {
+    let schema = hostile_ref_bomb(12);
+
+    let rendered = super::ts_signatures::json_schema_to_type(Some(&schema));
+
+    assert_eq!(
+        rendered, "unknown",
+        "an exhausted budget must publish `unknown`, never a partial render"
+    );
+}
+
+/// The budget must be invisible to legitimate schemas: realistic nesting and
+/// legitimate shared refs render fully.
+#[test]
+fn legitimate_nested_schema_renders_fully_under_budget() {
+    let schema = json!({
+        "$defs": {
+            "Page": {
+                "type": "object",
+                "properties": {
+                    "cursor": { "type": "string" },
+                    "size": { "type": "integer" }
+                }
+            }
+        },
+        "type": "object",
+        "properties": {
+            "query": { "type": "string" },
+            "page": { "$ref": "#/$defs/Page" },
+            "fallback_page": { "$ref": "#/$defs/Page" },
+            "filters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "field": { "type": "string" },
+                        "values": { "type": "array", "items": { "type": "string" } }
+                    }
+                }
+            }
+        },
+        "required": ["query"]
+    });
+
+    let rendered = super::ts_signatures::json_schema_to_type(Some(&schema));
+
+    assert_ne!(rendered, "unknown");
+    assert!(rendered.contains("query: string;"), "{rendered}");
+    // Both occurrences of the shared ref expand — budget, not memoization.
+    assert_eq!(
+        rendered.matches("cursor?: string;").count(),
+        2,
+        "shared refs must still expand at every occurrence: {rendered}"
+    );
+}

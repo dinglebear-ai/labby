@@ -1,0 +1,315 @@
+//! Bounded cursor pagination for upstream MCP catalog methods.
+//!
+//! rmcp's `list_all_*` conveniences have no cursor-cycle, page, byte, item, or
+//! total-deadline guards. Request paths must use these helpers so an upstream
+//! cannot make the gateway materialize an unbounded catalog before the public
+//! catalog cap is applied.
+
+use std::collections::HashSet;
+use std::future::Future;
+use std::io::Write;
+use std::time::Duration;
+
+use rmcp::RoleClient;
+use rmcp::model::{PaginatedRequestParams, Prompt, Resource, ResourceTemplate, Tool};
+use rmcp::service::{Peer, ServiceError};
+use serde::Serialize;
+use thiserror::Error;
+use tokio::time::Instant;
+
+use super::capability_call::bounded_service_error_text;
+use super::helpers::classify_upstream_error;
+use super::helpers::max_response_bytes;
+
+const MAX_CATALOG_PAGES: usize = 64;
+const MAX_ITEMS_PER_PAGE: usize = 1_000;
+const MAX_CURSOR_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Error)]
+pub(super) enum CatalogPaginationError {
+    #[error("upstream catalog request failed: {0}")]
+    Service(#[from] ServiceError),
+    #[error("upstream catalog pagination timed out after {deadline_ms}ms")]
+    Deadline { deadline_ms: u128 },
+    #[error("upstream catalog repeated a pagination cursor")]
+    RepeatedCursor,
+    #[error("upstream catalog exceeded the {limit}-page pagination limit")]
+    PageLimit { limit: usize },
+    #[error("upstream catalog page exceeded the {limit}-item limit")]
+    PageItemLimit { limit: usize },
+    #[error("upstream catalog cursor exceeded the {limit}-byte limit")]
+    CursorLimit { limit: usize },
+    #[error("upstream catalog exceeded the {limit}-byte serialized limit")]
+    ByteLimit { limit: usize },
+}
+
+impl CatalogPaginationError {
+    pub(super) fn kind(&self) -> &'static str {
+        match self {
+            Self::Service(error) => classify_upstream_error(&bounded_service_error_text(error)),
+            Self::Deadline { .. } => "timeout",
+            Self::RepeatedCursor => "pagination_repeated_cursor",
+            Self::PageLimit { .. } => "pagination_page_limit",
+            Self::PageItemLimit { .. } => "pagination_page_item_limit",
+            Self::CursorLimit { .. } => "pagination_cursor_limit",
+            Self::ByteLimit { .. } => "response_too_large",
+        }
+    }
+
+    pub(super) fn bounded_text(&self) -> String {
+        match self {
+            Self::Service(error) => bounded_service_error_text(error),
+            _ => self.to_string(),
+        }
+    }
+
+    /// Adapt pagination policy failures to the existing capability-call
+    /// skeleton without bypassing its bulkhead, health, usage, or subject-peer
+    /// eviction behavior. The original structured kind is logged at this
+    /// boundary. A pagination-policy violation is a protocol failure, so the
+    /// capability layer records it against the upstream circuit breaker.
+    pub(super) fn into_service_error(self, upstream: &str) -> ServiceError {
+        if let Self::Service(error) = self {
+            return error;
+        }
+        tracing::warn!(
+            upstream,
+            kind = self.kind(),
+            error = %self,
+            "bounded upstream catalog pagination stopped"
+        );
+        ServiceError::UnexpectedResponse
+    }
+}
+
+struct ByteCounter(usize);
+
+impl Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_len<T: Serialize>(value: &T) -> usize {
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, value).map_or(usize::MAX, |()| counter.0)
+}
+
+async fn collect_bounded<T, F, Fut>(
+    deadline: Duration,
+    item_limit: usize,
+    mut fetch: F,
+) -> Result<Vec<T>, CatalogPaginationError>
+where
+    T: Serialize,
+    F: FnMut(Option<PaginatedRequestParams>) -> Fut,
+    Fut: Future<Output = Result<(Vec<T>, Option<String>), ServiceError>>,
+{
+    let started = Instant::now();
+    let deadline_at = started + deadline;
+    let byte_limit = max_response_bytes();
+    let mut items = Vec::with_capacity(item_limit.min(128));
+    let mut total_bytes = 0usize;
+    let mut cursor = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_index in 0..MAX_CATALOG_PAGES {
+        let params = Some(PaginatedRequestParams::default().with_cursor(cursor.clone()));
+        let (page, next_cursor) = tokio::time::timeout_at(deadline_at, fetch(params))
+            .await
+            .map_err(|_| CatalogPaginationError::Deadline {
+                deadline_ms: deadline.as_millis(),
+            })??;
+
+        if page.len() > MAX_ITEMS_PER_PAGE {
+            return Err(CatalogPaginationError::PageItemLimit {
+                limit: MAX_ITEMS_PER_PAGE,
+            });
+        }
+        for item in page {
+            if items.len() >= item_limit {
+                tracing::warn!(
+                    item_limit,
+                    page_count = page_index + 1,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "upstream catalog pagination stopped at item limit"
+                );
+                return Ok(items);
+            }
+            total_bytes = total_bytes.saturating_add(serialized_len(&item));
+            if total_bytes > byte_limit {
+                return Err(CatalogPaginationError::ByteLimit { limit: byte_limit });
+            }
+            items.push(item);
+        }
+
+        let Some(next) = next_cursor else {
+            return Ok(items);
+        };
+        if next.len() > MAX_CURSOR_BYTES {
+            return Err(CatalogPaginationError::CursorLimit {
+                limit: MAX_CURSOR_BYTES,
+            });
+        }
+        total_bytes = total_bytes.saturating_add(next.len());
+        if total_bytes > byte_limit {
+            return Err(CatalogPaginationError::ByteLimit { limit: byte_limit });
+        }
+        if !seen_cursors.insert(next.clone()) {
+            return Err(CatalogPaginationError::RepeatedCursor);
+        }
+        cursor = Some(next);
+    }
+
+    Err(CatalogPaginationError::PageLimit {
+        limit: MAX_CATALOG_PAGES,
+    })
+}
+
+pub(super) async fn list_tools(
+    peer: &Peer<RoleClient>,
+    deadline: Duration,
+    item_limit: usize,
+) -> Result<Vec<Tool>, CatalogPaginationError> {
+    collect_bounded(deadline, item_limit, |params| async move {
+        let result = peer.list_tools(params).await?;
+        Ok((result.tools, result.next_cursor))
+    })
+    .await
+}
+
+pub(super) async fn list_prompts(
+    peer: &Peer<RoleClient>,
+    deadline: Duration,
+    item_limit: usize,
+) -> Result<Vec<Prompt>, CatalogPaginationError> {
+    collect_bounded(deadline, item_limit, |params| async move {
+        let result = peer.list_prompts(params).await?;
+        Ok((result.prompts, result.next_cursor))
+    })
+    .await
+}
+
+pub(super) async fn list_resources(
+    peer: &Peer<RoleClient>,
+    deadline: Duration,
+    item_limit: usize,
+) -> Result<Vec<Resource>, CatalogPaginationError> {
+    collect_bounded(deadline, item_limit, |params| async move {
+        let result = peer.list_resources(params).await?;
+        Ok((result.resources, result.next_cursor))
+    })
+    .await
+}
+
+pub(super) async fn list_resource_templates(
+    peer: &Peer<RoleClient>,
+    deadline: Duration,
+    item_limit: usize,
+) -> Result<Vec<ResourceTemplate>, CatalogPaginationError> {
+    collect_bounded(deadline, item_limit, |params| async move {
+        let result = peer.list_resource_templates(params).await?;
+        Ok((result.resource_templates, result.next_cursor))
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rmcp::model::Tool;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn repeated_cursor_is_rejected_after_two_bounded_requests() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let result = collect_bounded(Duration::from_secs(1), 10, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<_, ServiceError>((Vec::<Tool>::new(), Some("again".to_string()))) }
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(CatalogPaginationError::RepeatedCursor)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn item_limit_stops_fetching_before_an_endless_catalog_materializes() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let result = collect_bounded(Duration::from_secs(1), 3, move |_| {
+            let page = observed.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Ok::<_, ServiceError>((
+                    vec![
+                        Tool::new(
+                            format!("tool-{page}-a"),
+                            "",
+                            Arc::new(serde_json::Map::new()),
+                        ),
+                        Tool::new(
+                            format!("tool-{page}-b"),
+                            "",
+                            Arc::new(serde_json::Map::new()),
+                        ),
+                    ],
+                    Some(format!("cursor-{page}")),
+                ))
+            }
+        })
+        .await
+        .expect("bounded catalog");
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn total_deadline_cancels_a_stalled_page() {
+        let result = collect_bounded::<Tool, _, _>(Duration::from_millis(10), 10, |_| async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok::<_, ServiceError>((Vec::new(), None))
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(CatalogPaginationError::Deadline { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn oversized_cursor_is_rejected_before_it_is_retained() {
+        let result = collect_bounded::<Tool, _, _>(Duration::from_secs(1), 10, |_| async {
+            Ok::<_, ServiceError>((Vec::new(), Some("x".repeat(MAX_CURSOR_BYTES + 1))))
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(CatalogPaginationError::CursorLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn service_error_text_is_bounded_and_keeps_classification() {
+        let error = CatalogPaginationError::Service(ServiceError::McpError(
+            rmcp::model::ErrorData::internal_error("x".repeat(1024 * 1024), None),
+        ));
+
+        assert_eq!(error.kind(), "connection_error");
+        assert!(error.bounded_text().len() < 5_000);
+    }
+}

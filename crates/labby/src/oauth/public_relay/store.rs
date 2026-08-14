@@ -282,7 +282,7 @@ fn save_entries_sync(
         .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
     let backup_path = if path.exists() {
         let backup = create_backup(&path)?;
-        prune_old_backups(&path, MAX_REGISTRY_BACKUPS);
+        prune_old_backups_except(&path, MAX_REGISTRY_BACKUPS, Some(&backup));
         Some(backup)
     } else {
         None
@@ -326,15 +326,34 @@ fn create_backup(path: &Path) -> Result<PathBuf, PublicRelayError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?
         .as_millis();
-    let backup = PathBuf::from(format!(
-        "{}.bak.{now}.{}",
-        path.display(),
-        std::process::id()
-    ));
+    create_backup_at(path, now)
+}
+
+fn create_backup_at(path: &Path, now: u128) -> Result<PathBuf, PublicRelayError> {
     let mut src = File::open(path)
         .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
-    let mut dst = open_backup_file(&backup)
-        .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
+    let base = format!("{}.bak.{now}.{}", path.display(), std::process::id());
+    let mut attempt = 0_u64;
+    let (backup, mut dst) = loop {
+        let candidate = if attempt == 0 {
+            PathBuf::from(&base)
+        } else {
+            PathBuf::from(format!("{base}.{attempt}"))
+        };
+        match open_backup_file(&candidate) {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                attempt = attempt.checked_add(1).ok_or_else(|| {
+                    PublicRelayError::RegistryUnavailable(
+                        "relay registry backup suffix space exhausted".into(),
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(PublicRelayError::RegistryUnavailable(error.to_string()));
+            }
+        }
+    };
     io::copy(&mut src, &mut dst)
         .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
     dst.sync_all()
@@ -407,7 +426,12 @@ fn list_backup_paths(path: &Path) -> Vec<(SystemTime, PathBuf)> {
 /// most recently modified ones. Never fails the caller's save — pruning
 /// is hygiene, not correctness, so a listing/removal error here is logged
 /// and swallowed rather than propagated.
+#[cfg(test)]
 fn prune_old_backups(path: &Path, keep: usize) {
+    prune_old_backups_except(path, keep, None);
+}
+
+fn prune_old_backups_except(path: &Path, keep: usize, protected: Option<&Path>) {
     let Some(parent) = path.parent() else {
         return;
     };
@@ -430,8 +454,17 @@ fn prune_old_backups(path: &Path, keep: usize) {
     if backups.len() <= keep {
         return;
     }
-    // Newest first, so `skip(keep)` yields exactly the stale tail.
-    backups.sort_by_key(|b| std::cmp::Reverse(b.0));
+    // The backup just created by this save must win even when the filesystem's
+    // mtime resolution makes every candidate indistinguishable. Path ordering
+    // makes all remaining ties deterministic.
+    backups.sort_by(|left, right| {
+        let left_protected = protected.is_some_and(|path| left.1 == path);
+        let right_protected = protected.is_some_and(|path| right.1 == path);
+        right_protected
+            .cmp(&left_protected)
+            .then_with(|| right.0.cmp(&left.0))
+            .then_with(|| right.1.cmp(&left.1))
+    });
     for (_, stale) in backups.into_iter().skip(keep) {
         if let Err(error) = fs::remove_file(&stale) {
             tracing::warn!(
@@ -701,6 +734,93 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "backup file must be owner-only (0o600), got {mode:o}"
+        );
+    }
+
+    #[test]
+    fn public_relay_store_backup_names_are_unique_within_one_millisecond() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("registry.json");
+        fs::write(&path, b"first").expect("seed registry");
+
+        let first = create_backup_at(&path, 1_700_000_000_123).expect("first backup");
+        fs::write(&path, b"second").expect("replace registry");
+        let second = create_backup_at(&path, 1_700_000_000_123).expect("second backup");
+
+        assert_ne!(first, second, "same-millisecond backups must not collide");
+        assert_eq!(fs::read(first).expect("read first backup"), b"first");
+        assert_eq!(fs::read(second).expect("read second backup"), b"second");
+    }
+
+    #[test]
+    fn public_relay_store_backup_creation_is_exclusive_under_concurrency() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Barrier};
+
+        const WRITERS: usize = 8;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("registry.json");
+        fs::write(&path, b"registry").expect("seed registry");
+        let barrier = Arc::new(Barrier::new(WRITERS));
+
+        let threads: Vec<_> = (0..WRITERS)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    create_backup_at(&path, 1_700_000_000_123).expect("create backup")
+                })
+            })
+            .collect();
+        let backups: HashSet<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("backup thread"))
+            .collect();
+
+        assert_eq!(backups.len(), WRITERS);
+        assert!(
+            backups
+                .iter()
+                .all(|backup| fs::read(backup).unwrap() == b"registry")
+        );
+
+        prune_old_backups(&path, MAX_REGISTRY_BACKUPS);
+        assert_eq!(list_backup_paths(&path).len(), MAX_REGISTRY_BACKUPS);
+    }
+
+    #[test]
+    fn pruning_mtime_ties_retains_the_just_created_backup() {
+        const CREATED_AT: u128 = 1_700_000_000_123;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("registry.json");
+        fs::write(&path, b"registry").expect("seed registry");
+
+        let mut backups = Vec::new();
+        for _ in 0..=MAX_REGISTRY_BACKUPS {
+            backups.push(create_backup_at(&path, CREATED_AT).expect("create backup"));
+        }
+        let retained = backups.last().expect("newest backup").clone();
+        let tied_mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for backup in &backups {
+            OpenOptions::new()
+                .write(true)
+                .open(backup)
+                .expect("open backup")
+                .set_modified(tied_mtime)
+                .expect("tie backup mtime");
+        }
+
+        prune_old_backups_except(&path, MAX_REGISTRY_BACKUPS, Some(&retained));
+
+        assert_eq!(list_backup_paths(&path).len(), MAX_REGISTRY_BACKUPS);
+        assert!(
+            retained.exists(),
+            "the backup returned by save must survive pruning"
+        );
+        assert_eq!(
+            fs::read(retained).expect("read retained backup"),
+            b"registry"
         );
     }
 

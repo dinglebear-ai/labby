@@ -157,11 +157,19 @@ test('stale delayed OAuth probe cannot auto-connect the previous URL', async () 
 test('auto OAuth opens authorization URL when popups are allowed', async () => {
   const window = installGatewayDialogDom()
   const openCalls: string[] = []
+  const tabs: Array<{ closed: boolean; opener: unknown; location: { href: string }; close: () => void }> = []
   Object.defineProperty(window, 'open', {
     configurable: true,
     value: (url?: string | URL) => {
       openCalls.push(String(url))
-      return { closed: false, location: { href: '' }, close: () => {} }
+      const tab = {
+        closed: false,
+        opener: window,
+        location: { href: '' },
+        close: () => {},
+      }
+      tabs.push(tab)
+      return tab
     },
   })
 
@@ -195,7 +203,9 @@ test('auto OAuth opens authorization URL when popups are allowed', async () => {
     await setInputValue(window, urlInput, 'https://github.example/mcp')
 
     await waitFor(() => {
-      assert.deepEqual(openCalls, ['https://github.example/oauth/authorize'])
+      assert.deepEqual(openCalls, ['about:blank'])
+      assert.equal(tabs[0]?.opener, null)
+      assert.equal(tabs[0]?.location.href, 'https://github.example/oauth/authorize')
       assert.match(document.body.textContent ?? '', /Waiting\.\.\./)
     })
 

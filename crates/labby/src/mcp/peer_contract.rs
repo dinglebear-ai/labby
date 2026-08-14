@@ -13,10 +13,6 @@ use rmcp::model::Tool;
 use crate::mcp::catalog::{
     CodeModeAppState, CodeModeVisibility, SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot,
 };
-use crate::mcp::completion::action_schema;
-use crate::mcp::handlers_tools::server_logs_tool_meta;
-#[cfg(feature = "gateway")]
-use crate::mcp::permanent_tools::code_mode_full_annotations;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -35,12 +31,103 @@ use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
 };
+
+// ── FR-2a (issue #210, lab-41e7m.5): single audience-free authorization gates ──
+//
+// One implementation of the MCP visibility/authorization predicates,
+// consumed by both `LabMcpServer` (catalog.rs, live-request path) and
+// `PeerContract` (stored-subscription path). Two hard constraints, from the
+// 2026-08-05 engineering review:
+//
+// - AUDIENCE-FREE. `audience.admin_apps_visible` (or the request's
+//   `admin_app_resources_visible`) must stay at the call sites: folding it in
+//   here would silently grant admin apps to unprivileged callers, because
+//   `catalog.rs` supplies `PeerCatalogAudience::default()` with
+//   `admin_apps_visible: true`.
+// - FREE FUNCTIONS over borrowed fields, not methods reached via
+//   `self.peer_contract()` — constructing a `PeerContract` clones a deep
+//   `McpRouteScope` on every builtin dispatch.
+
+/// Whether `service` is exposed on the MCP surface for this route scope.
 #[cfg(feature = "gateway")]
-use crate::mcp::handlers_tools::{
-    add_server_tool_meta, add_server_tool_schema, code_mode_execute_schema, code_mode_tool_meta,
-    code_mode_trace_output_schema, code_mode_ui_description, gateway_status_tool_meta,
-    gateway_status_tool_schema, mcp_app_tool_description, mcp_app_tool_schema,
-};
+pub(crate) async fn mcp_service_visible(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    service: &str,
+) -> bool {
+    if !route_scope.allows_service(service) {
+        return false;
+    }
+    match gateway_manager {
+        Some(manager) => manager.surface_enabled_for_service(service, "mcp").await,
+        None => true,
+    }
+}
+
+/// Whether `service.action` is allowed on the MCP surface.
+#[cfg(feature = "gateway")]
+pub(crate) async fn mcp_action_allowed(
+    gateway_manager: Option<&GatewayManager>,
+    service: &str,
+    action: &str,
+) -> bool {
+    match gateway_manager {
+        Some(manager) => {
+            manager
+                .mcp_action_allowed_for_service(service, action)
+                .await
+        }
+        None => true,
+    }
+}
+
+/// Whether the current route can safely advertise and execute Add Server.
+#[cfg(feature = "gateway")]
+pub(crate) async fn add_server_app_available(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    registry: &ToolRegistry,
+) -> bool {
+    admin_gateway_app_available(
+        route_scope,
+        gateway_manager,
+        registry,
+        &["gateway.test", "gateway.add"],
+    )
+    .await
+}
+
+/// Whether the current route can safely advertise live gateway status.
+#[cfg(feature = "gateway")]
+pub(crate) async fn gateway_status_app_available(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    registry: &ToolRegistry,
+) -> bool {
+    admin_gateway_app_available(route_scope, gateway_manager, registry, &["gateway.list"]).await
+}
+
+#[cfg(feature = "gateway")]
+async fn admin_gateway_app_available(
+    route_scope: &McpRouteScope,
+    gateway_manager: Option<&GatewayManager>,
+    registry: &ToolRegistry,
+    required_actions: &[&str],
+) -> bool {
+    if !(route_scope.allows_service("gateway")
+        && gateway_manager.is_some()
+        && registry.service("gateway").is_some()
+        && mcp_service_visible(route_scope, gateway_manager, "gateway").await)
+    {
+        return false;
+    }
+    for action in required_actions {
+        if !mcp_action_allowed(gateway_manager, "gateway", action).await {
+            return false;
+        }
+    }
+    true
+}
 
 /// Request-derived inputs that affect the descriptor set for one peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,47 +196,34 @@ impl PeerContract {
     }
 
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
-        if !self.route_scope.allows_service(service) {
-            return false;
-        }
         #[cfg(feature = "gateway")]
-        match &self.gateway_manager {
-            Some(manager) => manager.surface_enabled_for_service(service, "mcp").await,
-            None => true,
+        {
+            mcp_service_visible(&self.route_scope, self.gateway_manager.as_deref(), service).await
         }
         #[cfg(not(feature = "gateway"))]
-        true
-    }
-
-    #[cfg(feature = "gateway")]
-    async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
-        match &self.gateway_manager {
-            Some(manager) => {
-                manager
-                    .mcp_action_allowed_for_service(service, action)
-                    .await
-            }
-            None => true,
+        {
+            self.route_scope.allows_service(service)
         }
     }
 
     #[cfg(feature = "gateway")]
     async fn add_server_app_available(&self) -> bool {
-        self.route_scope.allows_service("gateway")
-            && self.gateway_manager.is_some()
-            && self.registry.service("gateway").is_some()
-            && self.service_visible_on_mcp("gateway").await
-            && self.action_allowed_on_mcp("gateway", "gateway.test").await
-            && self.action_allowed_on_mcp("gateway", "gateway.add").await
+        add_server_app_available(
+            &self.route_scope,
+            self.gateway_manager.as_deref(),
+            &self.registry,
+        )
+        .await
     }
 
     #[cfg(feature = "gateway")]
     async fn gateway_status_app_available(&self) -> bool {
-        self.route_scope.allows_service("gateway")
-            && self.gateway_manager.is_some()
-            && self.registry.service("gateway").is_some()
-            && self.service_visible_on_mcp("gateway").await
-            && self.action_allowed_on_mcp("gateway", "gateway.list").await
+        gateway_status_app_available(
+            &self.route_scope,
+            self.gateway_manager.as_deref(),
+            &self.registry,
+        )
+        .await
     }
 
     /// Enabled upstream namespaces and normalized hints rendered in Code
@@ -198,7 +272,6 @@ impl PeerContract {
     pub(crate) async fn visible_tool_descriptors(&self) -> Vec<Tool> {
         let visibility = self.code_mode_visibility().await;
         let hide_raw_tools = visibility.hides_raw_tools();
-        let schema = Arc::new(action_schema());
         let mut descriptors = Vec::new();
         let mut builtin_names = HashSet::new();
         let mut advertised_names = HashSet::new();
@@ -209,15 +282,12 @@ impl PeerContract {
                 if hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME {
                     continue;
                 }
-                let tool = Tool::new(service.name, service.description, Arc::clone(&schema));
-                let tool =
-                    if service.name == SERVER_LOGS_TOOL_NAME && self.audience.admin_apps_visible {
-                        tool.with_meta(server_logs_tool_meta(service.name))
-                    } else {
-                        tool
-                    };
                 advertised_names.insert(service.name.to_string());
-                descriptors.push(tool);
+                descriptors.push(
+                    self.registry
+                        .permanent_tools()
+                        .builtin_service_tool(service, self.audience.admin_apps_visible),
+                );
             }
         }
 
@@ -247,25 +317,17 @@ impl PeerContract {
                 descriptors.push(tool);
 
                 if self.code_mode_app_state.is_enabled() {
-                    let tool = Tool::new(
-                        CODE_MODE_UI_TOOL_NAME,
-                        code_mode_ui_description(&upstreams),
-                        code_mode_execute_schema(),
-                    )
-                    .with_annotations(code_mode_full_annotations())
-                    .with_raw_output_schema(code_mode_trace_output_schema())
-                    .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME));
+                    let tool = self
+                        .registry
+                        .permanent_tools()
+                        .code_mode_ui_tool(&upstreams);
                     advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
                     descriptors.push(tool);
                 }
 
                 // Always advertised alongside codemode: the control tool is how a
                 // disabled app surface gets restored.
-                let tool = Tool::new(
-                    MCP_APP_TOOL_NAME,
-                    mcp_app_tool_description(),
-                    mcp_app_tool_schema(),
-                );
+                let tool = self.registry.permanent_tools().mcp_app_tool();
                 advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
                 descriptors.push(tool);
             }
@@ -273,24 +335,14 @@ impl PeerContract {
 
         #[cfg(feature = "gateway")]
         if self.audience.admin_apps_visible && self.add_server_app_available().await {
-            let tool = Tool::new(
-                ADD_SERVER_TOOL_NAME,
-                "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
-                add_server_tool_schema(),
-            )
-            .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME));
+            let tool = self.registry.permanent_tools().add_server_tool();
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
 
         #[cfg(feature = "gateway")]
         if self.audience.admin_apps_visible && self.gateway_status_app_available().await {
-            let tool = Tool::new(
-                GATEWAY_STATUS_TOOL_NAME,
-                "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
-                gateway_status_tool_schema(),
-            )
-            .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME));
+            let tool = self.registry.permanent_tools().gateway_status_tool();
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
@@ -314,7 +366,7 @@ impl PeerContract {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, tools) in pool
-                    .subject_scoped_tools_bounded(&configs, subject, subject_tool_limit)
+                    .cached_subject_scoped_tools_bounded(&configs, subject, subject_tool_limit)
                     .await
                 {
                     for tool in tools {
@@ -345,6 +397,7 @@ mod tests {
     use super::{PeerCatalogAudience, PeerContract};
     use crate::mcp::route_scope::McpRouteScope;
     use crate::registry::ToolRegistry;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     fn contract(route_scope: McpRouteScope) -> PeerContract {
@@ -384,5 +437,89 @@ mod tests {
         .visible_contract()
         .await;
         assert!(scoped.tools.is_subset(&root.tools));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn cold_oauth_peer_contract_does_not_connect_upstream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let upstream = crate::config::UpstreamConfig {
+            enabled: true,
+            name: "cold-oauth-contract".to_string(),
+            url: Some(format!("http://{address}/mcp")),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            proxy_skills: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: Some(crate::config::UpstreamOauthConfig {
+                mode: crate::config::UpstreamOauthMode::AuthorizationCodePkce,
+                registration: crate::config::UpstreamOauthRegistration::Preregistered {
+                    client_id: "client-id".to_string(),
+                    client_secret_env: None,
+                },
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            }),
+            imported_from: None,
+            priority: 1.0,
+        };
+        let pool = Arc::new(crate::dispatch::upstream::pool::UpstreamPool::new());
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool)).await;
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        manager
+            .seed_config_unchecked_for_tests(
+                crate::config::LabConfig {
+                    upstream: vec![upstream],
+                    ..crate::config::LabConfig::default()
+                }
+                .to_gateway_config(),
+            )
+            .await;
+        let peer_contract = PeerContract {
+            registry: Arc::new(ToolRegistry::default()),
+            gateway_manager: Some(manager),
+            route_scope: McpRouteScope::Root,
+            code_mode_app_state: Default::default(),
+            audience: PeerCatalogAudience {
+                code_mode_read_allowed: false,
+                code_mode_execute_allowed: false,
+                admin_apps_visible: false,
+                oauth_subject: Some("reader".to_string()),
+            },
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            peer_contract.visible_contract(),
+        )
+        .await
+        .expect("peer contract must return from cached state");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "peer contract rebuild must not cold-connect an OAuth upstream"
+        );
     }
 }

@@ -22,35 +22,35 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `name*: string` | `McpClientConfigView` | cli, mcp, api, web |
 | `gateway` | `gateway.clients.list` | false | false | true | lab:admin |  | `GatewayClientView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.code_mode.get` | false | false | true | lab:admin |  | `CodeModeConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.code_mode.set` | false | true | true | lab:admin | `enabled: boolean`<br>`trusted_read_only_tools: array`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.code_mode.set` | false | false | true | lab:admin | `enabled: boolean`<br>`trusted_read_only_tools: array`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.discover` | false | false | true | lab:admin | `clients: string[]`<br>`include_existing: boolean` | `DiscoveredServerView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.discovered_prompts` | false | false | true | lab:admin | `name*: string` | `string[]` | cli, mcp, api, web |
 | `gateway` | `gateway.discovered_resources` | false | false | true | lab:admin | `name*: string` | `string[]` | cli, mcp, api, web |
 | `gateway` | `gateway.discovered_tools` | false | false | true | lab:admin | `name*: string` | `GatewayToolExposureRowView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.enrich.apply` | false | true | true | lab:admin | `upstream*: string`<br>`hint*: string`<br>`metadata_hash*: string` | `GatewayHintApplyView` | cli, mcp, api, web |
-| `gateway` | `gateway.enrich.preview` | false | true | true | lab:admin | `upstreams: string[]`<br>`all: boolean`<br>`provider: string`<br>`max_upstreams: integer`<br>`timeout_ms: integer` | `GatewayEnrichmentPreviewView` | cli, mcp, api, web |
+| `gateway` | `gateway.enrich.apply` | false | false | true | lab:admin | `upstream*: string`<br>`hint*: string`<br>`metadata_hash*: string` | `GatewayHintApplyView` | cli, mcp, api, web |
+| `gateway` | `gateway.enrich.preview` | false | false | true | lab:admin | `upstreams: string[]`<br>`all: boolean`<br>`provider: string`<br>`max_upstreams: integer`<br>`timeout_ms: integer` | `GatewayEnrichmentPreviewView` | cli, mcp, api, web |
 | `gateway` | `gateway.get` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.import` | false | true | true | lab:admin | `all: boolean`<br>`names: string[]`<br>`clients: string[]` | `ImportResultView` | cli, mcp, api, web |
-| `gateway` | `gateway.import_pending.approve` | false | true | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api, web |
+| `gateway` | `gateway.import` | false | false | true | lab:admin | `all: boolean`<br>`names: string[]`<br>`clients: string[]` | `ImportResultView` | cli, mcp, api, web |
+| `gateway` | `gateway.import_pending.approve` | false | false | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api, web |
 | `gateway` | `gateway.import_pending.list` | false | false | true | lab:admin |  | `PendingImportView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.import_pending.reject` | false | true | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api, web |
-| `gateway` | `gateway.import_tombstones.clear` | false | true | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `ImportTombstoneView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.import_pending.reject` | false | false | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api, web |
+| `gateway` | `gateway.import_tombstones.clear` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `ImportTombstoneView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.import_tombstones.list` | false | false | true | lab:admin |  | `ImportTombstoneView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.import_tombstones.restore` | false | true | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.import_tombstones.restore` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.list` | false | false | true | lab:admin |  | `ServerView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.cleanup` | false | true | true | lab:admin | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin |  | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `ok` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string` | `ok` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.resource_lease.release` | false | true | true | lab:admin | `id*: string` | `ResourceLeaseReleaseView` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.resource_lease.release` | false | false | true | lab:admin | `id*: string` | `ResourceLeaseReleaseView` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.resource_lease.renew` | false | false | true | lab:admin | `id*: string`<br>`ttl_secs*: integer` | `ResourceLease` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `BeginAuthorization` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string` | `UpstreamOauthStatusView` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `upstream*: string`<br>`subject: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `upstream*: string` | `BeginAuthorization` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `upstream*: string` | `UpstreamOauthStatusView` | cli, mcp, api, web |
+| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `upstream*: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.get` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.list` | false | false | true | lab:admin |  | `ProtectedMcpRouteConfig[]` | cli, mcp, api, web |

@@ -127,9 +127,53 @@ async fn move_connection_to_subject_cache_with_tools(
     );
 }
 
+async fn take_fixture_connection(upstream: &str) -> super::UpstreamConnection {
+    let fixture = static_catalog_pool(upstream).await;
+    let connection = fixture
+        .connections
+        .write()
+        .await
+        .remove(upstream)
+        .expect("fixture connection present");
+    connection
+}
+
 fn sorted(mut names: Vec<String>) -> Vec<String> {
     names.sort_unstable();
     names
+}
+
+#[tokio::test]
+async fn subject_catalogs_are_isolated_from_each_other_and_the_global_catalog() {
+    let pool = super::UpstreamPool::new();
+    let config = oauth_upstream_config("private", &["*"]);
+    pool.seed_lazy_upstreams(std::slice::from_ref(&config))
+        .await;
+
+    for (subject, tool_name) in [("alice", "alice_private"), ("bob", "bob_private")] {
+        let connection = take_fixture_connection("private").await;
+        let peer = connection.peer.clone();
+        pool.subject_connections.write().await.insert(
+            ("private".to_string(), subject.to_string()),
+            SubjectScopedConnection {
+                _connection: connection,
+                peer,
+                tools: vec![test_tool(tool_name)],
+                last_used: Instant::now(),
+            },
+        );
+    }
+
+    let alice = pool
+        .subject_scoped_upstream_tools_allowed(std::slice::from_ref(&config), "alice", None)
+        .await;
+    let bob = pool
+        .subject_scoped_upstream_tools_allowed(std::slice::from_ref(&config), "bob", None)
+        .await;
+
+    assert_eq!(alice[0].tool.name.as_ref(), "alice_private");
+    assert_eq!(bob[0].tool.name.as_ref(), "bob_private");
+    assert!(pool.healthy_tools().await.is_empty());
 }
 
 /// `expose_tools` must hide the same tools on the OAuth subject-scoped path as

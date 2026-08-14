@@ -17,12 +17,14 @@ use super::super::types;
 use super::super::types::UpstreamCapability;
 use super::super::types::UpstreamRuntimeOwner;
 use super::UpstreamPool;
+use super::catalog_pagination;
 use super::connect::connect_upstream_with_client;
 use super::connect::stable_jitter_seed;
 use super::helpers::{
     AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR, DISCOVERY_TIMEOUT, auth_error_should_backoff_aggressively,
     classify_upstream_error, upstream_transport,
 };
+use super::tools::MAX_UPSTREAM_TOOLS;
 
 #[cfg(any(test, feature = "testkit"))]
 static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
@@ -207,8 +209,9 @@ impl UpstreamPool {
         };
 
         if let Some(peer) = existing_peer {
-            match tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await {
-                Ok(Ok(tools)) => {
+            match catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await
+            {
+                Ok(tools) => {
                     self.replace_catalog_tools(config, tools).await;
                     self.record_success_for(&config.name, UpstreamCapability::Tools)
                         .await;
@@ -225,11 +228,11 @@ impl UpstreamPool {
                     );
                     return Ok(true);
                 }
-                Ok(Err(error)) => {
+                Err(error) => {
                     self.record_failure_for(
                         &config.name,
                         UpstreamCapability::Tools,
-                        format!("upstream heartbeat failed: {error}"),
+                        format!("upstream heartbeat failed: {}", error.bounded_text()),
                     )
                     .await;
                     tracing::warn!(
@@ -241,30 +244,9 @@ impl UpstreamPool {
                         upstream = %config.name,
                         transport = upstream_transport(config),
                         elapsed_ms = started.elapsed().as_millis(),
-                        kind = "upstream_heartbeat_failed",
-                        error = %error,
+                        kind = error.kind(),
+                        error = %error.bounded_text(),
                         "upstream heartbeat failed"
-                    );
-                }
-                Err(_) => {
-                    self.record_failure_for(
-                        &config.name,
-                        UpstreamCapability::Tools,
-                        "upstream heartbeat timed out",
-                    )
-                    .await;
-                    tracing::warn!(
-                        surface = "dispatch",
-                        service = "upstream.pool",
-                        action = "upstream.reprobe",
-                        event = "heartbeat.error",
-                        operation = "health",
-                        upstream = %config.name,
-                        transport = upstream_transport(config),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        kind = "timeout",
-                        timeout_secs = DISCOVERY_TIMEOUT.as_secs(),
-                        "upstream heartbeat timed out"
                     );
                 }
             }

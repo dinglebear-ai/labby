@@ -114,6 +114,21 @@ When a valid OAuth credential exists for the active server, it takes precedence
 over the static token. If OAuth is unavailable or expired, the bridge falls back
 to the static token when configured.
 
+OAuth refreshes are single-flight. A rotated token is published to the in-memory
+cache only after `oauth.json` has been durably replaced; a persistence failure
+retains the prior session and is surfaced as a recoverable action error. Sign-out
+revokes the server-side refresh grant before deleting local credentials, and
+retains the local file when revocation fails so the user can retry safely.
+
+Both `oauth.json` and `settings.json` may contain secrets. Writes use an atomic
+replace operation that overwrites correctly on Windows. Unix files are created
+with mode `0600`; on Windows the app config directory gets an explicit,
+inheritance-disabled ACL granting access only to the current user before any
+temporary or destination file is created. The authoritative Windows DACL also
+retains the required local SYSTEM and Administrators principals, removes every
+pre-existing inherited or explicit ACE, and is re-applied before credentials
+are read so a permissive legacy file cannot remain silently trusted.
+
 ## Schema Validation
 
 The launcher catalog is intentionally compact: rows include

@@ -75,6 +75,7 @@ pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
     let enable = run_systemctl(&["enable", SERVICE_NAME]).await?;
     stdout.push_str(&enable.stdout);
     stderr.push_str(&enable.stderr);
+    provision_oauth_encryption_key_before_restart().await?;
     let restart = run_systemctl(&["restart", SERVICE_NAME]).await?;
     stdout.push_str(&restart.stdout);
     stderr.push_str(&restart.stderr);
@@ -212,6 +213,7 @@ pub(crate) async fn installed_and_ready() -> Result<bool, ToolError> {
 pub(crate) async fn restart() -> Result<HostServiceOutcome, ToolError> {
     let port = preflight_port_available("restart").await?;
     let path = unit_path();
+    provision_oauth_encryption_key_before_restart().await?;
     let restart = run_systemctl(&["restart", SERVICE_NAME]).await?;
     let mut stderr = restart.stderr;
     if let Err(err) = poll_ready(port).await {
@@ -232,6 +234,27 @@ pub(crate) async fn restart() -> Result<HostServiceOutcome, ToolError> {
         stdout: restart.stdout,
         stderr,
     })
+}
+
+async fn provision_oauth_encryption_key_before_restart() -> Result<(), ToolError> {
+    let env = Path::new("/home/labby/.labby/.env");
+    let outcome = super::bootstrap::ensure_oauth_encryption_key_at(env)?;
+    if outcome.changed {
+        // env_merge's atomic replacement is created by the provisioning user;
+        // restore the service account ownership before systemd reads it.
+        run_command("chown", &["labby:labby", path_to_str(env)?]).await?;
+        if let Some(backup) = outcome.backup_path.as_deref() {
+            run_command("chown", &["labby:labby", path_to_str(backup)?]).await?;
+        }
+        tracing::info!(
+            service = "setup",
+            action = "oauth_encryption_key.provision",
+            changed = true,
+            backup_created = outcome.backup_path.is_some(),
+            "provisioned OAuth credential encryption key before service restart"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) async fn uninstall() -> Result<HostServiceOutcome, ToolError> {

@@ -1800,6 +1800,10 @@ fn build_mcp_service_with_scope(
                 gateway_manager: manager,
                 peers,
                 code_mode_app_state,
+                // Stateless HTTP requests cannot prove that a listen belongs
+                // to any earlier tools/list request. This per-request store is
+                // therefore intentionally empty; listen catches up
+                // conservatively instead of inheriting another conversation.
                 last_listed_tool_contract: Default::default(),
                 #[cfg(feature = "gateway")]
                 client_registry,
@@ -2061,6 +2065,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use futures::StreamExt;
     use tower::ServiceExt;
 
     #[cfg(feature = "fs")]
@@ -2347,7 +2352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_mcp_adapts_legacy_initialize_lifecycle() {
+    async fn http_mcp_adapts_every_declared_legacy_initialize_version() {
         let app = build_http_router(
             AppState::new(),
             None,
@@ -2359,7 +2364,71 @@ mod tests {
             false,
         )
         .expect("router with HTTP MCP");
-        let response = app
+        for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp")
+                        .header("host", "localhost")
+                        .header("content-type", "application/json")
+                        .header("accept", "application/json, text/event-stream")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "initialize",
+                                "params": {
+                                    "protocolVersion": version,
+                                    "capabilities": {},
+                                    "clientInfo": {"name": "legacy-test", "version": "1.0"}
+                                }
+                            })
+                            .to_string(),
+                        ))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("response body");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body).expect("legacy initialize response is JSON-RPC");
+            assert!(body.get("error").is_none(), "version {version}: {body}");
+            assert_eq!(body["result"]["protocolVersion"], version);
+            assert_eq!(body["result"]["capabilities"]["tools"]["listChanged"], true);
+        }
+    }
+
+    #[tokio::test]
+    async fn stateless_http_list_mutation_listen_race_catches_up_conservatively() {
+        let notifier = PeerNotifier::default();
+        let code_mode_app_state = notifier.code_mode_app_state.clone();
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            notifier,
+            true,
+            false,
+        )
+        .expect("router with HTTP MCP");
+        let meta = serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "stateless-baseline-test",
+                "version": "1.0"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {}
+        });
+
+        let listed = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -2367,35 +2436,82 @@ mod tests {
                     .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "tools/list")
                     .body(Body::from(
                         serde_json::json!({
                             "jsonrpc": "2.0",
                             "id": 1,
-                            "method": "initialize",
+                            "method": "tools/list",
+                            "params": {"_meta": meta.clone()}
+                        })
+                        .to_string(),
+                    ))
+                    .expect("tools/list request"),
+            )
+            .await
+            .expect("tools/list response");
+        assert_eq!(listed.status(), StatusCode::OK);
+
+        // Mutate the advertised contract after the caller's completed list and
+        // before its separate stateless listen request. Sampling the live
+        // contract during listen would incorrectly treat this new state as the
+        // caller's baseline and suppress the required catch-up signal.
+        code_mode_app_state.set_enabled(false);
+
+        let listening = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "subscriptions/listen")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "subscriptions/listen",
                             "params": {
-                                "protocolVersion": "2025-11-25",
-                                "capabilities": {},
-                                "clientInfo": {"name": "legacy-test", "version": "1.0"}
+                                "_meta": meta,
+                                "notifications": {"toolsListChanged": true}
                             }
                         })
                         .to_string(),
                     ))
-                    .expect("request"),
+                    .expect("subscriptions/listen request"),
             )
             .await
-            .expect("response");
-
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .expect("response body");
-        let body: serde_json::Value =
-            serde_json::from_slice(&body).expect("legacy initialize response is JSON-RPC");
-        assert!(body.get("error").is_none());
-        assert_eq!(body["result"]["protocolVersion"], "2025-11-25");
+            .expect("subscriptions/listen response");
+        assert_eq!(listening.status(), StatusCode::OK);
+        let mut stream = listening.into_body().into_data_stream();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut observed = Vec::new();
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, stream.next()).await {
+                Ok(Some(chunk)) => {
+                    observed.extend_from_slice(&chunk.expect("SSE chunk"));
+                    if String::from_utf8_lossy(&observed)
+                        .contains("notifications/tools/list_changed")
+                    {
+                        break;
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let observed = String::from_utf8_lossy(&observed);
+        assert!(
+            observed.contains("notifications/tools/list_changed"),
+            "the list(A) -> mutate(B) -> listen race missed its conservative catch-up: {observed}"
+        );
     }
 
     #[tokio::test]
-    async fn http_mcp_discovers_only_the_new_stateless_protocol() {
+    async fn http_mcp_discovers_all_supported_protocols() {
         let app = build_http_router(
             AppState::new(),
             None,
@@ -2446,9 +2562,10 @@ mod tests {
             .await
             .expect("response body");
         let body = String::from_utf8(body.to_vec()).expect("UTF-8 response");
-        assert!(body.contains("\"supportedVersions\":[\"2026-07-28\"]"));
+        for version in rmcp::model::ProtocolVersion::KNOWN_VERSIONS {
+            assert!(body.contains(version.as_str()), "missing {version}: {body}");
+        }
         assert!(body.contains("\"resultType\":\"complete\""));
-        assert!(!body.contains("2025-11-25"));
     }
 
     #[tokio::test]

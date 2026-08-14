@@ -400,7 +400,7 @@ async fn discover_api_base_url(client: &reqwest::Client, base_url: &str) -> Resu
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{WRONG_API_HOST_HINT}; discovery omitted apiBaseUrl"))?;
-    validate_discovered_api_base_url(api_base)
+    validate_trusted_discovered_api_base_url(base_url, api_base)
 }
 
 fn validate_discovered_api_base_url(value: &str) -> Result<String, String> {
@@ -412,6 +412,40 @@ fn validate_discovered_api_base_url(value: &str) -> Result<String, String> {
         ));
     }
     Ok(url.origin().ascii_serialization())
+}
+
+/// Treat the configured server authority as the credential trust anchor.
+/// Discovery may select a path, but it must not redirect OAuth or static
+/// bearer credentials to an authority that the operator did not configure.
+fn validate_trusted_discovered_api_base_url(
+    configured_base_url: &str,
+    discovered_api_base_url: &str,
+) -> Result<String, String> {
+    let configured = reqwest::Url::parse(configured_base_url)
+        .map_err(|err| format!("configured Labby server URL is invalid: {err}"))?;
+    let discovered_origin = validate_discovered_api_base_url(discovered_api_base_url)?;
+    let discovered = reqwest::Url::parse(&discovered_origin)
+        .map_err(|err| format!("{WRONG_API_HOST_HINT}; discovery apiBaseUrl is invalid: {err}"))?;
+
+    if configured.origin() != discovered.origin() {
+        return Err(format!(
+            "{WRONG_API_HOST_HINT}; discovery apiBaseUrl must use the explicitly trusted origin"
+        ));
+    }
+
+    let loopback = discovered.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    if discovered.scheme() != "https" && !loopback {
+        return Err(format!(
+            "{WRONG_API_HOST_HINT}; discovery apiBaseUrl must use TLS outside loopback"
+        ));
+    }
+
+    Ok(discovered_origin)
 }
 
 fn validate_launcher_request(request: &LauncherExecuteRequest) -> Result<(), String> {
@@ -472,7 +506,7 @@ mod tests {
 
     use super::{
         LauncherExecuteRequest, parse_json_payload, validate_discovered_api_base_url,
-        validate_launcher_request,
+        validate_launcher_request, validate_trusted_discovered_api_base_url,
     };
 
     #[test]
@@ -523,5 +557,52 @@ mod tests {
             "https://api.example.com"
         );
         assert!(validate_discovered_api_base_url("file:///tmp/labby").is_err());
+    }
+
+    #[test]
+    fn rejects_attacker_api_base_url_before_forwarding_credentials() {
+        let error = validate_trusted_discovered_api_base_url(
+            "https://labby.example.com",
+            "https://attacker.example/api",
+        )
+        .expect_err("cross-origin discovery must not become a credential target");
+
+        assert!(error.contains("trusted origin"));
+    }
+
+    #[test]
+    fn discovered_credential_target_requires_tls_outside_loopback() {
+        assert_eq!(
+            validate_trusted_discovered_api_base_url(
+                "https://labby.example.com",
+                "https://labby.example.com/api",
+            )
+            .unwrap(),
+            "https://labby.example.com"
+        );
+        assert!(
+            validate_trusted_discovered_api_base_url(
+                "http://labby.example.com",
+                "http://labby.example.com/api",
+            )
+            .expect_err("plaintext remote credential target must be rejected")
+            .contains("TLS")
+        );
+        assert_eq!(
+            validate_trusted_discovered_api_base_url(
+                "http://127.0.0.1:8765",
+                "http://127.0.0.1:8765/api",
+            )
+            .unwrap(),
+            "http://127.0.0.1:8765"
+        );
+        assert!(
+            validate_trusted_discovered_api_base_url(
+                "https://127.0.0.1:8765",
+                "http://127.0.0.1:8765/api",
+            )
+            .expect_err("HTTPS trust anchor must not downgrade to HTTP on loopback")
+            .contains("trusted origin")
+        );
     }
 }

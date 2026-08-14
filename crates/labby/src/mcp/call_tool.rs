@@ -218,29 +218,10 @@ impl LabMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        if self.tool_request_is_destructive(&request, &context).await {
-            let service = request.name.as_ref();
-            let action = request
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("action"))
-                .and_then(Value::as_str)
-                .unwrap_or("call_tool");
-            match crate::mcp::elicitation::destructive_confirmation(&request, service, action) {
-                crate::mcp::elicitation::DestructiveConfirmation::Proceed => {}
-                crate::mcp::elicitation::DestructiveConfirmation::InputRequired(result) => {
-                    return Ok(CallToolResponse::InputRequired(result));
-                }
-                crate::mcp::elicitation::DestructiveConfirmation::Refused => {
-                    let envelope = build_error(
-                        service,
-                        action,
-                        "confirmation_required",
-                        &format!("action `{action}` is destructive — confirm to proceed"),
-                    );
-                    return Ok(error_result_from_envelope(envelope).into());
-                }
-            }
+        if let Some(response) =
+            Box::pin(self.destructive_confirmation_response(&request, &context)).await
+        {
+            return Ok(response);
         }
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
@@ -818,6 +799,22 @@ impl LabMcpServer {
                 ),
             )
         {
+            // This return precedes the `dispatch start` log, so without this
+            // the denial produces NO server-side telemetry at all. `transport`
+            // is the field that makes it diagnosable: the in-process peer
+            // transport denies every `requires_admin` builtin by design, and
+            // "why is gateway.add forbidden under codemode" is otherwise
+            // unanswerable from the logs.
+            tracing::warn!(
+                surface = "mcp",
+                service = %service,
+                action = %action,
+                subject = self.request_subject_log_tag(&context),
+                transport = self.transport_label,
+                elapsed_ms = start.elapsed().as_millis(),
+                kind = "forbidden",
+                "builtin action denied by admin gate"
+            );
             let envelope = build_error_extra(
                 &service,
                 &action,
@@ -948,6 +945,39 @@ impl LabMcpServer {
                 &format!("service `{service}` not found"),
             );
             Ok(error_result_from_envelope(envelope).into())
+        }
+    }
+
+    async fn destructive_confirmation_response(
+        &self,
+        request: &CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> Option<CallToolResponse> {
+        if !self.tool_request_is_destructive(request, context).await {
+            return None;
+        }
+
+        let service = request.name.as_ref();
+        let action = request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("call_tool");
+        match crate::mcp::elicitation::destructive_confirmation(request, service, action) {
+            crate::mcp::elicitation::DestructiveConfirmation::Proceed => None,
+            crate::mcp::elicitation::DestructiveConfirmation::InputRequired(result) => {
+                Some(CallToolResponse::InputRequired(result))
+            }
+            crate::mcp::elicitation::DestructiveConfirmation::Refused => {
+                let envelope = build_error(
+                    service,
+                    action,
+                    "confirmation_required",
+                    &format!("action `{action}` is destructive — confirm to proceed"),
+                );
+                Some(error_result_from_envelope(envelope).into())
+            }
         }
     }
 

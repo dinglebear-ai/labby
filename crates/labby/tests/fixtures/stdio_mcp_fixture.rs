@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 use std::sync::Arc;
 
 use rmcp::model::{

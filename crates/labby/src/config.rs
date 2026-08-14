@@ -541,6 +541,27 @@ impl LabConfig {
                         value: "gateway_subset target entries must not be empty".to_string(),
                     },
                 )?;
+                // Mirrors the identical guard in
+                // `labby_runtime::gateway_config::GatewayConfig::normalize_protected_mcp_routes`.
+                // THIS is the copy `load_toml` runs, and therefore the copy the
+                // mounted route scopes in `cli/serve.rs` are built from — the
+                // runtime copy alone left the guard off the serve path
+                // (review finding on lab-eyeuv). Keep the two in sync.
+                if let Some(reserved) = target
+                    .upstreams
+                    .iter()
+                    .find(|name| name.starts_with(IN_PROCESS_UPSTREAM_PREFIX))
+                {
+                    return Err(ConfigError::InvalidProtectedRoute {
+                        name: route.name.clone(),
+                        field: "target.upstreams",
+                        value: format!(
+                            "`{reserved}` uses the reserved `{IN_PROCESS_UPSTREAM_PREFIX}` \
+                             prefix; built-in service peers cannot be routed to a protected \
+                             subset — list the service under `target.services` instead"
+                        ),
+                    });
+                }
             }
             if route.target.is_some()
                 && (route.upstream.is_some() || !route.backend_url.trim().is_empty())
@@ -795,6 +816,7 @@ fn invalid_protected_route(
 // `lab-gateway`; keep them as the public `labby::config` surface and silence the
 // bin-target unused-import lint.
 #[allow(unused_imports)]
+pub use labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX;
 pub use labby_runtime::gateway_config::{
     CodeModeConfig, CodeModeResultShapePolicy, ConfigError, GatewayConfig, GatewayImportMode,
     GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
@@ -1005,6 +1027,13 @@ pub fn resolve_auth_for_config(cfg: &LabConfig) -> Result<auth_config::AuthConfi
 /// Prefer [`resolve_auth_for_config`] when a full `LabConfig` is available,
 /// so that `[public_urls].app` is used as a fallback for `LABBY_PUBLIC_URL`.
 pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::AuthConfig> {
+    resolve_auth_with_env(config, std::env::vars())
+}
+
+fn resolve_auth_with_env(
+    config: Option<&AuthFileConfig>,
+    env_vars: impl IntoIterator<Item = (String, String)>,
+) -> Result<auth_config::AuthConfig> {
     let mut merged: HashMap<String, String> = HashMap::new();
 
     if let Some(config) = config {
@@ -1125,10 +1154,11 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
         );
     }
 
-    for (key, value) in std::env::vars() {
+    for (key, value) in env_vars {
         if key.starts_with("LABBY_AUTH_")
             || key == "LABBY_PUBLIC_URL"
             || key.starts_with("LABBY_GOOGLE_")
+            || key == "LABBY_TOKEN_ENCRYPTION_KEY"
         {
             merged.insert(key, value);
         }
@@ -2045,6 +2075,14 @@ fn scan_instances_from(
 mod tests {
     use super::*;
 
+    fn resolve_oauth_fixture(config: &AuthFileConfig) -> auth_config::AuthConfig {
+        resolve_auth_with_env(
+            Some(config),
+            [("LABBY_TOKEN_ENCRYPTION_KEY".to_string(), "11".repeat(32))],
+        )
+        .expect("OAuth fixture should resolve")
+    }
+
     /// `install_resolved_preferences` must pick up config.toml values when no
     /// overriding env var is set. This test does not touch process env, so
     /// it's safe under both nextest's per-process isolation and cargo test's
@@ -2412,7 +2450,7 @@ future = "keep"
             codex_issuer_compatibility: Some(true),
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
         assert_eq!(resolved.access_token_ttl.as_secs(), 120);
         assert_eq!(resolved.refresh_token_ttl.as_secs(), 3600);
         assert_eq!(resolved.auth_code_ttl.as_secs(), 45);
@@ -2453,7 +2491,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).unwrap();
+        let resolved = resolve_oauth_fixture(&cfg);
         assert_eq!(resolved.machine_clients, vec![machine]);
         assert_eq!(resolved.enterprise_issuers, vec![issuer]);
     }
@@ -2469,7 +2507,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
 
         assert_eq!(
             resolved.allowed_client_redirect_uris,
@@ -2496,7 +2534,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
 
         assert_eq!(resolved.allowed_client_redirect_uris, Vec::<String>::new());
     }
@@ -2513,7 +2551,7 @@ future = "keep"
             ..AuthFileConfig::default()
         };
 
-        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+        let resolved = resolve_oauth_fixture(&cfg);
 
         assert_eq!(
             resolved.allowed_client_redirect_uris,
@@ -3682,5 +3720,36 @@ services = ["removed-service"]
                 .and_then(|n| n.to_str()),
             Some(".labby")
         );
+    }
+
+    /// Review finding on lab-eyeuv: the reserved-prefix guard was added to
+    /// `labby_runtime`'s copy of `normalize_protected_mcp_routes`, but
+    /// `load_toml` runs THIS copy — and the route scopes mounted by
+    /// `cli/serve.rs` are built from this config. The guard has to live on
+    /// both, and this test pins the serve-path copy specifically.
+    #[test]
+    fn serve_path_normalization_rejects_reserved_in_process_upstreams() {
+        let mut route: ProtectedMcpRouteConfig = toml::from_str(
+            "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+        )
+        .unwrap();
+        route.backend_url = String::new();
+        route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
+                services: Vec::new(),
+                expose_code_mode: false,
+            },
+        ));
+        let mut cfg = LabConfig {
+            protected_mcp_routes: vec![route],
+            ..LabConfig::default()
+        };
+
+        let error = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("the serve-path copy must reject the reserved prefix");
+        let rendered = error.to_string();
+        assert!(rendered.contains("__in_process__setup"), "{rendered}");
     }
 }

@@ -82,8 +82,11 @@ peer_uid = 1000
 ## Authentication
 
 - Operator/admin routes use the configured bearer or OAuth mode.
-- The downstream MCP endpoint implements only the stateless `2026-07-28`
-  lifecycle. The gateway-to-upstream boundary attempts `server/discover` first
+- The downstream MCP endpoint uses the stateless `2026-07-28` lifecycle as its
+  primary contract. Its legacy `initialize` compatibility path declares and
+  preserves every SDK-known historical protocol version it genuinely adapts,
+  so older clients retain that version's request-validation and wire semantics.
+  The gateway-to-upstream boundary attempts `server/discover` first
   and performs one bounded fallback to legacy `initialize` for recognized
   lifecycle-compatibility failures; HTTP/TCP and Unix-socket upstreams share
   that policy.

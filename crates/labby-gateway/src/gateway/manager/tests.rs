@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Shared fixtures for the `GatewayManager` test suite. The tests themselves
 //! live in the `tests/` child modules, split by concern; each child does
 //! `use super::*;` to inherit these fixtures and imports.
@@ -45,6 +46,113 @@ struct DeployKnownRegistry;
 struct SlowPersistStore {
     calls: Arc<AtomicUsize>,
     delay: Duration,
+}
+
+struct FaultAfterPersistStore {
+    path: PathBuf,
+    fail_next: std::sync::atomic::AtomicBool,
+    process_code_mode_enabled: std::sync::atomic::AtomicBool,
+}
+
+struct PauseAfterPersistStore {
+    path: PathBuf,
+    persisted: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl GatewayConfigStore for PauseAfterPersistStore {
+    fn public_urls(&self) -> ResolvedPublicUrls {
+        ResolvedPublicUrls::default()
+    }
+    fn set_process_code_mode_enabled(&self, _enabled: bool) {}
+    fn env_path(&self) -> PathBuf {
+        self.path.with_file_name(".env")
+    }
+    fn persist(&self, cfg: &GatewayConfig) -> Result<(), labby_runtime::error::ToolError> {
+        crate::gateway::config::write_gateway_config(&self.path, cfg)?;
+        let (persisted_lock, persisted_cv) = &*self.persisted;
+        *persisted_lock.lock().expect("persist signal lock") = true;
+        persisted_cv.notify_all();
+        let (release_lock, release_cv) = &*self.release;
+        let mut released = release_lock.lock().expect("release lock");
+        while !*released {
+            released = release_cv.wait(released).expect("release wait");
+        }
+        Ok(())
+    }
+    fn persist_gateway_bearer_token<'a>(
+        &'a self,
+        _env_name: &'a str,
+        _token_value: &'a str,
+    ) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn persist_service_env<'a>(
+        &'a self,
+        _service: &'a str,
+        _values: &'a BTreeMap<String, String>,
+    ) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl FaultAfterPersistStore {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            fail_next: std::sync::atomic::AtomicBool::new(false),
+            process_code_mode_enabled: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn fail_next_reload(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
+    }
+
+    fn process_code_mode_enabled(&self) -> bool {
+        self.process_code_mode_enabled.load(Ordering::SeqCst)
+    }
+}
+
+impl GatewayConfigStore for FaultAfterPersistStore {
+    fn public_urls(&self) -> ResolvedPublicUrls {
+        ResolvedPublicUrls::default()
+    }
+
+    fn set_process_code_mode_enabled(&self, enabled: bool) {
+        self.process_code_mode_enabled
+            .store(enabled, Ordering::SeqCst);
+    }
+
+    fn env_path(&self) -> PathBuf {
+        self.path.with_file_name(".env")
+    }
+
+    fn persist(&self, cfg: &GatewayConfig) -> Result<(), labby_runtime::error::ToolError> {
+        crate::gateway::config::write_gateway_config(&self.path, cfg)?;
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            std::fs::write(&self.path, "this is not valid toml = [").map_err(|error| {
+                labby_runtime::error::ToolError::internal_message(error.to_string())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn persist_gateway_bearer_token<'a>(
+        &'a self,
+        _env_name: &'a str,
+        _token_value: &'a str,
+    ) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn persist_service_env<'a>(
+        &'a self,
+        _service: &'a str,
+        _values: &'a BTreeMap<String, String>,
+    ) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 impl GatewayConfigStore for SlowPersistStore {

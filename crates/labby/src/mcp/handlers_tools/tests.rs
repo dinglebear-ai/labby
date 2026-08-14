@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Tests for tool-list/catalog visibility + upstream-pool resolution.
 //! Distributed from `server.rs` (bead `lab-kvji.24.1.6`). Duplicates the
 //! small `completion_test_registry` fixture to keep this `tests.rs`
@@ -9,6 +10,7 @@ use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::dispatch::upstream::types::{
     ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
+use crate::mcp::catalog::ToolCatalogSnapshot;
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
@@ -1876,6 +1878,98 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
 }
 
 #[tokio::test]
+async fn raw_oauth_list_tools_uses_only_the_subject_cache() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let mut upstream = fixture_oauth_upstream_config("cold-oauth");
+    upstream.url = Some(format!("http://{address}/mcp"));
+    let pool = Arc::new(UpstreamPool::new());
+    let manager = code_mode_manager_with_pool(false, upstream, Arc::clone(&pool)).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        running
+            .service()
+            .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"])),
+    )
+    .await
+    .expect("cached tools/list must return promptly")
+    .expect("list tools");
+
+    assert!(
+        result
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "remote")
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "root tools/list must not open an OAuth upstream connection"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "proxy-testkit")]
+async fn raw_oauth_list_tools_preserves_cached_subject_tools() {
+    let mut upstream = fixture_oauth_upstream_config("warm-oauth");
+    upstream.expose_tools = Some(vec!["visible".to_string()]);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "reader",
+        vec![
+            Tool::new("visible", "visible", Arc::new(serde_json::Map::new())),
+            Tool::new("hidden", "hidden", Arc::new(serde_json::Map::new())),
+        ],
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(false, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("list tools");
+
+    assert!(
+        result
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "visible")
+    );
+    assert!(
+        result
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "hidden")
+    );
+}
+
+#[tokio::test]
 async fn list_tools_does_not_promote_upstream_mcp_app_tools_when_resources_are_not_proxied() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(
@@ -3079,6 +3173,7 @@ async fn call_tool_honors_route_scope_for_mcp_app_sibling_callbacks() {
 }
 
 #[tokio::test]
+#[cfg(feature = "proxy-testkit")]
 async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks() {
     let upstream_name: Arc<str> = Arc::from("oauth_apps");
     let ui_tool = fixture_upstream_tool(
@@ -3088,19 +3183,14 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
     );
     let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
     let pool = Arc::new(UpstreamPool::new());
-    pool.insert_entry_for_test(
-        "oauth_apps",
-        fixture_upstream_entry(
-            "oauth_apps",
-            HashMap::from([
-                ("youtube_search_ui".to_string(), ui_tool),
-                ("youtube_probe".to_string(), plain_tool),
-            ]),
-        ),
+    let upstream = fixture_oauth_upstream_config("oauth_apps");
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "reader",
+        vec![ui_tool.tool, plain_tool.tool],
     )
     .await;
-    let manager =
-        code_mode_manager_with_pool(true, fixture_oauth_upstream_config("oauth_apps"), pool).await;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
     let server = test_server(
         completion_test_registry(),
         Some(manager),
@@ -3129,7 +3219,47 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
         envelope["error"]["cause"]
             .as_str()
             .is_some_and(|cause| cause.contains("relayed upstream")),
-        "subject-scoped route should preserve relayed-connect evidence: {text}"
+        "subject-scoped catalog must pass the sibling callback gate and reach relayed execution: {text}"
+    );
+}
+
+#[tokio::test]
+async fn call_tool_rejects_priority_zero_oauth_subject_scoped_callbacks() {
+    let upstream_name: Arc<str> = Arc::from("oauth_apps");
+    let ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_search_ui",
+        Some("ui://oauth-apps/youtube-search.html"),
+    );
+    let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "oauth_apps",
+        fixture_upstream_entry(
+            "oauth_apps",
+            HashMap::from([
+                ("youtube_search_ui".to_string(), ui_tool),
+                ("youtube_probe".to_string(), plain_tool),
+            ]),
+        ),
+    )
+    .await;
+    let mut upstream = fixture_oauth_upstream_config("oauth_apps");
+    upstream.priority = 0.0;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+
+    let text = call_tool_error_text(server, "youtube_probe").await;
+    let envelope: Value = serde_json::from_str(&text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "not_found");
+    assert!(
+        !text.contains("oauth_apps"),
+        "non-routable OAuth upstream must not be selected or disclosed, got {text}"
     );
 }
 
@@ -3173,7 +3303,8 @@ async fn list_tools_paginates_large_builtin_catalog() {
             .last_listed_tool_contract
             .read()
             .await
-            .is_none(),
+            .candidate_count(&None)
+            == 0,
         "a partial first page must not publish a complete contract baseline"
     );
     let wire = serde_json::to_value(&first).expect("serialize tool list");
@@ -3209,7 +3340,8 @@ async fn list_tools_paginates_large_builtin_catalog() {
             .last_listed_tool_contract
             .read()
             .await
-            .is_none(),
+            .candidate_count(&None)
+            == 0,
         "an intermediate page must not publish a complete contract baseline"
     );
     let third_request = PaginatedRequestParams::default().with_cursor(second.next_cursor.clone());
@@ -3229,7 +3361,8 @@ async fn list_tools_paginates_large_builtin_catalog() {
             .last_listed_tool_contract
             .read()
             .await
-            .is_some(),
+            .candidate_count(&None)
+            == 1,
         "only the final revision-validated page publishes the baseline"
     );
     assert!(
@@ -4565,4 +4698,279 @@ async fn peer_contract_removes_all_codemode_tools_when_read_and_execute_are_revo
     assert!(!contract.tools.contains(CODE_MODE_READ_TOOL_NAME));
     assert!(!contract.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(!contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
+}
+
+// ── Issue #210: builtin outputSchema + descriptor drift (Raw mode) ──────────
+
+/// AC-2 + AC-2a. The existing drift test above runs only under Code Mode,
+/// where `hide_raw_tools` suppresses every builtin except `server_logs`, so it
+/// never exercises the builtin descriptor loop. This sibling forces Raw mode.
+#[tokio::test]
+async fn raw_mode_builtin_descriptors_match_across_builders() {
+    // HERMETIC: force Raw unconditionally. `Root` + `gateway_manager: None` is
+    // NOT sufficient — `peer_contract.rs` returns InProcessPeer when
+    // `gateway_manager.is_none() && config::process_code_mode_enabled()`, and
+    // that backing store is a process-global `AtomicBool` any other test in
+    // the binary can set. `expose_code_mode: false` forces Raw.
+    //
+    // The services list MUST name the registered services:
+    // `service_visible_on_mcp` gates on `route_scope.allows_service`, so an
+    // empty list advertises nothing and the test proves nothing.
+    let scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "raw-mode-drift",
+        Vec::<String>::new(),
+        ["hidden-upstream", "gateway-alpha"],
+        /* expose_code_mode */ false,
+    );
+    let server = test_server(
+        completion_test_registry(),
+        None,
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+
+    let contract_tools = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let snapshot_for_request = running
+        .service()
+        .snapshot_tool_catalog_for_request(&context)
+        .await;
+    let result = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list tools");
+
+    assert_eq!(
+        result.tools, contract_tools,
+        "raw-mode tools/list and the notification contract must use identical descriptors"
+    );
+
+    // AC-2a: `output_schema` participates in `descriptor_contract_hash`, which
+    // drives tools/list_changed — one-sided drift makes change detection
+    // wrong, not merely incomplete.
+    assert_eq!(
+        ToolCatalogSnapshot::from_descriptors(&result.tools),
+        snapshot_for_request,
+        "snapshot built from the handler's descriptors must equal the request snapshot"
+    );
+
+    // Positive name assertions: without these the test passes vacuously — the
+    // exact failure mode of the code-mode sibling.
+    let names = result
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"gateway-alpha"),
+        "raw mode must advertise builtins"
+    );
+    assert!(
+        names.contains(&"hidden-upstream"),
+        "raw mode must NOT suppress builtins — the code-mode sibling asserts the inverse"
+    );
+
+    // AC-1: every registry service advertises the success-envelope schema.
+    // Scoped to registry services: synthetic tools may legitimately carry no
+    // schema (`mcp_app` returns `{"kind":"mcp_app_control", …}`).
+    let service_names: Vec<&str> = completion_test_registry()
+        .services()
+        .iter()
+        .map(|s| s.name)
+        .collect();
+    for tool in result
+        .tools
+        .iter()
+        .filter(|t| service_names.contains(&t.name.as_ref()))
+    {
+        let schema = tool
+            .output_schema
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} advertises no outputSchema", tool.name));
+        assert_eq!(schema["properties"]["ok"]["const"], serde_json::json!(true));
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["ok", "service", "action", "data"])
+        );
+        assert_eq!(schema["additionalProperties"], serde_json::json!(true));
+    }
+}
+
+/// AC-3 both axes: the success envelope is always present as
+/// `structuredContent`, carries exactly the four contract keys, and the text
+/// block parses to the identical value.
+#[tokio::test]
+async fn builtin_help_success_sets_conformant_structured_content() {
+    let server = test_server(
+        completion_test_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "raw-mode-envelope",
+            Vec::<String>::new(),
+            ["hidden-upstream", "gateway-alpha"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway-alpha").with_arguments(serde_json::Map::from_iter([(
+            "action".to_string(),
+            Value::String("help".to_string()),
+        )])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert_ne!(result.is_error, Some(true), "help must succeed");
+    let structured = result
+        .structured_content
+        .as_ref()
+        .expect("success results must always set structuredContent (FR-3 axis 2)");
+    let envelope = structured.as_object().expect("envelope object");
+    assert_eq!(
+        envelope.len(),
+        4,
+        "success envelope must carry exactly ok/service/action/data: {envelope:?}"
+    );
+    assert_eq!(envelope["ok"], Value::Bool(true));
+    assert_eq!(envelope["service"], Value::String("gateway-alpha".into()));
+    assert_eq!(envelope["action"], Value::String("help".into()));
+    assert!(envelope.contains_key("data"));
+
+    let text = result.content[0].as_text().expect("compat text block");
+    let reparsed: Value = serde_json::from_str(&text.text).expect("text block parses");
+    assert_eq!(
+        &reparsed, structured,
+        "compat text block must serialize the identical envelope"
+    );
+}
+
+/// Error exemption (CONTRACT §C3.2): an unknown action returns `isError` with
+/// an `{ok: false}` envelope; the advertised success schema deliberately does
+/// not describe it.
+///
+/// Needs its own dispatch fn: `noop_dispatch` succeeds for every action, so
+/// the shared fixture cannot produce this path.
+#[tokio::test]
+async fn builtin_unknown_action_error_is_exempt_from_success_schema() {
+    fn unknown_action_dispatch(
+        action: String,
+        _params: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
+        Box::pin(async move {
+            Err(ToolError::UnknownAction {
+                message: format!("unknown action `{action}`"),
+                valid: vec!["demo.list".to_string()],
+                hint: None,
+            })
+        })
+    }
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredService {
+        name: "gateway-alpha",
+        description: "Gateway alpha",
+        category: "network",
+        kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
+        status: "available",
+        actions: TEST_ACTIONS_TWO,
+        dispatch: unknown_action_dispatch,
+    });
+    let server = test_server(
+        registry,
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "raw-mode-error",
+            Vec::<String>::new(),
+            ["hidden-upstream", "gateway-alpha"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway-alpha").with_arguments(serde_json::Map::from_iter([(
+            "action".to_string(),
+            Value::String("definitely.not.real".to_string()),
+        )])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+
+    assert_eq!(result.is_error, Some(true));
+    let structured = result.structured_content.as_ref().expect("error envelope");
+    assert_eq!(structured["ok"], Value::Bool(false));
+    assert!(
+        structured.get("error").is_some(),
+        "error envelope carries the agent error contract, not the success shape"
+    );
+}
+
+/// FR-2a (issue #210, lab-41e7m.5): non-admin denial at the DISPATCH path.
+/// The consolidated availability gate is audience-free; the admin check lives
+/// at this call site. A non-admin caller's `add_server` call must fall
+/// through to normal routing (unknown tool here — no upstream by that name),
+/// never into the admin app handler; an admin caller is handled.
+#[tokio::test]
+async fn call_tool_add_server_denies_non_admin_scope_at_dispatch() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let denied = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(ADD_SERVER_TOOL_NAME),
+        scoped_context(running.peer().clone(), &["lab:read"]),
+    ))
+    .await
+    .expect("call result");
+    assert_eq!(
+        denied.is_error,
+        Some(true),
+        "non-admin call must fall through to normal routing (which errors here), not the admin app"
+    );
+    let envelope = denied.structured_content.as_ref().expect("error envelope");
+    assert_eq!(envelope["ok"], Value::Bool(false));
+
+    let handled = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(ADD_SERVER_TOOL_NAME),
+        scoped_context(running.peer().clone(), &["lab:admin"]),
+    ))
+    .await
+    .expect("admin call result");
+    let structured = handled
+        .structured_content
+        .as_ref()
+        .expect("admin add_server dispatch formats an envelope");
+    assert_eq!(
+        structured["service"],
+        Value::String(ADD_SERVER_TOOL_NAME.into())
+    );
 }

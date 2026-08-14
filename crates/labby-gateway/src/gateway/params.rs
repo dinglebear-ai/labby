@@ -330,8 +330,6 @@ pub(crate) struct GatewayMcpCleanupParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct GatewayOauthNameParams {
     pub upstream: String,
-    #[serde(default)]
-    pub subject: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

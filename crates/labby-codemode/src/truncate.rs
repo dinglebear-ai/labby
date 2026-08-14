@@ -268,6 +268,9 @@ pub(crate) fn apply_log_caps(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shape::CodeModeResultShapeMetadata;
+    use crate::types::CodeModeExecutedCall;
+    use labby_runtime::CodeModeResultShapePolicy;
 
     fn response_with_logs(result: Value, logs: Vec<String>) -> CodeModeExecutionResponse {
         CodeModeExecutionResponse {
@@ -299,6 +302,62 @@ mod tests {
                 response_within_budget(&probe, max_bytes, max_tokens, divisor)
             })
             .unwrap_or(original.len())
+    }
+
+    /// FR-5 (issue #210, lab-41e7m.2): the DEFAULT truncation path replaces an
+    /// over-budget result with an OBJECT marker — `truncated: true`,
+    /// `next_action`, a bounded `preview` — while `calls[]` metadata survives
+    /// verbatim. Structure must never collapse to a bare string here; the
+    /// string-marker path is `shape.rs`, which only runs under a non-`Off`
+    /// result-shape policy.
+    #[test]
+    fn over_budget_result_becomes_object_marker_and_calls_survive() {
+        let calls = vec![CodeModeExecutedCall {
+            id: "demo::big_query".to_string(),
+            ok: true,
+            elapsed_ms: 42,
+            start_ms: Some(1),
+            params: Some(json!({"q": "everything"})),
+            error_kind: None,
+            ui: None,
+        }];
+        let mut response =
+            response_with_logs(json!({"rows": vec!["r".repeat(64); 200]}), Vec::new());
+        response.calls = calls.clone();
+        response.result_shaping = Some(CodeModeResultShapeMetadata {
+            policy: CodeModeResultShapePolicy::Off,
+            changed: false,
+            truncated: false,
+            original_size_bytes: 0,
+            shaped_size_bytes: 0,
+            warning: None,
+        });
+
+        let truncated = truncate_execution_response(response, 4096, usize::MAX, 4);
+
+        let marker = truncated.result.as_ref().expect("marker result");
+        let marker = marker
+            .as_object()
+            .expect("marker must stay a JSON object, not a string");
+        assert_eq!(marker["truncated"], json!(true));
+        assert!(
+            marker["next_action"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
+            "marker carries agent guidance"
+        );
+        assert!(
+            marker["preview"].as_str().is_some_and(|s| s.len() <= 1024),
+            "preview is bounded"
+        );
+        assert_eq!(
+            truncated.calls, calls,
+            "structured calls[] metadata must survive result truncation"
+        );
+        assert!(
+            truncated.result_shaping.is_none(),
+            "stale shaping metadata must not describe the marker"
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -246,8 +247,13 @@ fn manager_clones_share_registry_and_restart_does_not_restore_leases() {
     assert_eq!(restarted.resource_registry().unwrap().lease_count(), 1);
 }
 
+/// Import actions mutate gateway import state, but `destructive` does not mean
+/// "mutates state" — it means unrecoverable data loss. Every import mutation
+/// has an undo path: imports land disabled-by-default, a rejection writes a
+/// tombstone, and `import_tombstones.clear` reverses the tombstone. They are
+/// admin-gated via `requires_admin`, not confirmation-gated.
 #[test]
-fn import_mutations_are_destructive() {
+fn import_mutations_are_not_destructive() {
     for name in [
         "gateway.import",
         "gateway.import_pending.approve",
@@ -259,32 +265,48 @@ fn import_mutations_are_destructive() {
             .iter()
             .find(|spec| spec.name == name)
             .unwrap_or_else(|| panic!("{name} action"));
-        assert!(spec.destructive, "{name} mutates gateway import state");
+        assert!(
+            !spec.destructive,
+            "{name} mutates import state but loses no unrecoverable data"
+        );
     }
 }
 
+/// `gateway.enrich.preview` really does spawn a local provider subprocess
+/// (`claude`/`codex`, see `enrichment/provider.rs`). Spawning a process is not
+/// destructive under Lab's data-loss definition — the same reasoning that keeps
+/// `gateway.test` non-destructive despite spawning stdio upstreams. The gate
+/// for local execution is `requires_admin` plus the spawn allowlist.
 #[test]
-fn enrich_preview_is_destructive_because_external_providers_spawn() {
+fn enrich_preview_spawns_providers_but_is_not_destructive() {
     let spec = ACTIONS
         .iter()
         .find(|spec| spec.name == "gateway.enrich.preview")
         .expect("gateway.enrich.preview action");
 
-    assert!(spec.destructive);
+    assert!(!spec.destructive);
+    assert!(spec.requires_admin);
 }
 
+/// `gateway.remove` deletes an operator-authored upstream config entry with no
+/// undo path, so it clears the data-loss bar. `gateway.mcp.cleanup` only kills
+/// runtime processes, which the definition explicitly calls out as recoverable.
 #[test]
-fn gateway_remove_and_runtime_cleanup_are_destructive() {
-    for name in ["gateway.remove", "gateway.mcp.cleanup"] {
-        let spec = ACTIONS
-            .iter()
-            .find(|spec| spec.name == name)
-            .unwrap_or_else(|| panic!("{name} action"));
-        assert!(
-            spec.destructive,
-            "{name} deletes config or runtime processes"
-        );
-    }
+fn gateway_remove_is_destructive_but_runtime_cleanup_is_not() {
+    let remove = ACTIONS
+        .iter()
+        .find(|spec| spec.name == "gateway.remove")
+        .expect("gateway.remove action");
+    assert!(remove.destructive, "gateway.remove deletes config");
+
+    let cleanup = ACTIONS
+        .iter()
+        .find(|spec| spec.name == "gateway.mcp.cleanup")
+        .expect("gateway.mcp.cleanup action");
+    assert!(
+        !cleanup.destructive,
+        "killing runtime processes is recoverable"
+    );
 }
 
 #[tokio::test]
@@ -318,6 +340,35 @@ async fn enrich_preview_dispatch_rejects_empty_selection() {
         .expect_err("empty selection must fail");
 
     assert_eq!(err.kind(), "invalid_param");
+}
+
+#[tokio::test]
+async fn shared_gateway_oauth_actions_reject_subject_overrides_without_echoing_them() {
+    let manager = test_manager();
+
+    for action in [
+        "gateway.oauth.start",
+        "gateway.oauth.status",
+        "gateway.oauth.clear",
+        "gateway.oauth.wait",
+    ] {
+        let error = dispatch_with_manager(
+            &manager,
+            action,
+            json!({
+                "upstream": "example",
+                "subject": "private-subject-marker",
+            }),
+        )
+        .await
+        .expect_err("shared OAuth actions must reject subject overrides before execution");
+
+        assert_eq!(error.kind(), "invalid_param", "{action}");
+        assert!(
+            !error.to_string().contains("private-subject-marker"),
+            "{action}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -881,6 +932,17 @@ async fn disabled_oauth_upstream_is_not_eligible_for_subject_discovery() {
     manager
         .replace_config_for_tests(vec![oauth_upstream_fixture("linear", false)])
         .await;
+
+    assert!(manager.oauth_upstream_config("linear").await.is_none());
+    assert!(manager.oauth_upstream_configs().await.is_empty());
+}
+
+#[tokio::test]
+async fn non_positive_priority_oauth_upstream_is_not_eligible_for_subject_discovery() {
+    let manager = test_manager();
+    let mut upstream = oauth_upstream_fixture("linear", true);
+    upstream.priority = 0.0;
+    manager.replace_config_for_tests(vec![upstream]).await;
 
     assert!(manager.oauth_upstream_config("linear").await.is_none());
     assert!(manager.oauth_upstream_configs().await.is_empty());

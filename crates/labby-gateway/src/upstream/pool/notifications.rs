@@ -5,17 +5,39 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use futures::stream::FuturesUnordered;
+use futures::stream;
 use rmcp::model::{ServerNotification, SubscriptionFilter};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
+use super::catalog_pagination;
 use super::helpers::{DISCOVERY_TIMEOUT, bare_upstream_resource_uri, cached_upstream_tool};
+use super::tools::MAX_UPSTREAM_TOOLS;
 
 const NOTIFICATION_EVENT_CAPACITY: usize = 1024;
-const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_secs(2);
+const SUBSCRIPTION_RECONCILE_CONCURRENCY: usize = 8;
+const SUBSCRIPTION_STABLE_INTERVAL: Duration = Duration::from_secs(30);
+
+pub(super) fn subscription_retry_delay(upstream: &str, attempt: u32) -> Duration {
+    let base = labby_runtime::backoff::reprobe_backoff(attempt);
+    let seed = upstream
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+        ^ u64::from(attempt);
+    labby_runtime::backoff::jitter_delay(base, seed)
+}
+
+pub(super) fn next_subscription_retry_attempt(attempt: u32, established_for: Duration) -> u32 {
+    if established_for >= SUBSCRIPTION_STABLE_INTERVAL {
+        0
+    } else {
+        attempt.saturating_add(1)
+    }
+}
 
 /// A notification observed on an upstream MCP connection and normalized for
 /// downstream gateway consumers.
@@ -77,24 +99,23 @@ impl UpstreamPool {
             return false;
         };
 
-        let listed = tokio::time::timeout(DISCOVERY_TIMEOUT, peer.list_all_tools()).await;
-        let tools = match listed {
-            Ok(Ok(tools)) => tools,
-            Ok(Err(error)) => {
-                let error = format!("tool-list refresh after list-changed signal failed: {error}");
-                self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
-                    .await;
-                tracing::warn!(upstream, error = %error, "upstream tool-list refresh failed");
-                return false;
-            }
-            Err(_) => {
+        let tools = match catalog_pagination::list_tools(
+            &peer,
+            DISCOVERY_TIMEOUT,
+            MAX_UPSTREAM_TOOLS,
+        )
+        .await
+        {
+            Ok(tools) => tools,
+            Err(error) => {
+                let kind = error.kind();
                 let error = format!(
-                    "tool-list refresh after list-changed signal timed out after {}s",
-                    DISCOVERY_TIMEOUT.as_secs()
+                    "tool-list refresh after list-changed signal failed: {}",
+                    error.bounded_text()
                 );
                 self.record_failure_for(upstream, UpstreamCapability::Tools, error.clone())
                     .await;
-                tracing::warn!(upstream, error = %error, "upstream tool-list refresh failed");
+                tracing::warn!(upstream, kind, error = %error, "upstream tool-list refresh failed");
                 return false;
             }
         };
@@ -323,6 +344,26 @@ impl UpstreamPool {
         let upstream = upstream.to_string();
         tokio::spawn(async move {
             let mut initial_subscription = initial_subscription;
+            let mut retry_attempt = 0_u32;
+            if initial_subscription.is_none() {
+                let delay = subscription_retry_delay(&upstream, retry_attempt);
+                retry_attempt = retry_attempt.saturating_add(1);
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "subscription.listen",
+                    phase = "retry_wait",
+                    upstream = %upstream,
+                    retry_attempt,
+                    delay_ms = delay.as_millis(),
+                    "upstream subscription reconnect scheduled"
+                );
+                tokio::select! {
+                    biased;
+                    () = generation.cancelled() => return,
+                    () = tokio::time::sleep(delay) => {}
+                }
+            }
             loop {
                 let (mut subscription, publish_acknowledgement) = match initial_subscription.take()
                 {
@@ -331,14 +372,18 @@ impl UpstreamPool {
                         let established = tokio::select! {
                             biased;
                             () = generation.cancelled() => break,
-                            result = peer.listen(requested.clone()) => result,
+                            result = tokio::time::timeout(
+                                DISCOVERY_TIMEOUT,
+                                peer.listen(requested.clone()),
+                            ) => result,
                         };
                         let subscription = match established {
-                            Ok(subscription) => subscription,
-                            Err(error) => {
+                            Ok(Ok(subscription)) => subscription,
+                            Ok(Err(error)) => {
                                 tracing::warn!(
                                     upstream = %upstream,
                                     error = %error,
+                                    retry_attempt,
                                     "failed to establish upstream subscriptions/listen stream"
                                 );
                                 if !pool
@@ -347,16 +392,61 @@ impl UpstreamPool {
                                 {
                                     return;
                                 }
+                                let delay = subscription_retry_delay(&upstream, retry_attempt);
+                                retry_attempt = retry_attempt.saturating_add(1);
+                                tracing::warn!(
+                                    surface = "dispatch",
+                                    service = "upstream.pool",
+                                    action = "subscription.listen",
+                                    phase = "retry_wait",
+                                    upstream = %upstream,
+                                    retry_attempt,
+                                    delay_ms = delay.as_millis(),
+                                    "upstream subscription reconnect scheduled"
+                                );
                                 tokio::select! {
                                     biased;
                                     () = generation.cancelled() => break,
-                                    () = tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY) => continue,
+                                    () = tokio::time::sleep(delay) => continue,
+                                }
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    upstream = %upstream,
+                                    retry_attempt,
+                                    timeout_ms = DISCOVERY_TIMEOUT.as_millis(),
+                                    "timed out establishing upstream subscriptions/listen stream"
+                                );
+                                if !pool
+                                    .clear_subscription_resources_if_current(&upstream, &generation)
+                                    .await
+                                {
+                                    return;
+                                }
+                                let delay = subscription_retry_delay(&upstream, retry_attempt);
+                                retry_attempt = retry_attempt.saturating_add(1);
+                                tracing::warn!(
+                                    surface = "dispatch",
+                                    service = "upstream.pool",
+                                    action = "subscription.listen",
+                                    phase = "retry_wait",
+                                    upstream = %upstream,
+                                    retry_attempt,
+                                    delay_ms = delay.as_millis(),
+                                    "upstream subscription reconnect scheduled"
+                                );
+                                tokio::select! {
+                                    biased;
+                                    () = generation.cancelled() => break,
+                                    () = tokio::time::sleep(delay) => continue,
                                 }
                             }
                         };
                         (subscription, true)
                     }
                 };
+
+                let established_at = tokio::time::Instant::now();
 
                 if publish_acknowledgement {
                     if !pool
@@ -442,10 +532,13 @@ impl UpstreamPool {
                 {
                     return;
                 }
+                retry_attempt =
+                    next_subscription_retry_attempt(retry_attempt, established_at.elapsed());
+                let delay = subscription_retry_delay(&upstream, retry_attempt);
                 tokio::select! {
                     biased;
                     () = generation.cancelled() => break,
-                    () = tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY) => {}
+                    () = tokio::time::sleep(delay) => {}
                 }
             }
             let _ = pool
@@ -458,13 +551,14 @@ impl UpstreamPool {
     /// still completes its initial handshake before this batch returns, while
     /// independent 15-second deadlines no longer accumulate serially.
     pub(super) async fn refresh_upstream_subscriptions_concurrently(&self, upstreams: Vec<String>) {
-        let mut refreshes = FuturesUnordered::new();
-        for upstream in upstreams.into_iter().collect::<BTreeSet<_>>() {
-            refreshes.push(async move {
-                self.refresh_upstream_subscription(&upstream).await;
-            });
-        }
-        while refreshes.next().await.is_some() {}
+        stream::iter(upstreams.into_iter().collect::<BTreeSet<_>>())
+            .for_each_concurrent(
+                Some(SUBSCRIPTION_RECONCILE_CONCURRENCY),
+                |upstream| async move {
+                    self.refresh_upstream_subscription(&upstream).await;
+                },
+            )
+            .await;
     }
 
     pub(super) async fn cancel_all_upstream_subscriptions(&self) {

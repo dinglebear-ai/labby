@@ -3,6 +3,8 @@ use rmcp::RoleServer;
 #[cfg(test)]
 use rmcp::service::Peer;
 use rmcp::service::SubscriptionSink;
+#[cfg(feature = "gateway")]
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
@@ -11,6 +13,26 @@ use tokio::sync::mpsc;
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::{CatalogChangeEvent, GatewayCatalogDiff};
+
+#[cfg(feature = "gateway")]
+fn lag_reconciliation_diff() -> GatewayCatalogDiff {
+    GatewayCatalogDiff {
+        tools_changed: true,
+        resources_changed: true,
+        prompts_changed: true,
+    }
+}
+
+#[cfg(feature = "gateway")]
+async fn bounded_lag_reconciliation<F, T>(
+    timeout: std::time::Duration,
+    reconcile: F,
+) -> Result<T, tokio::time::error::Elapsed>
+where
+    F: Future<Output = T>,
+{
+    tokio::time::timeout(timeout, reconcile).await
+}
 
 /// A connected peer plus what it can see and what it was last told.
 ///
@@ -293,28 +315,18 @@ impl PeerNotifier {
                                         resources_changed: false,
                                         prompts_changed: false,
                                     },
-                                    "upstream.subscription",
+                                    labby_runtime::catalog_notify::SOURCE_UPSTREAM_SUBSCRIPTION,
                                 ).await;
                             }
-                            Ok(UpstreamNotificationEvent::PromptListChanged { .. }) => {
-                                self.notify_catalog_changes(
-                                    &GatewayCatalogDiff {
-                                        tools_changed: false,
-                                        resources_changed: false,
-                                        prompts_changed: true,
-                                    },
-                                    "upstream.subscription",
-                                ).await;
+                            Ok(UpstreamNotificationEvent::PromptListChanged { upstream }) => {
+                                self.notify_upstream_catalog_change(
+                                    false, false, true, upstream,
+                                );
                             }
-                            Ok(UpstreamNotificationEvent::ResourceListChanged { .. }) => {
-                                self.notify_catalog_changes(
-                                    &GatewayCatalogDiff {
-                                        tools_changed: false,
-                                        resources_changed: true,
-                                        prompts_changed: false,
-                                    },
-                                    "upstream.subscription",
-                                ).await;
+                            Ok(UpstreamNotificationEvent::ResourceListChanged { upstream }) => {
+                                self.notify_upstream_catalog_change(
+                                    false, true, false, upstream,
+                                );
                             }
                             Ok(UpstreamNotificationEvent::ResourceUpdated { upstream, uri }) => {
                                 crate::mcp::catalog_notifications::notify_resource_update_peers(
@@ -324,7 +336,7 @@ impl PeerNotifier {
                                 ).await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                tracing::warn!(skipped, "upstream notification relay lagged");
+                                self.reconcile_after_notification_lag(&pool, skipped).await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             Ok(_) => {}
@@ -369,5 +381,167 @@ impl PeerNotifier {
             diff.into(),
             source,
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    fn notify_upstream_catalog_change(
+        &self,
+        tools_changed: bool,
+        resources_changed: bool,
+        prompts_changed: bool,
+        upstream: String,
+    ) {
+        crate::mcp::catalog_coalesce::schedule_catalog_notification(
+            &self.peers,
+            crate::mcp::catalog_notifications::CatalogNotificationChanges::new(
+                tools_changed,
+                resources_changed,
+                prompts_changed,
+            )
+            .for_upstream(upstream),
+            labby_runtime::catalog_notify::SOURCE_UPSTREAM_SUBSCRIPTION,
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    async fn reconcile_after_notification_lag(
+        &self,
+        pool: &crate::dispatch::upstream::pool::UpstreamPool,
+        skipped: u64,
+    ) {
+        use futures::StreamExt;
+
+        const RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        tracing::warn!(
+            surface = "mcp",
+            service = "peers",
+            action = "catalog.reconcile.start",
+            phase = "broadcast_lag",
+            skipped,
+            timeout_ms = RECONCILE_TIMEOUT.as_millis(),
+            "upstream notification relay lagged; reconciling authoritative catalogs"
+        );
+
+        let reconcile = async {
+            let tool_names = pool
+                .routable_upstream_names(
+                    crate::dispatch::upstream::types::UpstreamCapability::Tools,
+                )
+                .await;
+            let tool_refreshes =
+                futures::stream::iter(tool_names)
+                    .map(|upstream| async move {
+                        pool.refresh_tools_after_list_changed(&upstream).await
+                    })
+                    .buffer_unordered(8)
+                    .collect::<Vec<_>>();
+            let (resources, prompts, tool_results) = tokio::join!(
+                pool.list_upstream_resources(),
+                pool.list_upstream_prompts(&[]),
+                tool_refreshes,
+            );
+            let refreshed_tools = tool_results
+                .into_iter()
+                .filter(|refreshed| *refreshed)
+                .count();
+            (refreshed_tools, resources.len(), prompts.len())
+        };
+
+        match bounded_lag_reconciliation(RECONCILE_TIMEOUT, reconcile).await {
+            Ok((refreshed_tools, resource_count, prompt_count)) => {
+                tracing::info!(
+                    surface = "mcp",
+                    service = "peers",
+                    action = "catalog.reconcile.finish",
+                    phase = "broadcast_lag",
+                    outcome = "success",
+                    skipped,
+                    refreshed_tools,
+                    resource_count,
+                    prompt_count,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "reconciled authoritative catalogs after notification lag"
+                );
+                self.notify_catalog_changes(
+                    &lag_reconciliation_diff(),
+                    labby_runtime::catalog_notify::SOURCE_UPSTREAM_NOTIFICATION_LAG,
+                )
+                .await;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "peers",
+                    action = "catalog.reconcile.finish",
+                    phase = "broadcast_lag",
+                    outcome = "timeout_partial_unknown",
+                    convergence_scheduled = true,
+                    skipped,
+                    timeout_ms = RECONCILE_TIMEOUT.as_millis(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "catalog reconciliation timed out after notification lag; caches may be partially refreshed"
+                );
+                // The refresh futures can update one cache before another one
+                // reaches the outer deadline. Always signal all catalog kinds
+                // after timeout so no partial mutation remains unpublished.
+                self.notify_catalog_changes(
+                    &lag_reconciliation_diff(),
+                    labby_runtime::catalog_notify::SOURCE_UPSTREAM_NOTIFICATION_LAG,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod lag_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{bounded_lag_reconciliation, lag_reconciliation_diff};
+
+    #[tokio::test]
+    async fn forced_broadcast_lag_requires_reconciliation_of_every_catalog_class() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(1);
+        tx.send("first").expect("receiver exists");
+        tx.send("contract-changing-final-event")
+            .expect("receiver exists");
+
+        let error = rx.recv().await.expect_err("receiver must report lag");
+        assert!(matches!(
+            error,
+            tokio::sync::broadcast::error::RecvError::Lagged(1)
+        ));
+        let recovery = lag_reconciliation_diff();
+        assert!(recovery.tools_changed);
+        assert!(recovery.resources_changed);
+        assert!(recovery.prompts_changed);
+        assert_eq!(
+            rx.recv().await.expect("latest event remains available"),
+            "contract-changing-final-event"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_after_partial_refresh_still_requires_all_catalog_convergence() {
+        let cache_mutated = Arc::new(AtomicBool::new(false));
+        let mutation = Arc::clone(&cache_mutated);
+        let result = bounded_lag_reconciliation(std::time::Duration::from_millis(10), async move {
+            mutation.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        })
+        .await;
+
+        assert!(result.is_err(), "synthetic partial refresh must time out");
+        assert!(
+            cache_mutated.load(Ordering::SeqCst),
+            "one authoritative cache changed before the timeout"
+        );
+        let convergence = lag_reconciliation_diff();
+        assert!(convergence.tools_changed);
+        assert!(convergence.resources_changed);
+        assert!(convergence.prompts_changed);
     }
 }
