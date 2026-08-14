@@ -60,7 +60,10 @@ export function AgentDetailDrawer({
                 tone: detail.failed > 0 ? 'error' : 'success',
               },
               { label: 'Success', value: rate !== null ? `${rate}%` : '—' },
-              { label: 'Tokens', value: formatCompactNumber(detail.total_tokens) },
+              {
+                label: 'Tokens',
+                value: detail.tokens_collected ? formatCompactNumber(detail.total_tokens) : '—',
+              },
             ]}
           />
 

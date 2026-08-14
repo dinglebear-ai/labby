@@ -3,6 +3,7 @@
 import useSWR from 'swr'
 import { fetchDashboardMetrics } from '@/lib/api/metrics-client'
 import type { DashboardMetrics, MetricsWindow } from '@/lib/types/metrics'
+import { shouldRetryMetrics } from '@/lib/dashboard/dashboard-load-state'
 
 export const dashboardMetricsKey = (window: MetricsWindow) =>
   `/dashboard-metrics/${window}`
@@ -14,8 +15,14 @@ export function useDashboardMetrics(window: MetricsWindow) {
     () => fetchDashboardMetrics(window),
     {
       revalidateOnFocus: false,
-      refreshInterval: 15_000,
+      refreshInterval: (data) => data ? 15_000 : 0,
       keepPreviousData: true,
+      shouldRetryOnError: shouldRetryMetrics,
+      onErrorRetry: (error, _key, _config, revalidate, context) => {
+        if (!shouldRetryMetrics(error)) return
+        if (context.retryCount >= 2) return
+        setTimeout(() => revalidate({ retryCount: context.retryCount + 1 }), 2_000)
+      },
     },
   )
 }

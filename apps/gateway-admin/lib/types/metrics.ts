@@ -6,9 +6,9 @@
  *   - devices / nodes   → `fetchFleetDevices()`  (existing)
  *   - activity metrics  → `fetchDashboardMetrics()` (this module's shape)
  *
- * Activity metrics are aggregated server-side from the persisted log store
- * over a bounded time window. This file is the single source of truth for the
- * JSON shape; the Rust `logs.metrics` action mirrors it once the backend lands.
+ * Activity metrics combine the server-aggregated `gateway.usage.metrics`
+ * result with bounded persisted rows from `gateway.usage.calls`. Dimensions
+ * the gateway does not record are identified by `DashboardMetrics.collected`.
  */
 
 /** Rolling activity window. `7d` is the log-store retention ceiling. */
@@ -72,6 +72,16 @@ export interface DashboardMetrics {
   /** Window bounds, epoch ms. */
   since_ms: number
   until_ms: number
+
+  /** Whether a metric dimension is persisted by the current gateway usage store. */
+  collected: {
+    tokens: boolean
+    surfaces: boolean
+    fan_out: boolean
+    actor_kinds: boolean
+    /** False when row-derived panels are based on the bounded call-page sample. */
+    complete_call_rows: boolean
+  }
 
   tool_calls: {
     total: number
@@ -229,6 +239,7 @@ export interface ToolDetail {
   total_tokens: number
   avg_tokens: number
   avg_elapsed_ms: number
+  tokens_collected: boolean
   timeseries: MetricsBucket[]
   top_callers: AgentUsageEntry[]
   recent: ToolCallRecord[]
@@ -243,6 +254,7 @@ export interface AgentDetail {
   calls: number
   failed: number
   total_tokens: number
+  tokens_collected: boolean
   tools_used: ToolUsageEntry[]
   timeseries: MetricsBucket[]
   recent: ToolCallRecord[]

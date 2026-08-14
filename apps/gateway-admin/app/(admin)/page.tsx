@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import {
   Activity,
   AlertTriangle,
@@ -20,17 +21,12 @@ import { StatusBadge } from '@/components/gateway/status-badge'
 import { TransportBadge } from '@/components/gateway/transport-badge'
 import { StatTile } from '@/components/dashboard/stat-tile'
 import { WindowSelector } from '@/components/dashboard/window-selector'
-import { ToolVolumeChart } from '@/components/dashboard/tool-volume-chart'
-import { TopToolsChart } from '@/components/dashboard/top-tools-chart'
 import {
   FanOutPanel,
   LeastUsedPanel,
   MostActivePanel,
 } from '@/components/dashboard/activity-insight-panels'
-import { AnalysisSection } from '@/components/dashboard/analysis-section'
 import { ErrorNotice } from '@/components/dashboard/error-notice'
-import { ToolDetailDrawer } from '@/components/dashboard/tool-detail-drawer'
-import { AgentDetailDrawer } from '@/components/dashboard/agent-detail-drawer'
 import { WarningsBanner } from '@/components/dashboard/warnings-banner'
 import { DASH_METRIC_SM, DASH_SURFACE } from '@/components/dashboard/ui'
 import type { DrillTarget } from '@/components/dashboard/drill'
@@ -44,6 +40,7 @@ import {
   warningsSignature,
 } from '@/lib/dashboard/dashboard-metrics'
 import type { MetricsWindow } from '@/lib/types/metrics'
+import { metricsLoadState } from '@/lib/dashboard/dashboard-load-state'
 import { formatUiDate } from '@/lib/format-ui-time'
 import { cn } from '@/lib/utils'
 import {
@@ -54,6 +51,30 @@ import {
   AURORA_PAGE_SHELL,
   AURORA_STRONG_PANEL,
 } from '@/components/aurora/tokens'
+
+const ToolVolumeChart = dynamic(() =>
+  import('@/components/dashboard/tool-volume-chart').then((module) => module.ToolVolumeChart),
+)
+const TopToolsChart = dynamic(() =>
+  import('@/components/dashboard/top-tools-chart').then((module) => module.TopToolsChart),
+)
+const AnalysisSection = dynamic(() =>
+  import('@/components/dashboard/analysis-section').then((module) => module.AnalysisSection),
+)
+const ToolDetailDrawer = dynamic(() =>
+  import('@/components/dashboard/tool-detail-drawer').then((module) => module.ToolDetailDrawer),
+)
+const AgentDetailDrawer = dynamic(() =>
+  import('@/components/dashboard/agent-detail-drawer').then((module) => module.AgentDetailDrawer),
+)
+
+function MetricsUnavailable({ message }: { message: string }) {
+  return (
+    <div className="flex h-[200px] items-center justify-center rounded-aurora-2 border border-dashed border-aurora-border-strong px-6 text-center text-sm text-aurora-text-muted">
+      {message}
+    </div>
+  )
+}
 
 function PanelHeading({ title, hint }: { title: string; hint?: string }) {
   return (
@@ -68,11 +89,17 @@ export default function OverviewPage() {
   const { data: gateways, isLoading: gatewaysLoading } = useGateways()
   const [activeWindow, setActiveWindow] = useState<MetricsWindow>('24h')
   const [drill, setDrill] = useState<DrillTarget | null>(null)
-  const { data: metrics, error: metricsError, mutate: reloadMetrics } = useDashboardMetrics(activeWindow)
+  const {
+    data: metrics,
+    error: metricsError,
+    isLoading: isMetricsLoading,
+    mutate: reloadMetrics,
+  } = useDashboardMetrics(activeWindow)
 
   const live = buildLiveFleetStats(gateways ?? [])
   const warningsSig = warningsSignature(gateways ?? [])
-  const metricsLoading = !metrics
+  const metricsState = metricsLoadState(metrics, metricsError, isMetricsLoading)
+  const metricsLoading = metricsState === 'loading'
   const recentGateways = gateways?.slice(0, 5) ?? []
 
   return (
@@ -119,11 +146,19 @@ export default function OverviewPage() {
           </div>
         </div>
 
-        {metricsError ? (
+        {metricsState === 'unavailable' ? (
+          <ErrorNotice message="Usage metrics aren't available on this Labby server yet." />
+        ) : metricsState === 'error' ? (
           <ErrorNotice
             message="Couldn't load usage metrics for this window."
             onRetry={() => reloadMetrics()}
           />
+        ) : null}
+
+        {metrics && !metrics.collected.complete_call_rows ? (
+          <div className="rounded-aurora-3 border border-aurora-warn/30 bg-aurora-warn/8 p-4 text-sm text-aurora-text-primary">
+            Detailed charts use the newest 1,000 calls in this window; aggregate totals remain complete.
+          </div>
         ) : null}
 
         {/* Unified stats — live fleet + windowed usage, one row */}
@@ -164,14 +199,14 @@ export default function OverviewPage() {
           />
           <StatTile
             label="Tokens"
-            value={metrics ? formatCompactNumber(metrics.tokens.total) : '—'}
+            value={metrics?.collected.tokens ? formatCompactNumber(metrics.tokens.total) : '—'}
             icon={Coins}
             tone="info"
             loading={metricsLoading}
           />
           <StatTile
             label="Avg tokens"
-            value={metrics ? formatCompactNumber(metrics.tokens.avg_per_call) : '—'}
+            value={metrics?.collected.tokens ? formatCompactNumber(metrics.tokens.avg_per_call) : '—'}
             icon={Gauge}
             loading={metricsLoading}
           />
@@ -183,8 +218,10 @@ export default function OverviewPage() {
             <PanelHeading title="Tool-call volume" hint={WINDOW_LABELS[activeWindow]} />
             {metrics ? (
               <ToolVolumeChart data={metrics.timeseries} window={activeWindow} />
-            ) : (
+            ) : metricsLoading ? (
               <Skeleton className="h-[200px] w-full" />
+            ) : (
+              <MetricsUnavailable message="Tool-call history is unavailable." />
             )}
           </div>
           <div className={cn(AURORA_MEDIUM_PANEL, DASH_SURFACE, 'p-5')}>
@@ -194,8 +231,10 @@ export default function OverviewPage() {
                 tools={metrics.tools.top}
                 onSelect={(name) => setDrill({ type: 'tool', name })}
               />
-            ) : (
+            ) : metricsLoading ? (
               <Skeleton className="h-[200px] w-full" />
+            ) : (
+              <MetricsUnavailable message="Tool rankings are unavailable." />
             )}
           </div>
         </div>
@@ -207,24 +246,29 @@ export default function OverviewPage() {
               <MostActivePanel
                 actors={metrics.actors}
                 window={activeWindow}
+                actorKindsCollected={metrics.collected.actor_kinds}
                 onSelectActor={(entry) => setDrill({ type: 'agent', id: entry.id })}
               />
-              <FanOutPanel fanOut={metrics.fan_out} />
+              <FanOutPanel fanOut={metrics.fan_out} collected={metrics.collected.fan_out} />
               <LeastUsedPanel
                 tools={metrics.tools.least}
                 distinct={metrics.tools.distinct}
                 onSelect={(name) => setDrill({ type: 'tool', name })}
               />
             </>
-          ) : (
+          ) : metricsLoading ? (
             [1, 2, 3].map((i) => (
               <Skeleton key={i} className="h-[176px] w-full rounded-aurora-3" />
             ))
+          ) : (
+            <div className="lg:col-span-3">
+              <MetricsUnavailable message="Usage insights are unavailable." />
+            </div>
           )}
         </div>
 
         {/* ── Performance, cost & rhythm ─────────────────────────────── */}
-        {!metricsError ? (
+        {metrics ? (
           <AnalysisSection
             metrics={metrics}
             onSelectTool={(name) => setDrill({ type: 'tool', name })}
@@ -332,18 +376,22 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      <ToolDetailDrawer
-        tool={drill?.type === 'tool' ? drill.name : null}
-        window={activeWindow}
-        onClose={() => setDrill(null)}
-        onDrill={setDrill}
-      />
-      <AgentDetailDrawer
-        agentId={drill?.type === 'agent' ? drill.id : null}
-        window={activeWindow}
-        onClose={() => setDrill(null)}
-        onDrill={setDrill}
-      />
+      {drill?.type === 'tool' ? (
+        <ToolDetailDrawer
+          tool={drill.name}
+          window={activeWindow}
+          onClose={() => setDrill(null)}
+          onDrill={setDrill}
+        />
+      ) : null}
+      {drill?.type === 'agent' ? (
+        <AgentDetailDrawer
+          agentId={drill.id}
+          window={activeWindow}
+          onClose={() => setDrill(null)}
+          onDrill={setDrill}
+        />
+      ) : null}
     </>
   )
 }
