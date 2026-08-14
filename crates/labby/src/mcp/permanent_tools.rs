@@ -161,6 +161,7 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
         .open_world(open_world)
 }
 
+#[cfg(feature = "gateway")]
 #[must_use]
 fn mcp_app_annotations() -> ToolAnnotations {
     ToolAnnotations::new()
@@ -170,6 +171,7 @@ fn mcp_app_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+#[cfg(feature = "gateway")]
 #[must_use]
 fn gateway_status_annotations() -> ToolAnnotations {
     ToolAnnotations::new()
@@ -428,24 +430,60 @@ mod tests {
         assert_eq!(visible.annotations, hidden.annotations);
     }
 
+    /// Reviewed hint table: `(service, readOnly, destructive, idempotent, openWorld)`.
+    ///
+    /// One row per registry-backed service. A service with no row falls through
+    /// to the least-safe `_` arm, which
+    /// `every_registry_service_has_a_reviewed_hint_row` turns into a CI failure
+    /// rather than a silent conservative default.
+    const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
+        ("doctor", false, false, true, true),
+        ("fs", true, false, true, false),
+        ("gateway", false, true, false, true),
+        ("lab_admin", true, false, true, false),
+        ("server_logs", false, true, false, false),
+        ("setup", false, true, false, true),
+        ("snippets", false, true, false, true),
+    ];
+
+    /// Pinned action sets for services advertising `readOnlyHint: true`.
+    ///
+    /// `readOnlyHint` claims **every** action is non-mutating. That is strictly
+    /// stronger than "declares no destructive action" and therefore cannot be
+    /// derived from `ActionSpec` — a mutating-but-non-destructive action would
+    /// satisfy the derived check while making the advertised hint a lie (the
+    /// `doctor` trap: `system.checks` writes a probe file, which is why `doctor`
+    /// is deliberately *not* in this list). Pinning the action set forces a
+    /// re-audit whenever one is added.
+    const READ_ONLY_SERVICE_ACTIONS: &[(&str, &[&str])] = &[
+        ("fs", &["fs.list"]),
+        ("lab_admin", &["help", "schema", "onboarding.audit"]),
+    ];
+
+    fn expected_annotation_row(name: &str) -> Option<(bool, bool, bool, bool)> {
+        EXPECTED_SERVICE_ANNOTATIONS
+            .iter()
+            .find(|(row, ..)| *row == name)
+            .map(|&(_, read_only, destructive, idempotent, open_world)| {
+                (read_only, destructive, idempotent, open_world)
+            })
+    }
+
     #[test]
     fn every_registry_service_advertises_reviewed_explicit_annotations() {
         let registry = crate::registry::build_docs_registry();
         let permanent = PermanentToolRegistry::new();
-        let expected = [
-            ("doctor", false, false, true, true),
-            ("fs", true, false, true, false),
-            ("gateway", false, true, false, true),
-            ("lab_admin", true, false, true, false),
-            ("server_logs", false, true, false, false),
-            ("setup", false, true, false, true),
-            ("snippets", false, true, false, true),
-        ];
 
-        for (name, read_only, destructive, idempotent, open_world) in expected {
-            let Some(service) = registry.service(name) else {
-                // Feature slices intentionally omit services they do not compile.
-                continue;
+        for service in registry.services() {
+            let name = service.name;
+            let Some((read_only, destructive, idempotent, open_world)) =
+                expected_annotation_row(name)
+            else {
+                panic!(
+                    "service `{name}` has no row in EXPECTED_SERVICE_ANNOTATIONS; \
+                     it is silently shipping the least-safe fallback hints. Audit \
+                     its actions and add a reviewed row."
+                );
             };
             let annotations = permanent
                 .builtin_service_tool(service, true)
@@ -462,6 +500,47 @@ mod tests {
                     "{name} destructiveHint drifted from ActionSpec"
                 );
             }
+        }
+    }
+
+    /// The table→registry direction: a row for a renamed or removed service is
+    /// as silent as a missing row. Only meaningful when every service feature is
+    /// compiled, which is the authoritative build per the root `CLAUDE.md`.
+    #[cfg(all(feature = "gateway", feature = "fs", feature = "lab-admin"))]
+    #[test]
+    fn every_reviewed_hint_row_names_a_live_service() {
+        let registry = crate::registry::build_docs_registry();
+        for (name, ..) in EXPECTED_SERVICE_ANNOTATIONS {
+            assert!(
+                registry.service(name).is_some(),
+                "EXPECTED_SERVICE_ANNOTATIONS has a stale row for `{name}`, \
+                 which no longer resolves to a registered service"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_services_pin_their_action_sets() {
+        let registry = crate::registry::build_docs_registry();
+
+        for (name, pinned) in READ_ONLY_SERVICE_ACTIONS {
+            assert_eq!(
+                expected_annotation_row(name).map(|(read_only, ..)| read_only),
+                Some(true),
+                "`{name}` is pinned as read-only here but its hint row disagrees"
+            );
+            let Some(service) = registry.service(name) else {
+                // Feature slices intentionally omit services they do not compile.
+                continue;
+            };
+            let actual: Vec<&str> = service.actions.iter().map(|action| action.name).collect();
+            assert_eq!(
+                actual, *pinned,
+                "`{name}` advertises readOnlyHint: true, so its action set is pinned. \
+                 A new action must be audited as non-mutating before it is added here — \
+                 `readOnlyHint` is the hint clients act on (Claude Code gates parallel \
+                 execution on it, VS Code skips confirmation)."
+            );
         }
     }
 
@@ -494,6 +573,82 @@ mod tests {
             assert_eq!(annotations.idempotent_hint, Some(idempotent), "{name}");
             assert_eq!(annotations.open_world_hint, Some(open_world), "{name}");
         }
+    }
+
+    /// F9 regression guard — the compensating control for accepting the widened
+    /// next-hop reach (design decision "Option A").
+    ///
+    /// In a labby → labby chain the downstream gateway derives its own
+    /// `UpstreamTool.destructive` from the annotations we advertise
+    /// (`upstream_destructive_from_annotations`), and that value is a hard gate:
+    /// Code Mode, the palette, and widget callbacks all refuse a destructive
+    /// tool unless `destructive_permitted(Mcp, caller) == caller.can_execute()`.
+    ///
+    /// Before annotations existed every Labby tool arrived with none and failed
+    /// closed to `destructive: true`, so a non-execute caller could reach none of
+    /// them. Advertising hints deliberately opens the subset below. That is
+    /// accepted, but it rests on deployment configuration rather than an
+    /// invariant, so the set is pinned here: widening it must be a reviewed
+    /// change, not a side effect of editing a hint row.
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn labby_owned_annotations_pin_the_next_hop_destructive_gate() {
+        use labby_gateway::upstream::pool::upstream_destructive_from_annotations;
+
+        let permanent = PermanentToolRegistry::new();
+        let services = crate::registry::build_docs_registry();
+
+        // Reachable by a caller with `can_execute() == false` at hop 2.
+        let expected_callable = [
+            "doctor",
+            "fs",
+            "lab_admin",
+            "mcp_app",
+            "gateway_status",
+            CODE_MODE_READ_TOOL_NAME,
+        ];
+
+        let mut descriptors: Vec<rmcp::model::Tool> = services
+            .services()
+            .iter()
+            .map(|service| permanent.builtin_service_tool(service, true))
+            .collect();
+        descriptors.extend([
+            permanent.mcp_app_tool(),
+            permanent.add_server_tool(),
+            permanent.gateway_status_tool(),
+            permanent.code_mode_descriptor(&[]),
+            permanent.code_mode_read_descriptor(&[]),
+            permanent.code_mode_ui_tool(&[]),
+        ]);
+
+        let mut callable: Vec<String> = descriptors
+            .iter()
+            .filter(|tool| !upstream_destructive_from_annotations(tool.annotations.as_ref()))
+            .map(|tool| tool.name.to_string())
+            .collect();
+        callable.sort();
+
+        let mut expected: Vec<String> = expected_callable
+            .iter()
+            .filter(|name| {
+                // Feature slices omit services they do not compile; the meta
+                // tools are all gateway-gated alongside this test.
+                services.service(name).is_some()
+                    || !EXPECTED_SERVICE_ANNOTATIONS
+                        .iter()
+                        .any(|(row, ..)| row == *name)
+            })
+            .map(|name| (*name).to_string())
+            .collect();
+        expected.sort();
+
+        assert_eq!(
+            callable, expected,
+            "the set of Labby tools a non-execute caller can reach through a \
+             downstream gateway changed. This is an authorization change, not a \
+             hint tweak — re-review F9 before updating this list."
+        );
     }
 
     #[test]

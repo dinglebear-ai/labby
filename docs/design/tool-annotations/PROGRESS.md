@@ -10,21 +10,34 @@ Working document. Update as work lands; it is not generated.
 
 Issue [#212](https://github.com/dinglebear-ai/labby/issues/212) · Epic `lab-g1av5`
 Branch `feat/tool-annotations-20260805` · Base `origin/main`
-Last updated: 2026-08-13 — **implementation and focused verification complete**
+Last updated: 2026-08-14 — **core shipped; deferred items listed below**
 
-Legend: ☐ not started · ◐ in progress · ☑ done · ⊘ cut
+Legend: ☐ not started · ◐ in progress · ☑ done · ⊘ cut · ⊙ obsolete
 
 ## Status
 
 | Bead | Title | Priority | Status |
 |---|---|---|---|
-| `lab-g1av5` | Epic: annotations + passthrough verification | P2 | ◐ implemented; final CI pending |
-| `.1a` | No-op refactor: policy module + descriptors, unwired | P2 | ☐ *(to create — split from `.1`)* |
-| `.1b` | Semantic flip: switch annotations on | P2 | ☐ *(to create — **unblocked**)* |
-| `lab-g1av5.2` | Verify upstream passthrough + 5e regression guard | P2 | ☐ blocked by `.1b` |
-| `lab-g1av5.3` | Document semantics, gating effect, maintenance rules | P2 | ☐ blocked by `.1b` |
+| `lab-g1av5` | Epic: annotations + passthrough verification | P2 | ◐ core shipped; § "Deferred" open |
+| `.1a` | No-op refactor: policy module + descriptors, unwired | P2 | ⊙ **obsolete** — see below |
+| `.1b` | Semantic flip: switch annotations on | P2 | ☑ shipped |
+| `lab-g1av5.2` | Verify upstream passthrough + 5e regression guard | P2 | ◐ single-hop + 5e shipped; other paths deferred |
+| `lab-g1av5.3` | Document semantics, gating effect, maintenance rules | P2 | ☑ shipped |
 | `lab-g1av5.4` | Stretch: Code Mode catalog hints | P3 | ⊘ **cut** — cache stampede; see REVIEW_FINDINGS § 5 |
-| *new* | Companion: harden `doctor` SSRF validator | P2 | ☐ *(to create — land no later than `.2`)* |
+| *new* | Companion: harden `doctor` SSRF validator | P2 | ☐ *(to create — not in this PR)* |
+
+### `.1a` is obsolete, not skipped
+
+`.1a` existed to give the two mirror sites a single descriptor construction
+point. That already landed independently in #210 (`lab-41e7m`):
+`PermanentToolRegistry` is the sole `Tool::new` site, both
+`handlers_tools::list_tools_impl` and `peer_contract::visible_tool_descriptors`
+consume it, and a `clippy.toml` `disallowed-methods` entry on
+`rmcp::model::tool::Tool::new` enforces it — which also satisfies REVIEW_FINDINGS
+§ 6.3 ("must be automated"). Adding `mcp/annotations.rs` + `mcp/descriptors.rs`
+on top would have been pure churn, so the hint policy went into the existing
+construction site instead. The contract-hash acceptance criterion is therefore
+moot: no descriptor moved.
 
 ## F9 — resolved, accepted (2026-08-05)
 
@@ -47,47 +60,54 @@ reach.
 
 ## Phase checklist
 
-### `.1a` — provably no-op refactor (acceptance: **contract hash unchanged**)
-- ☐ `crates/labby/src/mcp/annotations.rs` — free `to_annotations` fn + `match svc.name` + `least_safe()`
-- ☐ `crates/labby/src/mcp/descriptors.rs` — six builders, still returning un-annotated `Tool`
-- ☐ Two `mod` lines in `crates/labby/src/mcp.rs`
-- ☐ `permanent_tools::code_mode_descriptor` delegates to `descriptors::code_mode`
-- ☐ Rewire `handlers_tools.rs` (`:139`, `:199`, `:212`, `:225`, `:239`)
-- ☐ Rewire `peer_contract.rs` (`:204`, `:230`, `:243`, `:254`, `:266`)
-- ☐ Pagination guards, `tracing` calls, `advertised_names.insert`, counters preserved verbatim
-- ☐ Automated lint: no `Tool::new` for a Labby-owned tool outside `descriptors.rs`
-- ☐ **Verify the contract hash did not move**
+### `.1a` — provably no-op refactor
+⊙ **Obsolete** — superseded by #210. See § "`.1a` is obsolete, not skipped".
 
 ### `.1b` — semantic flip
 - ☑ Chain `.with_annotations(..)` inside the centralized registry builders
-- ☐ Gate the four meta-tool policies with `#[cfg(feature = "gateway")]`
+- ☑ Gate the meta-tool policies with `#[cfg(feature = "gateway")]`
 - ☑ Test: 13 owned tools covered across the registry/meta descriptor tests
 - ☑ Test: every Labby-owned tool has `annotations.is_some()`
-- ☐ Test: read-only services have zero destructive actions (R7)
-- ☐ Test: pinned action set for read-only services
+- ☑ Test: `destructiveHint` matches the `ActionSpec` union (R7), `server_logs` excepted
+- ☑ Test: pinned action set for read-only services (`read_only_services_pin_their_action_sets`)
 - ☑ Test: hint table covers registry services and synthetic tools
 - ☑ Test: unlisted service falls back to least-safe hints
-- ☐ Test: hash stable across two in-process builds; differs with annotations stripped
+- ☑ Test: exhaustiveness **both** directions — every service has a reviewed row, every row names a live service
 - ☑ Both wire and peer-contract listing paths consume the same registry builders
-- ☐ Regression sweep: `tests.rs:852/893/915/950/1312/1634/1697/2874`
+- ☐ Test: hash stable across two in-process builds; differs with annotations stripped *(deferred)*
+- ☐ Regression sweep: `tests.rs:852/893/915/950/1312/1634/1697/2874` *(deferred)*
 
 ### `lab-g1av5.2` — passthrough + gating
-- ☐ `fixture_annotated_upstream_tool` (`&Arc<str>`, partial block, `title` set)
-- ☑ Single-hop raw-listing passthrough assertion
-- ☐ `cached_upstream_tool` preserves annotations (keep only the annotations half)
-- ☐ Existing fail-closed tests pass **unmodified**
-- ☐ Subject-scoped OAuth path covered
-- ☐ Multihop: annotation survival only (**not** `hop2_destructive` — unimplementable there)
-- ☐ **5e: in-process gating tests (regression guard)**
+- ☑ Single-hop raw-listing passthrough assertion, on **both** listing paths
+- ☑ **5e: in-process gating regression guard**
+  (`labby_owned_annotations_pin_the_next_hop_destructive_gate`) — pins the exact
+  set of Labby tools a non-execute caller can reach at hop 2, using the real
+  `upstream_destructive_from_annotations` predicate rather than a copy of it
+- ☑ Existing fail-closed tests pass **unmodified**
+- ☐ `fixture_annotated_upstream_tool` shared fixture *(deferred — the passthrough test builds its own)*
+- ☐ `cached_upstream_tool` preserves annotations *(deferred)*
+- ☐ Subject-scoped OAuth path covered *(deferred)*
+- ☐ Multihop: annotation survival only *(deferred)*
 
 ### `lab-g1av5.3` — docs
 - ☑ `docs/surfaces/MCP.md` annotations subsection
-- ☐ Fix `docs/surfaces/MCP.md:66-68` — it contradicts the code today
+- ☑ Fix `docs/surfaces/MCP.md` destructive-flow text that contradicted the code
 - ☑ `crates/labby/src/mcp/CLAUDE.md` mirror invariant + maintenance rule
 - ☑ `crates/labby-gateway/src/gateway/CLAUDE.md` wording reconciled with current semantics
-- ☐ Note: `lab://<service>/actions` is route-scoped, not admin-scoped
-- ☐ Link package from `docs/README.md` **and** `docs/design/README.md` (hand-maintained index)
-- ☐ Gate: no "advisory only"; no "relaxes elicitation" softening
+- ☑ Note: `lab://<service>/actions` is route-scoped, not admin-scoped
+- ☑ Link package from `docs/README.md` **and** `docs/design/README.md`
+- ☑ Gate: no "advisory only"; no "relaxes elicitation" softening
+
+## Deferred — tracked, not in this PR
+
+| Item | Why it is safe to defer |
+|---|---|
+| Hash-determinism test (REVIEW_FINDINGS T7) | Annotations derive from `&'static` data, so the hash is already covered by the existing mirror-equality assertion (`tests.rs:1672-1683`). T7 guards a churn mode, not a correctness gap. |
+| `cached_upstream_tool` annotation-preservation test (T8) | The passthrough assertion already covers the wire-visible half on both listing paths; the fail-closed derivation half is covered by the two pre-existing `helpers.rs` tests. |
+| Subject-scoped OAuth passthrough test | Genuinely distinct code path (`pool/tools.rs:246-274`) and the plan called it regression-prone. Left open deliberately. |
+| Multihop annotation-survival test | Out-of-process driver; the in-process 5e guard covers the security-relevant claim. |
+| Regression sweep of the listed `tests.rs` lines | Full `--all-features` suite passes; no listed test needed a change. |
+| `doctor` SSRF hardening | Pre-existing exposure, not created or widened by this epic. Companion bead. |
 
 ## Acceptance gate
 
