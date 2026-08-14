@@ -473,7 +473,7 @@ async fn an_upstream_without_the_extension_is_empty_not_an_error() {
 #[tokio::test]
 async fn a_second_read_is_served_from_cache() {
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -500,7 +500,7 @@ async fn a_second_read_is_served_from_cache() {
 #[tokio::test]
 async fn expose_skills_filters_and_fails_closed_on_an_empty_allowlist() {
     let server = SkillsServer::new(vec![json!({
-        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 600000
+        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 600_000
     })]);
     let pool = catalog_pool_with_server("up", server).await;
 
@@ -533,7 +533,7 @@ async fn narrowing_the_allowlist_takes_effect_without_waiting_for_the_ttl() {
     // The exposure gate runs on read, not at fetch, so an operator tightening
     // the allowlist is not stuck behind a long TTL.
     let server = SkillsServer::new(vec![json!({
-        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 3600000
+        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 3_600_000
     })]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -555,7 +555,7 @@ async fn narrowing_the_allowlist_takes_effect_without_waiting_for_the_ttl() {
 #[tokio::test]
 async fn two_subjects_never_share_a_cached_catalog() {
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -584,7 +584,7 @@ async fn excluded_and_truncated_bookkeeping_reaches_the_caller() {
         "resources": []
     });
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha"), bad], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha"), bad], "ttlMs": 600_000 }),
     ]);
     let pool = catalog_pool_with_server("up", server).await;
 
@@ -603,7 +603,7 @@ async fn excluded_and_truncated_bookkeeping_reaches_the_caller() {
 #[tokio::test]
 async fn invalidation_drops_every_subject_for_one_upstream() {
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -633,7 +633,7 @@ async fn a_pool_drain_clears_every_cached_catalog() {
     // Reload replaces connections and config wholesale; a catalog that survived
     // would describe skills belonging to peers the pool no longer holds.
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let pool = catalog_pool_with_server("up", server).await;
     let config = skills_config("up", None);

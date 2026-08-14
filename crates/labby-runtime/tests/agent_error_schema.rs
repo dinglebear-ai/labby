@@ -8,6 +8,9 @@
 //! enum lists — for every kind in the classification tables plus the
 //! unknown-kind catch-all.
 
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#![allow(clippy::panic)]
+
 use std::path::Path;
 
 use labby_runtime::agent_error::{AgentErrorContext, build_agent_error_value};

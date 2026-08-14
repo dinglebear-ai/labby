@@ -1,4 +1,3 @@
-#![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 //! Labby-native MCP multi-hop conformance driver.
 //!
 //! The driver launches this process as a synthetic leaf behind two real Labby

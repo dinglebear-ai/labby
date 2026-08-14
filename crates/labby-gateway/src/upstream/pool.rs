@@ -78,6 +78,8 @@ mod testsupport;
 mod tools;
 mod tools_call;
 #[cfg(test)]
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#[allow(clippy::panic)]
 mod tools_exposure_tests;
 mod usage_record;
 mod validate;

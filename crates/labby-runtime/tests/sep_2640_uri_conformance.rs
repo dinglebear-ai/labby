@@ -13,6 +13,9 @@
 //! example, and the first entry of its `skills/list` example — was rejected at
 //! ingest, so a conforming upstream's skills were silently dropped.
 
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#![allow(clippy::panic)]
+
 use labby_runtime::skills::{FIRST_PARTY_ORIGIN, parse_skill_uri};
 
 /// The spec's examples table, as `(uri, skill_path, name)`.
