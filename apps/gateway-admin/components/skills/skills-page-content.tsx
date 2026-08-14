@@ -73,7 +73,7 @@ export function SkillsPageContent() {
 
   return (
     <div className={AURORA_PAGE_SHELL}>
-      <AppHeader title="Skills" />
+      <AppHeader breadcrumbs={[{ label: 'Skills' }]} />
       <div className={AURORA_PAGE_FRAME}>
         <div className="flex items-start justify-between gap-4">
           <div>
