@@ -152,6 +152,9 @@ impl SkillsListResult {
     /// Concatenating `skills` directly is what makes this go wrong silently,
     /// so prefer this over extending the field in place.
     pub fn absorb(&mut self, entries: Vec<SkillEntry>, scope: Option<&str>, ttl_ms: Option<u64>) {
+        if entries.is_empty() && scope.is_none() && ttl_ms.is_none() {
+            return;
+        }
         self.skills.extend(entries);
 
         // Absent is not public: a source that declined to state its terms
@@ -315,6 +318,22 @@ mod tests {
 
         assert_eq!(result.cache_scope.as_deref(), Some(CACHE_SCOPE_PRIVATE));
         assert_eq!(result.ttl_ms, Some(5_000));
+    }
+
+    #[test]
+    fn absent_empty_source_does_not_downgrade_cache_scope() {
+        let mut result = SkillsListResult {
+            skills: Vec::new(),
+            next_cursor: None,
+            ttl_ms: Some(60_000),
+            cache_scope: Some(CACHE_SCOPE_PUBLIC.to_string()),
+            meta: None,
+        };
+
+        result.absorb(Vec::new(), None, None);
+
+        assert_eq!(result.cache_scope.as_deref(), Some(CACHE_SCOPE_PUBLIC));
+        assert_eq!(result.ttl_ms, Some(60_000));
     }
 
     #[test]

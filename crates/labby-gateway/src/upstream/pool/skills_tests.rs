@@ -718,7 +718,7 @@ async fn a_proxied_skill_file_is_readable_and_digest_verified() {
     let config = skills_config("up", None);
 
     let verified = pool
-        .read_proxied_skill_file(&config, None, "up/alpha/SKILL.md")
+        .read_proxied_skill_file(&config, None, "skill://up/alpha/SKILL.md")
         .await
         .expect("a listed skill file is readable through the gateway");
     assert_eq!(verified.text, skill_md_body("alpha"));
@@ -749,7 +749,11 @@ async fn a_body_whose_frontmatter_contradicts_its_entry_is_refused() {
     let pool = catalog_pool_with_server("up", server).await;
 
     let error = pool
-        .read_proxied_skill_file(&skills_config("up", None), None, "up/alpha/SKILL.md")
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
         .await
         .expect_err("a body that contradicts its entry must be refused");
     assert_eq!(
@@ -766,7 +770,11 @@ async fn a_tampered_proxied_file_returns_zero_bytes() {
     let pool = catalog_pool_with_server("up", server).await;
 
     let error = pool
-        .read_proxied_skill_file(&skills_config("up", None), None, "up/alpha/SKILL.md")
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
         .await
         .expect_err("tampered content must be refused");
     assert_eq!(
@@ -783,7 +791,11 @@ async fn a_file_absent_from_the_manifest_is_refused_rather_than_fetched() {
     let pool = catalog_pool_with_server("up", server).await;
 
     let error = pool
-        .read_proxied_skill_file(&skills_config("up", None), None, "up/alpha/not-listed.md")
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/not-listed.md",
+        )
         .await
         .expect_err("an unlisted file must be refused");
     assert_eq!(
@@ -805,7 +817,7 @@ async fn a_hidden_skills_files_are_not_readable_by_uri() {
         .read_proxied_skill_file(
             &skills_config("up", Some(vec!["alpha"])),
             None,
-            "up/beta/SKILL.md",
+            "skill://up/beta/SKILL.md",
         )
         .await
         .expect_err("a skill hidden from the listing must also be unreadable");
@@ -846,6 +858,16 @@ async fn a_native_scheme_upstream_is_aggregated_not_silently_dropped() {
         .expect("a native scheme is legal");
     assert_eq!(exposed.skills.len(), 1, "the skill must survive ingest");
     assert_eq!(exposed.skills[0].name, "refunds");
+
+    let verified = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "github://owner/repo/skills/refunds/SKILL.md",
+        )
+        .await
+        .expect("the native URI remains readable through its indexed binding");
+    assert_eq!(verified.text, body);
 }
 
 #[tokio::test]

@@ -358,11 +358,7 @@ pub struct VerifiedSkillFile {
 }
 
 impl UpstreamPool {
-    /// Read one file of a proxied skill, by the path Labby minted for it.
-    ///
-    /// `path` is the URI remainder after Labby's origin label. The upstream
-    /// knows the file under its *own* origin, so the cached entry is what maps
-    /// one to the other — Labby never guesses the upstream's label.
+    /// Read one file of a proxied skill by its exact native upstream URI.
     ///
     /// Every read is manifest-bound and digest-verified. A URI the manifest does
     /// not list is refused rather than fetched: the SEP treats an unlisted file
@@ -371,10 +367,7 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: Option<&str>,
-        // The upstream's OWN full `<skill-path>/<file-path>` — i.e. what
-        // remains after stripping the origin label Labby prepended. Named for
-        // the invariant because passing a label-relative remainder here silently
-        // matches nothing.
+        // The upstream's complete URI, including its native scheme.
         upstream_uri: &str,
     ) -> Result<VerifiedSkillFile, ToolError> {
         let canonical_uri = parse_skill_resource_uri(upstream_uri)
@@ -391,13 +384,6 @@ impl UpstreamPool {
                 message: error,
             })?;
 
-        // `path` is the remainder after the label Labby prepended, which is
-        // exactly the upstream's own full path — so it is matched against the
-        // upstream URI's *full* path, not its remainder. Matching remainders
-        // would drop the upstream's own first segment on both sides and make
-        // `skill://git-workflow/SKILL.md` (a legal one-segment skill path)
-        // unmatchable.
-        //
         // The owning skill travels with the match: verifying a `SKILL.md`
         // needs the frontmatter its own entry published, not another skill's.
         let bindings = exposed

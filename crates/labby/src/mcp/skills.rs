@@ -623,15 +623,6 @@ impl LabMcpServer {
         let subject = self.request_subject(context);
         let scope = self.route_scope.clone();
 
-        // With Code Mode on, raw upstream tools are hidden from tools/list, so
-        // no downstream name exists for a skill's `allowed-tools` to resolve
-        // against. Computed once: it is a gateway-wide setting.
-        let tool_access = if manager.code_mode_enabled().await {
-            aggregate::ToolAccess::CodeModeOnly
-        } else {
-            aggregate::ToolAccess::Direct
-        };
-
         let configs = manager
             .current_config()
             .await
@@ -672,17 +663,7 @@ impl LabMcpServer {
                     // Facts about Labby's own catalog, so a client can scope
                     // `allowed-tools` to this origin instead of resolving it
                     // against the flattened aggregate (threat model T3).
-                    let reachable_tools: Vec<String> = match tool_access {
-                        aggregate::ToolAccess::Direct => pool
-                            .healthy_tools_for_upstream(&config.name)
-                            .await
-                            .into_iter()
-                            .map(|tool| tool.tool.name.to_string())
-                            .collect(),
-                        aggregate::ToolAccess::CodeModeOnly => Vec::new(),
-                    };
-                    let meta =
-                        aggregate::origin_meta(&config.name, None, tool_access, &reachable_tools);
+                    let meta = self.skill_origin_meta(&config.name, &pool).await;
                     let minted =
                         aggregate::mint_proxied_entries(&config, &exposed.skills, Some(&meta));
                     aggregated.excluded_count += minted.excluded_count;

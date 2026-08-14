@@ -410,15 +410,15 @@ mod tests {
     fn a_non_skill_scheme_is_accepted_but_still_structurally_checked() {
         // The SEP privileges no scheme: an upstream MAY serve skills under one
         // native to its domain. What a URI must still satisfy is the structure.
-        assert!(parse_skill_uri("https://example.com/refunds/SKILL.md").is_ok());
-        assert!(parse_skill_uri("lab://catalog").is_ok());
+        assert!(parse_skill_resource_uri("https://example.com/refunds/SKILL.md").is_ok());
+        assert!(parse_skill_resource_uri("lab://catalog").is_ok());
         // An empty authority is still malformed, whatever the scheme.
-        assert!(parse_skill_uri("file:///etc/passwd").is_err());
+        assert!(parse_skill_resource_uri("file:///etc/passwd").is_err());
         // And identity never comes from the scheme — `parse_skill_uri` says
         // nothing about whether a URI names a skill; only a `skills/list` entry
         // or `skills/get` does.
         assert!(
-            parse_skill_uri("https://example.com/refunds/SKILL.md")
+            parse_skill_resource_uri("https://example.com/refunds/SKILL.md")
                 .expect("parses")
                 .skill_md_parts()
                 .is_some()
@@ -456,7 +456,7 @@ mod tests {
             "skill://lab_by/x/SKILL.md",
             "skill://lab.by/x/SKILL.md",
         ] {
-            assert!(parse_skill_uri(uri).is_ok(), "should accept {uri}");
+            assert!(parse_skill_resource_uri(uri).is_ok(), "should accept {uri}");
         }
         // But Labby still refuses to *mint* under a label of that shape.
         let uri = parse_skill_uri("skill://x/SKILL.md").expect("valid");
@@ -491,10 +491,14 @@ mod tests {
         let rewritten = uri.with_origin("gh").expect("valid label");
         assert_eq!(rewritten.origin(), "gh");
         // The remainder is the upstream's whole path, so the mapping inverts.
-        assert_eq!(rewritten.path(), uri.full_path());
+        assert_eq!(rewritten.path(), format!("skill/{}", uri.full_path()));
         assert_eq!(
             rewritten.to_uri(),
-            "skill://gh/upstream-a/billing/refunds/SKILL.md"
+            "skill://gh/skill/upstream-a/billing/refunds/SKILL.md"
+        );
+        assert_eq!(
+            rewritten.upstream_uri_for_origin("gh").as_deref(),
+            Some("skill://upstream-a/billing/refunds/SKILL.md")
         );
         // Round-trips: minting a proxied URI must not produce something the
         // parser then reads back differently.

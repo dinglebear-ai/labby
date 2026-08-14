@@ -145,16 +145,19 @@ pub(crate) fn mint_proxied_entries(
     // exactly one owner. Exclude every owner of a collision instead of letting
     // iteration order decide which instructions or bytes a client receives.
     let mut minted: Vec<SkillEntry> = Vec::with_capacity(skills.len());
-    let mut owners: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut owners: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     for skill in skills {
         let Some(entry) = mint_proxied_entry(&config.name, skill, meta) else {
             continue;
         };
         let owner = minted.len();
-        owners.entry(entry.uri.clone()).or_default().push(owner);
+        owners.entry(entry.uri.clone()).or_default().insert(owner);
         if let Some(resources) = &entry.resources {
             for resource in resources {
-                owners.entry(resource.uri.clone()).or_default().push(owner);
+                owners
+                    .entry(resource.uri.clone())
+                    .or_default()
+                    .insert(owner);
             }
         }
         minted.push(entry);
