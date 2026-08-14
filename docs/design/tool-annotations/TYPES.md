@@ -1,3 +1,9 @@
+---
+title: "Tool Annotations Types"
+created: "2026-08-05"
+updated: "2026-08-13"
+---
+
 # Types — Tool Annotations
 
 Concrete Rust being added. Domain rationale in [MODELS.md](MODELS.md); call-site

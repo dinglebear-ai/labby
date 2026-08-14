@@ -1,3 +1,9 @@
+---
+title: "Tool Annotations Contract"
+created: "2026-08-05"
+updated: "2026-08-13"
+---
+
 # Contract — Tool Annotations
 
 The externally observable promise. Anything here is a breaking change to alter

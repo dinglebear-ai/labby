@@ -1,3 +1,9 @@
+---
+title: "Tool Annotations Models"
+created: "2026-08-05"
+updated: "2026-08-13"
+---
+
 # Models — Tool Annotations
 
 The domain model: what data exists, where it lives, and how an action-level flag

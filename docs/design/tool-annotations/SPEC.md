@@ -1,3 +1,9 @@
+---
+title: "Tool Annotations Specification"
+created: "2026-08-05"
+updated: "2026-08-13"
+---
+
 # Specification — Tool Annotations
 
 Status: implemented · Issue: [#212](https://github.com/dinglebear-ai/labby/issues/212) · Epic: `lab-g1av5`

@@ -1,3 +1,9 @@
+---
+title: "Tool Annotations Schemas"
+created: "2026-08-05"
+updated: "2026-08-13"
+---
+
 # Schemas — Tool Annotations
 
 Wire-level shapes. Authoritative values in

@@ -1,3 +1,9 @@
+---
+title: "Tool Annotations Progress"
+created: "2026-08-05"
+updated: "2026-08-13"
+---
+
 # Progress — Tool Annotations
 
 Working document. Update as work lands; it is not generated.
