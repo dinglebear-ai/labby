@@ -24,6 +24,8 @@ pub(crate) mod aggregate;
 pub(crate) mod local;
 
 use serde_json::Value;
+#[cfg(feature = "gateway")]
+use futures::{stream, StreamExt};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -390,6 +392,33 @@ use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_all
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {
+    #[cfg(feature = "gateway")]
+    async fn skill_origin_meta(
+        &self,
+        origin: &str,
+        pool: &labby_gateway::upstream::pool::UpstreamPool,
+    ) -> serde_json::Map<String, Value> {
+        let code_mode = match self.gateway_manager.as_ref() {
+            Some(manager) => manager.code_mode_enabled().await,
+            None => false,
+        };
+        let access = if code_mode {
+            aggregate::ToolAccess::CodeModeOnly
+        } else {
+            aggregate::ToolAccess::Direct
+        };
+        let reachable = if access == aggregate::ToolAccess::Direct {
+            pool.healthy_tools_for_upstream(origin)
+                .await
+                .into_iter()
+                .map(|tool| tool.tool.name.to_string())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        aggregate::origin_meta(origin, None, access, &reachable)
+    }
+
     /// Answer `skills/list` and `skills/get`.
     ///
     /// Both are read-shaped, so they require the same scope as listing
@@ -559,11 +588,12 @@ impl LabMcpServer {
 
         // Ask the upstream under the URI it knows, then relabel the answer back
         // into this origin exactly as the listing does.
-        let upstream_uri = reconstruct_unlisted_upstream_uri(uri, &config.name)?;
+        let upstream_uri = parsed.upstream_uri_for_origin(&config.name)?;
         let skill = pool
             .fetch_unlisted_skill(&config, self.request_subject(context), &upstream_uri)
             .await?;
-        aggregate::mint_proxied_entry(&config.name, &skill, None)
+        let meta = self.skill_origin_meta(&config.name, &pool).await;
+        aggregate::mint_proxied_entry(&config.name, &skill, Some(&meta))
     }
 
     /// Without the gateway feature there are no proxied skills to resolve.
@@ -602,16 +632,34 @@ impl LabMcpServer {
             aggregate::ToolAccess::Direct
         };
 
+        let configs = manager
+            .current_config()
+            .await
+            .upstream
+            .into_iter()
+            .filter(|config| config.enabled && config.proxy_skills)
+            .filter(|config| scope.allows_upstream(&config.name))
+            .collect::<Vec<_>>();
+        let mut results = stream::iter(configs)
+            .map(|config| {
+                let pool = std::sync::Arc::clone(&pool);
+                async move {
+                    let result = pool.upstream_skills(&config, subject).await;
+                    (config, result)
+                }
+            })
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+        results.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+
         let mut aggregated = ProxiedSkills::default();
+        if !results.is_empty() {
+            aggregated.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_string());
+        }
         let entries = &mut aggregated.entries;
-        for config in manager.current_config().await.upstream {
-            if !config.enabled || !config.proxy_skills {
-                continue;
-            }
-            if !scope.allows_upstream(&config.name) {
-                continue;
-            }
-            match pool.upstream_skills(&config, subject).await {
+        for (config, result) in results {
+            match result {
                 Ok(exposed) => {
                     // Completeness bookkeeping the pool computed. Dropping it
                     // here is what makes a partial listing indistinguishable
@@ -620,7 +668,6 @@ impl LabMcpServer {
                     aggregated.truncated |= exposed.truncated;
                     // Every proxied entry is subject- and scope-dependent, so
                     // one is enough to make the whole listing non-shareable.
-                    aggregated.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_string());
                     aggregated.ttl_ms = min_ttl(aggregated.ttl_ms, exposed.ttl_ms);
                     // Facts about Labby's own catalog, so a client can scope
                     // `allowed-tools` to this origin instead of resolving it
@@ -666,25 +713,6 @@ impl LabMcpServer {
     ) -> Vec<SkillEntry> {
         Vec::new()
     }
-}
-
-/// Recover an upstream `skill://` URI from the URI Labby published for it.
-///
-/// Labby's minting erases a native upstream scheme, so an entry absent from the
-/// cached listing has no trustworthy inverse for `github://`, `gitlab://`, and
-/// similar identities. This fallback is therefore deliberately constrained to
-/// the reconstructable `skill://` form: remove exactly the selected gateway
-/// label and never guess a native scheme.
-#[cfg(feature = "gateway")]
-fn reconstruct_unlisted_upstream_uri(uri: &str, origin: &str) -> Option<String> {
-    let parsed = parse_skill_uri(uri).ok()?;
-    if parsed.scheme() != "skill" || parsed.origin() != origin || parsed.path().is_empty() {
-        return None;
-    }
-    let upstream_uri = format!("skill://{}", parsed.path());
-    parse_skill_uri(&upstream_uri)
-        .ok()
-        .map(|parsed| parsed.to_uri())
 }
 
 #[cfg(test)]
@@ -748,12 +776,16 @@ mod serve_tests {
     #[test]
     fn unlisted_proxy_lookup_removes_the_gateway_label_instead_of_prepending_it_again() {
         assert_eq!(
-            reconstruct_unlisted_upstream_uri("skill://gh/acme/refunds/SKILL.md", "gh")
+            parse_skill_uri("skill://gh/skill/acme/refunds/SKILL.md")
+                .expect("published URI")
+                .upstream_uri_for_origin("gh")
                 .expect("reconstructable skill URI"),
             "skill://acme/refunds/SKILL.md"
         );
         assert!(
-            reconstruct_unlisted_upstream_uri("skill://other/acme/refunds/SKILL.md", "gh")
+            parse_skill_uri("skill://other/skill/acme/refunds/SKILL.md")
+                .expect("published URI")
+                .upstream_uri_for_origin("gh")
                 .is_none(),
             "a URI outside the selected gateway origin must not be reconstructed"
         );
@@ -877,8 +909,11 @@ impl LabMcpServer {
             return Err(unknown());
         };
 
+        let upstream_uri = parsed
+            .upstream_uri_for_origin(&origin)
+            .ok_or_else(unknown)?;
         let verified = pool
-            .read_proxied_skill_file(&config, subject, parsed.path())
+            .read_proxied_skill_file(&config, subject, &upstream_uri)
             .await
             .map_err(|error| {
                 let payload = serde_json::to_string(&error).unwrap_or_else(|_| error.to_string());

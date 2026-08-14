@@ -178,15 +178,25 @@ impl SkillUri {
                 ),
             });
         }
-        // Minted into Labby's own `skill://` namespace whatever the upstream
-        // used. Labby is the *server* downstream, so it publishes in its own
-        // namespace; the upstream's native URI is never reconstructed from this
-        // string but recovered from the cached manifest, which is what keeps a
-        // non-`skill://` upstream routable.
+        // Mint into Labby's `skill://` namespace while retaining the native
+        // scheme as the first path segment after the gateway label. This makes
+        // the mapping exactly reversible even when the cached listing is gone.
         Ok(Self::from_parts(
             "skill".to_string(),
-            format!("{origin}/{}", self.full),
+            format!("{origin}/{}/{}", self.scheme, self.full),
         ))
+    }
+
+    /// Reverse [`with_origin`], recovering the exact native upstream URI.
+    pub fn upstream_uri_for_origin(&self, origin: &str) -> Option<String> {
+        if self.scheme != "skill" || self.origin() != origin {
+            return None;
+        }
+        let (scheme, full) = self.path().split_once('/')?;
+        let uri = format!("{scheme}://{full}");
+        parse_skill_resource_uri(&uri)
+            .ok()
+            .map(|parsed| parsed.to_uri())
     }
 }
 
@@ -273,7 +283,7 @@ pub fn is_valid_origin_label(label: &str) -> bool {
 ///
 /// Rejects: a missing or malformed scheme, an over-long URI, and any empty,
 /// dot, or over-long segment. The scheme itself is not constrained to `skill`.
-pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
+pub fn parse_skill_resource_uri(uri: &str) -> Result<SkillUri, ToolError> {
     if uri.chars().count() > MAX_URI_CHARS {
         return Err(invalid(uri, &format!("exceeds {MAX_URI_CHARS} characters")));
     }
@@ -326,6 +336,15 @@ pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
         scheme.to_ascii_lowercase(),
         rest.to_string(),
     ))
+}
+
+/// Parse a URI in Labby's published `skill://` namespace.
+pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
+    let parsed = parse_skill_resource_uri(uri)?;
+    if parsed.scheme() != "skill" {
+        return Err(invalid(uri, "expected the `skill://` scheme"));
+    }
+    Ok(parsed)
 }
 
 #[cfg(test)]

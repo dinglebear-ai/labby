@@ -23,7 +23,7 @@ use crate::error::ToolError;
 use crate::skills::digest::parse_digest;
 use crate::skills::frontmatter::validate_frontmatter;
 use crate::skills::limits::MAX_RESOURCES_PER_SKILL;
-use crate::skills::uri::{SkillUri, parse_skill_uri};
+use crate::skills::uri::{SkillUri, parse_skill_resource_uri};
 use crate::skills::wire::SkillEntry;
 
 /// Why a skill was rejected at ingest.
@@ -89,7 +89,7 @@ pub struct ValidatedSkill {
 /// must never sink the whole upstream, so callers exclude the skill, count the
 /// cause, and carry on.
 pub fn validate_skill_entry(entry: &SkillEntry) -> Result<ValidatedSkill, SkillRejection> {
-    let uri = parse_skill_uri(&entry.uri).map_err(|_| SkillRejection::InvalidSkillUri)?;
+    let uri = parse_skill_resource_uri(&entry.uri).map_err(|_| SkillRejection::InvalidSkillUri)?;
     // Take an owned name so the borrow of `uri` ends before it is moved into
     // the returned `ValidatedSkill`.
     let name = {
@@ -125,7 +125,7 @@ pub fn validate_skill_entry(entry: &SkillEntry) -> Result<ValidatedSkill, SkillR
 
         // Reject before the prefix test so a malformed URI cannot slip through
         // on a lucky string match.
-        let resource_uri = parse_skill_uri(&resource.uri)
+        let resource_uri = parse_skill_resource_uri(&resource.uri)
             .map_err(|_| SkillRejection::ManifestUriOutOfNamespace)?;
         // Now that any scheme is accepted, a manifest could otherwise name a
         // file under a *different* scheme and still satisfy the prefix test on

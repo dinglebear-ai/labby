@@ -12,10 +12,11 @@
 //! one policy must never keep serving under it once the policy changes.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
-use labby_runtime::skills::{ValidatedSkill, parse_skill_uri};
+use labby_runtime::skills::{ValidatedSkill, parse_skill_resource_uri};
 
 use super::UpstreamPool;
 use super::entries::{log_exposure_filter, resolve_request_skill_exposure_policy};
@@ -44,6 +45,8 @@ pub struct ExposedSkills {
     /// untrusted `ttlMs`. A downstream listing that folds these entries in must
     /// not advertise a longer TTL than the data behind it actually has.
     pub ttl_ms: Option<u64>,
+    catalog: Arc<UpstreamSkills>,
+    exposed_indices: BTreeSet<usize>,
 }
 
 impl UpstreamPool {
@@ -224,13 +227,17 @@ impl UpstreamPool {
         let policy =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
         let total = cached.skills.skills.len();
-        let skills: Vec<ValidatedSkill> = cached
+        let exposed_indices: BTreeSet<usize> = cached
             .skills
             .skills
             .iter()
-            .filter(|skill| policy.matches(&skill.name))
-            .cloned()
+            .enumerate()
+            .filter_map(|(index, skill)| policy.matches(&skill.name).then_some(index))
             .collect();
+        let skills = exposed_indices
+            .iter()
+            .map(|index| cached.skills.skills[*index].clone())
+            .collect::<Vec<_>>();
         log_exposure_filter(
             &config.name,
             "skills",
@@ -244,6 +251,8 @@ impl UpstreamPool {
             truncated: cached.skills.truncated,
             age_secs: cached.age().as_secs(),
             ttl_ms: Some(cached.remaining_ttl().as_millis() as u64),
+            catalog: Arc::clone(&cached.skills),
+            exposed_indices,
         }
     }
 
@@ -366,9 +375,14 @@ impl UpstreamPool {
         // remains after stripping the origin label Labby prepended. Named for
         // the invariant because passing a label-relative remainder here silently
         // matches nothing.
-        upstream_path: &str,
+        upstream_uri: &str,
     ) -> Result<VerifiedSkillFile, ToolError> {
-        let path = upstream_path;
+        let canonical_uri = parse_skill_resource_uri(upstream_uri)
+            .map_err(|error| ToolError::Sdk {
+                sdk_kind: "invalid_param".into(),
+                message: error.to_string(),
+            })?
+            .to_uri();
         let exposed = self
             .upstream_skills(config, subject)
             .await
@@ -386,46 +400,28 @@ impl UpstreamPool {
         //
         // The owning skill travels with the match: verifying a `SKILL.md`
         // needs the frontmatter its own entry published, not another skill's.
-        let mut found: Option<(&str, &str, &ValidatedSkill)> = None;
-        for skill in &exposed.skills {
-            let Some(resources) = skill.entry.resources.as_ref() else {
-                continue;
-            };
-            for resource in resources {
-                if let Ok(parsed) = parse_skill_uri(&resource.uri)
-                    && parsed.full_path() == path
-                {
-                    // Two schemes can share a path — `skill://a/SKILL.md` and
-                    // `github://a/SKILL.md` both publish as
-                    // `skill://<label>/a/SKILL.md`. Resolving by iteration order
-                    // would serve one skill's bytes under the other's identity,
-                    // so an ambiguous path is refused instead.
-                    if let Some((existing, _, _)) = found
-                        && existing != resource.uri.as_str()
-                    {
-                        return Err(ToolError::Sdk {
-                            sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
-                            message: format!(
-                                "`{path}` on upstream `{}` is served under more than one scheme, \
-                                 so it does not identify a single file",
-                                config.name
-                            ),
-                        });
-                    }
-                    found = Some((resource.uri.as_str(), resource.digest.as_str(), skill));
-                }
-            }
-        }
-
-        let Some((upstream_uri, digest, skill)) = found else {
+        let bindings = exposed
+            .catalog
+            .resource_index
+            .get(&canonical_uri)
+            .into_iter()
+            .flatten()
+            .filter(|binding| exposed.exposed_indices.contains(&binding.skill))
+            .collect::<Vec<_>>();
+        let [binding] = bindings.as_slice() else {
             return Err(ToolError::Sdk {
                 sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
                 message: format!(
-                    "no exposed skill on upstream `{}` lists `{path}`; refresh the skill entry and retry",
+                    "`{canonical_uri}` on upstream `{}` does not identify exactly one exposed skill file",
                     config.name
                 ),
             });
         };
+        let skill = &exposed.catalog.skills[binding.skill];
+        let resource =
+            &skill.entry.resources.as_ref().expect("validated manifest")[binding.resource];
+        let upstream_uri = resource.uri.as_str();
+        let digest = resource.digest.as_str();
 
         // Read from the owning upstream directly, preserving its native
         // `skill://` URI. The URI-routed helpers resolve a `lab://upstream/…`
@@ -509,7 +505,7 @@ impl UpstreamPool {
             return Err(ToolError::Sdk {
                 sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
                 message: format!(
-                    "content of `{path}` from upstream `{}` does not match the digest its entry published",
+                    "content of `{canonical_uri}` from upstream `{}` does not match the digest its entry published",
                     config.name
                 ),
             });
@@ -523,7 +519,7 @@ impl UpstreamPool {
         // acts on grants capabilities the entry a user approved never declared.
         // That is threat-model T3, and only a field-by-field comparison of the
         // served bytes against the published entry catches it.
-        if is_skill_md(&skill.entry.uri, path) {
+        if is_skill_md(&skill.entry.uri, &canonical_uri) {
             let served =
                 labby_runtime::skills::parse_skill_md_frontmatter(&text).map_err(|error| {
                     ToolError::Sdk {
@@ -559,5 +555,5 @@ fn is_skill_md(entry_uri: &str, upstream_path: &str) -> bool {
     // post-first-segment remainder here made this silently return false for
     // every skill, which disabled the frontmatter cross-check entirely — a
     // security check that fails open by never firing.
-    parse_skill_uri(entry_uri).is_ok_and(|parsed| parsed.full_path() == upstream_path)
+    parse_skill_resource_uri(entry_uri).is_ok_and(|parsed| parsed.to_uri() == upstream_path)
 }
