@@ -148,6 +148,37 @@ receives the final page of a complete listing. Subscribing before that point
 keeps the baseline unpublished so the next relevant catalog trigger emits
 `notifications/tools/list_changed`.
 
+## Resource Subscriptions
+
+Labby serves resource subscriptions through `subscriptions/listen` only. The
+deprecated `resources/subscribe` / `resources/unsubscribe` RPC pair is **not
+offered**, and the capability is not advertised to sessions that would have to
+use it.
+
+MCP advertises one `resources.subscribe` flag for both mechanisms, so the
+boundary is drawn per session rather than by clearing the flag outright:
+
+| Session | Lifecycle | `resources.subscribe` advertised | Usable mechanism |
+|---|---|---|---|
+| Modern (2026-07-28) | `discover` | yes | `subscriptions/listen` |
+| Legacy (pre-2026-07-28) | `initialize` | **no** | none |
+
+Clearing the flag globally would break modern subscriptions — rmcp intersects a
+client's requested `SubscriptionFilter` against the advertised capability — and
+would also break the gateway's own upstream subscription negotiation. The
+capability is therefore withheld in the legacy `initialize` adapter only.
+
+A legacy session could not use either mechanism regardless: Labby implements no
+`resources/subscribe` handler, and rmcp gates `subscriptions/listen` to modern
+sessions. Advertising the flag to those sessions promised something that could
+not work.
+
+Delivering subscriptions to legacy clients over HTTP would additionally require
+serving the 2025-06-18 transport era — the standalone `GET`/SSE stream and its
+session management — which the 2026-07-28 transport replaced with
+request-scoped streams. That is a transport-layer decision, not a subscription
+one.
+
 ## Supported Product Boundary
 
 The MCP server does not expose ACP, Marketplace, Registry-browser, Fleet/node,
