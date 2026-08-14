@@ -27,7 +27,10 @@ test-integration:
 
 # Lint
 lint: skill-drift rust-toolchain-sync
-    cargo clippy --workspace --all-features -- -D warnings
+    # --all-targets so tests/examples/benches are linted too. Without it the
+    # `disallowed_methods` bans (Tool::new, Peer::list_all_*) do not cover test
+    # code, which is exactly where fixtures reach for them.
+    cargo clippy --workspace --all-features --all-targets -- -D warnings
     cargo fmt --all -- --check
 
 # Verify Cargo, rust-toolchain, CI, container, and active docs agree on the MSRV.

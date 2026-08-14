@@ -538,6 +538,8 @@ where
 }
 
 #[cfg(test)]
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#[allow(clippy::panic)]
 mod tests {
     use labby_runtime::agent_error::SANITIZE_TRUNCATION_MARKER;
     use rmcp::model::{ErrorCode, ErrorData};

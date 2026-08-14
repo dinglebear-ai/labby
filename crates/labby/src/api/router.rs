@@ -4345,7 +4345,7 @@ mod tests {
     #[cfg(feature = "gateway")]
     #[test]
     fn named_protected_route_sse_includes_policy_errors() {
-        let errors = vec![protected_route_json_rpc_error(
+        let errors = [protected_route_json_rpc_error(
             serde_json::json!(7),
             -32601,
             "route_exposure_denied",

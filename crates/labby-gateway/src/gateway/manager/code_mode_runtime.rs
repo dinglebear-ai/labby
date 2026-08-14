@@ -910,6 +910,7 @@ impl GatewayManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod catalog_merge_tests {
     use super::*;
 

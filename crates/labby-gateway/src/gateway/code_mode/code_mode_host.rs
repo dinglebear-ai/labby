@@ -906,6 +906,48 @@ fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str
 // `crate::upstream::tool_error::mcp_error_data_kind` — shared with the MCP
 // upstream proxy so both surfaces emit the same model-facing kind.
 
+/// True when `upstream` names one of Labby's own in-process service peers.
+fn is_in_process_upstream(upstream: &str) -> bool {
+    // Same constant the name is minted from, and the one `UpstreamConfig`
+    // reserves — a literal here is how a third-party upstream ends up silently
+    // treated as in-process and handed the caller's identity.
+    upstream.starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+}
+
+/// A Code Mode caller's authorization facts, in propagatable form.
+///
+/// Scopes travel, not a decision: the receiving gate applies its own rules, so
+/// an action whose requirements differ from Code Mode's is still evaluated
+/// correctly rather than against a stale yes/no.
+pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCallerAuth {
+    match caller {
+        CodeModeCaller::TrustedLocal => PropagatedCallerAuth::trusted_local(),
+        CodeModeCaller::Scoped { capabilities, sub } => {
+            // The kernel deliberately keeps Lab's scope vocabulary out of its
+            // own types, so this adapter boundary is where the names come back.
+            let mut scopes = Vec::new();
+            if capabilities.is_admin {
+                scopes.push("lab:admin".to_string());
+            }
+            if capabilities.can_execute {
+                scopes.push("lab".to_string());
+            }
+            if capabilities.can_read {
+                scopes.push("lab:read".to_string());
+            }
+            PropagatedCallerAuth::scoped(scopes, sub.clone())
+        }
+    }
+}
+
+fn caller_auth_meta(auth: &PropagatedCallerAuth) -> rmcp::model::RequestMetaObject {
+    let mut meta = rmcp::model::RequestMetaObject::default();
+    if let Ok(value) = serde_json::to_value(auth) {
+        meta.insert(CALLER_AUTH_META_KEY.to_string(), value);
+    }
+    meta
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
@@ -1030,8 +1072,10 @@ mod tests {
             &CodeModeConfig::default(),
             &hinted
         ));
-        let mut trusted = CodeModeConfig::default();
-        trusted.trusted_read_only_tools = vec!["fixture::query".to_string()];
+        let trusted = CodeModeConfig {
+            trusted_read_only_tools: vec!["fixture::query".to_string()],
+            ..CodeModeConfig::default()
+        };
         assert!(tool_is_trusted_read_only(&trusted, &hinted));
     }
 
@@ -1499,46 +1543,4 @@ mod tests {
             "rule 4 serializes the whole result, including the explicit isError: false"
         );
     }
-}
-
-/// True when `upstream` names one of Labby's own in-process service peers.
-fn is_in_process_upstream(upstream: &str) -> bool {
-    // Same constant the name is minted from, and the one `UpstreamConfig`
-    // reserves — a literal here is how a third-party upstream ends up silently
-    // treated as in-process and handed the caller's identity.
-    upstream.starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
-}
-
-/// A Code Mode caller's authorization facts, in propagatable form.
-///
-/// Scopes travel, not a decision: the receiving gate applies its own rules, so
-/// an action whose requirements differ from Code Mode's is still evaluated
-/// correctly rather than against a stale yes/no.
-pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCallerAuth {
-    match caller {
-        CodeModeCaller::TrustedLocal => PropagatedCallerAuth::trusted_local(),
-        CodeModeCaller::Scoped { capabilities, sub } => {
-            // The kernel deliberately keeps Lab's scope vocabulary out of its
-            // own types, so this adapter boundary is where the names come back.
-            let mut scopes = Vec::new();
-            if capabilities.is_admin {
-                scopes.push("lab:admin".to_string());
-            }
-            if capabilities.can_execute {
-                scopes.push("lab".to_string());
-            }
-            if capabilities.can_read {
-                scopes.push("lab:read".to_string());
-            }
-            PropagatedCallerAuth::scoped(scopes, sub.clone())
-        }
-    }
-}
-
-fn caller_auth_meta(auth: &PropagatedCallerAuth) -> rmcp::model::RequestMetaObject {
-    let mut meta = rmcp::model::RequestMetaObject::default();
-    if let Ok(value) = serde_json::to_value(auth) {
-        meta.insert(CALLER_AUTH_META_KEY.to_string(), value);
-    }
-    meta
 }

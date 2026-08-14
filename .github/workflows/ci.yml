@@ -671,7 +671,10 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
         with:
           components: clippy
-      - run: cargo clippy --workspace --all-features --locked -- -D warnings
+      # --all-targets so tests/examples/benches are linted too. Without it the
+      # `disallowed_methods` bans (Tool::new, Peer::list_all_*) do not cover
+      # test code, which is exactly where fixtures reach for them.
+      - run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 
   mcp-regressions:
     name: MCP focused regressions
