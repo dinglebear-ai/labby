@@ -14,6 +14,7 @@
 
 import { useState } from 'react'
 import { Globe, Loader2, Terminal } from 'lucide-react'
+import { toast } from 'sonner'
 
 import {
   buildAddServerInput,
@@ -55,7 +56,10 @@ export function PaletteAddServer({
       proxyResources,
       proxyPrompts,
     })
-    if (!input) return
+    if (!input) {
+      toast.error('Enter an endpoint URL or a runnable command first')
+      return
+    }
     onSubmit(input)
   }
 

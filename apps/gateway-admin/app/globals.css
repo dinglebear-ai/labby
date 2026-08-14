@@ -95,6 +95,17 @@
   --radius-3: 22px;
   --radius-pill: 999px;
 
+  /* Font families.
+     These are ALSO listed in `@theme inline` below, but `inline` substitutes
+     values straight into Tailwind utilities and does not emit the custom
+     properties — so `var(--font-display)` from an inline style resolved to
+     nothing and every display title silently fell back to Inter. The mock's
+     aurora.css declares them on a plain `:root`; match that so both the
+     utilities and direct `var()` references work. */
+  --font-display: var(--font-manrope), 'Segoe UI', 'Helvetica Neue', arial, sans-serif;
+  --font-sans: var(--font-inter), 'Segoe UI', 'Helvetica Neue', arial, sans-serif;
+  --font-mono: 'SFMono-Regular', 'SF Mono', consolas, 'Liberation Mono', menlo, monospace;
+
   /* Secondary accent — rose pink for high-glance pops (mono code, key labels,
      skill-generation affordance). Sparingly. */
   --aurora-accent-pink: #f9a8c4;

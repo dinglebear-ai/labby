@@ -2,59 +2,99 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
+import * as DialogPrimitive from '@radix-ui/react-dialog'
 import {
   Activity,
+  ArrowLeft,
   BookOpen,
   Cable,
+  Check,
+  Copy,
+  ExternalLink,
   FileCode2,
   LayoutDashboard,
   Loader2,
+  Play,
+  Plus,
+  Power,
+  RefreshCw,
   Search,
   Settings,
+  SlidersHorizontal,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { Badge } from '@/components/ui/badge'
 import {
   Command,
   CommandEmpty,
-  CommandGroup,
-  CommandInput,
   CommandItem,
   CommandList,
-  CommandShortcut,
 } from '@/components/ui/command'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
-  DialogHeader,
+  DialogOverlay,
+  DialogPortal,
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
-import { cn } from '@/lib/utils'
+import { PaletteAddServer } from '@/components/palette/palette-add-server'
 import {
+  PaletteCountsStrip,
+  PaletteDot,
+  PaletteFooter,
+  PaletteSectionHeader,
+  PaletteSplit,
+  paletteToneVar,
+} from '@/components/palette/palette-parts'
+import {
+  PaletteAlertRow,
+  PaletteCommandRow,
+  PaletteServerRow,
+} from '@/components/palette/palette-rows'
+import { PaletteStyles } from '@/components/palette/palette-styles'
+import {
+  EMPTY_PALETTE_FILTERS,
+  PALETTE_SCOPE_HINT,
+  PALETTE_SCOPE_LABELS,
+  PALETTE_STATUS_FILTERS,
+  PALETTE_TRANSPORT_FILTERS,
   type AppCommandIconKey,
   type AppCommandItem,
   type CatalogBrowseItem,
+  type PaletteServerFilters,
+  appCommandItems,
   buildAppCommandState,
   buildCatalogActionItems,
   buildCatalogServiceItems,
+  buildGatewayAlerts,
+  buildPaletteCounts,
+  buildPaletteFooterLabel,
+  countPaletteFilterMatches,
+  describeGatewayConnection,
   findAppCommandItemById,
+  gatewayMatchesPaletteFilters,
+  paletteFiltersActive,
+  paletteScopeShows,
+  parsePaletteScope,
+  togglePaletteFilter,
 } from '@/lib/app-command-palette'
 import type { CatalogAction, CatalogParam } from '@/lib/types/command-catalog'
 import { useCommandCatalog } from '@/lib/hooks/use-command-catalog'
-import { useGateways } from '@/lib/hooks/use-gateways'
+import { useCopyTimeout } from '@/lib/hooks/use-copy-timeout'
+import { useGateways, useGatewayMutations } from '@/lib/hooks/use-gateways'
 import { confirmGatewayParams } from '@/lib/api/gateway-request'
 import { gatewayDetailHref, normalizeGatewayApiBase } from '@/lib/api/gateway-config'
+import { buildGatewayClientConfig } from '@/lib/api/gateway-client-config'
 import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import {
   isAbortError,
   performServiceAction,
   type ServiceActionError,
 } from '@/lib/api/service-action-client'
-import type { Gateway } from '@/lib/types/gateway'
+import type { CreateGatewayInput, Gateway } from '@/lib/types/gateway'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -70,8 +110,21 @@ const ICONS: Record<AppCommandIconKey, LucideIcon> = {
 
 const KIND_LABELS: Record<AppCommandItem['kind'], string> = {
   action: 'Action',
-  destination: 'Destination',
+  destination: 'Page',
 }
+
+/** Mock parity: the server list is capped at seven rows. */
+const SERVER_ROW_LIMIT = 7
+
+/**
+ * Filter groups shown in the palette's filter panel. The mock also carries a
+ * `Source` group (Gateway / Registry); this console has no equivalent
+ * taxonomy on `Gateway.source`, so it is omitted rather than faked.
+ */
+const FILTER_GROUPS = [
+  { group: 'status' as const, label: 'Status', pills: PALETTE_STATUS_FILTERS },
+  { group: 'transport' as const, label: 'Transport', pills: PALETTE_TRANSPORT_FILTERS },
+]
 
 export { OPEN_COMMAND_PALETTE_EVENT }
 
@@ -79,11 +132,15 @@ export { OPEN_COMMAND_PALETTE_EVENT }
 
 type PaletteMode =
   | { kind: 'browse' }
+  | { kind: 'add_server' }
+  | { kind: 'service_pane'; gatewayId: string }
   | { kind: 'param_prompt'; service: string; action: CatalogAction }
   | { kind: 'result'; service: string; action: string; data: unknown }
 
 type PaletteAction =
   | { type: 'BROWSE' }
+  | { type: 'ADD_SERVER' }
+  | { type: 'SERVICE_PANE'; gatewayId: string }
   | { type: 'PARAM_PROMPT'; service: string; action: CatalogAction }
   | { type: 'RESULT'; service: string; action: string; data: unknown }
 
@@ -91,6 +148,10 @@ function paletteReducer(state: PaletteMode, action: PaletteAction): PaletteMode 
   switch (action.type) {
     case 'BROWSE':
       return { kind: 'browse' }
+    case 'ADD_SERVER':
+      return { kind: 'add_server' }
+    case 'SERVICE_PANE':
+      return { kind: 'service_pane', gatewayId: action.gatewayId }
     case 'PARAM_PROMPT':
       return { kind: 'param_prompt', service: action.service, action: action.action }
     case 'RESULT':
@@ -163,6 +224,17 @@ function parseInstanceLabels(description: string): string[] {
     .filter((s) => s.length > 0 && s.length <= 64)
 }
 
+/** Static palette items narrowed to one kind — used by the `>` / `/` scopes. */
+function appCommandItemsOfKind(kind: AppCommandItem['kind']): AppCommandItem[] {
+  return appCommandItems.filter((item) => item.kind === kind)
+}
+
+function matchesQuery(query: string, ...fields: string[]): boolean {
+  if (!query) return true
+  const q = query.toLowerCase()
+  return fields.some((field) => field.toLowerCase().includes(q))
+}
+
 // ── Public components ─────────────────────────────────────────────────────────
 
 export function AppCommandPaletteTrigger() {
@@ -199,13 +271,34 @@ export function AppCommandPalette() {
   const [mode, dispatch] = useReducer(paletteReducer, { kind: 'browse' })
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [isDispatching, setIsDispatching] = useState(false)
+  const [pendingGatewayId, setPendingGatewayId] = useState<string | null>(null)
+  const [filters, setFilters] = useState<PaletteServerFilters>(EMPTY_PALETTE_FILTERS)
+  // null = auto: the panel opens by itself once a filter is active (mock parity).
+  const [filtersOpenOverride, setFiltersOpenOverride] = useState<boolean | null>(null)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [isCopied, markCopied] = useCopyTimeout(1500)
   const abortRef = useRef<AbortController | null>(null)
 
   // Issue 4: destructure error so we can surface catalog fetch failures
   const { data: catalogServices, isLoading: catalogLoading, error: catalogError } = useCommandCatalog()
   const { data: gateways = [] } = useGateways()
+  const { createGateway, testGateway, reloadGateway, enableGateway, disableGateway } =
+    useGatewayMutations()
 
-  const state = useMemo(() => buildAppCommandState(query), [query])
+  // Scoped prefixes — `>` actions · `#` servers · `/` pages (mock parity).
+  const { scope, query: scopedQuery } = useMemo(() => parsePaletteScope(query), [query])
+
+  const scopedCommandItems = useMemo(() => {
+    if (scope === null) return undefined
+    if (scope === 'actions') return appCommandItemsOfKind('action')
+    if (scope === 'pages') return appCommandItemsOfKind('destination')
+    return []
+  }, [scope])
+
+  const state = useMemo(
+    () => buildAppCommandState(scopedQuery, scopedCommandItems),
+    [scopedQuery, scopedCommandItems],
+  )
   const [activeItemId, setActiveItemId] = useState<string | null>(state.activeItemId)
 
   // Current page: top of page stack, or '' for root browse
@@ -214,30 +307,68 @@ export function AppCommandPalette() {
   // Catalog items for the current page
   const catalogItems = useMemo<CatalogBrowseItem[]>(() => {
     if (currentPage === '') {
+      if (!paletteScopeShows(scope, 'actions')) return []
       return buildCatalogServiceItems(catalogServices)
     }
     const svc = catalogServices.find((s) => s.name === currentPage)
     if (!svc) return []
     return buildCatalogActionItems(svc.name, svc.actions)
-  }, [currentPage, catalogServices])
+  }, [currentPage, catalogServices, scope])
+
+  const visibleCatalogItems = useMemo(
+    () =>
+      catalogItems.filter((item) => matchesQuery(scopedQuery, item.title, item.description)),
+    [catalogItems, scopedQuery],
+  )
+
+  const hasFilters = paletteFiltersActive(filters)
+  const filtersOpen = filtersOpenOverride ?? hasFilters
+  const activeFilterChips = useMemo(
+    () =>
+      FILTER_GROUPS.flatMap((group) =>
+        group.pills
+          .filter((pill) => (filters[group.group] as string[]).includes(pill.value))
+          .map((pill) => ({ group: group.group, value: pill.value, label: pill.label })),
+      ),
+    [filters],
+  )
 
   const gatewayItems = useMemo(() => {
-    if (currentPage !== '' || !query.trim()) return []
-    const q = query.trim().toLowerCase()
+    if (currentPage !== '' || !paletteScopeShows(scope, 'servers')) return []
     return gateways
+      .filter((gateway) => gatewayMatchesPaletteFilters(gateway, filters))
       .filter((gateway) => {
         const endpoint = buildGatewayEndpointPreview(gateway)
-        const haystack = [
+        return matchesQuery(
+          scopedQuery,
           gateway.name,
           endpoint,
           gateway.transport,
           gateway.source ?? '',
           ...gateway.discovery.tools.map((tool) => tool.name),
-        ].join(' ').toLowerCase()
-        return haystack.includes(q)
+        )
       })
-      .slice(0, 8)
-  }, [currentPage, gateways, query])
+      .slice(0, SERVER_ROW_LIMIT)
+  }, [currentPage, gateways, scopedQuery, scope, filters])
+
+  // "Needs Attention" rows — derived from live gateway health, empty query only.
+  const alerts = useMemo(() => {
+    if (currentPage !== '' || query.trim() || mode.kind !== 'browse') return []
+    return buildGatewayAlerts(gateways)
+  }, [currentPage, gateways, query, mode.kind])
+
+  const showAddServerRow =
+    currentPage === '' &&
+    paletteScopeShows(scope, 'actions') &&
+    matchesQuery(scopedQuery, 'Add Server')
+
+  const paneGateway = useMemo(
+    () =>
+      mode.kind === 'service_pane'
+        ? (gateways.find((gateway) => gateway.id === mode.gatewayId) ?? null)
+        : null,
+    [mode, gateways],
+  )
 
   // ── Abort management ───────────────────────────────────────────────────────
 
@@ -257,6 +388,9 @@ export function AppCommandPalette() {
     dispatch({ type: 'BROWSE' })
     setShowAdvanced(false)
     setIsDispatching(false)
+    setPendingGatewayId(null)
+    setFilters(EMPTY_PALETTE_FILTERS)
+    setFiltersOpenOverride(null)
     setOpen(true)
   }, [abortPending])
 
@@ -268,6 +402,9 @@ export function AppCommandPalette() {
     dispatch({ type: 'BROWSE' })
     setShowAdvanced(false)
     setIsDispatching(false)
+    setPendingGatewayId(null)
+    setFilters(EMPTY_PALETTE_FILTERS)
+    setFiltersOpenOverride(null)
   }, [abortPending])
 
   // ── Event listeners ────────────────────────────────────────────────────────
@@ -399,6 +536,72 @@ export function AppCommandPalette() {
     router.push(gatewayDetailHref(gatewayId))
   }
 
+  // ── Gateway row / service-pane operations (all backed by real mutations) ───
+
+  async function runGatewayOp(
+    gateway: Gateway,
+    label: string,
+    op: () => Promise<unknown>,
+  ) {
+    setPendingGatewayId(gateway.id)
+    try {
+      await op()
+      toast.success(`${gateway.name} ${label}`)
+    } catch (err) {
+      if (isAbortError(err)) return
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      toast.error(`${gateway.name} ${label} failed`, { description: message })
+    } finally {
+      setPendingGatewayId(null)
+    }
+  }
+
+  async function copyGatewayConfig(gateway: Gateway) {
+    const json = JSON.stringify(buildGatewayClientConfig(gateway), null, 2)
+    try {
+      await navigator.clipboard.writeText(json)
+      setCopiedId(gateway.id)
+      markCopied()
+    } catch {
+      toast.error(`Could not copy ${gateway.name} connection JSON`)
+    }
+  }
+
+  function togglePower(gateway: Gateway) {
+    const enabled = gateway.enabled ?? true
+    void runGatewayOp(gateway, enabled ? 'disabled' : 'enabled', () =>
+      enabled ? disableGateway(gateway.id) : enableGateway(gateway.id),
+    )
+  }
+
+  function testConnection(gateway: Gateway) {
+    void runGatewayOp(gateway, 'tested', async () => {
+      const result = await testGateway(gateway.id)
+      if (!result.success) throw new Error(result.message)
+    })
+  }
+
+  function reload(gateway: Gateway) {
+    void runGatewayOp(gateway, 'reloaded', () => reloadGateway(gateway.id))
+  }
+
+  function submitAddServer(input: CreateGatewayInput) {
+    setIsDispatching(true)
+    void (async () => {
+      try {
+        const gateway = await createGateway(input)
+        toast.success(`${gateway.name} added`, { description: 'Probing the upstream…' })
+        closePalette()
+        router.push(gatewayDetailHref(gateway.id))
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        toast.error('Could not add server', { description: message })
+      } finally {
+        setIsDispatching(false)
+      }
+    })()
+  }
+
   // ── Param prompt form submit ───────────────────────────────────────────────
 
   function handleParamSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -435,69 +638,193 @@ export function AppCommandPalette() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const showParamForm = mode.kind === 'param_prompt'
+  const showAddForm = mode.kind === 'add_server'
+  const showList = !showParamForm && !showAddForm
 
-  const placeholder = currentPage
-    ? `Search ${currentPage} actions...`
-    : 'Search pages, actions, and operational context...'
+  const placeholder = showAddForm
+    ? 'Adding a server…'
+    : currentPage
+      ? `Search ${currentPage} actions...`
+      : 'Search pages, actions, and operational context...'
+
+  const actionCount =
+    (showList && currentPage === '' ? state.items.length + visibleCatalogItems.length : 0) +
+    (showAddServerRow ? 1 : 0)
+  const pageCount = 0
+  const counts = buildPaletteCounts({
+    servers: gatewayItems.length,
+    actions: actionCount,
+    pages: pageCount,
+    alerts: alerts.length,
+  })
+  const footerLabel = buildPaletteFooterLabel({
+    servers: gatewayItems.length,
+    actions: actionCount,
+    pages: pageCount,
+    alerts: alerts.length,
+  })
+  const showCounts = mode.kind === 'browse' && (query.trim().length > 0 || alerts.length > 0)
+
+  const backTarget =
+    showAddForm || mode.kind === 'service_pane' ? 'mode' : pages.length > 0 ? 'page' : null
+
+  function goBack() {
+    if (backTarget === 'mode') {
+      dispatch({ type: 'BROWSE' })
+      return
+    }
+    if (backTarget === 'page') {
+      setPages((prev) => prev.slice(0, -1))
+      setQuery('')
+    }
+  }
+
+  // Row index feeds the mock's zebra striping across the whole flat list.
+  let zebra = 0
+  const nextZebra = () => zebra++
 
   return (
-    <>
-      <Dialog open={open} onOpenChange={(next) => { if (!next) closePalette() }}>
-        <DialogContent
-          className="top-[18%] translate-y-0 border-aurora-border-strong bg-aurora-panel-strong p-0 shadow-[var(--aurora-shadow-strong),var(--aurora-highlight-strong)] sm:max-w-2xl"
-          showCloseButton={false}
+    <Dialog open={open} onOpenChange={(next) => { if (!next) closePalette() }}>
+      <DialogPortal>
+        <PaletteStyles />
+        <DialogOverlay className="z-50 bg-[rgba(3,9,14,0.62)]" />
+        <DialogPrimitive.Content
+          data-slot="dialog-content"
+          data-palette="1"
+          aria-label="Search and filter servers"
+          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 text-aurora-text-primary duration-200"
         >
-          <DialogHeader className="sr-only">
-            <DialogTitle>Command Palette</DialogTitle>
-            <DialogDescription>
-              Search Labby destinations and actions.
-            </DialogDescription>
-          </DialogHeader>
+          <DialogTitle className="sr-only">Command Palette</DialogTitle>
+          <DialogDescription className="sr-only">
+            Search Labby destinations, actions, and gateway servers.
+          </DialogDescription>
 
           <Command
             shouldFilter={false}
             value={activeItemId ?? undefined}
             onValueChange={setActiveItemId}
             onKeyDown={handleCommandKeyDown}
-            className="bg-transparent text-aurora-text-primary"
+            className="block h-auto w-full overflow-visible rounded-none bg-transparent text-aurora-text-primary"
           >
-            {/* Page breadcrumb */}
-            {pages.length > 0 && (
-              <div className="flex items-center gap-1.5 border-b border-aurora-border-strong px-4 py-2 text-[11px] text-aurora-text-muted">
-                <span
-                  className="cursor-pointer hover:text-aurora-text-primary"
-                  onClick={() => { setPages([]); setQuery('') }}
+            {/* Header — search field, clear, Esc hint */}
+            <div className="pal-head">
+              {backTarget ? (
+                <button
+                  type="button"
+                  className="pal-back"
+                  aria-label="Back"
+                  title="Back to palette — Esc"
+                  onClick={goBack}
                 >
-                  Browse
+                  <ArrowLeft size={14} />
+                </button>
+              ) : null}
+              <div className="pal-field">
+                <span className="pal-field-icon">
+                  <Search size={14} />
                 </span>
-                {pages.map((page, idx) => (
-                  <span key={page} className="flex items-center gap-1.5">
-                    <span>/</span>
-                    <span
-                      className="cursor-pointer hover:text-aurora-text-primary"
-                      onClick={() => { setPages(pages.slice(0, idx + 1)); setQuery('') }}
-                    >
-                      {page}
-                    </span>
-                  </span>
+                <PaletteInput value={query} onValueChange={setQuery} placeholder={placeholder} />
+                <kbd className="pal-kbd">↑↓ · ↵</kbd>
+              </div>
+              {showList ? (
+                <button
+                  type="button"
+                  className="pal-filterbtn"
+                  aria-pressed={filtersOpen}
+                  aria-label="Toggle filters"
+                  title="Filters"
+                  onClick={() => setFiltersOpenOverride(!filtersOpen)}
+                >
+                  <SlidersHorizontal size={13} />
+                </button>
+              ) : null}
+              {query ? (
+                <button
+                  type="button"
+                  className="pal-iconbtn"
+                  aria-label="Clear search"
+                  onClick={() => setQuery('')}
+                >
+                  <X size={13} />
+                </button>
+              ) : null}
+              <kbd className="pal-kbd-esc">Esc</kbd>
+            </div>
+
+            {/* Counts strip */}
+            {showCounts ? (
+              <PaletteCountsStrip
+                counts={counts}
+                scopeLabel={scope ? PALETTE_SCOPE_LABELS[scope] : null}
+                onClearScope={() => setQuery('')}
+                hint={PALETTE_SCOPE_HINT}
+              />
+            ) : null}
+
+            {/* Active filter chips — shown when filters are set but the panel is closed */}
+            {showList && hasFilters && !filtersOpen ? (
+              <div className="pal-chips">
+                {activeFilterChips.map((chip) => (
+                  <button
+                    key={`${chip.group}:${chip.value}`}
+                    type="button"
+                    className="pal-chipbtn"
+                    title="Remove filter"
+                    onClick={() =>
+                      setFilters((current) => togglePaletteFilter(current, chip.group, chip.value))
+                    }
+                  >
+                    {chip.label}
+                    <X size={9} strokeWidth={2.4} />
+                  </button>
+                ))}
+                <span className="pal-grow" />
+                <button
+                  type="button"
+                  className="pal-clear"
+                  onClick={() => setFilters(EMPTY_PALETTE_FILTERS)}
+                >
+                  Clear All
+                </button>
+              </div>
+            ) : null}
+
+            {/* Filter panel — scopes the palette's own Servers list */}
+            {showList && filtersOpen ? (
+              <div className="pal-filters">
+                {FILTER_GROUPS.map((group) => (
+                  <div key={group.group} className="pal-filterrow">
+                    <span className="pal-filterlabel">{group.label}</span>
+                    <div className="pal-filterpills">
+                      {group.pills.map((pill) => {
+                        const active = (filters[group.group] as string[]).includes(pill.value)
+                        return (
+                          <button
+                            key={pill.value}
+                            type="button"
+                            className="pal-pill"
+                            aria-pressed={active}
+                            onClick={() =>
+                              setFilters((current) =>
+                                togglePaletteFilter(current, group.group, pill.value),
+                              )
+                            }
+                          >
+                            {active ? <Check size={11} strokeWidth={2.2} /> : null}
+                            {pill.label} {countPaletteFilterMatches(gateways, group.group, pill.value)}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
                 ))}
               </div>
-            )}
+            ) : null}
 
-            {/* Input — shown when not in param form mode */}
-            {!showParamForm && (
-              <div className="border-b border-aurora-border-strong px-4 py-3">
-                <CommandInput
-                  autoFocus
-                  value={query}
-                  onValueChange={setQuery}
-                  aria-label="Search command palette"
-                  name="app-command-palette-search"
-                  placeholder={placeholder}
-                  className="text-aurora-text-primary placeholder:text-aurora-text-muted"
-                />
-              </div>
-            )}
+            {/* Inline add-server flow */}
+            {showAddForm ? (
+              <PaletteAddServer isSubmitting={isDispatching} onSubmit={submitAddServer} />
+            ) : null}
 
             {/* Param form — rendered OUTSIDE CommandList to avoid cmdk arrow-key interception.
                 The `mode.kind === 'param_prompt'` check is needed for TypeScript narrowing even
@@ -517,270 +844,346 @@ export function AppCommandPalette() {
               />
             )}
 
-            {/* Command list — hidden in param form mode */}
-            {!showParamForm && (
-              <CommandList className="aurora-scrollbar max-h-[420px] px-4 py-4">
-                {/* Loading skeleton while catalog is loading */}
-                {catalogLoading && currentPage === '' && (
-                  <div className="flex items-center justify-center py-8 text-aurora-text-muted">
-                    <Loader2 className="size-4 animate-spin" />
-                    <span className="ml-2 text-sm">Loading services...</span>
-                  </div>
-                )}
+            {showList && (
+              <div className="pal-listwrap">
+                <CommandList data-pallist="1" className="aurora-scrollbar">
+                  {/* Per-service pane header (mock: palSvcOpen) */}
+                  {paneGateway ? (
+                    <ServicePaneHeader
+                      gateway={paneGateway}
+                      onBack={() => dispatch({ type: 'BROWSE' })}
+                    />
+                  ) : null}
 
-                {/* Issue 4: surface catalog fetch error instead of silently showing empty list */}
-                {catalogError && !catalogLoading && (
-                  <CommandGroup>
-                    <CommandItem disabled className="text-aurora-error text-xs">
-                      Failed to load actions — check server connection
-                    </CommandItem>
-                  </CommandGroup>
-                )}
-
-                {/* Catalog service / action items for current page */}
-                {!catalogLoading && !catalogError && catalogItems.length > 0 && (
-                  <CommandGroup
-                    heading={currentPage ? `${currentPage} actions` : 'Services'}
-                    className="mb-3 overflow-visible p-0 [&_[cmdk-group-heading]]:px-0 [&_[cmdk-group-heading]]:py-0 [&_[cmdk-group-heading]]:pb-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:tracking-[0.18em] [&_[cmdk-group-heading]]:text-aurora-text-muted [&_[cmdk-group-heading]]:uppercase"
-                  >
-                    <div className="grid gap-2">
-                      {catalogItems
-                        .filter((item) => {
-                          if (!query) return true
-                          const q = query.toLowerCase()
-                          return item.title.toLowerCase().includes(q) ||
-                            item.description.toLowerCase().includes(q)
-                        })
-                        .map((item) => (
-                          <CatalogItemRow
-                            key={item.id}
-                            item={item}
-                            onSelect={() => handleCatalogItemSelect(item)}
-                          />
-                        ))}
+                  {/* Catalog drill-down header */}
+                  {!paneGateway && currentPage !== '' ? (
+                    <div className="pal-svchead">
+                      <button
+                        type="button"
+                        className="pal-rowbtn"
+                        aria-label="Back"
+                        title="Back to palette"
+                        onClick={() => { setPages((prev) => prev.slice(0, -1)); setQuery('') }}
+                      >
+                        <ArrowLeft size={13} />
+                      </button>
+                      <span className="pal-svcname">{currentPage}</span>
+                      <span className="pal-grow" />
+                      <kbd className="pal-kbd">Esc</kbd>
                     </div>
-                  </CommandGroup>
-                )}
+                  ) : null}
 
-                {/* Static destination/action items — shown on root page only */}
-                {currentPage === '' && (
-                  state.items.length > 0 || gatewayItems.length > 0 ? (
+                  {/* Per-service actions */}
+                  {paneGateway
+                    ? renderServicePaneRows({
+                        gateway: paneGateway,
+                        pending: pendingGatewayId === paneGateway.id,
+                        onTest: () => testConnection(paneGateway),
+                        onReload: () => reload(paneGateway),
+                        onTogglePower: () => togglePower(paneGateway),
+                        onCopy: () => void copyGatewayConfig(paneGateway),
+                        onOpen: () => executeGatewayDestination(paneGateway.id),
+                        nextZebra,
+                      })
+                    : null}
+
+                  {!paneGateway && (
                     <>
-                      {gatewayItems.length > 0 ? (
-                        <CommandGroup
-                          heading="Servers"
-                          className="mb-3 overflow-visible p-0 [&_[cmdk-group-heading]]:px-0 [&_[cmdk-group-heading]]:py-0 [&_[cmdk-group-heading]]:pb-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:tracking-[0.18em] [&_[cmdk-group-heading]]:text-aurora-text-muted [&_[cmdk-group-heading]]:uppercase"
-                        >
-                          <div className="grid gap-2">
-                            {gatewayItems.map((gateway) => (
-                              <GatewayCommandPaletteRow
-                                key={gateway.id}
-                                gateway={gateway}
-                                onSelect={() => executeGatewayDestination(gateway.id)}
-                              />
-                            ))}
+                      {/* Loading skeleton while catalog is loading */}
+                      {catalogLoading && currentPage === '' && paletteScopeShows(scope, 'actions') && (
+                        <div className="pal-empty">
+                          <Loader2 className="mr-2 inline size-4 animate-spin" />
+                          Loading services...
+                        </div>
+                      )}
+
+                      {/* Issue 4: surface catalog fetch error instead of silently showing empty list */}
+                      {catalogError && !catalogLoading && paletteScopeShows(scope, 'actions') && (
+                        <div className="pal-empty" style={{ color: 'var(--aurora-error)' }}>
+                          Failed to load actions — check server connection
+                        </div>
+                      )}
+
+                      {/* Needs Attention */}
+                      {alerts.length > 0 && (
+                        <>
+                          <PaletteSectionHeader label="Needs Attention" />
+                          {alerts.map((alert) => (
+                            <PaletteAlertRow
+                              key={alert.id}
+                              value={alert.id}
+                              label={alert.label}
+                              tone={alert.tone}
+                              onSelect={() =>
+                                dispatch({ type: 'SERVICE_PANE', gatewayId: alert.gatewayId })
+                              }
+                            />
+                          ))}
+                          <PaletteSplit />
+                        </>
+                      )}
+
+                      {/* Add Server — backed by the real createGateway mutation */}
+                      {showAddServerRow && (
+                        <PaletteCommandRow
+                          value="palette-add-server"
+                          keywords={['add', 'server', 'upstream', 'mcp']}
+                          zebra={nextZebra()}
+                          icon={<Plus size={12} />}
+                          label="Add Server"
+                          trailing="Action"
+                          onSelect={() => dispatch({ type: 'ADD_SERVER' })}
+                        />
+                      )}
+
+                      {/* Static destinations / actions, grouped by rank */}
+                      {currentPage === '' &&
+                        state.groups.map((group) => (
+                          <div key={group.key}>
+                            <PaletteSectionHeader label={group.label} />
+                            {group.items.map((item) => {
+                              const Icon = ICONS[item.icon]
+                              return (
+                                <PaletteCommandRow
+                                  key={item.id}
+                                  value={item.id}
+                                  keywords={item.keywords}
+                                  zebra={nextZebra()}
+                                  icon={<Icon size={12} />}
+                                  iconTone={item.kind === 'action' ? 'accent' : 'muted'}
+                                  label={item.title}
+                                  trailing={KIND_LABELS[item.kind]}
+                                  onSelect={(() => {
+                                    const itemId = item.id
+                                    return () =>
+                                      executeDestination(
+                                        findAppCommandItemById(itemId, state.items),
+                                      )
+                                  })()}
+                                />
+                              )
+                            })}
                           </div>
-                        </CommandGroup>
-                      ) : null}
-                      {state.groups.map((group) => (
-                        <CommandGroup
-                          key={group.key}
-                          heading={group.label}
-                          className="mb-3 overflow-visible p-0 [&_[cmdk-group-heading]]:px-0 [&_[cmdk-group-heading]]:py-0 [&_[cmdk-group-heading]]:pb-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:tracking-[0.18em] [&_[cmdk-group-heading]]:text-aurora-text-muted [&_[cmdk-group-heading]]:uppercase"
-                        >
-                          <div className="grid gap-2">
-                            {group.items.map((item) => (
-                              <AppCommandPaletteRow
-                                key={item.id}
-                                item={item}
-                                active={item.id === activeItemId}
-                                onSelect={(itemId) => {
-                                  executeDestination(findAppCommandItemById(itemId, state.items))
-                                }}
-                              />
-                            ))}
-                          </div>
-                        </CommandGroup>
-                      ))}
+                        ))}
+
+                      {/* Catalog services (root) or a service's actions (drill-down) */}
+                      {!catalogLoading && !catalogError && visibleCatalogItems.length > 0 && (
+                        <>
+                          {currentPage === '' ? <PaletteSectionHeader label="Services" /> : null}
+                          {visibleCatalogItems.map((item) => (
+                            <PaletteCommandRow
+                              key={item.id}
+                              value={item.id}
+                              zebra={nextZebra()}
+                              icon={<Cable size={12} />}
+                              label={item.title}
+                              trailing={
+                                item.kind === 'catalog-service'
+                                  ? 'Browse'
+                                  : item.destructive
+                                    ? 'Destructive'
+                                    : 'Run'
+                              }
+                              onSelect={() => handleCatalogItemSelect(item)}
+                            />
+                          ))}
+                        </>
+                      )}
+
+                      {/* Servers */}
+                      {gatewayItems.length > 0 && (
+                        <>
+                          <PaletteSectionHeader label="Servers" />
+                          {gatewayItems.map((gateway) => (
+                            <PaletteServerRow
+                              key={gateway.id}
+                              gateway={gateway}
+                              endpoint={buildGatewayEndpointPreview(gateway)}
+                              connection={describeGatewayConnection(gateway)}
+                              zebra={nextZebra()}
+                              copied={isCopied && copiedId === gateway.id}
+                              pending={pendingGatewayId === gateway.id}
+                              onSelect={() => executeGatewayDestination(gateway.id)}
+                              onCopy={() => void copyGatewayConfig(gateway)}
+                              onTogglePower={() => togglePower(gateway)}
+                              onTest={() => testConnection(gateway)}
+                              onReload={() => reload(gateway)}
+                            />
+                          ))}
+                        </>
+                      )}
+
+                      {/* Empty state */}
+                      {!catalogLoading &&
+                        alerts.length === 0 &&
+                        !showAddServerRow &&
+                        state.items.length === 0 &&
+                        visibleCatalogItems.length === 0 &&
+                        gatewayItems.length === 0 && (
+                          <CommandEmpty className="pal-empty">
+                            {currentPage
+                              ? `No actions available for ${currentPage}.`
+                              : 'No matching commands. Try gateway, snippets, usage, or settings.'}
+                          </CommandEmpty>
+                        )}
                     </>
-                  ) : (
-                    !catalogLoading && !query && catalogItems.length === 0 ? null : (
-                      <CommandEmpty className="rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface px-5 py-6 text-left">
-                        <p className="text-sm font-semibold text-aurora-text-primary">
-                          No matching commands
-                        </p>
-                        <p className="mt-2 text-sm text-aurora-text-muted">
-                          Try gateway, snippets, usage, or settings.
-                        </p>
-                      </CommandEmpty>
-                    )
-                  )
-                )}
-
-                {/* Empty state on action page */}
-                {currentPage !== '' && !catalogLoading && catalogItems.length === 0 && (
-                  <CommandEmpty className="rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface px-5 py-6 text-left">
-                    <p className="text-sm font-semibold text-aurora-text-primary">
-                      No actions found
-                    </p>
-                    <p className="mt-2 text-sm text-aurora-text-muted">
-                      No actions available for {currentPage}.
-                    </p>
-                  </CommandEmpty>
-                )}
-              </CommandList>
+                  )}
+                </CommandList>
+              </div>
             )}
+
+            {showList ? (
+              <PaletteFooter label={footerLabel}>
+                {hasFilters ? (
+                  <button
+                    type="button"
+                    className="pal-footclear"
+                    onClick={() => setFilters(EMPTY_PALETTE_FILTERS)}
+                  >
+                    Clear All
+                  </button>
+                ) : null}
+              </PaletteFooter>
+            ) : null}
           </Command>
-        </DialogContent>
-      </Dialog>
-
-    </>
+        </DialogPrimitive.Content>
+      </DialogPortal>
+    </Dialog>
   )
 }
 
-// ── CatalogItemRow ─────────────────────────────────────────────────────────────
-
-type CatalogItemRowProps = {
-  item: CatalogBrowseItem
-  onSelect: () => void
-}
-
-function CatalogItemRow({ item, onSelect }: CatalogItemRowProps) {
+/** cmdk input, styled as the mock's search line. */
+function PaletteInput({
+  value,
+  onValueChange,
+  placeholder,
+}: {
+  value: string
+  onValueChange: (next: string) => void
+  placeholder: string
+}) {
   return (
-    <CommandItem
-      value={item.id}
-      onSelect={onSelect}
-      className="rounded-aurora-2 border border-aurora-border-strong/80 bg-aurora-control-surface px-3 py-3 text-aurora-text-primary transition-[border-color,background-color,box-shadow] hover:bg-aurora-hover-bg"
-    >
-      <div className="grid min-w-0 flex-1 gap-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] font-semibold leading-[1.2] text-aurora-text-primary">
-            {item.title}
-          </span>
-          {item.destructive && (
-            <Badge
-              variant="pill"
-              status="error"
-              className="border-aurora-border-strong bg-aurora-panel-medium text-[11px]"
-            >
-              Destructive
-            </Badge>
-          )}
-        </div>
-        <span className="truncate text-[12px] leading-[1.45] text-aurora-text-muted">
-          {item.description}
-        </span>
-      </div>
-      <CommandShortcut className="text-[11px] tracking-[0.08em] text-aurora-text-muted">
-        {item.kind === 'catalog-service' ? 'Browse' : 'Run'}
-      </CommandShortcut>
-    </CommandItem>
+    <input
+      autoFocus
+      className="pal-input"
+      value={value}
+      onChange={(event) => onValueChange(event.target.value)}
+      aria-label="Search command palette"
+      name="app-command-palette-search"
+      placeholder={placeholder}
+      autoComplete="off"
+      spellCheck={false}
+    />
   )
 }
 
-// ── AppCommandPaletteRow ───────────────────────────────────────────────────────
+// ── Service pane ──────────────────────────────────────────────────────────────
 
-type AppCommandPaletteRowProps = {
-  item: AppCommandItem
-  active: boolean
-  onSelect: (itemId: string) => void
-}
-
-function AppCommandPaletteRow({
-  item,
-  active,
-  onSelect,
-}: AppCommandPaletteRowProps) {
-  const Icon = ICONS[item.icon]
-
+function ServicePaneHeader({ gateway, onBack }: { gateway: Gateway; onBack: () => void }) {
+  const connection = describeGatewayConnection(gateway)
   return (
-    <CommandItem
-      value={item.id}
-      keywords={item.keywords}
-      onSelect={() => onSelect(item.id)}
-      className={cn(
-        'rounded-aurora-2 border border-aurora-border-strong/80 bg-aurora-control-surface px-3 py-3 text-aurora-text-primary transition-[border-color,background-color,box-shadow] hover:bg-aurora-hover-bg',
-        active
-          ? 'border-aurora-accent-primary/40 bg-aurora-panel-medium shadow-[var(--aurora-active-glow)]'
-          : '',
-      )}
-    >
-      <div className="flex size-9 items-center justify-center rounded-aurora-1 border border-aurora-border-strong bg-aurora-panel-medium text-aurora-accent-strong">
-        <Icon className="size-4" />
-      </div>
-      <div className="grid min-w-0 flex-1 gap-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] font-semibold leading-[1.2] text-aurora-text-primary">
-            {item.title}
-          </span>
-          <Badge
-            variant="pill"
-            status={item.kind === 'action' ? 'success' : 'default'}
-            className="border-aurora-border-strong bg-aurora-panel-medium text-[11px] text-aurora-text-muted"
-          >
-            {KIND_LABELS[item.kind]}
-          </Badge>
-        </div>
-        <span className="truncate text-[12px] leading-[1.45] text-aurora-text-muted">
-          {item.description}
-        </span>
-      </div>
-      <CommandShortcut className="text-[11px] tracking-[0.08em] text-aurora-text-muted">
-        {item.actionHint}
-      </CommandShortcut>
-    </CommandItem>
+    <div className="pal-svchead">
+      <button
+        type="button"
+        className="pal-rowbtn"
+        aria-label="Back"
+        title="Back to palette"
+        onClick={onBack}
+      >
+        <ArrowLeft size={13} />
+      </button>
+      <PaletteDot tone={connection.tone} />
+      <span className="pal-svcname">{gateway.name}</span>
+      <span className="pal-svcstatus" style={{ color: paletteToneVar(connection.tone) }}>
+        {connection.label}
+      </span>
+      <span className="pal-grow" />
+      <kbd className="pal-kbd">Esc</kbd>
+    </div>
   )
 }
 
-// ── GatewayCommandPaletteRow ──────────────────────────────────────────────────
-
-type GatewayCommandPaletteRowProps = {
+function renderServicePaneRows({
+  gateway,
+  pending,
+  onTest,
+  onReload,
+  onTogglePower,
+  onCopy,
+  onOpen,
+  nextZebra,
+}: {
   gateway: Gateway
-  onSelect: () => void
-}
-
-function GatewayCommandPaletteRow({ gateway, onSelect }: GatewayCommandPaletteRowProps) {
-  const endpoint = buildGatewayEndpointPreview(gateway)
+  pending: boolean
+  onTest: () => void
+  onReload: () => void
+  onTogglePower: () => void
+  onCopy: () => void
+  onOpen: () => void
+  nextZebra: () => number
+}) {
   const enabled = gateway.enabled ?? true
-  const status = !enabled
-    ? 'Disabled'
-    : gateway.status.healthy && gateway.status.connected
-      ? 'Healthy'
-      : gateway.status.connected
-        ? 'Attention'
-        : 'Offline'
+  const rows: Array<{
+    key: string
+    icon: React.ReactNode
+    label: string
+    sub: string
+    onSelect: () => void
+  }> = [
+    {
+      key: 'test',
+      icon: <Play size={12} />,
+      label: 'Test Connection',
+      sub: gateway.transport === 'stdio' ? 'spawn + initialize' : 'initialize + tools/list',
+      onSelect: onTest,
+    },
+    {
+      key: 'reload',
+      icon: <RefreshCw size={12} />,
+      label: 'Reload Server',
+      sub: 'Re-probe catalog',
+      onSelect: onReload,
+    },
+    {
+      key: 'power',
+      icon: <Power size={12} />,
+      label: enabled ? 'Disable Server' : 'Enable Server',
+      sub: enabled ? 'Stop exposing this upstream' : 'Expose this upstream again',
+      onSelect: onTogglePower,
+    },
+    {
+      key: 'copy',
+      icon: <Copy size={12} />,
+      label: 'Copy Connection JSON',
+      sub: '.mcp.json entry',
+      onSelect: onCopy,
+    },
+    {
+      key: 'open',
+      icon: <ExternalLink size={12} />,
+      label: 'Open Server Page',
+      sub: 'Full detail hub',
+      onSelect: onOpen,
+    },
+  ]
 
-  return (
+  return rows.map((row) => (
     <CommandItem
-      value={`gateway:${gateway.id}`}
-      onSelect={onSelect}
-      className="rounded-aurora-2 border border-aurora-border-strong/80 bg-aurora-control-surface px-3 py-3 text-aurora-text-primary transition-[border-color,background-color,box-shadow] hover:bg-aurora-hover-bg"
+      key={row.key}
+      data-palrow="1"
+      data-palzebra={nextZebra() % 2 === 1 ? '1' : '0'}
+      value={`svcaction:${gateway.id}:${row.key}`}
+      disabled={pending}
+      onSelect={row.onSelect}
     >
-      <div className="flex size-9 items-center justify-center rounded-aurora-1 border border-aurora-accent-primary/25 bg-aurora-accent-primary/10 text-aurora-accent-strong">
-        <Cable className="size-4" />
-      </div>
-      <div className="grid min-w-0 flex-1 gap-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] font-semibold leading-[1.2] text-aurora-text-primary">
-            {gateway.name}
-          </span>
-          <Badge
-            variant="pill"
-            status="default"
-            className="h-5 border-aurora-border-strong bg-aurora-panel-medium px-2 text-[10px] uppercase tracking-[0.12em] text-aurora-text-muted"
-          >
-            {gateway.transport}
-          </Badge>
-        </div>
-        <span className="truncate text-[12px] leading-[1.45] text-aurora-text-muted">
-          {endpoint}
-        </span>
-      </div>
-      <CommandShortcut className="text-[11px] tracking-[0.08em] text-aurora-text-muted">
-        {status}
-      </CommandShortcut>
+      <span className="pal-chip">{row.icon}</span>
+      <span className="pal-label">{row.label}</span>
+      <span className="pal-grow" />
+      <span className="pal-sub" data-plain="1">
+        {row.sub}
+      </span>
     </CommandItem>
-  )
+  ))
 }
 
 // ── ParamPromptForm ───────────────────────────────────────────────────────────
@@ -816,15 +1219,17 @@ function ParamPromptForm({
   const showAdvancedToggle = optionalParams.length > 0 && (requiredParams.length >= 3 || totalParams >= 5)
 
   return (
-    <div className="px-4 py-4">
-      <div className="mb-3 text-sm font-semibold text-aurora-text-primary">
-        {service} / {action.action}
+    <div className="pal-form">
+      <div>
+        <div className="pal-svcname">
+          {service} / {action.action}
+        </div>
+        {action.description && (
+          <p className="mt-1 text-[12px] text-aurora-text-muted">{action.description}</p>
+        )}
       </div>
-      {action.description && (
-        <p className="mb-4 text-[12px] text-aurora-text-muted">{action.description}</p>
-      )}
 
-      <form onSubmit={onSubmit} className="space-y-3">
+      <form onSubmit={onSubmit} className="flex flex-col gap-3">
         {/* Required params */}
         {requiredParams.map((param) => (
           <ParamField key={param.name} param={param} actionName={action.action} />
@@ -841,7 +1246,7 @@ function ParamPromptForm({
             {showAdvancedToggle && (
               <button
                 type="button"
-                className="text-[12px] text-aurora-accent-primary hover:underline"
+                className="text-left text-[12px] text-aurora-accent-primary hover:underline"
                 onClick={onToggleAdvanced}
               >
                 {showAdvanced
@@ -852,21 +1257,14 @@ function ParamPromptForm({
           </>
         )}
 
-        <div className="flex items-center gap-2 pt-2">
-          <button
-            type="submit"
-            disabled={isDispatching}
-            className="flex items-center gap-1.5 rounded-aurora-1 bg-aurora-accent-primary px-3 py-1.5 text-[12px] font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
-          >
-            {isDispatching && <Loader2 className="size-3 animate-spin" />}
-            {action.destructive ? 'Continue...' : 'Run'}
-          </button>
-          <button
-            type="button"
-            className="rounded-aurora-1 px-3 py-1.5 text-[12px] text-aurora-text-muted transition hover:text-aurora-text-primary"
-            onClick={onCancel}
-          >
+        <div className="pal-add-foot">
+          <span className="pal-grow" />
+          <button type="button" className="pal-btn" onClick={onCancel}>
             Cancel
+          </button>
+          <button type="submit" className="pal-btn" data-primary="1" disabled={isDispatching}>
+            {isDispatching && <Loader2 size={11} className="mr-1 inline animate-spin" />}
+            {action.destructive ? 'Continue...' : 'Run'}
           </button>
         </div>
       </form>
@@ -895,11 +1293,11 @@ function ParamField({ param, actionName }: { param: CatalogParam; actionName: st
       : 2000
 
   return (
-    <div className="grid gap-1">
-      <label htmlFor={`param-${param.name}`} className="text-[11px] font-semibold text-aurora-text-primary">
+    <div className="pal-add-col">
+      <label htmlFor={`param-${param.name}`} className="pal-add-label">
         {param.name}
-        {param.required && <span className="ml-1 text-red-400">*</span>}
-        <span className="ml-2 font-normal text-aurora-text-muted">({param.ty})</span>
+        {param.required && <span className="ml-1 text-aurora-error">*</span>}
+        <span className="ml-2 font-normal normal-case tracking-normal">({param.ty})</span>
       </label>
       {param.description && (
         <p className="text-[11px] text-aurora-text-muted">{param.description}</p>
@@ -912,7 +1310,7 @@ function ParamField({ param, actionName }: { param: CatalogParam; actionName: st
         autoComplete={isPassword ? 'current-password' : 'off'}
         maxLength={maxLength}
         list={datalistId}
-        className="w-full rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface px-2.5 py-1.5 text-[13px] text-aurora-text-primary placeholder:text-aurora-text-muted focus:border-aurora-accent-primary focus:outline-none"
+        className="pal-add-input"
         placeholder={isPassword ? '••••••••' : param.description || param.name}
       />
       {datalistId && (

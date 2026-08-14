@@ -7,13 +7,18 @@ import {
   buildAddServerInput,
   buildGatewayAlerts,
   buildPaletteCounts,
+  countPaletteFilterMatches,
   detectPaletteAddTransport,
+  gatewayMatchesPaletteFilters,
+  paletteFiltersActive,
   parsePaletteEnvPairs,
+  togglePaletteFilter,
   buildPaletteFooterLabel,
   describeGatewayConnection,
   findAppCommandItemById,
   paletteScopeShows,
   parsePaletteScope,
+  type PaletteServerFilters,
 } from './app-command-palette'
 
 test('app command palette ranks server searches first', () => {
@@ -234,5 +239,62 @@ test('buildAddServerInput produces a real CreateGatewayInput', () => {
     },
   )
 
+  // Quoted args survive because the shared stdio tokenizer does the splitting.
+  assert.deepEqual(
+    buildAddServerInput({ ...base, target: 'npx -y "my server" --flag', name: 'quoted' })?.config,
+    {
+      command: 'npx',
+      args: ['-y', 'my server', '--flag'],
+      proxy_resources: true,
+      proxy_prompts: false,
+    },
+  )
+
   assert.equal(buildAddServerInput({ ...base, target: '  ' }), null)
+  // Unterminated quote is unusable, not silently mangled.
+  assert.equal(buildAddServerInput({ ...base, target: 'npx "broken' }), null)
+})
+
+test('palette server filters combine OR within a group and AND across groups', () => {
+  const gateways = [
+    { transport: 'http', status: { healthy: true, connected: true } },
+    { transport: 'stdio', status: { healthy: false, connected: false } },
+    { transport: 'http', enabled: false, status: { healthy: false, connected: false } },
+  ]
+
+  assert.equal(
+    gateways.filter((g) => gatewayMatchesPaletteFilters(g, { status: ['healthy'], transport: [] }))
+      .length,
+    1,
+  )
+  assert.equal(
+    gateways.filter((g) =>
+      gatewayMatchesPaletteFilters(g, { status: ['disconnected'], transport: ['stdio'] }),
+    ).length,
+    1,
+  )
+  assert.equal(
+    gateways.filter((g) =>
+      gatewayMatchesPaletteFilters(g, { status: ['healthy', 'disabled'], transport: [] }),
+    ).length,
+    2,
+  )
+
+  assert.equal(countPaletteFilterMatches(gateways, 'status', 'enabled'), 2)
+  assert.equal(countPaletteFilterMatches(gateways, 'transport', 'http'), 2)
+})
+
+test('togglePaletteFilter flips membership without mutating the input', () => {
+  const base: PaletteServerFilters = { status: [], transport: [] }
+  assert.equal(paletteFiltersActive(base), false)
+
+  const withHealthy = togglePaletteFilter(base, 'status', 'healthy')
+  assert.deepEqual(withHealthy, { status: ['healthy'], transport: [] })
+  assert.deepEqual(base.status, [])
+  assert.equal(paletteFiltersActive(withHealthy), true)
+
+  assert.deepEqual(togglePaletteFilter(withHealthy, 'status', 'healthy'), {
+    status: [],
+    transport: [],
+  })
 })

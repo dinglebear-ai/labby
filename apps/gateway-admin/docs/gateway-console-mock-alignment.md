@@ -61,6 +61,10 @@ overflow: hidden;
 Inner scroller `overflow-x: auto`; grid parent `min-width: 1010px`.
 Above 1100px the mock forces `[data-gwtablewrap] { overflow-x: visible }`.
 
+NOTE: the gateway-table-specific rules (`[data-gwrow]:hover`, the 1101px
+override, the <=700px row reflow) were NOT ported into `globals.css` — only the
+shell/nav/panel rules were. Implement them on the elements, or port them.
+
 ### Header row
 
 ```
@@ -126,19 +130,59 @@ Cells, in order:
 5. **Exposed** — `justify-self: center; min-width: 0`. Inner:
    `display: grid; grid-template-columns: 40px 40px 40px; column-gap: 6px; align-items: center`.
    Each count: `inline-flex; gap: 4px; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums`.
-   The tools count is `color: var(--aurora-accent-pink)`.
+   Tone is conditional, NOT "tools are always pink":
+   `discovered === 0` -> dimmed em-dash; `exposed < discovered` -> `var(--aurora-accent-pink)`;
+   `exposed === discovered` -> `var(--aurora-text-primary)`. Applies to all three counts.
    Title attribute: `Exposed — tools 0/7 · resources 0/0 · prompts 0/0`.
 6. **Uptime** — `justify-self: center; min-width: 0`. Sparkline
    (`display: flex; gap: 1.5px; align-items: center`) followed by a percentage.
    Title: `Uptime · last 24h — 79.2% (per-hour reconciliation probes)`.
 
-Below 700px the mock collapses the head and reflows rows to wrapped flex —
-that rule is already in `globals.css`.
+Below 700px the mock collapses the head and reflows rows to wrapped flex.
+Moot for us: our desktop grid is `hidden md:block` and a card list takes over
+below 768px.
+
+`bg-aurora-neutral` resolves to nothing — there is no `--aurora-neutral` token.
+
+Tailwind gotcha: the `--gw*` token names contain underscores, which Tailwind
+rewrites to spaces inside arbitrary values. Alias them to underscore-free
+custom properties on a wrapper rather than relying on `\_` escapes.
 
 ### Filters
 
 The mock has no filter-bar card; filtering lives in the command palette.
 Ours renders `GatewayFilters` as a separate card between hero and table.
+
+## Settings (measured, implemented)
+
+The mock's Settings screen has **no hero card** — just a plain title block. Do
+not reach for `ConsoleHero` here.
+
+```
+body:   display:flex; flex-direction:column; gap:14px; max-width:760px
+h1:     var(--font-display); 24px; 800; margin 0
+p:      margin:5px 0 0; 12.5px; muted
+card:   radius var(--radius-2); 1px color-mix(border-default 45%, page-bg);
+        linear-gradient(180deg, panel-strong-top, panel-strong);
+        var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,.04)
+header: padding 11px 16px; border-bottom color-mix(70%, page-bg);
+        background var(--gw0-0_38); 10.5px/700/0.15em uppercase muted
+body:   padding 4px 0
+row:    flex; gap 14px; padding 11px 16px; border-top color-mix(35%, page-bg)
+        label 13px/600 primary; description 11.5px/1.5 muted, margin-top 2px
+toggle: 34x19 pill; on accent-primary / off color-mix(border-strong 80%);
+        knob 15x15 at top 2px, left 2px->17px, bg var(--aurora-page-bg),
+        0 1px 2px rgba(0,0,0,.4), transition left 160ms
+segment:28px tall; radius 8; 11.5px/650
+        active: border accent 45% / bg accent 14% / color accent-strong
+        idle:   border color-mix(border-default 70%, page-bg) /
+                bg control-surface / color muted
+value:  <code> 11px muted, font-family INHERITED (not mono)
+```
+
+All of the above lives in `components/settings/SettingsChrome.tsx`.
+The mock has no settings sub-nav; ours renders its 7 panels using the mock's
+own segmented control in a strip above the column.
 
 ## Then
 

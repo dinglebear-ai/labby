@@ -79,7 +79,7 @@ export function PaletteDot({
         boxShadow:
           variant === 'glow'
             ? `0 0 4px ${color}`
-            : `0 0 0 3px color-mix(in srgb, ${color} 12%, transparent)`,
+            : `0 0 0 3px color-mix(in srgb, ${color} 10%, transparent)`,
       }}
     />
   )

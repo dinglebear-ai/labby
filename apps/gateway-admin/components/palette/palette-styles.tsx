@@ -14,6 +14,25 @@
  */
 
 const PALETTE_CSS = `
+/*
+ * The mock's document default is content-box; this app's Tailwind preflight
+ * forces border-box. Only elements that pair an explicit width/height with a
+ * border actually diverge, so those are switched back rather than blanket-
+ * resetting the subtree (which would break the Tailwind-sized bits).
+ */
+div[data-palette],
+[data-palette] .pal-field,
+[data-palette] .pal-chip,
+[data-palette] .pal-scope,
+[data-palette] .pal-add-cmd,
+[data-palette] .pal-add-kind,
+[data-palette] .pal-add-input,
+[data-palette] .pal-add-tokeninput,
+[data-palette] .pal-add-pill,
+[data-palette] .pal-btn {
+  box-sizing: content-box;
+}
+
 div[data-palette] {
   position: fixed;
   z-index: 51;
@@ -29,11 +48,21 @@ div[data-palette] {
   display: block;
   padding: 0;
   gap: 0;
+  /* The mock inherits the UA default line-height; Tailwind's base sets 1.5. */
+  line-height: normal;
   border-radius: 16px;
   border: 1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg));
   background: linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong));
   box-shadow: var(--aurora-shadow-strong), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   overflow: hidden;
+}
+
+/*
+ * The mock renders at the UA default line-height throughout; Tailwind's
+ * text-sm utility on cmdk items would otherwise inject 1.43 and inflate rows.
+ */
+[data-palette] * {
+  line-height: normal;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
@@ -145,6 +174,157 @@ div[data-palette] {
 }
 [data-palette] .pal-iconbtn:hover {
   color: var(--aurora-text-primary);
+  background: var(--aurora-hover-bg);
+}
+
+[data-palette] .pal-filterbtn {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg));
+  background: transparent;
+  color: var(--aurora-text-muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+[data-palette] .pal-filterbtn:hover {
+  color: var(--aurora-text-primary);
+  background: var(--aurora-hover-bg);
+}
+[data-palette] .pal-filterbtn[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--aurora-accent-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--aurora-accent-primary) 10%, transparent);
+  color: var(--aurora-accent-strong);
+}
+
+/* ── Filter panel + active chips ────────────────────────────────────────── */
+[data-palette] .pal-filters {
+  padding: 9px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg));
+  background: var(--gw0-0_30);
+}
+[data-palette] .pal-filterrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+[data-palette] .pal-filterlabel {
+  flex-shrink: 0;
+  width: 68px;
+  text-align: right;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--aurora-text-muted) 70%, transparent);
+}
+[data-palette] .pal-filterpills {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+[data-palette] .pal-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out,
+    box-shadow 150ms ease-out;
+  border: 1px solid color-mix(in srgb, var(--aurora-border-strong) 70%, var(--aurora-page-bg));
+  background: transparent;
+  color: var(--aurora-text-muted);
+}
+[data-palette] .pal-pill:hover {
+  background: color-mix(in srgb, var(--aurora-accent-primary) 7%, transparent);
+  color: var(--aurora-text-primary);
+  border-color: var(--aurora-border-strong);
+}
+[data-palette] .pal-pill[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--aurora-accent-primary) 70%, #0b2233);
+  background: var(--aurora-accent-primary);
+  color: #06202e;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--aurora-accent-primary) 30%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+[data-palette] .pal-chips {
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg));
+  background: var(--gw0-0_30);
+}
+[data-palette] .pal-chipbtn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--aurora-accent-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--aurora-accent-primary) 12%, transparent);
+  color: var(--aurora-accent-strong);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-palette] .pal-chipbtn:hover {
+  background: color-mix(in srgb, var(--aurora-accent-primary) 20%, transparent);
+}
+[data-palette] .pal-clear {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: none;
+  background: none;
+  color: var(--aurora-text-muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+[data-palette] .pal-clear:hover {
+  color: var(--aurora-text-primary);
+  background: var(--aurora-hover-bg);
+}
+[data-palette] .pal-footclear {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-1);
+  border: 1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg));
+  background: var(--aurora-control-surface);
+  color: var(--aurora-accent-strong);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+[data-palette] .pal-footclear:hover {
   background: var(--aurora-hover-bg);
 }
 

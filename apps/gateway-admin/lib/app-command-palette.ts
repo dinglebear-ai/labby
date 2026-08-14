@@ -1,3 +1,4 @@
+import { parseStdioCommandLine } from '@/lib/stdio-command'
 import type { CreateGatewayInput } from '@/lib/types/gateway'
 
 export type AppCommandKind = 'destination' | 'action'
@@ -425,6 +426,102 @@ export function describeGatewayConnection(gateway: GatewayConnectionInput): Gate
   return { label: 'healthy', tone: 'success' }
 }
 
+// ── Server filters (mock parity: the palette's filter panel) ─────────────────
+
+export type PaletteStatusFilter = 'healthy' | 'disconnected' | 'enabled' | 'disabled'
+export type PaletteTransportFilter = 'stdio' | 'http'
+
+export type PaletteServerFilters = {
+  status: PaletteStatusFilter[]
+  transport: PaletteTransportFilter[]
+}
+
+export const EMPTY_PALETTE_FILTERS: PaletteServerFilters = { status: [], transport: [] }
+
+export const PALETTE_STATUS_FILTERS: Array<{ value: PaletteStatusFilter; label: string }> = [
+  { value: 'healthy', label: 'Healthy' },
+  { value: 'disconnected', label: 'Disconnected' },
+  { value: 'enabled', label: 'Enabled' },
+  { value: 'disabled', label: 'Disabled' },
+]
+
+/**
+ * The mock also offers a `Source` group (Gateway / Registry). This console has
+ * no equivalent taxonomy on `Gateway.source`, so that group is omitted.
+ */
+export const PALETTE_TRANSPORT_FILTERS: Array<{ value: PaletteTransportFilter; label: string }> = [
+  { value: 'stdio', label: 'stdio' },
+  { value: 'http', label: 'HTTP' },
+]
+
+export type PaletteFilterableGateway = GatewayConnectionInput & { transport: string }
+
+function matchesStatusFilter(
+  gateway: PaletteFilterableGateway,
+  value: PaletteStatusFilter,
+): boolean {
+  switch (value) {
+    case 'healthy':
+      return describeGatewayConnection(gateway).tone === 'success'
+    case 'disconnected':
+      return !gateway.status.connected
+    case 'enabled':
+      return gateway.enabled !== false
+    case 'disabled':
+      return gateway.enabled === false
+  }
+}
+
+/** OR within a filter group, AND across groups — the mock's behaviour. */
+export function gatewayMatchesPaletteFilters(
+  gateway: PaletteFilterableGateway,
+  filters: PaletteServerFilters,
+): boolean {
+  if (filters.status.length && !filters.status.some((v) => matchesStatusFilter(gateway, v))) {
+    return false
+  }
+  if (
+    filters.transport.length &&
+    !filters.transport.some((v) => gateway.transport === v || (v === 'http' && gateway.transport === 'in_process'))
+  ) {
+    return false
+  }
+  return true
+}
+
+/** Count of gateways a given pill would match, shown beside the pill label. */
+export function countPaletteFilterMatches(
+  gateways: ReadonlyArray<PaletteFilterableGateway>,
+  group: 'status' | 'transport',
+  value: string,
+): number {
+  return gateways.filter((gateway) =>
+    group === 'status'
+      ? matchesStatusFilter(gateway, value as PaletteStatusFilter)
+      : gatewayMatchesPaletteFilters(gateway, {
+          status: [],
+          transport: [value as PaletteTransportFilter],
+        }),
+  ).length
+}
+
+export function paletteFiltersActive(filters: PaletteServerFilters): boolean {
+  return filters.status.length > 0 || filters.transport.length > 0
+}
+
+/** Toggle a value inside one filter group, returning a new filters object. */
+export function togglePaletteFilter(
+  filters: PaletteServerFilters,
+  group: 'status' | 'transport',
+  value: string,
+): PaletteServerFilters {
+  const current = filters[group] as string[]
+  const next = current.includes(value)
+    ? current.filter((entry) => entry !== value)
+    : [...current, value]
+  return { ...filters, [group]: next } as PaletteServerFilters
+}
+
 // ── Inline "Add Server" flow (mock parity: the palette's add-server sheet) ────
 
 export type PaletteAddAuth = 'none' | 'bearer' | 'oauth'
@@ -470,7 +567,9 @@ export function buildAddServerInput(form: PaletteAddForm): CreateGatewayInput | 
   if (!transport) return null
 
   const target = form.target.trim()
-  const name = form.name.trim() || (transport === 'http' ? hostnameOf(target) : target.split(/\s+/)[0])
+  const fallbackName =
+    transport === 'http' ? hostnameOf(target) : target.trim().split(/\s+/)[0]
+  const name = form.name.trim() || fallbackName
 
   if (transport === 'http') {
     const tokenEnv = form.tokenEnv.trim()
@@ -487,7 +586,17 @@ export function buildAddServerInput(form: PaletteAddForm): CreateGatewayInput | 
     }
   }
 
-  const [command, ...args] = target.split(/\s+/)
+  // Reuse the console's shared tokenizer so quoted args and leading env
+  // assignments behave exactly as they do in the full add-server dialog.
+  let command: string
+  let args: string[]
+  try {
+    ;({ command, args } = parseStdioCommandLine(target))
+  } catch {
+    return null
+  }
+  if (!command) return null
+
   const env = parsePaletteEnvPairs(form.env)
   return {
     name,

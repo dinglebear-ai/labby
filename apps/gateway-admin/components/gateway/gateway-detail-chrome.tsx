@@ -7,22 +7,29 @@ import * as React from 'react'
  * Gateway Console mock (`Gateway Console.dc.html`, project
  * d80fe050-1bc9-44b0-aa68-6e873344c619) via `agent-browser eval`.
  *
- * Where the mock's detail lives
- * -----------------------------
- * The mock has no standalone gateway detail *screen* and no tabbed detail
- * view — `data-screen-label` reports exactly one screen ("Gateway Console"),
- * and neither `Gateway Console.dc.html` nor `Labby Gateway Console.html`
- * contains an Overview/Activity/Logs/Config tab bar. Clicking a `[data-gwrow]`
- * expands an inline detail panel directly beneath the row. That panel is the
- * mock's gateway-detail vocabulary, and it is what these primitives encode:
+ * Where the mock's detail lives — TWO different surfaces
+ * ------------------------------------------------------
+ * The mock's gateway table gives a row two distinct affordances, and they
+ * have different chrome. Do not conflate them:
  *
- *   1. an action cluster (ghost icon buttons, an auth pill, metric pills)
- *   2. a full-bleed divider
- *   3. a stat-card grid  — repeat(auto-fit, minmax(150px, 1fr)), gap 10
- *   4. a wider panel grid — repeat(auto-fit, minmax(190px, 1fr)), gap 10
+ * 1. **Row expansion** — clicking the row *body* expands an inline panel
+ *    beneath it. Chrome: 26px borderless ghost icon buttons, a warn "Auth"
+ *    pill, 24px metric pills, a full-bleed divider, a stat-card grid
+ *    (auto-fit minmax(150px,1fr), gap 10) and a wider panel grid
+ *    (auto-fit minmax(190px,1fr), gap 10).
  *
- * Our detail is a real route with tabs, so the tab bar has no mock counterpart
- * and is left as-is; everything else is restyled onto these measurements.
+ * 2. **Detail page** — clicking the server *name* (an `<a>` in the first grid
+ *    cell) is a real page change: the table unmounts, `h1` and
+ *    `[data-crumbleaf]` become the server name, and the mock's source flips
+ *    `page: 'detail'`. This page has a sticky header card, a stat strip, and
+ *    an underline tab bar: Overview · Variables · Catalog · Activity ·
+ *    Routes · Logs. Its topbar cluster is 32px bordered control-surface
+ *    buttons (Test / View in Logs / Reload / Generate skill / Edit / More),
+ *    NOT the row expansion's 26px ghosts.
+ *
+ * Our route is the detail page, so it drives surface 2. The surface-1
+ * primitives are kept because the result sheets reuse that stat-card
+ * vocabulary.
  *
  * Every literal below was read off the mock's live DOM. Re-measure rather than
  * adjusting by eye.
@@ -100,7 +107,17 @@ export const DETAIL_MICRO_LABEL_STYLE: React.CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
-/** Stat value — Manrope display face, 14.5px, extrabold, tabular. */
+/**
+ * Stat value — Manrope display face, 14.5px, extrabold, tabular. Matches the
+ * mock's inline `font-family: var(--font-display)`.
+ *
+ * `var(--font-display)` used to resolve to nothing here (Tailwind v4's
+ * `@theme inline` substitutes font families into utilities without emitting
+ * the custom properties), which silently downgraded every display value to
+ * Inter. That was fixed in `app/layout.tsx` + `app/globals.css` on
+ * 2026-08-14; the `font-display` utility class on the consuming element is
+ * kept as a belt-and-braces guard.
+ */
 export const DETAIL_STAT_VALUE_STYLE: React.CSSProperties = {
   fontFamily: 'var(--font-display)',
   fontSize: 14.5,
@@ -197,7 +214,9 @@ export function DetailStatCard({
         ) : null}
         <DetailMicroLabel>{label}</DetailMicroLabel>
       </div>
-      <div style={DETAIL_STAT_VALUE_STYLE}>{value}</div>
+      <div className="font-display" style={DETAIL_STAT_VALUE_STYLE}>
+        {value}
+      </div>
       {typeof meterPercent === 'number' ? (
         <div
           style={{

@@ -93,9 +93,13 @@ export const SETTINGS_MULTILINE_CONTROL_STYLE: CSSProperties = {
   padding: '8px 10px',
 }
 
-/** Read-only scalar values render as an 11px muted `code`, as in the mock. */
+/**
+ * Read-only scalar values render as an 11px muted `code`. The mock uses a
+ * `code` element but leaves the family inherited, so this does too.
+ */
 export const SETTINGS_VALUE_STYLE: CSSProperties = {
   flexShrink: 0,
+  fontFamily: 'inherit',
   fontSize: 11,
   color: 'var(--aurora-text-muted)',
 }
@@ -156,7 +160,21 @@ export function SettingsCard({
         {action ? (
           <>
             <div style={{ flex: 1 }} />
-            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div
+              style={{
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                // The header bar is uppercase/tracked label type; controls
+                // parked in it must not inherit that.
+                textTransform: 'none',
+                letterSpacing: 'normal',
+                fontWeight: 400,
+                fontSize: 11.5,
+                color: 'var(--aurora-text-primary)',
+              }}
+            >
               {action}
             </div>
           </>

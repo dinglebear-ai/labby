@@ -817,7 +817,11 @@ export function GatewayListView({
               onClearFilters={onClearFilters}
             />
 
-            <div>
+            {/* min-w-0: without it this grid item's min-content contribution is
+                the table's 1010px min-width, which inflates the track past the
+                available width and the page shell clips the card instead of
+                letting the table's own overflow-x scroller engage. */}
+            <div className="min-w-0">
               {!showToolsView && discoveredConfigs ? (
                 <McpConfigImportReviewPanel
                   discoveredConfigs={discoveredConfigs}
