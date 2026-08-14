@@ -9,7 +9,7 @@ import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { SettingsCard, SettingsRowStrip } from '@/components/settings/SettingsChrome'
 import { ServiceForm, type ProbeOutcome } from '@/components/setup/ServiceForm'
 import { PluginToggle } from '@/components/setup/PluginToggle'
 import { setupApi, type ServiceSchema } from '@/lib/api/setup-client'
@@ -115,58 +115,68 @@ export default function ServicePage({
   const focusKey = searchParams?.get('focus') ?? null
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-start gap-2 space-y-0">
-        <Link
-          href="/settings/services/"
-          className="text-aurora-text-muted hover:text-aurora-text-primary"
-          aria-label="Back to services"
-        >
-          <ArrowLeft className="h-4 w-4 mt-1" />
-        </Link>
-        <div>
-          <CardTitle>{state?.schema.display_name ?? service}</CardTitle>
-          <CardDescription>
-            {state?.schema.description ?? `Configure ${service} env vars`}
-          </CardDescription>
-          {focusKey ? (
-            <p className="mt-1 text-xs text-amber-600">
-              Focused field: {focusKey}
-            </p>
-          ) : null}
-        </div>
-        {state ? (
+    <SettingsCard
+      title={
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <Link
+            href="/settings/services/"
+            className="text-aurora-text-muted hover:text-aurora-text-primary"
+            aria-label="Back to services"
+            style={{ display: 'grid' }}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+          </Link>
+          {state?.schema.display_name ?? service}
+        </span>
+      }
+      action={
+        state ? (
           <PluginToggle
             service={service}
             installed={pluginInstalled}
             onChanged={setPluginInstalled}
           />
-        ) : null}
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
+        ) : null
+      }
+      description={
+        <>
+          {state?.schema.description ?? `Configure ${service} env vars`}
+          {focusKey ? (
+            <span style={{ display: 'block', marginTop: 2, color: 'var(--aurora-warn)' }}>
+              Focused field: {focusKey}
+            </span>
+          ) : null}
+        </>
+      }
+    >
+      {loading ? (
+        <SettingsRowStrip>
+          <span className="flex items-center gap-2 text-[11.5px] text-aurora-text-muted">
             <Loader2 className="h-4 w-4 animate-spin" /> loading
-          </div>
-        ) : null}
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
-        {state ? (
-          <>
-            <ServiceForm
-              fields={state.fields}
-              defaultValues={state.defaults}
-              onSave={save}
-              onProbe={probe}
-              submitLabel="Save changes"
-            />
-            {saved ? (
-              <p className="mt-3 text-xs text-emerald-600">
-                ✓ Saved to ~/.labby/.env
-              </p>
-            ) : null}
-          </>
-        ) : null}
-      </CardContent>
-    </Card>
+          </span>
+        </SettingsRowStrip>
+      ) : null}
+      {error ? (
+        <SettingsRowStrip>
+          <span className="text-[11.5px] text-destructive">{error}</span>
+        </SettingsRowStrip>
+      ) : null}
+      {state ? (
+        <SettingsRowStrip style={{ display: 'block' }}>
+          <ServiceForm
+            fields={state.fields}
+            defaultValues={state.defaults}
+            onSave={save}
+            onProbe={probe}
+            submitLabel="Save changes"
+          />
+          {saved ? (
+            <p style={{ marginTop: 10, fontSize: 11, color: 'var(--aurora-success)' }}>
+              ✓ Saved to ~/.labby/.env
+            </p>
+          ) : null}
+        </SettingsRowStrip>
+      ) : null}
+    </SettingsCard>
   )
 }

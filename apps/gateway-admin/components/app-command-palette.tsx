@@ -55,6 +55,7 @@ import {
   type ServiceActionError,
 } from '@/lib/api/service-action-client'
 import type { Gateway } from '@/lib/types/gateway'
+import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -72,7 +73,7 @@ const KIND_LABELS: Record<AppCommandItem['kind'], string> = {
   destination: 'Destination',
 }
 
-const OPEN_COMMAND_PALETTE_EVENT = 'labby:open-command-palette'
+export { OPEN_COMMAND_PALETTE_EVENT }
 
 // ── Mode state (discriminated union) ─────────────────────────────────────────
 

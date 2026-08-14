@@ -1,3 +1,5 @@
+import type { CreateGatewayInput } from '@/lib/types/gateway'
+
 export type AppCommandKind = 'destination' | 'action'
 
 export type AppCommandGroupKey = 'best-match' | 'actions' | 'destinations'
@@ -294,4 +296,245 @@ export function buildCatalogActionItems(
     actionName: a.action,
     destructive: a.destructive,
   }))
+}
+
+// ── Scoped-prefix parsing (mock parity: `>` actions · `#` servers · `/` pages) ─
+
+export type PaletteScope = 'actions' | 'servers' | 'pages'
+
+export type PaletteScopeState = {
+  /** Active scope, or null when the query carries no recognised prefix. */
+  scope: PaletteScope | null
+  /** The query with the scope prefix stripped and trimmed. */
+  query: string
+}
+
+const SCOPE_PREFIXES: Record<string, PaletteScope> = {
+  '>': 'actions',
+  '#': 'servers',
+  '/': 'pages',
+}
+
+/**
+ * Hint rendered in the counts strip. The mock also advertises `@ sessions`;
+ * this console has no agent-session surface, so that scope is omitted.
+ */
+export const PALETTE_SCOPE_HINT = '> actions · # servers · / pages'
+
+export const PALETTE_SCOPE_LABELS: Record<PaletteScope, string> = {
+  actions: 'Actions only',
+  servers: 'Servers only',
+  pages: 'Pages only',
+}
+
+/** Split a raw palette query into its scope prefix and the residual query. */
+export function parsePaletteScope(raw: string): PaletteScopeState {
+  const trimmed = raw.trim()
+  const scope = SCOPE_PREFIXES[trimmed.charAt(0)] ?? null
+  return {
+    scope,
+    query: (scope ? trimmed.slice(1) : trimmed).trim(),
+  }
+}
+
+/** True when `kind` should be rendered under the active scope. */
+export function paletteScopeShows(scope: PaletteScope | null, kind: PaletteScope): boolean {
+  return scope === null || scope === kind
+}
+
+// ── Counts strip + footer label ───────────────────────────────────────────────
+
+export type PaletteCountsInput = {
+  servers: number
+  actions: number
+  pages: number
+  alerts: number
+}
+
+export type PaletteCount = { key: string; value: number }
+
+/** Counts shown in the palette meta strip. Zero-valued buckets are dropped. */
+export function buildPaletteCounts(input: PaletteCountsInput): PaletteCount[] {
+  return (
+    [
+      { key: 'Servers', value: input.servers },
+      { key: 'Actions', value: input.actions },
+      { key: 'Pages', value: input.pages },
+      { key: 'Alerts', value: input.alerts },
+    ] as PaletteCount[]
+  ).filter((count) => count.value > 0)
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`
+}
+
+/** Footer summary line, e.g. `5 servers · 2 actions match`. */
+export function buildPaletteFooterLabel(input: PaletteCountsInput): string {
+  const parts: string[] = []
+  if (input.servers) parts.push(plural(input.servers, 'server', 'servers'))
+  if (input.actions) parts.push(plural(input.actions, 'action', 'actions'))
+  if (input.pages) parts.push(plural(input.pages, 'page', 'pages'))
+  return parts.length ? `${parts.join(' · ')} match` : 'No matches'
+}
+
+// ── Gateway connection status (mock parity: the per-service detail header) ────
+
+export type PaletteTone = 'success' | 'warn' | 'error' | 'muted'
+
+export type GatewayConnection = {
+  /** Lowercase status word, matching the mock's `healthy` / `needs auth` copy. */
+  label: string
+  tone: PaletteTone
+}
+
+/** Minimal structural shape needed to describe a gateway's connection state. */
+export type GatewayConnectionInput = {
+  enabled?: boolean
+  status: { healthy: boolean; connected: boolean; last_error?: string }
+  warnings?: ReadonlyArray<{ code: string; message: string }>
+}
+
+function mentionsAuth(gateway: GatewayConnectionInput): boolean {
+  const haystack = [
+    gateway.status.last_error ?? '',
+    ...(gateway.warnings ?? []).flatMap((w) => [w.code, w.message]),
+  ]
+    .join(' ')
+    .toLowerCase()
+  return /\bauth|unauthori[sz]ed|401\b/.test(haystack)
+}
+
+/**
+ * Map a gateway to the mock's connection vocabulary.
+ * The mock distinguishes `token expired` from `needs auth`; this console has no
+ * token-expiry field, so an auth-flavoured failure collapses to `needs auth`.
+ */
+export function describeGatewayConnection(gateway: GatewayConnectionInput): GatewayConnection {
+  if (gateway.enabled === false) return { label: 'disabled', tone: 'muted' }
+  if (!gateway.status.connected) {
+    return mentionsAuth(gateway)
+      ? { label: 'needs auth', tone: 'warn' }
+      : { label: 'disconnected', tone: 'error' }
+  }
+  if (!gateway.status.healthy) {
+    return mentionsAuth(gateway)
+      ? { label: 'needs auth', tone: 'warn' }
+      : { label: 'degraded', tone: 'warn' }
+  }
+  return { label: 'healthy', tone: 'success' }
+}
+
+// ── Inline "Add Server" flow (mock parity: the palette's add-server sheet) ────
+
+export type PaletteAddAuth = 'none' | 'bearer' | 'oauth'
+
+export type PaletteAddForm = {
+  name: string
+  /** Endpoint URL or stdio command line. */
+  target: string
+  auth: PaletteAddAuth
+  tokenEnv: string
+  /** `KEY=value, KEY=value` for stdio upstreams. */
+  env: string
+  proxyResources: boolean
+  proxyPrompts: boolean
+}
+
+/** `https://…` targets are HTTP upstreams; anything else is a stdio command. */
+export function detectPaletteAddTransport(target: string): 'http' | 'stdio' | null {
+  const value = target.trim()
+  if (!value) return null
+  return /^https?:\/\//i.test(value) ? 'http' : 'stdio'
+}
+
+/** Parse `KEY=value, KEY=value` into an env map. Malformed entries are dropped. */
+export function parsePaletteEnvPairs(raw: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const pair of raw.split(',')) {
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    const key = pair.slice(0, eq).trim()
+    const value = pair.slice(eq + 1).trim()
+    if (key) env[key] = value
+  }
+  return env
+}
+
+/**
+ * Turn the inline add-server form into a `CreateGatewayInput`.
+ * Returns null when there is no target to add — the caller surfaces the error.
+ */
+export function buildAddServerInput(form: PaletteAddForm): CreateGatewayInput | null {
+  const transport = detectPaletteAddTransport(form.target)
+  if (!transport) return null
+
+  const target = form.target.trim()
+  const name = form.name.trim() || (transport === 'http' ? hostnameOf(target) : target.split(/\s+/)[0])
+
+  if (transport === 'http') {
+    const tokenEnv = form.tokenEnv.trim()
+    return {
+      name,
+      transport: 'http',
+      config: {
+        url: target,
+        ...(form.auth === 'bearer' && tokenEnv ? { bearer_token_env: tokenEnv } : {}),
+        ...(form.auth === 'oauth' ? { oauth_enabled: true } : {}),
+        proxy_resources: form.proxyResources,
+        proxy_prompts: form.proxyPrompts,
+      },
+    }
+  }
+
+  const [command, ...args] = target.split(/\s+/)
+  const env = parsePaletteEnvPairs(form.env)
+  return {
+    name,
+    transport: 'stdio',
+    config: {
+      command,
+      ...(args.length ? { args } : {}),
+      ...(Object.keys(env).length ? { env } : {}),
+      proxy_resources: form.proxyResources,
+      proxy_prompts: form.proxyPrompts,
+    },
+  }
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
+export type PaletteAlert = {
+  id: string
+  gatewayId: string
+  label: string
+  tone: PaletteTone
+}
+
+/**
+ * Derive the "Needs Attention" rows from live gateway state.
+ * Only enabled gateways that are not healthy produce an alert; the mock caps
+ * the section at three rows.
+ */
+export function buildGatewayAlerts(
+  gateways: ReadonlyArray<GatewayConnectionInput & { id: string; name: string }>,
+  limit = 3,
+): PaletteAlert[] {
+  return gateways
+    .filter((gateway) => gateway.enabled !== false)
+    .map((gateway) => ({ gateway, connection: describeGatewayConnection(gateway) }))
+    .filter(({ connection }) => connection.tone === 'error' || connection.tone === 'warn')
+    .slice(0, limit)
+    .map(({ gateway, connection }) => ({
+      id: `alert-${gateway.id}`,
+      gatewayId: gateway.id,
+      label: `${gateway.name} ${connection.label}`,
+      tone: connection.tone,
+    }))
 }

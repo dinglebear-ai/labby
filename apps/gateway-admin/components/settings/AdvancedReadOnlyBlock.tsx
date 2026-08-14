@@ -1,5 +1,9 @@
 import type { SettingsFieldSpec, SettingsState } from '@/lib/api/setup-client'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  SettingsCard,
+  SettingsRow,
+  SETTINGS_MULTILINE_CONTROL_STYLE,
+} from './SettingsChrome'
 
 export function AdvancedReadOnlyBlock({
   state,
@@ -9,22 +13,26 @@ export function AdvancedReadOnlyBlock({
   fields: SettingsFieldSpec[]
 }): React.ReactElement {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Read-only advanced config</CardTitle>
-        <CardDescription>Complex and dangerous settings are visible here redacted. Typed editors are separate follow-up work.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {fields.map((field) => (
-          <div key={field.key} className="rounded-md border p-3">
-            <p className="text-sm font-medium">{field.label}</p>
-            <p className="text-xs text-aurora-text-muted">{field.description}</p>
-            <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-aurora-control-surface p-3 text-xs">
+    <SettingsCard
+      title="Read-only advanced config"
+      description="Complex and dangerous settings are visible here redacted. Typed editors are separate follow-up work."
+    >
+      {fields.map((field) => (
+        <SettingsRow
+          key={field.key}
+          layout="stacked"
+          label={field.label}
+          description={field.description}
+          control={
+            <pre
+              className="max-h-72 overflow-auto"
+              style={{ ...SETTINGS_MULTILINE_CONTROL_STYLE, fontSize: 11, margin: 0 }}
+            >
               {JSON.stringify(state.values[field.key] ?? null, null, 2)}
             </pre>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
+          }
+        />
+      ))}
+    </SettingsCard>
   )
 }

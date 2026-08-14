@@ -9,7 +9,11 @@ import { useState } from 'react'
 import { Loader2, RefreshCw, ArrowRight, CheckCircle2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  SettingsCard,
+  SettingsRow,
+  SettingsRowStrip,
+} from '@/components/settings/SettingsChrome'
 import { Checkbox } from '@/components/ui/checkbox'
 import { extractApi, type ExtractCredential, type ExtractReport } from '@/lib/api/extract-client'
 import { setupApi } from '@/lib/api/setup-client'
@@ -82,105 +86,127 @@ export default function ExtractPanel(): React.ReactElement {
 
   return (
     <>
-      <h1 className="sr-only">Extract settings</h1>
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between space-y-0">
-          <div>
-            <CardTitle>Extract</CardTitle>
-            <CardDescription>
-              Scan local + SSH hosts for existing service credentials and apply
-              the discovered URLs to your draft. Secret values are redacted in
-              transit; re-enter them in each service&apos;s settings page.
-            </CardDescription>
-          </div>
+      <h2 className="sr-only">Extract settings</h2>
+      <SettingsCard
+        title="Extract"
+        description={
+          <>
+            Scan local + SSH hosts for existing service credentials and apply
+            the discovered URLs to your draft. Secret values are redacted in
+            transit; re-enter them in each service&apos;s settings page.
+          </>
+        }
+        action={
           <Button variant="outline" size="sm" onClick={rescan} disabled={loading}>
             <RefreshCw className={`mr-2 h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
             {report ? 'Re-scan' : 'Scan'}
           </Button>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
+        }
+      >
+        {loading ? (
+          <SettingsRowStrip>
+            <span className="flex items-center gap-2 text-[11.5px] text-aurora-text-muted">
               <Loader2 className="h-4 w-4 animate-spin" /> running extract.scan
-            </div>
-          ) : null}
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+            </span>
+          </SettingsRowStrip>
+        ) : null}
+        {error ? (
+          <SettingsRowStrip>
+            <span className="text-[11.5px] text-destructive">{error}</span>
+          </SettingsRowStrip>
+        ) : null}
 
         {report && report.creds.length === 0 ? (
-          <p className="text-sm text-aurora-text-muted">
-            No credentials discovered.
-          </p>
+          <SettingsRowStrip>
+            <span style={{ fontSize: 11.5, color: 'var(--aurora-text-muted)' }}>
+              No credentials discovered.
+            </span>
+          </SettingsRowStrip>
         ) : null}
 
         {report && report.creds.length > 0 ? (
           <>
-            <ul className="divide-y rounded-md border">
-              {report.creds.map((cred, idx) => (
-                <li key={`${cred.service}-${idx}`} className="flex items-start gap-3 p-3 text-sm">
+            {report.creds.map((cred, idx) => (
+              <SettingsRow
+                key={`${cred.service}-${idx}`}
+                label={cred.service}
+                description={
+                  <>
+                    {cred.url ? <span style={{ display: 'block' }}>URL: {cred.url}</span> : null}
+                    <span style={{ display: 'block' }}>
+                      {cred.secret_present ? 'Secret present (redacted)' : 'No secret'}
+                      {cred.source_host ? ` — host: ${cred.source_host}` : ''}
+                    </span>
+                  </>
+                }
+                control={
                   <Checkbox
                     checked={selected.has(idx)}
                     onCheckedChange={() => toggle(idx)}
                     aria-label={`Toggle ${cred.service}`}
                   />
-                  <div className="flex-1">
-                    <p className="font-medium">{cred.service}</p>
-                    {cred.url ? (
-                      <p className="text-xs text-aurora-text-muted">URL: {cred.url}</p>
-                    ) : null}
-                    <p className="text-xs text-aurora-text-muted">
-                      {cred.secret_present ? 'Secret present (redacted)' : 'No secret'}
-                      {cred.source_host ? ` — host: ${cred.source_host}` : ''}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <div className="rounded-md border p-3">
-              <p className="text-sm font-medium">Draft preview</p>
-              {previewEntries.length > 0 ? (
-                <ul className="mt-2 space-y-1 text-xs text-aurora-text-muted">
-                  {previewEntries.map((entry) => (
-                    <li key={entry.key} className="font-mono">
-                      {entry.key} = {entry.value}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-2 text-xs text-aurora-text-muted">
-                  Selected credentials do not include writable URL values.
-                </p>
-              )}
-              <p className="mt-2 text-xs text-aurora-text-muted">
-                Redacted secrets are not written by extract; enter them on each service page.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button onClick={applyToDraft} disabled={applying || selected.size === 0}>
+                }
+              />
+            ))}
+            <SettingsRow
+              layout="stacked"
+              label="Draft preview"
+              description="Redacted secrets are not written by extract; enter them on each service page."
+              control={
+                previewEntries.length > 0 ? (
+                  <ul style={{ display: 'grid', gap: 2 }}>
+                    {previewEntries.map((entry) => (
+                      <li
+                        key={entry.key}
+                        style={{ fontSize: 11, color: 'var(--aurora-text-muted)' }}
+                      >
+                        <code>
+                          {entry.key} = {entry.value}
+                        </code>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--aurora-text-muted)' }}>
+                    Selected credentials do not include writable URL values.
+                  </p>
+                )
+              }
+            />
+            <SettingsRowStrip style={{ gap: 10 }}>
+              <Button size="sm" onClick={applyToDraft} disabled={applying || selected.size === 0}>
                 {applying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 <ArrowRight className="mr-2 h-4 w-4" />
                 Apply {selected.size} to draft
               </Button>
               {appliedCount !== undefined ? (
-                <span className="text-xs text-emerald-600 inline-flex items-center gap-1">
+                <span
+                  className="inline-flex items-center gap-1"
+                  style={{ fontSize: 11, color: 'var(--aurora-success)' }}
+                >
                   <CheckCircle2 className="h-3 w-3" /> {appliedCount} entries written
                 </span>
               ) : null}
-            </div>
+            </SettingsRowStrip>
           </>
         ) : null}
 
         {report?.warnings && report.warnings.length > 0 ? (
-          <ul className="text-xs text-amber-600 list-disc pl-5">
-            {report.warnings.map((w, i) => (
-              <li key={i}>
-                {w.service ? `${w.service}: ` : ''}
-                {w.message}
-              </li>
-            ))}
-          </ul>
+          <SettingsRowStrip>
+            <ul
+              className="list-disc pl-5"
+              style={{ fontSize: 11, color: 'var(--aurora-warn)' }}
+            >
+              {report.warnings.map((w, i) => (
+                <li key={i}>
+                  {w.service ? `${w.service}: ` : ''}
+                  {w.message}
+                </li>
+              ))}
+            </ul>
+          </SettingsRowStrip>
         ) : null}
-      </CardContent>
-      </Card>
+      </SettingsCard>
     </>
   )
 }

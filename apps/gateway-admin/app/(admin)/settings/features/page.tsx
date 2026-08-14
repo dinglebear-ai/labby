@@ -37,13 +37,13 @@ export default function FeaturesPage(): React.ReactElement {
 
   return (
     <>
-      <h1 className="sr-only">Feature settings</h1>
+      <h2 className="sr-only">Feature settings</h2>
       {loading ? (
-        <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
+        <div className="flex items-center gap-2 text-[11.5px] text-aurora-text-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> loading feature settings
         </div>
       ) : null}
-      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {error ? <p className="text-[11.5px] text-destructive">{error}</p> : null}
       {settings ? (
         <SettingsScalarSection
           title="Features"

@@ -2,21 +2,23 @@
 
 import { KeyRound, LifeBuoy, PlugZap, ShieldCheck } from 'lucide-react'
 // AppHeader is owned by the parent /settings/layout.tsx — do not double-mount.
-import { Badge } from '@/components/ui/badge'
 import {
-  AURORA_DISPLAY_1,
-  AURORA_DISPLAY_NUMBER,
-  AURORA_MEDIUM_PANEL,
-  AURORA_MUTED_LABEL,
-  AURORA_STRONG_PANEL,
-} from '@/components/aurora/tokens'
+  SettingsCard,
+  SettingsRow,
+  SettingsRowStrip,
+  SettingsValue,
+} from '@/components/settings/SettingsChrome'
 import { hasMockDataAuthMode, isStandaloneBearerAuthMode } from '@/lib/auth/auth-mode'
 import { buildGatewaySettingsSnapshot } from '@/lib/dashboard/admin-insights'
 import { useGateways } from '@/lib/hooks/use-gateways'
 import { useBrowserSession } from '@/lib/auth/session'
-import { cn } from '@/lib/utils'
 import { AllowedUsersPanel } from '@/components/allowed-users-panel'
 
+/**
+ * Doctor panel — control-plane posture and effective defaults, restyled onto
+ * the mock's settings-card vocabulary: an uppercase header bar over rows whose
+ * label and description sit left of a right-aligned value.
+ */
 export default function SettingsPage() {
   const session = useBrowserSession()
   const isAdmin = session.status === 'authenticated' && session.isAdmin === true
@@ -26,166 +28,194 @@ export default function SettingsPage() {
     hasMockData: hasMockDataAuthMode(),
   }) : null
 
+  const unavailable = Boolean(error) || !snapshot
+
   return (
-    <div className="flex flex-col gap-4">
-      {/* Page header (lab-bg3e.5: this content lives under /settings/doctor
-          since the original /settings root now redirects to /settings/core). */}
-      <div className={cn(AURORA_STRONG_PANEL, 'px-6 py-5')}>
-        <p className={AURORA_MUTED_LABEL}>Doctor</p>
-        <h1 className={cn(AURORA_DISPLAY_1, 'mt-2 text-aurora-text-primary')}>Fleet Posture</h1>
-        <p className="mt-2 text-sm text-aurora-text-muted">
-          Control-plane posture and effective defaults for the server fleet.
-        </p>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <h2 className="sr-only">Doctor</h2>
 
-        {/* Stat cards */}
+      <SettingsCard
+        title="Fleet Posture"
+        description="Control-plane posture and effective defaults for the server fleet."
+      >
         {isLoading ? (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {Array.from({ length: 4 }, (_, index) => (
-              <div key={index} className="h-28 animate-pulse rounded-aurora-3 border border-aurora-border-strong bg-aurora-panel-medium" />
-            ))}
-          </div>
-        ) : error || !snapshot ? (
-          <div className="rounded-[1rem] border border-aurora-error/30 bg-aurora-error/8 p-4 text-sm text-aurora-error">
-            Failed to load settings because the server list is unavailable.
-          </div>
+          <LoadingRows count={4} />
+        ) : unavailable ? (
+          <ErrorRow message="Failed to load settings because the server list is unavailable." />
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div className={cn(AURORA_MEDIUM_PANEL, 'px-5 py-4')}>
-              <p className={AURORA_MUTED_LABEL}>Auth Mode</p>
-              <p className="mt-2 text-xl font-semibold text-aurora-text-primary">{snapshot.authModeLabel}</p>
-              <p className="mt-1 text-sm text-aurora-text-muted">How the web UI authenticates control-plane requests.</p>
-            </div>
-            <div className={cn(AURORA_MEDIUM_PANEL, 'px-5 py-4')}>
-              <p className={AURORA_MUTED_LABEL}>Runtime</p>
-              <p className="mt-2 text-xl font-semibold text-aurora-text-primary">{snapshot.runtimeLabel}</p>
-              <p className="mt-1 text-sm text-aurora-text-muted">Current environment mode exposed to the admin UI.</p>
-            </div>
-            <div className={cn(AURORA_MEDIUM_PANEL, 'px-5 py-4')}>
-              <p className={AURORA_MUTED_LABEL}>Warnings</p>
-              <p className={cn(AURORA_DISPLAY_NUMBER, 'mt-2 text-[22px]', snapshot.warningCount > 0 ? 'text-aurora-warn' : 'text-aurora-text-primary')}>
-                {snapshot.warningCount}
-              </p>
-              <p className="mt-1 text-sm text-aurora-text-muted">Warnings across all configured servers.</p>
-            </div>
-            <div className={cn(AURORA_MEDIUM_PANEL, 'px-5 py-4')}>
-              <p className={AURORA_MUTED_LABEL}>Disconnected</p>
-              <p className={cn(AURORA_DISPLAY_NUMBER, 'mt-2 text-[22px]', snapshot.disconnectedGateways > 0 ? 'text-aurora-error' : 'text-aurora-text-primary')}>
-                {snapshot.disconnectedGateways}
-              </p>
-              <p className="mt-1 text-sm text-aurora-text-muted">Servers that currently need operator attention.</p>
-            </div>
-          </div>
+          <>
+            <SettingsRow
+              label="Auth mode"
+              description="How the web UI authenticates control-plane requests."
+              control={<SettingsValue>{snapshot!.authModeLabel}</SettingsValue>}
+            />
+            <SettingsRow
+              label="Runtime"
+              description="Current environment mode exposed to the admin UI."
+              control={<SettingsValue>{snapshot!.runtimeLabel}</SettingsValue>}
+            />
+            <SettingsRow
+              label="Warnings"
+              description="Warnings across all configured servers."
+              control={
+                <MetricValue
+                  value={snapshot!.warningCount}
+                  tone={snapshot!.warningCount > 0 ? 'var(--aurora-warn)' : undefined}
+                />
+              }
+            />
+            <SettingsRow
+              label="Disconnected"
+              description="Servers that currently need operator attention."
+              control={
+                <MetricValue
+                  value={snapshot!.disconnectedGateways}
+                  tone={snapshot!.disconnectedGateways > 0 ? 'var(--aurora-error)' : undefined}
+                />
+              }
+            />
+          </>
         )}
+      </SettingsCard>
 
-        {/* Detail grid */}
-        <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
-          <div className={cn(AURORA_STRONG_PANEL, 'px-6 py-5')}>
-            <p className="text-base font-semibold text-aurora-text-primary">Control-plane posture</p>
-            <p className="mt-1 text-sm text-aurora-text-muted">
-              A read-only summary of the admin surface and the current server fleet.
-            </p>
+      <SettingsCard
+        title="Control-plane posture"
+        description="A read-only summary of the admin surface and the current server fleet."
+      >
+        {isLoading ? (
+          <LoadingRows count={4} />
+        ) : unavailable ? (
+          <ErrorRow message="Failed to load settings because the server list is unavailable." />
+        ) : (
+          <>
+            <SettingsRow
+              label={
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <ShieldCheck size={14} style={{ color: 'var(--aurora-accent-primary)' }} />
+                  Authentication
+                </span>
+              }
+              description={`UI requests are running in ${snapshot!.authModeLabel}.`}
+            />
+            <SettingsRow
+              label={
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <LifeBuoy size={14} style={{ color: 'var(--aurora-accent-primary)' }} />
+                  Preview mode
+                </span>
+              }
+              description={`${snapshot!.runtimeLabel} is active for this build.`}
+            />
+            <SettingsRow
+              label={
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <PlugZap size={14} style={{ color: 'var(--aurora-accent-primary)' }} />
+                  Server reachability
+                </span>
+              }
+              description={`${snapshot!.connectedGateways} of ${snapshot!.totalGateways} servers are connected.`}
+            />
+            <SettingsRow
+              label={
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <KeyRound size={14} style={{ color: 'var(--aurora-accent-primary)' }} />
+                  Protected upstreams
+                </span>
+              }
+              description={`${snapshot!.bearerTokenGateways} servers require bearer-token env wiring.`}
+            />
+          </>
+        )}
+      </SettingsCard>
 
-            {isLoading ? (
-              <div className="mt-5 space-y-3">
-                {Array.from({ length: 4 }, (_, index) => (
-                  <div key={index} className="h-20 animate-pulse rounded-[1rem] border border-aurora-border-strong bg-aurora-control-surface" />
-                ))}
-              </div>
-            ) : error || !snapshot ? (
-              <div className="mt-5 rounded-[1rem] border border-aurora-error/30 bg-aurora-error/8 p-4 text-sm text-aurora-error">
-                Failed to load settings because the server list is unavailable.
-              </div>
-            ) : (
-              <div className="mt-5 grid gap-3 md:grid-cols-2">
-                <div className="rounded-[1rem] border border-aurora-border-strong bg-aurora-control-surface p-4">
-                  <div className="flex items-center gap-3">
-                    <ShieldCheck className="size-5 text-aurora-accent-primary" />
-                    <div>
-                      <p className="font-medium text-aurora-text-primary">Authentication</p>
-                      <p className="text-sm text-aurora-text-muted">
-                        UI requests are running in <span className="font-medium text-aurora-text-primary">{snapshot.authModeLabel}</span>.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-[1rem] border border-aurora-border-strong bg-aurora-control-surface p-4">
-                  <div className="flex items-center gap-3">
-                    <LifeBuoy className="size-5 text-aurora-accent-primary" />
-                    <div>
-                      <p className="font-medium text-aurora-text-primary">Preview mode</p>
-                      <p className="text-sm text-aurora-text-muted">
-                        <span className="font-medium text-aurora-text-primary">{snapshot.runtimeLabel}</span> is active for this build.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-[1rem] border border-aurora-border-strong bg-aurora-control-surface p-4">
-                  <div className="flex items-center gap-3">
-                    <PlugZap className="size-5 text-aurora-accent-primary" />
-                    <div>
-                      <p className="font-medium text-aurora-text-primary">Server reachability</p>
-                      <p className="text-sm text-aurora-text-muted">
-                        {snapshot.connectedGateways} of {snapshot.totalGateways} servers are connected.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-[1rem] border border-aurora-border-strong bg-aurora-control-surface p-4">
-                  <div className="flex items-center gap-3">
-                    <KeyRound className="size-5 text-aurora-accent-primary" />
-                    <div>
-                      <p className="font-medium text-aurora-text-primary">Protected upstreams</p>
-                      <p className="text-sm text-aurora-text-muted">
-                        {snapshot.bearerTokenGateways} servers require bearer-token env wiring.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className={cn(AURORA_STRONG_PANEL, 'px-6 py-5')}>
-            <p className="text-base font-semibold text-aurora-text-primary">Effective defaults</p>
-            {isLoading ? (
-              <div className="mt-4 space-y-3">
-                {Array.from({ length: 4 }, (_, index) => (
-                  <div key={index} className="h-14 animate-pulse rounded-[1rem] border border-aurora-border-strong bg-aurora-control-surface" />
-                ))}
-              </div>
-            ) : error || !snapshot ? (
-              <div className="mt-4 rounded-[1rem] border border-aurora-error/30 bg-aurora-error/8 p-4 text-sm text-aurora-error">
-                Effective defaults are unavailable until the server list loads successfully.
-              </div>
-            ) : (
-              <div className="mt-4 space-y-2 text-sm text-aurora-text-muted">
-                <div className="flex items-center justify-between rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface px-4 py-3">
-                  <span>Proxy resources enabled</span>
-                  <Badge variant="secondary">{snapshot.proxyResourceGateways} servers</Badge>
-                </div>
-                <div className="flex items-center justify-between rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface px-4 py-3">
-                  <span>Disconnected servers</span>
-                  <Badge variant="secondary" status={snapshot.disconnectedGateways === 0 ? 'default' : 'error'}>
-                    {snapshot.disconnectedGateways}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface px-4 py-3">
-                  <span>Warning backlog</span>
-                  <Badge variant={snapshot.warningCount === 0 ? 'secondary' : 'outline'} status={snapshot.warningCount > 0 ? 'warn' : 'default'}>
-                    {snapshot.warningCount}
-                  </Badge>
-                </div>
-                <div className="rounded-aurora-1 border border-aurora-border-strong border-dashed p-4 text-aurora-text-muted">
-                  Code Mode mode is now managed on the Servers page. Other global defaults are still surfaced as effective posture until their backend write APIs exist.
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+      <SettingsCard title="Effective defaults">
+        {isLoading ? (
+          <LoadingRows count={3} />
+        ) : unavailable ? (
+          <ErrorRow message="Effective defaults are unavailable until the server list loads successfully." />
+        ) : (
+          <>
+            <SettingsRow
+              label="Proxy resources enabled"
+              control={<SettingsValue>{snapshot!.proxyResourceGateways} servers</SettingsValue>}
+            />
+            <SettingsRow
+              label="Disconnected servers"
+              control={
+                <MetricValue
+                  value={snapshot!.disconnectedGateways}
+                  tone={snapshot!.disconnectedGateways > 0 ? 'var(--aurora-error)' : undefined}
+                />
+              }
+            />
+            <SettingsRow
+              label="Warning backlog"
+              control={
+                <MetricValue
+                  value={snapshot!.warningCount}
+                  tone={snapshot!.warningCount > 0 ? 'var(--aurora-warn)' : undefined}
+                />
+              }
+            />
+            <SettingsRowStrip>
+              <span style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--aurora-text-muted)' }}>
+                Code Mode mode is now managed on the Servers page. Other global defaults are still
+                surfaced as effective posture until their backend write APIs exist.
+              </span>
+            </SettingsRowStrip>
+          </>
+        )}
+      </SettingsCard>
 
       {/* Allowed users (admin only) */}
       {isAdmin ? <AllowedUsersPanel /> : null}
     </div>
+  )
+}
+
+function MetricValue({ value, tone }: { value: number; tone?: string }) {
+  return (
+    <span
+      style={{
+        fontFamily: 'var(--font-display)',
+        fontSize: 16,
+        fontWeight: 800,
+        fontVariantNumeric: 'tabular-nums',
+        color: tone ?? 'var(--aurora-text-primary)',
+      }}
+    >
+      {value}
+    </span>
+  )
+}
+
+function LoadingRows({ count }: { count: number }) {
+  return (
+    <>
+      {Array.from({ length: count }, (_, index) => (
+        <SettingsRowStrip key={index}>
+          <span
+            className="animate-pulse"
+            style={{
+              display: 'block',
+              width: '100%',
+              height: 32,
+              borderRadius: 8,
+              background: 'var(--aurora-control-surface)',
+            }}
+          />
+        </SettingsRowStrip>
+      ))}
+    </>
+  )
+}
+
+function ErrorRow({ message }: { message: string }) {
+  return (
+    <SettingsRowStrip>
+      <span style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--aurora-error)' }}>
+        {message}
+      </span>
+    </SettingsRowStrip>
   )
 }

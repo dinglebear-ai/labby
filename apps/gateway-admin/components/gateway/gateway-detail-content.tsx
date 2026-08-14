@@ -20,6 +20,15 @@ import {
   Settings,
   Power,
   SlidersHorizontal,
+  Activity,
+  Braces,
+  Cpu,
+  Globe,
+  HardDrive,
+  Lock,
+  MemoryStick,
+  Network,
+  Timer,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { AppHeader } from '@/components/app-header'
@@ -47,6 +56,22 @@ import { cn, getErrorMessage } from '@/lib/utils'
 import { buildGatewayClientConfig } from '@/lib/api/gateway-client-config'
 import { useStableToolExposure } from './use-stable-tool-exposure'
 import { GatewayEnabledSetting } from './gateway-enabled-setting'
+import {
+  DETAIL_METRIC_PILL_STYLE,
+  DETAIL_NO_DATA,
+  DETAIL_PANEL_GRID_STYLE,
+  DETAIL_STAT_GRID_STYLE,
+  DetailCard,
+  DetailClusterRule,
+  DetailDivider,
+  DetailIconButton,
+  DetailInset,
+  DetailMetricPill,
+  DetailMicroLabel,
+  DetailMiniList,
+  DetailStatCard,
+  DetailWarnPill,
+} from './gateway-detail-chrome'
 
 const GatewayFormDialog = dynamic(
   () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
@@ -492,55 +517,51 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     }
   }
 
-  // AppHeader actions: action buttons
+  // AppHeader actions. The mock's DETAIL PAGE topbar cluster (its `isDetailPage`
+  // branch) is `gap: 5px` of 32px radius-1 control-surface buttons — not the
+  // row-expansion cluster's 26px ghosts. Its order is Test / View in Logs /
+  // Reload / Generate skill / Edit / More; we ship the actions that exist here
+  // (see the report for the two we cannot back).
   const headerActions = (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center" style={{ gap: 5 }}>
       {!isLabGateway && (
-        <Button
-          variant="outline"
-          size="icon"
+        <DetailToolbarButton
           onClick={handleTest}
           disabled={isTesting || !(gateway.enabled ?? true)}
           aria-label="Test server"
           title="Test server"
         >
           {isTesting ? (
-            <Loader2 className="size-4 animate-spin" />
+            <Loader2 size={15} className="animate-spin" />
           ) : (
-            <Play className="size-4" />
+            <Play size={15} />
           )}
-        </Button>
+        </DetailToolbarButton>
       )}
       {!isLabGateway && (
-        <Button
-          variant="outline"
-          size="icon"
+        <DetailToolbarButton
           onClick={handleReload}
           disabled={isReloading || !(gateway.enabled ?? true)}
           aria-label="Reload server"
           title="Reload server"
         >
-          <RefreshCw className={`size-4 ${isReloading ? 'animate-spin' : ''}`} />
-        </Button>
+          <RefreshCw size={15} className={isReloading ? 'animate-spin' : undefined} />
+        </DetailToolbarButton>
       )}
-      <Button
-        variant="outline"
-        size="icon"
+      <DetailToolbarButton
         onClick={() => setEditOpen(true)}
         aria-label="Edit server"
         title="Edit server"
       >
-        <Pencil className="size-4" />
-      </Button>
-      <Button
-        variant="outline"
-        size="icon"
+        <Pencil size={15} />
+      </DetailToolbarButton>
+      <DetailToolbarButton
         onClick={() => void handleDelete()}
         aria-label="Remove server"
         title="Remove server"
       >
-        <Trash2 className="size-4" />
-      </Button>
+        <Trash2 size={15} />
+      </DetailToolbarButton>
     </div>
   )
 
@@ -574,103 +595,192 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             </div>
           </div>
         ) : null}
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'catalog' | 'runtime' | 'config' | 'settings' | 'warnings')} className="space-y-4">
-          {/* Header card with tabs embedded */}
-          <div className="relative rounded-lg border bg-aurora-panel-medium p-5">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="absolute right-5 top-5 inline-flex size-8 items-center justify-center rounded-full border bg-aurora-page-bg text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary"
-                  title={updatedAtLabel}
-                  aria-label={`Last updated ${updatedAtLabel}`}
-                >
-                  <Clock className="size-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="left">
-                {updatedAtLabel}
-              </TooltipContent>
-            </Tooltip>
-            <div className="flex flex-wrap items-center gap-2 pr-28">
-              <TransportBadge transport={gateway.transport} iconOnly={gateway.transport === 'stdio'} />
-            </div>
-
-            {/* Name + endpoint */}
-            <div className="mt-3 space-y-1">
-              <div className="flex flex-wrap items-start gap-3">
-                <span
-                  className={`size-2.5 rounded-full ${gateway.status.healthy && gateway.status.connected ? 'bg-aurora-success' : 'bg-aurora-error'}`}
-                  aria-hidden="true"
-                />
-                <h1 className={cn(AURORA_DISPLAY_1, 'break-words text-aurora-text-primary')}>{gateway.name}</h1>
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) =>
+            setActiveTab(value as 'overview' | 'catalog' | 'runtime' | 'config' | 'settings' | 'warnings')
+          }
+          className="space-y-4"
+        >
+          {/*
+            Detail header card, measured off the mock's DETAIL PAGE (reached by
+            clicking a server name in the table, which unmounts the table).
+            Three stacked rows bled to the card edge: title + meta rail, the
+            stat strip, then the underline tab bar. See gateway-detail-chrome.
+          */}
+          <div ref={headerCardRef} style={{ ...DETAIL_HEADER_CARD_STYLE, top: headerStickyTop }}>
+            {/* Title row */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span
+                    className={`size-2.5 shrink-0 rounded-full ${gateway.status.healthy && gateway.status.connected ? 'bg-aurora-success' : 'bg-aurora-error'}`}
+                    aria-hidden="true"
+                  />
+                  <h1 style={DETAIL_TITLE_STYLE}>{gateway.name}</h1>
+                  <TransportBadge transport={gateway.transport} iconOnly={gateway.transport === 'stdio'} />
+                </div>
               </div>
-              <div className="max-w-3xl">
-                <div className="flex items-center gap-2 overflow-hidden rounded-aurora-2 border bg-aurora-page-bg px-3 py-2">
-                  <div className="min-w-0 flex-1">
-                    <pre className="overflow-x-hidden rounded-aurora-2 border border-aurora-border-strong/60 bg-aurora-control-surface px-3 py-2 font-mono text-[11px] leading-5 text-aurora-text-primary whitespace-pre-wrap break-all shadow-[var(--aurora-highlight-medium)]">
-                      <code className="font-mono">{endpointDisplay}</code>
-                    </pre>
-                  </div>
-                  <div className="shrink-0">
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(endpointDisplay)
-                          toast.success('Copied to clipboard')
-                        } catch {
-                          toast.error('Failed to copy to clipboard')
-                        }
-                      }}
-                      aria-label="Copy command"
-                      title="Copy command"
-                    >
-                      <Copy className="size-4" />
-                    </Button>
-                  </div>
+              <div className="shrink-0 pt-1 min-w-0">
+                <div style={DETAIL_TITLE_META_STYLE}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(endpointDisplay)
+                        toast.success('Copied to clipboard')
+                      } catch {
+                        toast.error('Failed to copy to clipboard')
+                      }
+                    }}
+                    aria-label="Copy command"
+                    title={endpointDisplay}
+                    className="grid place-items-center cursor-pointer border-0 bg-transparent"
+                    style={{ width: 18, height: 18, borderRadius: 5, color: 'var(--aurora-accent-strong)' }}
+                  >
+                    <Copy size={13} />
+                  </button>
+                  <DetailMetaDot />
+                  <button
+                    type="button"
+                    onClick={handleCopyConfig}
+                    aria-label="Copy client configuration"
+                    title="Copy .mcp.json entry"
+                    className="grid place-items-center cursor-pointer border-0 bg-transparent"
+                    style={{ width: 18, height: 18, borderRadius: 5, color: 'var(--aurora-text-muted)' }}
+                  >
+                    {configCopied ? <Check size={13} /> : <Braces size={13} />}
+                  </button>
+                  <DetailMetaDot />
+                  {/*
+                    The mock shows serverInfo.version and protocolVersion here.
+                    Neither is on the Gateway type, so both dash.
+                  */}
+                  <span title="Server version — not reported by the gateway API" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    v{DETAIL_NO_DATA}
+                  </span>
+                  <DetailMetaDot />
+                  <span
+                    title="Model Context Protocol version — not reported by the gateway API"
+                    style={{ fontVariantNumeric: 'tabular-nums' }}
+                  >
+                    MCP {DETAIL_NO_DATA}
+                  </span>
+                  {gateway.warnings.length > 0 ? (
+                    <>
+                      <DetailMetaDot />
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab('warnings')}
+                            aria-label={`Open warnings (${gateway.warnings.length})`}
+                            className="inline-grid place-items-center cursor-pointer border-0 bg-transparent"
+                            style={{ width: 18, height: 18, borderRadius: 5, color: 'var(--aurora-warn)' }}
+                          >
+                            <AlertTriangle size={13} />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" className="max-w-xs">
+                          {gateway.warnings[0].message}
+                          {gateway.warnings.length > 1 && (
+                            <span className="block mt-1 text-xs opacity-70">
+                              +{gateway.warnings.length - 1} more — see Warnings tab
+                            </span>
+                          )}
+                        </TooltipContent>
+                      </Tooltip>
+                    </>
+                  ) : null}
+                  <DetailMetaDot />
+                  <span title={updatedAtLabel} aria-label={`Last updated ${updatedAtLabel}`}>
+                    {updatedAtLabel}
+                  </span>
                 </div>
               </div>
             </div>
 
-            {/* Tabs directly under name/endpoint */}
-            <TabsList className="-mx-1 px-1 mt-4">
-              <TabsTrigger value="catalog">
-                Catalog
-                <Badge variant="secondary" className="ml-2 text-xs">
-                  {gateway.discovery.tools.length + gateway.discovery.resources.length + gateway.discovery.prompts.length}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger value="runtime">
-                Runtime
-                <Badge variant="secondary" className="ml-2 text-xs">
-                  {gateway.status.likely_stale_count ?? 0}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger value="config">Config</TabsTrigger>
-              <TabsTrigger value="settings">
-                Settings
-                <Badge variant="secondary" className="ml-2 text-xs">
-                  {/* gateway enabled + expose resources + expose prompts + lab surfaces */}
-                  {3 + surfaceEntries.length}
-                </Badge>
-              </TabsTrigger>
-              {gateway.warnings.length > 0 && (
-                <TabsTrigger value="warnings" className="text-aurora-warn">
-                  Warnings
-                  <Badge variant="secondary" className="ml-2 text-xs bg-aurora-warn/10">
-                    {gateway.warnings.length}
-                  </Badge>
+            {/*
+              Stat strip. The mock's four metric cells are CALLS / ERRORS /
+              CLIENTS / P50 LATENCY — all 24h telemetry the gateway API does
+              not report, so their values dash. The identity cell is real.
+            */}
+            <div style={DETAIL_STAT_STRIP_STYLE}>
+              <DetailStripCell
+                first
+                label={gateway.enabled ?? true ? 'Exposed' : 'Disabled'}
+                value={`${gateway.status.exposed_tool_count}/${gateway.status.discovered_tool_count}`}
+                sub={endpointDisplay}
+                title={endpointDisplay}
+              />
+              <DetailStripCell
+                label="Calls"
+                value={DETAIL_NO_DATA}
+                sub="last 24h"
+                title="Tool calls in the last 24h — not reported by the gateway API"
+              />
+              <DetailStripCell
+                label="Errors"
+                value={DETAIL_NO_DATA}
+                sub="last 24h"
+                title="Failed tool calls in the last 24h — not reported by the gateway API"
+              />
+              <DetailStripCell
+                label="Clients"
+                value={DETAIL_NO_DATA}
+                sub="live sessions"
+                title="Live client sessions — not reported by the gateway API"
+              />
+              <DetailStripCell
+                label="P50 latency"
+                value={DETAIL_NO_DATA}
+                sub={`p95 ${DETAIL_NO_DATA}`}
+                title="Tool-call round-trip percentiles — not reported by the gateway API"
+              />
+            </div>
+
+            {/* Underline tab bar */}
+            <div ref={tabRowRef} style={DETAIL_TAB_ROW_STYLE}>
+              <TabsList className={DETAIL_TAB_LIST_CLASS}>
+                <TabsTrigger value="overview" className={DETAIL_TAB_TRIGGER_CLASS}>
+                  Overview
                 </TabsTrigger>
-              )}
-            </TabsList>
-          </div>
+                <TabsTrigger value="catalog" className={DETAIL_TAB_TRIGGER_CLASS}>
+                  Catalog
+                  <DetailTabBadge>
+                    {gateway.discovery.tools.length +
+                      gateway.discovery.resources.length +
+                      gateway.discovery.prompts.length}
+                  </DetailTabBadge>
+                </TabsTrigger>
+                <TabsTrigger value="runtime" className={DETAIL_TAB_TRIGGER_CLASS}>
+                  Runtime
+                  <DetailTabBadge>{gateway.status.likely_stale_count ?? 0}</DetailTabBadge>
+                </TabsTrigger>
+                <TabsTrigger value="config" className={DETAIL_TAB_TRIGGER_CLASS}>
+                  Config
+                </TabsTrigger>
+                <TabsTrigger value="settings" className={DETAIL_TAB_TRIGGER_CLASS}>
+                  Settings
+                  <DetailTabBadge>{3 + surfaceEntries.length}</DetailTabBadge>
+                </TabsTrigger>
+                {gateway.warnings.length > 0 && (
+                  <TabsTrigger
+                    value="warnings"
+                    className={cn(DETAIL_TAB_TRIGGER_CLASS, 'text-aurora-warn')}
+                  >
+                    Warnings
+                    <DetailTabBadge>{gateway.warnings.length}</DetailTabBadge>
+                  </TabsTrigger>
+                )}
+              </TabsList>
+            </div>
+          </DetailCard>
 
           {/* Tab content */}
           <TabsContent value="catalog">
             <div className="space-y-4">
-              <div className="rounded-lg border bg-aurora-panel-medium p-4">
+              <DetailCard padding="14px 20px 16px">
                 <div className="space-y-3">
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
@@ -752,10 +862,10 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     ) : null}
                   </div>
                 </div>
-              </div>
+              </DetailCard>
 
               {(inventoryFilter === 'all' || inventoryFilter === 'tools') ? (
-                <div className="rounded-lg border bg-aurora-panel-medium p-4">
+                <DetailCard padding="14px 20px 16px">
                   <div className="mb-4 flex items-center gap-2">
                     <Wrench className="size-4 text-aurora-text-muted" />
                     <h2 className="text-lg font-semibold">{toolsTabLabel}</h2>
@@ -783,7 +893,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     hideSearchAndFilterControls
                     hideManageModeToggle
                   />
-                </div>
+                </DetailCard>
               ) : null}
 
               {(inventoryFilter === 'all' || inventoryFilter === 'resources') ? (
@@ -858,35 +968,39 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
           </TabsContent>
 
           <TabsContent value="config">
-            <div className="rounded-lg border bg-aurora-panel-medium p-5">
+            <DetailCard padding="16px 20px 18px">
               <div className="mb-4">
                 <h2 className="text-lg font-semibold">Client Configuration</h2>
                 <p className="text-sm text-aurora-text-muted mt-1">
                   Add this JSON block to your MCP client configuration to connect to this server.
                 </p>
               </div>
-              <div className="overflow-hidden rounded-aurora-2 border bg-aurora-page-bg">
-                <div className="flex items-center justify-between border-b px-4 py-3">
-                  <p className="text-xs font-medium uppercase tracking-[0.16em] text-aurora-text-muted">Client JSON</p>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-aurora-text-muted hover:text-aurora-text-primary"
+              <DetailInset style={{ padding: 0, overflow: 'hidden' }}>
+                <div
+                  className="flex items-center justify-between px-4 py-3"
+                  style={{
+                    borderBottom:
+                      '1px solid color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))',
+                  }}
+                >
+                  <DetailMicroLabel>Client JSON</DetailMicroLabel>
+                  <DetailIconButton
                     onClick={handleCopyConfig}
+                    aria-label="Copy client JSON"
                     title="Copy to clipboard"
                   >
-                    {configCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                  </Button>
+                    {configCopied ? <Check size={14} /> : <Copy size={14} />}
+                  </DetailIconButton>
                 </div>
                 <pre className="aurora-scrollbar overflow-x-auto whitespace-pre-wrap break-all px-4 py-4 text-sm leading-6 text-aurora-text-primary">
                   <code>{clientConfigJson}</code>
                 </pre>
-              </div>
-            </div>
+              </DetailInset>
+            </DetailCard>
           </TabsContent>
 
           <TabsContent value="settings">
-            <div className="rounded-lg border bg-aurora-panel-medium p-5 space-y-5">
+            <DetailCard padding="16px 20px 18px" className="space-y-5">
               <div>
                 <h2 className="text-lg font-semibold">Server settings</h2>
                 <p className="mt-1 text-sm text-aurora-text-muted">
@@ -895,7 +1009,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
               </div>
 
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
+                <DetailInset style={{ padding: 16 }}>
                   <div className="flex items-center gap-2">
                     <Power className="size-4 text-aurora-text-muted" />
                     <h3 className="text-sm font-semibold text-aurora-text-primary">Server state</h3>
@@ -907,9 +1021,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       onDisable={handleDisableGateway}
                     />
                   </div>
-                </div>
+                </DetailInset>
 
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
+                <DetailInset style={{ padding: 16 }}>
                   <div className="flex items-center gap-2">
                     <Settings className="size-4 text-aurora-text-muted" />
                     <h3 className="text-sm font-semibold text-aurora-text-primary">Exposure surfaces</h3>
@@ -928,11 +1042,11 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       onCheckedChange={handleProxyPromptsToggle}
                     />
                   </div>
-                </div>
+                </DetailInset>
               </div>
 
               {surfaceEntries.length > 0 ? (
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
+                <DetailInset style={{ padding: 16 }}>
                   <div className="flex items-center gap-2">
                     <Wrench className="size-4 text-aurora-text-muted" />
                     <h3 className="text-sm font-semibold text-aurora-text-primary">Lab surfaces</h3>
@@ -960,13 +1074,13 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       </div>
                     ))}
                   </div>
-                </div>
+                </DetailInset>
               ) : null}
-            </div>
+            </DetailCard>
           </TabsContent>
 
           <TabsContent value="runtime">
-            <div className="rounded-lg border bg-aurora-panel-medium p-5 space-y-5">
+            <DetailCard padding="16px 20px 18px" className="space-y-5">
               <div>
                 <h2 className="text-lg font-semibold">Runtime details</h2>
                 <p className="text-sm text-aurora-text-muted mt-1">
@@ -975,42 +1089,93 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                 </p>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
-                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-aurora-text-muted">Connection</p>
-                  <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                    {gateway.status.connected ? 'Connected' : 'Not connected'}
-                  </p>
-                  <p className="mt-1 text-xs text-aurora-text-muted">
-                    {gateway.enabled ?? false ? 'Server enabled' : 'Server disabled'}
-                  </p>
+              <div style={DETAIL_STAT_GRID_STYLE}>
+                <DetailStatCard
+                  icon={<Network size={11} />}
+                  label="Connection"
+                  value={gateway.status.connected ? 'Connected' : 'Not connected'}
+                  sub={gateway.enabled ?? false ? 'Server enabled' : 'Server disabled'}
+                />
+                <DetailStatCard
+                  icon={<Cpu size={11} />}
+                  label="Process"
+                  value={gateway.status.pid ? `pid ${gateway.status.pid}` : 'No active pid'}
+                  sub={gateway.status.pgid ? `pgid ${gateway.status.pgid}` : 'No process group recorded'}
+                />
+                <DetailStatCard
+                  icon={<Clock size={11} />}
+                  label="Process age"
+                  value={runtimeAgeLabel ?? 'Unknown'}
+                  sub="upstream process start time"
+                />
+                <DetailStatCard
+                  icon={<AlertTriangle size={11} />}
+                  label="Stale processes"
+                  value={gateway.status.likely_stale_count ?? 0}
+                  sub="orphaned runtimes after reconciliation"
+                />
+              </div>
+
+              {/*
+                The mock's detail panel carries a live-telemetry row
+                (CPU / RAM / STORAGE / NETWORK) and CLIENTS · 24H /
+                TOP TOOLS · 24H / CALLS · 24H panels. The gateway API exposes
+                none of those, so every value dashes rather than being faked.
+              */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Activity className="size-4 text-aurora-text-muted" />
+                  <h3 className="text-sm font-semibold text-aurora-text-primary">Live telemetry</h3>
+                  <span className="text-xs text-aurora-text-muted">
+                    Not reported by the gateway API yet
+                  </span>
                 </div>
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
-                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-aurora-text-muted">Process</p>
-                  <p className="mt-2 text-sm font-semibold text-aurora-text-primary font-mono">
-                    {gateway.status.pid ? `pid ${gateway.status.pid}` : 'No active pid'}
-                  </p>
-                  <p className="mt-1 text-xs text-aurora-text-muted font-mono">
-                    {gateway.status.pgid ? `pgid ${gateway.status.pgid}` : 'No process group recorded'}
-                  </p>
+                <div style={DETAIL_STAT_GRID_STYLE}>
+                  <DetailStatCard
+                    icon={<Cpu size={11} />}
+                    label="CPU"
+                    value={DETAIL_NO_DATA}
+                    sub="proxy share"
+                    title="CPU — gateway time spent proxying this server. Not reported by the gateway API."
+                  />
+                  <DetailStatCard
+                    icon={<MemoryStick size={11} />}
+                    label="RAM"
+                    value={DETAIL_NO_DATA}
+                    sub="buffers + session state"
+                    title="Memory. Not reported by the gateway API."
+                  />
+                  <DetailStatCard
+                    icon={<HardDrive size={11} />}
+                    label="Storage"
+                    value={DETAIL_NO_DATA}
+                    sub="runtime · logs + cache"
+                    title="Disk used by runtime snapshots, logs, and cache for this server. Not reported by the gateway API."
+                  />
+                  <DetailStatCard
+                    icon={<Network size={11} />}
+                    label="Network"
+                    value={DETAIL_NO_DATA}
+                    sub="ingress / egress"
+                    title="Network — ingress / egress through the gateway. Not reported by the gateway API."
+                  />
                 </div>
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
-                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-aurora-text-muted">Process age</p>
-                  <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                    {runtimeAgeLabel ?? 'Unknown'}
-                  </p>
-                  <p className="mt-1 text-xs text-aurora-text-muted">
-                    Derived from upstream process start time when available
-                  </p>
-                </div>
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
-                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-aurora-text-muted">Stale processes</p>
-                  <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                    {gateway.status.likely_stale_count ?? 0}
-                  </p>
-                  <p className="mt-1 text-xs text-aurora-text-muted">
-                    Persisted orphaned runtimes that still look alive after reconciliation
-                  </p>
+                <div style={DETAIL_PANEL_GRID_STYLE}>
+                  <DetailMiniList
+                    label="Clients · 24h"
+                    rows={[]}
+                    title="Per-client call counts. Not reported by the gateway API."
+                  />
+                  <DetailMiniList
+                    label="Top tools · 24h"
+                    rows={[]}
+                    title="Per-tool call counts. Not reported by the gateway API."
+                  />
+                  <DetailMiniList
+                    label="Calls · 24h"
+                    rows={[]}
+                    title="Call volume over the last 24h. Not reported by the gateway API."
+                  />
                 </div>
               </div>
 
@@ -1072,71 +1237,61 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
               ) : null}
 
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
+                <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <Wrench className="size-4 text-aurora-text-muted" />
                     <h3 className="text-sm font-semibold text-aurora-text-primary">Catalog exposure</h3>
                   </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-md border bg-aurora-control-surface/10 p-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-aurora-text-muted">Tools</p>
-                      <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                        {gateway.status.exposed_tool_count}/{gateway.status.discovered_tool_count}
-                      </p>
-                    </div>
-                    <div className="rounded-md border bg-aurora-control-surface/10 p-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-aurora-text-muted">Resources</p>
-                      <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                        {gateway.status.exposed_resource_count}/{gateway.status.discovered_resource_count}
-                      </p>
-                    </div>
-                    <div className="rounded-md border bg-aurora-control-surface/10 p-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-aurora-text-muted">Prompts</p>
-                      <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                        {gateway.status.exposed_prompt_count}/{gateway.status.discovered_prompt_count}
-                      </p>
-                    </div>
+                  <div style={DETAIL_STAT_GRID_STYLE}>
+                    <DetailStatCard
+                      icon={<Wrench size={11} />}
+                      label="Tools"
+                      value={`${gateway.status.exposed_tool_count}/${gateway.status.discovered_tool_count}`}
+                    />
+                    <DetailStatCard
+                      icon={<FileText size={11} />}
+                      label="Resources"
+                      value={`${gateway.status.exposed_resource_count}/${gateway.status.discovered_resource_count}`}
+                    />
+                    <DetailStatCard
+                      icon={<MessageSquare size={11} />}
+                      label="Prompts"
+                      value={`${gateway.status.exposed_prompt_count}/${gateway.status.discovered_prompt_count}`}
+                    />
                   </div>
                 </div>
 
-                <div className="rounded-lg border bg-aurora-page-bg p-4">
+                <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <Clock className="size-4 text-aurora-text-muted" />
                     <h3 className="text-sm font-semibold text-aurora-text-primary">Reconciliation notes</h3>
                   </div>
-                  <div className="mt-4 space-y-3 text-sm text-aurora-text-muted">
-                    <div className="rounded-md border bg-aurora-control-surface/10 p-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-aurora-text-muted">Origin</p>
-                      <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                        {gateway.status.origin ?? 'server-managed'}
-                      </p>
-                    </div>
-                    <div className="rounded-md border bg-aurora-control-surface/10 p-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-aurora-text-muted">Runtime state file</p>
-                      <p className="mt-2 break-all text-xs font-mono text-aurora-text-primary">
+                  <div className="space-y-2.5">
+                    <DetailStatCard label="Origin" value={gateway.status.origin ?? 'server-managed'} />
+                    <DetailInset>
+                      <DetailMicroLabel style={{ marginBottom: 6 }}>Runtime state file</DetailMicroLabel>
+                      <p className="break-all text-xs font-mono text-aurora-text-primary">
                         {gateway.status.runtime_state_path ?? 'Unavailable'}
                       </p>
-                    </div>
-                    <div className="rounded-md border bg-aurora-control-surface/10 p-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-aurora-text-muted">Last reconciled</p>
-                      <p className="mt-2 text-sm font-semibold text-aurora-text-primary">
-                        {formatGatewayTimestamp(gateway.status.reconciled_at)}
-                      </p>
-                    </div>
+                    </DetailInset>
+                    <DetailStatCard
+                      label="Last reconciled"
+                      value={formatGatewayTimestamp(gateway.status.reconciled_at)}
+                    />
                   </div>
-                  <ul className="mt-4 space-y-3 text-sm text-aurora-text-muted">
+                  <ul className="space-y-2 text-sm text-aurora-text-muted">
                     <li>Active runtime metadata is recorded when the server spawns stdio upstreams.</li>
                     <li>Runtime snapshots are written to disk beside the server config and survive server restarts.</li>
                     <li>Dead PIDs are pruned during runtime reconciliation; surviving non-current PIDs count as stale runtime state.</li>
                   </ul>
                 </div>
               </div>
-            </div>
+            </DetailCard>
           </TabsContent>
 
           {gateway.warnings.length > 0 && (
             <TabsContent value="warnings">
-              <div className="rounded-lg border bg-aurora-panel-medium p-6">
+              <DetailCard padding="16px 20px 18px">
                 <h2 className="text-lg font-semibold mb-4">Server Warnings</h2>
                 <div className="space-y-2">
                   {gateway.warnings.map((warning, index) => (
@@ -1157,7 +1312,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     </div>
                   ))}
                 </div>
-              </div>
+              </DetailCard>
             </TabsContent>
           )}
         </Tabs>
