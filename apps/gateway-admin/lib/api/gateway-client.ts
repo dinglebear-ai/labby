@@ -58,7 +58,11 @@ export class GatewayApiError extends Error implements ServiceActionError {
   }
 }
 
-async function gatewayAction<T>(action: string, params: object, signal?: AbortSignal): Promise<T> {
+export async function gatewayAction<T>(
+  action: string,
+  params: object,
+  signal?: AbortSignal,
+): Promise<T> {
   return performServiceAction<T, GatewayApiError>({
     action,
     params,

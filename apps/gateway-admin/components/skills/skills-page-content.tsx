@@ -17,7 +17,7 @@ import {
   AURORA_PAGE_SHELL,
   AURORA_STRONG_PANEL,
 } from '@/components/aurora/tokens'
-import { gatewayAction } from '@/lib/api/gateway-client-auth'
+import { gatewayAction } from '@/lib/api/gateway-client'
 import {
   formatCacheAge,
   skillsRowStatus,
