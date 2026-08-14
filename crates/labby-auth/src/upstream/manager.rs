@@ -46,6 +46,9 @@ use crate::sqlite::SqliteStore;
 use crate::types::UpstreamOauthCredentialRow;
 use crate::upstream::encryption::EncryptionKey;
 use crate::upstream::google_store::GoogleProviderCredentialStore;
+use crate::upstream::http_client::{
+    TrustedOriginOAuthHttpClient, authorization_manager_for_upstream,
+};
 use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
 use crate::upstream::types::{BeginAuthorization, GoogleCredentialBrokerStatus, OauthError};
@@ -208,21 +211,17 @@ impl UpstreamOauthManager {
         let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
         let upstream_url = self.upstream_url()?;
 
-        // rmcp's AuthorizationManager builds its own internal reqwest client.
-        // See google.rs::GoogleProvider::new for why this call is needed
-        // under "rustls-no-provider" -- idempotent, safe to ignore Err.
-        drop(rustls::crypto::ring::default_provider().install_default());
-        let mut manager = AuthorizationManager::new(upstream_url.as_str())
+        let mut manager = authorization_manager_for_upstream(upstream_url.as_str())
             .await
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     subject,
-                    kind = "internal_error",
+                    kind = e.kind(),
                     error = %e,
                     "upstream oauth: failed to create authorization manager"
                 );
-                OauthError::Internal(format!("create auth manager: {e}"))
+                e
             })?;
 
         self.install_credential_store(&mut manager, subject, scopes_owned.clone())?;
@@ -847,12 +846,7 @@ impl UpstreamOauthManager {
         let scopes_owned = self.effective_scopes()?;
         let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
 
-        // See begin_authorization above for why this call is needed under
-        // "rustls-no-provider" -- idempotent, safe to ignore Err.
-        drop(rustls::crypto::ring::default_provider().install_default());
-        let mut manager = AuthorizationManager::new(upstream_url.as_str())
-            .await
-            .map_err(|e| OauthError::Internal(format!("create auth manager: {e}")))?;
+        let mut manager = authorization_manager_for_upstream(upstream_url.as_str()).await?;
 
         self.install_credential_store(&mut manager, subject, scopes_owned.clone())?;
         let state_store = SqliteStateStore::new(self.sqlite.clone(), &self.upstream.name, subject);
@@ -1406,6 +1400,8 @@ enum DynamicClientRegistrationUse {
 #[derive(Debug, Deserialize)]
 struct ProtectedResourceMetadata {
     #[serde(default)]
+    resource: Option<String>,
+    #[serde(default)]
     authorization_server: Option<String>,
     #[serde(default)]
     authorization_servers: Option<Vec<String>>,
@@ -1423,25 +1419,28 @@ pub async fn discover_published_metadata(
 ) -> Result<Option<AuthorizationMetadata>, OauthError> {
     let upstream = url::Url::parse(upstream_url)
         .map_err(|error| OauthError::Internal(format!("invalid upstream url: {error}")))?;
-    // See google.rs::GoogleProvider::new for why this call is needed
-    // under "rustls-no-provider" -- idempotent, safe to ignore Err.
-    drop(rustls::crypto::ring::default_provider().install_default());
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|error| OauthError::Internal(format!("build oauth metadata client: {error}")))?;
+    let client = TrustedOriginOAuthHttpClient::new(upstream_url)?;
 
     for metadata_url in protected_resource_metadata_candidates(&upstream) {
-        let response = match client.get(metadata_url.clone()).send().await {
+        let response = match client.get(metadata_url.clone()).await {
             Ok(response) => response,
             Err(_) => continue,
         };
         if !response.status().is_success() {
             continue;
         }
-        let Ok(resource_metadata) = response.json::<ProtectedResourceMetadata>().await else {
+        let Ok(resource_metadata) =
+            serde_json::from_slice::<ProtectedResourceMetadata>(response.body())
+        else {
             continue;
         };
+        if resource_metadata
+            .resource
+            .as_deref()
+            .is_some_and(|resource| resource != upstream.as_str())
+        {
+            continue;
+        }
 
         let mut authorization_servers = Vec::new();
         if let Some(server) = resource_metadata.authorization_server {
@@ -1458,14 +1457,16 @@ pub async fn discover_published_metadata(
                 continue;
             };
             for authorization_metadata_url in authorization_metadata_candidates(&server_url) {
-                let response = match client.get(authorization_metadata_url).send().await {
+                let response = match client.get(authorization_metadata_url).await {
                     Ok(response) => response,
                     Err(_) => continue,
                 };
                 if !response.status().is_success() {
                     continue;
                 }
-                if let Ok(metadata) = response.json::<AuthorizationMetadata>().await {
+                if let Ok(metadata) =
+                    serde_json::from_slice::<AuthorizationMetadata>(response.body())
+                {
                     return Ok(Some(metadata));
                 }
             }
@@ -1473,14 +1474,14 @@ pub async fn discover_published_metadata(
     }
 
     for authorization_metadata_url in authorization_metadata_candidates(&upstream) {
-        let response = match client.get(authorization_metadata_url).send().await {
+        let response = match client.get(authorization_metadata_url).await {
             Ok(response) => response,
             Err(_) => continue,
         };
         if !response.status().is_success() {
             continue;
         }
-        if let Ok(metadata) = response.json::<AuthorizationMetadata>().await {
+        if let Ok(metadata) = serde_json::from_slice::<AuthorizationMetadata>(response.body()) {
             return Ok(Some(metadata));
         }
     }
