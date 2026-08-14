@@ -114,9 +114,11 @@ impl Harness {
                     env: Default::default(),
                     proxy_resources: false,
                     proxy_prompts: false,
+                    proxy_skills: false,
                     expose_tools: None,
                     expose_resources: None,
                     expose_prompts: None,
+                    expose_skills: None,
                     code_mode_hint: None,
                     oauth: Some(UpstreamOauthConfig {
                         mode: UpstreamOauthMode::AuthorizationCodePkce,

@@ -33,6 +33,7 @@ pub(super) fn capability_name(capability: UpstreamCapability) -> &'static str {
         UpstreamCapability::Tools => "tools",
         UpstreamCapability::Prompts => "prompts",
         UpstreamCapability::Resources => "resources",
+        UpstreamCapability::Skills => "skills",
     }
 }
 
@@ -81,6 +82,20 @@ impl<'a> UpstreamRequestLog<'a> {
             transport: None,
             item_kind: Some("resource_uri"),
             item: Some(resource_uri),
+        }
+    }
+
+    /// `skill_uri` must already be redacted by the caller, exactly like
+    /// [`Self::resource`] — a skill URI carries the same path-shaped detail.
+    pub(super) fn skill(upstream: &'a str, skill_uri: &'a str, subject_scoped: bool) -> Self {
+        Self {
+            upstream,
+            capability: "skills",
+            operation: "skill.get",
+            subject_scoped,
+            transport: None,
+            item_kind: Some("skill_uri"),
+            item: Some(skill_uri),
         }
     }
 

@@ -143,6 +143,12 @@ impl UpstreamPool {
         self.evict_all_relay_connections().await;
         self.cancel_all_upstream_subscriptions().await;
 
+        // Drop every cached skill catalog. A snapshot that outlived the drain
+        // would describe skills belonging to connections this pool no longer
+        // holds, and a later read against it could route to a detached
+        // upstream — the catalog must not survive the config it came from.
+        self.clear_all_cached_skills().await;
+
         let cancelled_probe_count = {
             let mut tasks = self.probe_tasks.write().await;
             let count = tasks.len();

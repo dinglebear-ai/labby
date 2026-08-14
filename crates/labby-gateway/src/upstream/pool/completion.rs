@@ -53,7 +53,11 @@ impl UpstreamPool {
     ) -> bool {
         match capability {
             UpstreamCapability::Prompts => self.prompt_is_exposed(upstream_name, reference).await,
-            UpstreamCapability::Resources | UpstreamCapability::Tools => true,
+            UpstreamCapability::Resources
+            | UpstreamCapability::Tools
+            // Completion has no skills reference space: SEP-2640 defines no
+            // completion reference type for skills.
+            | UpstreamCapability::Skills => true,
         }
     }
 
@@ -136,7 +140,9 @@ impl UpstreamPool {
                 &config.name,
                 &reference,
             ),
-            UpstreamCapability::Resources | UpstreamCapability::Tools => true,
+            UpstreamCapability::Resources
+            | UpstreamCapability::Tools
+            | UpstreamCapability::Skills => true,
         };
         if !exposed {
             return Err(format!(

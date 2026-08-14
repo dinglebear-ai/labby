@@ -274,6 +274,11 @@ impl UpstreamPool {
                 .shutdown(&config.name, "upstream.reprobe.reconnect")
                 .await;
         }
+        // A skill catalog belongs to the connection that produced it. The peer
+        // is being replaced, so anything cached against the old one must go —
+        // otherwise a read could be routed against a manifest the reconnected
+        // upstream never published.
+        self.invalidate_upstream_skills(&config.name).await;
 
         let subject = config.oauth.as_ref().and(oauth_subject);
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());

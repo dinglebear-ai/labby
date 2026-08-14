@@ -52,17 +52,21 @@ fn make_entry(name: &str, tools: Vec<UpstreamTool>, policy: ToolExposurePolicy) 
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
+        skill_count: 0,
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,
         prompt_health: UpstreamHealth::Healthy,
         resource_health: UpstreamHealth::Healthy,
+        skill_health: UpstreamHealth::Healthy,
         tool_unhealthy_since: None,
         prompt_unhealthy_since: None,
         resource_unhealthy_since: None,
+        skill_unhealthy_since: None,
         tool_last_error: None,
         prompt_last_error: None,
         resource_last_error: None,
+        skill_last_error: None,
     }
 }
 

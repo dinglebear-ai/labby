@@ -15,6 +15,7 @@
 
 pub mod agent_error;
 pub mod backoff;
+pub mod caller_auth;
 pub mod catalog_notify;
 pub mod client_registry;
 pub mod code_mode_app;
@@ -23,6 +24,7 @@ pub mod gateway_config;
 pub mod helpers;
 pub mod path_safety;
 pub mod redact;
+pub mod skills;
 
 pub use helpers::{env_non_empty, home_dir, lab_home};
 

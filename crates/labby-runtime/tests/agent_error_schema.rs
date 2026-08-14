@@ -29,6 +29,9 @@ const KINDS: &[&str] = &[
     "content_too_large",
     "relay_invalid_target",
     "invalid_code_mode_id",
+    // skills extension (SEP-2640)
+    "skill_digest_mismatch",
+    "skill_manifest_stale",
     // policy
     "forbidden",
     "permission_denied",
@@ -45,6 +48,7 @@ const KINDS: &[&str] = &[
     "call_budget_exceeded",
     "result_too_large",
     "artifact_too_large",
+    "response_too_large",
     "snippet_budget_exceeded",
     "snippet_resolve_limit",
     // discovery

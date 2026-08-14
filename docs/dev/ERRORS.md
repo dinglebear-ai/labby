@@ -1,7 +1,7 @@
 ---
 title: "Error Contract"
 created: "2026-07-30"
-updated: "2026-08-05"
+updated: "2026-08-12"
 ---
 
 # Error Contract
@@ -92,6 +92,14 @@ Supported code may emit additional stable kinds, including:
   `invalid_encoding`;
 - payload limits: `response_too_large` — gateway cap on upstream MCP response
   bytes (distinct from `content_too_large`'s request/content limits);
+- skills extension (SEP-2640): `skill_digest_mismatch` — fetched bytes disagree
+  with the digest the skill's entry published, or the read named a file the
+  entry's `resources` manifest does not list (the spec treats both as the same
+  class of verification failure); `skill_manifest_stale` — the skill URI no
+  longer resolves against the cached catalog and `skills/get` does not answer
+  for it either. Both recover with `rediscover`, since the spec's prescribed
+  response is to refresh the entry and proceed from the current `resources`
+  set. See `docs/contracts/skills-extension.md`;
 - Code Mode: `timeout` (wall-clock expiry — the historical
   `code_mode_timeout`/`code_mode_fuel_exhausted` kinds are retired and must not
   be reintroduced), `invalid_code_mode_id`, `call_budget_exceeded`,
