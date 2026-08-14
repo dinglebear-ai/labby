@@ -49,6 +49,10 @@ pub enum OauthError {
     #[error("oauth_shared_credential_protected: {0}")]
     SharedCredentialProtected(String),
 
+    /// Outbound OAuth request was rejected or failed before a valid response.
+    #[error("{kind}: {message}")]
+    Egress { kind: &'static str, message: String },
+
     /// Internal / configuration errors that are not caller-recoverable.
     #[error("internal_error: {0}")]
     Internal(String),
@@ -67,6 +71,7 @@ impl OauthError {
             Self::AccountAmbiguous(_) => "oauth_account_ambiguous",
             Self::ClientMismatch(_) => "oauth_client_mismatch",
             Self::SharedCredentialProtected(_) => "oauth_shared_credential_protected",
+            Self::Egress { kind, .. } => kind,
             Self::Internal(_) => "internal_error",
         }
     }
@@ -78,7 +83,7 @@ impl OauthError {
     /// onto its own response type at the route boundary.
     #[allow(dead_code)]
     #[must_use]
-    pub const fn http_status_code(&self) -> u16 {
+    pub fn http_status_code(&self) -> u16 {
         match self {
             Self::NeedsReauth(_) => 401,
             Self::StateInvalid(_) => 400,
@@ -87,6 +92,12 @@ impl OauthError {
             Self::AccountAmbiguous(_)
             | Self::ClientMismatch(_)
             | Self::SharedCredentialProtected(_) => 409,
+            Self::Egress { kind, .. } => match *kind {
+                "ssrf_blocked" | "validation_failed" => 400,
+                "timeout" => 504,
+                "response_too_large" => 502,
+                _ => 502,
+            },
             Self::Internal(_) => 500,
         }
     }

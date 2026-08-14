@@ -355,13 +355,13 @@ pub(crate) async fn run(
                 action = "probe",
                 upstream = %name,
                 url = %redacted_url,
-                kind = "network_error",
+                kind = e.kind(),
                 error = %e,
                 elapsed_ms = started.elapsed().as_millis(),
                 "upstream oauth probe: connection failed"
             );
             ToolError::Sdk {
-                sdk_kind: "network_error".to_string(),
+                sdk_kind: e.kind().to_string(),
                 message: format!("failed to prepare upstream OAuth client: {e}"),
             }
         })?;
@@ -387,7 +387,7 @@ pub(crate) async fn run(
                 labby_auth::upstream::manager::discover_published_metadata(&canonical_url)
                     .await
                     .map_err(|error| ToolError::Sdk {
-                        sdk_kind: "internal_error".to_string(),
+                        sdk_kind: error.kind().to_string(),
                         message: format!("OAuth metadata discovery failed: {error}"),
                     })?;
             if let Some(metadata) = fallback {

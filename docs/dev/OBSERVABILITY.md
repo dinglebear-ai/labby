@@ -168,6 +168,9 @@ This applies to all shared request helpers, including:
 - `delete`
 - `delete_query`
 
+The upstream OAuth HTTP client follows the same request event contract for
+discovery, registration, token exchange, and refresh requests.
+
 `HttpClient` logs must inherit the caller span from CLI, MCP, or HTTP dispatch.
 
 ### Outbound RMCP Client Requests

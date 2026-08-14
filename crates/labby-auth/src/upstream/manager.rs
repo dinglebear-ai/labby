@@ -1420,25 +1420,46 @@ pub async fn discover_published_metadata(
     let upstream = url::Url::parse(upstream_url)
         .map_err(|error| OauthError::Internal(format!("invalid upstream url: {error}")))?;
     let client = TrustedOriginOAuthHttpClient::new(upstream_url)?;
+    let mut first_error = None;
 
     for metadata_url in protected_resource_metadata_candidates(&upstream) {
         let response = match client.get(metadata_url.clone()).await {
             Ok(response) => response,
-            Err(_) => continue,
+            Err(error) => {
+                remember_metadata_error(&mut first_error, error);
+                continue;
+            }
         };
-        if !response.status().is_success() {
+        if metadata_not_found(&response) {
             continue;
         }
-        let Ok(resource_metadata) =
-            serde_json::from_slice::<ProtectedResourceMetadata>(response.body())
-        else {
+        if !response.status().is_success() {
+            remember_metadata_error(&mut first_error, metadata_http_error(response.status()));
             continue;
-        };
+        }
+        let resource_metadata =
+            match serde_json::from_slice::<ProtectedResourceMetadata>(response.body()) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    remember_metadata_error(
+                        &mut first_error,
+                        invalid_metadata_error("protected-resource", error),
+                    );
+                    continue;
+                }
+            };
         if resource_metadata
             .resource
             .as_deref()
             .is_some_and(|resource| resource != upstream.as_str())
         {
+            remember_metadata_error(
+                &mut first_error,
+                OauthError::ResourceMismatch(
+                    "protected-resource metadata does not match the configured upstream resource"
+                        .to_string(),
+                ),
+            );
             continue;
         }
 
@@ -1451,23 +1472,48 @@ pub async fn discover_published_metadata(
         }
 
         for authorization_server in authorization_servers {
-            let Ok(server_url) =
-                resolve_authorization_server_url(&metadata_url, authorization_server.trim())
-            else {
-                continue;
+            let server_url = match resolve_authorization_server_url(
+                &metadata_url,
+                authorization_server.trim(),
+            ) {
+                Ok(url) => url,
+                Err(error) => {
+                    remember_metadata_error(
+                        &mut first_error,
+                        OauthError::Egress {
+                            kind: "validation_failed",
+                            message: format!("invalid OAuth authorization server URL: {error}"),
+                        },
+                    );
+                    continue;
+                }
             };
             for authorization_metadata_url in authorization_metadata_candidates(&server_url) {
                 let response = match client.get(authorization_metadata_url).await {
                     Ok(response) => response,
-                    Err(_) => continue,
+                    Err(error) => {
+                        remember_metadata_error(&mut first_error, error);
+                        continue;
+                    }
                 };
-                if !response.status().is_success() {
+                if metadata_not_found(&response) {
                     continue;
                 }
-                if let Ok(metadata) =
-                    serde_json::from_slice::<AuthorizationMetadata>(response.body())
-                {
-                    return Ok(Some(metadata));
+                if !response.status().is_success() {
+                    remember_metadata_error(
+                        &mut first_error,
+                        metadata_http_error(response.status()),
+                    );
+                    continue;
+                }
+                match serde_json::from_slice::<AuthorizationMetadata>(response.body()) {
+                    Ok(metadata) => return Ok(Some(metadata)),
+                    Err(error) => {
+                        remember_metadata_error(
+                            &mut first_error,
+                            invalid_metadata_error("authorization", error),
+                        );
+                    }
                 }
             }
         }
@@ -1476,17 +1522,52 @@ pub async fn discover_published_metadata(
     for authorization_metadata_url in authorization_metadata_candidates(&upstream) {
         let response = match client.get(authorization_metadata_url).await {
             Ok(response) => response,
-            Err(_) => continue,
+            Err(error) => {
+                remember_metadata_error(&mut first_error, error);
+                continue;
+            }
         };
-        if !response.status().is_success() {
+        if metadata_not_found(&response) {
             continue;
         }
-        if let Ok(metadata) = serde_json::from_slice::<AuthorizationMetadata>(response.body()) {
-            return Ok(Some(metadata));
+        if !response.status().is_success() {
+            remember_metadata_error(&mut first_error, metadata_http_error(response.status()));
+            continue;
+        }
+        match serde_json::from_slice::<AuthorizationMetadata>(response.body()) {
+            Ok(metadata) => return Ok(Some(metadata)),
+            Err(error) => {
+                remember_metadata_error(
+                    &mut first_error,
+                    invalid_metadata_error("authorization", error),
+                );
+            }
         }
     }
 
-    Ok(None)
+    first_error.map_or(Ok(None), Err)
+}
+
+fn remember_metadata_error(first_error: &mut Option<OauthError>, error: OauthError) {
+    first_error.get_or_insert(error);
+}
+
+fn metadata_not_found(response: &oauth2::HttpResponse) -> bool {
+    matches!(response.status().as_u16(), 404 | 410)
+}
+
+fn metadata_http_error(status: oauth2::http::StatusCode) -> OauthError {
+    OauthError::Egress {
+        kind: "upstream_error",
+        message: format!("OAuth metadata returned HTTP {status}"),
+    }
+}
+
+fn invalid_metadata_error(kind: &str, error: serde_json::Error) -> OauthError {
+    OauthError::Egress {
+        kind: "validation_failed",
+        message: format!("invalid OAuth {kind} metadata: {error}"),
+    }
 }
 
 fn protected_resource_metadata_candidates(upstream: &url::Url) -> Vec<url::Url> {
