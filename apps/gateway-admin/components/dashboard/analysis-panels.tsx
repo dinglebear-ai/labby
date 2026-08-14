@@ -145,9 +145,11 @@ export function UpstreamsPanel({ upstreams }: { upstreams: UpstreamUsage[] }) {
 export function ThroughputPanel({
   throughput,
   agentsSeen,
+  showAgents = true,
 }: {
   throughput: DashboardMetrics['throughput']
   agentsSeen: DashboardMetrics['agents_seen']
+  showAgents?: boolean
 }) {
   return (
     <DashboardPanel title="Throughput" icon={<Gauge className="size-4" />}>
@@ -156,13 +158,13 @@ export function ThroughputPanel({
         <StatCell value={throughput.avg_per_min} label="avg / min" />
         <StatCell value={hourLabel(throughput.busiest_hour)} label="busiest hour" />
       </div>
-      <div className="flex items-center justify-between gap-3 border-t border-aurora-border-default/60 pt-3 text-sm">
+      {showAgents ? <div className="flex items-center justify-between gap-3 border-t border-aurora-border-default/60 pt-3 text-sm">
         <span className="text-aurora-text-muted">Agents</span>
         <span className="tabular-nums text-aurora-text-primary">
           <span className="text-aurora-accent-strong">{agentsSeen.new} new</span>
           <span className="text-aurora-text-muted"> · {agentsSeen.returning} returning</span>
         </span>
-      </div>
+      </div> : null}
     </DashboardPanel>
   )
 }

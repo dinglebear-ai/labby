@@ -17,6 +17,10 @@ artifacts.
 - [design-system-contract.md](./design-system-contract.md) — Labby web UI
   design-system contract.
 
+- [tool-annotations/](./tool-annotations/) — MCP `ToolAnnotations` on Labby's own
+  tools plus upstream passthrough: spec, wire contract, schemas, models, types,
+  implementation plan, review findings, and progress tracker.
+
 ## Proposals And Artifacts
 
 - [CLI_OUTPUT_THEME_API.md](./CLI_OUTPUT_THEME_API.md)

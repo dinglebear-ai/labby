@@ -38,6 +38,8 @@ import type {
   GatewayImportResult,
 } from '@/lib/types/gateway'
 import { useCallback } from 'react'
+import { loadGatewayConfiguration, loadGatewayRuntime } from '@/lib/api/gateway-progressive'
+import { withRequestTiming } from '@/lib/api/request-timing'
 
 // Set NEXT_PUBLIC_MOCK_DATA=true to use mock data for development
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
@@ -93,9 +95,15 @@ const fetchGateways = async (): Promise<Gateway[]> => {
     return upstreamMcpGateways(getMockGatewaysFallback())
   }
 
-  const gateways = upstreamMcpGateways(await gatewayApi.list())
-  return upstreamMcpGateways(await gatewayApi.hydrateRuntime(gateways))
+  return withRequestTiming('gateway.list', async () =>
+    upstreamMcpGateways(await loadGatewayConfiguration(gatewayApi)),
+  )
 }
+
+const hydrateGatewayRuntime = async (gateways: Gateway[]): Promise<Gateway[]> =>
+  withRequestTiming('gateway.runtime', async () =>
+    upstreamMcpGateways(await loadGatewayRuntime(gatewayApi, gateways)),
+  )
 
 const fetchGateway = async (id: string): Promise<Gateway> => {
   if (USE_MOCK_DATA) {
@@ -177,11 +185,28 @@ async function refreshGatewayCache(id?: string, extraKeys: string[] = []) {
 
 // Hooks
 export function useGateways() {
-  return useSWR<Gateway[]>(GATEWAYS_KEY, fetchGateways, {
+  const configured = useSWR<Gateway[]>(GATEWAYS_KEY, fetchGateways, {
     revalidateOnFocus: false,
     fallbackData: USE_MOCK_DATA ? getMockGatewaysFallback() : undefined,
     revalidateOnMount: !USE_MOCK_DATA,
   })
+  const runtimeKey = configured.data
+    ? ['/gateways/runtime', configured.data.map((gateway) => gateway.id).join(',')]
+    : null
+  const runtime = useSWR<Gateway[]>(
+    runtimeKey,
+    () => hydrateGatewayRuntime(configured.data ?? []),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  )
+
+  return {
+    ...configured,
+    data: runtime.data ?? configured.data,
+    error: configured.error,
+    runtimeError: runtime.error,
+    isLoading: configured.isLoading,
+    isValidating: configured.isValidating || runtime.isValidating,
+  }
 }
 
 export function useGateway(id: string | null) {

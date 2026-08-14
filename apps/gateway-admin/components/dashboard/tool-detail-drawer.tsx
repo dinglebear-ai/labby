@@ -59,7 +59,10 @@ export function ToolDetailDrawer({
                 value: formatCompactNumber(detail.failed),
                 tone: detail.failed > 0 ? 'error' : 'success',
               },
-              { label: 'Avg tokens', value: formatCompactNumber(detail.avg_tokens) },
+              {
+                label: 'Avg tokens',
+                value: detail.tokens_collected ? formatCompactNumber(detail.avg_tokens) : '—',
+              },
               { label: 'Avg latency', value: formatDuration(detail.avg_elapsed_ms) },
             ]}
           />

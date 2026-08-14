@@ -4805,6 +4805,70 @@ async fn raw_mode_builtin_descriptors_match_across_builders() {
     }
 }
 
+#[tokio::test]
+async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths() {
+    let upstream_name: Arc<str> = Arc::from("annotated");
+    let mut expected = rmcp::model::ToolAnnotations::new()
+        .read_only(true)
+        .destructive(false)
+        .idempotent(true)
+        .open_world(false);
+    expected.title = Some("Reviewed upstream title".to_string());
+    let mut upstream_tool = fixture_upstream_tool(&upstream_name, "annotated.read", None);
+    upstream_tool.tool.annotations = Some(expected.clone());
+
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "annotated",
+        fixture_upstream_entry(
+            "annotated",
+            HashMap::from([("annotated.read".to_string(), upstream_tool)]),
+        ),
+    )
+    .await;
+    let manager =
+        code_mode_manager_with_pool(false, fixture_upstream_config("annotated"), pool).await;
+    let scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "annotation-passthrough",
+        ["annotated"],
+        Vec::<String>::new(),
+        false,
+    );
+    let server = test_server(
+        ToolRegistry::new(),
+        Some(manager),
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+
+    let contract_tools = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list tools")
+        .tools;
+
+    for tools in [&contract_tools, &listed] {
+        let annotations = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "annotated.read")
+            .and_then(|tool| tool.annotations.as_ref())
+            .expect("upstream annotations on downstream descriptor");
+        assert_eq!(annotations, &expected);
+    }
+    assert_eq!(listed, contract_tools);
+}
+
 /// AC-3 both axes: the success envelope is always present as
 /// `structuredContent`, carries exactly the four contract keys, and the text
 /// block parses to the identical value.

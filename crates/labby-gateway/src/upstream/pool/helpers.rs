@@ -434,6 +434,30 @@ pub(super) fn bare_upstream_resource_uri(uri: &str) -> &str {
     uri
 }
 
+/// Derive the gateway-side `destructive` verdict for a proxied tool from the
+/// annotations its upstream advertised.
+///
+/// Fail-closed: an upstream must *explicitly* mark a tool read-only or
+/// non-destructive before the gateway will treat it as safe. Missing
+/// annotations, or a block that sets neither hint, both yield `true`.
+///
+/// This is deliberately public and separate from [`cached_upstream_tool`] so
+/// that callers which advertise their own annotations — notably Labby's own
+/// `PermanentToolRegistry` descriptors in a labby → labby chain — can pin the
+/// next-hop verdict their hints produce without duplicating this predicate.
+/// The value never reaches the wire; it feeds the Code Mode / palette / widget
+/// destructive gates (`destructive_permitted`).
+#[must_use]
+pub fn upstream_destructive_from_annotations(
+    annotations: Option<&rmcp::model::ToolAnnotations>,
+) -> bool {
+    annotations.is_none_or(|annotations| {
+        annotations
+            .destructive_hint
+            .unwrap_or_else(|| !annotations.read_only_hint.unwrap_or(false))
+    })
+}
+
 pub(super) fn cached_upstream_tool(
     mut tool: rmcp::model::Tool,
     upstream_name: &Arc<str>,
@@ -448,11 +472,7 @@ pub(super) fn cached_upstream_tool(
     // Fail closed for gateway-side safety gates: an upstream must explicitly
     // mark a tool read-only or non-destructive before widget callbacks may
     // bypass destructive confirmation.
-    let destructive = tool.annotations.as_ref().is_none_or(|annotations| {
-        annotations
-            .destructive_hint
-            .unwrap_or_else(|| !annotations.read_only_hint.unwrap_or(false))
-    });
+    let destructive = upstream_destructive_from_annotations(tool.annotations.as_ref());
     (
         name,
         UpstreamTool {

@@ -23,9 +23,9 @@
 pub(crate) mod aggregate;
 pub(crate) mod local;
 
-use serde_json::Value;
 #[cfg(feature = "gateway")]
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 

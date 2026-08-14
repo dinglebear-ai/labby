@@ -57,6 +57,27 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.12.0](https://github.com/dinglebear-ai/labby/compare/v1.11.0...v1.12.0) (2026-08-14)
+
+
+### Added
+
+* **mcp:** add the SEP-2640 skills vocabulary to labby-runtime ([#396](https://github.com/dinglebear-ai/labby/issues/396)) ([0a98c58](https://github.com/dinglebear-ai/labby/commit/0a98c58b32c970f7f1b01107163a36c09710d6c8))
+* **mcp:** advertise tool safety annotations ([#402](https://github.com/dinglebear-ai/labby/issues/402)) ([20361b2](https://github.com/dinglebear-ai/labby/commit/20361b2fea06ac23f8282e98a90579cea25248ee))
+* **mcp:** outputSchema for listed tools + lock Code Mode structured content ([#210](https://github.com/dinglebear-ai/labby/issues/210)) ([#399](https://github.com/dinglebear-ai/labby/issues/399)) ([313e589](https://github.com/dinglebear-ai/labby/commit/313e5896945f4e784238843f811a9d85f9d00600))
+* **skills:** accept upstream skills under any URI scheme ([#403](https://github.com/dinglebear-ai/labby/issues/403)) ([ad80444](https://github.com/dinglebear-ai/labby/commit/ad804441cb32569c73dea38c86851aaee133982b))
+* **web:** use persisted gateway metrics in dashboard ([#406](https://github.com/dinglebear-ai/labby/issues/406)) ([5f1ac8b](https://github.com/dinglebear-ai/labby/commit/5f1ac8ba311e9941e9d635c2649da5f5b46595b0))
+
+
+### Fixed
+
+* **gateway:** align destructive flags with the data-loss definition ([#395](https://github.com/dinglebear-ai/labby/issues/395)) ([10a6890](https://github.com/dinglebear-ai/labby/commit/10a6890d0fbee2a78321554b5895df8f792fc171))
+* **gateway:** an upstream with no tools capability is tool-less, not broken ([#404](https://github.com/dinglebear-ai/labby/issues/404)) ([9513887](https://github.com/dinglebear-ai/labby/commit/9513887c6fbadef080045e4f508324d2239563e1))
+* **gateway:** bound upstream catalog pagination ([#393](https://github.com/dinglebear-ai/labby/issues/393)) ([bac804d](https://github.com/dinglebear-ai/labby/commit/bac804da2ef363b83120799b7024a56e48e97924))
+* harden MCP and OAuth lifecycle ([#400](https://github.com/dinglebear-ai/labby/issues/400)) ([3fe0668](https://github.com/dinglebear-ai/labby/commit/3fe06684fd5ee13a0414c6b5a8fec32ff9d20e6a))
+* **mcp:** advertise resource subscriptions honestly to legacy clients ([#401](https://github.com/dinglebear-ai/labby/issues/401)) ([2de5184](https://github.com/dinglebear-ai/labby/commit/2de5184a85991916580db2957b977e8c8aed36b1))
+* **mcp:** bound resource catalog refreshes ([#390](https://github.com/dinglebear-ai/labby/issues/390)) ([43d51ec](https://github.com/dinglebear-ai/labby/commit/43d51ec73c8b759f36cc7b2f44930f4e9f5ad893))
+
 ## [1.11.0](https://github.com/dinglebear-ai/labby/compare/v1.10.1...v1.11.0) (2026-08-10)
 
 

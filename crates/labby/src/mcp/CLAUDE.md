@@ -2,6 +2,56 @@
 
 This directory is the translation layer between `lab-apis` (pure SDK) and the MCP protocol. It owns dispatch, envelopes, resources, elicitation, and the shared catalog.
 
+## Tool descriptors are built twice — keep the two sites identical
+
+Every Labby-owned `Tool` is constructed at **two** places, and they must produce
+byte-identical descriptors:
+
+- `handlers_tools.rs::list_tools_impl` — what goes on the wire.
+- `peer_contract.rs::visible_tool_descriptors` — what feeds
+  `descriptor_contract_hash`, which drives `tools/list_changed`.
+
+Divergence between them is silent: the hash says the catalog changed when the
+wire content did not, or vice versa. Do not edit one site alone. Route descriptor
+construction through a shared per-tool builder and change that.
+
+Two asymmetries are deliberate and must be preserved: `list_tools_impl`
+paginates and can early-break (`tools.finished()`), while
+`visible_tool_descriptors` always builds the full list. Any equality assertion
+between them therefore only holds below the page cap.
+
+Note the visibility gates are spelled differently at the two sites
+(`server_logs_app_visible` vs `self.audience.admin_apps_visible`) but resolve to
+the same predicate on the live path, because production `PeerContract`s are built
+by `peer_contract_for_request`. `PeerCatalogAudience::default()` hardcodes
+`admin_apps_visible: true` and must never reach a real `tools/list` response.
+
+## MCP tool annotations
+
+MCP `ToolAnnotations` are **per tool**; `ActionSpec.destructive` is **per action**;
+and one Labby tool fronts a whole service. A tool-level hint is therefore the
+least-safe **union** of that service's actions — `setup` advertising
+`destructiveHint: true` means "at least one action here is destructive", not
+"this call is destructive".
+
+Do not confuse the two mechanisms. `ActionSpec.destructive` is the authorization
+gate for local dispatch (elicitation, CLI confirmation). `ToolAnnotations` are
+advertised metadata — but not inert: in a labby → labby chain the next hop
+derives its own `destructive` judgement from them, so accuracy is load-bearing.
+
+Upstream annotations pass through **verbatim**. Never normalize, enrich, or
+overwrite them.
+
+Maintenance rule: annotations must stay a pure function of the static catalogs —
+never per-peer, per-request, or time-dependent, or the contract hash churns.
+Do not memoize them in a process-global keyed by service name; different
+registries (`build_default_registry`, `build_docs_registry`, test registries)
+produce different service sets. A new service needs a reviewed hint row; a
+`readOnly` claim asserts every action is non-mutating, which is stronger than
+"has no destructive actions" and cannot be derived from `ActionSpec`.
+
+Spec and rationale: `docs/design/tool-annotations/`.
+
 ## One tool per service
 
 Each enabled service registers exactly one MCP tool in `crates/lab/src/registry.rs` (not `mcp/registry.rs`, which is a thin re-export). The tool name matches the service name. Normal services register directly from the shared dispatch layer:

@@ -20,6 +20,7 @@ use tokio::time::Instant;
 use super::capability_call::bounded_service_error_text;
 use super::helpers::classify_upstream_error;
 use super::helpers::max_response_bytes;
+use super::logging::is_capability_unsupported;
 
 const MAX_CATALOG_PAGES: usize = 64;
 const MAX_ITEMS_PER_PAGE: usize = 1_000;
@@ -171,16 +172,56 @@ where
     })
 }
 
+/// `tools/list`, tolerating an upstream that implements no tools at all.
+///
+/// A server advertises its capabilities during initialize, and a client is only
+/// supposed to call what was advertised. A server that exposes only resources —
+/// or only skills, via the `io.modelcontextprotocol/skills` extension — answers
+/// `tools/list` with `-32601 Method not found` and is behaving correctly.
+///
+/// Treating that as an error made such an upstream permanently unusable rather
+/// than merely tool-less: `connect.rs` and `connect_stdio.rs` turn it into a
+/// failed connection, and `probe.rs` marks the heartbeat unhealthy, so the
+/// upstream never joins the catalog however healthy it actually is. Discovered
+/// against a skills-over-MCP server that serves `skills/list` and
+/// `resources/list` and declares no `tools` capability.
+///
+/// `capability.rs` has always applied this same tolerance to `resources` and
+/// `prompts`; tools were the outlier. It belongs here rather than at each call
+/// site because "no tools capability" and "an empty tool list" are the same
+/// thing to every caller — the catalog gets no tools from this upstream either
+/// way — and spreading the check invites the next call site to forget it.
 pub(super) async fn list_tools(
     peer: &Peer<RoleClient>,
     deadline: Duration,
     item_limit: usize,
 ) -> Result<Vec<Tool>, CatalogPaginationError> {
-    collect_bounded(deadline, item_limit, |params| async move {
+    let result = collect_bounded(deadline, item_limit, |params| async move {
         let result = peer.list_tools(params).await?;
         Ok((result.tools, result.next_cursor))
     })
-    .await
+    .await;
+
+    tools_or_empty_when_unsupported(result)
+}
+
+/// The tolerance described on `list_tools`, split out so it can be tested
+/// without standing up a peer.
+///
+/// Narrow on purpose: only an unsupported-capability reply becomes an empty
+/// catalog. A timeout, a pagination-bound breach, or any other transport or
+/// protocol failure stays an error — silently reporting "no tools" for an
+/// upstream that is actually broken would hide the outage behind a healthy
+/// upstream serving nothing.
+fn tools_or_empty_when_unsupported(
+    result: Result<Vec<Tool>, CatalogPaginationError>,
+) -> Result<Vec<Tool>, CatalogPaginationError> {
+    match result {
+        Err(CatalogPaginationError::Service(ref error)) if is_capability_unsupported(error) => {
+            Ok(Vec::new())
+        }
+        other => other,
+    }
 }
 
 pub(super) async fn list_prompts(
@@ -301,6 +342,58 @@ mod tests {
             result,
             Err(CatalogPaginationError::CursorLimit { .. })
         ));
+    }
+
+    #[test]
+    fn an_upstream_without_a_tools_capability_yields_an_empty_catalog() {
+        // A skills- or resources-only server answers `tools/list` with -32601.
+        // That is a conformant answer to a method it never advertised, so it
+        // must leave the upstream usable rather than failing its connection.
+        let result = tools_or_empty_when_unsupported(Err(CatalogPaginationError::Service(
+            ServiceError::McpError(rmcp::model::ErrorData::method_not_found::<
+                rmcp::model::CallToolRequestMethod,
+            >()),
+        )));
+
+        assert!(matches!(result, Ok(tools) if tools.is_empty()));
+    }
+
+    #[test]
+    fn a_real_failure_is_not_disguised_as_an_empty_catalog() {
+        // The dangerous shape of this fix: reporting "no tools" for an upstream
+        // that is actually broken would present an outage as a healthy upstream
+        // serving nothing.
+        let result = tools_or_empty_when_unsupported(Err(CatalogPaginationError::Service(
+            ServiceError::McpError(rmcp::model::ErrorData::internal_error(
+                "upstream on fire",
+                None,
+            )),
+        )));
+
+        assert!(matches!(
+            result,
+            Err(CatalogPaginationError::Service(ServiceError::McpError(_)))
+        ));
+    }
+
+    #[test]
+    fn a_bounds_breach_is_still_an_error_not_an_empty_catalog() {
+        let result = tools_or_empty_when_unsupported(Err(CatalogPaginationError::PageLimit {
+            limit: MAX_CATALOG_PAGES,
+        }));
+
+        assert!(matches!(
+            result,
+            Err(CatalogPaginationError::PageLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn a_successful_listing_passes_through_untouched() {
+        let result =
+            tools_or_empty_when_unsupported(Ok(vec![super::super::testsupport::test_tool("echo")]));
+
+        assert!(matches!(result, Ok(tools) if tools.len() == 1));
     }
 
     #[test]
