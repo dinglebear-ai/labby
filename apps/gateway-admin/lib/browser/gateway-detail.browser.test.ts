@@ -211,11 +211,13 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   })
   await page.reload({ waitUntil: 'networkidle' })
 
-  await assert.doesNotReject(() => page.getByText('CONFIGURED').first().waitFor())
-  await assert.doesNotReject(() => page.locator('p:visible').filter({ hasText: /^5$/ }).first().waitFor())
-  await assert.doesNotReject(() => page.getByText('DISCOVERED TOOLS').first().waitFor())
-  await assert.doesNotReject(() => page.locator('p:visible').filter({ hasText: /^39$/ }).first().waitFor())
-  assert.match(await page.locator('body').innerText(), /github-server[\s\S]*12\/12/)
+  const totalStat = page.locator('[data-gateway-stat="total"]')
+  const toolsStat = page.locator('[data-gateway-stat="tools"]')
+  await assert.doesNotReject(() => totalStat.waitFor())
+  await assert.doesNotReject(() => toolsStat.waitFor())
+  assert.match(await totalStat.innerText(), /^5\s+Total$/i)
+  assert.match(await toolsStat.innerText(), /^24\/39\s+Tools$/i)
+  assert.match(await page.locator('body').innerText(), /github-server[\s\S]*12/)
 
   const hasHorizontalOverflow = await page.evaluate(() => {
     const root = document.documentElement
@@ -296,7 +298,7 @@ test('gateway list row action disable flow opens and completes successfully', { 
   })
   await page.reload({ waitUntil: 'networkidle' })
 
-  const githubRow = page.locator('tr').filter({ has: page.getByText('github-server') }).first()
+  const githubRow = page.locator('[data-gwrow="1"]').filter({ has: page.getByText('github-server') }).first()
   const disableButton = githubRow.getByRole('button', { name: 'Disable server' })
   await assert.doesNotReject(() => disableButton.waitFor())
 

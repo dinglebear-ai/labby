@@ -135,14 +135,12 @@ type PaletteMode =
   | { kind: 'add_server' }
   | { kind: 'service_pane'; gatewayId: string }
   | { kind: 'param_prompt'; service: string; action: CatalogAction }
-  | { kind: 'result'; service: string; action: string; data: unknown }
 
 type PaletteAction =
   | { type: 'BROWSE' }
   | { type: 'ADD_SERVER' }
   | { type: 'SERVICE_PANE'; gatewayId: string }
   | { type: 'PARAM_PROMPT'; service: string; action: CatalogAction }
-  | { type: 'RESULT'; service: string; action: string; data: unknown }
 
 function paletteReducer(state: PaletteMode, action: PaletteAction): PaletteMode {
   switch (action.type) {
@@ -154,8 +152,6 @@ function paletteReducer(state: PaletteMode, action: PaletteAction): PaletteMode 
       return { kind: 'service_pane', gatewayId: action.gatewayId }
     case 'PARAM_PROMPT':
       return { kind: 'param_prompt', service: action.service, action: action.action }
-    case 'RESULT':
-      return { kind: 'result', service: action.service, action: action.action, data: action.data }
   }
 }
 
@@ -470,7 +466,10 @@ export function AppCommandPalette() {
       // Use performServiceAction so CSRF and error shaping stay consistent.
       const url = serviceActionUrl(service)
       const finalParams = action.destructive ? confirmGatewayParams(params) : params
-      const data: unknown = await performServiceAction<unknown, ServiceActionError>({
+      // The response body is intentionally discarded: this path reports via
+      // toast and closes. The reducer's `RESULT` mode is reached from the
+      // catalog drill-down, not from here.
+      await performServiceAction<unknown, ServiceActionError>({
         action: action.action,
         params: finalParams,
         signal: controller.signal,
@@ -482,9 +481,7 @@ export function AppCommandPalette() {
       toast.success(`${service} ${action.action}`, {
         description: 'Action completed successfully.',
       })
-      dispatch({ type: 'RESULT', service, action: action.action, data })
-      setPages([])
-      dispatch({ type: 'BROWSE' })
+      closePalette()
     } catch (err) {
       if (isAbortError(err)) return
       const message = err instanceof Error ? err.message : 'Unknown error'

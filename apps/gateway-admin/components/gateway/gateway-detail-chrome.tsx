@@ -21,11 +21,15 @@ import * as React from 'react'
  * 2. **Detail page** — clicking the server *name* (an `<a>` in the first grid
  *    cell) is a real page change: the table unmounts, `h1` and
  *    `[data-crumbleaf]` become the server name, and the mock's source flips
- *    `page: 'detail'`. This page has a sticky header card, a stat strip, and
- *    an underline tab bar: Overview · Variables · Catalog · Activity ·
- *    Routes · Logs. Its topbar cluster is 32px bordered control-surface
- *    buttons (Test / View in Logs / Reload / Generate skill / Edit / More),
- *    NOT the row expansion's 26px ghosts.
+ *    `page: 'detail'`. This page has a sticky header card, an attached stat
+ *    strip, and an underline tab bar. Its topbar cluster is 32px bordered
+ *    control-surface buttons (Test / View in Logs / Reload / Generate skill /
+ *    Edit / More), NOT the row expansion's 26px ghosts.
+ *
+ *    Re-verified live on 2026-08-14 by enumerating `button[aria-pressed]`
+ *    inside the header card rather than testing a guessed list of names. The
+ *    tab set is exactly: Overview · Variables · Catalog 7 · Activity 1K ·
+ *    Routes 3 · Logs. Its chrome lives in `gateway-detail-tabs.tsx`.
  *
  * Our route is the detail page, so it drives surface 2. The surface-1
  * primitives are kept because the result sheets reuse that stat-card
@@ -376,6 +380,38 @@ export function DetailIconButton({
 }
 
 /**
+ * The detail page's topbar action button. Unlike the row expansion's 26px
+ * borderless ghosts, the mock's `isDetailPage` cluster is 32px squares with a
+ * 70%-blended border on `--aurora-control-surface`, spaced 5px apart, and
+ * hovering to primary text on `--aurora-hover-bg`.
+ */
+export function DetailTopbarButton({
+  className,
+  style,
+  type = 'button',
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      type={type}
+      className={[
+        'grid place-items-center shrink-0 cursor-pointer',
+        'border border-[color-mix(in_srgb,var(--aurora-border-default)_70%,var(--aurora-page-bg))]',
+        'bg-aurora-control-surface text-aurora-text-muted',
+        'hover:bg-[var(--aurora-hover-bg)] hover:text-aurora-text-primary',
+        'disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-aurora-control-surface',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--aurora-accent-primary)]/40',
+        className,
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      style={{ width: 32, height: 32, borderRadius: 'var(--radius-1)', ...style }}
+      {...rest}
+    />
+  )
+}
+
+/**
  * The mock's warn-toned cluster pill (its "Auth" affordance on a server that
  * needs OAuth).
  */
@@ -500,378 +536,3 @@ export function DetailMetricPill({
 
 /** Em-dash used wherever the mock shows a metric the gateway API does not expose. */
 export const DETAIL_NO_DATA = '—'
-
-// ===========================================================================
-// Detail PAGE chrome (surface 2 — see the file header)
-// ===========================================================================
-
-/**
- * Sticky header card. The mock uses `radius-3` here (the table card is
- * `radius-2`) and bleeds its inner rows to the card edge with `-18px`
- * margins, so the padding is asymmetric: `16px 18px 0`.
- */
-export const DETAIL_HEADER_CARD_STYLE: React.CSSProperties = {
-  position: 'sticky',
-  top: -186,
-  zIndex: 30,
-  padding: '16px 18px 0',
-  overflow: 'hidden',
-  borderRadius: 'var(--radius-3)',
-  border:
-    '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
-  background:
-    'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
-  boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,0.05)',
-}
-
-/** Detail `h1` — Manrope 25px/1.1/800, -0.01em. */
-export const DETAIL_TITLE_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontFamily: 'var(--font-display)',
-  fontSize: 25,
-  lineHeight: 1.1,
-  fontWeight: 800,
-  letterSpacing: '-0.01em',
-  color: 'var(--aurora-text-primary)',
-  wordBreak: 'break-word',
-}
-
-/** Title-row meta rail (version, protocol, links) sitting right of the `h1`. */
-export const DETAIL_TITLE_META_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'flex-end',
-  gap: 10,
-  flexWrap: 'wrap',
-  fontSize: 11,
-  lineHeight: 1,
-  color: 'var(--aurora-text-muted)',
-}
-
-/** 3px separator dot between meta-rail items. */
-export function DetailMetaDot() {
-  return (
-    <span
-      aria-hidden="true"
-      style={{
-        width: 3,
-        height: 3,
-        borderRadius: 999,
-        background: 'color-mix(in srgb, var(--aurora-text-muted) 45%, transparent)',
-      }}
-    />
-  )
-}
-
-/**
- * Header stat strip — `2fr` identity cell then four metric cells, bled to the
- * card edge with `-18px` side margins and separated by left borders.
- */
-export const DETAIL_STAT_STRIP_STYLE: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: '2fr repeat(4, minmax(120px, 1fr))',
-  margin: '10px -18px 0',
-  borderTop:
-    '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
-  background: 'var(--gw0-0_30)',
-}
-
-/** A metric cell in the header stat strip. */
-export function DetailStripCell({
-  label,
-  value,
-  sub,
-  title,
-  first,
-}: {
-  label: string
-  value: React.ReactNode
-  sub?: React.ReactNode
-  title?: string
-  /** The identity cell carries no left border and a wider left inset. */
-  first?: boolean
-}) {
-  return (
-    <div
-      title={title}
-      style={{
-        minWidth: 0,
-        padding: first ? '12px 16px 13px 18px' : '12px 16px 13px',
-        borderLeft: first
-          ? undefined
-          : '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
-      }}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: '0.13em',
-          textTransform: 'uppercase',
-          color: 'var(--aurora-text-muted)',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {label}
-      </div>
-      <div
-        className="font-display"
-        style={{
-          marginTop: 6,
-          fontFamily: 'var(--font-display)',
-          fontSize: 17,
-          lineHeight: 1,
-          fontWeight: 800,
-          fontVariantNumeric: 'tabular-nums',
-          color: 'var(--aurora-text-primary)',
-        }}
-      >
-        {value}
-      </div>
-      {sub ? (
-        <div
-          style={{
-            marginTop: 4,
-            fontSize: 10.5,
-            color: 'var(--aurora-text-muted)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
-        >
-          {sub}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Underline tab bar
-// ---------------------------------------------------------------------------
-
-/**
- * Row that hosts the tab scroller. Bled to the card edge and topped with a
- * hairline, exactly as the mock does.
- */
-export const DETAIL_TAB_ROW_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-  minWidth: 0,
-  margin: '0 -18px',
-  padding: '6px 18px 0',
-  borderTop:
-    '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
-}
-
-/**
- * Overrides for `components/ui/tabs.tsx` `TabsList`. The shared primitive is a
- * filled pill rail (`bg-aurora-control-surface rounded-lg p-[3px] h-9`); the
- * mock's detail tab bar is a bare underline scroller, so the background,
- * radius, padding, height and centring are all unset here. Editing the shared
- * primitive would change every other screen, so the override lives at this
- * call site.
- */
-export const DETAIL_TAB_LIST_CLASS =
-  'h-auto w-full max-w-full justify-start gap-[2px] overflow-x-auto rounded-none ' +
-  'bg-transparent p-0 md:w-full md:justify-start'
-
-/**
- * Overrides for `TabsTrigger` — 34px tall, 13px side padding, 12.5px/650,
- * 2px bottom indicator. Inactive is `--aurora-text-muted`; active is
- * `--aurora-accent-strong` over an `--aurora-accent-primary` indicator, with
- * the primitive's default active glow removed (the mock has none).
- */
-export const DETAIL_TAB_TRIGGER_CLASS =
-  'h-[34px] shrink-0 gap-1.5 rounded-none border-0 border-b-2 border-transparent px-[13px] py-0 ' +
-  'text-[12.5px] font-[650] text-aurora-text-muted transition-[color,border-color] duration-150 md:flex-none ' +
-  'data-[state=active]:border-b-2 data-[state=active]:border-aurora-accent-primary ' +
-  'data-[state=active]:text-aurora-accent-strong data-[state=active]:shadow-none'
-
-/** The 17px count chip the mock puts inside a tab label. */
-export function DetailTabBadge({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        height: 17,
-        padding: '0 5px',
-        borderRadius: 5,
-        fontSize: 10,
-        fontWeight: 650,
-        fontVariantNumeric: 'tabular-nums',
-        border: '1px solid color-mix(in srgb, var(--aurora-border-strong) 80%, transparent)',
-        background: 'var(--gw0-0_48)',
-        color: 'var(--aurora-text-muted)',
-      }}
-    >
-      {children}
-    </span>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Spec card (the Overview tab's vocabulary)
-// ---------------------------------------------------------------------------
-
-/**
- * Overview card. The mock emphasises the first card with the panel-strong
- * gradient and renders the rest on panel-medium; `emphasis` selects which.
- */
-export function DetailSpecCard({
-  label,
-  action,
-  emphasis,
-  children,
-}: {
-  label: string
-  action?: React.ReactNode
-  emphasis?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <div
-      style={{
-        borderRadius: 'var(--radius-2)',
-        border:
-          '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
-        background: emphasis
-          ? 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))'
-          : 'linear-gradient(180deg, var(--aurora-panel-medium-top), transparent), var(--aurora-panel-medium)',
-        boxShadow: 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.04)',
-        overflow: 'hidden',
-        minWidth: 0,
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 10,
-          padding: '11px 16px',
-          borderBottom:
-            '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
-          background: 'var(--gw0-0_38)',
-          fontSize: 10.5,
-          fontWeight: 700,
-          letterSpacing: '0.15em',
-          textTransform: 'uppercase',
-          color: 'var(--aurora-text-muted)',
-        }}
-      >
-        <span>{label}</span>
-        {action}
-      </div>
-      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-/** Key/value row inside a `DetailSpecCard`. */
-export function DetailSpecRow({
-  label,
-  value,
-  tone = 'default',
-  title,
-}: {
-  label: React.ReactNode
-  /** Pass `DETAIL_NO_DATA` for anything the gateway API cannot back. */
-  value: React.ReactNode
-  tone?: 'default' | 'muted' | 'accent' | 'faint'
-  title?: string
-}) {
-  const color =
-    tone === 'accent'
-      ? 'var(--aurora-accent-strong)'
-      : tone === 'muted'
-        ? 'var(--aurora-text-muted)'
-        : tone === 'faint'
-          ? 'color-mix(in srgb, var(--aurora-text-muted) 70%, transparent)'
-          : 'var(--aurora-text-primary)'
-  return (
-    <div
-      title={title}
-      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}
-    >
-      <span style={{ fontSize: 12.5, color: 'var(--aurora-text-muted)', flexShrink: 0 }}>
-        {label}
-      </span>
-      <span
-        style={{
-          fontSize: 12.5,
-          fontWeight: 650,
-          fontVariantNumeric: 'tabular-nums',
-          color,
-          minWidth: 0,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {value}
-      </span>
-    </div>
-  )
-}
-
-/** Overview's card grid — `repeat(auto-fit, minmax(300px, 1fr))`, gap 12. */
-export const DETAIL_SPEC_GRID_STYLE: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-  gap: 12,
-}
-
-// ---------------------------------------------------------------------------
-// Topbar toolbar button (detail page)
-// ---------------------------------------------------------------------------
-
-const TOOLBAR_BUTTON_BASE =
-  'grid place-items-center shrink-0 cursor-pointer ' +
-  'disabled:cursor-not-allowed disabled:opacity-45 ' +
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--aurora-accent-primary)]/40'
-
-/**
- * The detail page's topbar action button: 32px, `radius-1`, control-surface
- * fill with a 70%-blended border. This is deliberately different from
- * `DetailIconButton` — that one is the row-expansion cluster's 26px ghost.
- */
-export function DetailToolbarButton({
-  tone = 'default',
-  className,
-  style,
-  type = 'button',
-  ...rest
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 'default' | 'pink' }) {
-  const toneStyle: React.CSSProperties =
-    tone === 'pink'
-      ? {
-          border: '1px solid color-mix(in srgb, var(--aurora-accent-pink-deep) 55%, transparent)',
-          background: 'color-mix(in srgb, var(--aurora-accent-pink) 8%, var(--aurora-control-surface))',
-          color: 'var(--aurora-accent-pink)',
-        }
-      : {
-          border:
-            '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
-          background: 'var(--aurora-control-surface)',
-          color: 'var(--aurora-text-muted)',
-        }
-  return (
-    <button
-      type={type}
-      className={[TOOLBAR_BUTTON_BASE, className].filter(Boolean).join(' ')}
-      style={{
-        width: 32,
-        height: 32,
-        borderRadius: 'var(--radius-1)',
-        ...toneStyle,
-        ...style,
-      }}
-      {...rest}
-    />
-  )
-}

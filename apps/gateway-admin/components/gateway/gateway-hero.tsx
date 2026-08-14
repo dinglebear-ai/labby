@@ -95,10 +95,23 @@ function StatCell({
   )
 
   if (!interactive) {
-    return <div style={style}>{body}</div>
+    return (
+      <div data-gateway-stat={label.toLowerCase()} style={style}>
+        {body}
+      </div>
+    )
   }
+  const accessibleValue =
+    typeof value === 'string' || typeof value === 'number' ? `${label}: ${value}` : label
   return (
-    <button type="button" onClick={onClick} aria-pressed={Boolean(active)} style={style}>
+    <button
+      type="button"
+      data-gateway-stat={label.toLowerCase()}
+      onClick={onClick}
+      aria-label={accessibleValue}
+      aria-pressed={Boolean(active)}
+      style={style}
+    >
       {body}
     </button>
   )
