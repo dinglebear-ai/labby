@@ -140,7 +140,7 @@ pub(crate) fn mint_proxied_entries(
     config: &UpstreamConfig,
     skills: &[ValidatedSkill],
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> Vec<SkillEntry> {
+) -> MintedEntries {
     // A skill is identified by its `uri`, so publishing one twice would hand a
     // client two different skills under one identifier. Minting drops the
     // upstream's scheme (Labby publishes in its own `skill://` namespace), so
@@ -169,7 +169,17 @@ pub(crate) fn mint_proxied_entries(
         }
         minted.retain(|entry| !colliding.contains(&entry.uri));
     }
-    minted
+    let excluded_count = skills.len().saturating_sub(minted.len());
+    MintedEntries {
+        entries: minted,
+        excluded_count,
+    }
+}
+
+/// Proxied entries plus the number that could not be published honestly.
+pub(crate) struct MintedEntries {
+    pub(crate) entries: Vec<SkillEntry>,
+    pub(crate) excluded_count: usize,
 }
 
 #[cfg(test)]
@@ -275,7 +285,7 @@ mod tests {
         // skills must differ by *path*, as the comment above describes; passing
         // the identical skill twice tested a degenerate case a real listing
         // cannot produce, and now correctly trips the same-URI collision guard.
-        let entries = mint_proxied_entries(
+        let result = mint_proxied_entries(
             &UpstreamConfig {
                 name: "acme-corp".to_string(),
                 ..super::super::tests_support::minimal_config()
@@ -286,11 +296,12 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(entries.len(), 2, "no name-keyed deduplication");
+        assert_eq!(result.entries.len(), 2, "no name-keyed deduplication");
         assert_ne!(
-            entries[0].uri, entries[1].uri,
+            result.entries[0].uri, result.entries[1].uri,
             "distinct paths, distinct URIs"
         );
+        assert_eq!(result.excluded_count, 0);
     }
 
     #[test]
@@ -300,7 +311,7 @@ mod tests {
         // two schemes would publish one identifier for two different skills.
         // Resolving that by iteration order would decide, invisibly, which
         // instructions an agent acts on.
-        let entries = mint_proxied_entries(
+        let result = mint_proxied_entries(
             &UpstreamConfig {
                 name: "gh".to_string(),
                 ..super::super::tests_support::minimal_config()
@@ -312,8 +323,13 @@ mod tests {
             None,
         );
         assert!(
-            entries.is_empty(),
-            "an ambiguous identifier must publish neither skill, got {entries:?}"
+            result.entries.is_empty(),
+            "an ambiguous identifier must publish neither skill, got {:?}",
+            result.entries
+        );
+        assert_eq!(
+            result.excluded_count, 2,
+            "every silently omitted skill must reach listing completeness metadata"
         );
     }
 

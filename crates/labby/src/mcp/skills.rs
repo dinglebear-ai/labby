@@ -559,7 +559,7 @@ impl LabMcpServer {
 
         // Ask the upstream under the URI it knows, then relabel the answer back
         // into this origin exactly as the listing does.
-        let upstream_uri = parsed.with_origin(&config.name).ok()?.to_uri();
+        let upstream_uri = reconstruct_unlisted_upstream_uri(uri, &config.name)?;
         let skill = pool
             .fetch_unlisted_skill(&config, self.request_subject(context), &upstream_uri)
             .await?;
@@ -636,11 +636,10 @@ impl LabMcpServer {
                     };
                     let meta =
                         aggregate::origin_meta(&config.name, None, tool_access, &reachable_tools);
-                    entries.extend(aggregate::mint_proxied_entries(
-                        &config,
-                        &exposed.skills,
-                        Some(&meta),
-                    ));
+                    let minted =
+                        aggregate::mint_proxied_entries(&config, &exposed.skills, Some(&meta));
+                    aggregated.excluded_count += minted.excluded_count;
+                    entries.extend(minted.entries);
                 }
                 Err(error) => {
                     // Partial results: one unreachable upstream must not empty
@@ -667,6 +666,25 @@ impl LabMcpServer {
     ) -> Vec<SkillEntry> {
         Vec::new()
     }
+}
+
+/// Recover an upstream `skill://` URI from the URI Labby published for it.
+///
+/// Labby's minting erases a native upstream scheme, so an entry absent from the
+/// cached listing has no trustworthy inverse for `github://`, `gitlab://`, and
+/// similar identities. This fallback is therefore deliberately constrained to
+/// the reconstructable `skill://` form: remove exactly the selected gateway
+/// label and never guess a native scheme.
+#[cfg(feature = "gateway")]
+fn reconstruct_unlisted_upstream_uri(uri: &str, origin: &str) -> Option<String> {
+    let parsed = parse_skill_uri(uri).ok()?;
+    if parsed.scheme() != "skill" || parsed.origin() != origin || parsed.path().is_empty() {
+        return None;
+    }
+    let upstream_uri = format!("skill://{}", parsed.path());
+    parse_skill_uri(&upstream_uri)
+        .ok()
+        .map(|parsed| parsed.to_uri())
 }
 
 #[cfg(test)]
@@ -725,6 +743,20 @@ mod serve_tests {
         assert!(read_first_party_skill_file("skill://labby/using-labby/../escape.md").is_none());
         assert!(read_first_party_skill_file("skill://labby/nonexistent/SKILL.md").is_none());
         assert!(first_party_skill_entry("skill://labby/nonexistent/SKILL.md").is_none());
+    }
+
+    #[test]
+    fn unlisted_proxy_lookup_removes_the_gateway_label_instead_of_prepending_it_again() {
+        assert_eq!(
+            reconstruct_unlisted_upstream_uri("skill://gh/acme/refunds/SKILL.md", "gh")
+                .expect("reconstructable skill URI"),
+            "skill://acme/refunds/SKILL.md"
+        );
+        assert!(
+            reconstruct_unlisted_upstream_uri("skill://other/acme/refunds/SKILL.md", "gh")
+                .is_none(),
+            "a URI outside the selected gateway origin must not be reconstructed"
+        );
     }
 }
 

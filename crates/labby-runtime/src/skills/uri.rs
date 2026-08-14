@@ -319,7 +319,13 @@ pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
         check_segment(uri, segment)?;
     }
 
-    Ok(SkillUri::from_parts(scheme.to_string(), rest.to_string()))
+    // RFC 3986 §3.1: schemes are case-insensitive. Canonicalizing at the
+    // parser boundary keeps manifest namespace checks and collision detection
+    // from treating `GitHub://` and `github://` as different schemes.
+    Ok(SkillUri::from_parts(
+        scheme.to_ascii_lowercase(),
+        rest.to_string(),
+    ))
 }
 
 #[cfg(test)]

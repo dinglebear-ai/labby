@@ -23,7 +23,7 @@ use crate::error::ToolError;
 use crate::skills::digest::parse_digest;
 use crate::skills::frontmatter::validate_frontmatter;
 use crate::skills::limits::MAX_RESOURCES_PER_SKILL;
-use crate::skills::uri::{SKILL_MD_FILE, SkillUri, parse_skill_uri};
+use crate::skills::uri::{SkillUri, parse_skill_uri};
 use crate::skills::wire::SkillEntry;
 
 /// Why a skill was rejected at ingest.
@@ -112,10 +112,11 @@ pub fn validate_skill_entry(entry: &SkillEntry) -> Result<ValidatedSkill, SkillR
 
     // Everything in the manifest must sit under the skill's own directory, which
     // is the entry URI with the trailing `/SKILL.md` removed.
-    let skill_root = entry
-        .uri
-        .strip_suffix(SKILL_MD_FILE)
+    let (skill_path, _) = uri
+        .skill_md_parts()
         .ok_or(SkillRejection::InvalidSkillUri)?;
+    let skill_root = format!("{skill_path}/");
+    let canonical_entry_uri = uri.to_uri();
 
     let mut seen = BTreeSet::new();
     let mut has_skill_md = false;
@@ -133,13 +134,14 @@ pub fn validate_skill_entry(entry: &SkillEntry) -> Result<ValidatedSkill, SkillR
         if resource_uri.scheme() != uri.scheme() {
             return Err(SkillRejection::ManifestUriOutOfNamespace);
         }
-        if !resource.uri.starts_with(skill_root) {
+        if !resource_uri.full_path().starts_with(&skill_root) {
             return Err(SkillRejection::ManifestUriOutOfNamespace);
         }
-        if !seen.insert(resource.uri.as_str()) {
+        let canonical_resource_uri = resource_uri.to_uri();
+        if !seen.insert(canonical_resource_uri.clone()) {
             return Err(SkillRejection::ManifestDuplicateUri);
         }
-        if resource.uri == entry.uri {
+        if canonical_resource_uri == canonical_entry_uri {
             has_skill_md = true;
         }
     }
@@ -245,6 +247,17 @@ mod tests {
         let validated = validate_skill_entry(&valid_entry()).expect("valid");
         assert_eq!(validated.name, "using-labby");
         assert_eq!(validated.uri.origin(), "labby");
+    }
+
+    #[test]
+    fn accepts_equivalent_scheme_spellings_within_one_manifest() {
+        let entry = entry_with(
+            "GitHub://owner/refunds/SKILL.md",
+            "refunds",
+            Some(vec![resource("github://owner/refunds/SKILL.md", b"body")]),
+        );
+
+        validate_skill_entry(&entry).expect("URI schemes are case-insensitive");
     }
 
     #[test]

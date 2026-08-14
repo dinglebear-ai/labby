@@ -305,7 +305,10 @@ Two consequences follow, both handled by refusing rather than guessing:
 
 The native URI is never reconstructed from the published string; it is recovered
 from the cached manifest, which is what keeps a non-`skill://` upstream
-routable. Note also that the scheme confers no identity: the SEP says a host
+routable. Consequently, URI-only fallback for a skill absent from the cached
+listing is limited to upstream `skill://` identities: Labby can remove its own
+origin label from those exactly, but it refuses to guess an erased native
+scheme. Note also that the scheme confers no identity: the SEP says a host
 "MUST NOT conclude that a resource is a skill merely because its URI carries a
 particular scheme" — identity comes from a `skills/list` entry or `skills/get`.
 
