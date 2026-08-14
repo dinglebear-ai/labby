@@ -12,7 +12,8 @@ use dashmap::DashMap;
 use labby_primitives::mcp::{
     MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
 };
-#[cfg(feature = "gateway")]
+// Not feature-gated: `mcp_extensions()` is unconditional so a build with one
+// extension and not another still advertises the one it has.
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams,
@@ -36,11 +37,20 @@ use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
 /// Process-global counter minting a unique `relay_session_id` per
-/// `LabMcpServer` instance. Each transport session (HTTP factory invocation or
-/// the single stdio server) builds one `LabMcpServer`, so the id is stable for
-/// a session's lifetime and unique across sessions — exactly the key the
-/// upstream relay cache needs to bind a cached connection to one downstream
-/// agent without ever reusing it across agents.
+/// `LabMcpServer` instance.
+///
+/// **The instance lifetime differs by transport, and the id inherits that.** On
+/// stdio one `LabMcpServer` serves the whole process, so the id is genuinely
+/// stable for the session. On streamable HTTP the service factory runs *per
+/// POST* (rmcp `StreamableHttpService::handle_post` calls `get_service()` for
+/// each request under the stateless mode Labby configures — see
+/// `build_mcp_service`), so a fresh instance and a fresh id are minted per
+/// request; all of them share one peer registry via `PeerNotifier`.
+///
+/// The id therefore binds a cached upstream relay connection to one downstream
+/// agent without ever reusing it across agents — which holds on both
+/// transports — but it must not be read as a stable per-connection session
+/// identity on HTTP.
 static RELAY_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -404,10 +414,25 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
     extensions
 }
 
-#[cfg(feature = "gateway")]
+/// Extension capabilities advertised in `initialize`.
+///
+/// Deliberately not gated as a whole: each extension carries its own `cfg` so a
+/// build that enables one and not another still advertises the one it has. The
+/// previous whole-function gate meant a `--features skills` build without
+/// `gateway` advertised no extensions block at all, and so could never announce
+/// skills support.
 fn mcp_extensions() -> ExtensionCapabilities {
     let mut extensions = ExtensionCapabilities::new();
+    #[cfg(feature = "gateway")]
     extensions.extend(mcp_apps_ui_extension());
+    #[cfg(feature = "skills")]
+    extensions.insert(
+        labby_runtime::skills::wire::SKILLS_EXTENSION_KEY.to_string(),
+        // Empty object: supported, with no optional features. Labby does not
+        // implement `resources/directory/read`, and a client must not call it
+        // against a server that has not declared `directoryRead`.
+        serde_json::Map::new(),
+    );
     extensions
 }
 
@@ -440,6 +465,31 @@ fn connected_client_from_discovery(
     }
 }
 
+/// Strip capabilities a legacy (pre-2026-07-28) session cannot actually use.
+///
+/// MCP advertises a single `resources.subscribe` flag for two different
+/// mechanisms: the deprecated `resources/subscribe` RPC pair, and the
+/// `subscriptions/listen` stream that replaced it in 2026-07-28. `get_info`
+/// must keep the flag set, because rmcp intersects a client's requested
+/// `SubscriptionFilter` against it (`SubscriptionFilter::supported_by`) —
+/// clearing it there would silence modern subscriptions, including the
+/// gateway's own upstream negotiation.
+///
+/// A legacy session can reach neither mechanism: Labby implements no
+/// `resources/subscribe` handler, so rmcp answers with `method_not_found`, and
+/// rmcp gates `subscriptions/listen` to modern sessions. Advertising the flag
+/// on this path therefore promises something that cannot work, so withhold it
+/// for legacy sessions only.
+///
+/// Extracted from `initialize` so it can be unit tested against a fabricated
+/// `ServerInfo` without standing up a gateway manager (the flag is
+/// gateway-conditional in `get_info`).
+fn withhold_legacy_unusable_capabilities(info: &mut ServerInfo) {
+    if let Some(resources) = info.capabilities.resources.as_mut() {
+        resources.subscribe = None;
+    }
+}
+
 impl ServerHandler for LabMcpServer {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
@@ -466,6 +516,10 @@ impl ServerHandler for LabMcpServer {
         // negotiated peer version. Echo the requested version because every
         // SDK-known historical version is explicitly declared above.
         info.protocol_version = request.protocol_version;
+        // This is the only legacy entry point — modern clients negotiate via
+        // `discover`, which returns `get_info()` untouched — so it is also the
+        // only place a capability can be withheld from legacy sessions alone.
+        withhold_legacy_unusable_capabilities(&mut info);
         Ok(info)
     }
 
@@ -493,7 +547,6 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts()
             .enable_prompts_list_changed()
             .enable_completions();
-        #[cfg(feature = "gateway")]
         let builder = builder.enable_extensions_with(mcp_extensions());
         #[cfg(feature = "gateway")]
         let builder = if gateway_manager_configured {
@@ -507,6 +560,16 @@ impl ServerHandler for LabMcpServer {
         let capabilities = builder.build();
         let mut info = ServerInfo::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
+        // A pointer, not skill content. It reaches clients that never parse the
+        // capability map, which is the population most likely to miss an
+        // extension entirely.
+        #[cfg(feature = "skills")]
+        {
+            info.instructions = Some(
+                "This server implements the MCP Skills extension                  (io.modelcontextprotocol/skills). Call `skills/list` to enumerate its Agent                  Skills, or `skills/get` with a `skill://` URI to fetch one entry. The contract                  this server implements is readable at `lab://contracts/skills-extension`."
+                    .to_string(),
+            );
+        }
         info
     }
 
@@ -530,8 +593,22 @@ impl ServerHandler for LabMcpServer {
     async fn on_custom_request(
         &self,
         request: CustomRequest,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
+        // `context` is threaded rather than ignored: the skills methods below
+        // are scope-gated, and once proxied skills land they route per OAuth
+        // subject. A context-blind custom-request handler is how the in-process
+        // peer ended up trusting every caller (lab-m01gl) — do not reintroduce
+        // that shape here.
+        #[cfg(feature = "skills")]
+        if matches!(
+            request.method.as_str(),
+            labby_runtime::skills::wire::SKILLS_LIST_METHOD
+                | labby_runtime::skills::wire::SKILLS_GET_METHOD
+        ) {
+            return self.handle_skills_request(&request, &context).await;
+        }
+
         if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode::METHOD_NOT_FOUND,
@@ -772,8 +849,12 @@ impl ServerHandler for LabMcpServer {
         // and intentionally leaves the typed params field empty. Restore the
         // canonical metadata before handing the envelope to proxy routing.
         restore_request_meta(&mut request.meta, &context.meta);
+        // Keep the full product-dispatch future off rmcp's transport worker
+        // stack. In a multi-hop relay, nested Labby servers otherwise poll the
+        // all-features dispatch state on Tokio's bounded worker stack and can
+        // overflow it as new in-process services enlarge that state machine.
         Ok(provenance::stamp_call_tool_response(
-            self.call_tool_response_impl(request, context).await?,
+            Box::pin(self.call_tool_response_impl(request, context)).await?,
         ))
     }
 
@@ -863,28 +944,27 @@ impl ServerHandler for LabMcpServer {
 
 use crate::mcp::catalog::CatalogChangeSet;
 
-impl LabMcpServer {
-    /// Whether an ABSENT `AuthContext` on this server's transport means
-    /// "trusted local operator" rather than "unauthenticated hop".
-    ///
-    /// **Allow-list, deliberately.** A transport earns this only by being
-    /// named in [`TRANSPORTS_TRUSTING_ABSENT_AUTH`]; anything else fails
-    /// closed. An exclusion list was the obvious shape and is the wrong one:
-    /// it would silently extend stdio trust to every transport added later,
-    /// which is the same "absence read as trust" mistake this guard exists
-    /// to fix (bead lab-m01gl).
-    ///
-    /// The listed transports earn it honestly — stdio carries no per-request
-    /// auth by design, and the HTTP surfaces inject one whenever auth is
-    /// configured (`cli/serve.rs` refuses to bind non-loopback without it).
-    /// The in-process service peers do not: their duplex transport has no
-    /// HTTP layer to inject auth, so treating that absence as trust let a
-    /// caller holding only `lab` reach `requires_admin` builtin actions
-    /// through Code Mode's `__in_process__*` namespaces.
-    pub(crate) fn trusts_absent_auth(&self) -> bool {
-        TRANSPORTS_TRUSTING_ABSENT_AUTH.contains(&self.transport_label)
-    }
+/// Extension capability map, for tests that assert what `initialize` declares.
+#[cfg(test)]
+pub(crate) fn mcp_extensions_for_test() -> ExtensionCapabilities {
+    mcp_extensions()
+}
 
+impl LabMcpServer {
+    /// Whether a missing per-request `AuthContext` may be read as trusted local
+    /// stdio on *this* server's transport.
+    ///
+    /// The in-process peer is served over a duplex pipe with no HTTP layer, so
+    /// it produces `None` for every caller — including a remote non-admin one
+    /// arriving through Code Mode. This is an allow-list: any future transport
+    /// fails closed until it explicitly proves that absent auth means local.
+    pub(crate) fn absent_auth_trust(&self) -> crate::mcp::context::AbsentAuth {
+        if TRANSPORTS_TRUSTING_ABSENT_AUTH.contains(&self.transport_label) {
+            crate::mcp::context::AbsentAuth::TrustedLocal
+        } else {
+            crate::mcp::context::AbsentAuth::Untrusted
+        }
+    }
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
     /// Per-call sites pass their own label so a notification triggered by a
     /// tool call is never confused with a gateway reconcile.
@@ -912,8 +992,8 @@ mod tests {
     use super::verify_upstream_subject_resolution_support;
     use super::{
         LabMcpServer, MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
-        cancel_tracked_request_by_token, request_cancellation_key, restore_request_meta,
-        track_request_cancellation,
+        ServerCapabilities, ServerInfo, cancel_tracked_request_by_token, request_cancellation_key,
+        restore_request_meta, track_request_cancellation, withhold_legacy_unusable_capabilities,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
@@ -1170,6 +1250,86 @@ mod tests {
         assert!(
             first.token.is_cancelled() && second.token.is_cancelled(),
             "an ambiguous stateless fallback key must not silently orphan either live request"
+        );
+    }
+
+    /// A legacy session can use neither subscription mechanism, so it must not
+    /// be told `resources.subscribe` is available. Regression guard for the
+    /// capability-honesty defect in issue #211.
+    #[test]
+    fn legacy_initialize_withholds_resource_subscribe_capability() {
+        let capabilities = ServerCapabilities::builder()
+            .enable_resources()
+            .enable_resources_list_changed()
+            .enable_resources_subscribe()
+            .build();
+        let mut info = ServerInfo::new(capabilities);
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.subscribe),
+            Some(true),
+            "fixture must start with the capability advertised, or this test proves nothing"
+        );
+
+        withhold_legacy_unusable_capabilities(&mut info);
+
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.subscribe),
+            None,
+            "a legacy session reaches neither resources/subscribe (no handler) nor \
+             subscriptions/listen (rmcp gates it to modern sessions), so advertising \
+             the capability to it promises something that cannot work"
+        );
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.list_changed),
+            Some(true),
+            "withholding subscribe must not disturb the other resource capabilities"
+        );
+    }
+
+    /// The withholding must not depend on `resources` being present — under
+    /// `--no-default-features` the gateway-conditional branch never runs.
+    #[test]
+    fn withholding_is_safe_when_no_resource_capability_is_advertised() {
+        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        withhold_legacy_unusable_capabilities(&mut info);
+        assert!(info.capabilities.resources.is_none());
+        assert!(
+            info.capabilities.tools.is_some(),
+            "unrelated capabilities must survive"
+        );
+    }
+
+    /// `get_info` — the path `discover` returns to modern clients — must keep
+    /// the flag. rmcp intersects a requested `SubscriptionFilter` against it
+    /// (`SubscriptionFilter::supported_by`), so clearing it globally instead of
+    /// per-session would silence modern subscriptions and the gateway's own
+    /// upstream negotiation.
+    #[test]
+    fn get_info_does_not_withhold_capabilities_from_modern_sessions() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let info = server.get_info();
+
+        // This fixture has no gateway manager, so `subscribe` is not advertised
+        // in the first place. What this locks in is that `get_info` performs no
+        // withholding of its own: the resource capability it does advertise is
+        // unmodified, and withholding happens only on the legacy path.
+        assert_eq!(
+            info.capabilities
+                .resources
+                .as_ref()
+                .and_then(|c| c.list_changed),
+            Some(true),
+            "get_info must return capabilities untouched by legacy withholding"
         );
     }
 

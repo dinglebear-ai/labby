@@ -44,6 +44,8 @@ pub(super) fn config_view(
         expose_tools: upstream.expose_tools.clone(),
         expose_resources: upstream.expose_resources.clone(),
         expose_prompts: upstream.expose_prompts.clone(),
+        proxy_skills: upstream.proxy_skills,
+        expose_skills: upstream.expose_skills.clone(),
         code_mode_hint: upstream
             .code_mode_hint
             .as_deref()
@@ -720,6 +722,8 @@ mod tests {
             expose_tools: None,
             expose_resources: None,
             expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
             code_mode_hint: None,
             oauth: None,
             imported_from: None,

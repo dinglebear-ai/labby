@@ -129,6 +129,7 @@ fn update_patch_from_args(args: GatewayUpdateArgs) -> Value {
 
     insert_if_some(&mut patch, "name", args.new_name);
     insert_if_some(&mut patch, "proxy_resources", args.proxy_resources);
+    insert_if_some(&mut patch, "proxy_skills", args.proxy_skills);
 
     if args.clear_url || command_was_set {
         patch.insert("url".to_string(), Value::Null);
@@ -322,6 +323,7 @@ pub(super) async fn dispatch_command(
                             "args": args.args,
                             "bearer_token_env": args.bearer_token_env,
                             "proxy_resources": args.proxy_resources,
+                            "proxy_skills": args.proxy_skills,
                         }
                     }),
                 ),

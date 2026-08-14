@@ -123,7 +123,34 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
     )
     spec_files = changed_files(spec_compare)
     rmcp_files = changed_files(rmcp_compare)
-    drift = spec_head != spec["commit"] or latest_commit != rmcp["commit"]
+
+    # SEP-2640 is an unmerged draft Labby implements against a pinned mirror
+    # commit. Only the normative documents count as drift: the mirror also
+    # carries working-group material (rationale, decision logs) that moves
+    # without changing what Labby implements, and treating those as drift would
+    # train people to ignore this report.
+    skills = baseline.get("skills_extension")
+    skills_head = None
+    skills_files: list[str] = []
+    if skills:
+        skills_head = api_json(
+            f"https://api.github.com/repos/{skills['repository']}/commits/{skills['ref']}",
+            token,
+        )["sha"]
+        if skills_head != skills["commit"]:
+            skills_compare = api_json(
+                compare_url(skills["repository"], skills["commit"], skills_head), token
+            )
+            watched = set(skills.get("watched_paths", ()))
+            skills_files = [
+                path for path in changed_files(skills_compare) if path in watched
+            ]
+
+    drift = (
+        spec_head != spec["commit"]
+        or latest_commit != rmcp["commit"]
+        or bool(skills_files)
+    )
     mapped_paths, checks = map_ownership(
         spec_files + rmcp_files, latest_release.get("body") or ""
     )
@@ -141,6 +168,11 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         "|---|---|---|",
         f"| MCP spec `{spec['protocol_version']}` | `{spec['commit']}` | `{spec_head}` |",
         f"| rmcp `{rmcp['crate_version']}` | `{rmcp['commit']}` / `{rmcp['release_tag']}` | `{latest_commit}` / `{latest_tag}` |",
+        *(
+            [f"| Skills extension (SEP-2640 draft) | `{skills['commit']}` | `{skills_head}` |"]
+            if skills
+            else []
+        ),
         "",
         "## Upstream files changed",
         "",
@@ -150,6 +182,19 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         "### rmcp",
         *([f"- `{path}`" for path in rmcp_files] or ["- None"]),
         "",
+        *(
+            [
+                "### Skills extension (SEP-2640 draft)",
+                *([f"- `{path}`" for path in skills_files] or ["- None (normative documents unchanged)"]),
+                "",
+                "The skills draft is unmerged and Labby implements a pinned revision. When a",
+                f"normative document moves, re-read it, update `{skills['contract']}` and the",
+                "conformance fixtures it binds, then advance the baseline in the same PR.",
+                "",
+            ]
+            if skills
+            else []
+        ),
         "## Labby code that must be reviewed",
         "",
         *[f"- `{path}`" for path in mapped_paths],
@@ -157,6 +202,11 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         "## Required validation",
         "",
         *[f"- `{check}`" for check in checks],
+        *(
+            ["- `cargo test -p labby-runtime --all-features --locked skills_contract_conformance`"]
+            if skills_files
+            else []
+        ),
         "",
         "When the upstream change is intentionally adopted, update code/tests first, run the",
         "listed validation, then advance `conformance/upstream-baseline.json` in the same PR.",

@@ -250,6 +250,14 @@ pub struct GatewayAddArgs {
     pub bearer_token_env: Option<String>,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub proxy_resources: bool,
+    /// Aggregate this upstream's Agent Skills (SEP-2640) through the gateway.
+    ///
+    /// Defaults to false, unlike the other proxy flags: an upstream's skills
+    /// carry instructions an agent will act on, so aggregating them is a
+    /// deliberate trust decision. Without this flag there is no way to turn it
+    /// on from the CLI at all.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pub proxy_skills: bool,
 }
 
 #[derive(Debug, Args)]
@@ -282,6 +290,9 @@ pub struct GatewayUpdateArgs {
     pub clear_bearer_token_env: bool,
     #[arg(long)]
     pub proxy_resources: Option<bool>,
+    /// Turn Agent Skills aggregation on or off for this upstream.
+    #[arg(long)]
+    pub proxy_skills: Option<bool>,
 }
 
 #[derive(Debug, Args)]

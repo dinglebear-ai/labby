@@ -1686,6 +1686,7 @@
               "help",
               "schema",
               "gateway.list",
+              "gateway.skills.list",
               "gateway.code_mode.get",
               "gateway.code_mode.set",
               "gateway.server.get",
@@ -2303,6 +2304,14 @@
             "type": "string"
           },
           "values": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewaySkillsListParams": {
+        "type": "object",
+        "properties": {
+          "upstream": {
             "type": "string"
           }
         }

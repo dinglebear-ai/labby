@@ -1701,7 +1701,18 @@ fn stdio_recursion_guard_active(stdio_mode: bool, spawn_depth: Option<u32>) -> b
 /// Build the MCP streamable HTTP service from app state.
 ///
 /// The factory closure clones `Arc<ToolRegistry>` from `AppState` and constructs
-/// a new `LabMcpServer` per session. Construction cost: two Arc increments.
+/// a new `LabMcpServer`. Construction cost: two Arc increments.
+///
+/// **Per request, not per session.** This service is configured with
+/// `NeverSessionManager` and `legacy_session_mode(false)`, so rmcp invokes the
+/// factory on every POST rather than once per connection, and serves each one
+/// over a `OneshotTransport` that ends with the response. There is no
+/// connection-scoped `LabMcpServer` on this transport, and no `GET`/SSE stream
+/// (rmcp routes `GET` only under `legacy_session_mode` or with an event store,
+/// so it answers `405`). Cross-request continuity comes from the shared
+/// `PeerNotifier` registry, not from the server instance.
+///
+/// Contrast `run_stdio`, where one instance does serve the whole process.
 fn build_mcp_service(
     state: &AppState,
     mcp_config: &crate::config::McpPreferences,

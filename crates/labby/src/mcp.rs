@@ -41,6 +41,8 @@ pub mod result_format;
 pub(crate) mod route_scope;
 pub mod server;
 pub mod services;
+#[cfg(feature = "skills")]
+pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod upstream;
 

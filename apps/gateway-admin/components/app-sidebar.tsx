@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { LabbyIcon } from '@/components/labby-icon'
 import { usePathname } from 'next/navigation'
 import {
+  BookOpen,
   Cable,
   LayoutDashboard,
   Settings,
@@ -48,6 +49,11 @@ export const primarySidebarNavigation = [
     title: 'Snippets',
     url: '/snippets',
     icon: FileCode2,
+  },
+  {
+    title: 'Skills',
+    url: '/skills',
+    icon: BookOpen,
   },
 ]
 

@@ -11,6 +11,7 @@
 
 use axum::http::request::Parts;
 use labby_auth::auth_context::AuthContext;
+use labby_runtime::caller_auth::{CALLER_AUTH_META_KEY, PropagatedCallerAuth};
 use rmcp::RoleServer;
 use rmcp::service::RequestContext;
 use sha2::{Digest, Sha256};
@@ -149,60 +150,140 @@ pub(crate) fn code_mode_read_scope_allowed(auth: Option<&AuthContext>) -> bool {
     })
 }
 
-/// Whether `action` on builtin `entry` may execute for this caller.
+/// Whether an absent `AuthContext` may be read as "trusted local stdio".
 ///
-/// `trust_absent_auth` comes from `LabMcpServer::trusts_absent_auth` and is
-/// keyed on the **transport**, not the route scope: it is `true` only for the
-/// transports in `TRANSPORTS_TRUSTING_ABSENT_AUTH`, where a missing
-/// `AuthContext` means a local operator. On any other transport a missing
-/// context means the request reached builtin dispatch over a hop that carries
-/// no auth layer — today the in-process service peers — and is treated as
-/// UNPRIVILEGED.
+/// The stdio trust model treats a missing per-request auth context as a local
+/// operator at a terminal. That inference is only sound on a transport that
+/// *would* have carried auth for a remote caller. The in-process peer
+/// (`mcp/in_process_peer.rs`) is served over `tokio::io::duplex`, which has no
+/// HTTP layer, so `auth_context_from_extensions` finds no `Parts` and resolves
+/// to `None` for **every** caller — including a remote, non-admin OAuth caller
+/// who reached it through Code Mode. On that transport an absent context proves
+/// nothing and must not be trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbsentAuth {
+    /// No auth context means a local stdio caller. Applies to transports that
+    /// inject one for every authenticated remote caller.
+    TrustedLocal,
+    /// No auth context proves nothing about the caller. Applies to the
+    /// in-process peer, whose transport cannot carry auth at all.
+    ///
+    /// This is the *fallback* for that transport, not its normal path: the
+    /// gateway propagates the real caller's authorization in `_meta`, and
+    /// [`AbsentAuth::Propagated`] carries it. Reaching `Untrusted` means the
+    /// propagation was missing, so the request fails closed.
+    Untrusted,
+}
+
+/// How a request's authorization was established, once transport is accounted
+/// for.
 ///
-/// Do not "simplify" this to a route-scope check: protected routes on an
-/// auth-less loopback gateway legitimately run admin actions with no
-/// `AuthContext`, and scoping the guard that way breaks them (that attempt
-/// was made and reverted; see `context/tests.rs`).
+/// Built by [`LabMcpServer::caller_authorization`] so every gate sees the same
+/// resolution rather than each re-deriving it.
+#[derive(Debug, Clone)]
+pub(crate) enum CallerAuthorization<'a> {
+    /// The request carried its own `AuthContext`.
+    Direct(&'a AuthContext),
+    /// No context, but the transport implies a trusted local operator.
+    TrustedLocal,
+    /// No context, but the gateway propagated the real caller across the
+    /// in-process hop.
+    Propagated(PropagatedCallerAuth),
+    /// No context and nothing to stand in for one.
+    Unknown,
+}
+
+impl CallerAuthorization<'_> {
+    /// Whether this caller satisfies an admin-gated action.
+    #[must_use]
+    pub(crate) fn is_admin(&self) -> bool {
+        match self {
+            Self::Direct(auth) => auth.scopes.iter().any(|scope| scope == "lab:admin"),
+            Self::TrustedLocal => true,
+            Self::Propagated(auth) => auth.is_admin(),
+            Self::Unknown => false,
+        }
+    }
+
+    /// Whether this caller is a trusted local operator, which is what the
+    /// credential-minting `setup` actions require.
+    #[must_use]
+    pub(crate) fn is_trusted_local(&self) -> bool {
+        match self {
+            Self::TrustedLocal => true,
+            Self::Propagated(auth) => auth.trusted_local,
+            Self::Direct(_) | Self::Unknown => false,
+        }
+    }
+}
+
+/// Read caller authorization propagated across the in-process peer hop.
+///
+/// Returns `None` unless the request carries the reserved `_meta` key. Callers
+/// MUST only consult this on the in-process transport — see
+/// `labby_runtime::caller_auth` for why that restriction is the whole basis for
+/// trusting it.
+pub(crate) fn propagated_caller_auth(
+    meta: Option<&rmcp::model::RequestMetaObject>,
+) -> Option<PropagatedCallerAuth> {
+    let value = meta?.get(CALLER_AUTH_META_KEY)?;
+    serde_json::from_value(value.clone()).ok()
+}
+
+/// Resolve a request's authorization, accounting for transport and any
+/// authorization the gateway propagated across the in-process hop.
+///
+/// `propagated` is read **only** when the transport cannot carry an
+/// `AuthContext` of its own — see `labby_runtime::caller_auth` for why that
+/// restriction is what makes trusting it sound.
+pub(crate) fn resolve_caller_authorization(
+    auth: Option<&AuthContext>,
+    absent_auth: AbsentAuth,
+    propagated: Option<PropagatedCallerAuth>,
+) -> CallerAuthorization<'_> {
+    if let Some(auth) = auth {
+        // A real context always wins. Propagated facts never override or widen
+        // an authorization the caller actually presented.
+        return CallerAuthorization::Direct(auth);
+    }
+    match absent_auth {
+        AbsentAuth::TrustedLocal => CallerAuthorization::TrustedLocal,
+        AbsentAuth::Untrusted => match propagated {
+            Some(propagated) => CallerAuthorization::Propagated(propagated),
+            None => CallerAuthorization::Unknown,
+        },
+    }
+}
+
 pub(crate) fn tool_execute_builtin_action_allowed(
     entry: &crate::registry::RegisteredService,
     action: &str,
-    auth: Option<&AuthContext>,
-    trust_absent_auth: bool,
+    caller: &CallerAuthorization<'_>,
 ) -> bool {
     let bare = action
         .strip_prefix(&format!("{}.", entry.name))
         .unwrap_or(action);
-    let trusted_local_stdio = auth.is_none() && trust_absent_auth;
-    if entry.name == "setup"
-        && crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare)
-        && !trusted_local_stdio
-    {
-        // MCP-over-HTTP always carries AuthContext. Only trusted local stdio
-        // (represented by no per-request auth context ON THE ROOT SURFACE) may
-        // mint credentials or ask the host to probe a caller-selected URL.
-        // The `trust_absent_auth` term is load-bearing: without it, the
-        // auth-less in-process peer transport satisfied `auth.is_none()` and
-        // these stdio-only actions became remotely reachable through Code Mode.
-        return false;
+    if entry.name == "setup" && crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare) {
+        // These mint credentials or ask the host to probe a caller-selected
+        // URL, so they are for trusted local stdio only. A remote caller always
+        // carries an AuthContext and is refused; a local operator reaching them
+        // through Code Mode is honored, because the propagated facts say so.
+        return caller.is_trusted_local();
     }
     if !builtin_action_requires_admin(entry, action) {
         return true;
     }
     // INTENTIONAL ASYMMETRY with the HTTP API gate (`api/services/gateway.rs`,
     // which uses `is_some_and` — absent auth = DENIED). Here absent auth is
-    // ALLOWED *only on the root surface*: that is the stdio trust model, where
-    // a `None` AuthContext means a local stdio caller (trusted), not an
-    // anonymous network request. Remote MCP-over-HTTP cannot reach here
-    // unauthenticated because `cli/serve.rs` refuses to bind a non-loopback
-    // address without auth configured, and the `/mcp` route carries the
-    // bearer/OAuth layer when auth is configured. Do NOT widen this to every
-    // surface without also proving every reachable transport injects an
-    // AuthContext for authenticated callers — the in-process peer transport
-    // does not (bead lab-m01gl).
-    match auth {
-        Some(auth) => auth.scopes.iter().any(|scope| scope == "lab:admin"),
-        None => trust_absent_auth,
-    }
+    // allowed *only* on a transport where it genuinely implies local stdio.
+    // Remote MCP-over-HTTP cannot reach here unauthenticated because
+    // `cli/serve.rs` refuses to bind a non-loopback address without auth
+    // configured, and the `/mcp` route carries the bearer/OAuth layer when auth
+    // is configured. The in-process peer is the transport that broke that
+    // inference, which is why `absent_auth` is a parameter rather than a
+    // constant. Do NOT widen this without proving the new transport injects an
+    // AuthContext for every authenticated caller.
+    caller.is_admin()
 }
 
 pub(crate) fn builtin_action_requires_admin(

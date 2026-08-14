@@ -86,6 +86,13 @@ pub struct GatewayConfigView {
     pub expose_resources: Option<Vec<String>>,
     #[serde(default)]
     pub expose_prompts: Option<Vec<String>>,
+    /// Whether this upstream proxies Agent Skills (SEP-2640). Projected like
+    /// its `proxy_*` siblings so an operator can see the setting without
+    /// reading `config.toml`; unlike them it defaults to false.
+    #[serde(default)]
+    pub proxy_skills: bool,
+    #[serde(default)]
+    pub expose_skills: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_mode_hint: Option<String>,
     #[serde(default)]

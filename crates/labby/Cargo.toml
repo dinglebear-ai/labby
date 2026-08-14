@@ -141,7 +141,7 @@ path = "src/lib.rs"
 #   deleted from this crate rather than left as sleeping feature gates.
 # - Helper/internal features are not standalone product slices unless this comment is updated.
 [features]
-all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd"]
+all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills"]
 gateway = [
   "dep:labby-codemode",
   "dep:labby-gateway",
@@ -154,6 +154,11 @@ api-docs = ["dep:utoipa"]
 default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []
+# Agent Skills over MCP (SEP-2640). `labby-gateway?/skills` is a WEAK dependency
+# feature: it enables skills support in labby-gateway only when that optional
+# crate is already in the build, so a serve-only `--features skills` build does
+# not silently drag the whole gateway in.
+skills = ["labby-gateway?/skills"]
 systemd = ["dep:sd-notify"]
 proxy-testkit = ["labby-gateway/testkit"]
 [lints]

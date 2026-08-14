@@ -6,7 +6,7 @@ Feature invariant status: clean.
 
 | Crate | Feature | Class | In Default | In All | Maps To | Dependencies |
 | --- | --- | --- | --- | --- | --- | --- |
-| labby | `all` | AggregateDefault | false | false | - | `lab-admin`<br>`api-docs`<br>`gateway-host`<br>`fs`<br>`systemd` |
+| labby | `all` | AggregateDefault | false | false | - | `lab-admin`<br>`api-docs`<br>`gateway-host`<br>`fs`<br>`systemd`<br>`skills` |
 | labby | `api-docs` | HelperInternal | false | true | - | `dep:utoipa` |
 | labby | `default` | AggregateDefault | false | false | - | `gateway-host` |
 | labby | `fs` | ProductSlice | false | true | - | `dep:walkdir`<br>`dep:globset`<br>`dep:unicode-normalization`<br>`dep:rustix` |
@@ -14,6 +14,7 @@ Feature invariant status: clean.
 | labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
 | labby | `proxy-testkit` | IntentionalException | false | false | - | `labby-gateway/testkit` |
+| labby | `skills` | IntentionalException | false | true | - | `labby-gateway?/skills` |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all |  |
@@ -23,6 +24,7 @@ Feature invariant status: clean.
 | labby-auth | `http-axum` | ExtractedCrate | true | true | - | `dep:axum`<br>`dep:tower` |
 | labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | true | true | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow`<br>`dep:labby-runtime` |
 | labby-codemode | `no_features` | ExtractedCrate | true | true | - |  |
+| labby-gateway | `skills` | ExtractedCrate | false | false | - |  |
 | labby-gateway | `testkit` | ExtractedCrate | false | false | - |  |
 | labby-web | `default` | AggregateDefault | true | true | - |  |
 | labby-winjob | `no_features` | ExtractedCrate | false | false | - |  |

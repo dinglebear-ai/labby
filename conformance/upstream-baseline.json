@@ -15,5 +15,15 @@
     "npm_package": "@modelcontextprotocol/conformance",
     "npm_dist_tag": "alpha",
     "version": "0.2.0-alpha.9"
+  },
+  "skills_extension": {
+    "repository": "modelcontextprotocol/experimental-ext-skills",
+    "ref": "main",
+    "commit": "9f55cd349932ba00fc18402873c9eb2d2c2e78cb",
+    "contract": "docs/contracts/skills-extension.md",
+    "watched_paths": [
+      "docs/sep-draft-skills-extension.md",
+      "docs/threat-model.md"
+    ]
   }
 }
