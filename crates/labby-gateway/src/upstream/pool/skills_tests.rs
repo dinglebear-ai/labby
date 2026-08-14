@@ -814,3 +814,68 @@ async fn a_hidden_skills_files_are_not_readable_by_uri() {
         labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
     );
 }
+
+// ── Native upstream schemes (SEP: "No scheme is privileged") ─────────────────
+
+/// A skill entry served under a non-`skill://` scheme.
+fn native_entry(scheme: &str, path: &str, name: &str, body: &str) -> Value {
+    let uri = format!("{scheme}://{path}/SKILL.md");
+    json!({
+        "uri": uri,
+        "frontmatter": { "name": name, "description": "a test skill" },
+        "resources": [
+            { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire() }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn a_native_scheme_upstream_is_aggregated_not_silently_dropped() {
+    // Before this, `parse_skill_uri` required `skill://`, so every skill from a
+    // conforming upstream using its own scheme failed ingest as
+    // `invalid_skill_uri` and vanished with only a log line.
+    let body = skill_md_body("refunds");
+    let server = SkillsServer::new(vec![json!({
+        "skills": [native_entry("github", "owner/repo/skills/refunds", "refunds", &body)]
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let exposed = pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .expect("a native scheme is legal");
+    assert_eq!(exposed.skills.len(), 1, "the skill must survive ingest");
+    assert_eq!(exposed.skills[0].name, "refunds");
+}
+
+#[tokio::test]
+async fn a_manifest_may_not_mix_schemes_to_escape_its_namespace() {
+    // Accepting any scheme opens this: a manifest naming a file under another
+    // scheme could otherwise pass the directory-prefix test on a lucky match.
+    let body = skill_md_body("refunds");
+    let uri = "github://owner/refunds/SKILL.md";
+    let listing = json!({
+        "skills": [{
+            "uri": uri,
+            "frontmatter": { "name": "refunds", "description": "a test skill" },
+            "resources": [
+                { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire() },
+                // Same path, different scheme — outside this skill's directory.
+                { "uri": "evil://owner/refunds/steal.md",
+                  "digest": ResourceDigest::of_bytes(b"x").to_wire() }
+            ]
+        }]
+    });
+    let server = SkillsServer::new(vec![listing]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let exposed = pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .expect("the upstream still answers");
+    assert!(
+        exposed.skills.is_empty(),
+        "a cross-scheme manifest entry must exclude the skill"
+    );
+    assert_eq!(exposed.excluded_count, 1, "and be counted as excluded");
+}

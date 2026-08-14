@@ -46,15 +46,34 @@ pub const FIRST_PARTY_ORIGIN: &str = "labby";
 /// one-segment form unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillUri {
+    /// Scheme without `://`. Usually `skill`, but the SEP privileges none.
+    scheme: String,
     full: String,
     /// Byte index of the first `/`, or `full.len()` when there is none.
     split: usize,
 }
 
 impl SkillUri {
-    fn from_full(full: String) -> Self {
+    fn from_parts(scheme: String, full: String) -> Self {
         let split = full.find('/').unwrap_or(full.len());
-        Self { full, split }
+        Self {
+            scheme,
+            full,
+            split,
+        }
+    }
+
+    /// The URI's scheme, without `://`.
+    ///
+    /// A server MAY serve skills under a scheme native to its own domain
+    /// (`github://owner/repo/skills/refunds/SKILL.md`), and the SEP is explicit
+    /// that "no scheme is privileged" — the structural constraints apply
+    /// regardless. It also warns that a host "MUST NOT conclude that a resource
+    /// is a skill merely because its URI carries a particular scheme": identity
+    /// comes from a `skills/list` entry or `skills/get`, never from the scheme.
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        &self.scheme
     }
 
     /// The first path segment.
@@ -125,7 +144,7 @@ impl SkillUri {
     /// Render back to canonical `skill://origin/path` form.
     #[must_use]
     pub fn to_uri(&self) -> String {
-        format!("{SKILL_URI_SCHEME}{}", self.full)
+        format!("{}://{}", self.scheme, self.full)
     }
 
     /// Mint this URI under a host-assigned origin label, **prepending** the
@@ -159,8 +178,23 @@ impl SkillUri {
                 ),
             });
         }
-        Ok(Self::from_full(format!("{origin}/{}", self.full)))
+        // Minted into Labby's own `skill://` namespace whatever the upstream
+        // used. Labby is the *server* downstream, so it publishes in its own
+        // namespace; the upstream's native URI is never reconstructed from this
+        // string but recovered from the cached manifest, which is what keeps a
+        // non-`skill://` upstream routable.
+        Ok(Self::from_parts(
+            "skill".to_string(),
+            format!("{origin}/{}", self.full),
+        ))
     }
+}
+
+/// RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`.
+fn is_valid_scheme(scheme: &str) -> bool {
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 fn invalid(uri: &str, why: &str) -> ToolError {
@@ -237,16 +271,27 @@ pub fn is_valid_origin_label(label: &str) -> bool {
 
 /// Parse a `skill://` URI into an origin label and an opaque remainder.
 ///
-/// Rejects: a non-`skill://` scheme, an over-long URI, an origin-only URI with
-/// no file part, a malformed origin label, and any empty, dot, or over-long
-/// segment.
+/// Rejects: a missing or malformed scheme, an over-long URI, and any empty,
+/// dot, or over-long segment. The scheme itself is not constrained to `skill`.
 pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
     if uri.chars().count() > MAX_URI_CHARS {
         return Err(invalid(uri, &format!("exceeds {MAX_URI_CHARS} characters")));
     }
-    let rest = uri
-        .strip_prefix(SKILL_URI_SCHEME)
-        .ok_or_else(|| invalid(uri, "expected the `skill://` scheme"))?;
+    // Any scheme, not just `skill://`. The SEP: "A server MAY serve skills
+    // under another scheme native to its domain (e.g.,
+    // `github://owner/repo/skills/refunds/SKILL.md`). No scheme is privileged:
+    // the structural constraints above ... apply regardless of scheme."
+    // Requiring `skill://` here silently excluded every skill from a conforming
+    // upstream that used its own scheme.
+    let (scheme, rest) = uri
+        .split_once("://")
+        .ok_or_else(|| invalid(uri, "expected a `<scheme>://` prefix"))?;
+    if !is_valid_scheme(scheme) {
+        return Err(invalid(
+            uri,
+            "scheme must start with a letter and contain only letters, digits, `+`, `-`, or `.`",
+        ));
+    }
     if rest.contains('?') || rest.contains('#') {
         return Err(invalid(
             uri,
@@ -274,7 +319,7 @@ pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
         check_segment(uri, segment)?;
     }
 
-    Ok(SkillUri::from_full(rest.to_string()))
+    Ok(SkillUri::from_parts(scheme.to_string(), rest.to_string()))
 }
 
 #[cfg(test)]
@@ -337,14 +382,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_skill_scheme() {
-        for uri in [
-            "file:///etc/passwd",
-            "lab://catalog",
-            "https://example.com/SKILL.md",
-        ] {
-            assert!(parse_skill_uri(uri).is_err(), "should reject {uri}");
-        }
+    fn a_non_skill_scheme_is_accepted_but_still_structurally_checked() {
+        // The SEP privileges no scheme: an upstream MAY serve skills under one
+        // native to its domain. What a URI must still satisfy is the structure.
+        assert!(parse_skill_uri("https://example.com/refunds/SKILL.md").is_ok());
+        assert!(parse_skill_uri("lab://catalog").is_ok());
+        // An empty authority is still malformed, whatever the scheme.
+        assert!(parse_skill_uri("file:///etc/passwd").is_err());
+        // And identity never comes from the scheme — `parse_skill_uri` says
+        // nothing about whether a URI names a skill; only a `skills/list` entry
+        // or `skills/get` does.
+        assert!(
+            parse_skill_uri("https://example.com/refunds/SKILL.md")
+                .expect("parses")
+                .skill_md_parts()
+                .is_some()
+        );
     }
 
     #[test]

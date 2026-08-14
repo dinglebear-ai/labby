@@ -19,6 +19,8 @@
 //! and file contents are untouched. A digest the upstream computed therefore
 //! still describes exactly the bytes Labby relays.
 
+use std::collections::BTreeSet;
+
 use labby_runtime::gateway_config::UpstreamConfig;
 use labby_runtime::skills::wire::{SkillEntry, SkillResource};
 use labby_runtime::skills::{ValidatedSkill, parse_skill_uri};
@@ -139,10 +141,35 @@ pub(crate) fn mint_proxied_entries(
     skills: &[ValidatedSkill],
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Vec<SkillEntry> {
-    skills
-        .iter()
-        .filter_map(|skill| mint_proxied_entry(&config.name, skill, meta))
-        .collect()
+    // A skill is identified by its `uri`, so publishing one twice would hand a
+    // client two different skills under one identifier. Minting drops the
+    // upstream's scheme (Labby publishes in its own `skill://` namespace), so
+    // an upstream serving both `skill://a/SKILL.md` and `github://a/SKILL.md`
+    // would collide here. Both are dropped rather than one silently winning:
+    // choosing by iteration order decides, invisibly, which instructions an
+    // agent acts on.
+    let mut minted: Vec<SkillEntry> = Vec::with_capacity(skills.len());
+    let mut colliding: BTreeSet<String> = BTreeSet::new();
+    for skill in skills {
+        let Some(entry) = mint_proxied_entry(&config.name, skill, meta) else {
+            continue;
+        };
+        if minted.iter().any(|existing| existing.uri == entry.uri) {
+            colliding.insert(entry.uri.clone());
+        }
+        minted.push(entry);
+    }
+    if !colliding.is_empty() {
+        for uri in &colliding {
+            tracing::warn!(
+                upstream = %config.name,
+                skill = %uri,
+                "excluding skills that mint to one URI under different schemes"
+            );
+        }
+        minted.retain(|entry| !colliding.contains(&entry.uri));
+    }
+    minted
 }
 
 #[cfg(test)]
@@ -153,6 +180,19 @@ mod tests {
 
     pub(super) fn upstream_skill_for_meta() -> ValidatedSkill {
         upstream_skill("their-label", "refunds")
+    }
+
+    fn upstream_skill_with_scheme(scheme: &str, origin: &str, name: &str) -> ValidatedSkill {
+        let uri = format!("{scheme}://{origin}/{name}/SKILL.md");
+        let entry: SkillEntry = serde_json::from_value(json!({
+            "uri": uri,
+            "frontmatter": { "name": name, "description": "d" },
+            "resources": [
+                { "uri": uri, "digest": labby_runtime::skills::ResourceDigest::of_bytes(b"a").to_wire() },
+            ]
+        }))
+        .expect("entry");
+        validate_skill_entry(&entry).expect("valid")
     }
 
     fn upstream_skill(origin: &str, name: &str) -> ValidatedSkill {
@@ -231,19 +271,50 @@ mod tests {
         // not substituted, so nothing the upstream organized by is discarded.
         assert_eq!(minted.uri, "skill://acme-corp/acme/refunds/SKILL.md");
         // Nothing here dedupes by name, so a sibling at another path is
-        // unaffected — asserting the absence of a name-keyed collapse.
+        // unaffected — asserting the absence of a name-keyed collapse. The two
+        // skills must differ by *path*, as the comment above describes; passing
+        // the identical skill twice tested a degenerate case a real listing
+        // cannot produce, and now correctly trips the same-URI collision guard.
         let entries = mint_proxied_entries(
             &UpstreamConfig {
                 name: "acme-corp".to_string(),
                 ..super::super::tests_support::minimal_config()
             },
             &[
-                upstream_skill("acme", "refunds"),
-                upstream_skill("acme", "refunds"),
+                upstream_skill("acme/billing", "refunds"),
+                upstream_skill("acme/support", "refunds"),
             ],
             None,
         );
         assert_eq!(entries.len(), 2, "no name-keyed deduplication");
+        assert_ne!(
+            entries[0].uri, entries[1].uri,
+            "distinct paths, distinct URIs"
+        );
+    }
+
+    #[test]
+    fn two_schemes_minting_to_one_uri_drop_both_rather_than_picking() {
+        // Minting drops the upstream's scheme, because Labby publishes in its
+        // own `skill://` namespace. So an upstream serving the same path under
+        // two schemes would publish one identifier for two different skills.
+        // Resolving that by iteration order would decide, invisibly, which
+        // instructions an agent acts on.
+        let entries = mint_proxied_entries(
+            &UpstreamConfig {
+                name: "gh".to_string(),
+                ..super::super::tests_support::minimal_config()
+            },
+            &[
+                upstream_skill_with_scheme("skill", "acme", "refunds"),
+                upstream_skill_with_scheme("github", "acme", "refunds"),
+            ],
+            None,
+        );
+        assert!(
+            entries.is_empty(),
+            "an ambiguous identifier must publish neither skill, got {entries:?}"
+        );
     }
 
     #[test]

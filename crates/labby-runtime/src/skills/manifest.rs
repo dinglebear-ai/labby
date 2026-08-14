@@ -124,7 +124,15 @@ pub fn validate_skill_entry(entry: &SkillEntry) -> Result<ValidatedSkill, SkillR
 
         // Reject before the prefix test so a malformed URI cannot slip through
         // on a lucky string match.
-        parse_skill_uri(&resource.uri).map_err(|_| SkillRejection::ManifestUriOutOfNamespace)?;
+        let resource_uri = parse_skill_uri(&resource.uri)
+            .map_err(|_| SkillRejection::ManifestUriOutOfNamespace)?;
+        // Now that any scheme is accepted, a manifest could otherwise name a
+        // file under a *different* scheme and still satisfy the prefix test on
+        // some other axis. Every file of a skill lives in that skill's
+        // directory, which means one scheme per skill.
+        if resource_uri.scheme() != uri.scheme() {
+            return Err(SkillRejection::ManifestUriOutOfNamespace);
+        }
         if !resource.uri.starts_with(skill_root) {
             return Err(SkillRejection::ManifestUriOutOfNamespace);
         }
