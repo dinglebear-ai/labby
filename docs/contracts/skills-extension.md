@@ -285,6 +285,30 @@ annotations via `_meta` under their own reverse-domain prefix — not the
 structurally guaranteed rather than merely validated: an upstream's segments can
 never occupy the first position of a URI Labby publishes.
 
+**No scheme is privileged.** An upstream MAY serve skills under a scheme
+native to its own domain — the SEP's example is
+`github://owner/repo/skills/refunds/SKILL.md` — and "the structural constraints
+above ... apply regardless of scheme." Labby parses any RFC 3986 scheme and
+applies the same structure; requiring `skill://` silently excluded every skill
+from a conforming upstream that used its own.
+
+Two consequences follow, both handled by refusing rather than guessing:
+
+- A manifest may not mix schemes. Every file of a skill lives in that skill's
+  directory, so one scheme per skill; a cross-scheme entry excludes the skill.
+- Minting drops the upstream's scheme, since Labby publishes in its own
+  `skill://` namespace. An upstream serving one path under two schemes would
+  therefore publish a single identifier for two different skills. Both are
+  excluded from the listing, and an ambiguous read is refused — resolving either
+  by iteration order would decide, invisibly, which instructions an agent acts
+  on.
+
+The native URI is never reconstructed from the published string; it is recovered
+from the cached manifest, which is what keeps a non-`skill://` upstream
+routable. Note also that the scheme confers no identity: the SEP says a host
+"MUST NOT conclude that a resource is a skill merely because its URI carries a
+particular scheme" — identity comes from a `skills/list` entry or `skills/get`.
+
 **Inbound URIs are not held to Labby's minting grammar.** Labby mints labels as
 lowercase-alphanumeric-with-hyphens, but the SEP only says the first segment
 SHOULD be a valid RFC 3986 `reg-name`. Applying the stricter minting rule to

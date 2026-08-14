@@ -395,12 +395,25 @@ impl UpstreamPool {
                 if let Ok(parsed) = parse_skill_uri(&resource.uri)
                     && parsed.full_path() == path
                 {
+                    // Two schemes can share a path — `skill://a/SKILL.md` and
+                    // `github://a/SKILL.md` both publish as
+                    // `skill://<label>/a/SKILL.md`. Resolving by iteration order
+                    // would serve one skill's bytes under the other's identity,
+                    // so an ambiguous path is refused instead.
+                    if let Some((existing, _, _)) = found
+                        && existing != resource.uri.as_str()
+                    {
+                        return Err(ToolError::Sdk {
+                            sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
+                            message: format!(
+                                "`{path}` on upstream `{}` is served under more than one scheme, \
+                                 so it does not identify a single file",
+                                config.name
+                            ),
+                        });
+                    }
                     found = Some((resource.uri.as_str(), resource.digest.as_str(), skill));
-                    break;
                 }
-            }
-            if found.is_some() {
-                break;
             }
         }
 

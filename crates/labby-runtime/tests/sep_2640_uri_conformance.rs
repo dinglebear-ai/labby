@@ -139,3 +139,60 @@ fn an_upstream_label_labby_would_reject_is_still_parseable_inbound() {
         );
     }
 }
+
+// ── Native schemes ───────────────────────────────────────────────────────────
+//
+// > A server MAY serve skills under another scheme native to its domain (e.g.,
+// > `github://owner/repo/skills/refunds/SKILL.md`). No scheme is privileged:
+// > the structural constraints above — `<skill-path>` ending in the skill name,
+// > `SKILL.md` explicit in the URI — apply regardless of scheme.
+
+#[test]
+fn a_native_scheme_parses_and_yields_the_same_structure() {
+    // The SEP's own native-scheme example. Requiring `skill://` here excluded
+    // every skill from a conforming upstream that used its own scheme.
+    let uri = parse_skill_uri("github://owner/repo/skills/refunds/SKILL.md")
+        .expect("a native scheme is legal");
+    assert_eq!(uri.scheme(), "github");
+    let (skill_path, name) = uri.skill_md_parts().expect("structure applies regardless");
+    assert_eq!(skill_path, "owner/repo/skills/refunds");
+    assert_eq!(name, "refunds");
+}
+
+#[test]
+fn structural_constraints_still_bind_under_a_native_scheme() {
+    // "No scheme is privileged" cuts both ways: a native scheme buys no
+    // exemption from the rules a `skill://` URI must satisfy.
+    assert!(parse_skill_uri("github://owner/repo/../../etc/passwd/SKILL.md").is_err());
+    assert!(parse_skill_uri("github://owner//SKILL.md").is_err());
+}
+
+#[test]
+fn a_malformed_scheme_is_still_rejected() {
+    for uri in [
+        "notascheme/refunds/SKILL.md",
+        "1github://owner/refunds/SKILL.md",
+        "git hub://owner/refunds/SKILL.md",
+    ] {
+        assert!(parse_skill_uri(uri).is_err(), "{uri} should be refused");
+    }
+}
+
+#[test]
+fn a_native_scheme_skill_is_published_in_labbys_own_namespace() {
+    // Labby is the server downstream, so it publishes under `skill://` whatever
+    // the upstream used. The native URI is not reconstructed from this string —
+    // it is recovered from the cached manifest, which is what keeps the read
+    // routable.
+    let native = parse_skill_uri("github://owner/repo/skills/refunds/SKILL.md").expect("parses");
+    let minted = native.with_origin("gh").expect("valid label");
+    assert_eq!(minted.scheme(), "skill");
+    assert_eq!(
+        minted.to_uri(),
+        "skill://gh/owner/repo/skills/refunds/SKILL.md"
+    );
+    // The name survives, and the remainder is the upstream's own path, which is
+    // what the read matches against.
+    assert_eq!(minted.skill_md_parts().expect("resolves").1, "refunds");
+    assert_eq!(minted.path(), native.full_path());
+}
