@@ -857,10 +857,11 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             Activity · Routes · Logs, ours is whatever the gateway API can back
             — but the tab chrome now is the mock's, measured off its live DOM.
 
-            Deviations: the mock's header card is sticky (`top: -186px`), ours
-            is not; and the mock shows no endpoint line here (it lives in the
-            table row and in the transport button's title) while we keep one,
-            since the endpoint is the thing operators copy most.
+            Deviation: the mock's header card is sticky (`top: -186px`), ours
+            is not. The endpoint is not printed here because the mock does not
+            print it here — it stays one click away in the meta lane's copy
+            button (whose title is the endpoint), in the Runtime tab's
+            Connection & Network card, and in the Config tab's client JSON.
           */}
           <DetailCard
             padding="16px 20px 0"
@@ -1045,22 +1046,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   </Tooltip>
                 </div>
               </div>
-            </div>
-
-            {/* Endpoint — a deliberate addition; see the note above. */}
-            <div className="mt-3">
-              <pre
-                className="aurora-scrollbar max-w-3xl overflow-x-auto whitespace-pre-wrap break-all px-3 py-2 font-mono text-[11px] leading-5 text-aurora-text-primary"
-                style={{
-                  borderRadius: 9,
-                  border:
-                    '1px solid color-mix(in srgb, var(--aurora-border-default) 60%, var(--aurora-page-bg))',
-                  background: 'var(--gw0-0_42)',
-                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
-                }}
-              >
-                <code className="font-mono">{endpointDisplay}</code>
-              </pre>
             </div>
 
             {/*
