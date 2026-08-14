@@ -132,6 +132,53 @@ pub(crate) fn code_mode_full_annotations() -> ToolAnnotations {
         .open_world(true)
 }
 
+/// Advertised safety hints for a registry-backed service tool.
+///
+/// `destructiveHint` is the least-safe union of the service's action catalog,
+/// except for `server_logs`: that admin-only surface can disclose sensitive
+/// free-text and is deliberately kept behind the next-hop destructive gate.
+/// The other hints are reviewed service-level claims; absence of a destructive
+/// action is not enough to infer that a service is read-only.
+#[must_use]
+fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
+    let derived_destructive = service.actions.iter().any(|action| action.destructive);
+    let (read_only, destructive, idempotent, open_world) = match service.name {
+        "fs" | "lab_admin" => (true, derived_destructive, true, false),
+        "doctor" => (false, derived_destructive, true, true),
+        "gateway" | "setup" | "snippets" => (false, derived_destructive, false, true),
+        // `server_logs` is operationally read-only, but advertising it as such
+        // would bypass the conservative next-hop gate described above.
+        SERVER_LOGS_TOOL_NAME => (false, true, false, false),
+        // Registries are extensible in tests and future feature slices. New
+        // services get conservative hints until their behavior is audited.
+        _ => (false, true, false, true),
+    };
+
+    ToolAnnotations::new()
+        .read_only(read_only)
+        .destructive(destructive)
+        .idempotent(idempotent)
+        .open_world(open_world)
+}
+
+#[must_use]
+fn mcp_app_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(false)
+        .idempotent(true)
+        .open_world(false)
+}
+
+#[must_use]
+fn gateway_status_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(true)
+        .destructive(false)
+        .idempotent(true)
+        .open_world(false)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PermanentToolRegistry;
 
@@ -168,6 +215,7 @@ impl PermanentToolRegistry {
         admin_apps_visible: bool,
     ) -> Tool {
         let tool = Tool::new(service.name, service.description, builtin_action_schema())
+            .with_annotations(builtin_service_annotations(service))
             .with_raw_output_schema(dispatch_envelope_output_schema());
         if service.name == SERVER_LOGS_TOOL_NAME && admin_apps_visible {
             tool.with_meta(server_logs_tool_meta(service.name))
@@ -204,6 +252,7 @@ impl PermanentToolRegistry {
             mcp_app_tool_description(),
             mcp_app_tool_schema(),
         )
+        .with_annotations(mcp_app_annotations())
     }
 
     /// Descriptor for the Add Server admin app tool.
@@ -218,6 +267,7 @@ impl PermanentToolRegistry {
             "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
             add_server_tool_schema(),
         )
+        .with_annotations(code_mode_full_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
         .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME))
     }
@@ -234,6 +284,7 @@ impl PermanentToolRegistry {
             "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
             gateway_status_tool_schema(),
         )
+        .with_annotations(gateway_status_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
         .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME))
     }
@@ -358,6 +409,11 @@ mod tests {
         let schema = tool.output_schema.as_ref().expect("outputSchema");
         assert_eq!(schema["properties"]["ok"]["const"], serde_json::json!(true));
         assert!(tool.meta.is_none(), "only server_logs carries app meta");
+        let annotations = tool.annotations.expect("fallback annotations");
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.destructive_hint, Some(true));
+        assert_eq!(annotations.idempotent_hint, Some(false));
+        assert_eq!(annotations.open_world_hint, Some(true));
     }
 
     #[test]
@@ -369,6 +425,44 @@ mod tests {
         assert!(hidden.meta.is_none(), "non-admin server_logs has no meta");
         // The schema is not audience-dependent.
         assert_eq!(visible.output_schema, hidden.output_schema);
+        assert_eq!(visible.annotations, hidden.annotations);
+    }
+
+    #[test]
+    fn every_registry_service_advertises_reviewed_explicit_annotations() {
+        let registry = crate::registry::build_docs_registry();
+        let permanent = PermanentToolRegistry::new();
+        let expected = [
+            ("doctor", false, false, true, true),
+            ("fs", true, false, true, false),
+            ("gateway", false, true, false, true),
+            ("lab_admin", true, false, true, false),
+            ("server_logs", false, true, false, false),
+            ("setup", false, true, false, true),
+            ("snippets", false, true, false, true),
+        ];
+
+        for (name, read_only, destructive, idempotent, open_world) in expected {
+            let Some(service) = registry.service(name) else {
+                // Feature slices intentionally omit services they do not compile.
+                continue;
+            };
+            let annotations = permanent
+                .builtin_service_tool(service, true)
+                .annotations
+                .expect("every Labby-owned service tool must carry annotations");
+            assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
+            assert_eq!(annotations.destructive_hint, Some(destructive), "{name}");
+            assert_eq!(annotations.idempotent_hint, Some(idempotent), "{name}");
+            assert_eq!(annotations.open_world_hint, Some(open_world), "{name}");
+            if name != SERVER_LOGS_TOOL_NAME {
+                assert_eq!(
+                    destructive,
+                    service.actions.iter().any(|action| action.destructive),
+                    "{name} destructiveHint drifted from ActionSpec"
+                );
+            }
+        }
     }
 
     #[cfg(feature = "gateway")]
@@ -385,6 +479,21 @@ mod tests {
         let ui_schema = registry.code_mode_ui_tool(&[]).output_schema;
         assert!(ui_schema.is_some());
         assert_ne!(ui_schema, registry.add_server_tool().output_schema);
+
+        let cases = [
+            (registry.mcp_app_tool(), false, false, true, false),
+            (registry.add_server_tool(), false, true, false, true),
+            (registry.gateway_status_tool(), true, false, true, false),
+            (registry.code_mode_ui_tool(&[]), false, true, false, true),
+        ];
+        for (tool, read_only, destructive, idempotent, open_world) in cases {
+            let name = tool.name.to_string();
+            let annotations = tool.annotations.expect("owned meta tool annotations");
+            assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
+            assert_eq!(annotations.destructive_hint, Some(destructive), "{name}");
+            assert_eq!(annotations.idempotent_hint, Some(idempotent), "{name}");
+            assert_eq!(annotations.open_world_hint, Some(open_world), "{name}");
+        }
     }
 
     #[test]

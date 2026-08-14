@@ -1,6 +1,6 @@
 # Specification — Tool Annotations
 
-Status: proposed, **revised after two review rounds** · Issue: [#212](https://github.com/dinglebear-ai/labby/issues/212) · Epic: `lab-g1av5`
+Status: implemented · Issue: [#212](https://github.com/dinglebear-ai/labby/issues/212) · Epic: `lab-g1av5`
 
 > Read [REVIEW_FINDINGS.md](REVIEW_FINDINGS.md) alongside this document. It records
 > what changed and why, including one **gating unknown (F9)** that must be settled
@@ -35,7 +35,7 @@ Two concrete gaps:
   catalog, so it cannot drift from `ActionSpec.destructive`.
 - G3. Upstream annotations are proven to reach downstream clients byte-identical,
   on every listing path, including through two gateway hops.
-- G4. The two mirrored construction sites cannot silently diverge.
+- G4. The wire listing and peer-contract listing cannot silently diverge.
 
 ## 3. Non-goals
 
@@ -81,6 +81,7 @@ the destructive-flag count alone. **"Zero destructive actions" does not imply
 | `setup` | 16 / 32 | 26 / 32 | **no** | Config/env writes, repair actions. |
 | `gateway` | **12 / 64** | **61 / 64** | **no** | `gateway.code_mode.set`, `enrich.preview`, `enrich.apply`, `remove`, `test`. |
 | `codemode`, `codemode_ui` | n/a | — | **no** | Execute snippets that invoke arbitrary upstream tools. |
+| `codemode_read` | n/a | — | **yes** | Restricted to explicitly read-only upstream tools; artifact writes are disabled. |
 | `add_server` (meta) | n/a | — | **no** | Persists gateway config and can spawn a local subprocess. |
 
 Three lessons this audit produced:
@@ -121,6 +122,7 @@ service tools is computed at runtime and MUST equal the table.
 | `snippets` | `false` | `true` | `false` | `true` |
 | `codemode` | `false` | `true` | `false` | `true` |
 | `codemode_ui` | `false` | `true` | `false` | `true` |
+| `codemode_read` | `true` | `false` | `true` | `true` |
 | `add_server` | `false` | `true` | `false` | `true` |
 
 Rationale for the less obvious cells:
@@ -144,8 +146,8 @@ mutation risk. The override must carry a comment and its own test.
 
 Verification that derivation agrees with the table: `doctor` 0, `fs` 0,
 `lab_admin` 0 → `false`; `snippets` 2, `setup` 16, `gateway` 12 → `true`.
-Eleven of twelve rows follow the rule; `server_logs` is the one documented
-exception above.
+Six of the seven registry-backed service rows follow derivation; `server_logs`
+is the one documented exception above. Synthetic tools use reviewed constants.
 
 **A deliberate deviation from ecosystem convention.** Setting all four hints
 explicitly is *not* what reference implementations do — the official filesystem

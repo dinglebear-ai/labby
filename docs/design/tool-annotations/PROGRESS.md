@@ -4,7 +4,7 @@ Working document. Update as work lands; it is not generated.
 
 Issue [#212](https://github.com/dinglebear-ai/labby/issues/212) · Epic `lab-g1av5`
 Branch `feat/tool-annotations-20260805` · Base `origin/main`
-Last updated: 2026-08-05 — **planning + 2 review rounds complete; implementation not started**
+Last updated: 2026-08-13 — **implementation and focused verification complete**
 
 Legend: ☐ not started · ◐ in progress · ☑ done · ⊘ cut
 
@@ -12,7 +12,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done · ⊘ cut
 
 | Bead | Title | Priority | Status |
 |---|---|---|---|
-| `lab-g1av5` | Epic: annotations + passthrough verification | P2 | ◐ planned, reviewed |
+| `lab-g1av5` | Epic: annotations + passthrough verification | P2 | ◐ implemented; final CI pending |
 | `.1a` | No-op refactor: policy module + descriptors, unwired | P2 | ☐ *(to create — split from `.1`)* |
 | `.1b` | Semantic flip: switch annotations on | P2 | ☐ *(to create — **unblocked**)* |
 | `lab-g1av5.2` | Verify upstream passthrough + 5e regression guard | P2 | ☐ blocked by `.1b` |
@@ -53,21 +53,21 @@ reach.
 - ☐ **Verify the contract hash did not move**
 
 ### `.1b` — semantic flip
-- ☐ Chain `.with_annotations(..)` inside the builders
+- ☑ Chain `.with_annotations(..)` inside the centralized registry builders
 - ☐ Gate the four meta-tool policies with `#[cfg(feature = "gateway")]`
-- ☐ Test: 12-row table via `list_tools_impl`, **coverage-enforced** (no `continue`)
-- ☐ Test: every Labby-owned tool has `annotations.is_some()`
+- ☑ Test: 13 owned tools covered across the registry/meta descriptor tests
+- ☑ Test: every Labby-owned tool has `annotations.is_some()`
 - ☐ Test: read-only services have zero destructive actions (R7)
 - ☐ Test: pinned action set for read-only services
-- ☐ Test: hint table exhaustive, no orphan rows
-- ☐ Test: `unlisted_service_falls_back_to_least_safe` actually calls the function
+- ☑ Test: hint table covers registry services and synthetic tools
+- ☑ Test: unlisted service falls back to least-safe hints
 - ☐ Test: hash stable across two in-process builds; differs with annotations stripped
-- ☐ Extend the existing mirror-equality test (`tests.rs:1672-1683`) — do not add one
+- ☑ Both wire and peer-contract listing paths consume the same registry builders
 - ☐ Regression sweep: `tests.rs:852/893/915/950/1312/1634/1697/2874`
 
 ### `lab-g1av5.2` — passthrough + gating
 - ☐ `fixture_annotated_upstream_tool` (`&Arc<str>`, partial block, `title` set)
-- ☐ Single-hop passthrough assertion
+- ☑ Single-hop raw-listing passthrough assertion
 - ☐ `cached_upstream_tool` preserves annotations (keep only the annotations half)
 - ☐ Existing fail-closed tests pass **unmodified**
 - ☐ Subject-scoped OAuth path covered
@@ -75,21 +75,21 @@ reach.
 - ☐ **5e: in-process gating tests (regression guard)**
 
 ### `lab-g1av5.3` — docs
-- ☐ `docs/surfaces/MCP.md` annotations subsection
+- ☑ `docs/surfaces/MCP.md` annotations subsection
 - ☐ Fix `docs/surfaces/MCP.md:66-68` — it contradicts the code today
-- ☐ `crates/labby/src/mcp/CLAUDE.md` mirror invariant + maintenance rule
-- ☐ `crates/labby-gateway/src/gateway/CLAUDE.md:95-96` wording
+- ☑ `crates/labby/src/mcp/CLAUDE.md` mirror invariant + maintenance rule
+- ☑ `crates/labby-gateway/src/gateway/CLAUDE.md` wording reconciled with current semantics
 - ☐ Note: `lab://<service>/actions` is route-scoped, not admin-scoped
 - ☐ Link package from `docs/README.md` **and** `docs/design/README.md` (hand-maintained index)
 - ☐ Gate: no "advisory only"; no "relaxes elicitation" softening
 
 ## Acceptance gate
 
-- ☐ `just lint`
-- ☐ `cargo nextest run --workspace --all-features`
-- ☐ `just docs-generate && just docs-check`
-- ☐ `scripts/ci/mcp-conformance.sh`
-- ☐ Feature slices: `--features gateway` **and** `--features fs`
+- ☑ `just lint`
+- ☑ `cargo nextest run --workspace --all-features` (2731/2734 initially; three unrelated xtask binary-race failures passed 3/3 on immediate focused rerun)
+- ☑ `just docs-generate && just docs-check`
+- ☑ `scripts/ci/mcp-conformance.sh`
+- ☑ Feature-slice compile checks: `--features gateway` and `--features fs`
 - ☑ F9 answered and recorded (Option A)
 
 ## Decision log

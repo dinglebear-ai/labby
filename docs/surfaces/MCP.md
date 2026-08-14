@@ -160,9 +160,10 @@ Independently of what an upstream claims, Labby derives its own fail-closed
 is treated as destructive unless its annotations explicitly say otherwise. That
 value never reaches the wire.
 
-Annotations on Labby's **own** tools are specified in
-[../design/tool-annotations/](../design/tool-annotations/) and are not yet
-implemented. Two properties from that spec matter to clients: a Labby tool fronts
+Annotations on Labby's **own** tools are implemented by the shared
+`PermanentToolRegistry` descriptor builders and specified in
+[../design/tool-annotations/](../design/tool-annotations/). Two properties from
+that spec matter to clients: a Labby tool fronts
 a whole service, so a tool-level hint is the least-safe **union** of that
 service's actions and must not be read as a claim about a specific `action`; and
 in a labby → labby chain these hints feed the next hop's own gate, so they are

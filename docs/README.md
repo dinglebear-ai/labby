@@ -132,6 +132,8 @@ The docs are split by topic so contributors do not have to recover architecture,
   Focused feature docs and implementation artifacts.
 - [design/README.md](./design/README.md)
   Design contract and artifact index.
+- [design/tool-annotations/README.md](./design/tool-annotations/README.md)
+  MCP tool-safety hint policy, downstream gating semantics, and verification package.
 - [SERVICE_ONBOARDING.md](./dev/SERVICE_ONBOARDING.md)
   End-to-end checklist for adding a new service, from upstream spec to verification.
 - [SCAFFOLD_AND_AUDIT.md](./dev/SCAFFOLD_AND_AUDIT.md)

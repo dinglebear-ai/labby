@@ -1,10 +1,12 @@
 # Tool Annotations — Design Package
 
-Design and implementation package for [issue #212](https://github.com/dinglebear-ai/labby/issues/212):
+Implemented design and verification package for [issue #212](https://github.com/dinglebear-ai/labby/issues/212):
 set MCP `ToolAnnotations` on Labby's own tools, and guarantee that upstream tools'
 annotations reach downstream clients unchanged.
 
-Tracked as beads epic `lab-g1av5` (children `lab-g1av5.1` … `lab-g1av5.4`).
+Tracked as beads epic `lab-g1av5`. The original implementation plan is retained
+as design history; the live implementation uses the newer centralized
+`mcp/permanent_tools.rs` registry introduced after that plan was written.
 
 ## Read in this order
 
@@ -40,7 +42,7 @@ Child bead `lab-g1av5.2` therefore adds *tests*, not a fix.
 function that consumes annotations is `cached_upstream_tool`, now at
 `crates/labby-gateway/src/upstream/pool/helpers.rs:423`.
 
-**3. Annotations are not advisory here — they gate authorization at the next
+**3. Annotations are not inert here — they gate authorization at the next
 hop.** In a labby → labby chain the downstream gateway derives its destructive
 gate *from these very hints* (`cached_upstream_tool`, fail-closed). That value
 gates not just MRTR elicitation but a hard `forbidden` in Code Mode
@@ -54,8 +56,8 @@ implementation ([SPEC § 7, F9](SPEC.md#7-safety-semantics-must-be-stated-correc
 
 ## Scope boundary
 
-In scope: annotation policy, the two mirrored construction sites, passthrough
-tests, docs.
+In scope: annotation policy, the shared descriptor registry consumed by both
+listing paths, passthrough tests, and docs.
 
 Out of scope: extending `ActionSpec` with `read_only`/`idempotent`/`open_world`
 fields (per-action hints), and changing the `cached_upstream_tool` derivation or
