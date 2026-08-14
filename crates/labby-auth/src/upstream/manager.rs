@@ -1426,7 +1426,7 @@ pub async fn discover_published_metadata(
         let response = match client.get(metadata_url.clone()).await {
             Ok(response) => response,
             Err(error) => {
-                remember_metadata_error(&mut first_error, error);
+                remember_or_return_metadata_error(&mut first_error, error)?;
                 continue;
             }
         };
@@ -1453,14 +1453,10 @@ pub async fn discover_published_metadata(
             .as_deref()
             .is_some_and(|resource| resource != upstream.as_str())
         {
-            remember_metadata_error(
-                &mut first_error,
-                OauthError::ResourceMismatch(
-                    "protected-resource metadata does not match the configured upstream resource"
-                        .to_string(),
-                ),
-            );
-            continue;
+            return Err(OauthError::ResourceMismatch(
+                "protected-resource metadata does not match the configured upstream resource"
+                    .to_string(),
+            ));
         }
 
         let mut authorization_servers = Vec::new();
@@ -1478,21 +1474,17 @@ pub async fn discover_published_metadata(
             ) {
                 Ok(url) => url,
                 Err(error) => {
-                    remember_metadata_error(
-                        &mut first_error,
-                        OauthError::Egress {
-                            kind: "validation_failed",
-                            message: format!("invalid OAuth authorization server URL: {error}"),
-                        },
-                    );
-                    continue;
+                    return Err(OauthError::Egress {
+                        kind: "validation_failed",
+                        message: format!("invalid OAuth authorization server URL: {error}"),
+                    });
                 }
             };
             for authorization_metadata_url in authorization_metadata_candidates(&server_url) {
                 let response = match client.get(authorization_metadata_url).await {
                     Ok(response) => response,
                     Err(error) => {
-                        remember_metadata_error(&mut first_error, error);
+                        remember_or_return_metadata_error(&mut first_error, error)?;
                         continue;
                     }
                 };
@@ -1523,7 +1515,7 @@ pub async fn discover_published_metadata(
         let response = match client.get(authorization_metadata_url).await {
             Ok(response) => response,
             Err(error) => {
-                remember_metadata_error(&mut first_error, error);
+                remember_or_return_metadata_error(&mut first_error, error)?;
                 continue;
             }
         };
@@ -1550,6 +1542,27 @@ pub async fn discover_published_metadata(
 
 fn remember_metadata_error(first_error: &mut Option<OauthError>, error: OauthError) {
     first_error.get_or_insert(error);
+}
+
+fn remember_or_return_metadata_error(
+    first_error: &mut Option<OauthError>,
+    error: OauthError,
+) -> Result<(), OauthError> {
+    if terminal_metadata_error(&error) {
+        return Err(error);
+    }
+    remember_metadata_error(first_error, error);
+    Ok(())
+}
+
+fn terminal_metadata_error(error: &OauthError) -> bool {
+    matches!(
+        error,
+        OauthError::Egress {
+            kind: "ssrf_blocked" | "response_too_large",
+            ..
+        }
+    )
 }
 
 fn metadata_not_found(response: &oauth2::HttpResponse) -> bool {
