@@ -811,8 +811,12 @@ impl ServerHandler for LabMcpServer {
         // and intentionally leaves the typed params field empty. Restore the
         // canonical metadata before handing the envelope to proxy routing.
         restore_request_meta(&mut request.meta, &context.meta);
+        // Keep the full product-dispatch future off rmcp's transport worker
+        // stack. In a multi-hop relay, nested Labby servers otherwise poll the
+        // all-features dispatch state on Tokio's bounded worker stack and can
+        // overflow it as new in-process services enlarge that state machine.
         Ok(provenance::stamp_call_tool_response(
-            self.call_tool_response_impl(request, context).await?,
+            Box::pin(self.call_tool_response_impl(request, context)).await?,
         ))
     }
 
