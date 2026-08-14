@@ -79,10 +79,12 @@ export function MostActivePanel({
   actors,
   window,
   onSelectActor,
+  actorKindsCollected = true,
 }: {
   actors: { agent: ActorFacet; device: ActorFacet; ip: ActorFacet }
   window: MetricsWindow
   onSelectActor: (entry: ActorUsageEntry) => void
+  actorKindsCollected?: boolean
 }) {
   const [facet, setFacet] = useState<ActorKind>('agent')
   const current = actors[facet]
@@ -91,11 +93,13 @@ export function MostActivePanel({
 
   return (
     <DashboardPanel
-      title="Most active"
+      title={actorKindsCollected ? 'Most active' : 'Most active subjects'}
       icon={<Bot className="size-4" />}
-      meta={`${current.active} ${meta.unit}${current.active === 1 ? '' : 's'}`}
+      meta={actorKindsCollected
+        ? `${current.active} ${meta.unit}${current.active === 1 ? '' : 's'}`
+        : `${current.active} subject${current.active === 1 ? '' : 's'}`}
     >
-      <div
+      {actorKindsCollected ? <div
         role="tablist"
         aria-label="Actor facet"
         className="inline-flex items-center gap-1 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface p-0.5"
@@ -119,7 +123,7 @@ export function MostActivePanel({
             </button>
           )
         })}
-      </div>
+      </div> : null}
 
       {top.length === 0 ? (
         <p className="text-sm text-aurora-text-muted">No {meta.unit} activity in this window.</p>
@@ -159,8 +163,21 @@ function FanOutStat({ value, label }: { value: ReactNode; label: string }) {
 }
 
 /** Code Mode fan-out — orchestrated multi-tool execute runs. */
-export function FanOutPanel({ fanOut }: { fanOut: DashboardMetrics['fan_out'] }) {
+export function FanOutPanel({
+  fanOut,
+  collected = true,
+}: {
+  fanOut: DashboardMetrics['fan_out']
+  collected?: boolean
+}) {
   const pct = (rate: number) => `${Math.round(rate * 100)}%`
+  if (!collected) {
+    return (
+      <DashboardPanel title="Code Mode fan-out" icon={<Network className="size-4" />}>
+        <p className="text-sm text-aurora-text-muted">Fan-out telemetry is not collected.</p>
+      </DashboardPanel>
+    )
+  }
   return (
     <DashboardPanel
       title="Code Mode fan-out"

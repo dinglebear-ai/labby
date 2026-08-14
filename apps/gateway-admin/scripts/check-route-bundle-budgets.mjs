@@ -5,10 +5,14 @@ import path from 'node:path'
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const maxCompressedBytes = 450 * 1024
-const routes = ['gateway', 'gateways']
+const routes = [
+  { label: '/', output: 'index' },
+  { label: '/gateway', output: 'gateway' },
+  { label: '/gateways', output: 'gateways' },
+]
 
-async function compressedInitialRouteBytes(route) {
-  const html = await readFile(path.join(appRoot, '.next', 'server', 'app', `${route}.html`), 'utf8')
+async function compressedInitialRouteBytes(output) {
+  const html = await readFile(path.join(appRoot, '.next', 'server', 'app', `${output}.html`), 'utf8')
   const sources = new Set(
     [...html.matchAll(/<script[^>]+src="([^"]+\.js)"/g)].map((match) => match[1]),
   )
@@ -22,11 +26,11 @@ async function compressedInitialRouteBytes(route) {
 }
 
 for (const route of routes) {
-  const { total, chunks } = await compressedInitialRouteBytes(route)
+  const { total, chunks } = await compressedInitialRouteBytes(route.output)
   if (total > maxCompressedBytes) {
     throw new Error(
-      `/${route} initial JavaScript is ${(total / 1024).toFixed(1)} KiB compressed across ${chunks} chunks; budget is ${maxCompressedBytes / 1024} KiB`,
+      `${route.label} initial JavaScript is ${(total / 1024).toFixed(1)} KiB compressed across ${chunks} chunks; budget is ${maxCompressedBytes / 1024} KiB`,
     )
   }
-  console.log(`/${route}: ${(total / 1024).toFixed(1)} KiB compressed (${chunks} initial chunks)`)
+  console.log(`${route.label}: ${(total / 1024).toFixed(1)} KiB compressed (${chunks} initial chunks)`)
 }

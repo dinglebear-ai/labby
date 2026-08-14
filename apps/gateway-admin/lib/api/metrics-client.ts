@@ -1,5 +1,11 @@
 import { normalizeGatewayApiBase } from './gateway-config.ts'
 import { gatewayRequestInit } from './gateway-request.ts'
+import { withRequestTiming } from './request-timing.ts'
+import {
+  aggregateGatewayUsage,
+  type GatewayUsageCalls,
+  type GatewayUsageMetrics,
+} from '../dashboard/gateway-usage-adapter.ts'
 import type {
   ActorFacet,
   ActorKind,
@@ -24,6 +30,18 @@ export type MetricsRequestOptions = {
   token?: string
   signal?: AbortSignal
   standaloneBearerAuth?: boolean
+}
+
+export class MetricsApiError extends Error {
+  status: number
+  code?: string
+
+  constructor(message: string, status: number, code?: string) {
+    super(message)
+    this.name = 'MetricsApiError'
+    this.status = status
+    this.code = code
+  }
 }
 
 const WINDOW_MS: Record<MetricsWindow, number> = {
@@ -361,6 +379,13 @@ function aggregateDashboard(
     window,
     since_ms: now - WINDOW_MS[window],
     until_ms: now,
+    collected: {
+      tokens: true,
+      surfaces: true,
+      fan_out: true,
+      actor_kinds: true,
+      complete_call_rows: true,
+    },
     tool_calls: { total, failed, succeeded: total - failed },
     tools: { top: tools.slice(0, 5), least: tools.slice(-3).reverse(), distinct: tools.length },
     tokens: {
@@ -408,13 +433,16 @@ function aggregateDashboard(
 // ── Real path (mirrors logs-client) ────────────────────────────────────────
 
 function metricsActionUrl(baseUrl?: string) {
-  return `${normalizeGatewayApiBase(baseUrl)}/logs`
+  return `${normalizeGatewayApiBase(baseUrl)}/gateway`
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const raw = await response.text()
   if (raw.length === 0) {
-    throw new Error(`request failed with status ${response.status} ${response.statusText}`.trim())
+    throw new MetricsApiError(
+      `request failed with status ${response.status} ${response.statusText}`.trim(),
+      response.status,
+    )
   }
   let payload: unknown
   try {
@@ -427,21 +455,63 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
       typeof (payload as { message?: unknown })?.message === 'string'
         ? (payload as { message: string }).message
         : `request failed with status ${response.status}`
-    throw new Error(message)
+    const code = typeof (payload as { kind?: unknown })?.kind === 'string'
+      ? (payload as { kind: string }).kind
+      : undefined
+    throw new MetricsApiError(message, response.status, code)
   }
   return payload as T
 }
 
-async function postLogsAction<T>(
+async function postGatewayUsageAction<T>(
   action: string,
   params: object,
   options?: MetricsRequestOptions,
 ): Promise<T> {
-  const response = await fetch(
-    metricsActionUrl(options?.baseUrl),
-    gatewayRequestInit(action, params, options?.token, options?.signal, options?.standaloneBearerAuth),
+  return withRequestTiming(`metrics.${action}`, async () => {
+    const response = await fetch(
+      metricsActionUrl(options?.baseUrl),
+      gatewayRequestInit(action, params, options?.token, options?.signal, options?.standaloneBearerAuth),
+    )
+    return parseJsonResponse<T>(response)
+  })
+}
+
+function usageWindowParams(window: MetricsWindow, now = Date.now()) {
+  return {
+    since_unix: Math.floor((now - WINDOW_MS[window]) / 1000),
+    until_unix: Math.floor(now / 1000),
+  }
+}
+
+async function fetchPersistedCalls(
+  window: MetricsWindow,
+  options?: MetricsRequestOptions,
+): Promise<GatewayUsageCalls> {
+  return postGatewayUsageAction<GatewayUsageCalls>(
+    'gateway.usage.calls',
+    { ...usageWindowParams(window), limit: 1000, include_total: true },
+    options,
   )
-  return parseJsonResponse<T>(response)
+}
+
+function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
+  return rows.calls.map((call, index) => ({
+    id: `${call.ts_unix}:${index}:${call.upstream}:${call.tool}`,
+    ts: call.ts_unix * 1000,
+    tool: `${call.upstream}::${call.tool}`,
+    action: null,
+    agent_id: call.actor,
+    agent_label: call.actor,
+    agent_kind: 'agent',
+    ip: '',
+    surface: 'unknown',
+    outcome: call.outcome === 'ok' ? 'ok' : 'failed',
+    error_kind: call.outcome === 'ok' ? null : call.outcome,
+    input_tokens: 0,
+    output_tokens: 0,
+    elapsed_ms: call.elapsed_ms,
+  }))
 }
 
 // ── Public fetchers ────────────────────────────────────────────────────────
@@ -455,7 +525,17 @@ export async function fetchDashboardMetrics(
     const now = Date.now()
     return aggregateDashboard(buildCallStream(window, now), window, now)
   }
-  return postLogsAction<DashboardMetrics>('logs.metrics', { window }, options)
+  const now = Date.now()
+  const params = usageWindowParams(window, now)
+  const [summary, rows] = await Promise.all([
+    postGatewayUsageAction<GatewayUsageMetrics>('gateway.usage.metrics', params, options),
+    postGatewayUsageAction<GatewayUsageCalls>(
+      'gateway.usage.calls',
+      { ...params, limit: 1000, include_total: true },
+      options,
+    ),
+  ])
+  return aggregateGatewayUsage(window, now, summary, rows)
 }
 
 export async function fetchToolDetail(
@@ -479,12 +559,30 @@ export async function fetchToolDetail(
       avg_tokens: calls > 0 ? Math.round(totalTokens / calls) : 0,
       avg_elapsed_ms:
         calls > 0 ? Math.round(records.reduce((s, r) => s + r.elapsed_ms, 0) / calls) : 0,
+      tokens_collected: true,
       timeseries: bucketize(records, window, now),
       top_callers: rankAgents(records).slice(0, 5),
       recent: recentCalls(records),
     }
   }
-  return postLogsAction<ToolDetail>('logs.tool_detail', { tool: name, window }, options)
+  const records = persistedCallRecords(await fetchPersistedCalls(window, options))
+    .filter((record) => record.tool === name)
+  const calls = records.length
+  return {
+    name,
+    window,
+    calls,
+    failed: records.filter((record) => record.outcome === 'failed').length,
+    total_tokens: 0,
+    avg_tokens: 0,
+    avg_elapsed_ms: calls > 0
+      ? Math.round(records.reduce((sum, record) => sum + record.elapsed_ms, 0) / calls)
+      : 0,
+    tokens_collected: false,
+    timeseries: bucketize(records, window, Date.now()),
+    top_callers: rankAgents(records).slice(0, 5),
+    recent: recentCalls(records),
+  }
 }
 
 export async function fetchAgentDetail(
@@ -506,12 +604,27 @@ export async function fetchAgentDetail(
       calls: records.length,
       failed: records.filter((r) => r.outcome === 'failed').length,
       total_tokens: tokens.input + tokens.output,
+      tokens_collected: true,
       tools_used: rankTools(records),
       timeseries: bucketize(records, window, now),
       recent: recentCalls(records),
     }
   }
-  return postLogsAction<AgentDetail>('logs.agent_detail', { agent: id, window }, options)
+  const records = persistedCallRecords(await fetchPersistedCalls(window, options))
+    .filter((record) => record.agent_id === id)
+  return {
+    id,
+    label: id,
+    kind: 'agent',
+    window,
+    calls: records.length,
+    failed: records.filter((record) => record.outcome === 'failed').length,
+    total_tokens: 0,
+    tokens_collected: false,
+    tools_used: rankTools(records),
+    timeseries: bucketize(records, window, Date.now()),
+    recent: recentCalls(records),
+  }
 }
 
 export async function fetchToolCalls(
@@ -554,5 +667,40 @@ export async function fetchToolCalls(
       },
     }
   }
-  return postLogsAction<ToolCallPage>('logs.calls', { query }, options)
+  const now = Date.now()
+  const params = usageWindowParams(query.window, now)
+  const [summary, rows] = await Promise.all([
+    postGatewayUsageAction<GatewayUsageMetrics>('gateway.usage.metrics', params, options),
+    fetchPersistedCalls(query.window, options),
+  ])
+  const stream = persistedCallRecords(rows)
+  const search = query.search?.trim().toLowerCase()
+  const filtered = stream.filter((record) => {
+    if (query.tool && record.tool !== query.tool) return false
+    if (query.agent && record.agent_id !== query.agent) return false
+    if (query.ip && record.ip !== query.ip) return false
+    if (query.outcome && record.outcome !== query.outcome) return false
+    if (query.surface && record.surface !== query.surface) return false
+    if (search) {
+      const haystack = `${record.tool} ${record.agent_label} ${record.error_kind ?? ''}`.toLowerCase()
+      if (!haystack.includes(search)) return false
+    }
+    return true
+  })
+  const sorted = filtered.sort((left, right) => right.ts - left.ts)
+  const offset = query.offset ?? 0
+  const limit = query.limit ?? 50
+  const agentMap = new Map<string, string>()
+  for (const record of stream) agentMap.set(record.agent_id, record.agent_label)
+  return {
+    calls: sorted.slice(offset, offset + limit),
+    total: summary.total_calls,
+    filtered: sorted.length,
+    facets: {
+      tools: [...new Set(stream.map((record) => record.tool))].sort(),
+      agents: [...agentMap.entries()].map(([id, label]) => ({ id, label })),
+      ips: [],
+      surfaces: [],
+    },
+  }
 }
