@@ -181,10 +181,7 @@ impl SkillUri {
         // Mint into Labby's `skill://` namespace while retaining the native
         // scheme as the first path segment after the gateway label. This makes
         // the mapping exactly reversible even when the cached listing is gone.
-        Ok(Self::from_parts(
-            "skill".to_string(),
-            format!("{origin}/{}/{}", self.scheme, self.full),
-        ))
+        parse_skill_uri(&format!("skill://{origin}/{}/{}", self.scheme, self.full))
     }
 
     /// Reverse [`with_origin`], recovering the exact native upstream URI.

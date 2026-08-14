@@ -805,6 +805,28 @@ async fn a_file_absent_from_the_manifest_is_refused_rather_than_fetched() {
 }
 
 #[tokio::test]
+async fn duplicate_resource_bindings_are_refused_instead_of_using_iteration_order() {
+    let duplicate = entry("up", "alpha");
+    let server = SkillsServer::new(vec![json!({
+        "skills": [duplicate.clone(), duplicate]
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
+        .await
+        .expect_err("an ambiguous resource owner must never win by iteration order");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
+    );
+}
+
+#[tokio::test]
 async fn a_hidden_skills_files_are_not_readable_by_uri() {
     // Filtering only the listing would leave the file fetchable by URI, which
     // is a bypass rather than a restriction.

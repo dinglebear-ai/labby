@@ -560,14 +560,16 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
         uri: &str,
     ) -> Option<SkillEntry> {
-        if let Some(entry) = self
-            .proxied_skill_entries(context)
-            .await
+        let aggregated = self.proxied_skill_entries(context).await;
+        if let Some(entry) = aggregated
             .entries
             .into_iter()
             .find(|entry| entry.uri == uri)
         {
             return Some(entry);
+        }
+        if aggregated.excluded_uris.contains(uri) {
+            return None;
         }
 
         // Not in the listing. The SEP requires a host to load a skill given
@@ -667,6 +669,7 @@ impl LabMcpServer {
                     let minted =
                         aggregate::mint_proxied_entries(&config, &exposed.skills, Some(&meta));
                     aggregated.excluded_count += minted.excluded_count;
+                    aggregated.excluded_uris.extend(minted.excluded_uris);
                     entries.extend(minted.entries);
                 }
                 Err(error) => {
@@ -818,6 +821,8 @@ pub(crate) mod tests_support {
 #[derive(Debug, Default)]
 pub(crate) struct ProxiedSkills {
     pub(crate) entries: Vec<SkillEntry>,
+    /// Published identities intentionally withheld because ownership collided.
+    pub(crate) excluded_uris: BTreeSet<String>,
     /// Upstreams that failed and were skipped rather than emptying the listing.
     pub(crate) unreachable_upstreams: usize,
     /// Skills dropped for integrity or budget reasons, summed across upstreams.

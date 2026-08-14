@@ -168,6 +168,10 @@ pub(crate) fn mint_proxied_entries(
         .flatten()
         .copied()
         .collect();
+    let excluded_uris = colliding_owners
+        .iter()
+        .filter_map(|index| minted.get(*index).map(|entry| entry.uri.clone()))
+        .collect();
     if !colliding_owners.is_empty() {
         for (uri, owners) in &owners {
             if owners.len() <= 1 {
@@ -189,6 +193,7 @@ pub(crate) fn mint_proxied_entries(
     MintedEntries {
         entries: minted,
         excluded_count,
+        excluded_uris,
     }
 }
 
@@ -196,6 +201,7 @@ pub(crate) fn mint_proxied_entries(
 pub(crate) struct MintedEntries {
     pub(crate) entries: Vec<SkillEntry>,
     pub(crate) excluded_count: usize,
+    pub(crate) excluded_uris: BTreeSet<String>,
 }
 
 #[cfg(test)]
@@ -349,7 +355,7 @@ mod tests {
     fn overlapping_resource_uris_exclude_every_owning_skill() {
         let mut parent = upstream_skill("acme", "parent");
         let mut child = upstream_skill("acme/parent", "child");
-        let shared = "skill://acme/parent/shared.md";
+        let shared = "skill://acme/parent/child/shared.md";
         parent
             .entry
             .resources
@@ -378,6 +384,7 @@ mod tests {
         );
         assert!(result.entries.is_empty());
         assert_eq!(result.excluded_count, 2);
+        assert_eq!(result.excluded_uris.len(), 2);
     }
 
     #[test]
