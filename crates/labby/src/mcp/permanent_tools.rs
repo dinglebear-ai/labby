@@ -132,6 +132,55 @@ pub(crate) fn code_mode_full_annotations() -> ToolAnnotations {
         .open_world(true)
 }
 
+/// Advertised safety hints for a registry-backed service tool.
+///
+/// `destructiveHint` is the least-safe union of the service's action catalog,
+/// except for `server_logs`: that admin-only surface can disclose sensitive
+/// free-text and is deliberately kept behind the next-hop destructive gate.
+/// The other hints are reviewed service-level claims; absence of a destructive
+/// action is not enough to infer that a service is read-only.
+#[must_use]
+fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
+    let derived_destructive = service.actions.iter().any(|action| action.destructive);
+    let (read_only, destructive, idempotent, open_world) = match service.name {
+        "fs" | "lab_admin" => (true, derived_destructive, true, false),
+        "doctor" => (false, derived_destructive, true, true),
+        "gateway" | "setup" | "snippets" => (false, derived_destructive, false, true),
+        // `server_logs` is operationally read-only, but advertising it as such
+        // would bypass the conservative next-hop gate described above.
+        SERVER_LOGS_TOOL_NAME => (false, true, false, false),
+        // Registries are extensible in tests and future feature slices. New
+        // services get conservative hints until their behavior is audited.
+        _ => (false, true, false, true),
+    };
+
+    ToolAnnotations::new()
+        .read_only(read_only)
+        .destructive(destructive)
+        .idempotent(idempotent)
+        .open_world(open_world)
+}
+
+#[cfg(feature = "gateway")]
+#[must_use]
+fn mcp_app_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(false)
+        .idempotent(true)
+        .open_world(false)
+}
+
+#[cfg(feature = "gateway")]
+#[must_use]
+fn gateway_status_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(true)
+        .destructive(false)
+        .idempotent(true)
+        .open_world(false)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PermanentToolRegistry;
 
@@ -168,6 +217,7 @@ impl PermanentToolRegistry {
         admin_apps_visible: bool,
     ) -> Tool {
         let tool = Tool::new(service.name, service.description, builtin_action_schema())
+            .with_annotations(builtin_service_annotations(service))
             .with_raw_output_schema(dispatch_envelope_output_schema());
         if service.name == SERVER_LOGS_TOOL_NAME && admin_apps_visible {
             tool.with_meta(server_logs_tool_meta(service.name))
@@ -204,6 +254,7 @@ impl PermanentToolRegistry {
             mcp_app_tool_description(),
             mcp_app_tool_schema(),
         )
+        .with_annotations(mcp_app_annotations())
     }
 
     /// Descriptor for the Add Server admin app tool.
@@ -218,6 +269,7 @@ impl PermanentToolRegistry {
             "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
             add_server_tool_schema(),
         )
+        .with_annotations(code_mode_full_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
         .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME))
     }
@@ -234,6 +286,7 @@ impl PermanentToolRegistry {
             "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
             gateway_status_tool_schema(),
         )
+        .with_annotations(gateway_status_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
         .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME))
     }
@@ -358,6 +411,11 @@ mod tests {
         let schema = tool.output_schema.as_ref().expect("outputSchema");
         assert_eq!(schema["properties"]["ok"]["const"], serde_json::json!(true));
         assert!(tool.meta.is_none(), "only server_logs carries app meta");
+        let annotations = tool.annotations.expect("fallback annotations");
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.destructive_hint, Some(true));
+        assert_eq!(annotations.idempotent_hint, Some(false));
+        assert_eq!(annotations.open_world_hint, Some(true));
     }
 
     #[test]
@@ -369,6 +427,121 @@ mod tests {
         assert!(hidden.meta.is_none(), "non-admin server_logs has no meta");
         // The schema is not audience-dependent.
         assert_eq!(visible.output_schema, hidden.output_schema);
+        assert_eq!(visible.annotations, hidden.annotations);
+    }
+
+    /// Reviewed hint table: `(service, readOnly, destructive, idempotent, openWorld)`.
+    ///
+    /// One row per registry-backed service. A service with no row falls through
+    /// to the least-safe `_` arm, which
+    /// `every_registry_service_has_a_reviewed_hint_row` turns into a CI failure
+    /// rather than a silent conservative default.
+    const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
+        ("doctor", false, false, true, true),
+        ("fs", true, false, true, false),
+        ("gateway", false, true, false, true),
+        ("lab_admin", true, false, true, false),
+        ("server_logs", false, true, false, false),
+        ("setup", false, true, false, true),
+        ("snippets", false, true, false, true),
+    ];
+
+    /// Pinned action sets for services advertising `readOnlyHint: true`.
+    ///
+    /// `readOnlyHint` claims **every** action is non-mutating. That is strictly
+    /// stronger than "declares no destructive action" and therefore cannot be
+    /// derived from `ActionSpec` — a mutating-but-non-destructive action would
+    /// satisfy the derived check while making the advertised hint a lie (the
+    /// `doctor` trap: `system.checks` writes a probe file, which is why `doctor`
+    /// is deliberately *not* in this list). Pinning the action set forces a
+    /// re-audit whenever one is added.
+    const READ_ONLY_SERVICE_ACTIONS: &[(&str, &[&str])] = &[
+        ("fs", &["fs.list"]),
+        ("lab_admin", &["help", "schema", "onboarding.audit"]),
+    ];
+
+    fn expected_annotation_row(name: &str) -> Option<(bool, bool, bool, bool)> {
+        EXPECTED_SERVICE_ANNOTATIONS
+            .iter()
+            .find(|(row, ..)| *row == name)
+            .map(|&(_, read_only, destructive, idempotent, open_world)| {
+                (read_only, destructive, idempotent, open_world)
+            })
+    }
+
+    #[test]
+    fn every_registry_service_advertises_reviewed_explicit_annotations() {
+        let registry = crate::registry::build_docs_registry();
+        let permanent = PermanentToolRegistry::new();
+
+        for service in registry.services() {
+            let name = service.name;
+            let Some((read_only, destructive, idempotent, open_world)) =
+                expected_annotation_row(name)
+            else {
+                panic!(
+                    "service `{name}` has no row in EXPECTED_SERVICE_ANNOTATIONS; \
+                     it is silently shipping the least-safe fallback hints. Audit \
+                     its actions and add a reviewed row."
+                );
+            };
+            let annotations = permanent
+                .builtin_service_tool(service, true)
+                .annotations
+                .expect("every Labby-owned service tool must carry annotations");
+            assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
+            assert_eq!(annotations.destructive_hint, Some(destructive), "{name}");
+            assert_eq!(annotations.idempotent_hint, Some(idempotent), "{name}");
+            assert_eq!(annotations.open_world_hint, Some(open_world), "{name}");
+            if name != SERVER_LOGS_TOOL_NAME {
+                assert_eq!(
+                    destructive,
+                    service.actions.iter().any(|action| action.destructive),
+                    "{name} destructiveHint drifted from ActionSpec"
+                );
+            }
+        }
+    }
+
+    /// The table→registry direction: a row for a renamed or removed service is
+    /// as silent as a missing row. Only meaningful when every service feature is
+    /// compiled, which is the authoritative build per the root `CLAUDE.md`.
+    #[cfg(all(feature = "gateway", feature = "fs", feature = "lab-admin"))]
+    #[test]
+    fn every_reviewed_hint_row_names_a_live_service() {
+        let registry = crate::registry::build_docs_registry();
+        for (name, ..) in EXPECTED_SERVICE_ANNOTATIONS {
+            assert!(
+                registry.service(name).is_some(),
+                "EXPECTED_SERVICE_ANNOTATIONS has a stale row for `{name}`, \
+                 which no longer resolves to a registered service"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_services_pin_their_action_sets() {
+        let registry = crate::registry::build_docs_registry();
+
+        for (name, pinned) in READ_ONLY_SERVICE_ACTIONS {
+            assert_eq!(
+                expected_annotation_row(name).map(|(read_only, ..)| read_only),
+                Some(true),
+                "`{name}` is pinned as read-only here but its hint row disagrees"
+            );
+            let Some(service) = registry.service(name) else {
+                // Feature slices intentionally omit services they do not compile.
+                continue;
+            };
+            let actual: Vec<&str> = service.actions.iter().map(|action| action.name).collect();
+            assert_eq!(
+                actual, *pinned,
+                "`{name}` advertises readOnlyHint: true, so its action set is pinned. \
+                 A new action must be audited as non-mutating before it is added here — \
+                 `readOnlyHint` is the hint clients act on (Claude Code gates parallel \
+                 execution on it, VS Code skips confirmation)."
+            );
+        }
     }
 
     #[cfg(feature = "gateway")]
@@ -385,6 +558,97 @@ mod tests {
         let ui_schema = registry.code_mode_ui_tool(&[]).output_schema;
         assert!(ui_schema.is_some());
         assert_ne!(ui_schema, registry.add_server_tool().output_schema);
+
+        let cases = [
+            (registry.mcp_app_tool(), false, false, true, false),
+            (registry.add_server_tool(), false, true, false, true),
+            (registry.gateway_status_tool(), true, false, true, false),
+            (registry.code_mode_ui_tool(&[]), false, true, false, true),
+        ];
+        for (tool, read_only, destructive, idempotent, open_world) in cases {
+            let name = tool.name.to_string();
+            let annotations = tool.annotations.expect("owned meta tool annotations");
+            assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
+            assert_eq!(annotations.destructive_hint, Some(destructive), "{name}");
+            assert_eq!(annotations.idempotent_hint, Some(idempotent), "{name}");
+            assert_eq!(annotations.open_world_hint, Some(open_world), "{name}");
+        }
+    }
+
+    /// F9 regression guard — the compensating control for accepting the widened
+    /// next-hop reach (design decision "Option A").
+    ///
+    /// In a labby → labby chain the downstream gateway derives its own
+    /// `UpstreamTool.destructive` from the annotations we advertise
+    /// (`upstream_destructive_from_annotations`), and that value is a hard gate:
+    /// Code Mode, the palette, and widget callbacks all refuse a destructive
+    /// tool unless `destructive_permitted(Mcp, caller) == caller.can_execute()`.
+    ///
+    /// Before annotations existed every Labby tool arrived with none and failed
+    /// closed to `destructive: true`, so a non-execute caller could reach none of
+    /// them. Advertising hints deliberately opens the subset below. That is
+    /// accepted, but it rests on deployment configuration rather than an
+    /// invariant, so the set is pinned here: widening it must be a reviewed
+    /// change, not a side effect of editing a hint row.
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn labby_owned_annotations_pin_the_next_hop_destructive_gate() {
+        use labby_gateway::upstream::pool::upstream_destructive_from_annotations;
+
+        let permanent = PermanentToolRegistry::new();
+        let services = crate::registry::build_docs_registry();
+
+        // Reachable by a caller with `can_execute() == false` at hop 2.
+        let expected_callable = [
+            "doctor",
+            "fs",
+            "lab_admin",
+            "mcp_app",
+            "gateway_status",
+            CODE_MODE_READ_TOOL_NAME,
+        ];
+
+        let mut descriptors: Vec<rmcp::model::Tool> = services
+            .services()
+            .iter()
+            .map(|service| permanent.builtin_service_tool(service, true))
+            .collect();
+        descriptors.extend([
+            permanent.mcp_app_tool(),
+            permanent.add_server_tool(),
+            permanent.gateway_status_tool(),
+            permanent.code_mode_descriptor(&[]),
+            permanent.code_mode_read_descriptor(&[]),
+            permanent.code_mode_ui_tool(&[]),
+        ]);
+
+        let mut callable: Vec<String> = descriptors
+            .iter()
+            .filter(|tool| !upstream_destructive_from_annotations(tool.annotations.as_ref()))
+            .map(|tool| tool.name.to_string())
+            .collect();
+        callable.sort();
+
+        let mut expected: Vec<String> = expected_callable
+            .iter()
+            .filter(|name| {
+                // Feature slices omit services they do not compile; the meta
+                // tools are all gateway-gated alongside this test.
+                services.service(name).is_some()
+                    || !EXPECTED_SERVICE_ANNOTATIONS
+                        .iter()
+                        .any(|(row, ..)| row == *name)
+            })
+            .map(|name| (*name).to_string())
+            .collect();
+        expected.sort();
+
+        assert_eq!(
+            callable, expected,
+            "the set of Labby tools a non-execute caller can reach through a \
+             downstream gateway changed. This is an authorization change, not a \
+             hint tweak — re-review F9 before updating this list."
+        );
     }
 
     #[test]

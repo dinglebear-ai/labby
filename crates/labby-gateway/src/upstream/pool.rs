@@ -87,6 +87,7 @@ pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
     UpstreamCachedSummary, in_process_upstream_name, redact_resource_uri_for_logging,
+    upstream_destructive_from_annotations,
 };
 pub(crate) use helpers::{
     install_max_response_bytes_default, install_upstream_discovery_concurrency_default,
