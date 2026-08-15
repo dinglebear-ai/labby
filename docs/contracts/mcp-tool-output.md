@@ -8,8 +8,8 @@ updated: "2026-08-11"
 
 Status: **active** (implemented on `feat/mcp-output-schema-210`, issue #210 / epic `lab-41e7m`)
 Surfaces: MCP
-Related: [spec](../plans/210-mcp-output-schema/SPEC.md),
-[research](../plans/210-mcp-output-schema/RESEARCH.md), [ERRORS.md](../dev/ERRORS.md),
+Related: [spec](../plans/complete/210-mcp-output-schema/SPEC.md),
+[research](../plans/complete/210-mcp-output-schema/RESEARCH.md), [ERRORS.md](../dev/ERRORS.md),
 [agent-error-contract.md](./agent-error-contract.md),
 [SERIALIZATION.md](../design/SERIALIZATION.md)
 
@@ -19,7 +19,7 @@ the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 - **Contract version:** 1
 - **MCP revisions:** 2025-06-18 → 2026-07-28 (three revisions; rmcp 3.1.0 additionally
   negotiates 2024-11-05 and 2025-03-26)
-- Acceptance criteria live in [SPEC.md](../plans/210-mcp-output-schema/SPEC.md) §6 — this document does not restate them.
+- Acceptance criteria live in [SPEC.md](../plans/complete/210-mcp-output-schema/SPEC.md) §6 — this document does not restate them.
 
 ---
 

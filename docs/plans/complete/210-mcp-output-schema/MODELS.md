@@ -248,7 +248,7 @@ Exactly one, and it is a function rather than a type:
 ```rust
 /// Success-envelope output schema shared by every builtin service tool.
 /// Mirrors `build_success` (mcp/envelope.rs:42) — see
-/// docs/plans/210-mcp-output-schema/schemas/dispatch-envelope.schema.json.
+/// docs/plans/complete/210-mcp-output-schema/schemas/dispatch-envelope.schema.json.
 pub(crate) fn dispatch_envelope_output_schema() -> Arc<serde_json::Map<String, Value>>;
 ```
 
