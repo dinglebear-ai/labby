@@ -160,7 +160,7 @@ test('gateway manage tools flow persists after a full reload in mock preview', {
   await assert.doesNotReject(() => page.getByText('12 hidden').waitFor())
 })
 
-test('gateway detail uses a compact summary and endpoint block in mock preview', { concurrency: false }, async (t) => {
+test('gateway detail uses a compact summary and endpoint control in mock preview', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
@@ -178,7 +178,11 @@ test('gateway detail uses a compact summary and endpoint block in mock preview',
   await assert.doesNotReject(() => page.getByText('12/12').first().waitFor())
   await assert.doesNotReject(() => page.getByText('Resources').first().waitFor())
   await assert.doesNotReject(() => page.getByText('Prompts').first().waitFor())
-  await assert.doesNotReject(() => page.getByText('http://localhost:3001/mcp').waitFor())
+  await assert.doesNotReject(() =>
+    page.getByRole('button', { name: 'Copy command' }).and(
+      page.locator('[title="http://localhost:3001/mcp"]'),
+    ).waitFor(),
+  )
   await page.getByRole('button', { name: 'Tools', exact: true }).click()
   await assert.doesNotReject(() =>
     page.getByRole('button', { name: 'Manage tools', exact: true }).waitFor(),
