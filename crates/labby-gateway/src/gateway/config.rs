@@ -266,6 +266,9 @@ pub(crate) fn update_upstream(
     if let Some(proxy_prompts) = patch.proxy_prompts {
         cfg.upstream[index].proxy_prompts = proxy_prompts;
     }
+    if let Some(proxy_skills) = patch.proxy_skills {
+        cfg.upstream[index].proxy_skills = proxy_skills;
+    }
     if let Some(expose_tools) = patch.expose_tools {
         // Treat empty array as "clear filter" — an empty allowlist that blocks
         // all tools is never useful and is the natural way to say "remove filter".
@@ -282,6 +285,12 @@ pub(crate) fn update_upstream(
     }
     if let Some(expose_prompts) = patch.expose_prompts {
         cfg.upstream[index].expose_prompts = match expose_prompts {
+            Some(ref v) if v.is_empty() => None,
+            other => other,
+        };
+    }
+    if let Some(expose_skills) = patch.expose_skills {
+        cfg.upstream[index].expose_skills = match expose_skills {
             Some(ref v) if v.is_empty() => None,
             other => other,
         };

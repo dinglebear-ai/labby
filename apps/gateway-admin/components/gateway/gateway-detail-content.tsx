@@ -75,6 +75,7 @@ import {
 } from './gateway-detail-chrome'
 import {
   DETAIL_KV_GRID_STYLE,
+  DetailCapabilityCluster,
   DetailExposureCell,
   DetailKeyValueCard,
   DetailStatStrip,
@@ -1087,9 +1088,13 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
               Counts ride in a 17px chip that re-tones with the tab.
 
               The mock also parks a 12-icon capability cluster at the right end
-              of this row. We render none: the gateway API reports no
-              `initialize` capability set, and a dimmed icon there would assert
-              "not advertised" about something we simply have not asked.
+              of this row, toned "supported" / "not advertised" from the
+              server's `initialize` response. The gateway API reports no
+              capability set, so every icon renders in the third,
+              explicitly-unknown state — dashed, unfilled, behind a leading `—`
+              — rather than borrowing the mock's dimmed "not advertised" tone,
+              which would assert something we never asked the server. See
+              `DetailCapabilityCluster`.
             */}
             <DetailTabBar>
               <DetailTabsList aria-label="Server detail sections">
@@ -1127,6 +1132,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   />
                 )}
               </DetailTabsList>
+              <DetailCapabilityCluster />
             </DetailTabBar>
           </DetailCard>
 
