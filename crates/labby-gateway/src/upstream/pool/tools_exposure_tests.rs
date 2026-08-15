@@ -94,39 +94,6 @@ async fn move_connection_to_subject_cache(
     .await;
 }
 
-async fn move_connection_to_subject_cache_with_tools(
-    pool: &super::UpstreamPool,
-    upstream: &str,
-    subject: &str,
-    tools: Vec<rmcp::model::Tool>,
-) {
-    // `UpstreamConnection` implements `Drop`, so the whole value has to be moved
-    // out of the pool rather than having its fields taken individually.
-    let peer = pool
-        .connections
-        .read()
-        .await
-        .get(upstream)
-        .expect("fixture connection present")
-        .peer
-        .clone();
-    let connection = pool
-        .connections
-        .write()
-        .await
-        .remove(upstream)
-        .expect("fixture connection present");
-    pool.subject_connections.write().await.insert(
-        (upstream.to_string(), subject.to_string()),
-        SubjectScopedConnection {
-            _connection: connection,
-            peer,
-            tools,
-            last_used: Instant::now(),
-        },
-    );
-}
-
 async fn take_fixture_connection(upstream: &str) -> super::UpstreamConnection {
     let fixture = static_catalog_pool(upstream).await;
     let connection = fixture
