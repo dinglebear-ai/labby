@@ -92,7 +92,7 @@ Mirror `code_mode_trace_output_schema` (`handlers_tools.rs:686-765`).
 /// describe per-action payloads.
 ///
 /// Error envelopes are deliberately NOT described here — see
-/// docs/plans/210-mcp-output-schema/CONTRACT.md §C3.2. Note the exemption for
+/// docs/plans/complete/210-mcp-output-schema/CONTRACT.md §C3.2. Note the exemption for
 /// `isError` results is ecosystem convention, not explicit spec text.
 ///
 /// `additionalProperties` is `true` by decision (SPEC §5.2). If `build_success`

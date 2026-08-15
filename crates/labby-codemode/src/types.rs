@@ -186,7 +186,7 @@ impl ToolDescriptor {
             // Deliberate: a snippet returns an arbitrary JavaScript value, so
             // there is no honest output schema to publish. `dts` is likewise
             // empty, so `describe` renders inputs with no type section. See
-            // docs/plans/210-mcp-output-schema/SPEC.md FR-8 (decision D6).
+            // docs/plans/complete/210-mcp-output-schema/SPEC.md FR-8 (decision D6).
             output_schema: None,
             signature: format!("codemode.run({:?}, input?)", info.name),
             dts: String::new(),

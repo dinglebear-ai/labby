@@ -97,7 +97,7 @@ introspection. See CONTRACT §C7.
 ## 3. Validation
 
 ```bash
-for f in docs/plans/210-mcp-output-schema/schemas/*.json; do jq -e type "$f" >/dev/null || echo "BAD $f"; done
+for f in docs/plans/complete/210-mcp-output-schema/schemas/*.json; do jq -e type "$f" >/dev/null || echo "BAD $f"; done
 ```
 
 Runtime conformance is enforced by Rust tests, not by loading these files — except for the
