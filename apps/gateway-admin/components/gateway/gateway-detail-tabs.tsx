@@ -3,6 +3,8 @@
 import * as React from 'react'
 import * as TabsPrimitive from '@radix-ui/react-tabs'
 
+import { DETAIL_NO_DATA } from './gateway-detail-chrome'
+
 /**
  * Header-card chrome for the Gateway detail *page* — tab bar, attached stat
  * strip, and the overview key/value card.
@@ -43,7 +45,7 @@ import * as TabsPrimitive from '@radix-ui/react-tabs'
 /**
  * The tab-bar row. In the mock this is the last band of the header card: a
  * full-bleed strip separated by a hairline, holding the scrolling tab list and
- * (in the mock) a capability-icon cluster on the right.
+ * a capability-icon cluster on the right (see {@link DetailCapabilityCluster}).
  *
  * `bleed` is the host card's horizontal padding — the row cancels it with
  * negative margins and re-applies it as padding, exactly as the mock does at
@@ -198,6 +200,346 @@ export function DetailTabTrigger({
         <span style={detailTabCountStyle(active)}>{count}</span>
       )}
     </TabsPrimitive.Trigger>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Capability cluster
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-capability tone in {@link DetailCapabilityCluster}.
+ *
+ * `supported` / `not_advertised` are the mock's own two states. `unknown` is
+ * ours, and it exists because the two mock states are both *claims*: one says
+ * the server advertised the capability in its `initialize` response, the other
+ * says it did not. The gateway API returns no capability set at all, so making
+ * either claim would be fabrication.
+ */
+export type DetailCapabilityState = 'supported' | 'not_advertised' | 'unknown'
+
+export type DetailCapabilityKey =
+  | 'tools'
+  | 'prompts'
+  | 'resources'
+  | 'elicitation'
+  | 'ui_resources'
+  | 'roots'
+  | 'sampling'
+  | 'logging'
+  | 'completions'
+  | 'tasks'
+  | 'ping'
+  | 'progress'
+
+/**
+ * 12px/1.6-stroke glyph, matching the mock's inline `<svg>` attributes exactly
+ * (`viewBox 0 0 24 24`, `fill none`, `stroke currentColor`, round caps/joins,
+ * `display: block`). Paths below are the literal `d` strings read off the
+ * mock's DOM rather than lucide-react components, so the cluster cannot drift
+ * when the icon package is bumped.
+ */
+function CapabilityGlyph({ children }: { children: React.ReactNode }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ display: 'block' }}
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  )
+}
+
+/**
+ * The mock's capability list, in its own order — enumerated from the live DOM
+ * (`title` attribute per icon), not guessed from the MCP spec.
+ */
+export const DETAIL_CAPABILITIES: ReadonlyArray<{
+  key: DetailCapabilityKey
+  label: string
+  icon: React.ReactNode
+}> = [
+  {
+    key: 'tools',
+    label: 'Tools',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'prompts',
+    label: 'Prompts',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'resources',
+    label: 'Resources',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+        <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+        <path d="m9 18 3-3-3-3" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'elicitation',
+    label: 'Elicitation',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M12 3v3M18.4 5.6l-2.1 2.1M21 12h-3M5.6 5.6l2.1 2.1M3 12h3M12 21v-3M7.7 16.3l-2.1 2.1M16.3 16.3l2.1 2.1" />
+        <circle cx="12" cy="12" r="3" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'ui_resources',
+    label: 'UI Resources',
+    icon: (
+      <CapabilityGlyph>
+        <rect width="18" height="18" x="3" y="3" rx="2" />
+        <path d="M3 9h18" />
+        <path d="M9 21V9" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'roots',
+    label: 'Roots',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'sampling',
+    label: 'Sampling',
+    icon: (
+      <CapabilityGlyph>
+        <path d="m18 14 4 4-4 4" />
+        <path d="m18 2 4 4-4 4" />
+        <path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22" />
+        <path d="M2 6h1.972a4 4 0 0 1 3.6 2.2" />
+        <path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'logging',
+    label: 'Logging',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M3 5h.01M3 12h.01M3 19h.01M8 5h13M8 12h13M8 19h13" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'completions',
+    label: 'Completions',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1" />
+        <path d="M7 22h1a4 4 0 0 0 4-4v-1" />
+        <path d="M7 2h1a4 4 0 0 1 4 4v1" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'tasks',
+    label: 'Tasks',
+    icon: (
+      <CapabilityGlyph>
+        <path d="m9 11 3 3L22 4" />
+        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'ping',
+    label: 'Ping',
+    icon: (
+      <CapabilityGlyph>
+        <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+      </CapabilityGlyph>
+    ),
+  },
+  {
+    key: 'progress',
+    label: 'Progress',
+    icon: (
+      <CapabilityGlyph>
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 6v6l4 2" />
+      </CapabilityGlyph>
+    ),
+  },
+]
+
+/**
+ * 24×24 icon box, 7px radius, grid-centred — measured off the mock. Only the
+ * border/background/colour triple changes with state.
+ *
+ * `box-sizing: content-box` is load-bearing: the mock has no CSS reset, so its
+ * `width: 24px` plus a 1px border renders a 26px box. Tailwind's preflight
+ * makes everything `border-box` here, which would silently shrink the cluster
+ * to 24px cells and 30px tall. Opting this one element out reproduces the
+ * measured 26×26 cell and 32px cluster height.
+ */
+const CAPABILITY_BOX_STYLE: React.CSSProperties = {
+  boxSizing: 'content-box',
+  display: 'grid',
+  placeItems: 'center',
+  width: 24,
+  height: 24,
+  borderRadius: 7,
+}
+
+/**
+ * The mock ships two tones; `unknown` is ours.
+ *
+ * It is deliberately *not* a dimmer variant of `not_advertised` — a dimmer
+ * filled box is exactly how a reader would spell "advertised: no". Unknown is
+ * an **empty box with a dashed edge**: no fill at all, so it reads as a slot
+ * nothing has been written into. The cluster additionally leads with the
+ * project's `—` no-data glyph, the same marker used for every other metric the
+ * gateway API cannot back.
+ */
+const CAPABILITY_TONE_STYLE: Record<DetailCapabilityState, React.CSSProperties> = {
+  supported: {
+    border: '1px solid color-mix(in srgb, var(--aurora-accent-primary) 28%, transparent)',
+    background: 'color-mix(in srgb, var(--aurora-accent-primary) 10%, transparent)',
+    color: 'var(--aurora-accent-strong)',
+  },
+  not_advertised: {
+    border:
+      '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
+    background: 'var(--gw0-0_30)',
+    color: 'color-mix(in srgb, var(--aurora-text-muted) 45%, transparent)',
+  },
+  unknown: {
+    border: '1px dashed color-mix(in srgb, var(--aurora-border-strong) 70%, transparent)',
+    background: 'transparent',
+    color: 'color-mix(in srgb, var(--aurora-text-muted) 70%, transparent)',
+  },
+}
+
+function capabilityTitle(label: string, state: DetailCapabilityState): string {
+  if (state === 'supported') return `${label} — supported`
+  if (state === 'not_advertised') return `${label} — not advertised`
+  return (
+    `${label} — not reported. The gateway API does not report this server's ` +
+    `advertised capability set, so Labby cannot tell whether ${label} is ` +
+    `supported. This is not the same as "not supported".`
+  )
+}
+
+/**
+ * The capability cluster parked at the right end of the detail tab bar.
+ *
+ * Mock geometry, measured live: `flex; align-items: center; gap: 3px;
+ * padding-bottom: 6px`, twelve 24px boxes (26px border-box), 345×32 overall.
+ * Its container `title` in the mock reads `6 of 12 capabilities advertised in
+ * initialize.`
+ *
+ * **Why every icon is `unknown` here.** The mock's tones encode an answer to
+ * "did this server advertise capability X in its `initialize` response?" The
+ * gateway API exposes no capability set — `Gateway` carries `status` counts,
+ * `discovery` lists, `config.proxy_*` (which are *our* proxy switches, not the
+ * upstream's advertisement) and `surfaces` (Labby's own surfaces). None of
+ * those answer the question. Deriving a capability from a tool/prompt/resource
+ * count would be inference, so the affordance renders in the third state
+ * instead of being dropped — matching how the rest of the console shows `—`
+ * for fields the API cannot back.
+ *
+ * Pass `states` once the API grows a capability set; anything unlisted stays
+ * `unknown`.
+ *
+ * One deliberate deviation from the mock: the mock pins the cluster at
+ * `flex-shrink: 0`, which overflows the viewport below ~430px. Ours shrinks
+ * and scrolls internally instead. Above that width the rendered box is
+ * identical, because there is slack in the row and nothing shrinks.
+ */
+export function DetailCapabilityCluster({
+  states,
+  style,
+  ...rest
+}: Omit<React.HTMLAttributes<HTMLDivElement>, 'title' | 'children'> & {
+  states?: Partial<Record<DetailCapabilityKey, DetailCapabilityState>>
+}) {
+  const resolved = DETAIL_CAPABILITIES.map((capability) => ({
+    ...capability,
+    state: states?.[capability.key] ?? ('unknown' as DetailCapabilityState),
+  }))
+  const allUnknown = resolved.every((capability) => capability.state === 'unknown')
+  const advertised = resolved.filter((capability) => capability.state === 'supported').length
+
+  const clusterTitle = allUnknown
+    ? `Capabilities — not reported. The gateway API does not return the MCP ` +
+      `initialize capability set for this server, so none of these ` +
+      `${DETAIL_CAPABILITIES.length} capabilities can be shown as supported or ` +
+      `unsupported.`
+    : `${advertised} of ${DETAIL_CAPABILITIES.length} capabilities advertised in initialize.`
+
+  return (
+    <div
+      role="img"
+      aria-label={clusterTitle}
+      title={clusterTitle}
+      style={{
+        flexShrink: 1,
+        minWidth: 0,
+        overflowX: 'auto',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 3,
+        paddingBottom: 6,
+        ...style,
+      }}
+      {...rest}
+    >
+      {allUnknown ? (
+        <span
+          style={{
+            flexShrink: 0,
+            paddingRight: 3,
+            fontSize: 12,
+            fontWeight: 700,
+            lineHeight: 1,
+            color: 'color-mix(in srgb, var(--aurora-text-muted) 70%, transparent)',
+          }}
+        >
+          {DETAIL_NO_DATA}
+        </span>
+      ) : null}
+      {resolved.map((capability) => (
+        <span
+          key={capability.key}
+          title={capabilityTitle(capability.label, capability.state)}
+          style={{
+            ...CAPABILITY_BOX_STYLE,
+            ...CAPABILITY_TONE_STYLE[capability.state],
+            flexShrink: 0,
+          }}
+        >
+          {capability.icon}
+        </span>
+      ))}
+    </div>
   )
 }
 
