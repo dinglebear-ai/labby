@@ -84,9 +84,15 @@ reach.
   set of Labby tools a non-execute caller can reach at hop 2, using the real
   `upstream_destructive_from_annotations` predicate rather than a copy of it
 - ☑ Existing fail-closed tests pass **unmodified**
-- ☐ `fixture_annotated_upstream_tool` shared fixture *(deferred — the passthrough test builds its own)*
-- ☐ `cached_upstream_tool` preserves annotations *(deferred)*
-- ☐ Subject-scoped OAuth path covered *(deferred)*
+- ☑ Subject-scoped OAuth path covered — `annotation_passthrough_tests.rs`, four cases
+  (full block incl. `title`, partial block not filled in, absence preserved, per-tool
+  isolation). This path clones `rmcp::model::Tool` straight out of the per-subject
+  connection cache and never builds an `UpstreamTool`, so it could not inherit the
+  aggregated path's behavior.
+- ☑ `cached_upstream_tool` preserves annotations — relay half only; the fail-closed
+  derivation half stays with the two pre-existing `helpers.rs` tests (T8).
+- ☑ Shared subject-cache fixture — `move_connection_to_subject_cache_with_tools` moved
+  into `testsupport.rs` and shared with `tools_exposure_tests` rather than duplicated.
 - ☐ Multihop: annotation survival only *(deferred)*
 
 ### `lab-g1av5.3` — docs
@@ -103,8 +109,6 @@ reach.
 | Item | Why it is safe to defer |
 |---|---|
 | Hash-determinism test (REVIEW_FINDINGS T7) | Annotations derive from `&'static` data, so the hash is already covered by the existing mirror-equality assertion (`tests.rs:1672-1683`). T7 guards a churn mode, not a correctness gap. |
-| `cached_upstream_tool` annotation-preservation test (T8) | The passthrough assertion already covers the wire-visible half on both listing paths; the fail-closed derivation half is covered by the two pre-existing `helpers.rs` tests. |
-| Subject-scoped OAuth passthrough test | Genuinely distinct code path (`pool/tools.rs:246-274`) and the plan called it regression-prone. Left open deliberately. |
 | Multihop annotation-survival test | Out-of-process driver; the in-process 5e guard covers the security-relevant claim. |
 | Regression sweep of the listed `tests.rs` lines | Full `--all-features` suite passes; no listed test needed a change. |
 | `doctor` SSRF hardening | Pre-existing exposure, not created or widened by this epic. Companion bead. |
