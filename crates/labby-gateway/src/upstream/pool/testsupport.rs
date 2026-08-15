@@ -487,3 +487,44 @@ impl UpstreamPool {
         );
     }
 }
+
+/// Re-home a fixture's pooled connection into the `(upstream, subject)` cache
+/// so the OAuth subject-scoped paths hit their fast path without any network.
+///
+/// Shared because two suites need it: `tools_exposure_tests` (does the
+/// `expose_tools` filter apply on this path too?) and
+/// `annotation_passthrough_tests` (do upstream annotations survive it?).
+/// `tools` is stored exactly as given — seed it *unfiltered*, since the
+/// behavior under test always runs after the cache read.
+pub(super) async fn move_connection_to_subject_cache_with_tools(
+    pool: &UpstreamPool,
+    upstream: &str,
+    subject: &str,
+    tools: Vec<rmcp::model::Tool>,
+) {
+    // `UpstreamConnection` implements `Drop`, so the whole value has to be moved
+    // out of the pool rather than having its fields taken individually.
+    let peer = pool
+        .connections
+        .read()
+        .await
+        .get(upstream)
+        .expect("fixture connection present")
+        .peer
+        .clone();
+    let connection = pool
+        .connections
+        .write()
+        .await
+        .remove(upstream)
+        .expect("fixture connection present");
+    pool.subject_connections.write().await.insert(
+        (upstream.to_string(), subject.to_string()),
+        super::SubjectScopedConnection {
+            _connection: connection,
+            peer,
+            tools,
+            last_used: std::time::Instant::now(),
+        },
+    );
+}
