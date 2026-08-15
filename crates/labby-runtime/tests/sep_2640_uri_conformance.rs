@@ -16,7 +16,7 @@
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #![allow(clippy::panic)]
 
-use labby_runtime::skills::{FIRST_PARTY_ORIGIN, parse_skill_uri};
+use labby_runtime::skills::{FIRST_PARTY_ORIGIN, parse_skill_resource_uri, parse_skill_uri};
 
 /// The spec's examples table, as `(uri, skill_path, name)`.
 const SPEC_EXAMPLES: &[(&str, &str, &str)] = &[
@@ -40,10 +40,10 @@ const SPEC_EXAMPLES: &[(&str, &str, &str)] = &[
 #[test]
 fn every_spec_example_skill_md_resolves_to_its_declared_name() {
     for (uri, expected_path, expected_name) in SPEC_EXAMPLES {
-        let parsed = parse_skill_uri(uri).unwrap_or_else(|e| panic!("{uri} must parse: {e}"));
+        let parsed = parse_skill_uri(uri).expect("SEP example must parse");
         let (skill_path, name) = parsed
             .skill_md_parts()
-            .unwrap_or_else(|| panic!("{uri} must yield a skill path and name"));
+            .expect("SEP example must yield a skill path and name");
         assert_eq!(&skill_path, expected_path, "skill path for {uri}");
         assert_eq!(&name, expected_name, "name for {uri}");
     }
@@ -67,7 +67,7 @@ fn non_skill_md_files_parse_without_being_split_positionally() {
         "skill://pdf-processing/scripts/extract.py",
         "skill://acme/billing/refunds/examples/email.md",
     ] {
-        let parsed = parse_skill_uri(uri).unwrap_or_else(|e| panic!("{uri} must parse: {e}"));
+        let parsed = parse_skill_uri(uri).expect("SEP resource URI must parse");
         assert!(parsed.skill_md_parts().is_none(), "{uri} is not a SKILL.md");
     }
 }
@@ -80,12 +80,12 @@ fn minting_prepends_and_is_exactly_invertible() {
     for (upstream_uri, expected_minted, expected_name) in [
         (
             "skill://git-workflow/SKILL.md",
-            "skill://up/git-workflow/SKILL.md",
+            "skill://up/skill/git-workflow/SKILL.md",
             "git-workflow",
         ),
         (
             "skill://acme/billing/refunds/SKILL.md",
-            "skill://up/acme/billing/refunds/SKILL.md",
+            "skill://up/skill/acme/billing/refunds/SKILL.md",
             "refunds",
         ),
     ] {
@@ -94,8 +94,10 @@ fn minting_prepends_and_is_exactly_invertible() {
         assert_eq!(minted.to_uri(), expected_minted);
         // The name survives relabelling — it is the last segment either way.
         assert_eq!(minted.skill_md_parts().expect("resolves").1, expected_name);
-        // Invertible: the remainder is the upstream's own full path verbatim.
-        assert_eq!(minted.path(), upstream.full_path());
+        assert_eq!(
+            minted.upstream_uri_for_origin("up").as_deref(),
+            Some(upstream_uri)
+        );
     }
 }
 
@@ -154,7 +156,7 @@ fn an_upstream_label_labby_would_reject_is_still_parseable_inbound() {
 fn a_native_scheme_parses_and_yields_the_same_structure() {
     // The SEP's own native-scheme example. Requiring `skill://` here excluded
     // every skill from a conforming upstream that used its own scheme.
-    let uri = parse_skill_uri("github://owner/repo/skills/refunds/SKILL.md")
+    let uri = parse_skill_resource_uri("github://owner/repo/skills/refunds/SKILL.md")
         .expect("a native scheme is legal");
     assert_eq!(uri.scheme(), "github");
     let (skill_path, name) = uri.skill_md_parts().expect("structure applies regardless");
@@ -166,8 +168,8 @@ fn a_native_scheme_parses_and_yields_the_same_structure() {
 fn structural_constraints_still_bind_under_a_native_scheme() {
     // "No scheme is privileged" cuts both ways: a native scheme buys no
     // exemption from the rules a `skill://` URI must satisfy.
-    assert!(parse_skill_uri("github://owner/repo/../../etc/passwd/SKILL.md").is_err());
-    assert!(parse_skill_uri("github://owner//SKILL.md").is_err());
+    assert!(parse_skill_resource_uri("github://owner/repo/../../etc/passwd/SKILL.md").is_err());
+    assert!(parse_skill_resource_uri("github://owner//SKILL.md").is_err());
 }
 
 #[test]
@@ -177,25 +179,34 @@ fn a_malformed_scheme_is_still_rejected() {
         "1github://owner/refunds/SKILL.md",
         "git hub://owner/refunds/SKILL.md",
     ] {
-        assert!(parse_skill_uri(uri).is_err(), "{uri} should be refused");
+        assert!(
+            parse_skill_resource_uri(uri).is_err(),
+            "{uri} should be refused"
+        );
     }
 }
 
 #[test]
 fn a_native_scheme_skill_is_published_in_labbys_own_namespace() {
     // Labby is the server downstream, so it publishes under `skill://` whatever
-    // the upstream used. The native URI is not reconstructed from this string —
-    // it is recovered from the cached manifest, which is what keeps the read
-    // routable.
-    let native = parse_skill_uri("github://owner/repo/skills/refunds/SKILL.md").expect("parses");
+    // the upstream used. Encoding the native scheme as a path segment keeps
+    // the published URI exactly reversible even after the listing cache expires.
+    let native =
+        parse_skill_resource_uri("github://owner/repo/skills/refunds/SKILL.md").expect("parses");
     let minted = native.with_origin("gh").expect("valid label");
     assert_eq!(minted.scheme(), "skill");
     assert_eq!(
         minted.to_uri(),
-        "skill://gh/owner/repo/skills/refunds/SKILL.md"
+        "skill://gh/github/owner/repo/skills/refunds/SKILL.md"
+    );
+    assert_eq!(
+        minted
+            .upstream_uri_for_origin("gh")
+            .expect("minting is exactly reversible"),
+        "github://owner/repo/skills/refunds/SKILL.md"
     );
     // The name survives, and the remainder is the upstream's own path, which is
     // what the read matches against.
     assert_eq!(minted.skill_md_parts().expect("resolves").1, "refunds");
-    assert_eq!(minted.path(), native.full_path());
+    assert_eq!(minted.path(), "github/owner/repo/skills/refunds/SKILL.md");
 }

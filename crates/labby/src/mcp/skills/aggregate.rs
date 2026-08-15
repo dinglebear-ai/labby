@@ -19,11 +19,11 @@
 //! and file contents are untouched. A digest the upstream computed therefore
 //! still describes exactly the bytes Labby relays.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use labby_runtime::gateway_config::UpstreamConfig;
 use labby_runtime::skills::wire::{SkillEntry, SkillResource};
-use labby_runtime::skills::{ValidatedSkill, parse_skill_uri};
+use labby_runtime::skills::{ValidatedSkill, parse_skill_resource_uri};
 
 /// `_meta` key carrying Labby's provenance and tool-reachability facts.
 pub(crate) const SKILL_ORIGIN_META_KEY: &str = "ai.dinglebear.labby/skillOrigin";
@@ -108,7 +108,7 @@ pub(crate) fn mint_proxied_entry(
     skill: &ValidatedSkill,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<SkillEntry> {
-    let uri = parse_skill_uri(&skill.entry.uri).ok()?;
+    let uri = parse_skill_resource_uri(&skill.entry.uri).ok()?;
     let minted_uri = uri.with_origin(origin).ok()?.to_uri();
 
     let resources = match skill.entry.resources.as_ref() {
@@ -116,7 +116,7 @@ pub(crate) fn mint_proxied_entry(
         Some(resources) => {
             let mut minted = Vec::with_capacity(resources.len());
             for resource in resources {
-                let parsed = parse_skill_uri(&resource.uri).ok()?;
+                let parsed = parse_skill_resource_uri(&resource.uri).ok()?;
                 minted.push(SkillResource {
                     uri: parsed.with_origin(origin).ok()?.to_uri(),
                     // Untouched: the label moved, the bytes did not.
@@ -140,36 +140,68 @@ pub(crate) fn mint_proxied_entries(
     config: &UpstreamConfig,
     skills: &[ValidatedSkill],
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> Vec<SkillEntry> {
-    // A skill is identified by its `uri`, so publishing one twice would hand a
-    // client two different skills under one identifier. Minting drops the
-    // upstream's scheme (Labby publishes in its own `skill://` namespace), so
-    // an upstream serving both `skill://a/SKILL.md` and `github://a/SKILL.md`
-    // would collide here. Both are dropped rather than one silently winning:
-    // choosing by iteration order decides, invisibly, which instructions an
-    // agent acts on.
+) -> MintedEntries {
+    // A skill is identified by its `uri`, and a resource URI must resolve to
+    // exactly one owner. Exclude every owner of a collision instead of letting
+    // iteration order decide which instructions or bytes a client receives.
     let mut minted: Vec<SkillEntry> = Vec::with_capacity(skills.len());
-    let mut colliding: BTreeSet<String> = BTreeSet::new();
+    let mut owners: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     for skill in skills {
         let Some(entry) = mint_proxied_entry(&config.name, skill, meta) else {
             continue;
         };
-        if minted.iter().any(|existing| existing.uri == entry.uri) {
-            colliding.insert(entry.uri.clone());
+        let owner = minted.len();
+        owners.entry(entry.uri.clone()).or_default().insert(owner);
+        if let Some(resources) = &entry.resources {
+            for resource in resources {
+                owners
+                    .entry(resource.uri.clone())
+                    .or_default()
+                    .insert(owner);
+            }
         }
         minted.push(entry);
     }
-    if !colliding.is_empty() {
-        for uri in &colliding {
+    let colliding_owners: BTreeSet<usize> = owners
+        .values()
+        .filter(|owners| owners.len() > 1)
+        .flatten()
+        .copied()
+        .collect();
+    let excluded_uris = colliding_owners
+        .iter()
+        .filter_map(|index| minted.get(*index).map(|entry| entry.uri.clone()))
+        .collect();
+    if !colliding_owners.is_empty() {
+        for (uri, owners) in &owners {
+            if owners.len() <= 1 {
+                continue;
+            }
             tracing::warn!(
                 upstream = %config.name,
                 skill = %uri,
-                "excluding skills that mint to one URI under different schemes"
+                "excluding skills that mint to an ambiguously owned URI"
             );
         }
-        minted.retain(|entry| !colliding.contains(&entry.uri));
+        minted = minted
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, entry)| (!colliding_owners.contains(&index)).then_some(entry))
+            .collect();
     }
-    minted
+    let excluded_count = skills.len().saturating_sub(minted.len());
+    MintedEntries {
+        entries: minted,
+        excluded_count,
+        excluded_uris,
+    }
+}
+
+/// Proxied entries plus the number that could not be published honestly.
+pub(crate) struct MintedEntries {
+    pub(crate) entries: Vec<SkillEntry>,
+    pub(crate) excluded_count: usize,
+    pub(crate) excluded_uris: BTreeSet<String>,
 }
 
 #[cfg(test)]
@@ -223,7 +255,7 @@ mod tests {
             .collect();
 
         let minted = mint_proxied_entry("gh", &skill, None).expect("mints");
-        assert_eq!(minted.uri, "skill://gh/their-label/refunds/SKILL.md");
+        assert_eq!(minted.uri, "skill://gh/skill/their-label/refunds/SKILL.md");
         let minted_resources = minted.resources.as_ref().expect("manifest");
         assert!(
             minted_resources
@@ -255,8 +287,8 @@ mod tests {
         let b = mint_proxied_entry("beta", &upstream_skill("y", "refunds"), None).expect("b");
 
         assert_ne!(a.uri, b.uri);
-        assert_eq!(a.uri, "skill://alpha/x/refunds/SKILL.md");
-        assert_eq!(b.uri, "skill://beta/y/refunds/SKILL.md");
+        assert_eq!(a.uri, "skill://alpha/skill/x/refunds/SKILL.md");
+        assert_eq!(b.uri, "skill://beta/skill/y/refunds/SKILL.md");
         // Names collide by design; the URIs are what identify them.
         assert_eq!(a.frontmatter.get("name"), b.frontmatter.get("name"));
     }
@@ -269,13 +301,13 @@ mod tests {
         let minted = mint_proxied_entry("acme-corp", &billing, None).expect("mints");
         // The upstream's own `acme` prefix survives: the label is prepended,
         // not substituted, so nothing the upstream organized by is discarded.
-        assert_eq!(minted.uri, "skill://acme-corp/acme/refunds/SKILL.md");
+        assert_eq!(minted.uri, "skill://acme-corp/skill/acme/refunds/SKILL.md");
         // Nothing here dedupes by name, so a sibling at another path is
         // unaffected — asserting the absence of a name-keyed collapse. The two
         // skills must differ by *path*, as the comment above describes; passing
         // the identical skill twice tested a degenerate case a real listing
         // cannot produce, and now correctly trips the same-URI collision guard.
-        let entries = mint_proxied_entries(
+        let result = mint_proxied_entries(
             &UpstreamConfig {
                 name: "acme-corp".to_string(),
                 ..super::super::tests_support::minimal_config()
@@ -286,21 +318,17 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(entries.len(), 2, "no name-keyed deduplication");
+        assert_eq!(result.entries.len(), 2, "no name-keyed deduplication");
         assert_ne!(
-            entries[0].uri, entries[1].uri,
+            result.entries[0].uri, result.entries[1].uri,
             "distinct paths, distinct URIs"
         );
+        assert_eq!(result.excluded_count, 0);
     }
 
     #[test]
-    fn two_schemes_minting_to_one_uri_drop_both_rather_than_picking() {
-        // Minting drops the upstream's scheme, because Labby publishes in its
-        // own `skill://` namespace. So an upstream serving the same path under
-        // two schemes would publish one identifier for two different skills.
-        // Resolving that by iteration order would decide, invisibly, which
-        // instructions an agent acts on.
-        let entries = mint_proxied_entries(
+    fn two_schemes_mint_to_distinct_reversible_uris() {
+        let result = mint_proxied_entries(
             &UpstreamConfig {
                 name: "gh".to_string(),
                 ..super::super::tests_support::minimal_config()
@@ -311,10 +339,52 @@ mod tests {
             ],
             None,
         );
-        assert!(
-            entries.is_empty(),
-            "an ambiguous identifier must publish neither skill, got {entries:?}"
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.excluded_count, 0);
+        assert_eq!(
+            result.entries[0].uri,
+            "skill://gh/skill/acme/refunds/SKILL.md"
         );
+        assert_eq!(
+            result.entries[1].uri,
+            "skill://gh/github/acme/refunds/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn overlapping_resource_uris_exclude_every_owning_skill() {
+        let mut parent = upstream_skill("acme", "parent");
+        let mut child = upstream_skill("acme/parent", "child");
+        let shared = "skill://acme/parent/child/shared.md";
+        parent
+            .entry
+            .resources
+            .as_mut()
+            .expect("manifest")
+            .push(SkillResource {
+                uri: shared.to_string(),
+                digest: labby_runtime::skills::ResourceDigest::of_bytes(b"parent").to_wire(),
+            });
+        child
+            .entry
+            .resources
+            .as_mut()
+            .expect("manifest")
+            .push(SkillResource {
+                uri: shared.to_string(),
+                digest: labby_runtime::skills::ResourceDigest::of_bytes(b"child").to_wire(),
+            });
+        let result = mint_proxied_entries(
+            &UpstreamConfig {
+                name: "gh".into(),
+                ..super::super::tests_support::minimal_config()
+            },
+            &[parent, child],
+            None,
+        );
+        assert!(result.entries.is_empty());
+        assert_eq!(result.excluded_count, 2);
+        assert_eq!(result.excluded_uris.len(), 2);
     }
 
     #[test]
@@ -330,7 +400,7 @@ mod tests {
         let mut skill = upstream_skill("their-label", "refunds");
         skill.entry.resources = None;
         let minted = mint_proxied_entry("gh", &skill, None).expect("mints");
-        assert_eq!(minted.uri, "skill://gh/their-label/refunds/SKILL.md");
+        assert_eq!(minted.uri, "skill://gh/skill/their-label/refunds/SKILL.md");
         assert!(minted.resources.is_none(), "must not fabricate a manifest");
     }
 }

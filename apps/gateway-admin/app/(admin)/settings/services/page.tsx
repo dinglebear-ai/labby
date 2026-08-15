@@ -9,7 +9,11 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ChevronRight, Loader2, CircleAlert, CircleCheck } from 'lucide-react'
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  SettingsCard,
+  SettingsRow,
+  SettingsRowStrip,
+} from '@/components/settings/SettingsChrome'
 import { PluginToggle } from '@/components/setup/PluginToggle'
 import { setupApi, type ServiceSchema, type SetupSnapshot, type ServiceStatus, type SettingsState } from '@/lib/api/setup-client'
 
@@ -77,73 +81,93 @@ export default function ServicesIndex(): React.ReactElement {
 
   return (
     <>
-      <h1 className="sr-only">Service settings</h1>
-      <Card>
-        <CardHeader>
-          <CardTitle>Services</CardTitle>
-          <CardDescription>
+      <h2 className="sr-only">Service settings</h2>
+      <SettingsCard
+        title="Services"
+        description={
+          <>
             Configure connection details for every Bootstrap service. Click a
             row to edit its env vars; saves commit immediately to{' '}
             <code>~/.labby/.env</code>.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {settings ? (
-            <div className="mb-4 rounded-md border p-3">
-              <div className="space-y-1">
-                <p className="text-sm font-medium">Built-in upstream API services</p>
-                <p className="text-sm text-aurora-text-muted">
-                  {builtInsEnabled === true
-                    ? 'Enabled from Features settings.'
-                    : 'Disabled from Features settings; saved credentials are preserved.'}
-                </p>
-                <p className="text-xs text-aurora-text-muted">
-                  Service credentials remain managed on individual service pages; the full env inventory is available in Advanced.
-                </p>
-              </div>
-            </div>
-          ) : null}
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
+          </>
+        }
+      >
+        {settings ? (
+          <SettingsRow
+            layout="stacked"
+            label="Built-in upstream API services"
+            description={
+              <>
+                {builtInsEnabled === true
+                  ? 'Enabled from Features settings.'
+                  : 'Disabled from Features settings; saved credentials are preserved.'}
+                <span style={{ display: 'block', marginTop: 2 }}>
+                  Service credentials remain managed on individual service pages; the full env
+                  inventory is available in Advanced.
+                </span>
+              </>
+            }
+          />
+        ) : null}
+        {loading ? (
+          <SettingsRowStrip>
+            <span className="flex items-center gap-2 text-[11.5px] text-aurora-text-muted">
               <Loader2 className="h-4 w-4 animate-spin" /> loading catalog
-            </div>
-          ) : null}
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
-          {!loading && !error ? (
-          <ul className="divide-y rounded-md border">
-            {rows.map(({ schema, configured, pluginInstalled }) => (
-              <li key={schema.name}>
-                <div className="flex items-center justify-between gap-3 p-3 text-sm hover:bg-accent/40">
-                  <Link href={`/settings/services/${schema.name}/`} className="min-w-0 flex-1">
-                    <div>
-                      <p className="font-medium">{schema.display_name}</p>
-                      {schema.description ? (
-                        <p className="text-xs text-aurora-text-muted">
-                          {schema.description}
-                        </p>
-                      ) : null}
-                    </div>
+            </span>
+          </SettingsRowStrip>
+        ) : null}
+        {error ? (
+          <SettingsRowStrip>
+            <span className="text-[11.5px] text-destructive">{error}</span>
+          </SettingsRowStrip>
+        ) : null}
+        {!loading && !error
+          ? rows.map(({ schema, configured, pluginInstalled }) => (
+              <SettingsRow
+                key={schema.name}
+                label={
+                  <Link
+                    href={`/settings/services/${schema.name}/`}
+                    style={{ color: 'inherit', textDecoration: 'none' }}
+                  >
+                    {schema.display_name}
                   </Link>
-                  <div className="flex items-center gap-2 text-xs">
+                }
+                description={schema.description ?? undefined}
+                control={
+                  <div
+                    className="flex items-center gap-2"
+                    style={{ fontSize: 11, color: 'var(--aurora-text-muted)' }}
+                  >
                     <PluginToggle service={schema.name} installed={pluginInstalled} disabled={!configured} />
                     {configured ? (
-                      <span className="inline-flex items-center gap-1 text-emerald-600">
+                      <span
+                        className="inline-flex items-center gap-1"
+                        style={{ color: 'var(--aurora-success)' }}
+                      >
                         <CircleCheck className="h-3 w-3" /> configured
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 text-amber-600">
+                      <span
+                        className="inline-flex items-center gap-1"
+                        style={{ color: 'var(--aurora-warn)' }}
+                      >
                         <CircleAlert className="h-3 w-3" /> incomplete
                       </span>
                     )}
-                    <ChevronRight className="h-4 w-4 text-aurora-text-muted" />
+                    <Link
+                      href={`/settings/services/${schema.name}/`}
+                      aria-label={`Open ${schema.display_name} settings`}
+                      style={{ display: 'grid', color: 'var(--aurora-text-muted)' }}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Link>
                   </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        </CardContent>
-      </Card>
+                }
+              />
+            ))
+          : null}
+      </SettingsCard>
     </>
   )
 }

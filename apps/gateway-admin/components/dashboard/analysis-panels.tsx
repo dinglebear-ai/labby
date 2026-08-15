@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react'
 import {
+  Activity,
   Clock3,
   Gauge,
   Layers,
@@ -13,11 +14,16 @@ import {
 import { DashboardPanel } from './panel'
 import { MetricBarList, type MetricBarItem } from './metric-bars'
 import { DASH_METRIC_SM } from './ui'
-import { formatCompactNumber, formatDuration } from '@/lib/dashboard/dashboard-metrics'
+import {
+  WINDOW_LABELS,
+  formatCompactNumber,
+  formatDuration,
+} from '@/lib/dashboard/dashboard-metrics'
 import { surfaceLabel } from '@/lib/dashboard/surface-label'
 import type {
   DashboardMetrics,
   ErrorKindCount,
+  MetricsWindow,
   SurfaceCount,
   TokenByTool,
   UpstreamUsage,
@@ -134,8 +140,73 @@ export function UpstreamsPanel({ upstreams }: { upstreams: UpstreamUsage[] }) {
     display: u.failed > 0 ? `${formatCompactNumber(u.calls)} · ${u.failed} err` : formatCompactNumber(u.calls),
   }))
   return (
-    <DashboardPanel title="Top upstreams" icon={<Server className="size-4" />} meta={`${upstreams.length} servers`}>
+    <DashboardPanel
+      title="Most active servers"
+      icon={<Server className="size-4" />}
+      meta={`${upstreams.length} servers`}
+    >
       <MetricBarList items={items} mono />
+    </DashboardPanel>
+  )
+}
+
+// ── Call outcomes ────────────────────────────────────────────────────────
+
+/**
+ * Succeeded / failed split for the window, with the leading error kinds.
+ * Mirrors the mock's "Call Outcomes" rail panel.
+ */
+export function CallOutcomesPanel({
+  toolCalls,
+  errors,
+  window: metricsWindow,
+}: {
+  toolCalls: DashboardMetrics['tool_calls']
+  errors: DashboardMetrics['errors']
+  window: MetricsWindow
+}) {
+  const total = Math.max(1, toolCalls.total)
+  const okPct = Math.round((toolCalls.succeeded / total) * 100)
+
+  return (
+    <DashboardPanel
+      title="Call outcomes"
+      icon={<Activity className="size-4" />}
+      meta={WINDOW_LABELS[metricsWindow]}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm text-aurora-text-primary">
+          {formatCompactNumber(toolCalls.succeeded)} succeeded
+        </span>
+        <span className="shrink-0 text-sm font-semibold tabular-nums text-aurora-text-muted">
+          {okPct}%
+        </span>
+      </div>
+      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-aurora-control-surface">
+        <div className="h-full bg-aurora-success" style={{ width: `${okPct}%` }} />
+        <div className="h-full flex-1 bg-aurora-error" />
+      </div>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm text-aurora-text-primary">
+          {formatCompactNumber(toolCalls.failed)} failed
+        </span>
+        <span className="shrink-0 text-sm font-semibold tabular-nums text-aurora-text-muted">
+          {100 - okPct}%
+        </span>
+      </div>
+      {errors.by_kind.length > 0 ? (
+        <ul className="flex flex-col gap-1 border-t border-aurora-border-default/55 pt-2">
+          {errors.by_kind.slice(0, 3).map((entry) => (
+            <li
+              key={entry.kind}
+              className="flex items-baseline justify-between gap-3 text-[11px] text-aurora-text-muted"
+            >
+              <span className="min-w-0 truncate font-mono">{entry.kind}</span>
+              <span className="shrink-0 tabular-nums">{entry.count}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </DashboardPanel>
   )
 }

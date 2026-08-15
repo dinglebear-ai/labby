@@ -2,34 +2,179 @@
 
 import * as React from 'react'
 import {
-  CheckCircle2,
-  Code2,
+  ArrowDown,
+  ArrowUp,
   FileCode2,
   FlaskConical,
   Loader2,
+  Package,
   Play,
   RefreshCw,
+  Search,
   ShieldCheck,
-  XCircle,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
-import { Badge } from '@/components/ui/badge'
+import { ConsoleHero } from '@/components/console/console-hero'
 import { Button } from '@/components/ui/button'
 import { SafeMarkdown } from '@/components/markdown/safe-markdown'
-import {
-  AURORA_CARD_TITLE,
-  AURORA_DENSE_META,
-  AURORA_DISPLAY_1,
-  AURORA_DISPLAY_NUMBER,
-  AURORA_MEDIUM_PANEL,
-  AURORA_MUTED_LABEL,
-  AURORA_PAGE_FRAME,
-  AURORA_PAGE_SHELL,
-  AURORA_STRONG_PANEL,
-} from '@/components/aurora/tokens'
+import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { snippetsApi } from '@/lib/api/snippets-client'
-import type { ResolvedSnippet, SnippetInfo } from '@/lib/types/snippets'
-import { cn } from '@/lib/utils'
+import type { ResolvedSnippet, SnippetInfo, SnippetInputSpec } from '@/lib/types/snippets'
+import {
+  buildSnippetParams,
+  collectSnippetTags,
+  filterSnippets,
+  inputPlaceholder,
+  parseSnippetBody,
+  snippetKey,
+  sortSnippetsByName,
+  tokenizeSnippetSource,
+  type SnippetSortDirection,
+  type SnippetTokenKind,
+} from './snippet-model'
+
+/**
+ * Snippets screen body, measured off the Gateway Console mock.
+ *
+ * The mock draws one `--radius-2` card holding a filter row, a six-column
+ * snippet table, and an inline detail region that expands under the selected
+ * row. Everything in here is sized/coloured from that mock's live DOM.
+ *
+ * Four of the mock's columns — SERVERS, RUNS, FAILS, AVG — and the HISTORY
+ * sparkline have no field on `SnippetInfo`, so they render `—`. The mock does
+ * the same wherever its own fixture is missing a value; nothing is invented.
+ * Upstream servers *are* recoverable for the selected snippet, because its
+ * resolved body is fetched — they surface as the TOOLS CALLED chips.
+ */
+
+// ---------------------------------------------------------------------------
+// Measured chrome
+// ---------------------------------------------------------------------------
+
+const CARD: React.CSSProperties = {
+  borderRadius: 'var(--radius-2)',
+  border: '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
+  background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
+  boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,0.05)',
+  overflow: 'hidden',
+}
+
+const GRID_COLUMNS = 'minmax(240px, 1.4fr) minmax(140px, 1fr) 70px 60px 70px 90px 40px'
+
+const FILTER_ROW: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '10px 14px',
+  borderBottom: '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
+  background: 'var(--gw0-0_38)',
+}
+
+const HEAD_ROW: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: GRID_COLUMNS,
+  alignItems: 'center',
+  gap: 8,
+  padding: '0 14px',
+  height: 34,
+  borderBottom: '1px solid var(--aurora-border-strong)',
+  background: 'var(--gw0-0_48)',
+}
+
+const HEAD_LABEL: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: '0.14em',
+  textTransform: 'uppercase',
+  color: 'var(--aurora-text-muted)',
+}
+
+const CONTROL: React.CSSProperties = {
+  border: '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
+  background: 'var(--aurora-control-surface)',
+  outline: 'none',
+  fontFamily: 'inherit',
+  color: 'var(--aurora-text-primary)',
+}
+
+const SECTION_LABEL: React.CSSProperties = {
+  fontSize: 9.5,
+  fontWeight: 700,
+  letterSpacing: '0.14em',
+  textTransform: 'uppercase',
+  color: 'color-mix(in srgb, var(--aurora-text-muted) 75%, transparent)',
+  marginBottom: 7,
+}
+
+const CODE_BLOCK: React.CSSProperties = {
+  margin: 0,
+  padding: '12px 14px',
+  maxHeight: 340,
+  borderRadius: 9,
+  border: '1px solid color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))',
+  background: 'var(--gw4-0_62)',
+  fontFamily: "'JetBrains Mono', var(--font-mono)",
+  fontSize: 11,
+  lineHeight: 1.75,
+  overflow: 'auto',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+}
+
+const TOKEN_COLOR: Record<SnippetTokenKind, string | undefined> = {
+  plain: undefined,
+  comment: 'color-mix(in srgb, var(--aurora-text-muted) 65%, transparent)',
+  meta: 'color-mix(in srgb, var(--aurora-text-muted) 65%, transparent)',
+  string: 'var(--aurora-success)',
+  keyword: 'var(--aurora-accent-pink)',
+  key: 'var(--aurora-accent-strong)',
+}
+
+function rowStyle(index: number, selected: boolean): React.CSSProperties {
+  const zebra = index % 2 === 0 ? 'var(--gw1-0_62)' : 'var(--gw2-0_55)'
+  return {
+    display: 'grid',
+    gridTemplateColumns: GRID_COLUMNS,
+    alignItems: 'center',
+    gap: 8,
+    padding: '9px 14px',
+    cursor: 'pointer',
+    borderTop: '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+    transition: 'background 150ms',
+    background: selected
+      ? `color-mix(in srgb, var(--aurora-accent-primary) 6%, ${zebra})`
+      : zebra,
+    boxShadow: selected
+      ? 'inset 3px 0 0 color-mix(in srgb, var(--aurora-accent-primary) 42%, transparent)'
+      : undefined,
+  }
+}
+
+/** The mock's stand-in for a value its fixture does not carry. */
+function MissingCell({ title, align = 'center' }: { title: string; align?: 'start' | 'center' }) {
+  return (
+    <span
+      title={title}
+      style={{
+        justifySelf: align,
+        fontSize: 11.5,
+        fontVariantNumeric: 'tabular-nums',
+        color: 'color-mix(in srgb, var(--aurora-text-muted) 55%, transparent)',
+      }}
+    >
+      —
+    </span>
+  )
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div style={SECTION_LABEL}>{children}</div>
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
 
 type ActionState =
   | { kind: 'idle' }
@@ -37,30 +182,8 @@ type ActionState =
   | { kind: 'success'; label: string; detail: string }
   | { kind: 'error'; label: string; detail: string }
 
-function snippetKey(snippet: Pick<SnippetInfo, 'source' | 'name'>) {
-  return `${snippet.source}:${snippet.name}`
-}
-
-function inputEntries(snippet: SnippetInfo | null) {
-  return Object.entries(snippet?.inputs ?? {})
-}
-
-function formatDefault(value: unknown): string {
-  if (value === undefined) return 'none'
-  if (value === null) return 'null'
-  if (typeof value === 'string') return value
-  return JSON.stringify(value)
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown snippets error'
-}
-
-function tutorialText(snippet: ResolvedSnippet | null): string | null {
-  if (!snippet?.body) return null
-  const withoutFrontmatter = snippet.body.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/, '')
-  const beforeCode = withoutFrontmatter.split(/\r?\n```(?:js|javascript|ts|typescript)\b/)[0]?.trim()
-  return beforeCode || null
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -78,6 +201,10 @@ function actionResultFailed(result: unknown): boolean {
   return false
 }
 
+function inputEntries(snippet: SnippetInfo | null): Array<[string, SnippetInputSpec]> {
+  return Object.entries(snippet?.inputs ?? {})
+}
+
 export function SnippetsPageContent() {
   const [snippets, setSnippets] = React.useState<SnippetInfo[]>([])
   const [selectedKey, setSelectedKey] = React.useState<string | null>(null)
@@ -86,6 +213,10 @@ export function SnippetsPageContent() {
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [actionState, setActionState] = React.useState<ActionState>({ kind: 'idle' })
+  const [query, setQuery] = React.useState('')
+  const [activeTag, setActiveTag] = React.useState<string | null>(null)
+  const [sortDirection, setSortDirection] = React.useState<SnippetSortDirection>('asc')
+  const [inputValues, setInputValues] = React.useState<Record<string, Record<string, string>>>({})
 
   const reload = React.useCallback(async () => {
     setLoading(true)
@@ -147,16 +278,23 @@ export function SnippetsPageContent() {
     return () => controller.abort()
   }, [selectedKey, snippets])
 
+  const tags = React.useMemo(() => collectSnippetTags(snippets), [snippets])
+  const visible = React.useMemo(
+    () => sortSnippetsByName(filterSnippets(snippets, query, activeTag), sortDirection),
+    [snippets, query, activeTag, sortDirection],
+  )
+
   const selected = React.useMemo(
-    () =>
-      snippets.find((snippet) => snippetKey(snippet) === selectedKey) ??
-      snippets[0] ??
-      null,
+    () => snippets.find((snippet) => snippetKey(snippet) === selectedKey) ?? null,
     [selectedKey, snippets],
   )
   const selectedDetailLoaded = selectedDetail?.name === selected?.name
-  const selectedTutorial =
-    selectedDetailLoaded ? tutorialText(selectedDetail) : null
+  const parsed = React.useMemo(
+    () => parseSnippetBody(selectedDetailLoaded ? selectedDetail?.body : null),
+    [selectedDetail, selectedDetailLoaded],
+  )
+  const sourceTokens = React.useMemo(() => tokenizeSnippetSource(parsed.source), [parsed.source])
+
   const builtinCount = snippets.filter((snippet) => snippet.source === 'builtin').length
   const inputCount = snippets.reduce((sum, snippet) => sum + inputEntries(snippet).length, 0)
 
@@ -174,21 +312,38 @@ export function SnippetsPageContent() {
     }
   }
 
+  /** Coerce the INPUTS table into typed params before test/exec. */
+  const withParams = (
+    snippet: SnippetInfo,
+    label: string,
+    fn: (params: Record<string, unknown>) => Promise<unknown>,
+  ) => {
+    const built = buildSnippetParams(snippet.inputs, inputValues[snippetKey(snippet)])
+    if (!built.ok) {
+      setActionState({ kind: 'error', label, detail: built.error })
+      return
+    }
+    void runAction(label, () => fn(built.params))
+  }
+
+  const setInputValue = (key: string, name: string, value: string) => {
+    setInputValues((current) => ({ ...current, [key]: { ...current[key], [name]: value } }))
+  }
+
+  const running = actionState.kind === 'loading' ? actionState.label : null
+
   return (
     <>
       <AppHeader breadcrumbs={[{ label: 'Snippets' }]} />
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
         <div className={AURORA_PAGE_FRAME}>
-          <div className={cn(AURORA_STRONG_PANEL, 'px-6 py-5')}>
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className={AURORA_MUTED_LABEL}>Code Mode workflows</p>
-                <h1 className={cn(AURORA_DISPLAY_1, 'mt-2 text-aurora-text-primary')}>Snippets</h1>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-aurora-text-muted">
-                  Inspect executable Code Mode snippets, review their typed inputs, and run validation or smoke checks through the shared snippets dispatch layer.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
+          {/* Hero — the mock's eyebrow + title + action cluster with the stat
+              strip welded to the card's bottom edge, not floating cards. */}
+          <ConsoleHero
+            eyebrow="Code Mode"
+            title="Snippets"
+            actions={
+              <>
                 <Button variant="outline" size="sm" onClick={() => void reload()}>
                   <RefreshCw className="size-4" />
                   Refresh
@@ -202,205 +357,602 @@ export function SnippetsPageContent() {
                   <FlaskConical className="size-4" />
                   Test all
                 </Button>
+              </>
+            }
+            stats={[
+              { label: 'Snippets', value: snippets.length, icon: <FileCode2 size={12} strokeWidth={1.8} /> },
+              { label: 'Built-in', value: builtinCount, icon: <Package size={12} strokeWidth={1.8} /> },
+              { label: 'Inputs', value: inputCount, icon: <SlidersHorizontal size={12} strokeWidth={1.8} /> },
+            ]}
+          />
+
+          <section style={CARD}>
+            {/* Filter row: search, tag pills, right-aligned count. */}
+            <div style={FILTER_ROW}>
+              <div style={{ flex: '1 1 0%', maxWidth: 340, position: 'relative' }}>
+                <span
+                  style={{
+                    position: 'absolute',
+                    left: 10,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    color: 'var(--aurora-text-muted)',
+                    display: 'grid',
+                    placeItems: 'center',
+                  }}
+                >
+                  <Search size={12} strokeWidth={1.8} />
+                </span>
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search snippets, tools, tags…"
+                  aria-label="Search snippets"
+                  style={{
+                    ...CONTROL,
+                    width: '100%',
+                    height: 30,
+                    padding: '0 10px 0 30px',
+                    borderRadius: 9,
+                    fontSize: 12,
+                    boxSizing: 'border-box',
+                  }}
+                />
               </div>
-            </div>
-          </div>
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            <MetricCard label="Snippets" value={snippets.length} detail="Executable workflows in built-in and user stores." />
-            <MetricCard label="Built-in" value={builtinCount} detail="Frontmatter-backed snippets shipped with Labby." />
-            <MetricCard label="Inputs" value={inputCount} detail="Typed parameters with defaults and validation." />
-          </div>
-
-          {error ? (
-            <div className={cn(AURORA_MEDIUM_PANEL, 'border-aurora-error/40 px-5 py-4 text-sm text-aurora-error')}>
-              Failed to load snippets: {error}
-            </div>
-          ) : null}
-
-          <div className="grid min-h-[520px] gap-5 lg:grid-cols-[minmax(280px,380px)_minmax(0,1fr)]">
-            <div className={cn(AURORA_STRONG_PANEL, 'overflow-hidden')}>
-              <div className="border-b border-aurora-border-strong px-5 py-4">
-                <p className={AURORA_MUTED_LABEL}>Library</p>
-              </div>
-              <div className="divide-y divide-aurora-border-strong/70">
-                {loading && snippets.length === 0 ? (
-                  Array.from({ length: 5 }, (_, index) => (
-                    <div key={index} className="h-24 animate-pulse bg-aurora-control-surface/45" />
-                  ))
-                ) : snippets.length === 0 ? (
-                  <div className="px-5 py-8 text-sm text-aurora-text-muted">No executable snippets found.</div>
-                ) : (
-                  snippets.map((snippet) => (
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {tags.map((tag) => {
+                  const active = activeTag === tag
+                  return (
                     <button
-                      key={`${snippet.source}:${snippet.name}`}
+                      key={tag}
                       type="button"
-                      onClick={() => setSelectedKey(snippetKey(snippet))}
-                      className={cn(
-                        'flex w-full items-start gap-3 px-5 py-4 text-left transition hover:bg-aurora-hover-bg/60',
-                        selected && snippetKey(selected) === snippetKey(snippet) && 'border-l-2 border-aurora-accent-primary bg-aurora-hover-bg/70 shadow-[var(--aurora-active-glow)]',
-                      )}
+                      aria-pressed={active}
+                      onClick={() => setActiveTag(active ? null : tag)}
+                      style={{
+                        height: 24,
+                        padding: '0 10px',
+                        borderRadius: 999,
+                        fontFamily: 'inherit',
+                        fontSize: 10.5,
+                        fontWeight: 650,
+                        cursor: 'pointer',
+                        transition: 'background 150ms, border-color 150ms, color 150ms',
+                        border: active
+                          ? '1px solid color-mix(in srgb, var(--aurora-accent-primary) 45%, transparent)'
+                          : '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
+                        background: active
+                          ? 'color-mix(in srgb, var(--aurora-accent-primary) 13%, transparent)'
+                          : 'var(--aurora-control-surface)',
+                        color: active ? 'var(--aurora-accent-strong)' : 'var(--aurora-text-muted)',
+                      }}
                     >
-                      <FileCode2 className="mt-0.5 size-4 shrink-0 text-aurora-accent-primary" />
-                      <span className="min-w-0 flex-1">
-                        <span className={cn(AURORA_CARD_TITLE, 'block truncate text-aurora-text-primary')}>{snippet.name}</span>
-                        <span className="mt-1 line-clamp-2 block text-xs leading-5 text-aurora-text-muted">
-                          {snippet.description ?? 'No description provided.'}
-                        </span>
-                        <span className="mt-3 flex flex-wrap gap-1.5">
-                          <Badge variant="secondary">{snippet.source}</Badge>
-                          {snippet.shadowed ? <Badge variant="outline">Shadowed</Badge> : null}
-                          {inputEntries(snippet).length > 0 ? <Badge variant="outline">{inputEntries(snippet).length} inputs</Badge> : null}
-                        </span>
-                      </span>
+                      {tag}
                     </button>
-                  ))
-                )}
+                  )
+                })}
               </div>
+
+              <div style={{ flex: '1 1 0%' }} />
+
+              <span
+                style={{
+                  fontSize: 11,
+                  color: 'var(--aurora-text-muted)',
+                  fontVariantNumeric: 'tabular-nums',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {visible.length} of {snippets.length} snippets
+              </span>
             </div>
 
-            <div className={cn(AURORA_STRONG_PANEL, 'flex min-w-0 flex-col overflow-hidden')}>
-              {selected ? (
-                <>
-                  <div className="border-b border-aurora-border-strong px-5 py-4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0">
-                        <p className={AURORA_MUTED_LABEL}>Selected snippet</p>
-                        <h2 className={cn(AURORA_DISPLAY_1, 'mt-2 truncate text-[26px] text-aurora-text-primary')}>{selected.name}</h2>
-                        <p className="mt-2 max-w-3xl text-sm leading-6 text-aurora-text-muted">{selected.description}</p>
-                      </div>
-                      <div className="flex shrink-0 flex-wrap gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => void runAction('Validate', () => snippetsApi.validate(selected.name))}
-                        >
-                          <ShieldCheck className="size-4" />
-                          Validate
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => void runAction('Test', () => snippetsApi.test(selected.name))}
-                        >
-                          <FlaskConical className="size-4" />
-                          Test
-                        </Button>
-                        <Button
-                          variant="default"
-                          size="sm"
-                          onClick={() => void runAction('Execute', () => snippetsApi.exec(selected.name))}
-                        >
-                          <Play className="size-4" />
-                          Execute
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
+            {/* Table head. Only SNIPPET is sortable — the remaining columns have
+                no data behind them, so there is nothing to order by. */}
+            <div style={HEAD_ROW}>
+              <button
+                type="button"
+                onClick={() => setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'))}
+                style={{
+                  ...HEAD_LABEL,
+                  justifySelf: 'start',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  border: 'none',
+                  background: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                Snippet
+                {sortDirection === 'asc' ? <ArrowUp size={10} /> : <ArrowDown size={10} />}
+              </button>
+              <span style={HEAD_LABEL}>Servers</span>
+              <span style={{ ...HEAD_LABEL, justifySelf: 'center' }}>Runs</span>
+              <span style={{ ...HEAD_LABEL, justifySelf: 'center' }}>Fails</span>
+              <span style={{ ...HEAD_LABEL, justifySelf: 'center' }}>Avg</span>
+              <span style={{ ...HEAD_LABEL, justifySelf: 'center' }}>History</span>
+              <span />
+            </div>
 
-                  {selectedDetailLoaded || detailError ? (
-                    <div className="border-b border-aurora-border-strong p-5">
-                      <div className={cn(AURORA_MEDIUM_PANEL, 'max-h-[420px] overflow-auto p-4')}>
-                        <p className={AURORA_MUTED_LABEL}>Tutorial</p>
-                        {detailError ? (
-                          <p className="mt-4 text-sm leading-6 text-aurora-error">
-                            Failed to load snippet body: {detailError}
-                          </p>
-                        ) : selectedTutorial ? (
-                          <SafeMarkdown
-                            text={selectedTutorial}
-                            className="mt-4 text-sm leading-6 text-aurora-text-muted [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:text-aurora-text-primary [&_h2]:mt-5 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-aurora-text-primary [&_h3]:mt-4 [&_h3]:font-semibold [&_h3]:text-aurora-text-primary [&_li]:my-1 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-3 [&_pre]:my-3 [&_pre]:rounded-[0.75rem] [&_pre]:border [&_pre]:border-aurora-border-strong [&_pre]:bg-aurora-control-surface [&_pre]:p-3 [&_table]:my-3 [&_td]:border [&_td]:border-aurora-border-strong [&_td]:px-2 [&_td]:py-1.5 [&_th]:border [&_th]:border-aurora-border-strong [&_th]:px-2 [&_th]:py-1.5 [&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-5"
+            {error ? (
+              <div
+                style={{
+                  padding: '14px 16px',
+                  fontSize: 12,
+                  color: 'var(--aurora-error)',
+                  background: 'var(--gw1-0_62)',
+                }}
+              >
+                Failed to load snippets: {error}
+              </div>
+            ) : loading && snippets.length === 0 ? (
+              Array.from({ length: 5 }, (_, index) => (
+                <div
+                  key={index}
+                  className="animate-pulse"
+                  style={{ ...rowStyle(index, false), height: 43, cursor: 'default' }}
+                >
+                  <span
+                    style={{
+                      height: 10,
+                      borderRadius: 4,
+                      background: 'color-mix(in srgb, var(--aurora-text-muted) 18%, transparent)',
+                    }}
+                  />
+                </div>
+              ))
+            ) : visible.length === 0 ? (
+              <div
+                style={{
+                  padding: '18px 16px',
+                  fontSize: 12,
+                  color: 'var(--aurora-text-muted)',
+                  background: 'var(--gw1-0_62)',
+                }}
+              >
+                {snippets.length === 0
+                  ? 'No executable snippets found.'
+                  : 'No snippets match this filter.'}
+              </div>
+            ) : (
+              visible.map((snippet, index) => {
+                const key = snippetKey(snippet)
+                const isSelected = selected ? snippetKey(selected) === key : false
+                return (
+                  <React.Fragment key={key}>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      data-hoverrow="1"
+                      aria-pressed={isSelected}
+                      onClick={() => setSelectedKey(isSelected ? null : key)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedKey(isSelected ? null : key)
+                        }
+                      }}
+                      style={rowStyle(index, isSelected)}
+                    >
+                      <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 9 }}>
+                        <span
+                          title={
+                            snippet.shadowed
+                              ? 'Shadowed by a user snippet of the same name'
+                              : `${snippet.source} snippet · ${snippet.path}`
+                          }
+                          style={{
+                            flexShrink: 0,
+                            width: 6,
+                            height: 6,
+                            borderRadius: 999,
+                            background: snippet.shadowed
+                              ? 'var(--aurora-warn)'
+                              : 'color-mix(in srgb, var(--aurora-text-muted) 55%, transparent)',
+                            boxShadow: snippet.shadowed ? '0 0 4px var(--aurora-warn)' : undefined,
+                          }}
+                        />
+                        <span
+                          style={{
+                            minWidth: 0,
+                            display: 'flex',
+                            alignItems: 'baseline',
+                            gap: 8,
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontFamily: 'var(--font-display)',
+                              fontSize: 12.5,
+                              fontWeight: 760,
+                              color: 'var(--aurora-text-primary)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {snippet.name}
+                          </span>
+                          <span
+                            style={{
+                              minWidth: 0,
+                              fontSize: 11,
+                              color: 'var(--aurora-text-muted)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {snippet.description ?? 'No description provided.'}
+                          </span>
+                        </span>
+                      </div>
+
+                      <MissingCell
+                        align="start"
+                        title="Servers — the snippets API does not report upstreams per snippet; select a row to see the tools its source calls"
+                      />
+                      <MissingCell title="Runs — the snippets API does not expose run counts" />
+                      <MissingCell title="Fails — the snippets API does not expose failure counts" />
+                      <MissingCell title="Avg — the snippets API does not expose runtimes" />
+                      <MissingCell title="History — the snippets API does not expose per-run history" />
+
+                      <button
+                        type="button"
+                        title="Execute now"
+                        aria-label={`Execute ${snippet.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          withParams(snippet, 'Execute', (params) =>
+                            snippetsApi.exec(snippet.name, params),
+                          )
+                        }}
+                        style={{
+                          justifySelf: 'center',
+                          display: 'grid',
+                          placeItems: 'center',
+                          width: 24,
+                          height: 24,
+                          borderRadius: 7,
+                          border: '1px solid color-mix(in srgb, var(--aurora-accent-primary) 40%, transparent)',
+                          background: 'color-mix(in srgb, var(--aurora-accent-primary) 10%, transparent)',
+                          color: 'var(--aurora-accent-strong)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Play size={11} fill="currentColor" strokeWidth={0} />
+                      </button>
+                    </div>
+
+                    {isSelected ? (
+                      <div
+                        style={{
+                          borderTop:
+                            '1px solid color-mix(in srgb, var(--aurora-accent-primary) 20%, var(--aurora-border-default))',
+                          boxShadow:
+                            'inset 3px 0 0 color-mix(in srgb, var(--aurora-accent-primary) 42%, transparent)',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            flexWrap: 'wrap',
+                            padding: '10px 16px',
+                            borderBottom:
+                              '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+                            background: 'var(--gw0-0_30)',
+                          }}
+                        >
+                          {(snippet.tags ?? []).map((tag) => (
+                            <span
+                              key={tag}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                height: 19,
+                                padding: '0 8px',
+                                borderRadius: 6,
+                                border:
+                                  '1px solid color-mix(in srgb, var(--aurora-border-strong) 80%, transparent)',
+                                background: 'var(--gw0-0_48)',
+                                fontSize: 9.5,
+                                fontWeight: 650,
+                                letterSpacing: '0.06em',
+                                textTransform: 'uppercase',
+                                color: 'var(--aurora-text-muted)',
+                              }}
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          <div style={{ flex: '1 1 0%' }} />
+                          <DetailButton
+                            label="Validate"
+                            icon={<ShieldCheck size={11} />}
+                            busy={running === 'Validate'}
+                            disabled={running !== null}
+                            onClick={() =>
+                              void runAction('Validate', () => snippetsApi.validate(snippet.name))
+                            }
                           />
-                        ) : (
-                          <p className="mt-4 text-sm leading-6 text-aurora-text-muted">
-                            No tutorial markdown found before the executable code block.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
+                          <DetailButton
+                            label="Test"
+                            icon={<FlaskConical size={11} />}
+                            busy={running === 'Test'}
+                            disabled={running !== null}
+                            onClick={() =>
+                              withParams(snippet, 'Test', (params) =>
+                                snippetsApi.test(snippet.name, params),
+                              )
+                            }
+                          />
+                          <DetailButton
+                            label="Execute"
+                            icon={<Play size={11} fill="currentColor" strokeWidth={0} />}
+                            busy={running === 'Execute'}
+                            disabled={running !== null}
+                            primary
+                            onClick={() =>
+                              withParams(snippet, 'Execute', (params) =>
+                                snippetsApi.exec(snippet.name, params),
+                              )
+                            }
+                          />
+                        </div>
 
-                  <div className="grid gap-4 p-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-                    <div className={cn(AURORA_MEDIUM_PANEL, 'min-w-0 overflow-hidden p-4')}>
-                      <div className="flex items-center gap-2">
-                        <Code2 className="size-4 text-aurora-accent-primary" />
-                        <p className={AURORA_MUTED_LABEL}>Inputs</p>
-                      </div>
-                      {inputEntries(selected).length === 0 ? (
-                        <p className="mt-4 text-sm text-aurora-text-muted">This snippet does not declare typed inputs.</p>
-                      ) : (
-                        <div className="mt-4 divide-y divide-aurora-border-strong/60">
-                          {inputEntries(selected).map(([name, spec]) => (
-                            <div key={name} className="grid gap-2 py-3 md:grid-cols-[160px_minmax(0,1fr)_160px]">
-                              <div>
-                                <p className="font-mono text-xs font-semibold text-aurora-text-primary">{name}</p>
-                                <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-aurora-text-muted">
-                                  {spec.required ? 'Required' : 'Optional'}
-                                </p>
-                              </div>
-                              <p className="text-sm leading-6 text-aurora-text-muted">
-                                {spec.description ?? 'No description provided.'}
+                        <div
+                          style={{
+                            padding: '14px 16px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 14,
+                          }}
+                        >
+                          <div>
+                            <SectionLabel>Tools called</SectionLabel>
+                            {detailError ? (
+                              <p style={{ margin: 0, fontSize: 11.5, color: 'var(--aurora-error)' }}>
+                                Failed to load snippet body: {detailError}
                               </p>
-                              <div className="min-w-0 text-left md:text-right">
-                                <Badge variant="outline">{spec.ty}</Badge>
-                                <p className="mt-2 truncate font-mono text-xs text-aurora-text-muted">
-                                  default {formatDefault(spec.default)}
-                                </p>
+                            ) : !selectedDetailLoaded ? (
+                              <p style={{ margin: 0, fontSize: 11.5, color: 'var(--aurora-text-muted)' }}>
+                                Loading source…
+                              </p>
+                            ) : parsed.tools.length === 0 ? (
+                              <p style={{ margin: 0, fontSize: 11.5, color: 'var(--aurora-text-muted)' }}>
+                                No <code>callTool</code> references found in this snippet&apos;s source.
+                              </p>
+                            ) : (
+                              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                                {parsed.tools.map((tool) => (
+                                  <span
+                                    key={tool}
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: 5,
+                                      height: 24,
+                                      padding: '0 9px',
+                                      borderRadius: 8,
+                                      border:
+                                        '1px solid color-mix(in srgb, var(--aurora-accent-primary) 24%, transparent)',
+                                      background:
+                                        'color-mix(in srgb, var(--aurora-accent-primary) 8%, transparent)',
+                                      fontSize: 11,
+                                      color: 'var(--aurora-accent-strong)',
+                                    }}
+                                  >
+                                    {tool}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <SectionLabel>Inputs</SectionLabel>
+                            {inputEntries(snippet).length === 0 ? (
+                              <p style={{ margin: 0, fontSize: 11.5, color: 'var(--aurora-text-muted)' }}>
+                                This snippet does not declare typed inputs.
+                              </p>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                {inputEntries(snippet).map(([name, spec]) => (
+                                  <div key={name}>
+                                    <div
+                                      style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: '140px 90px minmax(0px, 1fr)',
+                                        gap: 10,
+                                        alignItems: 'center',
+                                      }}
+                                    >
+                                      <span style={{ fontSize: 11.5, color: 'var(--aurora-text-primary)' }}>
+                                        {name}
+                                      </span>
+                                      <span style={{ fontSize: 10.5, color: 'var(--aurora-text-muted)' }}>
+                                        {spec.ty}
+                                        {spec.required ? ' *' : ''}
+                                      </span>
+                                      <input
+                                        aria-label={name}
+                                        placeholder={inputPlaceholder(spec)}
+                                        value={inputValues[key]?.[name] ?? ''}
+                                        onChange={(event) => setInputValue(key, name, event.target.value)}
+                                        style={{
+                                          ...CONTROL,
+                                          height: 30,
+                                          padding: '0 10px',
+                                          borderRadius: 8,
+                                          fontSize: 11,
+                                        }}
+                                      />
+                                    </div>
+                                    {spec.description ? (
+                                      <p
+                                        style={{
+                                          margin: '3px 0 0',
+                                          fontSize: 10.5,
+                                          color: 'color-mix(in srgb, var(--aurora-text-muted) 80%, transparent)',
+                                        }}
+                                      >
+                                        {spec.description}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Deliberate addition: the mock has no tutorial region,
+                              but built-in snippets ship rendered walkthroughs and
+                              dropping them would lose real functionality. */}
+                          {selectedDetailLoaded && parsed.tutorial ? (
+                            <div>
+                              <SectionLabel>Tutorial</SectionLabel>
+                              <div
+                                style={{
+                                  ...CODE_BLOCK,
+                                  fontFamily: 'inherit',
+                                  fontSize: 12,
+                                  lineHeight: 1.6,
+                                  whiteSpace: 'normal',
+                                }}
+                              >
+                                <SafeMarkdown
+                                  text={parsed.tutorial}
+                                  className="text-aurora-text-muted [&_h1]:font-display [&_h1]:text-[17px] [&_h1]:font-extrabold [&_h1]:text-aurora-text-primary [&_h2]:mt-4 [&_h2]:font-display [&_h2]:text-[14px] [&_h2]:font-bold [&_h2]:text-aurora-text-primary [&_h3]:mt-3 [&_h3]:font-semibold [&_h3]:text-aurora-text-primary [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-auto [&_pre]:rounded-[8px] [&_pre]:border [&_pre]:border-aurora-border-strong [&_pre]:bg-aurora-control-surface [&_pre]:p-2.5 [&_table]:my-2 [&_td]:border [&_td]:border-aurora-border-strong [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-aurora-border-strong [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+                                />
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                          ) : null}
 
-                    <div className={cn(AURORA_MEDIUM_PANEL, 'p-4')}>
-                      <p className={AURORA_MUTED_LABEL}>Run receipt</p>
-                      {actionState.kind === 'idle' ? (
-                        <p className="mt-4 text-sm leading-6 text-aurora-text-muted">
-                          Validate, test, or execute the selected snippet. Actions require admin scope and use the `/v1/snippets` surface.
-                        </p>
-                      ) : actionState.kind === 'loading' ? (
-                        <div className="mt-4 flex items-center gap-2 text-sm text-aurora-text-muted">
-                          <Loader2 className="size-4 animate-spin text-aurora-accent-primary" />
-                          Running {actionState.label.toLowerCase()}...
-                        </div>
-                      ) : (
-                        <div className="mt-4 space-y-3">
-                          <div className="flex items-center gap-2 text-sm font-medium text-aurora-text-primary">
-                            {actionState.kind === 'success' ? (
-                              <CheckCircle2 className="size-4 text-aurora-success" />
+                          <div>
+                            <SectionLabel>Source</SectionLabel>
+                            {detailError ? (
+                              <p style={{ margin: 0, fontSize: 11.5, color: 'var(--aurora-error)' }}>
+                                Failed to load snippet body: {detailError}
+                              </p>
+                            ) : !selectedDetailLoaded ? (
+                              <p style={{ margin: 0, fontSize: 11.5, color: 'var(--aurora-text-muted)' }}>
+                                Loading source…
+                              </p>
                             ) : (
-                              <XCircle className="size-4 text-aurora-error" />
+                              <pre style={CODE_BLOCK}>
+                                {sourceTokens.map((token, tokenIndex) => (
+                                  <span
+                                    key={tokenIndex}
+                                    style={{ color: TOKEN_COLOR[token.kind] }}
+                                  >
+                                    {token.text}
+                                  </span>
+                                ))}
+                              </pre>
                             )}
-                            {actionState.label} {actionState.kind === 'success' ? 'completed' : 'failed'}
                           </div>
-                          <pre className="max-h-56 overflow-auto rounded-[0.75rem] border border-aurora-border-strong bg-aurora-control-surface p-3 text-xs leading-5 text-aurora-text-muted">
-                            {actionState.detail}
-                          </pre>
+
+                          {actionState.kind === 'idle' ? null : (
+                            <div>
+                              <SectionLabel>
+                                {actionState.label}{' '}
+                                {actionState.kind === 'loading'
+                                  ? 'running'
+                                  : actionState.kind === 'success'
+                                    ? 'completed'
+                                    : 'failed'}
+                              </SectionLabel>
+                              {actionState.kind === 'loading' ? (
+                                <p
+                                  style={{
+                                    margin: 0,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    fontSize: 11.5,
+                                    color: 'var(--aurora-text-muted)',
+                                  }}
+                                >
+                                  <Loader2 className="animate-spin" size={12} />
+                                  Running {actionState.label.toLowerCase()}…
+                                </p>
+                              ) : (
+                                <pre
+                                  style={{
+                                    ...CODE_BLOCK,
+                                    maxHeight: 240,
+                                    color:
+                                      actionState.kind === 'error'
+                                        ? 'var(--aurora-error)'
+                                        : 'var(--aurora-text-muted)',
+                                  }}
+                                >
+                                  {actionState.detail}
+                                </pre>
+                              )}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex min-h-[360px] items-center justify-center p-8 text-sm text-aurora-text-muted">
-                  Select a snippet to inspect its inputs and run actions.
-                </div>
-              )}
-            </div>
-          </div>
+                      </div>
+                    ) : null}
+                  </React.Fragment>
+                )
+              })
+            )}
+          </section>
         </div>
       </div>
     </>
   )
 }
 
-function MetricCard({ label, value, detail }: { label: string; value: number; detail: string }) {
+function DetailButton({
+  label,
+  icon,
+  onClick,
+  busy,
+  disabled,
+  primary,
+}: {
+  label: string
+  icon: React.ReactNode
+  onClick: () => void
+  busy?: boolean
+  disabled?: boolean
+  primary?: boolean
+}) {
   return (
-    <div className={cn(AURORA_MEDIUM_PANEL, 'px-5 py-4')}>
-      <p className={AURORA_MUTED_LABEL}>{label}</p>
-      <p className={cn(AURORA_DISPLAY_NUMBER, 'mt-2 text-aurora-text-primary')}>{value}</p>
-      <p className={cn(AURORA_DENSE_META, 'mt-2 text-aurora-text-muted')}>{detail}</p>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        height: 28,
+        padding: primary ? '0 13px' : '0 12px',
+        borderRadius: 8,
+        border: primary
+          ? '1px solid color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))'
+          : '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
+        background: primary
+          ? 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))'
+          : 'var(--aurora-control-surface)',
+        color: primary ? 'var(--aurora-accent-strong)' : 'var(--aurora-text-muted)',
+        fontFamily: 'inherit',
+        fontSize: 11.5,
+        fontWeight: 650,
+        cursor: disabled ? 'progress' : 'pointer',
+        opacity: disabled && !busy ? 0.55 : 1,
+      }}
+    >
+      {busy ? <Loader2 className="animate-spin" size={11} /> : icon}
+      {label}
+    </button>
   )
 }

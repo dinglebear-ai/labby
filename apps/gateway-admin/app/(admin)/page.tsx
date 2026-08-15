@@ -1,31 +1,25 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
-import {
-  Activity,
-  AlertTriangle,
-  ArrowRight,
-  Cable,
-  Clock3,
-  Coins,
-  Gauge,
-  PlugZap,
-  Wrench,
-} from 'lucide-react'
+import { ArrowRight, Cable, Clock3 } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/gateway/status-badge'
 import { TransportBadge } from '@/components/gateway/transport-badge'
-import { StatTile } from '@/components/dashboard/stat-tile'
-import { WindowSelector } from '@/components/dashboard/window-selector'
+import { OverviewHero } from '@/components/dashboard/overview-hero'
 import {
   FanOutPanel,
   LeastUsedPanel,
   MostActivePanel,
 } from '@/components/dashboard/activity-insight-panels'
+import {
+  CallOutcomesPanel,
+  UpstreamsPanel,
+} from '@/components/dashboard/analysis-panels'
+import { DashboardPanel } from '@/components/dashboard/panel'
 import { ErrorNotice } from '@/components/dashboard/error-notice'
 import { WarningsBanner } from '@/components/dashboard/warnings-banner'
 import { DASH_METRIC_SM, DASH_SURFACE } from '@/components/dashboard/ui'
@@ -36,7 +30,6 @@ import { useDashboardMetrics } from '@/lib/hooks/use-dashboard-metrics'
 import {
   WINDOW_LABELS,
   buildLiveFleetStats,
-  formatCompactNumber,
   warningsSignature,
 } from '@/lib/dashboard/dashboard-metrics'
 import type { MetricsWindow } from '@/lib/types/metrics'
@@ -44,9 +37,6 @@ import { metricsLoadState } from '@/lib/dashboard/dashboard-load-state'
 import { formatUiDate } from '@/lib/format-ui-time'
 import { cn } from '@/lib/utils'
 import {
-  AURORA_DISPLAY_1,
-  AURORA_MEDIUM_PANEL,
-  AURORA_MUTED_LABEL,
   AURORA_PAGE_FRAME,
   AURORA_PAGE_SHELL,
   AURORA_STRONG_PANEL,
@@ -76,15 +66,6 @@ function MetricsUnavailable({ message }: { message: string }) {
   )
 }
 
-function PanelHeading({ title, hint }: { title: string; hint?: string }) {
-  return (
-    <div className="mb-3 flex items-baseline justify-between gap-3">
-      <p className={AURORA_MUTED_LABEL}>{title}</p>
-      {hint ? <p className="text-xs text-aurora-text-muted">{hint}</p> : null}
-    </div>
-  )
-}
-
 export default function OverviewPage() {
   const { data: gateways, isLoading: gatewaysLoading } = useGateways()
   const [activeWindow, setActiveWindow] = useState<MetricsWindow>('24h')
@@ -102,49 +83,33 @@ export default function OverviewPage() {
   const metricsLoading = metricsState === 'loading'
   const recentGateways = gateways?.slice(0, 5) ?? []
 
+  // Stamp each successful metrics load so the hero can count "updated Ns ago".
+  const [metricsLoadedAt, setMetricsLoadedAt] = useState(() => Date.now())
+  useEffect(() => {
+    if (metrics) setMetricsLoadedAt(Date.now())
+  }, [metrics])
+
   return (
     <>
       <AppHeader breadcrumbs={[{ label: 'Overview' }]} />
 
       <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)}>
-        {/* Header */}
-        <div className={cn(AURORA_STRONG_PANEL, DASH_SURFACE,'px-6 py-5')}>
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-2xl space-y-2">
-              <p className={AURORA_MUTED_LABEL}>Gateway control plane</p>
-              <h1 className={cn(AURORA_DISPLAY_1, 'text-aurora-text-primary')}>
-                Operational overview
-              </h1>
-              <p className="text-sm text-aurora-text-muted sm:text-base">
-                Reachability, exposure, and usage across your connected MCP
-                servers.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <Button asChild>
-                <Link href="/gateways">Manage servers</Link>
-              </Button>
-            </div>
-          </div>
-        </div>
+        {/* Hero — eyebrow + pulse, title + heartbeat, trouble chips, window
+            controls, and the welded stat strip / fleet-health squares. */}
+        <OverviewHero
+          gateways={gateways ?? []}
+          live={live}
+          metrics={metrics}
+          activeWindow={activeWindow}
+          onWindowChange={setActiveWindow}
+          onRefresh={() => reloadMetrics()}
+          loadedAt={metricsLoadedAt}
+        />
 
         {/* Warnings banner (dismissable) */}
         {!gatewaysLoading && (
           <WarningsBanner count={live.warnings} signature={warningsSig} />
         )}
-
-        {/* Window controls — govern the four usage tiles + charts below */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-aurora-text-muted">
-            Live fleet state · usage over the {WINDOW_LABELS[activeWindow].toLowerCase()}
-          </p>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <Link href={`/usage?window=${activeWindow}`}>Open explorer</Link>
-            </Button>
-            <WindowSelector value={activeWindow} onChange={setActiveWindow} />
-          </div>
-        </div>
 
         {metricsState === 'unavailable' ? (
           <ErrorNotice message="Usage metrics aren't available on this Labby server yet." />
@@ -161,110 +126,98 @@ export default function OverviewPage() {
           </div>
         ) : null}
 
-        {/* Unified stats — live fleet + windowed usage, one row */}
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 2xl:grid-cols-8">
-          <StatTile
-            label="Connected"
-            value={live.connectedServers}
-            icon={Cable}
-            tone="success"
-            loading={gatewaysLoading}
-          />
-          <StatTile
-            label="Offline"
-            value={live.offlineServers}
-            icon={PlugZap}
-            tone={live.offlineServers > 0 ? 'warning' : 'success'}
-            loading={gatewaysLoading}
-          />
-          <StatTile
-            label="Discovered tools"
-            value={live.discoveredTools}
-            icon={Wrench}
-            tone="info"
-            loading={gatewaysLoading}
-          />
-          <StatTile
-            label="Tool calls"
-            value={metrics ? formatCompactNumber(metrics.tool_calls.total) : '—'}
-            icon={Activity}
-            loading={metricsLoading}
-          />
-          <StatTile
-            label="Failed"
-            value={metrics ? formatCompactNumber(metrics.tool_calls.failed) : '—'}
-            icon={AlertTriangle}
-            tone={metrics && metrics.tool_calls.failed > 0 ? 'error' : 'success'}
-            loading={metricsLoading}
-          />
-          <StatTile
-            label="Tokens"
-            value={metrics?.collected.tokens ? formatCompactNumber(metrics.tokens.total) : '—'}
-            icon={Coins}
-            tone="info"
-            loading={metricsLoading}
-          />
-          <StatTile
-            label="Avg tokens"
-            value={metrics?.collected.tokens ? formatCompactNumber(metrics.tokens.avg_per_call) : '—'}
-            icon={Gauge}
-            loading={metricsLoading}
-          />
-        </div>
+        {/* Telemetry split — the mock's 2fr content column beside a rail.
+            Left column auto-fits at 250px so the wide panels span it. */}
+        <div
+          data-ovouter="1"
+          data-mobile-stack="1"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 2fr) minmax(260px, 1fr)',
+            gap: 12,
+            alignItems: 'start',
+          }}
+        >
+          <div
+            data-ovinner="1"
+            data-mobile-stack="1"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+              gap: 12,
+              minWidth: 0,
+              alignItems: 'start',
+            }}
+          >
+            <DashboardPanel
+              className="[grid-column:1/-1]"
+              title="Tool-call volume"
+              meta={WINDOW_LABELS[activeWindow]}
+            >
+              {metrics ? (
+                <ToolVolumeChart data={metrics.timeseries} window={activeWindow} />
+              ) : metricsLoading ? (
+                <Skeleton className="h-[200px] w-full" />
+              ) : (
+                <MetricsUnavailable message="Tool-call history is unavailable." />
+              )}
+            </DashboardPanel>
 
-        {/* Charts */}
-        <div className="grid gap-4 lg:grid-cols-3">
-          <div className={cn(AURORA_MEDIUM_PANEL, DASH_SURFACE, 'p-5 lg:col-span-2')}>
-            <PanelHeading title="Tool-call volume" hint={WINDOW_LABELS[activeWindow]} />
-            {metrics ? (
-              <ToolVolumeChart data={metrics.timeseries} window={activeWindow} />
-            ) : metricsLoading ? (
-              <Skeleton className="h-[200px] w-full" />
-            ) : (
-              <MetricsUnavailable message="Tool-call history is unavailable." />
-            )}
-          </div>
-          <div className={cn(AURORA_MEDIUM_PANEL, DASH_SURFACE, 'p-5')}>
-            <PanelHeading title="Top tools" />
-            {metrics ? (
-              <TopToolsChart
-                tools={metrics.tools.top}
-                onSelect={(name) => setDrill({ type: 'tool', name })}
-              />
-            ) : metricsLoading ? (
-              <Skeleton className="h-[200px] w-full" />
-            ) : (
-              <MetricsUnavailable message="Tool rankings are unavailable." />
-            )}
-          </div>
-        </div>
+            <DashboardPanel className="[grid-column:1/-1]" title="Top tools">
+              {metrics ? (
+                <TopToolsChart
+                  tools={metrics.tools.top}
+                  onSelect={(name) => setDrill({ type: 'tool', name })}
+                />
+              ) : metricsLoading ? (
+                <Skeleton className="h-[200px] w-full" />
+              ) : (
+                <MetricsUnavailable message="Tool rankings are unavailable." />
+              )}
+            </DashboardPanel>
 
-        {/* Insight panels */}
-        <div className="grid gap-4 lg:grid-cols-3">
-          {metrics ? (
-            <>
-              <MostActivePanel
-                actors={metrics.actors}
-                window={activeWindow}
-                actorKindsCollected={metrics.collected.actor_kinds}
-                onSelectActor={(entry) => setDrill({ type: 'agent', id: entry.id })}
-              />
-              <FanOutPanel fanOut={metrics.fan_out} collected={metrics.collected.fan_out} />
-              <LeastUsedPanel
-                tools={metrics.tools.least}
-                distinct={metrics.tools.distinct}
-                onSelect={(name) => setDrill({ type: 'tool', name })}
-              />
-            </>
-          ) : metricsLoading ? (
-            [1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-[176px] w-full rounded-aurora-3" />
-            ))
-          ) : (
-            <div className="lg:col-span-3">
+            {metrics ? (
+              <>
+                <FanOutPanel fanOut={metrics.fan_out} collected={metrics.collected.fan_out} />
+                <LeastUsedPanel
+                  tools={metrics.tools.least}
+                  distinct={metrics.tools.distinct}
+                  onSelect={(name) => setDrill({ type: 'tool', name })}
+                />
+              </>
+            ) : metricsLoading ? (
+              [1, 2].map((i) => (
+                <Skeleton key={i} className="h-[176px] w-full rounded-aurora-2" />
+              ))
+            ) : (
               <MetricsUnavailable message="Usage insights are unavailable." />
-            </div>
-          )}
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gap: 12, minWidth: 0, alignItems: 'start' }}>
+            {metrics ? (
+              <>
+                <MostActivePanel
+                  actors={metrics.actors}
+                  window={activeWindow}
+                  actorKindsCollected={metrics.collected.actor_kinds}
+                  onSelectActor={(entry) => setDrill({ type: 'agent', id: entry.id })}
+                />
+                <UpstreamsPanel upstreams={metrics.upstreams} />
+                <CallOutcomesPanel
+                  toolCalls={metrics.tool_calls}
+                  errors={metrics.errors}
+                  window={activeWindow}
+                />
+              </>
+            ) : metricsLoading ? (
+              [1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-[176px] w-full rounded-aurora-2" />
+              ))
+            ) : (
+              <MetricsUnavailable message="Usage breakdowns are unavailable." />
+            )}
+          </div>
         </div>
 
         {/* ── Performance, cost & rhythm ─────────────────────────────── */}
@@ -376,22 +329,18 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {drill?.type === 'tool' ? (
-        <ToolDetailDrawer
-          tool={drill.name}
-          window={activeWindow}
-          onClose={() => setDrill(null)}
-          onDrill={setDrill}
-        />
-      ) : null}
-      {drill?.type === 'agent' ? (
-        <AgentDetailDrawer
-          agentId={drill.id}
-          window={activeWindow}
-          onClose={() => setDrill(null)}
-          onDrill={setDrill}
-        />
-      ) : null}
+      <ToolDetailDrawer
+        tool={drill?.type === 'tool' ? drill.name : null}
+        window={activeWindow}
+        onClose={() => setDrill(null)}
+        onDrill={setDrill}
+      />
+      <AgentDetailDrawer
+        agentId={drill?.type === 'agent' ? drill.id : null}
+        window={activeWindow}
+        onClose={() => setDrill(null)}
+        onDrill={setDrill}
+      />
     </>
   )
 }

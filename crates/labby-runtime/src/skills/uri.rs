@@ -178,15 +178,22 @@ impl SkillUri {
                 ),
             });
         }
-        // Minted into Labby's own `skill://` namespace whatever the upstream
-        // used. Labby is the *server* downstream, so it publishes in its own
-        // namespace; the upstream's native URI is never reconstructed from this
-        // string but recovered from the cached manifest, which is what keeps a
-        // non-`skill://` upstream routable.
-        Ok(Self::from_parts(
-            "skill".to_string(),
-            format!("{origin}/{}", self.full),
-        ))
+        // Mint into Labby's `skill://` namespace while retaining the native
+        // scheme as the first path segment after the gateway label. This makes
+        // the mapping exactly reversible even when the cached listing is gone.
+        parse_skill_uri(&format!("skill://{origin}/{}/{}", self.scheme, self.full))
+    }
+
+    /// Reverse [`with_origin`], recovering the exact native upstream URI.
+    pub fn upstream_uri_for_origin(&self, origin: &str) -> Option<String> {
+        if self.scheme != "skill" || self.origin() != origin {
+            return None;
+        }
+        let (scheme, full) = self.path().split_once('/')?;
+        let uri = format!("{scheme}://{full}");
+        parse_skill_resource_uri(&uri)
+            .ok()
+            .map(|parsed| parsed.to_uri())
     }
 }
 
@@ -273,7 +280,7 @@ pub fn is_valid_origin_label(label: &str) -> bool {
 ///
 /// Rejects: a missing or malformed scheme, an over-long URI, and any empty,
 /// dot, or over-long segment. The scheme itself is not constrained to `skill`.
-pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
+pub fn parse_skill_resource_uri(uri: &str) -> Result<SkillUri, ToolError> {
     if uri.chars().count() > MAX_URI_CHARS {
         return Err(invalid(uri, &format!("exceeds {MAX_URI_CHARS} characters")));
     }
@@ -319,7 +326,22 @@ pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
         check_segment(uri, segment)?;
     }
 
-    Ok(SkillUri::from_parts(scheme.to_string(), rest.to_string()))
+    // RFC 3986 §3.1: schemes are case-insensitive. Canonicalizing at the
+    // parser boundary keeps manifest namespace checks and collision detection
+    // from treating `GitHub://` and `github://` as different schemes.
+    Ok(SkillUri::from_parts(
+        scheme.to_ascii_lowercase(),
+        rest.to_string(),
+    ))
+}
+
+/// Parse a URI in Labby's published `skill://` namespace.
+pub fn parse_skill_uri(uri: &str) -> Result<SkillUri, ToolError> {
+    let parsed = parse_skill_resource_uri(uri)?;
+    if parsed.scheme() != "skill" {
+        return Err(invalid(uri, "expected the `skill://` scheme"));
+    }
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -385,15 +407,15 @@ mod tests {
     fn a_non_skill_scheme_is_accepted_but_still_structurally_checked() {
         // The SEP privileges no scheme: an upstream MAY serve skills under one
         // native to its domain. What a URI must still satisfy is the structure.
-        assert!(parse_skill_uri("https://example.com/refunds/SKILL.md").is_ok());
-        assert!(parse_skill_uri("lab://catalog").is_ok());
+        assert!(parse_skill_resource_uri("https://example.com/refunds/SKILL.md").is_ok());
+        assert!(parse_skill_resource_uri("lab://catalog").is_ok());
         // An empty authority is still malformed, whatever the scheme.
-        assert!(parse_skill_uri("file:///etc/passwd").is_err());
+        assert!(parse_skill_resource_uri("file:///etc/passwd").is_err());
         // And identity never comes from the scheme — `parse_skill_uri` says
         // nothing about whether a URI names a skill; only a `skills/list` entry
         // or `skills/get` does.
         assert!(
-            parse_skill_uri("https://example.com/refunds/SKILL.md")
+            parse_skill_resource_uri("https://example.com/refunds/SKILL.md")
                 .expect("parses")
                 .skill_md_parts()
                 .is_some()
@@ -431,7 +453,7 @@ mod tests {
             "skill://lab_by/x/SKILL.md",
             "skill://lab.by/x/SKILL.md",
         ] {
-            assert!(parse_skill_uri(uri).is_ok(), "should accept {uri}");
+            assert!(parse_skill_resource_uri(uri).is_ok(), "should accept {uri}");
         }
         // But Labby still refuses to *mint* under a label of that shape.
         let uri = parse_skill_uri("skill://x/SKILL.md").expect("valid");
@@ -466,10 +488,14 @@ mod tests {
         let rewritten = uri.with_origin("gh").expect("valid label");
         assert_eq!(rewritten.origin(), "gh");
         // The remainder is the upstream's whole path, so the mapping inverts.
-        assert_eq!(rewritten.path(), uri.full_path());
+        assert_eq!(rewritten.path(), format!("skill/{}", uri.full_path()));
         assert_eq!(
             rewritten.to_uri(),
-            "skill://gh/upstream-a/billing/refunds/SKILL.md"
+            "skill://gh/skill/upstream-a/billing/refunds/SKILL.md"
+        );
+        assert_eq!(
+            rewritten.upstream_uri_for_origin("gh").as_deref(),
+            Some("skill://upstream-a/billing/refunds/SKILL.md")
         );
         // Round-trips: minting a proxied URI must not produce something the
         // parser then reads back differently.

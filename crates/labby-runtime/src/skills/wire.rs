@@ -152,11 +152,7 @@ impl SkillsListResult {
     /// Concatenating `skills` directly is what makes this go wrong silently,
     /// so prefer this over extending the field in place.
     pub fn absorb(&mut self, entries: Vec<SkillEntry>, scope: Option<&str>, ttl_ms: Option<u64>) {
-        // Absorbing nothing changes nothing. A gateway with no skills-proxying
-        // upstreams still calls this, and downgrading a purely first-party
-        // listing to `private` would discard a correct, useful caching hint on
-        // content that genuinely is caller-independent.
-        if entries.is_empty() {
+        if entries.is_empty() && scope.is_none() && ttl_ms.is_none() {
             return;
         }
         self.skills.extend(entries);
@@ -306,6 +302,38 @@ mod tests {
             serde_json::from_value(json!({ "skills": [], "cacheScope": "some-future-scope" }))
                 .expect("unknown scope tolerated");
         assert_eq!(result.cache_scope.as_deref(), Some("some-future-scope"));
+    }
+
+    #[test]
+    fn empty_private_absorb_still_downgrades_cache_scope() {
+        let mut result = SkillsListResult {
+            skills: Vec::new(),
+            next_cursor: None,
+            ttl_ms: Some(60_000),
+            cache_scope: Some(CACHE_SCOPE_PUBLIC.to_string()),
+            meta: None,
+        };
+
+        result.absorb(Vec::new(), Some(CACHE_SCOPE_PRIVATE), Some(5_000));
+
+        assert_eq!(result.cache_scope.as_deref(), Some(CACHE_SCOPE_PRIVATE));
+        assert_eq!(result.ttl_ms, Some(5_000));
+    }
+
+    #[test]
+    fn absent_empty_source_does_not_downgrade_cache_scope() {
+        let mut result = SkillsListResult {
+            skills: Vec::new(),
+            next_cursor: None,
+            ttl_ms: Some(60_000),
+            cache_scope: Some(CACHE_SCOPE_PUBLIC.to_string()),
+            meta: None,
+        };
+
+        result.absorb(Vec::new(), None, None);
+
+        assert_eq!(result.cache_scope.as_deref(), Some(CACHE_SCOPE_PUBLIC));
+        assert_eq!(result.ttl_ms, Some(60_000));
     }
 
     #[test]

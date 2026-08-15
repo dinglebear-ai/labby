@@ -60,13 +60,24 @@ export const AURORA_DENSE_META =
 // Layout
 // ---------------------------------------------------------------------------
 
-/** Page content frame — max-width container with standard padding. */
-export const AURORA_PAGE_FRAME =
-  'mx-auto flex w-full max-w-[1740px] flex-col gap-5 px-3 py-5 sm:px-6 sm:py-6 xl:px-8'
+/**
+ * Page content frame — vertical rhythm only.
+ *
+ * The console shell (`components/console/console-shell.tsx`) owns the 1740px
+ * measure and the page padding, exactly as the Gateway Console mock does with
+ * its single scroll body. Screens must not re-declare either, or content
+ * indents twice against the topbar and sidebar.
+ */
+export const AURORA_PAGE_FRAME = 'flex w-full flex-col gap-4'
 
-/** Page background shell — subtle radial aurora gradient. */
-export const AURORA_PAGE_SHELL =
-  'bg-[radial-gradient(circle_at_top_left,rgba(41,182,246,0.08),transparent_26%),radial-gradient(circle_at_top_right,rgba(103,203,250,0.06),transparent_20%)]'
+/**
+ * Page background shell — intentionally empty.
+ *
+ * The aurora radial wash is painted once on the shell's main column so it
+ * anchors to the viewport rather than restarting per screen. Retained as a
+ * no-op so existing `cn(...)` call sites stay valid.
+ */
+export const AURORA_PAGE_SHELL = ''
 
 // ---------------------------------------------------------------------------
 // Panels
