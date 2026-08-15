@@ -6,8 +6,9 @@
 //! are pinned into reqwest for each request, and the trusted origin is resolved
 //! lazily on its first network operation then reused to close the DNS-rebinding gap.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rmcp_client::transport::AuthorizationManager;
@@ -19,13 +20,14 @@ use thiserror::Error;
 use tokio::sync::OnceCell;
 use url::{Host, Url};
 
-use super::types::OauthError;
+use super::types::{OAuthEgressKind, OauthError};
 
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
+const MAX_CACHED_HTTP_CLIENTS: usize = 32;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 enum OAuthEgressError {
     #[error("invalid OAuth URL: {0}")]
     InvalidUrl(String),
@@ -40,14 +42,14 @@ enum OAuthEgressError {
 }
 
 impl OAuthEgressError {
-    fn kind(&self) -> &'static str {
+    fn kind(&self) -> OAuthEgressKind {
         match self {
-            Self::InvalidUrl(_) => "validation_failed",
-            Self::SsrfBlocked(_) => "ssrf_blocked",
-            Self::Dns(_) => "dns_error",
-            Self::Http(message) if message.starts_with("timeout: ") => "timeout",
-            Self::Http(_) => "network_error",
-            Self::ResponseBodyTooLarge(_) => "response_too_large",
+            Self::InvalidUrl(_) => OAuthEgressKind::ValidationFailed,
+            Self::SsrfBlocked(_) => OAuthEgressKind::SsrfBlocked,
+            Self::Dns(_) => OAuthEgressKind::DnsError,
+            Self::Http(message) if message.starts_with("timeout: ") => OAuthEgressKind::Timeout,
+            Self::Http(_) => OAuthEgressKind::NetworkError,
+            Self::ResponseBodyTooLarge(_) => OAuthEgressKind::ResponseTooLarge,
         }
     }
 
@@ -82,17 +84,26 @@ fn reqwest_error(error: reqwest::Error) -> OAuthEgressError {
 pub(crate) struct TrustedOriginOAuthHttpClient {
     trusted_origin: Url,
     trusted_addresses: Arc<OnceCell<Vec<SocketAddr>>>,
+    clients: Arc<Mutex<HashMap<ClientCacheKey, reqwest::Client>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ClientCacheKey {
+    origin: String,
+    addresses: Vec<SocketAddr>,
+    timeout: Duration,
+    follow_redirects: bool,
 }
 
 impl TrustedOriginOAuthHttpClient {
     pub(crate) fn new(base_url: &str) -> Result<Self, OauthError> {
         drop(rustls::crypto::ring::default_provider().install_default());
-        let trusted_origin = parse_oauth_url(base_url).map_err(|error| {
-            OauthError::Internal(format!("invalid upstream OAuth URL: {error}"))
-        })?;
+        let trusted_origin = parse_oauth_url(base_url)
+            .map_err(|error| error.into_oauth_error("invalid upstream OAuth URL"))?;
         Ok(Self {
             trusted_origin,
             trusted_addresses: Arc::new(OnceCell::new()),
+            clients: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -194,22 +205,15 @@ impl TrustedOriginOAuthHttpClient {
             })?
             .to_string();
 
-        let redirect = match redirect_policy {
-            OAuthHttpRedirectPolicy::Stop => reqwest::redirect::Policy::none(),
-            OAuthHttpRedirectPolicy::Follow => same_origin_redirect_policy(&url),
-            _ => reqwest::redirect::Policy::none(),
+        let follow_redirects = matches!(redirect_policy, OAuthHttpRedirectPolicy::Follow);
+        let timeout = timeout.unwrap_or(DEFAULT_HTTP_TIMEOUT);
+        let key = ClientCacheKey {
+            origin: origin_key(&url),
+            addresses: addresses.clone(),
+            timeout,
+            follow_redirects,
         };
-        let mut builder = configure_oauth_client_builder(
-            reqwest::Client::builder(),
-            timeout.unwrap_or(DEFAULT_HTTP_TIMEOUT),
-            redirect,
-        );
-        if matches!(url.host(), Some(Host::Domain(_))) {
-            builder = builder.resolve_to_addrs(&host, &addresses);
-        }
-        let client = builder
-            .build()
-            .map_err(|error| boxed_error(reqwest_error(error)))?;
+        let client = self.client_for(&key, &url, &host)?;
         let mut response = client
             .execute(request)
             .await
@@ -243,6 +247,40 @@ impl TrustedOriginOAuthHttpClient {
             .map_err(|error| boxed_error(OAuthEgressError::Http(error.to_string())))
     }
 
+    fn client_for(
+        &self,
+        key: &ClientCacheKey,
+        url: &Url,
+        host: &str,
+    ) -> Result<reqwest::Client, OAuthHttpClientError> {
+        if let Ok(clients) = self.clients.lock()
+            && let Some(client) = clients.get(key)
+        {
+            return Ok(client.clone());
+        }
+
+        let redirect = if key.follow_redirects {
+            same_origin_redirect_policy(url)
+        } else {
+            reqwest::redirect::Policy::none()
+        };
+        let mut builder =
+            configure_oauth_client_builder(reqwest::Client::builder(), key.timeout, redirect);
+        if matches!(url.host(), Some(Host::Domain(_))) {
+            builder = builder.resolve_to_addrs(host, &key.addresses);
+        }
+        let client = builder
+            .build()
+            .map_err(|error| boxed_error(reqwest_error(error)))?;
+        if let Ok(mut clients) = self.clients.lock() {
+            if clients.len() >= MAX_CACHED_HTTP_CLIENTS {
+                clients.clear();
+            }
+            clients.insert(key.clone(), client.clone());
+        }
+        Ok(client)
+    }
+
     pub(crate) async fn get(&self, url: Url) -> Result<oauth2::HttpResponse, OauthError> {
         let request = reqwest::Request::new(reqwest::Method::GET, url);
         self.execute_reqwest(
@@ -254,7 +292,7 @@ impl TrustedOriginOAuthHttpClient {
         .map_err(|error| match error.downcast::<OAuthEgressError>() {
             Ok(error) => error.into_oauth_error("fetch OAuth metadata"),
             Err(error) => OauthError::Egress {
-                kind: "network_error",
+                kind: OAuthEgressKind::NetworkError,
                 message: format!("fetch OAuth metadata: {error}"),
             },
         })
@@ -274,7 +312,8 @@ fn configure_oauth_client_builder(
 fn oauth_http_error_kind(error: &OAuthHttpClientError) -> &'static str {
     error
         .downcast_ref::<OAuthEgressError>()
-        .map_or("network_error", OAuthEgressError::kind)
+        .map_or(OAuthEgressKind::NetworkError, OAuthEgressError::kind)
+        .as_str()
 }
 
 impl OAuthHttpClient for TrustedOriginOAuthHttpClient {
@@ -295,15 +334,14 @@ impl OAuthHttpClient for TrustedOriginOAuthHttpClient {
 pub async fn authorization_manager_for_upstream(
     upstream_url: &str,
 ) -> Result<AuthorizationManager, OauthError> {
-    let client = TrustedOriginOAuthHttpClient::new(upstream_url)?;
-    AuthorizationManager::new_with_oauth_http_client(upstream_url, Arc::new(client))
+    let client = Arc::new(TrustedOriginOAuthHttpClient::new(upstream_url)?);
+    AuthorizationManager::new_with_oauth_http_client(upstream_url, client)
         .await
         .map_err(|_| OauthError::Egress {
-            kind: "network_error",
-            // rmcp's aggregate error may retain a discovery URL. The custom
-            // client already emits a redacted request.error event, so do not
-            // echo the third-party wrapper and risk exposing query secrets.
-            message: "create auth manager: OAuth discovery failed".to_string(),
+            // rmcp 3.1 performs URL parsing only in this constructor. OAuth
+            // discovery is deferred and retains the injected client's kinds.
+            kind: OAuthEgressKind::ValidationFailed,
+            message: "create auth manager: invalid upstream OAuth URL".to_string(),
         })
 }
 
@@ -389,6 +427,15 @@ fn same_origin(left: &Url, right: &Url) -> bool {
             .zip(right.host_str())
             .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
         && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn origin_key(url: &Url) -> String {
+    format!(
+        "{}://{}:{}",
+        url.scheme(),
+        url.host_str().unwrap_or("<missing>").to_ascii_lowercase(),
+        url.port_or_known_default().unwrap_or(0)
+    )
 }
 
 fn same_origin_redirect_policy(origin: &Url) -> reqwest::redirect::Policy {
@@ -495,7 +542,7 @@ mod tests {
             .expect_err("server intentionally withholds its response");
 
         let error = reqwest_error(error);
-        assert_eq!(error.kind(), "timeout");
+        assert_eq!(error.kind().as_str(), "timeout");
         assert!(!error.to_string().contains(secret));
         assert!(!error.to_string().contains(&address.to_string()));
         server.abort();
@@ -529,6 +576,12 @@ mod tests {
         }
         assert!(parse_oauth_url("http://localhost/token").is_ok());
         assert!(parse_oauth_url("http://127.0.0.1/token").is_ok());
+
+        let error = TrustedOriginOAuthHttpClient::new("http://example.com/token")
+            .err()
+            .expect("public HTTP must be rejected");
+        assert_eq!(error.kind(), "validation_failed");
+        assert_eq!(error.http_status_code(), 400);
     }
 
     #[tokio::test]
@@ -588,5 +641,20 @@ mod tests {
         .unwrap();
         let response = client.get(origin).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[test]
+    fn equivalent_pins_reuse_one_http_client() {
+        let client = TrustedOriginOAuthHttpClient::new("http://127.0.0.1:8765/mcp").unwrap();
+        let url = Url::parse("http://127.0.0.1:8765/token").unwrap();
+        let key = ClientCacheKey {
+            origin: origin_key(&url),
+            addresses: vec!["127.0.0.1:8765".parse().unwrap()],
+            timeout: DEFAULT_HTTP_TIMEOUT,
+            follow_redirects: false,
+        };
+        client.client_for(&key, &url, "127.0.0.1").unwrap();
+        client.client_for(&key, &url, "127.0.0.1").unwrap();
+        assert_eq!(client.clients.lock().unwrap().len(), 1);
     }
 }
