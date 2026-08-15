@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 
+use labby_primitives::ssrf;
 use url::Host;
 
 use crate::dispatch::error::ToolError;
@@ -91,45 +92,45 @@ pub fn parse_relay_check(params: &serde_json::Value) -> Result<RelayCheckParams,
     Ok(RelayCheckParams { probe_targets })
 }
 
+/// Static SSRF guard for a URL `doctor.proxy.check` will actually fetch.
+///
+/// Delegates to the canonical `labby_primitives::ssrf` checks rather than
+/// re-deriving the blocked ranges here. The bespoke version this replaced
+/// hardcoded `Host::Domain(_) => false`, so any internal *name*
+/// (`gateway.lan`, `vault.internal`) passed unexamined; it also missed CGNAT
+/// (`100.64.0.0/10`) and the IPv4-mapped-IPv6 form (`::ffff:10.0.0.1`), which
+/// Rust's `Ipv6Addr` helpers do not cover.
+///
+/// Scheme stays `http`-or-`https` on purpose: unlike the archive/registry
+/// fetchers that use [`labby_primitives::ssrf::parse_validated_https_url`],
+/// probing a plain-HTTP reverse proxy is a legitimate thing to ask this
+/// diagnostic to do. The multicast rejection the old code had is dropped
+/// because the canonical guard does not carry it; multicast is not a
+/// meaningful SSRF target for an HTTP GET.
+///
+/// This is the static half only — it performs no DNS. The resolved-address
+/// half runs in `proxy.rs` immediately before the probes.
 fn validate_public_proxy_url(param: &str, parsed: &url::Url) -> Result<(), ToolError> {
+    let invalid = |message: String| ToolError::InvalidParam {
+        message,
+        param: param.to_string(),
+    };
     let Some(host) = parsed.host() else {
-        return Err(ToolError::InvalidParam {
-            message: format!("{param} must be an http(s) URL with a host"),
-            param: param.to_string(),
-        });
+        return Err(invalid(format!(
+            "{param} must be an http(s) URL with a host"
+        )));
     };
-    let is_localhost = matches!(host, Host::Domain(domain) if domain.eq_ignore_ascii_case("localhost") || domain.to_ascii_lowercase().ends_with(".localhost"));
-    let is_blocked_ip = match host {
-        Host::Domain(_) => false,
-        Host::Ipv4(ip) => is_private_proxy_ip(IpAddr::V4(ip)),
-        Host::Ipv6(ip) => is_private_proxy_ip(IpAddr::V6(ip)),
-    };
-    if is_localhost || is_blocked_ip {
-        return Err(ToolError::InvalidParam {
-            message: format!("{param} must be a public proxy URL, not a local or private address"),
-            param: param.to_string(),
-        });
+    let redacted = ssrf::redact_url(parsed.as_str());
+    match host {
+        Host::Domain(domain) => ssrf::check_host_not_private(domain),
+        Host::Ipv4(ip) => ssrf::check_ip_not_private(IpAddr::V4(ip), &redacted),
+        Host::Ipv6(ip) => ssrf::check_ip_not_private(IpAddr::V6(ip), &redacted),
     }
-    Ok(())
-}
-
-fn is_private_proxy_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-        }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-        }
-    }
+    .map_err(|error| {
+        invalid(format!(
+            "{param} must be a public proxy URL, not a local or private address: {error}"
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -168,5 +169,92 @@ mod tests {
             let err = parse_proxy_check(&params).expect_err("private IPv6 should fail");
             assert_eq!(err.kind(), "invalid_param", "{value}");
         }
+    }
+
+    /// The bespoke validator hardcoded `Host::Domain(_) => false`, so an
+    /// internal *name* was never examined at all — only IP literals were. Each
+    /// of these reaches a private network by name.
+    #[test]
+    fn parse_proxy_check_rejects_private_hostnames() {
+        for value in [
+            "https://gateway.lan",
+            "https://vault.internal",
+            "https://printer.local",
+            "https://wiki.intranet",
+            "https://sso.corp",
+            "https://nas.home",
+            "http://localhost",
+            "https://localhost:8443",
+        ] {
+            let params = serde_json::json!({
+                "app_url": value,
+                "mcp_url": "https://mcp.example.test",
+                "route": "/telemetry",
+            });
+            let err = parse_proxy_check(&params).expect_err("private hostname should fail");
+            assert_eq!(err.kind(), "invalid_param", "{value}");
+        }
+    }
+
+    /// Ranges the bespoke validator missed: CGNAT (`100.64.0.0/10`, the
+    /// Tailscale range this fleet actually runs on) and the IPv4-mapped-IPv6
+    /// form, which `Ipv6Addr::is_loopback`/`is_unique_local` do not cover.
+    #[test]
+    fn parse_proxy_check_rejects_cgnat_and_ipv4_mapped_ipv6() {
+        for value in [
+            "https://100.64.0.1",
+            "https://100.100.118.47",
+            "https://[::ffff:10.0.0.1]",
+            "https://[::ffff:127.0.0.1]",
+        ] {
+            let params = serde_json::json!({
+                "app_url": value,
+                "mcp_url": "https://mcp.example.test",
+                "route": "/telemetry",
+            });
+            let err = parse_proxy_check(&params).expect_err("blocked range should fail");
+            assert_eq!(err.kind(), "invalid_param", "{value}");
+        }
+    }
+
+    /// `mcp_url` is fetched too, so it must be guarded identically — the guard
+    /// is applied in a loop over both, and this pins that.
+    #[test]
+    fn parse_proxy_check_guards_mcp_url_as_well_as_app_url() {
+        let params = serde_json::json!({
+            "app_url": "https://lab.example.test",
+            "mcp_url": "https://gateway.lan",
+            "route": "/telemetry",
+        });
+        let err = parse_proxy_check(&params).expect_err("private mcp_url should fail");
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    /// `backend_url` is never fetched — `check_backend_leak` requests
+    /// `mcp_url` and searches the response body for this string. Restricting
+    /// it would defeat the probe, whose entire purpose is detecting a leaked
+    /// *private* origin. Pin that it stays permitted.
+    #[test]
+    fn parse_proxy_check_still_allows_a_private_backend_url_needle() {
+        let params = serde_json::json!({
+            "app_url": "https://lab.example.test",
+            "mcp_url": "https://mcp.example.test",
+            "route": "/telemetry",
+            "backend_url": "http://10.1.0.1:8080",
+        });
+        let parsed = parse_proxy_check(&params).expect("private backend_url is the point");
+        assert_eq!(parsed.backend_url, Some("http://10.1.0.1:8080"));
+    }
+
+    /// Plain HTTP stays legal: probing an http reverse proxy is a legitimate
+    /// use of this diagnostic, unlike the archive fetchers that pin https.
+    #[test]
+    fn parse_proxy_check_still_allows_public_http_urls() {
+        let params = serde_json::json!({
+            "app_url": "http://lab.example.test",
+            "mcp_url": "https://mcp.example.test",
+            "route": "/telemetry",
+        });
+        parse_proxy_check(&params).expect("public http is allowed");
     }
 }
