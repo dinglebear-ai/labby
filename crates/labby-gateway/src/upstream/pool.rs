@@ -21,6 +21,10 @@ use crate::registry::InProcessService;
 
 use super::types::{UpstreamEntry, UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 
+#[cfg(test)]
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#[allow(clippy::panic)]
+mod annotation_passthrough_tests;
 mod cache_repair;
 mod capability;
 mod capability_call;
