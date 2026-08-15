@@ -1200,3 +1200,58 @@ fn incus_publish_job_checks_out_before_downloading_artifacts() {
         "publish-image must pin GH_REPO so gh stays correct even if the checkout is reconfigured"
     );
 }
+
+/// Regression guard for lab-k222n.
+///
+/// The release container compiles the real `labby` crate inside Docker. Several
+/// runtime resources are embedded with `include_str!`, so excluding their source
+/// trees from the Docker context makes the release-only build fail even though
+/// native CI is green.
+#[test]
+fn release_container_includes_compile_time_contract_and_skill_assets() {
+    let dockerignore =
+        fs::read_to_string(repo_root().join(".dockerignore")).expect("read Docker ignore rules");
+    let dockerfile =
+        fs::read_to_string(repo_root().join("config/Dockerfile")).expect("read release Dockerfile");
+
+    for required in [
+        "!docs/contracts/**",
+        "!plugins/labby/skills/using-labby/**",
+        "!plugins/labby/skills/creating-snippets/**",
+    ] {
+        assert!(
+            dockerignore.contains(required),
+            "Docker context must retain embedded asset rule {required}"
+        );
+    }
+
+    for required in [
+        "COPY docs/contracts/ docs/contracts/",
+        "COPY plugins/labby/skills/using-labby/ plugins/labby/skills/using-labby/",
+        "COPY plugins/labby/skills/creating-snippets/ plugins/labby/skills/creating-snippets/",
+    ] {
+        assert!(
+            dockerfile.contains(required),
+            "release Dockerfile must copy embedded assets with {required}"
+        );
+    }
+}
+
+/// Regression guard for lab-bm6pc.
+///
+/// Incus marks a system container RUNNING before systemd's system bus is ready.
+/// The bootstrap uses `hostnamectl` and `systemctl`, so it must explicitly wait
+/// for the guest service manager after launch/start and before those calls.
+#[test]
+fn incus_bootstrap_waits_for_guest_systemd_before_systemctl_consumers() {
+    let script = fs::read_to_string(repo_root().join("scripts/incus-bootstrap.sh"))
+        .expect("read Incus bootstrap script");
+    assert!(
+        script.contains("\nwait_for_guest_systemd\nverify_container_substrate\n"),
+        "guest systemd readiness must precede bootstrap operations that consume the system bus"
+    );
+    assert!(
+        script.contains("systemctl is-system-running"),
+        "readiness must probe the guest system manager rather than only Incus RUNNING state"
+    );
+}

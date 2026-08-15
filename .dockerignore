@@ -72,6 +72,8 @@ docs/
 !docs/
 !docs/generated/
 !docs/generated/env-reference.json
+!docs/contracts/
+!docs/contracts/**
 README.md
 LICENSE*
 AGENTS.md
@@ -88,6 +90,13 @@ agents/
 commands/
 hooks/
 plugins/
+!plugins/
+!plugins/labby/
+!plugins/labby/skills/
+!plugins/labby/skills/using-labby/
+!plugins/labby/skills/using-labby/**
+!plugins/labby/skills/creating-snippets/
+!plugins/labby/skills/creating-snippets/**
 skills/
 
 # ── Docker self-references ───────────────────────────────────────────────────

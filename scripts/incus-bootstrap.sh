@@ -100,6 +100,23 @@ verify_container_substrate() {
         || fail "$NAME must be Ubuntu 26.04 for the supported Labby runtime; found: $os_release"
 }
 
+wait_for_guest_systemd() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+
+    attempts=0
+    while [ "$attempts" -lt 90 ]; do
+        state="$(incus exec "$NAME" -- systemctl is-system-running 2>/dev/null || true)"
+        case "$state" in
+            running | degraded) return 0 ;;
+        esac
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+
+    incus exec "$NAME" -- systemctl status --no-pager 2>/dev/null || true
+    fail "$NAME systemd did not become ready within 90 seconds"
+}
+
 ensure_tun_device() {
     if [ "$DRY_RUN" -eq 1 ]; then
         say "+ incus config show $(quote "$NAME") --expanded # verify profile-provided tun access"
@@ -550,6 +567,7 @@ else
     fi
 fi
 
+wait_for_guest_systemd
 verify_container_substrate
 ensure_tun_device
 ensure_apparmor_signal_rule
