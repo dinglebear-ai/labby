@@ -26,7 +26,7 @@ pub(crate) mod local;
 #[cfg(feature = "gateway")]
 use futures::{StreamExt, stream};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use labby_runtime::skills::wire::{

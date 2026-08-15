@@ -88,8 +88,7 @@ const KINDS: &[&str] = &[
 fn published_schema() -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/contracts/schemas/agent-error.schema.json");
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let raw = std::fs::read_to_string(&path).expect("read published agent-error schema");
     serde_json::from_str(&raw).expect("agent-error schema is valid JSON")
 }
 
@@ -97,7 +96,7 @@ fn string_list<'a>(schema: &'a Value, pointer: &str) -> Vec<&'a str> {
     schema
         .pointer(pointer)
         .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("schema array at `{pointer}`"))
+        .expect("schema pointer names an array")
         .iter()
         .map(|value| value.as_str().expect("schema list entries are strings"))
         .collect()

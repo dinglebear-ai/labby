@@ -37,10 +37,10 @@ const SPEC_EXAMPLES: &[(&str, &str, &str)] = &[
 #[test]
 fn every_spec_example_skill_md_resolves_to_its_declared_name() {
     for (uri, expected_path, expected_name) in SPEC_EXAMPLES {
-        let parsed = parse_skill_uri(uri).unwrap_or_else(|e| panic!("{uri} must parse: {e}"));
+        let parsed = parse_skill_uri(uri).expect("SEP example must parse");
         let (skill_path, name) = parsed
             .skill_md_parts()
-            .unwrap_or_else(|| panic!("{uri} must yield a skill path and name"));
+            .expect("SEP example must yield a skill path and name");
         assert_eq!(&skill_path, expected_path, "skill path for {uri}");
         assert_eq!(&name, expected_name, "name for {uri}");
     }
@@ -64,7 +64,7 @@ fn non_skill_md_files_parse_without_being_split_positionally() {
         "skill://pdf-processing/scripts/extract.py",
         "skill://acme/billing/refunds/examples/email.md",
     ] {
-        let parsed = parse_skill_uri(uri).unwrap_or_else(|e| panic!("{uri} must parse: {e}"));
+        let parsed = parse_skill_uri(uri).expect("SEP resource URI must parse");
         assert!(parsed.skill_md_parts().is_none(), "{uri} is not a SKILL.md");
     }
 }
