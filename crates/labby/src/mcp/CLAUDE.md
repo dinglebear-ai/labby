@@ -74,8 +74,10 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
 - `nodes` owns MCP-only enrollment actions.
 - Code Mode is registered directly in the MCP layer and bypasses both
   `dispatch/` and `mcp/services/`. The public surface is intentionally split:
-  `codemode` is always text-only, `codemode_ui` shares the same execution
-  backend but owns the MCP App metadata, and `mcp_app` is the text-only
+  `codemode` has no static app descriptor but may return dynamic `_meta.ui`
+  when an upstream call launches a nested MCP App. `codemode_ui` shares the
+  same execution backend and owns the Code Mode inspector metadata, while
+  `mcp_app` is the text-only
   `status|enable|disable` recovery control. App mutations require `lab:admin`,
   are gateway-scoped, and schedule coalesced `tools/list_changed` plus
   `resources/list_changed` notifications after the open tool turn drains.

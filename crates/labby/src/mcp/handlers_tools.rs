@@ -426,14 +426,14 @@ impl LabMcpServer {
     }
 }
 
-/// The note appended to the text-only `codemode` descriptor.
+/// The note appended to the `codemode` descriptor.
 ///
 /// Shared with `PermanentToolRegistry::code_mode_descriptor` so the advertised
 /// description and the hashed peer contract can never disagree.
 #[cfg(feature = "gateway")]
 pub(crate) fn code_mode_app_text_note() -> String {
     format!(
-        "This text-only entry point never attaches an MCP App UI. When advertised, use `{CODE_MODE_UI_TOOL_NAME}` for the visual trace inspector; `{MCP_APP_TOOL_NAME}` can inspect or restore that app surface."
+        "This entry point has no static Labby UI, but nested upstream MCP Apps attach dynamically when a called tool returns `_meta.ui`. When advertised, use `{CODE_MODE_UI_TOOL_NAME}` for the visual trace inspector; `{MCP_APP_TOOL_NAME}` can inspect or restore that Labby-owned app surface."
     )
 }
 
@@ -443,7 +443,7 @@ pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]
     crate::mcp::call_tool_codemode::code_mode_description_with_suffix(
         upstreams,
         &format!(
-            "This explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` for text-only execution."
+            "This explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` when nested upstream MCP Apps should become the active result UI."
         ),
     )
 }
@@ -451,7 +451,7 @@ pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]
 /// Description for the text-only `mcp_app` control tool.
 #[cfg(feature = "gateway")]
 pub(crate) const fn mcp_app_tool_description() -> &'static str {
-    "Enable, disable, or inspect Labby's Code Mode MCP App surface. This controls the explicit codemode_ui tool and discoverable app resources; codemode remains text-only and available."
+    "Enable, disable, or inspect Labby's Code Mode inspector surface. This controls the explicit codemode_ui tool and discoverable Labby-owned app resources; codemode remains available and can return nested upstream MCP App metadata dynamically."
 }
 
 #[cfg(feature = "gateway")]

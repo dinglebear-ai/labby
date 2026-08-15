@@ -4,14 +4,46 @@
 use super::{
     CODE_MODE_DESCRIPTION_MAX_BYTES, CodeModeUpstreamDescription, InflightCodeModeRole,
     await_code_mode_execution, begin_code_mode_execution, code_arg, code_mode_description,
-    code_mode_description_with_suffix, code_mode_execute_trace, route_scoped_capability_filter,
-    string_array_arg,
+    code_mode_description_with_suffix, code_mode_execute_trace, code_mode_result,
+    route_scoped_capability_filter, string_array_arg,
 };
 use crate::config::CodeModeResultShapePolicy;
 use labby_codemode::{
     CodeModeExecutedCall, CodeModeExecutionResponse, CodeModeResultShapeMetadata, MAX_SOURCE_BYTES,
+    UiLink,
 };
 use serde_json::{Value, json};
+
+#[test]
+fn code_mode_result_preserves_captured_upstream_mcp_app_metadata() {
+    let response = CodeModeExecutionResponse {
+        execution_id: Some("execution-1".to_string()),
+        result: Some(json!({"session_id": "quick-shell-session"})),
+        result_shaping: None,
+        ui: Some(UiLink {
+            ui_meta: json!({
+                "resourceUri": "ui://quick-shell/mcp-app.v5.html",
+                "visibility": ["model", "app"]
+            }),
+        }),
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![],
+    };
+
+    let result = code_mode_result("result text".to_string(), json!({}), &response);
+    let meta = result
+        .meta
+        .expect("captured MCP App metadata must pass through");
+
+    assert_eq!(
+        meta.0["ui"],
+        json!({
+            "resourceUri": "ui://quick-shell/mcp-app.v5.html",
+            "visibility": ["model", "app"]
+        })
+    );
+}
 
 #[test]
 fn code_mode_filter_arg_rejects_malformed_values() {
@@ -272,6 +304,14 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
     );
     // Per-call params remain redacted — that is the secret-bearing channel.
     assert_eq!(trace["calls"][0]["params"]["token"], json!("[redacted]"));
+    assert!(
+        trace["calls"][0].get("error_kind").is_none(),
+        "successful calls must omit optional error_kind instead of emitting null"
+    );
+    assert!(
+        trace["calls"][0].get("ui").is_none(),
+        "non-UI calls must omit optional ui instead of emitting null"
+    );
 
     // The real return value is now embedded verbatim so structured-content-only
     // clients (e.g. Claude Code) actually receive it, not just its shape. The

@@ -1841,11 +1841,12 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
                 ));
             }
 
-            Ok(ReadResourceResult::new(vec![
+            let mut result = ReadResourceResult::new(vec![
                 ResourceContents::text("<main>quick shell widget</main>", params.uri)
                     .with_mime_type("text/html;profile=mcp-app"),
-            ])
-            .into())
+            ]);
+            result.result_type = None;
+            Ok(result.into())
         }
     }
 
@@ -2352,6 +2353,11 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         };
         assert_eq!(uri, UPSTREAM_UI_URI);
         assert!(upstream_html.contains("quick shell widget"));
+        assert_eq!(
+            upstream_read.result_type,
+            Some(rmcp::model::ResultType::COMPLETE),
+            "Labby must restore the current-protocol discriminator omitted by an older upstream"
+        );
     }
 
     #[tokio::test]
