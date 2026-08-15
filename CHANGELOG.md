@@ -57,6 +57,21 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.13.0](https://github.com/dinglebear-ai/labby/compare/v1.12.0...v1.13.0) (2026-08-15)
+
+
+### Added
+
+* **web:** align gateway console experience ([#409](https://github.com/dinglebear-ai/labby/issues/409)) ([2fc15c7](https://github.com/dinglebear-ai/labby/commit/2fc15c7afdb2ba0789d22bb47c8998752c3f6d96))
+* **web:** show gateway capability status cluster ([#420](https://github.com/dinglebear-ai/labby/issues/420)) ([5c7696a](https://github.com/dinglebear-ai/labby/commit/5c7696a6ee719a9a211df0dee46749c7357e4dcc))
+
+
+### Fixed
+
+* **auth:** enforce OAuth egress policy ([#408](https://github.com/dinglebear-ai/labby/issues/408)) ([9eab82b](https://github.com/dinglebear-ai/labby/commit/9eab82b594d3179db3bac2210552ec32013b68c5))
+* **auth:** harden OAuth metadata discovery ([#414](https://github.com/dinglebear-ai/labby/issues/414)) ([b11904b](https://github.com/dinglebear-ai/labby/commit/b11904b5357b12a8115b7bdc52d4a5a04c4e3c08))
+* **skills:** harden native URI aggregation ([#410](https://github.com/dinglebear-ai/labby/issues/410)) ([80a61c5](https://github.com/dinglebear-ai/labby/commit/80a61c570cbaff5058707f9ce548774ede4fec1b))
+
 ## [1.12.0](https://github.com/dinglebear-ai/labby/compare/v1.11.0...v1.12.0) (2026-08-14)
 
 
