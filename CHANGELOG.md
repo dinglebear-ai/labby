@@ -57,6 +57,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.13.1](https://github.com/dinglebear-ai/labby/compare/v1.13.0...v1.13.1) (2026-08-15)
+
+
+### Fixed
+
+* **mcp:** surface nested apps from Code Mode ([#423](https://github.com/dinglebear-ai/labby/issues/423)) ([fd04604](https://github.com/dinglebear-ai/labby/commit/fd04604f0d977b6b305c578260095801ac448f2d))
+
 ## [1.13.0](https://github.com/dinglebear-ai/labby/compare/v1.12.0...v1.13.0) (2026-08-15)
 
 
