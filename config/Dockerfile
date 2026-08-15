@@ -100,6 +100,9 @@ RUN mkdir -p \
 # apps/gateway-admin/out is sent in the build context.)
 COPY apps/gateway-admin/out apps/gateway-admin/out
 COPY docs/generated/env-reference.json docs/generated/env-reference.json
+COPY docs/contracts/ docs/contracts/
+COPY plugins/labby/skills/using-labby/ plugins/labby/skills/using-labby/
+COPY plugins/labby/skills/creating-snippets/ plugins/labby/skills/creating-snippets/
 COPY scripts/incus-bootstrap.sh scripts/incus-bootstrap.sh
 COPY scripts/install.sh scripts/install.sh
 COPY config/incus/labby-backup.yaml config/incus/labby-backup.yaml
