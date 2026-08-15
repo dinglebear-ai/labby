@@ -297,6 +297,11 @@ Tool-search observability:
   `gateway.update`; these paths require admin scope but are not marked
   destructive under Lab's permanent-data-loss definition.
 
+`gateway.oauth.probe` is intentionally stricter than general gateway URL
+validation: its `url` must use HTTPS and must not contain userinfo, a query, or
+a fragment. Loopback HTTP remains supported by the shared OAuth client for
+native development flows, but is not accepted by the remote probe action.
+
 ## Reconcile Model
 
 Every mutating action follows the same sequence:

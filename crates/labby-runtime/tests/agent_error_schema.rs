@@ -75,6 +75,8 @@ const KINDS: &[&str] = &[
     "provider_timeout",
     "not_connected",
     "connection_error",
+    "connection_refused",
+    "dns_error",
     "relay_forwarder_init_failed",
     // bridge
     "bridge_transport_error",
