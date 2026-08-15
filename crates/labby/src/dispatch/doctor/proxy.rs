@@ -18,6 +18,16 @@ pub async fn check_proxy(params: ProxyCheckParams<'_>) -> Result<Report, ToolErr
             message: format!("failed to build proxy doctor client: {error}"),
         })?;
 
+    // Resolved-address SSRF guard. `params.rs` already rejected private
+    // literals and private-suffix names statically; this closes the case it
+    // structurally cannot see — a public-looking name that resolves into
+    // private space (split-horizon DNS, or an attacker-controlled record).
+    // Only the two URLs that are actually fetched are checked; `backend_url`
+    // is never requested, it is only a needle searched for in response bodies.
+    for (param, url) in [("app_url", params.app_url), ("mcp_url", params.mcp_url)] {
+        reject_private_resolution(param, url).await?;
+    }
+
     let mut findings = Vec::new();
     findings.push(check_app_health(&client, params.app_url).await);
     findings.push(check_resource_metadata(&client, &params).await);
@@ -27,6 +37,47 @@ pub async fn check_proxy(params: ProxyCheckParams<'_>) -> Result<Report, ToolErr
         findings.push(check_backend_leak(&client, params.mcp_url, params.route, backend_url).await);
     }
     Ok(Report { findings })
+}
+
+/// Resolve `url`'s host and reject if any resolved address is private.
+///
+/// Deliberately fails **open on resolution failure**: a name that does not
+/// resolve is not an SSRF vector, and turning "DNS is down" into a hard
+/// `invalid_param` would break the diagnostic's ability to report an
+/// unreachable proxy as a normal finding. Only a *successful* resolution into
+/// blocked space is an error. Every returned address is checked, not just the
+/// first, so a mixed public/private record set cannot slip through.
+async fn reject_private_resolution(param: &str, url: &str) -> Result<(), ToolError> {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return Ok(());
+    };
+    // Only names need resolving. IP literals are deliberately skipped here
+    // because `parse_proxy_check` already rejected private ones statically,
+    // and both production call sites (`dispatch.rs` `proxy.check`, early-return
+    // and main arm) go through it — a `ProxyCheckParams` cannot reach this
+    // function unvalidated. The in-crate tests construct it directly against
+    // `127.0.0.1` wiremock servers, which is why re-checking literals here
+    // would break them. If a third production construction site is ever added,
+    // it must call `parse_proxy_check` or re-check literals itself.
+    let Some(url::Host::Domain(host)) = parsed.host() else {
+        return Ok(());
+    };
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let Ok(addrs) = tokio::net::lookup_host((host, port)).await else {
+        return Ok(());
+    };
+    let redacted = labby_primitives::ssrf::redact_url(url);
+    for addr in addrs {
+        labby_primitives::ssrf::check_ip_not_private(addr.ip(), &redacted).map_err(|error| {
+            ToolError::InvalidParam {
+                message: format!(
+                    "{param} resolves into private address space, which would make this probe an SSRF vector: {error}"
+                ),
+                param: param.to_string(),
+            }
+        })?;
+    }
+    Ok(())
 }
 
 async fn check_app_health(client: &reqwest::Client, app_url: &str) -> Finding {
