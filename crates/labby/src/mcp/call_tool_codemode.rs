@@ -767,9 +767,10 @@ impl LabMcpServer {
         step_buffer_guard.disarm();
         response.execution_id = Some(execution_id.clone());
 
-        // Keep Code Mode's own MCP App as the top-level output template. Any
-        // upstream widget-bearing calls are carried per-call in the structured
-        // trace so the inspector can show them without displacing itself.
+        // Preserve the last upstream widget both in the structured trace and
+        // on the final CallToolResult. The result metadata lets the host render
+        // the actual nested MCP App; trace-only capture leaves the app session
+        // open but unreachable from the client.
         let captured_resource_uri = response.ui.as_ref().and_then(|ui| {
             ui.ui_meta
                 .get("resourceUri")
@@ -891,7 +892,7 @@ impl LabMcpServer {
             captured_ui_resource_uri = captured_resource_uri.unwrap_or("<none>"),
             "gateway codemode ok"
         );
-        Ok(call_result_with_structured(output, structured, None))
+        Ok(code_mode_result(output, structured, &response))
     }
 }
 
@@ -918,6 +919,20 @@ fn call_result_with_structured(
     result.structured_content = Some(structured);
     result.meta = ui_meta;
     result
+}
+
+fn code_mode_result(
+    text: String,
+    structured: Value,
+    response: &CodeModeExecutionResponse,
+) -> CallToolResult {
+    let ui_meta = response.ui.as_ref().map(|ui| {
+        MetaObject(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            ui.ui_meta.clone(),
+        )]))
+    });
+    call_result_with_structured(text, structured, ui_meta)
 }
 
 #[cfg(test)]

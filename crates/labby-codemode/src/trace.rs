@@ -48,17 +48,26 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
         .iter()
         .map(|call| {
             let (namespace, tool) = split_code_mode_call_id(&call.id);
-            json!({
-                "id": call.id,
-                "namespace": namespace,
-                "tool": tool,
-                "ok": call.ok,
-                "elapsed_ms": call.elapsed_ms,
-                "start_ms": call.start_ms,
-                "params": call.params,
-                "error_kind": call.error_kind,
-                "ui": call.ui.as_ref().map(|ui| &ui.ui_meta),
-            })
+            let mut entry = Map::from_iter([
+                ("id".to_string(), json!(call.id)),
+                ("namespace".to_string(), json!(namespace)),
+                ("tool".to_string(), json!(tool)),
+                ("ok".to_string(), json!(call.ok)),
+                ("elapsed_ms".to_string(), json!(call.elapsed_ms)),
+            ]);
+            if let Some(start_ms) = call.start_ms {
+                entry.insert("start_ms".to_string(), json!(start_ms));
+            }
+            if let Some(params) = &call.params {
+                entry.insert("params".to_string(), params.clone());
+            }
+            if let Some(error_kind) = &call.error_kind {
+                entry.insert("error_kind".to_string(), json!(error_kind));
+            }
+            if let Some(ui) = &call.ui {
+                entry.insert("ui".to_string(), ui.ui_meta.clone());
+            }
+            Value::Object(entry)
         })
         .collect::<Vec<_>>();
 

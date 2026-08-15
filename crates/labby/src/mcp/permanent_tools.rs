@@ -672,7 +672,7 @@ mod tests {
         let description = descriptor.description.expect("description");
         assert!(description.len() <= CODE_MODE_DESCRIPTION_MAX_BYTES);
         assert!(description.contains("codemode.search"));
-        assert!(description.contains("text-only entry point"));
+        assert!(description.contains("nested upstream MCP Apps"));
     }
 
     #[cfg(feature = "gateway")]

@@ -21,7 +21,7 @@ use crate::mcp::peer_contract::{PeerCatalogAudience, PeerContract};
 #[cfg(test)]
 use crate::mcp::prompts::list_all as list_builtin_prompts;
 
-/// Primary Cloudflare-style Code Mode tool name. This entry point is always text-only.
+/// Primary Code Mode tool. It has no static UI but can return a nested upstream MCP App.
 pub(crate) const CODE_MODE_TOOL_NAME: &str = "codemode";
 /// Read-only Code Mode entry point. The broker enforces upstream annotations.
 pub(crate) const CODE_MODE_READ_TOOL_NAME: &str = "codemode_read";
