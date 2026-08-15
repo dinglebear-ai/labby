@@ -431,6 +431,128 @@ fn update_upstream_applies_expose_tools_patch() {
 }
 
 #[test]
+fn update_upstream_applies_proxy_skills_patch() {
+    let mut cfg = sample_config();
+
+    update_upstream(
+        &mut cfg,
+        "a",
+        GatewayUpdatePatch {
+            proxy_skills: Some(true),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("update should succeed");
+
+    let a = cfg
+        .upstream
+        .iter()
+        .find(|u| u.name == "a")
+        .expect("a upstream");
+
+    assert!(a.proxy_skills);
+}
+
+#[test]
+fn update_upstream_leaves_proxy_skills_untouched_when_absent() {
+    let mut cfg = sample_config();
+
+    update_upstream(
+        &mut cfg,
+        "a",
+        GatewayUpdatePatch {
+            proxy_skills: Some(true),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("enable should succeed");
+
+    // A later patch that says nothing about skills must not silently reset it.
+    update_upstream(
+        &mut cfg,
+        "a",
+        GatewayUpdatePatch {
+            proxy_resources: Some(false),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("second update should succeed");
+
+    let a = cfg
+        .upstream
+        .iter()
+        .find(|u| u.name == "a")
+        .expect("a upstream");
+
+    assert!(a.proxy_skills);
+    assert!(!a.proxy_resources);
+}
+
+#[test]
+fn gateway_update_patch_carries_skill_fields_over_the_wire() {
+    // The CLI's `--proxy-skills` and the gateway.update action both arrive as
+    // JSON. Before these fields existed on the patch, serde dropped them
+    // silently and the update reported success while changing nothing.
+    let patch: GatewayUpdatePatch =
+        serde_json::from_str(r#"{"proxy_skills": true, "expose_skills": ["review-*"]}"#).unwrap();
+
+    assert_eq!(patch.proxy_skills, Some(true));
+    assert_eq!(
+        patch.expose_skills,
+        Some(Some(vec!["review-*".to_string()]))
+    );
+
+    let absent: GatewayUpdatePatch = serde_json::from_str(r"{}").unwrap();
+    assert_eq!(absent.proxy_skills, None);
+    assert_eq!(absent.expose_skills, None);
+}
+
+#[test]
+fn update_upstream_applies_and_clears_expose_skills() {
+    let mut cfg = sample_config();
+
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            expose_skills: Some(Some(vec!["core".to_string()])),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("update should succeed");
+
+    assert_eq!(
+        cfg.upstream
+            .iter()
+            .find(|u| u.name == "b")
+            .expect("b upstream")
+            .expose_skills
+            .as_deref(),
+        Some(&["core".to_string()][..])
+    );
+
+    // An empty array clears the allowlist, matching expose_tools/resources/prompts.
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            expose_skills: Some(Some(vec![])),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("clear should succeed");
+
+    assert_eq!(
+        cfg.upstream
+            .iter()
+            .find(|u| u.name == "b")
+            .expect("b upstream")
+            .expose_skills,
+        None
+    );
+}
+
+#[test]
 fn expose_tools_patch_distinguishes_absent_null_empty_and_values() {
     let absent: GatewayUpdatePatch = serde_json::from_str(r"{}").unwrap();
     let null: GatewayUpdatePatch = serde_json::from_str(r#"{"expose_tools": null}"#).unwrap();

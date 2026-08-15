@@ -238,12 +238,19 @@ pub(crate) struct GatewayUpdatePatch {
     pub proxy_resources: Option<bool>,
     #[serde(default)]
     pub proxy_prompts: Option<bool>,
+    /// Agent Skills aggregation (SEP-2640) for this upstream.
+    ///
+    /// Absent leaves the current setting alone; `true`/`false` sets it.
+    #[serde(default)]
+    pub proxy_skills: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub expose_tools: Option<Option<Vec<String>>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub expose_resources: Option<Option<Vec<String>>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub expose_prompts: Option<Option<Vec<String>>>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    pub expose_skills: Option<Option<Vec<String>>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub oauth: Option<Option<UpstreamOauthConfig>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
