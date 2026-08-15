@@ -70,7 +70,22 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
   const markup = renderToStaticMarkup(
     <SidebarProvider>
       <GatewayListView
-        summary={{ enabled: 2, healthy: 1, disconnected: 1, tools: 2 }}
+        summary={{
+          enabled: 2,
+          healthy: 1,
+          disconnected: 1,
+          tools: 2,
+          totalServers: 2,
+          exposedTools: 2,
+          discoveredPrompts: 1,
+          exposedPrompts: 1,
+          discoveredResources: 1,
+          exposedResources: 1,
+          serverStates: [
+            { id: 'a', name: 'a', color: 'var(--aurora-success)', state: 'healthy' },
+            { id: 'b', name: 'b', color: 'var(--aurora-error)', state: 'disconnected' },
+          ],
+        }}
         showToolsView={false}
         gatewayFilters={{ primaryLens: 'enabled', search: '', status: [], source: [], transport: [] }}
         toolFilters={{ search: '', gatewayIds: [], exposure: 'all', source: [], transport: [] }}

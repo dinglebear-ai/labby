@@ -48,8 +48,18 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} ${manrope.variable} font-sans antialiased overflow-x-clip`}>
+    // next/font's `variable` classNames must sit on <html>, not <body>:
+    // globals.css declares --font-display/--font-sans on :root, and custom
+    // property substitution resolves at the declaring element. With the fonts
+    // scoped to <body>, `var(--font-manrope)` was invalid-at-computed-value-time
+    // at :root, so the whole --font-display declaration was dropped and every
+    // display title silently fell back to Inter.
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${inter.variable} ${manrope.variable}`}
+    >
+      <body className="font-sans antialiased overflow-x-clip">
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"

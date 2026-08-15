@@ -1,14 +1,25 @@
 'use client'
 
 import type { SettingsFieldSpec, SettingsState } from '@/lib/api/setup-client'
-import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { hasEnvOverrideWarning, parseFieldInput, valueAsInputString } from '@/lib/settings/schema'
+import {
+  SettingsMetaPill,
+  SettingsRow,
+  SettingsToggle,
+  SettingsValue,
+  SETTINGS_CONTROL_STYLE,
+  SETTINGS_MULTILINE_CONTROL_STYLE,
+} from './SettingsChrome'
 
+/**
+ * One field as a mock settings row: label + description on the left, control
+ * parked on the right. Wide controls (free text, list editors, JSON dumps)
+ * fall back to the stacked variant, which keeps the same hairline and padding
+ * but drops the control onto its own line.
+ */
 export function SettingsScalarField({
   field,
   value,
@@ -39,14 +50,37 @@ export function SettingsScalarField({
     'aria-describedby': describedBy,
   }
 
+  // Read-only primitives render as the mock's muted `code` value; structured
+  // values still need the JSON dump.
+  const isPrimitive =
+    value === null ||
+    value === undefined ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  const stacked =
+    field.control === 'text' ||
+    field.control === 'string_list' ||
+    (field.control === 'read_only' && !isPrimitive)
+
   function renderControl(): React.ReactNode {
     switch (field.control) {
       case 'bool':
-        return <Switch {...controlProps} checked={Boolean(value)} onCheckedChange={(checked) => onChange(field.key, checked)} />
+        return (
+          <SettingsToggle
+            id={id}
+            label={field.label}
+            checked={Boolean(value)}
+            disabled={disabled}
+            invalid={Boolean(error)}
+            describedBy={describedBy}
+            onChange={(checked) => onChange(field.key, checked)}
+          />
+        )
       case 'enum':
         return (
           <Select value={inputValue} disabled={disabled} onValueChange={(next) => onChange(field.key, next)}>
-            <SelectTrigger {...controlProps}>
+            <SelectTrigger {...controlProps} style={{ ...SETTINGS_CONTROL_STYLE, minWidth: 150 }}>
               <SelectValue placeholder={field.example ?? 'Select'} />
             </SelectTrigger>
             <SelectContent>
@@ -59,38 +93,86 @@ export function SettingsScalarField({
           </Select>
         )
       case 'string_list':
-        return <Textarea {...controlProps} value={inputValue} className="min-h-24 font-mono text-xs" onChange={(event) => onChange(field.key, parseFieldInput(field, event.target.value))} />
+        return (
+          <Textarea
+            {...controlProps}
+            value={inputValue}
+            className="w-full font-mono"
+            style={SETTINGS_MULTILINE_CONTROL_STYLE}
+            onChange={(event) => onChange(field.key, parseFieldInput(field, event.target.value))}
+          />
+        )
       case 'read_only':
-        return <pre className="max-h-64 overflow-auto rounded-md bg-aurora-control-surface p-3 text-xs">{JSON.stringify(value ?? null, null, 2)}</pre>
+        return isPrimitive ? (
+          <SettingsValue>{inputValue === '' ? '—' : inputValue}</SettingsValue>
+        ) : (
+          <pre
+            className="max-h-64 overflow-auto"
+            style={{ ...SETTINGS_MULTILINE_CONTROL_STYLE, fontSize: 11, margin: 0 }}
+          >
+            {JSON.stringify(value ?? null, null, 2)}
+          </pre>
+        )
       default:
-        return <Input {...controlProps} type={field.control === 'number' ? 'number' : 'text'} value={inputValue} onChange={(event) => onChange(field.key, parseFieldInput(field, event.target.value))} />
+        return (
+          <Input
+            {...controlProps}
+            type={field.control === 'number' ? 'number' : 'text'}
+            value={inputValue}
+            className={stacked ? 'w-full' : undefined}
+            style={
+              stacked
+                ? { ...SETTINGS_CONTROL_STYLE, width: '100%' }
+                : { ...SETTINGS_CONTROL_STYLE, width: 150 }
+            }
+            onChange={(event) => onChange(field.key, parseFieldInput(field, event.target.value))}
+          />
+        )
     }
   }
 
-  return (
-    <div className="grid gap-2 rounded-md border p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <Label htmlFor={id}>{field.label}</Label>
-          <p className="mt-1 text-xs text-aurora-text-muted">{field.description}</p>
-          <p className="mt-1 font-mono text-[11px] text-aurora-text-muted">{field.key}</p>
-        </div>
-        <span className="rounded bg-aurora-control-surface px-1.5 py-0.5 text-[10px] uppercase text-aurora-text-muted">
-          {field.apply_mode}
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        <Badge variant="secondary">{backendLabel}</Badge>
-        <Badge variant="outline">source: {sourceLabel}</Badge>
-        <Badge variant="outline">risk: {field.risk}</Badge>
-        {field.write_policy !== 'editable' ? <Badge variant="outline" status="warn">{field.write_policy}</Badge> : null}
-        {field.env_override ? <Badge variant="outline">env: {field.env_override}</Badge> : null}
-      </div>
-      {hasEnvOverrideWarning(field, state) ? (
-        <p className="text-xs text-amber-600">{envOverride} currently overrides this config.toml value. Edit the env var or remove the override first.</p>
+  const meta = (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+      <code style={{ fontSize: 10.5, color: 'var(--aurora-text-muted)' }}>{field.key}</code>
+      <SettingsMetaPill>{backendLabel}</SettingsMetaPill>
+      <SettingsMetaPill>source: {sourceLabel}</SettingsMetaPill>
+      <SettingsMetaPill>risk: {field.risk}</SettingsMetaPill>
+      <SettingsMetaPill>{field.apply_mode}</SettingsMetaPill>
+      {field.write_policy !== 'editable' ? (
+        <SettingsMetaPill tone="warn">{field.write_policy}</SettingsMetaPill>
       ) : null}
-      {renderControl()}
-      {error ? <p id={errorId} className="text-xs text-destructive">{error}</p> : null}
+      {field.env_override ? <SettingsMetaPill>env: {field.env_override}</SettingsMetaPill> : null}
     </div>
+  )
+
+  const description = (
+    <>
+      {field.description}
+      {hasEnvOverrideWarning(field, state) ? (
+        <span style={{ display: 'block', marginTop: 4, color: 'var(--aurora-warn)' }}>
+          {envOverride} currently overrides this config.toml value. Edit the env var or remove the
+          override first.
+        </span>
+      ) : null}
+      {error ? (
+        <span
+          id={errorId}
+          style={{ display: 'block', marginTop: 4, color: 'var(--aurora-error)' }}
+        >
+          {error}
+        </span>
+      ) : null}
+    </>
+  )
+
+  return (
+    <SettingsRow
+      layout={stacked ? 'stacked' : 'inline'}
+      htmlFor={field.control === 'bool' ? undefined : id}
+      label={field.label}
+      description={description}
+      meta={meta}
+      control={renderControl()}
+    />
   )
 }

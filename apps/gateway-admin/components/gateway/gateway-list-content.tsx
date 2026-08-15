@@ -25,7 +25,6 @@ import { cn, getErrorMessage } from '@/lib/utils'
 import {
   AURORA_DISPLAY_NUMBER,
   AURORA_MEDIUM_PANEL,
-  AURORA_MUTED_LABEL,
   AURORA_PAGE_FRAME,
   AURORA_PAGE_SHELL,
   AURORA_STRONG_PANEL,
@@ -45,13 +44,14 @@ import {
 } from './gateway-list-state'
 import { EmptyState } from './empty-state'
 import { GatewayFilters } from './gateway-filters'
+import { GatewayHero } from './gateway-hero'
 import type { GatewaySaveRollback } from './gateway-form-dialog'
 import { GatewayTable } from './gateway-table'
 import { GatewayTableSkeleton } from './table-skeleton'
 import { GatewayToolsTable } from './gateway-tools-table'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
-import { AURORA_GATEWAY_STAT, gatewayActionTone } from './gateway-theme'
+import { gatewayActionTone } from './gateway-theme'
 import { CodeModeHeaderToggle } from './code-mode-toggle'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
@@ -93,6 +93,14 @@ interface GatewaySummary {
   healthy: number
   disconnected: number
   tools: number
+  /** Exposure totals + per-server health slices for the Gateway hero. */
+  exposedTools: number
+  discoveredPrompts: number
+  exposedPrompts: number
+  discoveredResources: number
+  exposedResources: number
+  totalServers: number
+  serverStates: Array<{ id: string; name: string; color: string; state: string }>
 }
 
 export interface GatewayListViewProps {
@@ -176,9 +184,41 @@ export function GatewayListContent() {
     const enabled = items.filter((gateway) => gateway.enabled ?? true).length
     const healthy = items.filter((gateway) => (gateway.enabled ?? true) && gateway.status.healthy && gateway.status.connected).length
     const disconnected = items.filter((gateway) => (gateway.enabled ?? true) && !gateway.status.connected).length
-    const tools = items.reduce((sum, gateway) => sum + gateway.status.discovered_tool_count, 0)
+    const sum = (pick: (gateway: Gateway) => number) =>
+      items.reduce((total, gateway) => total + pick(gateway), 0)
+    const tools = sum((gateway) => gateway.status.discovered_tool_count)
 
-    return { enabled, healthy, disconnected, tools }
+    const serverStates = items.map((gateway) => {
+      const base = { id: gateway.id, name: gateway.name }
+      if (!gateway.status.connected) {
+        return { ...base, color: 'var(--aurora-error)', state: 'disconnected' }
+      }
+      if (!gateway.status.healthy) {
+        return { ...base, color: 'var(--aurora-warn)', state: 'unhealthy' }
+      }
+      if (gateway.warnings.length > 0) {
+        return {
+          ...base,
+          color: 'var(--aurora-warn)',
+          state: `${gateway.warnings.length} warning(s)`,
+        }
+      }
+      return { ...base, color: 'var(--aurora-success)', state: 'healthy' }
+    })
+
+    return {
+      enabled,
+      healthy,
+      disconnected,
+      tools,
+      totalServers: items.length,
+      exposedTools: sum((gateway) => gateway.status.exposed_tool_count),
+      discoveredPrompts: sum((gateway) => gateway.status.discovered_prompt_count),
+      exposedPrompts: sum((gateway) => gateway.status.exposed_prompt_count),
+      discoveredResources: sum((gateway) => gateway.status.discovered_resource_count),
+      exposedResources: sum((gateway) => gateway.status.exposed_resource_count),
+      serverStates,
+    }
   }, [items])
 
   const toolRows = useMemo(() => aggregateToolsFromGateways(items), [items])
@@ -735,44 +775,27 @@ export function GatewayListView({
             </div>
           </section>
 
-          <section className={cn(AURORA_STRONG_PANEL, 'hidden rounded-aurora-1 p-2 lg:block')}>
-            <div className="grid h-full gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              <SummaryCard
-                label="Enabled"
-                value={summary.enabled}
-                subline="Ready to route"
-                icon={<Cable className="size-5 text-aurora-text-muted" />}
-                active={!showToolsView && gatewayFilters.primaryLens === 'enabled'}
-                onClick={() => onPrimaryLensChange('enabled')}
-              />
-              <SummaryCard
-                label="Healthy"
-                value={summary.healthy}
-                subline={`${summary.healthy} connected`}
-                icon={<Activity className="size-5 text-aurora-accent-strong" />}
-                valueClassName="text-aurora-accent-strong"
-                active={!showToolsView && gatewayFilters.primaryLens === 'healthy'}
-                onClick={() => onPrimaryLensChange('healthy')}
-              />
-              <SummaryCard
-                label="Disconnected"
-                value={summary.disconnected}
-                subline={`${summary.disconnected} needs attention`}
-                icon={<TriangleAlert className="size-5 text-aurora-warn" />}
-                valueClassName="text-aurora-warn"
-                active={!showToolsView && gatewayFilters.primaryLens === 'disconnected'}
-                onClick={() => onPrimaryLensChange('disconnected')}
-              />
-              <SummaryCard
-                label="Discovered tools"
-                value={summary.tools}
-                subline={`${summary.tools} exposed surfaces`}
-                icon={<Wrench className="size-5 text-aurora-accent-primary" />}
-                active={showToolsView}
-                onClick={() => onPrimaryLensChange('tools')}
-              />
-            </div>
-          </section>
+          {/* Desktop: the mock's Gateway hero — fleet + exposure stat groups
+              welded to the card's bottom edge. The fleet cells are the same
+              lens filters the old summary cards were. */}
+          <div className="hidden lg:block">
+            <GatewayHero
+              totalServers={summary.totalServers}
+              healthy={summary.healthy}
+              enabled={summary.enabled}
+              disconnected={summary.disconnected}
+              discoveredTools={summary.tools}
+              exposedTools={summary.exposedTools}
+              discoveredPrompts={summary.discoveredPrompts}
+              exposedPrompts={summary.exposedPrompts}
+              discoveredResources={summary.discoveredResources}
+              exposedResources={summary.exposedResources}
+              serverStates={summary.serverStates}
+              activeLens={gatewayFilters.primaryLens}
+              toolsViewActive={showToolsView}
+              onLensChange={onPrimaryLensChange}
+            />
+          </div>
 
           <div className="grid gap-4">
             <GatewayFilters
@@ -794,7 +817,11 @@ export function GatewayListView({
               onClearFilters={onClearFilters}
             />
 
-            <div>
+            {/* min-w-0: without it this grid item's min-content contribution is
+                the table's 1010px min-width, which inflates the track past the
+                available width and the page shell clips the card instead of
+                letting the table's own overflow-x scroller engage. */}
+            <div className="min-w-0">
               {!showToolsView && discoveredConfigs ? (
                 <McpConfigImportReviewPanel
                   discoveredConfigs={discoveredConfigs}
@@ -1000,52 +1027,6 @@ function McpConfigImportReviewPanel({
         <p className="mt-3 text-xs text-aurora-text-muted">No external MCP configs found.</p>
       )}
     </section>
-  )
-}
-
-function SummaryCard({
-  label,
-  value,
-  subline,
-  icon,
-  active,
-  onClick,
-  valueClassName,
-}: {
-  label: string
-  value: number
-  subline: string
-  icon: ReactNode
-  active: boolean
-  onClick: () => void
-  valueClassName?: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        AURORA_GATEWAY_STAT,
-        'cursor-pointer rounded-aurora-1 px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34',
-        !active &&
-          'bg-aurora-panel/72 hover:border-aurora-accent-primary/28 hover:bg-aurora-hover-bg hover:shadow-[0_0_0_1px_rgba(87,190,255,0.08)]',
-        active && 'border-aurora-accent-primary/40 bg-aurora-accent-primary/8 shadow-[inset_0_0_0_1px_rgba(87,190,255,0.12)]',
-      )}
-      aria-pressed={active}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className={AURORA_MUTED_LABEL}>{label}</p>
-          <p className={cn(AURORA_DISPLAY_NUMBER, 'mt-1 text-[22px] text-aurora-text-primary', valueClassName)}>
-            {value}
-          </p>
-          <p className="mt-1 truncate text-[11px] font-medium text-aurora-text-muted">{subline}</p>
-        </div>
-        <span className="ml-auto flex size-9 shrink-0 items-center justify-center rounded-aurora-1 border border-aurora-border-strong/80 bg-aurora-control-surface/70 text-aurora-text-muted shadow-[var(--aurora-highlight-medium)]">
-          {icon}
-        </span>
-      </div>
-    </button>
   )
 }
 

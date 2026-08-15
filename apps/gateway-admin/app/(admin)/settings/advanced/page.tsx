@@ -5,7 +5,7 @@ import { Loader2 } from 'lucide-react'
 
 import { AdvancedReadOnlyBlock } from '@/components/settings/AdvancedReadOnlyBlock'
 import { SettingsScalarSection } from '@/components/settings/SettingsScalarSection'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { SettingsCard, SETTINGS_CONTROL_STYLE } from '@/components/settings/SettingsChrome'
 import { Input } from '@/components/ui/input'
 import { setupApi, type EnvSettingSpec, type SettingsSchemaResponse, type SettingsState } from '@/lib/api/setup-client'
 import { fieldsForSection } from '@/lib/settings/schema'
@@ -45,15 +45,15 @@ export default function AdvancedPage(): React.ReactElement {
 
   return (
     <>
-      <h1 className="sr-only">Advanced settings</h1>
+      <h2 className="sr-only">Advanced settings</h2>
       {loading ? (
-        <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
+        <div className="flex items-center gap-2 text-[11.5px] text-aurora-text-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> loading advanced settings
         </div>
       ) : null}
-      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {error ? <p className="text-[11.5px] text-destructive">{error}</p> : null}
       {settings ? (
-        <div className="space-y-4">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <SettingsScalarSection
             title="Advanced Scalars"
             description="Low-risk advanced scalar limits and paths."
@@ -76,23 +76,42 @@ function EnvInventoryTable({ entries }: { entries: EnvSettingSpec[] }): React.Re
     `${entry.key} ${entry.service} ${entry.description}`.toLowerCase().includes(query.toLowerCase()),
   )
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Environment Inventory</CardTitle>
-        <CardDescription>Known env keys from generated docs and service metadata. Only low-risk core env keys are editable in this epic.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter env keys" />
-        <ul className="max-h-[520px] divide-y overflow-auto rounded-md border">
-          {filtered.map((entry) => (
-            <li key={entry.key} className="grid gap-1 p-3 text-sm md:grid-cols-[240px_1fr_auto]">
-              <p className="font-mono text-xs">{entry.key}</p>
-              <p className="text-aurora-text-muted">{entry.description}</p>
-              <p className="text-xs text-aurora-text-muted">{entry.service}{entry.secret ? ' secret' : ''}{entry.editable ? ' editable' : ''}</p>
-            </li>
-          ))}
-        </ul>
-      </CardContent>
-    </Card>
+    <SettingsCard
+      title="Environment Inventory"
+      description="Known env keys from generated docs and service metadata. Only low-risk core env keys are editable in this epic."
+      action={
+        <Input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Filter env keys"
+          aria-label="Filter env keys"
+          style={{ ...SETTINGS_CONTROL_STYLE, width: 200 }}
+        />
+      }
+    >
+      <ul className="max-h-[520px] overflow-auto">
+        {filtered.map((entry) => (
+          <li
+            key={entry.key}
+            className="grid gap-1 md:grid-cols-[220px_1fr_auto]"
+            style={{
+              padding: '9px 16px',
+              borderTop:
+                '1px solid color-mix(in srgb, var(--aurora-border-default) 35%, var(--aurora-page-bg))',
+            }}
+          >
+            <code style={{ fontSize: 11, color: 'var(--aurora-text-primary)' }}>{entry.key}</code>
+            <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--aurora-text-muted)' }}>
+              {entry.description}
+            </p>
+            <p style={{ margin: 0, fontSize: 11, color: 'var(--aurora-text-muted)' }}>
+              {entry.service}
+              {entry.secret ? ' secret' : ''}
+              {entry.editable ? ' editable' : ''}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </SettingsCard>
   )
 }

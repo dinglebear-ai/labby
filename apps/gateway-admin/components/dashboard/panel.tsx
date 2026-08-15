@@ -1,15 +1,21 @@
 import type { ReactNode } from 'react'
-import { AURORA_MEDIUM_PANEL, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
-import { DASH_SURFACE } from './ui'
 import { cn } from '@/lib/utils'
 
-/** Shared squared panel shell for dashboard insight/analysis cards. */
+/**
+ * Shared panel shell for dashboard insight/analysis cards.
+ *
+ * Chrome measured off the rendered Gateway Console mock: a `--radius-2` card
+ * on the panel-strong gradient, with a tinted header bar separated by a rule
+ * rather than the inline heading this used to draw. Every dashboard panel goes
+ * through here, so the mock's card treatment lands everywhere at once.
+ */
 export function DashboardPanel({
   title,
   icon,
   meta,
   action,
   className,
+  bodyClassName,
   children,
 }: {
   title: string
@@ -17,18 +23,71 @@ export function DashboardPanel({
   meta?: ReactNode
   action?: ReactNode
   className?: string
+  bodyClassName?: string
   children: ReactNode
 }) {
   return (
-    <div className={cn(AURORA_MEDIUM_PANEL, DASH_SURFACE, 'flex flex-col gap-3 p-5', className)}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          {icon ? <span className="shrink-0 text-aurora-accent-primary">{icon}</span> : null}
-          <p className={AURORA_MUTED_LABEL}>{title}</p>
-        </div>
-        {meta ? <span className="shrink-0 text-xs text-aurora-text-muted">{meta}</span> : action}
+    <div
+      data-hovercard="1"
+      className={cn('overflow-hidden', className)}
+      style={{
+        borderRadius: 'var(--radius-2)',
+        border:
+          '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
+        background:
+          'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
+        boxShadow: 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.04)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 14px',
+          borderBottom:
+            '1px solid color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+          background: 'var(--gw0-0_38)',
+        }}
+      >
+        {icon ? (
+          <span className="grid shrink-0 place-items-center text-aurora-accent-primary">
+            {icon}
+          </span>
+        ) : null}
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: '0.14em',
+            textTransform: 'uppercase',
+            color: 'var(--aurora-text-muted)',
+          }}
+        >
+          {title}
+        </span>
+        <div style={{ flex: 1 }} />
+        {meta ? (
+          <span
+            style={{
+              fontSize: 10,
+              color: 'color-mix(in srgb, var(--aurora-text-muted) 80%, transparent)',
+              fontVariantNumeric: 'tabular-nums',
+              flexShrink: 0,
+            }}
+          >
+            {meta}
+          </span>
+        ) : null}
+        {action}
       </div>
-      {children}
+
+      <div
+        className={bodyClassName}
+        style={{ display: 'flex', flexDirection: 'column', gap: 9, padding: '12px 14px' }}
+      >
+        {children}
+      </div>
     </div>
   )
 }

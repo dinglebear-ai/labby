@@ -10,6 +10,12 @@ import {
 } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import type { Gateway, TestGatewayResult } from '@/lib/types/gateway'
+import {
+  DETAIL_NO_DATA,
+  DETAIL_STAT_GRID_STYLE,
+  DetailMicroLabel,
+  DetailStatCard,
+} from './gateway-detail-chrome'
 
 interface TestResultPanelProps {
   result: { gateway: Gateway; result: TestGatewayResult } | null
@@ -34,9 +40,13 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
           </SheetDescription>
         </SheetHeader>
 
-        <div className="mt-6 space-y-6">
+        {/* px-4 matches SheetHeader's p-4 — without it the body ran flush to
+            the sheet edges and the stat grid clipped on the right. */}
+        <div className="mt-2 space-y-6 px-4">
           {/* Status */}
-          <div className={`flex items-start gap-4 rounded-lg border p-4 ${
+          <div
+            style={{ borderRadius: 9 }}
+            className={`flex items-start gap-4 border p-4 ${
             isSuccess
               ? 'border-aurora-success/20 bg-aurora-success/5'
               : isWarning
@@ -93,64 +103,52 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
             testResult.discovered_resources !== undefined ||
             testResult.discovered_prompts !== undefined) && (
             <div className="space-y-3">
-              <h4 className="text-sm font-medium text-aurora-text-muted">
+              <DetailMicroLabel>
                 {isSuccess ? 'Connection Details' : 'Probe Details'}
-              </h4>
-              
-              <div className="grid gap-3">
+              </DetailMicroLabel>
+
+              {/* Mock stat-card chrome — see gateway-detail-chrome.tsx. */}
+              <div style={DETAIL_STAT_GRID_STYLE}>
                 {testResult.latency_ms !== undefined && (
-                  <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <Clock className="size-4 text-aurora-text-muted" />
-                      <span>Latency</span>
-                    </div>
-                    <span className="text-sm font-medium tabular-nums">
-                      {testResult.latency_ms}ms
-                    </span>
-                  </div>
+                  <DetailStatCard
+                    icon={<Clock size={11} />}
+                    label="Latency"
+                    value={`${testResult.latency_ms}ms`}
+                  />
                 )}
 
                 {testResult.discovered_tools !== undefined && (
-                  <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <Wrench className="size-4 text-aurora-text-muted" />
-                      <span>Discovered Tools</span>
-                    </div>
-                    <span className="text-sm font-medium tabular-nums">
-                      {testResult.discovered_tools}
-                    </span>
-                  </div>
+                  <DetailStatCard
+                    icon={<Wrench size={11} />}
+                    label="Tools"
+                    value={testResult.discovered_tools ?? DETAIL_NO_DATA}
+                    sub="discovered"
+                  />
                 )}
 
                 {testResult.discovered_resources !== undefined && (
-                  <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <FileText className="size-4 text-aurora-text-muted" />
-                      <span>Discovered Resources</span>
-                    </div>
-                    <span className="text-sm font-medium tabular-nums">
-                      {testResult.discovered_resources}
-                    </span>
-                  </div>
+                  <DetailStatCard
+                    icon={<FileText size={11} />}
+                    label="Resources"
+                    value={testResult.discovered_resources ?? DETAIL_NO_DATA}
+                    sub="discovered"
+                  />
                 )}
 
                 {testResult.discovered_prompts !== undefined && (
-                  <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <MessageSquare className="size-4 text-aurora-text-muted" />
-                      <span>Discovered Prompts</span>
-                    </div>
-                    <span className="text-sm font-medium tabular-nums">
-                      {testResult.discovered_prompts}
-                    </span>
-                  </div>
+                  <DetailStatCard
+                    icon={<MessageSquare size={11} />}
+                    label="Prompts"
+                    value={testResult.discovered_prompts ?? DETAIL_NO_DATA}
+                    sub="discovered"
+                  />
                 )}
               </div>
             </div>
           )}
         </div>
 
-        <div className="mt-8">
+        <div className="mt-8 px-4 pb-4">
           <Button variant="outline" onClick={onClose} className="w-full">
             <X className="size-4 mr-2" />
             Close

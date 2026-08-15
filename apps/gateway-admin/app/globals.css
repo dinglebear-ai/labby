@@ -87,12 +87,105 @@
   --aurora-preview-unmatched: #ff9100;
   --aurora-preview-highlight: #ffea00;
 
-  /* Aurora radius scale — token-backed per design-system-contract.md.
-     New code should reach for rounded-aurora-1/2/3; legacy rounded-[…rem]
-     variants are tolerated as tuned variants pending migration. */
-  --radius-1: 6px;
-  --radius-2: 8px;
-  --radius-3: 10px;
+  /* Aurora radius scale — token-backed per design-system-contract.md and
+     matched to the Gateway Console mock (_ds/…/aurora.css canon).
+     New code should reach for rounded-aurora-1/2/3. */
+  --radius-1: 14px;
+  --radius-2: 18px;
+  --radius-3: 22px;
+  --radius-pill: 999px;
+
+  /* Font families.
+     These are ALSO listed in `@theme inline` below, but `inline` substitutes
+     values straight into Tailwind utilities and does not emit the custom
+     properties — so `var(--font-display)` from an inline style resolved to
+     nothing and every display title silently fell back to Inter. The mock's
+     aurora.css declares them on a plain `:root`; match that so both the
+     utilities and direct `var()` references work. */
+  --font-display: var(--font-manrope), 'Segoe UI', 'Helvetica Neue', arial, sans-serif;
+  --font-sans: var(--font-inter), 'Segoe UI', 'Helvetica Neue', arial, sans-serif;
+  --font-mono: 'SFMono-Regular', 'SF Mono', consolas, 'Liberation Mono', menlo, monospace;
+
+  /* Secondary accent — rose pink for high-glance pops (mono code, key labels,
+     skill-generation affordance). Sparingly. */
+  --aurora-accent-pink: #f9a8c4;
+  --aurora-accent-pink-strong: #fbc4d6;
+  --aurora-accent-pink-deep: #c46b88;
+
+  /* Tertiary accent — orange for async / heavy jobs (Axon operation tone). */
+  --axon-orange: #ff9645;
+  --axon-orange-strong: #ffb474;
+  --axon-orange-deep: #c96a1c;
+
+  --aurora-shadow-subtle: 0 8px 16px rgba(0, 0, 0, 0.16);
+  --aurora-pressed-bg: color-mix(in srgb, var(--aurora-accent-primary) 16%, transparent);
+
+  /* Tints (named alpha scale) */
+  --aurora-tint-subtle: 12%;
+  --aurora-tint-soft: 18%;
+  --aurora-tint-medium: 30%;
+  --aurora-tint-strong: 40%;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 10px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-7: 24px;
+
+  /* Z-index layers */
+  --z-sidebar: 30;
+  --z-popover: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+
+  /* Motion */
+  --motion-duration-instant: 100ms;
+  --motion-duration-fast: 160ms;
+  --motion-duration-medium: 240ms;
+  --motion-duration-slow: 360ms;
+  --motion-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Line heights */
+  --lh-display-tight: 1.04;
+  --lh-display: 1.16;
+  --lh-body: 1.55;
+  --lh-dense: 1.4;
+
+  /* Console alpha ramp — the mock's --gw* scrim scale. Dark canon; the
+     `.light` block below remaps each stop to a light-appropriate wash. */
+  --gw0-0_24: rgba(7, 17, 26, 0.24);
+  --gw0-0_26: rgba(7, 17, 26, 0.26);
+  --gw0-0_28: rgba(7, 17, 26, 0.28);
+  --gw0-0_30: rgba(7, 17, 26, 0.3);
+  --gw0-0_34: rgba(7, 17, 26, 0.34);
+  --gw0-0_36: rgba(7, 17, 26, 0.36);
+  --gw0-0_38: rgba(7, 17, 26, 0.38);
+  --gw0-0_40: rgba(7, 17, 26, 0.4);
+  --gw0-0_42: rgba(7, 17, 26, 0.42);
+  --gw0-0_44: rgba(7, 17, 26, 0.44);
+  --gw0-0_45: rgba(7, 17, 26, 0.45);
+  --gw0-0_48: rgba(7, 17, 26, 0.48);
+  --gw0-0_50: rgba(7, 17, 26, 0.5);
+  --gw0-0_55: rgba(7, 17, 26, 0.55);
+  --gw0-0_6: rgba(7, 17, 26, 0.6);
+  --gw0-1: rgba(7, 17, 26, 1);
+  --gw1-0_30: rgba(15, 33, 46, 0.3);
+  --gw1-0_55: rgba(15, 33, 46, 0.55);
+  --gw1-0_62: rgba(15, 33, 46, 0.62);
+  --gw2-0_35: rgba(8, 18, 26, 0.35);
+  --gw2-0_55: rgba(8, 18, 26, 0.55);
+  --gw3-0_5: rgba(19, 41, 58, 0.5);
+  --gw3-0_6: rgba(19, 41, 58, 0.6);
+  --gw3-0_75: rgba(19, 41, 58, 0.75);
+  --gw4-0_45: rgba(4, 10, 15, 0.45);
+  --gw4-0_55: rgba(4, 10, 15, 0.55);
+  --gw4-0_62: rgba(4, 10, 15, 0.62);
+  --gw4-0_75: rgba(4, 10, 15, 0.75);
+  --gw5-0_85: rgba(3, 8, 13, 0.85);
 }
 
 .aurora-text-surface .cm-editor {
@@ -213,6 +306,78 @@
   --aurora-highlight-medium: inset 0 1px 0 rgba(255, 255, 255, 0.7);
   --aurora-highlight-strong: inset 0 1px 0 rgba(255, 255, 255, 0.9);
   --aurora-hover-bg: #dcedf2;
+
+  /* Light remaps for the accent extensions and console scrim ramp. */
+  --aurora-accent-pink: #b84372;
+  --aurora-accent-pink-strong: #a13a64;
+  --aurora-accent-pink-deep: #9c3560;
+  --axon-orange: #e0731a;
+  --axon-orange-strong: #c25f10;
+  --axon-orange-deep: #a8540e;
+  --aurora-shadow-medium:
+    0 6px 16px rgba(23, 42, 58, 0.1), 0 1px 3px rgba(23, 42, 58, 0.08);
+  --aurora-shadow-strong:
+    0 12px 28px rgba(23, 42, 58, 0.14), 0 2px 6px rgba(23, 42, 58, 0.1);
+  --aurora-shadow-subtle: 0 4px 10px rgba(23, 42, 58, 0.08);
+
+  --gw0-0_24: rgba(13, 35, 52, 0.043);
+  --gw0-0_26: rgba(13, 35, 52, 0.047);
+  --gw0-0_28: rgba(13, 35, 52, 0.05);
+  --gw0-0_30: rgba(13, 35, 52, 0.054);
+  --gw0-0_34: rgba(13, 35, 52, 0.061);
+  --gw0-0_36: rgba(13, 35, 52, 0.065);
+  --gw0-0_38: rgba(13, 35, 52, 0.068);
+  --gw0-0_40: rgba(13, 35, 52, 0.072);
+  --gw0-0_42: rgba(13, 35, 52, 0.076);
+  --gw0-0_44: rgba(13, 35, 52, 0.079);
+  --gw0-0_45: rgba(13, 35, 52, 0.081);
+  --gw0-0_48: rgba(13, 35, 52, 0.086);
+  --gw0-0_50: rgba(13, 35, 52, 0.09);
+  --gw0-0_55: rgba(13, 35, 52, 0.099);
+  --gw0-0_6: rgba(13, 35, 52, 0.14);
+  --gw0-1: rgba(13, 35, 52, 0.18);
+  --gw1-0_30: rgba(13, 35, 52, 0.03);
+  --gw1-0_55: rgba(13, 35, 52, 0.055);
+  --gw1-0_62: rgba(13, 35, 52, 0.062);
+  --gw2-0_35: rgba(13, 35, 52, 0.02);
+  --gw2-0_55: rgba(13, 35, 52, 0.028);
+  --gw3-0_5: rgba(13, 35, 52, 0.07);
+  --gw3-0_6: rgba(13, 35, 52, 0.084);
+  --gw3-0_75: rgba(13, 35, 52, 0.105);
+  --gw4-0_45: rgba(13, 35, 52, 0.032);
+  --gw4-0_55: rgba(13, 35, 52, 0.039);
+  --gw4-0_62: rgba(13, 35, 52, 0.043);
+  --gw4-0_75: rgba(13, 35, 52, 0.053);
+  --gw5-0_85: rgba(13, 35, 52, 0.051);
+}
+
+/* Dark islands inside light mode — code blocks, terminals, chart wells keep
+   the dark canon so syntax tones stay legible. */
+.light [data-dark-island] {
+  --aurora-text-primary: #e8f2f8;
+  --aurora-text-muted: #8fb3c7;
+  --aurora-border-default: #1d3d4e;
+  --aurora-border-strong: #24536c;
+  --aurora-panel-strong: #0d2233;
+  --aurora-panel-strong-top: #123048;
+  --aurora-panel-medium: #0c1f2e;
+  --aurora-panel-medium-top: #112a3e;
+  --aurora-control-surface: #0e2536;
+  --aurora-hover-bg: rgba(41, 182, 246, 0.1);
+  --gw0-0_30: rgba(7, 17, 26, 0.3);
+  --gw0-0_38: rgba(7, 17, 26, 0.38);
+  --gw0-0_40: rgba(7, 17, 26, 0.4);
+  --gw0-0_44: rgba(7, 17, 26, 0.44);
+  --gw0-0_48: rgba(7, 17, 26, 0.48);
+  --gw0-0_6: rgba(7, 17, 26, 0.6);
+  --gw1-0_62: rgba(15, 33, 46, 0.62);
+  --gw2-0_55: rgba(8, 18, 26, 0.55);
+  --gw3-0_5: rgba(19, 41, 58, 0.5);
+  --gw3-0_6: rgba(19, 41, 58, 0.6);
+  --gw3-0_75: rgba(19, 41, 58, 0.75);
+  --gw4-0_55: rgba(4, 10, 15, 0.55);
+  --gw4-0_62: rgba(4, 10, 15, 0.62);
+  --gw5-0_85: rgba(3, 8, 13, 0.85);
 }
 
 @theme inline {
@@ -278,6 +443,12 @@
   --color-aurora-error: var(--aurora-error);
   --color-aurora-success: var(--aurora-success);
   --color-aurora-hover-bg: var(--aurora-hover-bg);
+  --color-aurora-accent-pink: var(--aurora-accent-pink);
+  --color-aurora-accent-pink-strong: var(--aurora-accent-pink-strong);
+  --color-aurora-accent-pink-deep: var(--aurora-accent-pink-deep);
+  --color-axon-orange: var(--axon-orange);
+  --color-axon-orange-strong: var(--axon-orange-strong);
+  --color-axon-orange-deep: var(--axon-orange-deep);
   --color-aurora-preview-allowed: var(--aurora-preview-allowed);
   --color-aurora-preview-unmatched: var(--aurora-preview-unmatched);
   --color-aurora-preview-highlight: var(--aurora-preview-highlight);
@@ -285,6 +456,7 @@
   /* Shadow/highlight token forwarding — enables Tailwind utilities:
      shadow-aurora-medium, shadow-aurora-strong, shadow-aurora-active-glow,
      shadow-aurora-highlight-medium, shadow-aurora-highlight-strong */
+  --shadow-aurora-subtle: var(--aurora-shadow-subtle);
   --shadow-aurora-medium: var(--aurora-shadow-medium);
   --shadow-aurora-strong: var(--aurora-shadow-strong);
   --shadow-aurora-active-glow: var(--aurora-active-glow);
@@ -346,5 +518,439 @@
   }
   .aurora-scrollbar::-webkit-scrollbar-corner {
     background: transparent;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Console chrome — ported verbatim from the Gateway Console mock's inline
+ * <style> block. These are structural interaction affordances (hover reveals,
+ * active spines, menu-row indents, entrance animations) that the shell and
+ * page surfaces attach to via data-* attributes. Keep in sync with the mock.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
+.console-root * {
+  scrollbar-width: thin;
+  scrollbar-color: #234a5f transparent;
+}
+.console-root ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.console-root ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--aurora-border-strong) 72%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  min-height: 32px;
+}
+.console-root ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(
+    in srgb,
+    var(--aurora-accent-primary) 45%,
+    var(--aurora-border-strong)
+  );
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.console-root ::-webkit-scrollbar-track,
+.console-root ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── Keyframes ──────────────────────────────────────────────────────────── */
+@keyframes auroraDotPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(103, 203, 250, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(103, 203, 250, 0.16);
+  }
+}
+@keyframes auroraSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ovPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes hintSwap {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes auroraFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes auroraMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes auroraDialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes auroraBackdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes auroraExpandIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes brandShimmer {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(41, 182, 246, 0));
+    opacity: 1;
+  }
+  50% {
+    filter: drop-shadow(0 0 5px rgba(41, 182, 246, 0.35));
+    opacity: 0.92;
+  }
+}
+@keyframes navTick1 {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.3);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes navTick2 {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.3);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+section[data-screen-label] {
+  animation: auroraFadeUp 200ms ease-out;
+}
+[data-anim='menu'] {
+  animation: auroraMenuIn 140ms ease-out;
+  transform-origin: top;
+}
+[data-anim='dialog'] {
+  animation: auroraDialogIn 180ms ease-out;
+}
+[data-anim='backdrop'] {
+  animation: auroraBackdropIn 150ms ease-out;
+}
+[data-anim='expand'] {
+  animation: auroraExpandIn 170ms ease-out;
+}
+[data-anim='hintswap'] {
+  animation: hintSwap 320ms ease-out;
+}
+[data-anim='navlabel'] {
+  animation: hintSwap 200ms ease-out;
+}
+
+/* ── Hover reveals ──────────────────────────────────────────────────────── */
+[data-hoverreveal] {
+  opacity: 0.75;
+  transition: opacity 150ms ease-out;
+}
+[data-hoverrow]:hover [data-hoverreveal] {
+  opacity: 1;
+}
+[data-hoverrow] {
+  transition:
+    background 130ms ease-out,
+    box-shadow 130ms ease-out;
+}
+[data-hoverrow]:hover {
+  box-shadow: inset 2.5px 0 0
+    color-mix(in srgb, var(--aurora-accent-primary) 40%, transparent);
+}
+[data-hovercard] {
+  transition:
+    border-color 160ms ease-out,
+    box-shadow 160ms ease-out;
+}
+[data-hovercard]:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--aurora-accent-primary) 24%,
+    var(--aurora-border-strong)
+  ) !important;
+  box-shadow: var(--aurora-shadow-strong), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+[data-trow] [data-peek] {
+  opacity: 0;
+  transition: opacity 130ms ease-out;
+}
+[data-trow]:hover [data-peek] {
+  opacity: 1;
+}
+[data-sorthead] [data-ghost] {
+  opacity: 0;
+  transition: opacity 130ms ease-out;
+}
+[data-sorthead]:hover [data-ghost] {
+  opacity: 0.55;
+}
+
+/* ── Menu rows ──────────────────────────────────────────────────────────── */
+[data-menurow] {
+  position: relative;
+  transition:
+    background 130ms ease-out,
+    padding-left 140ms ease-out;
+}
+[data-menurow]::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  bottom: 6px;
+  width: 2.5px;
+  border-radius: 999px;
+  background: var(--aurora-accent-strong);
+  opacity: 0;
+  transform: scaleY(0.35);
+  transition:
+    opacity 130ms ease-out,
+    transform 160ms ease-out;
+}
+[data-menurow]:hover {
+  padding-left: 15px !important;
+}
+[data-menurow]:hover::before {
+  opacity: 0.85;
+  transform: scaleY(1);
+}
+
+/* ── Sidebar nav items ──────────────────────────────────────────────────── */
+[data-navitem] {
+  position: relative;
+}
+[data-navitem]::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: 8px;
+  bottom: 8px;
+  width: 2.5px;
+  border-radius: 999px;
+  background: var(--aurora-accent-strong);
+  opacity: 0;
+  transform: scaleY(0.35);
+  transition:
+    opacity 140ms ease-out,
+    transform 170ms ease-out;
+}
+[data-navitem]:hover::before {
+  opacity: 0.85;
+  transform: scaleY(1);
+}
+[data-navitem][aria-current='true']::before {
+  opacity: 0;
+}
+[data-navitem] > span:first-of-type {
+  transition: transform 150ms ease-out;
+}
+[data-navitem]:hover > span:first-of-type {
+  transform: translateX(2px);
+}
+[data-navitem]:active {
+  transform: translateY(0.5px);
+}
+[data-pinbtn] {
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+[data-navitem]:hover [data-pinbtn] {
+  opacity: 0.55;
+}
+[data-pinbtn][data-pinned='1'] {
+  opacity: 1 !important;
+}
+[data-pinbtn]:hover {
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--aurora-accent-primary) 12%, transparent);
+}
+[data-kbd] {
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+[data-navitem]:hover [data-kbd] {
+  opacity: 1;
+}
+nav[data-collapsed='1'] [data-navitem]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 80;
+  white-space: nowrap;
+  padding: 6px 10px;
+  border-radius: 9px;
+  border: 1px solid
+    color-mix(in srgb, var(--aurora-border-strong) 80%, var(--aurora-page-bg));
+  background: linear-gradient(
+    180deg,
+    var(--aurora-panel-strong-top),
+    var(--aurora-panel-strong)
+  );
+  box-shadow: var(--aurora-shadow-strong), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--aurora-text-primary);
+  pointer-events: none;
+  animation: hintSwap 140ms ease-out;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.console-root button,
+.console-root a,
+.console-root input,
+.console-root [role='button'] {
+  transition:
+    background 150ms ease-out,
+    color 150ms ease-out,
+    border-color 150ms ease-out,
+    box-shadow 150ms ease-out,
+    opacity 150ms ease-out;
+}
+[data-btnlift] svg {
+  transition: transform 160ms ease-out;
+}
+[data-btnlift]:hover svg {
+  transform: translateY(2px);
+}
+[data-btnlift]:active svg {
+  transform: translateY(3px);
+}
+[data-btnlift]:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--aurora-accent-primary) 35%,
+    var(--aurora-border-strong)
+  ) !important;
+}
+
+/* ── Mobile ─────────────────────────────────────────────────────────────── */
+[data-mobile-only] {
+  display: none !important;
+}
+@media (max-width: 900px) {
+  [data-mobile-only] {
+    display: inline-flex !important;
+  }
+  [data-collapsed-strip='1'] {
+    display: none !important;
+  }
+  [data-actioncluster] button,
+  header[data-topbar] > div > button,
+  [data-navitem] {
+    min-height: 40px;
+  }
+  [data-actioncluster] button {
+    min-width: 40px;
+  }
+  [data-main-scroll] {
+    padding: 12px !important;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+  }
+  header[data-topbar] {
+    gap: 8px !important;
+    padding-left: calc(10px + env(safe-area-inset-left)) !important;
+    padding-right: calc(10px + env(safe-area-inset-right)) !important;
+  }
+  aside[data-console-sidebar] {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  [data-searchbar] {
+    position: static !important;
+    transform: none !important;
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+  }
+  [data-searchbar]:hover {
+    width: auto !important;
+  }
+  [data-mobile-stack] {
+    grid-template-columns: 1fr !important;
+  }
+  [data-mobile-grid2] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+  [data-mobile-grid2] > * {
+    border-left: none !important;
+  }
+  [data-actioncluster] {
+    overflow-x: auto;
+    max-width: 44vw;
+  }
+  [data-crumbleaf] {
+    min-width: 0 !important;
+    max-width: 24vw;
+  }
+  [data-hovercard]:hover {
+    transform: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  section[data-screen-label],
+  [data-anim] {
+    animation: none !important;
+  }
+  .console-root * {
+    transition-duration: 1ms !important;
   }
 }

@@ -10,6 +10,12 @@ import {
 } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import type { Gateway, GatewayCleanupResult } from '@/lib/types/gateway'
+import {
+  DETAIL_STAT_GRID_STYLE,
+  DetailInset,
+  DetailMicroLabel,
+  DetailStatCard,
+} from './gateway-detail-chrome'
 
 interface CleanupResultPanelProps {
   result: { gateway: Gateway; result: GatewayCleanupResult } | null
@@ -37,12 +43,10 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
     if (matches.length === 0) return null
     return (
       <div className="space-y-2">
-        <h5 className="text-xs font-medium uppercase tracking-wide text-aurora-text-muted">
-          {title}
-        </h5>
+        <DetailMicroLabel>{title}</DetailMicroLabel>
         <div className="space-y-2">
           {matches.map((match) => (
-            <div key={match.pattern} className="rounded-lg border px-4 py-3">
+            <DetailInset key={match.pattern}>
               <div className="flex items-center justify-between gap-3">
                 <code className="text-xs">{match.pattern}</code>
                 <span className="text-xs font-medium tabular-nums">
@@ -52,7 +56,7 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
               <p className="mt-2 text-xs text-aurora-text-muted break-all">
                 {match.pids.join(', ')}
               </p>
-            </div>
+            </DetailInset>
           ))}
         </div>
       </div>
@@ -69,9 +73,12 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
           </SheetDescription>
         </SheetHeader>
 
-        <div className="mt-6 space-y-6">
+        {/* px-4 matches SheetHeader's p-4 — without it the body ran flush to
+            the sheet edges and the stat grid clipped on the right. */}
+        <div className="mt-2 space-y-6 px-4">
           <div
-            className={`flex items-start gap-4 rounded-lg border p-4 ${
+            style={{ borderRadius: 9 }}
+            className={`flex items-start gap-4 border p-4 ${
               cleanup.aggressive
                 ? 'border-aurora-warn/20 bg-aurora-warn/5'
                 : 'border-aurora-success/20 bg-aurora-success/5'
@@ -106,27 +113,25 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
           </div>
 
           <div className="space-y-3">
-            <h4 className="text-sm font-medium text-aurora-text-muted">Cleanup breakdown</h4>
-            <div className="grid gap-3">
-              <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                <span className="text-sm">Server runtime {laneLabel}</span>
-                <span className="text-sm font-medium tabular-nums">
-                  {isPreview ? cleanup.gateway_matched : cleanup.gateway_killed}
-                </span>
-              </div>
-              <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                <span className="text-sm">Local client/session {laneLabel}</span>
-                <span className="text-sm font-medium tabular-nums">
-                  {isPreview ? cleanup.local_matched : cleanup.local_killed}
-                </span>
-              </div>
+            <DetailMicroLabel>Cleanup breakdown</DetailMicroLabel>
+            {/* Mock stat-card chrome — see gateway-detail-chrome.tsx. */}
+            <div style={DETAIL_STAT_GRID_STYLE}>
+              <DetailStatCard
+                label="Server runtime"
+                value={isPreview ? cleanup.gateway_matched : cleanup.gateway_killed}
+                sub={laneLabel}
+              />
+              <DetailStatCard
+                label="Local client/session"
+                value={isPreview ? cleanup.local_matched : cleanup.local_killed}
+                sub={laneLabel}
+              />
               {cleanup.aggressive && (
-                <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                  <span className="text-sm">Aggressive fallback {laneLabel}</span>
-                  <span className="text-sm font-medium tabular-nums">
-                    {isPreview ? cleanup.aggressive_matched : cleanup.aggressive_killed}
-                  </span>
-                </div>
+                <DetailStatCard
+                  label="Aggressive fallback"
+                  value={isPreview ? cleanup.aggressive_matched : cleanup.aggressive_killed}
+                  sub={laneLabel}
+                />
               )}
             </div>
           </div>
@@ -138,7 +143,7 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
           </div>
         </div>
 
-        <div className="mt-8">
+        <div className="mt-8 px-4 pb-4">
           <Button variant="outline" onClick={onClose} className="w-full">
             <X className="size-4 mr-2" />
             Close

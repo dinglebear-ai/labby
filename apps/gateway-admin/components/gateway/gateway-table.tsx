@@ -1,12 +1,11 @@
 'use client'
 
-import { type ReactNode, useMemo, useState } from 'react'
+import { Fragment, type CSSProperties, type ReactNode, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
-  ArrowDown,
-  ArrowUp,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   MoreHorizontal,
   Eye,
@@ -17,18 +16,12 @@ import {
   Search,
   TriangleAlert,
   Trash2,
+  Users,
+  X,
   FileText,
   MessageSquare,
   Wrench,
 } from 'lucide-react'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -40,13 +33,10 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
-import { TransportBadge } from './transport-badge'
 import { WarningsPill } from './warnings-pill'
 import type { Gateway } from '@/lib/types/gateway'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
-import { SurfaceRatio } from './surface-ratio'
-import type { TransportType } from '@/lib/types/gateway'
 import {
   AURORA_MUTED_LABEL,
 } from '@/components/aurora/tokens'
@@ -57,8 +47,9 @@ import {
   gatewayStatusTone,
 } from './gateway-theme'
 
-type SortKey = 'name' | 'transport' | 'tools' | 'resources' | 'prompts'
+type SortKey = 'name' | 'endpoint' | 'exposed'
 type SortDirection = 'asc' | 'desc'
+type StatusGroupId = 'attention' | 'healthy'
 
 const AURORA_GATEWAY_TABLE_SHELL =
   'border border-aurora-border-strong bg-aurora-panel-strong shadow-[var(--aurora-shadow-strong),var(--aurora-highlight-strong)] rounded-aurora-1'
@@ -66,10 +57,62 @@ const AURORA_GATEWAY_TABLE_SHELL =
 const GATEWAY_TABLE_BADGE =
   'inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.12em]'
 
-const GATEWAY_TABLE_ACTION =
-  'size-8 rounded-aurora-1 hover:bg-aurora-hover-bg hover:text-aurora-text-primary'
+/**
+ * Gateway Console mock — measured off `Gateway Console.dc.html`.
+ * Card, grid track list, header, group headers, and row chrome all mirror the
+ * mock's computed styles.
+ */
+const GW_CARD =
+  'overflow-hidden rounded-aurora-2 border border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-[var(--aurora-shadow-strong),inset_0_1px_0_rgba(255,255,255,0.05)]'
 
-const rowToneClass = (index: number) => (index % 2 === 0 ? 'gateway-row-tone-a' : 'gateway-row-tone-b')
+const GW_GRID =
+  'grid grid-cols-[minmax(0,1fr)_80px_minmax(140px,300px)_170px_130px_18px] items-center'
+
+/**
+ * The `--gw*` scrim ramp carries underscores in its token names, which Tailwind
+ * rewrites to spaces inside arbitrary values. Aliasing the ramp onto
+ * underscore-free custom properties on the card keeps the utilities literal and
+ * the values theme-reactive.
+ */
+const GW_SCRIM_ALIASES = {
+  '--gw-head': 'var(--gw0-0_48)',
+  '--gw-row': 'var(--gw1-0_62)',
+  '--gw-row-hover': 'var(--gw3-0_75)',
+  '--gw-group': 'var(--gw4-0_55)',
+  '--gw-group-hover': 'var(--gw4-0_75)',
+  '--gw-footer': 'var(--gw0-0_38)',
+} as CSSProperties
+
+const GW_HEAD_LABEL =
+  'text-[10.5px] font-bold uppercase tracking-[0.16em] text-aurora-text-muted'
+
+const GW_ROW_ACTION =
+  'grid size-5 shrink-0 cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary disabled:cursor-default disabled:opacity-45'
+
+/** `—` cells and zero counts: the mock's 45%-alpha muted tone. */
+const GW_EMPTY_TONE = 'text-[color-mix(in_srgb,var(--aurora-text-muted)_45%,transparent)]'
+
+const GW_EMPTY_RAIL = 'bg-[color-mix(in_srgb,var(--aurora-text-muted)_45%,transparent)]'
+
+const GW_COUNT = 'inline-flex items-center gap-1 text-[12px] [font-weight:650] tabular-nums'
+
+const EM_DASH = '—'
+
+/**
+ * Exposure tone, as measured on every mock row:
+ * nothing discovered → muted dash, partial exposure → pink, full → primary.
+ */
+function exposureTone(exposed: number, discovered: number): string {
+  if (discovered === 0) return GW_EMPTY_TONE
+  if (exposed < discovered) return 'text-aurora-accent-pink'
+  return 'text-aurora-text-primary'
+}
+
+/** A server is "needs attention" when it is enabled but not cleanly connected. */
+function needsAttention(gateway: Gateway): boolean {
+  if (!(gateway.enabled ?? true)) return false
+  return !gateway.status.connected || !gateway.status.healthy || gateway.warnings.length > 0
+}
 
 function isStaleVirtualServer(gateway: Gateway): boolean {
   return gateway.source === 'in_process' && gateway.warnings.some((warning) => warning.code === 'unknown_service')
@@ -113,6 +156,9 @@ export function GatewayTable({
   const [copiedGatewayId, setCopiedGatewayId] = useState<string | null>(null)
   const [expandedMobileGatewayId, setExpandedMobileGatewayId] = useState<string | null>(null)
   const [disableConfirmationGatewayId, setDisableConfirmationGatewayId] = useState<string | null>(null)
+  const [collapsedGroups, setCollapsedGroups] = useState<StatusGroupId[]>([])
+  const [attentionBannerDismissed, setAttentionBannerDismissed] = useState(false)
+  const [selectedGatewayIds, setSelectedGatewayIds] = useState<string[]>([])
   const disableConfirmationGateway = disableConfirmationGatewayId
     ? gateways.find((gateway) => gateway.id === disableConfirmationGatewayId) ?? null
     : null
@@ -158,17 +204,6 @@ export function GatewayTable({
   }
 
   const sortedGateways = useMemo(() => {
-    const transportLabel = (transport: TransportType) => {
-      switch (transport) {
-        case 'in_process':
-          return 'lab'
-        case 'stdio':
-          return 'stdio'
-        case 'http':
-          return 'http'
-      }
-    }
-
     const sorted = [...gateways].sort((left, right) => {
       let result = 0
 
@@ -176,17 +211,18 @@ export function GatewayTable({
         case 'name':
           result = left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
           break
-        case 'transport':
-          result = transportLabel(left.transport).localeCompare(transportLabel(right.transport))
+        case 'endpoint':
+          result = buildGatewayEndpointPreview(left).localeCompare(
+            buildGatewayEndpointPreview(right),
+            undefined,
+            { sensitivity: 'base' },
+          )
           break
-        case 'tools':
-          result = left.status.exposed_tool_count - right.status.exposed_tool_count
-          break
-        case 'resources':
-          result = left.status.exposed_resource_count - right.status.exposed_resource_count
-          break
-        case 'prompts':
-          result = left.status.exposed_prompt_count - right.status.exposed_prompt_count
+        case 'exposed':
+          result =
+            left.status.exposed_tool_count - right.status.exposed_tool_count ||
+            left.status.exposed_resource_count - right.status.exposed_resource_count ||
+            left.status.exposed_prompt_count - right.status.exposed_prompt_count
           break
       }
 
@@ -200,6 +236,44 @@ export function GatewayTable({
     return sorted
   }, [gateways, sortDirection, sortKey])
 
+  const statusGroups = useMemo(() => {
+    const attention = sortedGateways.filter(needsAttention)
+    const healthy = sortedGateways.filter((gateway) => !needsAttention(gateway))
+
+    return [
+      { id: 'attention' as const, label: 'Needs attention', tone: 'text-aurora-error', rows: attention },
+      { id: 'healthy' as const, label: 'Healthy', tone: 'text-aurora-success', rows: healthy },
+    ].filter((group) => group.rows.length > 0)
+  }, [sortedGateways])
+
+  const attentionCount = useMemo(() => sortedGateways.filter(needsAttention).length, [sortedGateways])
+
+  const exposureTotals = useMemo(
+    () =>
+      gateways.reduce(
+        (totals, gateway) => ({
+          exposed: totals.exposed + gateway.status.exposed_tool_count,
+          discovered: totals.discovered + gateway.status.discovered_tool_count,
+        }),
+        { exposed: 0, discovered: 0 },
+      ),
+    [gateways],
+  )
+
+  const isGroupCollapsed = (id: StatusGroupId) => collapsedGroups.includes(id)
+
+  const toggleGroup = (id: StatusGroupId) => {
+    setCollapsedGroups((current) =>
+      current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id],
+    )
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedGatewayIds((current) =>
+      current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id],
+    )
+  }
+
   const handleSort = (nextKey: SortKey) => {
     if (sortKey === nextKey) {
       setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'))
@@ -207,30 +281,47 @@ export function GatewayTable({
     }
 
     setSortKey(nextKey)
-    setSortDirection(nextKey === 'name' || nextKey === 'transport' ? 'asc' : 'desc')
+    setSortDirection(nextKey === 'exposed' ? 'desc' : 'asc')
   }
 
-  const renderSortIcon = (key: SortKey) => {
-    if (sortKey !== key) return null
-
-    return sortDirection === 'asc'
-      ? <ArrowUp className="size-3.5" />
-      : <ArrowDown className="size-3.5" />
-  }
-
-  const activeSortLabel = `${sortKey === 'name' ? 'Server' : sortKey[0]!.toUpperCase() + sortKey.slice(1)} ${sortDirection === 'asc' ? '↑' : '↓'}`
-
-  const SortHeader = ({ label, sort }: { label: string; sort: SortKey }) => (
+  const SortHeader = ({
+    label,
+    sort,
+    align = 'center',
+  }: {
+    label: string
+    sort: SortKey
+    align?: 'start' | 'center'
+  }) => (
     <button
       type="button"
+      data-sorthead="1"
       onClick={() => handleSort(sort)}
-      className="inline-flex items-center gap-1.5 transition-colors hover:text-aurora-text-primary"
+      className={cn(
+        GW_HEAD_LABEL,
+        'inline-flex cursor-pointer items-center gap-[5px] whitespace-nowrap transition-colors hover:text-aurora-text-primary',
+        align === 'start' ? 'justify-self-start p-0' : 'justify-self-center rounded-md px-1 py-0.5',
+      )}
       aria-label={`Sort by ${label.toLowerCase()}`}
       aria-sort={sortKey === sort ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       <span>{label}</span>
-      {renderSortIcon(sort)}
+      {sortKey === sort ? (
+        <span className="text-[10px]" aria-hidden="true">{sortDirection === 'asc' ? '↑' : '↓'}</span>
+      ) : (
+        <span data-ghost="1" className="text-[10px]" aria-hidden="true">↓</span>
+      )}
     </button>
+  )
+
+  /**
+   * Clients and Uptime have no field on `Gateway`, so their headers are labels
+   * rather than sort buttons — there is nothing to order by.
+   */
+  const StaticHeader = ({ label, title }: { label: string; title: string }) => (
+    <span className={cn(GW_HEAD_LABEL, 'justify-self-center whitespace-nowrap')} title={title}>
+      {label}
+    </span>
   )
 
   const formatRuntimeAge = (ageSeconds?: number) => {
@@ -331,7 +422,7 @@ export function GatewayTable({
   }
 
   const statusRailClass = (gateway: Gateway) => {
-    if (!(gateway.enabled ?? true)) return 'bg-aurora-neutral'
+    if (!(gateway.enabled ?? true)) return GW_EMPTY_RAIL
     if (gateway.status.healthy && gateway.status.connected && gateway.warnings.length === 0) return 'bg-aurora-accent-strong'
     if (!gateway.status.connected) return 'bg-aurora-error'
     return 'bg-aurora-warn'
@@ -380,6 +471,321 @@ export function GatewayTable({
     )
   }
 
+  /** One desktop row, laid out on the mock's six-track grid. */
+  const renderDesktopRow = (gateway: Gateway) => {
+    const supportsProbeControls = gateway.source !== 'in_process'
+    const canRemoveGatewayRow = canRemoveGateway(gateway)
+    const endpointPreview = buildGatewayEndpointPreview(gateway)
+    const showsCommandLine = gateway.transport === 'stdio'
+    const isDisabled = !(gateway.enabled ?? true)
+    const statusTone = gatewayStatusTone(gateway.status.healthy, gateway.status.connected)
+    const runtimeChips = runtimeBadges(gateway)
+    const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
+    const cleanupBadge = cleanupBadgeLabel(cleanupSummary?.cleanup, 'cleaned')
+    const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
+    const isSelected = selectedGatewayIds.includes(gateway.id)
+    const status = gateway.status
+    const toggleLabel = gateway.enabled ?? true ? 'Disable server' : 'Enable server'
+
+    return (
+      <div
+        key={gateway.id}
+        data-gwrow="1"
+        data-hoverrow="1"
+        className={cn(
+          GW_GRID,
+          'group relative border-t border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] bg-[var(--gw-row)] transition-[background-color,box-shadow] duration-150 hover:bg-[color-mix(in_srgb,var(--aurora-accent-primary)_7%,var(--gw-row-hover))]',
+          density === 'condensed' ? 'py-[7px]' : 'py-[11px]',
+          isDisabled && 'text-aurora-text-muted',
+        )}
+      >
+        <span
+          className={cn('absolute inset-y-0 left-0 w-[3px]', statusRailClass(gateway))}
+          aria-hidden="true"
+        />
+
+        <div className="min-w-0 pl-5">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={isSelected}
+              aria-label={`Select ${gateway.name}`}
+              onClick={() => toggleSelected(gateway.id)}
+              className={cn(
+                'grid size-[14px] shrink-0 cursor-pointer place-items-center rounded-[4px] border p-0 transition-[border-color,background-color]',
+                isSelected
+                  ? 'border-aurora-accent-primary/60 bg-aurora-accent-primary/20'
+                  : 'border-[color-mix(in_srgb,var(--aurora-border-strong)_85%,transparent)] bg-[var(--gw-head)] hover:border-aurora-accent-primary/45',
+              )}
+            >
+              {isSelected ? (
+                <Check className="size-2.5 text-aurora-accent-strong" aria-hidden="true" />
+              ) : null}
+            </button>
+            <Link
+              href={gatewayDetailHref(gateway.id)}
+              title={statusTone.label}
+              className="min-w-0 max-w-full break-words font-display text-[13.5px] leading-[1.16] [font-weight:760] text-aurora-text-primary underline-offset-4 hover:text-aurora-accent-strong hover:underline"
+            >
+              {gateway.name}
+            </Link>
+            {isDisabled ? (
+              <Badge
+                className={cn(
+                  GATEWAY_TABLE_BADGE,
+                  'border border-aurora-border-strong bg-[var(--gw-head)] text-aurora-text-muted',
+                )}
+              >
+                Disabled
+              </Badge>
+            ) : null}
+            <WarningsPill warnings={gateway.warnings} />
+            {runtimeChips}
+            {cleanupSummary?.cleanup && cleanupBadge ? (
+              <Badge
+                className={cn(
+                  GATEWAY_TABLE_BADGE,
+                  'border border-aurora-success/30 bg-[color-mix(in_srgb,var(--aurora-success)_12%,transparent)] text-aurora-success',
+                )}
+                title={`${cleanupSummary.cleanup.label}\n${cleanupSummary.cleanup.occurredAt}`}
+              >
+                {cleanupBadge}
+              </Badge>
+            ) : null}
+            {cleanupSummary?.preview && previewBadge ? (
+              <Badge
+                className={cn(
+                  GATEWAY_TABLE_BADGE,
+                  'border border-aurora-accent-primary/30 bg-aurora-accent-primary/10 text-aurora-accent-strong',
+                )}
+                title={`${cleanupSummary.preview.label}\n${cleanupSummary.preview.occurredAt}`}
+              >
+                {previewBadge}
+              </Badge>
+            ) : null}
+
+            <span data-hoverreveal="1" className="inline-flex items-center gap-0.5">
+              {density === 'comfortable' ? (
+                <button
+                  type="button"
+                  className={GW_ROW_ACTION}
+                  onClick={() => requestToggleEnabled(gateway)}
+                  title={toggleLabel}
+                >
+                  <Power className="size-[11px]" aria-hidden="true" />
+                  <span className="sr-only">{toggleLabel}</span>
+                </button>
+              ) : null}
+              {supportsProbeControls && density === 'comfortable' ? (
+                <button
+                  type="button"
+                  className={GW_ROW_ACTION}
+                  onClick={() => handleAction(gateway, 'test', onTest)}
+                  disabled={isLoading(gateway.id, 'test')}
+                  title="Test connection"
+                >
+                  <Play
+                    className={cn('size-[11px]', isLoading(gateway.id, 'test') && 'animate-pulse')}
+                    aria-hidden="true"
+                  />
+                  <span className="sr-only">Test connection</span>
+                </button>
+              ) : null}
+              {supportsProbeControls && density === 'comfortable' ? (
+                <button
+                  type="button"
+                  className={GW_ROW_ACTION}
+                  onClick={() => handleAction(gateway, 'reload', onReload)}
+                  disabled={isLoading(gateway.id, 'reload')}
+                  title="Reload server"
+                >
+                  <RefreshCw
+                    className={cn('size-[11px]', isLoading(gateway.id, 'reload') && 'animate-spin')}
+                    aria-hidden="true"
+                  />
+                  <span className="sr-only">Reload server</span>
+                </button>
+              ) : null}
+              {isStaleVirtualServer(gateway) && density === 'comfortable' ? (
+                <button
+                  type="button"
+                  className={cn(GW_ROW_ACTION, 'text-aurora-error hover:text-aurora-error')}
+                  onClick={() => onDelete(gateway)}
+                  title="Remove stale service"
+                >
+                  <Trash2 className="size-[11px]" aria-hidden="true" />
+                  <span className="sr-only">Remove stale service</span>
+                </button>
+              ) : null}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" className={GW_ROW_ACTION}>
+                    <MoreHorizontal className="size-[11px]" aria-hidden="true" />
+                    <span className="sr-only">More actions</span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem asChild>
+                    <Link href={gatewayDetailHref(gateway.id)}>
+                      <Eye className="mr-2 size-4" />
+                      View details
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onEdit(gateway)}>
+                    <Pencil className="mr-2 size-4" />
+                    Edit server
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => requestToggleEnabled(gateway)}>
+                    {gateway.enabled ?? true ? (
+                      <>
+                        <Trash2 className="mr-2 size-4" />
+                        Disable server
+                      </>
+                    ) : (
+                      <>
+                        <Play className="mr-2 size-4" />
+                        Enable server
+                      </>
+                    )}
+                  </DropdownMenuItem>
+                  {supportsProbeControls ? (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => onTest(gateway)}>
+                        <Play className="mr-2 size-4" />
+                        Test connection
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onReload(gateway)}>
+                        <RefreshCw className="mr-2 size-4" />
+                        Reload server
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onCleanup(gateway, false, true)}>
+                        <Search className="mr-2 size-4" />
+                        Preview cleanup
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onCleanup(gateway, false, false)}>
+                        <Wrench className="mr-2 size-4" />
+                        Cleanup runtime
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onCleanup(gateway, true, true)}>
+                        <Search className="mr-2 size-4" />
+                        Preview aggressive cleanup
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onCleanup(gateway, true, false)}>
+                        <TriangleAlert className="mr-2 size-4" />
+                        Aggressive cleanup
+                      </DropdownMenuItem>
+                      {cleanupSummary ? (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => onClearCleanupHistory(gateway)}>
+                            <Trash2 className="mr-2 size-4" />
+                            Clear cleanup history
+                          </DropdownMenuItem>
+                        </>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {canRemoveGatewayRow ? (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => onDelete(gateway)}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="mr-2 size-4" />
+                        {gateway.source === 'in_process' ? 'Remove stale service' : 'Remove server'}
+                      </DropdownMenuItem>
+                    </>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </span>
+          </div>
+        </div>
+
+        {/* Clients — the Gateway API reports no client attribution, so the mock's
+            own "no data" treatment (dimmed em dash) applies to every row. */}
+        <div className="min-w-0 justify-self-center">
+          <span
+            className={cn(GW_COUNT, 'gap-[5px]', GW_EMPTY_TONE)}
+            title="Connected clients are not reported by the gateway API"
+          >
+            <Users className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
+            <span className="sr-only">Clients:</span>
+            {EM_DASH}
+          </span>
+        </div>
+
+        <div className="min-w-0 max-w-full justify-self-center px-2.5">
+          <button
+            type="button"
+            onClick={() => copyCommand(gateway, endpointPreview)}
+            title={endpointPreview}
+            aria-label={`Copy ${gateway.name} ${showsCommandLine ? 'command' : 'endpoint'}`}
+            className={cn(
+              'block max-w-full cursor-pointer truncate rounded-md px-1.5 py-0.5 text-[10.5px] transition-colors hover:bg-aurora-hover-bg hover:text-aurora-accent-strong',
+              copiedGatewayId === gateway.id
+                ? 'text-aurora-accent-strong'
+                : 'text-[color-mix(in_srgb,var(--aurora-text-muted)_85%,transparent)]',
+            )}
+          >
+            {endpointPreview}
+          </button>
+        </div>
+
+        <div className="min-w-0 justify-self-center">
+          <span
+            className="grid grid-cols-[40px_40px_40px] items-center gap-x-1.5"
+            title={`Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count}`}
+          >
+            <span
+              className={cn(
+                GW_COUNT,
+                exposureTone(status.exposed_tool_count, status.discovered_tool_count),
+              )}
+            >
+              <Wrench className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
+              <span className="sr-only">Tools:</span>
+              {status.discovered_tool_count === 0 ? EM_DASH : status.exposed_tool_count}
+            </span>
+            <span
+              className={cn(
+                GW_COUNT,
+                exposureTone(status.exposed_resource_count, status.discovered_resource_count),
+              )}
+            >
+              <FileText className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
+              <span className="sr-only">Resources:</span>
+              {status.discovered_resource_count === 0 ? EM_DASH : status.exposed_resource_count}
+            </span>
+            <span
+              className={cn(
+                GW_COUNT,
+                exposureTone(status.exposed_prompt_count, status.discovered_prompt_count),
+              )}
+            >
+              <MessageSquare className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
+              <span className="sr-only">Prompts:</span>
+              {status.discovered_prompt_count === 0 ? EM_DASH : status.exposed_prompt_count}
+            </span>
+          </span>
+        </div>
+
+        {/* Uptime — no uptime history exists on the Gateway type. */}
+        <div className="min-w-0 justify-self-center">
+          <span
+            className={cn('text-[10.5px] [font-weight:650] tabular-nums', GW_EMPTY_TONE)}
+            title="Uptime history is not reported by the gateway API"
+          >
+            <span className="sr-only">Uptime:</span>
+            {EM_DASH}
+          </span>
+        </div>
+      </div>
+    )
+  }
   return (
     <>
       <div className={cn(AURORA_GATEWAY_TABLE_SHELL, 'overflow-hidden md:hidden')}>
@@ -598,282 +1004,118 @@ export function GatewayTable({
         </div>
       </div>
 
-      <div className={cn(AURORA_GATEWAY_TABLE_SHELL, 'hidden overflow-hidden md:block')}>
-        <div className="flex items-center justify-between border-b border-aurora-border-strong/80 bg-[repeating-linear-gradient(90deg,rgba(41,182,246,0.045)_0,rgba(41,182,246,0.045)_1px,transparent_1px,transparent_18px),linear-gradient(180deg,rgba(7,17,26,0.56),rgba(7,17,26,0.38))] px-5 py-2">
-          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-aurora-text-muted">
-            Server inventory
-          </span>
-          <span className="inline-flex h-6 items-center rounded-full border border-aurora-accent-primary/24 bg-aurora-accent-primary/10 px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-aurora-accent-strong">
-            Sorted by {activeSortLabel}
-          </span>
-        </div>
-        <Table className="min-w-[920px] table-fixed">
-          <TableHeader>
-            <TableRow className="border-b border-aurora-border-strong bg-[rgba(7,17,26,0.48)] hover:bg-[rgba(7,17,26,0.48)]">
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[50%] px-5 py-3')}>
-                <SortHeader label="Server" sort="name" />
-              </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[8%] px-2 py-3 text-center')}>
-                <SortHeader label="Transport" sort="transport" />
-              </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[9%] px-2 py-3 text-center')}>
-                <SortHeader label="Tools" sort="tools" />
-              </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[10%] px-2 py-3 text-center')}>
-                <SortHeader label="Resources" sort="resources" />
-              </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[9%] px-2 py-3 text-center')}>
-                <SortHeader label="Prompts" sort="prompts" />
-              </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[14%] px-4 py-3 text-right')}>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sortedGateways.map((gateway, index) => {
-              const supportsProbeControls = gateway.source !== 'in_process'
-              const canRemoveGatewayRow = canRemoveGateway(gateway)
-              const endpointPreview = buildGatewayEndpointPreview(gateway)
-              const showsCommandLine = gateway.transport === 'stdio'
-              const isDisabled = !(gateway.enabled ?? true)
-              const statusTone = gatewayStatusTone(gateway.status.healthy, gateway.status.connected)
-              const runtimeChips = runtimeBadges(gateway)
-              const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
-              const cleanupBadge = cleanupBadgeLabel(cleanupSummary?.cleanup, 'cleaned')
-              const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
-              const rowTone = rowToneClass(index)
+      {/* Desktop — the Gateway Console mock's grid table. Every value below was
+          measured off the mock's computed styles; see
+          docs/gateway-console-mock-alignment.md. */}
+      <section
+        aria-label="Server inventory"
+        data-hovercard="1"
+        className={cn(GW_CARD, 'hidden md:block')}
+        style={GW_SCRIM_ALIASES}
+      >
+        <div
+          data-gwtablewrap="1"
+          className="aurora-scrollbar overflow-x-auto min-[1101px]:overflow-x-visible"
+        >
+          <div data-gwtable="1" className="min-w-[1010px]">
+            <div
+              data-gwhead="1"
+              className={cn(
+                GW_GRID,
+                'sticky top-0 z-[18] h-10 border-b border-aurora-border-strong bg-[var(--gw-head)] pl-5',
+              )}
+            >
+              <SortHeader label="Server" sort="name" align="start" />
+              <StaticHeader
+                label="Clients"
+                title="Connected clients are not reported by the gateway API"
+              />
+              <SortHeader label="Endpoint" sort="endpoint" />
+              <SortHeader label="Exposed" sort="exposed" />
+              <StaticHeader
+                label="Uptime"
+                title="Uptime history is not reported by the gateway API"
+              />
+            </div>
+
+            {attentionCount > 0 && !attentionBannerDismissed ? (
+              <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-error)_22%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-error)_6%,var(--gw-head))] px-5 py-1.5 transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-error)_10%,var(--gw-head))]">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup('attention')}
+                  aria-expanded={!isGroupCollapsed('attention')}
+                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                >
+                  <TriangleAlert className="size-3 shrink-0 text-aurora-error" aria-hidden="true" />
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-aurora-error">
+                    Needs attention
+                  </span>
+                  <span className="text-[10.5px] tabular-nums text-aurora-text-muted">
+                    {attentionCount} {attentionCount === 1 ? 'server' : 'servers'}
+                  </span>
+                  <ChevronRight
+                    className={cn(
+                      'size-[11px] shrink-0 text-aurora-text-muted transition-transform',
+                      !isGroupCollapsed('attention') && 'rotate-90',
+                    )}
+                    aria-hidden="true"
+                  />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAttentionBannerDismissed(true)}
+                  className={cn(GW_ROW_ACTION, 'size-[22px] rounded-[7px]')}
+                  aria-label="Dismiss"
+                  title="Dismiss until something new needs attention"
+                >
+                  <X className="size-3" aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
+
+            {statusGroups.map((group) => {
+              const expanded = !isGroupCollapsed(group.id)
 
               return (
-                <TableRow
-                  key={gateway.id}
-                  className={cn(
-                    'group transition-[background-color,box-shadow,transform] duration-150 hover:translate-x-px hover:shadow-[inset_3px_0_0_color-mix(in_srgb,var(--aurora-accent-primary)_42%,transparent)]',
-                    rowTone,
-                    isDisabled ? AURORA_GATEWAY_DISABLED_ROW : AURORA_GATEWAY_ROW,
-                  )}
-                >
-                  <TableCell className={cn('relative px-5 align-middle whitespace-normal', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
-                    <span className={cn('absolute inset-y-0 left-0 w-1', statusRailClass(gateway))} aria-hidden="true" />
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className={cn('size-2 rounded-full', statusTone.dot)} aria-label={statusTone.label} title={statusTone.label} />
-                        <Link
-                          href={gatewayDetailHref(gateway.id)}
-                          className={cn(
-                            'min-w-0 max-w-full break-words font-display text-[15px] leading-[1.16] font-bold text-aurora-text-primary hover:text-aurora-accent-strong hover:underline underline-offset-4',
-                            density === 'condensed' && 'text-[14px]',
-                          )}
-                        >
-                          {gateway.name}
-                        </Link>
-                        {isDisabled ? (
-                          <Badge className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] text-aurora-text-muted')}>
-                            Disabled
-                          </Badge>
-                        ) : null}
-                        <WarningsPill warnings={gateway.warnings} />
-                        {runtimeChips}
-                        {cleanupSummary?.cleanup && cleanupBadge ? (
-                          <Badge
-                            className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-success/30 bg-[color-mix(in_srgb,var(--aurora-success)_12%,transparent)] text-aurora-success')}
-                            title={`${cleanupSummary.cleanup.label}\n${cleanupSummary.cleanup.occurredAt}`}
-                          >
-                            {cleanupBadge}
-                          </Badge>
-                        ) : null}
-                        {cleanupSummary?.preview && previewBadge ? (
-                          <Badge
-                            className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-accent-primary/30 bg-aurora-accent-primary/10 text-aurora-accent-strong')}
-                            title={`${cleanupSummary.preview.label}\n${cleanupSummary.preview.occurredAt}`}
-                          >
-                            {previewBadge}
-                          </Badge>
-                        ) : null}
-                        {density === 'condensed' ? (
-                          <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-aurora-text-muted" title={endpointPreview}>
-                            {endpointPreview}
-                          </span>
-                        ) : null}
-                      </div>
-                      {density === 'comfortable' ? (
-                        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5 text-aurora-text-muted">
-                          <div className="group/command flex min-w-0 max-w-full items-start gap-1.5 rounded-aurora-1 border border-transparent pr-1 transition-[background-color,border-color] hover:border-aurora-border-strong/70 hover:bg-aurora-control-surface/45">
-                            <CommandPreview
-                              gateway={gateway}
-                              preview={endpointPreview}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => copyCommand(gateway, endpointPreview)}
-                              className={cn(
-                                'mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-aurora-1 border border-aurora-border-strong bg-aurora-panel-medium text-aurora-text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 group-hover/command:opacity-100',
-                                copiedGatewayId === gateway.id && 'border-aurora-accent-primary/35 text-aurora-accent-strong opacity-100',
-                              )}
-                              aria-label={`Copy ${gateway.name} ${showsCommandLine ? 'command' : 'endpoint'}`}
-                              title={`Copy ${showsCommandLine ? 'command' : 'endpoint'}`}
-                            >
-                              {copiedGatewayId === gateway.id ? <Check className="size-3" /> : <Copy className="size-3" />}
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
-                    <div className="flex items-center justify-center">
-                      <TransportBadge transport={gateway.transport} iconOnly />
-                    </div>
-                  </TableCell>
-                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
-                    <div className="flex items-center justify-center">
-                      <SurfaceRatio icon={Wrench} label="Tools" exposed={gateway.status.exposed_tool_count} total={gateway.status.discovered_tool_count} />
-                    </div>
-                  </TableCell>
-                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
-                    <div className="flex items-center justify-center">
-                      <SurfaceRatio icon={FileText} label="Resources" exposed={gateway.status.exposed_resource_count} total={gateway.status.discovered_resource_count} />
-                    </div>
-                  </TableCell>
-                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
-                    <div className="flex items-center justify-center">
-                      <SurfaceRatio icon={MessageSquare} label="Prompts" exposed={gateway.status.exposed_prompt_count} total={gateway.status.discovered_prompt_count} />
-                    </div>
-                  </TableCell>
-                  <TableCell className={cn('px-4 text-right align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
-                    <div className="flex items-center justify-end gap-1">
-                      {density === 'comfortable' ? (
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 transition-opacity md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
-                          onClick={() => requestToggleEnabled(gateway)}
-                        >
-                          <Power className="size-3.5" />
-                          <span className="sr-only">{gateway.enabled ?? true ? 'Disable server' : 'Enable server'}</span>
-                        </Button>
-                      ) : null}
-                      {supportsProbeControls && density === 'comfortable' ? (
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 transition-opacity md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
-                          onClick={() => handleAction(gateway, 'test', onTest)}
-                          disabled={isLoading(gateway.id, 'test')}
-                        >
-                          <Play className={`size-3.5 ${isLoading(gateway.id, 'test') ? 'animate-pulse' : ''}`} />
-                          <span className="sr-only">Test connection</span>
-                        </Button>
-                      ) : null}
-                      {supportsProbeControls && density === 'comfortable' ? (
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 transition-opacity md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
-                          onClick={() => handleAction(gateway, 'reload', onReload)}
-                          disabled={isLoading(gateway.id, 'reload')}
-                        >
-                          <RefreshCw className={`size-3.5 ${isLoading(gateway.id, 'reload') ? 'animate-spin' : ''}`} />
-                          <span className="sr-only">Reload server</span>
-                        </Button>
-                      ) : null}
-                      {isStaleVirtualServer(gateway) && density === 'comfortable' ? (
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 text-destructive transition-opacity hover:text-destructive md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
-                          onClick={() => onDelete(gateway)}
-                        >
-                          <Trash2 className="size-3.5" />
-                          <span className="sr-only">Remove stale service</span>
-                        </Button>
-                      ) : null}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="icon" className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION)}>
-                            <MoreHorizontal className="size-3.5" />
-                            <span className="sr-only">More actions</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem asChild>
-                            <Link href={gatewayDetailHref(gateway.id)}>
-                              <Eye className="mr-2 size-4" />
-                              View details
-                            </Link>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => onEdit(gateway)}>
-                            <Pencil className="mr-2 size-4" />
-                            Edit server
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => requestToggleEnabled(gateway)}>
-                            {gateway.enabled ?? true ? (
-                              <>
-                                <Trash2 className="mr-2 size-4" />
-                                Disable server
-                              </>
-                            ) : (
-                              <>
-                                <Play className="mr-2 size-4" />
-                                Enable server
-                              </>
-                            )}
-                          </DropdownMenuItem>
-                          {supportsProbeControls ? (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => onTest(gateway)}>
-                                <Play className="mr-2 size-4" />
-                                Test connection
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onReload(gateway)}>
-                                <RefreshCw className="mr-2 size-4" />
-                                Reload server
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onCleanup(gateway, false, true)}>
-                                <Search className="mr-2 size-4" />
-                                Preview cleanup
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onCleanup(gateway, false, false)}>
-                                <Wrench className="mr-2 size-4" />
-                                Cleanup runtime
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onCleanup(gateway, true, true)}>
-                                <Search className="mr-2 size-4" />
-                                Preview aggressive cleanup
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onCleanup(gateway, true, false)}>
-                                <TriangleAlert className="mr-2 size-4" />
-                                Aggressive cleanup
-                              </DropdownMenuItem>
-                              {cleanupSummary ? (
-                                <>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuItem onClick={() => onClearCleanupHistory(gateway)}>
-                                    <Trash2 className="mr-2 size-4" />
-                                    Clear cleanup history
-                                  </DropdownMenuItem>
-                                </>
-                              ) : null}
-                            </>
-                          ) : null}
-                          {canRemoveGatewayRow ? (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => onDelete(gateway)} className="text-destructive focus:text-destructive">
-                                <Trash2 className="mr-2 size-4" />
-                                {gateway.source === 'in_process' ? 'Remove stale service' : 'Remove server'}
-                              </DropdownMenuItem>
-                            </>
-                          ) : null}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </TableCell>
-                </TableRow>
+                <Fragment key={group.id}>
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group.id)}
+                    aria-expanded={expanded}
+                    className="flex w-full cursor-pointer items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] bg-[var(--gw-group)] px-5 pt-[5px] pb-1 text-left transition-colors hover:bg-[var(--gw-group-hover)]"
+                  >
+                    <ChevronRight
+                      className={cn(
+                        'size-2.5 shrink-0 text-aurora-text-muted transition-transform',
+                        expanded && 'rotate-90',
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span className={cn('text-[9px] font-bold uppercase tracking-[0.16em]', group.tone)}>
+                      {group.label}
+                    </span>
+                    <span className="text-[9.5px] tabular-nums text-[color-mix(in_srgb,var(--aurora-text-muted)_65%,transparent)]">
+                      {group.rows.length}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="h-px flex-1 bg-[color-mix(in_srgb,var(--aurora-border-default)_40%,var(--aurora-page-bg))]"
+                    />
+                  </button>
+                  {expanded ? group.rows.map((gateway) => renderDesktopRow(gateway)) : null}
+                </Fragment>
               )
             })}
-          </TableBody>
-        </Table>
-      </div>
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-3 border-t border-[color-mix(in_srgb,var(--aurora-border-default)_70%,var(--aurora-page-bg))] bg-[var(--gw-footer)] px-5 py-[9px]">
+          <span className="text-[11.5px] tabular-nums text-aurora-text-muted">
+            {gateways.length} {gateways.length === 1 ? 'server' : 'servers'} ·{' '}
+            {exposureTotals.exposed}/{exposureTotals.discovered} tools
+            {selectedGatewayIds.length > 0 ? ` · ${selectedGatewayIds.length} selected` : ''}
+          </span>
+        </div>
+      </section>
       <ActionConfirmationDialog
         open={disableConfirmationGatewayId !== null}
         title="Disable server?"

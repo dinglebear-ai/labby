@@ -6,7 +6,6 @@ import {
   SurfacesPanel,
   ThroughputPanel,
   TokensByToolPanel,
-  UpstreamsPanel,
 } from './analysis-panels'
 import type { DashboardMetrics } from '@/lib/types/metrics'
 import { DashboardPanel } from './panel'
@@ -60,13 +59,12 @@ export function AnalysisSection({
           <UncollectedPanel title="By surface" message="Surface attribution is not collected." />
         )}
       </div>
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-2">
         {metrics.collected.tokens ? (
           <TokensByToolPanel tokens={metrics.tokens_by_tool} onSelect={onSelectTool} />
         ) : (
           <UncollectedPanel title="Tokens by tool" message="Token usage is not collected." />
         )}
-        <UpstreamsPanel upstreams={metrics.upstreams} />
         <ThroughputPanel
           throughput={metrics.throughput}
           agentsSeen={metrics.agents_seen}

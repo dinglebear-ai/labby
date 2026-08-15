@@ -1,13 +1,19 @@
 'use client'
 
-// Left nav rail for /settings/*. Static list of panels; URL-driven
-// "active" state via usePathname.
+// Section nav for /settings/*. Static list of panels; URL-driven "active"
+// state via usePathname.
+//
+// The mock's Settings screen is a single 760px column with no sub-nav, so
+// there is nothing to copy for a vertical rail. Rather than invent one, this
+// renders the panels as the mock's own segmented-button control (28px tall,
+// 8px radius, 11.5px/650, accent-tinted when active) in a horizontal strip
+// above the column — which keeps the body sitting exactly where the mock puts
+// it. Links, active state, and the mobile <select> fallback are unchanged.
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   Activity,
-  Box,
   Cog,
   FileSearch,
   Layers,
@@ -16,12 +22,12 @@ import {
   Shield,
 } from 'lucide-react'
 
-import { cn } from '@/lib/utils'
+import { settingsSegmentStyle, SETTINGS_CONTROL_STYLE } from './SettingsChrome'
 
 interface RailEntry {
   href: string
   label: string
-  icon: React.ComponentType<{ className?: string }>
+  icon: React.ComponentType<{ size?: number; className?: string }>
 }
 
 const ENTRIES: RailEntry[] = [
@@ -40,7 +46,7 @@ export function SettingsRail(): React.ReactElement {
   const activeEntry = ENTRIES.find((entry) => pathname.startsWith(entry.href)) ?? ENTRIES[0]
   const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
   return (
-    <nav aria-label="Settings sections" className="p-3">
+    <nav aria-label="Settings sections">
       <label htmlFor="settings-section" className="sr-only">
         Settings section
       </label>
@@ -48,7 +54,8 @@ export function SettingsRail(): React.ReactElement {
         id="settings-section"
         value={activeHref}
         onChange={(event) => router.push(event.target.value)}
-        className="h-10 w-full rounded-md border border-aurora-border-strong bg-aurora-control-surface px-3 text-sm font-medium text-aurora-text-primary md:hidden"
+        className="w-full md:hidden"
+        style={{ ...SETTINGS_CONTROL_STYLE, width: '100%' }}
       >
         {ENTRIES.map((entry) => (
           <option key={entry.href} value={entry.href}>
@@ -56,10 +63,10 @@ export function SettingsRail(): React.ReactElement {
           </option>
         ))}
       </select>
-      <div className="hidden gap-1 md:flex md:overflow-x-auto lg:flex-col lg:overflow-visible">
-        <h2 className="mb-2 hidden items-center gap-2 text-sm font-semibold uppercase text-aurora-text-muted lg:flex">
-          <Box className="h-4 w-4" /> Settings
-        </h2>
+      <div
+        className="hidden md:flex"
+        style={{ gap: 4, flexWrap: 'wrap', alignItems: 'center' }}
+      >
         {ENTRIES.map((entry) => {
           const active = pathname.startsWith(entry.href)
           const Icon = entry.icon
@@ -68,15 +75,10 @@ export function SettingsRail(): React.ReactElement {
               key={entry.href}
               href={entry.href}
               aria-current={active ? 'page' : undefined}
-              className={cn(
-                'flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors lg:shrink',
-                active
-                  ? 'bg-accent text-accent-foreground font-medium'
-                  : 'text-aurora-text-muted hover:bg-accent/50 hover:text-aurora-text-primary',
-              )}
+              style={settingsSegmentStyle(active)}
             >
-              <Icon className="h-4 w-4" />
-              <span className="whitespace-nowrap">{entry.label}</span>
+              <Icon size={13} />
+              <span>{entry.label}</span>
             </Link>
           )
         })}
