@@ -501,8 +501,10 @@ mod tests {
             make(Some(rmcp::model::ToolAnnotations::new().read_only(true))),
         ];
 
-        let mut config = CodeModeConfig::default();
-        config.trusted_read_only_tools = vec!["fixture::query".to_string()];
+        let config = CodeModeConfig {
+            trusted_read_only_tools: vec!["fixture::query".to_string()],
+            ..CodeModeConfig::default()
+        };
         let read_only_scope = ToolScope::default().read_only();
         let filtered = filter_tools_for_access(tools, &read_only_scope, &config);
         assert_eq!(filtered.len(), 1);
@@ -539,8 +541,10 @@ mod tests {
             .is_empty()
         );
 
-        let mut trusted = CodeModeConfig::default();
-        trusted.trusted_read_only_tools = vec!["fixture::query".to_string()];
+        let trusted = CodeModeConfig {
+            trusted_read_only_tools: vec!["fixture::query".to_string()],
+            ..CodeModeConfig::default()
+        };
         assert_eq!(
             filter_tools_for_access(vec![tool], &read_only_scope, &trusted).len(),
             1

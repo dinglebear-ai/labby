@@ -33,6 +33,12 @@ disallowed-macros = [
 #
 # Activated via `disallowed_methods = "deny"` in [workspace.lints.clippy]
 # in /Cargo.toml.
+#
+# The lint gate (`just lint` and the CI `Clippy` job) runs with `--all-targets`,
+# so these bans cover tests, examples, and benches too. That matters: test
+# fixtures are the main place `Tool::new` and the unbounded `Peer::list_all_*`
+# helpers get reached for. Keep `--all-targets` in both places or the exceptions
+# below become unenforced.
 disallowed-methods = [
     { path = "rmcp::model::tool::Tool::new", reason = "Construct Labby-owned descriptors through PermanentToolRegistry (crates/labby/src/mcp/permanent_tools.rs); duplicated Tool::new sites are a descriptor-drift hazard (#210)." },
     { path = "rmcp::service::Peer::list_all_tools", reason = "Unbounded nextCursor loop — use paginate.rs list_tools_bounded." },

@@ -377,6 +377,8 @@ impl UpstreamPool {
 }
 
 #[cfg(test)]
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#[allow(clippy::panic)]
 mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -673,11 +675,11 @@ mod tests {
         let (pool, server, downstream, relay_key) = task_pool().await;
         let route_a = super::TaskRouteAuthorization::new(
             "protected:a",
-            Some(["task-upstream".to_string()].into_iter().collect()),
+            Some(std::iter::once("task-upstream".to_string()).collect()),
         );
         let route_b = super::TaskRouteAuthorization::new(
             "protected:b",
-            Some(["other-upstream".to_string()].into_iter().collect()),
+            Some(std::iter::once("other-upstream".to_string()).collect()),
         );
         let registered = pool
             .register_task_response(&relay_key, Some("alice"), route_a, create_task_response())

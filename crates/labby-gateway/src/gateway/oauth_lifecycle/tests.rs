@@ -102,6 +102,15 @@ fn validate_probe_url_rejects_userinfo() {
 }
 
 #[test]
+fn validate_probe_url_rejects_http() {
+    let result = validate_probe_url("http://10.1.0.8/mcp");
+    assert!(
+        result.is_err(),
+        "expected error for non-HTTPS OAuth probe URL"
+    );
+}
+
+#[test]
 fn validate_probe_url_rejects_query_and_fragment() {
     let with_query = validate_probe_url("https://example.com/mcp?foo=bar");
     assert!(

@@ -21,7 +21,7 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 | Cargo workspace | 11 members, `resolver = "3"`, single `[workspace.package]` version |
 | Edition / MSRV | edition 2024, `rust-version = "1.97.1"`, toolchain pinned to 1.97.1 in `rust-toolchain.toml` |
 | MCP SDK | `rmcp = "=3.1.0"` — exact pin in `[workspace.dependencies]`, and the only repo in the fleet on rmcp 3.x. Bumping it is a breaking change across `crates/labby/src/mcp/` and `crates/labby-gateway/`. |
-| Lint enforcement | `[workspace.lints]` is real here: `unsafe_code = "forbid"`, `mod_module_files = "deny"`, `disallowed_macros = "deny"` (see `/clippy.toml` — bans `#[async_trait]`) |
+| Lint enforcement | `[workspace.lints]` is real here: `unsafe_code = "forbid"`, `mod_module_files = "deny"`, `disallowed_macros = "deny"`, `disallowed_methods = "deny"` (see `/clippy.toml` — bans `#[async_trait]`, `Tool::new` outside `permanent_tools.rs`, and rmcp's unbounded `Peer::list_all_*`). Linted with `--all-targets`, so test code is covered. |
 | Config / secrets | `~/.labby/config.toml` and `~/.labby/.env`; `$LABBY_HOME` overrides the `~/.labby` root |
 | Worktrees | This checkout carries a busy `.worktrees/` (currently 9 active worktrees). Run `git worktree list` before any workspace-level edit, and never assume the main checkout is the only consumer of `target/`. |
 
@@ -131,7 +131,7 @@ labby/
 ├── Cargo.toml                        # workspace: 11 members, resolver 3, shared lints
 ├── rust-toolchain.toml               # pinned 1.97.1 (MSRV is also 1.97.1)
 ├── Justfile
-├── clippy.toml                       # disallowed_macros config (bans #[async_trait])
+├── clippy.toml                       # disallowed_macros/_methods config (bans #[async_trait], Tool::new)
 ├── deny.toml
 ├── docs/README.md
 └── CLAUDE.md
@@ -362,7 +362,7 @@ All formatting lives in `crates/labby/src/output.rs`. `labby-apis` types are pur
 just check          # cargo check --workspace --all-features
 just test           # cargo nextest run --workspace --all-features
 just test-integration # nextest --run-ignored ignored-only (needs live services)
-just lint           # skill drift + toolchain sync, then clippy -D warnings + fmt --check
+just lint           # skill drift + toolchain sync, then clippy --all-targets -D warnings + fmt --check
 just deny           # cargo deny check
 just build          # cargo build --workspace --all-features --profile release-fast
 just build-release  # release build + install to bin/labby + symlink ~/.local/bin/labby
@@ -385,6 +385,9 @@ rather than a debug build — run `cargo build --workspace --all-features` direc
 when you need debug assertions and full unwinding. `just lint` is a superset of
 clippy+fmt: it also runs `plugins/scripts/check-dozzle-skill` (skill drift) and
 the Rust toolchain synchronization check, so a bare clippy run is not equivalent.
+Clippy runs with `--all-targets` in both `just lint` and CI, so tests, examples,
+and benches are linted too — without it the `disallowed_methods` bans do not
+cover test fixtures, which is where they are most often reached for.
 
 Generated artifacts under `docs/generated/` (service catalog, action catalog,
 env reference, API routes, OpenAPI, feature matrix, MCP help, CLI help) are
@@ -490,7 +493,7 @@ just test-integration
 - GitHub Actions, `.github/workflows/ci.yml`, gated behind a single `ci-gate` job.
 - Platforms: Linux x86_64 for the main jobs, plus dedicated `test-windows` and
   `palette-windows` jobs. The supported release targets are x86_64 only.
-- Rust checks: `fmt`, `clippy` (`-D warnings`), `deny`, `check`, `msrv` (1.97.1),
+- Rust checks: `fmt`, `clippy` (`--all-targets -D warnings`), `deny`, `check`, `msrv` (1.97.1),
   `test` / `test-fork`, `rust-coverage`.
 - Slice checks: `feature-slices` (`gateway`, `fs`) and `extracted-crate-slices`
   (per-feature checks of `labby-auth`, `labby-runtime`, and friends).

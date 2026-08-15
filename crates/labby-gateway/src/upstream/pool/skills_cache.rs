@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(clamp_ttl(Some(0)), SKILLS_TTL_FLOOR);
         // A decade would pin a stale catalog past any operator's patience.
         assert_eq!(clamp_ttl(Some(u64::MAX)), SKILLS_TTL_CEILING);
-        assert_eq!(clamp_ttl(Some(60_000)), Duration::from_secs(60));
+        assert_eq!(clamp_ttl(Some(60_000)), Duration::from_mins(1));
     }
 
     #[test]
@@ -195,7 +195,9 @@ mod tests {
         for i in 0..SKILLS_CACHE_MAX_ENTRIES + 10 {
             let mut entry = CachedSkills::new(snapshot(None));
             // Stagger last_used so the eviction order is deterministic.
-            entry.last_used = Instant::now() - Duration::from_secs(1000 - i as u64);
+            entry.last_used = Instant::now()
+                .checked_sub(Duration::from_secs(1000 - i as u64))
+                .expect("staggered instant is within range");
             cache.insert((format!("upstream-{i}"), None), entry);
         }
         evict(&mut cache);
@@ -209,7 +211,9 @@ mod tests {
     fn eviction_drops_idle_entries_regardless_of_cap() {
         let mut cache: HashMap<SkillsCacheKey, CachedSkills> = HashMap::new();
         let mut idle = CachedSkills::new(snapshot(None));
-        idle.last_used = Instant::now() - SKILLS_CACHE_IDLE_TTL - Duration::from_secs(1);
+        idle.last_used = Instant::now()
+            .checked_sub(SKILLS_CACHE_IDLE_TTL + Duration::from_secs(1))
+            .expect("idle instant is within range");
         cache.insert(("idle".to_string(), None), idle);
         cache.insert(
             ("live".to_string(), None),
