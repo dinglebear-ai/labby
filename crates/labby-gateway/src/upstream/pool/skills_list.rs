@@ -26,6 +26,7 @@
 //! TTL. Truncation by a *budget* is different — it is deterministic and is
 //! reported through `truncated`.
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use rmcp::RoleClient;
@@ -37,7 +38,15 @@ use labby_runtime::skills::wire::{
     SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD, SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult,
     SkillsListResult,
 };
-use labby_runtime::skills::{SkillRejection, ValidatedSkill, limits, validate_skill_entry};
+use labby_runtime::skills::{
+    SkillRejection, ValidatedSkill, limits, parse_skill_resource_uri, validate_skill_entry,
+};
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SkillResourceBinding {
+    pub(super) skill: usize,
+    pub(super) resource: usize,
+}
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
@@ -63,6 +72,9 @@ pub(super) struct UpstreamSkills {
     /// `cacheScope` as reported. Advisory only — Labby shards per subject
     /// regardless, which is stricter than any value here permits.
     pub(super) cache_scope: Option<String>,
+    /// Canonical native URI to every manifest owner. Multiple bindings are
+    /// retained so reads can fail closed without rescanning the catalog.
+    pub(super) resource_index: BTreeMap<String, Vec<SkillResourceBinding>>,
 }
 
 impl UpstreamSkills {
@@ -126,7 +138,20 @@ fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> bool {
         }
         let uri = entry.uri.clone();
         match validate_skill_entry(&entry) {
-            Ok(validated) => out.skills.push(validated),
+            Ok(validated) => {
+                let skill = out.skills.len();
+                if let Some(resources) = &validated.entry.resources {
+                    for (resource, item) in resources.iter().enumerate() {
+                        if let Ok(uri) = parse_skill_resource_uri(&item.uri) {
+                            out.resource_index
+                                .entry(uri.to_uri())
+                                .or_default()
+                                .push(SkillResourceBinding { skill, resource });
+                        }
+                    }
+                }
+                out.skills.push(validated);
+            }
             // One malformed skill must never sink the upstream: exclude it,
             // record the cause, and keep going.
             Err(reason) => out.excluded.push((reason, uri)),

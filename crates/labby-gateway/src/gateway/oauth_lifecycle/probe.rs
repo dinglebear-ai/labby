@@ -8,7 +8,9 @@ use url::Url;
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::oauth::ProbeResult;
-use labby_auth::upstream::manager::UpstreamOauthManager;
+use labby_auth::upstream::{
+    http_client::authorization_manager_for_upstream, manager::UpstreamOauthManager,
+};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{
     UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
@@ -24,6 +26,12 @@ pub(crate) fn validate_probe_url(raw: &str) -> Result<Url, ToolError> {
         message: "invalid upstream URL".to_string(),
         param: "url".to_string(),
     })?;
+    if parsed.scheme() != "https" {
+        return Err(ToolError::InvalidParam {
+            message: "upstream OAuth probe URL must use https".to_string(),
+            param: "url".to_string(),
+        });
+    }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(ToolError::InvalidParam {
             message: "upstream OAuth probe URL must not include userinfo".to_string(),
@@ -331,18 +339,6 @@ pub(crate) async fn run(
     let (canonical_url, redacted_url, name, name_is_persisted) =
         resolve_probe_identity(manager, url, upstream_name).await?;
 
-    crate::security::ssrf::validate_external_https_url(&canonical_url)
-        .await
-        .inspect_err(|_| {
-            tracing::warn!(
-                service = "upstream_oauth",
-                action = "probe",
-                url = %redacted_url,
-                kind = "ssrf_blocked",
-                "upstream oauth probe: SSRF validation task error"
-            );
-        })?;
-
     tracing::info!(
         service = "upstream_oauth",
         action = "probe",
@@ -351,7 +347,7 @@ pub(crate) async fn run(
         "upstream oauth probe: connecting"
     );
 
-    let auth_manager = rmcp::transport::AuthorizationManager::new(&canonical_url)
+    let auth_manager = authorization_manager_for_upstream(&canonical_url)
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -359,14 +355,14 @@ pub(crate) async fn run(
                 action = "probe",
                 upstream = %name,
                 url = %redacted_url,
-                kind = "network_error",
+                kind = e.kind(),
                 error = %e,
                 elapsed_ms = started.elapsed().as_millis(),
                 "upstream oauth probe: connection failed"
             );
             ToolError::Sdk {
-                sdk_kind: "network_error".to_string(),
-                message: format!("failed to connect to upstream: {e}"),
+                sdk_kind: e.kind().to_string(),
+                message: format!("failed to prepare upstream OAuth client: {e}"),
             }
         })?;
 
@@ -391,7 +387,7 @@ pub(crate) async fn run(
                 labby_auth::upstream::manager::discover_published_metadata(&canonical_url)
                     .await
                     .map_err(|error| ToolError::Sdk {
-                        sdk_kind: "internal_error".to_string(),
+                        sdk_kind: error.kind().to_string(),
                         message: format!("OAuth metadata discovery failed: {error}"),
                     })?;
             if let Some(metadata) = fallback {

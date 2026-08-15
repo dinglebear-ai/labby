@@ -1,6 +1,9 @@
 //! Drift protection binding serialized `CodeModeCallError`s to the published
 //! Code Mode call-error JSON Schema, read as plain JSON data.
 
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#![allow(clippy::panic)]
+
 use std::path::Path;
 
 use labby_codemode::{CodeModeCallError, CodeModeErrorEvidence, CodeModeToolSafetyHints};

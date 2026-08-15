@@ -261,8 +261,8 @@ segment rather than claiming the authority slot:
 
 | Upstream serves | Labby publishes | Skill name |
 |---|---|---|
-| `skill://git-workflow/SKILL.md` | `skill://gh/git-workflow/SKILL.md` | `git-workflow` |
-| `skill://acme/billing/refunds/SKILL.md` | `skill://gh/acme/billing/refunds/SKILL.md` | `refunds` |
+| `skill://git-workflow/SKILL.md` | `skill://gh/skill/git-workflow/SKILL.md` | `git-workflow` |
+| `skill://acme/billing/refunds/SKILL.md` | `skill://gh/skill/acme/billing/refunds/SKILL.md` | `refunds` |
 
 Prepending preserves the name-is-the-final-segment invariant at any depth and is
 **lossless**: stripping the label recovers the upstream's URI exactly, which is
@@ -296,16 +296,14 @@ Two consequences follow, both handled by refusing rather than guessing:
 
 - A manifest may not mix schemes. Every file of a skill lives in that skill's
   directory, so one scheme per skill; a cross-scheme entry excludes the skill.
-- Minting drops the upstream's scheme, since Labby publishes in its own
-  `skill://` namespace. An upstream serving one path under two schemes would
-  therefore publish a single identifier for two different skills. Both are
-  excluded from the listing, and an ambiguous read is refused — resolving either
-  by iteration order would decide, invisibly, which instructions an agent acts
-  on.
+- Minting preserves the upstream's scheme as the segment immediately after the
+  gateway label while publishing in Labby's `skill://` namespace. This keeps
+  native-scheme URIs distinct and makes the mapping exactly reversible.
 
-The native URI is never reconstructed from the published string; it is recovered
-from the cached manifest, which is what keeps a non-`skill://` upstream
-routable. Note also that the scheme confers no identity: the SEP says a host
+The native URI is reconstructed by removing Labby's label and decoding the
+preserved scheme segment. Cached manifests remain authoritative for digest and
+ownership checks, but an uncached `skills/get` can route without guessing. Note
+also that the scheme confers no identity: the SEP says a host
 "MUST NOT conclude that a resource is a skill merely because its URI carries a
 particular scheme" — identity comes from a `skills/list` entry or `skills/get`.
 

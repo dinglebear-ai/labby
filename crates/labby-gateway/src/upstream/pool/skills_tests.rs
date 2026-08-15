@@ -473,7 +473,7 @@ async fn an_upstream_without_the_extension_is_empty_not_an_error() {
 #[tokio::test]
 async fn a_second_read_is_served_from_cache() {
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -500,7 +500,7 @@ async fn a_second_read_is_served_from_cache() {
 #[tokio::test]
 async fn expose_skills_filters_and_fails_closed_on_an_empty_allowlist() {
     let server = SkillsServer::new(vec![json!({
-        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 600000
+        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 600_000
     })]);
     let pool = catalog_pool_with_server("up", server).await;
 
@@ -533,7 +533,7 @@ async fn narrowing_the_allowlist_takes_effect_without_waiting_for_the_ttl() {
     // The exposure gate runs on read, not at fetch, so an operator tightening
     // the allowlist is not stuck behind a long TTL.
     let server = SkillsServer::new(vec![json!({
-        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 3600000
+        "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 3_600_000
     })]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -555,7 +555,7 @@ async fn narrowing_the_allowlist_takes_effect_without_waiting_for_the_ttl() {
 #[tokio::test]
 async fn two_subjects_never_share_a_cached_catalog() {
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -584,7 +584,7 @@ async fn excluded_and_truncated_bookkeeping_reaches_the_caller() {
         "resources": []
     });
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha"), bad], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha"), bad], "ttlMs": 600_000 }),
     ]);
     let pool = catalog_pool_with_server("up", server).await;
 
@@ -603,7 +603,7 @@ async fn excluded_and_truncated_bookkeeping_reaches_the_caller() {
 #[tokio::test]
 async fn invalidation_drops_every_subject_for_one_upstream() {
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
     let pool = catalog_pool_with_server("up", server).await;
@@ -633,7 +633,7 @@ async fn a_pool_drain_clears_every_cached_catalog() {
     // Reload replaces connections and config wholesale; a catalog that survived
     // would describe skills belonging to peers the pool no longer holds.
     let server = SkillsServer::new(vec![
-        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600000 }),
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let pool = catalog_pool_with_server("up", server).await;
     let config = skills_config("up", None);
@@ -718,7 +718,7 @@ async fn a_proxied_skill_file_is_readable_and_digest_verified() {
     let config = skills_config("up", None);
 
     let verified = pool
-        .read_proxied_skill_file(&config, None, "up/alpha/SKILL.md")
+        .read_proxied_skill_file(&config, None, "skill://up/alpha/SKILL.md")
         .await
         .expect("a listed skill file is readable through the gateway");
     assert_eq!(verified.text, skill_md_body("alpha"));
@@ -749,7 +749,11 @@ async fn a_body_whose_frontmatter_contradicts_its_entry_is_refused() {
     let pool = catalog_pool_with_server("up", server).await;
 
     let error = pool
-        .read_proxied_skill_file(&skills_config("up", None), None, "up/alpha/SKILL.md")
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
         .await
         .expect_err("a body that contradicts its entry must be refused");
     assert_eq!(
@@ -766,7 +770,11 @@ async fn a_tampered_proxied_file_returns_zero_bytes() {
     let pool = catalog_pool_with_server("up", server).await;
 
     let error = pool
-        .read_proxied_skill_file(&skills_config("up", None), None, "up/alpha/SKILL.md")
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
         .await
         .expect_err("tampered content must be refused");
     assert_eq!(
@@ -783,9 +791,35 @@ async fn a_file_absent_from_the_manifest_is_refused_rather_than_fetched() {
     let pool = catalog_pool_with_server("up", server).await;
 
     let error = pool
-        .read_proxied_skill_file(&skills_config("up", None), None, "up/alpha/not-listed.md")
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/not-listed.md",
+        )
         .await
         .expect_err("an unlisted file must be refused");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
+    );
+}
+
+#[tokio::test]
+async fn duplicate_resource_bindings_are_refused_instead_of_using_iteration_order() {
+    let duplicate = entry("up", "alpha");
+    let server = SkillsServer::new(vec![json!({
+        "skills": [duplicate.clone(), duplicate]
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
+        .await
+        .expect_err("an ambiguous resource owner must never win by iteration order");
     assert_eq!(
         error.kind(),
         labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
@@ -805,7 +839,7 @@ async fn a_hidden_skills_files_are_not_readable_by_uri() {
         .read_proxied_skill_file(
             &skills_config("up", Some(vec!["alpha"])),
             None,
-            "up/beta/SKILL.md",
+            "skill://up/beta/SKILL.md",
         )
         .await
         .expect_err("a skill hidden from the listing must also be unreadable");
@@ -846,6 +880,16 @@ async fn a_native_scheme_upstream_is_aggregated_not_silently_dropped() {
         .expect("a native scheme is legal");
     assert_eq!(exposed.skills.len(), 1, "the skill must survive ingest");
     assert_eq!(exposed.skills[0].name, "refunds");
+
+    let verified = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "github://owner/repo/skills/refunds/SKILL.md",
+        )
+        .await
+        .expect("the native URI remains readable through its indexed binding");
+    assert_eq!(verified.text, body);
 }
 
 #[tokio::test]

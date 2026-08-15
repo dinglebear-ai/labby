@@ -361,6 +361,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "provider_timeout"
         | "not_connected"
         | "connection_error"
+        | "connection_refused"
+        | "dns_error"
         | "relay_forwarder_init_failed" => AgentErrorOrigin::UpstreamTransport,
         "bridge_transport_error" => AgentErrorOrigin::Bridge,
         _ => AgentErrorOrigin::Runtime,
@@ -418,7 +420,8 @@ pub fn recovery_for_kind(
         },
         "timeout" | "network_error" | "upstream_error" | "bad_gateway"
         | "service_unavailable" | "provider_unavailable" | "provider_timeout"
-        | "not_connected" | "connection_error" | "relay_forwarder_init_failed" => {
+        | "not_connected" | "connection_error" | "connection_refused" | "dns_error"
+        | "relay_forwarder_init_failed" => {
             AgentRecoveryAdvice {
                 action: AgentRecoveryAction::RetryLater,
                 same_arguments: AgentSameArgumentsRetry::Conditional,

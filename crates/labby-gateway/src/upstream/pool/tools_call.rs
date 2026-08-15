@@ -344,7 +344,10 @@ impl UpstreamPool {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
+#[allow(clippy::disallowed_methods)]
+// test fixtures construct upstream Tool values directly
+// `panic!` is how tests assert; `panic = "warn"` targets production paths.
+#[allow(clippy::panic)]
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
