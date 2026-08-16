@@ -207,22 +207,45 @@ async fn oauth_findings(config: &crate::config::LabConfig) -> Vec<Finding> {
         }
     };
 
-    let Some(gateway) = crate::live_gateway::detect(config).await else {
-        findings.push(finding(
-            "proxy:oauth-daemon",
-            Severity::Fail,
-            "no live Labby daemon is reachable",
-        ));
-        for check in [
-            "proxy:oauth-lease-create",
-            "proxy:oauth-lease-renew",
-            "proxy:oauth-lease-release",
-            "proxy:oauth-issuer-metadata",
-            "proxy:oauth-jwks",
-        ] {
-            findings.push(dependency_failure(check, "live daemon discovery"));
+    let gateway = match crate::live_gateway::detect(config).await {
+        Ok(Some(gateway)) => gateway,
+        Ok(None) => {
+            findings.push(finding(
+                "proxy:oauth-daemon",
+                Severity::Fail,
+                "no live Labby daemon is reachable",
+            ));
+            for check in [
+                "proxy:oauth-lease-create",
+                "proxy:oauth-lease-renew",
+                "proxy:oauth-lease-release",
+                "proxy:oauth-issuer-metadata",
+                "proxy:oauth-jwks",
+            ] {
+                findings.push(dependency_failure(check, "live daemon discovery"));
+            }
+            return findings;
         }
-        return findings;
+        Err(error) => {
+            findings.push(finding(
+                "proxy:oauth-daemon",
+                Severity::Fail,
+                format!("configured live Labby daemon failed: {error}"),
+            ));
+            for check in [
+                "proxy:oauth-lease-create",
+                "proxy:oauth-lease-renew",
+                "proxy:oauth-lease-release",
+                "proxy:oauth-issuer-metadata",
+                "proxy:oauth-jwks",
+            ] {
+                findings.push(dependency_failure(
+                    check,
+                    "configured live daemon discovery",
+                ));
+            }
+            return findings;
+        }
     };
     findings.push(finding(
         "proxy:oauth-daemon",

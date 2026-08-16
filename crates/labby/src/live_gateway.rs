@@ -18,11 +18,13 @@
 //! inside the same container/host as `labby serve` or from any other machine
 //! that shares `~/.labby/.env` (for `LABBY_MCP_HTTP_TOKEN`).
 
-use std::time::Duration;
+use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 use rmcp::RoleClient;
 use rmcp::service::RunningService;
 use serde_json::Value;
+use url::{Host, Url};
 
 use crate::config::LabConfig;
 use crate::dispatch::error::ToolError;
@@ -30,6 +32,10 @@ use crate::dispatch::error::ToolError;
 /// Timeout for the initial reachability probe. This runs on every thin-client
 /// startup, so an unreachable host must fail over quickly rather than hang.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+/// Bound the complete best-effort candidate walk before standalone fallback.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+/// Bound MCP initialize and short-lived Code Mode calls, not session lifetime.
+const MCP_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound ordinary thin-client dispatches after the short reachability probe.
 /// Long-poll actions opt out explicitly in `dispatch_timeout_for_action`.
 const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,10 +43,34 @@ const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// A reachable, already-running `labby serve` daemon.
 #[derive(Clone)]
 pub struct LiveGateway {
-    base_url: String,
+    base_url: Url,
+    explicit: bool,
+    source: &'static str,
     token: Option<String>,
     client: reqwest::Client,
     dispatch_timeout: Duration,
+    actions: Option<BTreeSet<String>>,
+}
+
+#[derive(Clone, Debug)]
+enum TargetSet {
+    Explicit { base_url: Url, source: &'static str },
+    Opportunistic(Vec<Url>),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ProbeStage {
+    Health,
+    Identity,
+    Actions,
+}
+
+#[derive(Debug)]
+struct ProbeFailure {
+    stage: ProbeStage,
+    status: Option<reqwest::StatusCode>,
+    kind: &'static str,
+    message: String,
 }
 
 /// Candidate base URLs to try, in priority order: the local bind address
@@ -51,8 +81,12 @@ pub struct LiveGateway {
 /// because it's a fast same-host round trip when co-located with the daemon;
 /// the public URLs are what let a thin client reach the daemon from anywhere
 /// else.
-fn candidate_base_urls(config: &LabConfig) -> Vec<String> {
-    candidate_base_urls_from(
+fn resolve_target_set(config: &LabConfig) -> Result<TargetSet, ToolError> {
+    resolve_target_set_from(
+        std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
+            .ok()
+            .as_deref(),
+        std::env::var("LABBY_SERVER_URL").ok().as_deref(),
         std::env::var("LABBY_MCP_HTTP_HOST").ok(),
         std::env::var("LABBY_MCP_HTTP_PORT").ok(),
         config,
@@ -62,11 +96,25 @@ fn candidate_base_urls(config: &LabConfig) -> Vec<String> {
 /// Pure resolution logic, split out from `candidate_base_urls` so it's
 /// testable without mutating process-global env vars (which would race with
 /// other tests in the same binary).
-fn candidate_base_urls_from(
+fn resolve_target_set_from(
+    plugin_url: Option<&str>,
+    server_url: Option<&str>,
     host_env: Option<String>,
     port_env: Option<String>,
     config: &LabConfig,
-) -> Vec<String> {
+) -> Result<TargetSet, ToolError> {
+    for (source, value) in [
+        ("CLAUDE_PLUGIN_OPTION_SERVER_URL", plugin_url),
+        ("LABBY_SERVER_URL", server_url),
+    ] {
+        if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+            return Ok(TargetSet::Explicit {
+                base_url: normalize_explicit_target(value)?,
+                source,
+            });
+        }
+    }
+
     let host = host_env
         .or_else(|| config.mcp.host.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
@@ -75,15 +123,75 @@ fn candidate_base_urls_from(
         .or(config.mcp.port)
         .unwrap_or(8765);
 
-    let mut candidates = vec![format!("http://{host}:{port}")];
+    let mut candidates = Vec::new();
+    push_candidate(&mut candidates, &format!("http://{host}:{port}"));
     let public = config.public_urls();
-    for url in [public.mcp_gateway, public.app].into_iter().flatten() {
-        let trimmed = url.trim_end_matches('/').to_string();
-        if !trimmed.is_empty() && !candidates.contains(&trimmed) {
-            candidates.push(trimmed);
-        }
+    for raw in [public.mcp_gateway, public.app].into_iter().flatten() {
+        push_candidate(&mut candidates, &raw);
     }
-    candidates
+    Ok(TargetSet::Opportunistic(candidates))
+}
+
+fn push_candidate(candidates: &mut Vec<Url>, raw: &str) {
+    if let Ok(url) = normalize_base_url(raw)
+        && !candidates.contains(&url)
+    {
+        candidates.push(url);
+    }
+}
+
+fn normalize_explicit_target(raw: &str) -> Result<Url, ToolError> {
+    let url = Url::parse(raw.trim()).map_err(|_| invalid_target("invalid URL"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(invalid_target("userinfo is not allowed"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(invalid_target(
+            "query strings and fragments are not allowed",
+        ));
+    }
+    match url.scheme() {
+        "https" => {}
+        "http" if is_loopback_url(&url) => {}
+        "http" => {
+            return Err(invalid_target(
+                "plaintext HTTP is allowed only for loopback",
+            ));
+        }
+        _ => return Err(invalid_target("scheme must be https or loopback http")),
+    }
+    normalize_base_url(url.as_str()).map_err(|_| invalid_target("invalid base path"))
+}
+
+fn normalize_base_url(raw: &str) -> Result<Url, url::ParseError> {
+    let mut url = Url::parse(raw.trim())?;
+    let path = url.path().trim_end_matches('/');
+    let base_path = path.strip_suffix("/mcp").unwrap_or(path);
+    let normalized_path = if base_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("{base_path}/")
+    };
+    url.set_path(&normalized_path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn is_loopback_url(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+fn invalid_target(reason: &str) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "invalid_param".to_string(),
+        message: format!("configured Labby server URL is invalid: {reason}"),
+    }
 }
 
 /// Probe candidate base URLs in order and return a client for the first
@@ -94,63 +202,135 @@ fn candidate_base_urls_from(
 /// must fall back to running standalone. A live daemon is a nice-to-have
 /// consistency guarantee here, not a hard requirement, so standalone use
 /// (bootstrap, `labby doctor`, the very first `gateway add`) keeps working.
-pub async fn detect(config: &LabConfig) -> Option<LiveGateway> {
-    let client = reqwest::Client::builder().build().ok()?;
+pub async fn detect(config: &LabConfig) -> Result<Option<LiveGateway>, ToolError> {
+    let targets = resolve_target_set(config)?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "service_unavailable".to_string(),
+            message: format!("remote Labby client initialization failed: {error}"),
+        })?;
     let token = std::env::var("LABBY_MCP_HTTP_TOKEN").ok();
 
-    for base_url in candidate_base_urls(config) {
-        let Ok(health) = client
-            .get(format!("{base_url}/health"))
-            .timeout(PROBE_TIMEOUT)
-            .send()
-            .await
-        else {
-            continue;
-        };
-        if health.status().is_success()
-            && is_labby_gateway_daemon(&client, &base_url, token.as_deref()).await
-        {
-            return Some(LiveGateway {
-                base_url,
-                token,
-                client,
-                dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
-            });
+    match targets {
+        TargetSet::Explicit { base_url, source } => {
+            let started = Instant::now();
+            match probe_target(&client, &base_url, token.as_deref()).await {
+                Ok(actions) => Ok(Some(LiveGateway::new(
+                    base_url, true, source, token, client, actions,
+                ))),
+                Err(failure) => {
+                    let error = probe_error(&base_url, &failure, true);
+                    tracing::warn!(
+                        surface = "cli",
+                        service = "gateway",
+                        action = "remote.detect",
+                        source,
+                        origin = %sanitized_origin(&base_url),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        kind = error.kind(),
+                        stage = ?failure.stage,
+                        status = ?failure.status,
+                        fallback_suppressed = true,
+                        "explicit remote gateway detection failed"
+                    );
+                    Err(error)
+                }
+            }
+        }
+        TargetSet::Opportunistic(candidates) => {
+            let future = async {
+                for base_url in candidates {
+                    if let Ok(actions) = probe_target(&client, &base_url, token.as_deref()).await {
+                        return Some(LiveGateway::new(
+                            base_url,
+                            false,
+                            "opportunistic",
+                            token.clone(),
+                            client.clone(),
+                            actions,
+                        ));
+                    }
+                }
+                None
+            };
+            Ok(tokio::time::timeout(DISCOVERY_TIMEOUT, future)
+                .await
+                .unwrap_or(None))
         }
     }
-    None
 }
 
-async fn is_labby_gateway_daemon(
+async fn probe_target(
     client: &reqwest::Client,
-    base_url: &str,
+    base_url: &Url,
     token: Option<&str>,
-) -> bool {
-    if token.is_none() && labby_discovery_identifies_daemon(client, base_url).await {
-        return true;
+) -> Result<Option<BTreeSet<String>>, ProbeFailure> {
+    let health = client
+        .get(base_url.join("health").expect("validated base URL joins"))
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| probe_transport_error(ProbeStage::Health, error))?;
+    if !health.status().is_success() {
+        return Err(probe_status_error(ProbeStage::Health, health.status()));
     }
 
+    if token.is_none() && labby_discovery_identifies_daemon(client, base_url).await {
+        return Ok(fetch_actions(client, base_url, None).await.ok());
+    }
+
+    let actions = fetch_actions(client, base_url, token).await?;
+    actions
+        .contains("gateway.reload")
+        .then_some(Some(actions))
+        .ok_or_else(|| ProbeFailure {
+            stage: ProbeStage::Identity,
+            status: None,
+            kind: "service_unavailable",
+            message: "endpoint is not a compatible Labby daemon".to_string(),
+        })
+}
+
+async fn fetch_actions(
+    client: &reqwest::Client,
+    base_url: &Url,
+    token: Option<&str>,
+) -> Result<BTreeSet<String>, ProbeFailure> {
     let mut request = client
-        .get(format!("{base_url}/v1/gateway/actions"))
+        .get(
+            base_url
+                .join("v1/gateway/actions")
+                .expect("validated base URL joins"),
+        )
         .timeout(PROBE_TIMEOUT);
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
-    let Ok(response) = request.send().await else {
-        return false;
-    };
+    let response = request
+        .send()
+        .await
+        .map_err(|error| probe_transport_error(ProbeStage::Actions, error))?;
     if !response.status().is_success() {
-        return false;
+        return Err(probe_status_error(ProbeStage::Actions, response.status()));
     }
-    let Ok(actions) = response.json::<Value>().await else {
-        return false;
-    };
-    actions_include_gateway_reload(&actions)
+    let actions = response.json::<Value>().await.map_err(|_| ProbeFailure {
+        stage: ProbeStage::Actions,
+        status: None,
+        kind: "service_unavailable",
+        message: "gateway actions response is invalid".to_string(),
+    })?;
+    Ok(action_names(&actions))
 }
 
-async fn labby_discovery_identifies_daemon(client: &reqwest::Client, base_url: &str) -> bool {
+async fn labby_discovery_identifies_daemon(client: &reqwest::Client, base_url: &Url) -> bool {
     let Ok(response) = client
-        .get(format!("{base_url}/.well-known/labby.json"))
+        .get(
+            base_url
+                .join(".well-known/labby.json")
+                .expect("validated base URL joins"),
+        )
         .timeout(PROBE_TIMEOUT)
         .send()
         .await
@@ -173,25 +353,134 @@ async fn labby_discovery_identifies_daemon(client: &reqwest::Client, base_url: &
             .is_some()
 }
 
-fn actions_include_gateway_reload(actions: &Value) -> bool {
-    actions.as_array().is_some_and(|items| {
-        items.iter().any(|item| {
-            item.get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| name == "gateway.reload")
-        })
-    })
+fn action_names(actions: &Value) -> BTreeSet<String> {
+    actions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+fn probe_transport_error(stage: ProbeStage, error: reqwest::Error) -> ProbeFailure {
+    ProbeFailure {
+        stage,
+        status: None,
+        kind: "service_unavailable",
+        message: if error.is_timeout() {
+            "request timed out".to_string()
+        } else {
+            "request failed".to_string()
+        },
+    }
+}
+
+fn probe_status_error(stage: ProbeStage, status: reqwest::StatusCode) -> ProbeFailure {
+    let kind = match status.as_u16() {
+        401 => "auth_required",
+        403 => "auth_failed",
+        _ => "service_unavailable",
+    };
+    ProbeFailure {
+        stage,
+        status: Some(status),
+        kind,
+        message: format!("daemon probe returned HTTP {status}"),
+    }
+}
+
+fn probe_error(base_url: &Url, failure: &ProbeFailure, explicit: bool) -> ToolError {
+    let suppression = if explicit {
+        "; local fallback suppressed"
+    } else {
+        ""
+    };
+    ToolError::Sdk {
+        sdk_kind: failure.kind.to_string(),
+        message: format!(
+            "configured Labby server {} failed during {:?}: {}{suppression}",
+            sanitized_origin(base_url),
+            failure.stage,
+            failure.message
+        ),
+    }
+}
+
+fn sanitized_origin(url: &Url) -> String {
+    url.origin().ascii_serialization()
+}
+
+#[cfg(test)]
+fn candidate_base_urls_from(
+    host_env: Option<String>,
+    port_env: Option<String>,
+    config: &LabConfig,
+) -> Vec<String> {
+    match resolve_target_set_from(None, None, host_env, port_env, config).unwrap() {
+        TargetSet::Opportunistic(urls) => urls
+            .into_iter()
+            .map(|url| url.as_str().trim_end_matches('/').to_string())
+            .collect(),
+        TargetSet::Explicit { .. } => unreachable!("no explicit values supplied"),
+    }
+}
+
+#[cfg(test)]
+async fn is_labby_gateway_daemon(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: Option<&str>,
+) -> bool {
+    let Ok(base_url) = normalize_base_url(base_url) else {
+        return false;
+    };
+    probe_target(client, &base_url, token).await.is_ok()
 }
 
 impl LiveGateway {
+    fn new(
+        base_url: Url,
+        explicit: bool,
+        source: &'static str,
+        token: Option<String>,
+        client: reqwest::Client,
+        actions: Option<BTreeSet<String>>,
+    ) -> Self {
+        Self {
+            base_url,
+            explicit,
+            source,
+            token,
+            client,
+            dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
+            actions,
+        }
+    }
+
+    #[must_use]
+    pub fn allows_local_fallback(&self) -> bool {
+        !self.explicit
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &'static str {
+        self.source
+    }
+
     pub async fn verify_resource_lease_actions(&self) -> Result<(), ToolError> {
         const REQUIRED: [&str; 3] = [
             "gateway.oauth.resource_lease.create",
             "gateway.oauth.resource_lease.renew",
             "gateway.oauth.resource_lease.release",
         ];
+        let actions = match &self.actions {
+            Some(actions) => actions.clone(),
+            None => fetch_actions(&self.client, &self.base_url, self.token.as_deref())
+                .await
+                .map_err(|failure| probe_error(&self.base_url, &failure, self.explicit))?,
+        };
         for action in REQUIRED {
-            if !self.supports_action(action).await? {
+            if !actions.contains(action) {
                 return Err(ToolError::Sdk {
                     sdk_kind: "proxy_auth_unavailable".to_string(),
                     message: format!(
@@ -205,7 +494,7 @@ impl LiveGateway {
 
     pub async fn verify_oauth_issuer(
         &self,
-        issuer: &url::Url,
+        issuer: &Url,
     ) -> Result<labby_auth::jwt::JwksDocument, ToolError> {
         let stable_issuer = issuer.as_str().trim_end_matches('/');
         let metadata_url = format!("{stable_issuer}/.well-known/oauth-authorization-server");
@@ -270,9 +559,14 @@ impl LiveGateway {
     }
 
     pub async fn supports_action(&self, action: &str) -> Result<bool, ToolError> {
-        let mut request = self
-            .client
-            .get(format!("{}/v1/gateway/actions", self.base_url));
+        if let Some(actions) = &self.actions {
+            return Ok(actions.contains(action));
+        }
+        let mut request = self.client.get(
+            self.base_url
+                .join("v1/gateway/actions")
+                .expect("validated base URL joins"),
+        );
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
@@ -344,7 +638,11 @@ impl LiveGateway {
     pub async fn dispatch_action(&self, action: &str, params: Value) -> Result<Value, ToolError> {
         let mut request = self
             .client
-            .post(format!("{}/v1/gateway", self.base_url))
+            .post(
+                self.base_url
+                    .join("v1/gateway")
+                    .expect("validated base URL joins"),
+            )
             .json(&serde_json::json!({ "action": action, "params": params }));
         if let Some(timeout) = dispatch_timeout_for_action(action, self.dispatch_timeout) {
             request = request.timeout(timeout);
@@ -386,14 +684,19 @@ impl LiveGateway {
     pub async fn call_codemode_tool(&self, code: &str) -> anyhow::Result<Value> {
         use rmcp::model::CallToolRequestParams;
 
-        let service = self.connect_service(()).await?;
+        let service = tokio::time::timeout(MCP_INITIALIZATION_TIMEOUT, self.connect_service(()))
+            .await
+            .map_err(|_| anyhow::anyhow!("remote Code Mode MCP initialization timed out"))??;
         let peer = service.peer().clone();
 
         let mut arguments = serde_json::Map::new();
         arguments.insert("code".to_string(), Value::String(code.to_string()));
-        let result = peer
-            .call_tool(CallToolRequestParams::new("codemode").with_arguments(arguments))
-            .await?;
+        let result = tokio::time::timeout(
+            MCP_INITIALIZATION_TIMEOUT,
+            peer.call_tool(CallToolRequestParams::new("codemode").with_arguments(arguments)),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("remote Code Mode call timed out"))??;
         service.cancel().await.ok();
 
         if let Some(structured) = result.structured_content {
@@ -427,8 +730,12 @@ impl LiveGateway {
             StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
         };
 
-        let mut transport_config =
-            StreamableHttpClientTransportConfig::with_uri(format!("{}/mcp", self.base_url));
+        let mut transport_config = StreamableHttpClientTransportConfig::with_uri(
+            self.base_url
+                .join("mcp")
+                .expect("validated base URL joins")
+                .to_string(),
+        );
         transport_config.auth_header = self.token.clone();
         let worker = StreamableHttpClientWorker::new(self.client.clone(), transport_config);
         Ok(handler
@@ -439,6 +746,22 @@ impl LiveGateway {
                 },
             )
             .await?)
+    }
+
+    pub async fn connect_service_bounded<H: rmcp::ClientHandler>(
+        &self,
+        handler: H,
+    ) -> Result<RunningService<RoleClient, H>, ToolError> {
+        tokio::time::timeout(MCP_INITIALIZATION_TIMEOUT, self.connect_service(handler))
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "bridge_transport_error".to_string(),
+                message: "remote Labby MCP initialization timed out".to_string(),
+            })?
+            .map_err(|error| ToolError::Sdk {
+                sdk_kind: "bridge_transport_error".to_string(),
+                message: format!("remote Labby MCP initialization failed: {error}"),
+            })
     }
 }
 
@@ -500,10 +823,16 @@ mod tests {
     fn test_gateway(base_url: String, token: Option<String>) -> LiveGateway {
         ensure_tls_provider();
         LiveGateway {
-            base_url,
+            base_url: normalize_base_url(&base_url).expect("test URL parses"),
+            explicit: false,
+            source: "test",
             token,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("test client builds"),
             dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
+            actions: None,
         }
     }
 
@@ -550,6 +879,96 @@ mod tests {
                 "https://labby.example.com".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn plugin_target_wins_and_terminal_mcp_is_normalized() {
+        let targets = resolve_target_set_from(
+            Some("https://plugin.example/prefix/mcp"),
+            Some("https://operator.example"),
+            None,
+            None,
+            &LabConfig::default(),
+        )
+        .expect("valid explicit target");
+
+        let TargetSet::Explicit { base_url, source } = targets else {
+            panic!("expected explicit target");
+        };
+        assert_eq!(source, "CLAUDE_PLUGIN_OPTION_SERVER_URL");
+        assert_eq!(base_url.as_str(), "https://plugin.example/prefix/");
+        assert_eq!(
+            base_url.join("health").unwrap().as_str(),
+            "https://plugin.example/prefix/health"
+        );
+    }
+
+    #[test]
+    fn explicit_target_validation_matrix() {
+        for accepted in [
+            "https://example.com",
+            "https://example.com/base/mcp/",
+            "http://localhost:8765/mcp",
+            "http://127.0.0.1:8765",
+            "http://[::1]:8765/mcp",
+        ] {
+            normalize_explicit_target(accepted)
+                .unwrap_or_else(|error| panic!("{accepted}: {error}"));
+        }
+
+        for rejected in [
+            "http://remote.example:8765",
+            "ftp://example.com/mcp",
+            "https://user:secret@example.com/mcp",
+            "https://example.com/mcp?token=secret",
+            "https://example.com/mcp#secret",
+        ] {
+            let error = normalize_explicit_target(rejected).expect_err(rejected);
+            assert_eq!(error.kind(), "invalid_param");
+            assert!(!error.to_string().contains("secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_probe_does_not_follow_redirects() {
+        ensure_tls_provider();
+        let destination = MockServer::start().await;
+        let source = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", destination.uri()))
+            .mount(&source)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let base_url = normalize_base_url(&source.uri()).unwrap();
+        let failure = probe_target(&client, &base_url, Some("sensitive-token"))
+            .await
+            .expect_err("redirect must be rejected");
+
+        assert_eq!(failure.status, Some(reqwest::StatusCode::FOUND));
+        assert!(destination.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn explicit_probe_error_is_sanitized_and_suppresses_fallback() {
+        let base_url = Url::parse("https://example.com/").unwrap();
+        let error = probe_error(
+            &base_url,
+            &ProbeFailure {
+                stage: ProbeStage::Actions,
+                status: Some(reqwest::StatusCode::UNAUTHORIZED),
+                kind: "auth_required",
+                message: "daemon probe returned HTTP 401 Unauthorized".to_string(),
+            },
+            true,
+        );
+        assert_eq!(error.kind(), "auth_required");
+        assert!(error.to_string().contains("local fallback suppressed"));
+        assert_eq!(sanitized_origin(&base_url), "https://example.com");
     }
 
     #[tokio::test]
@@ -690,7 +1109,7 @@ mod tests {
                 dispatch_timeout_for_action(spec.name, Duration::from_secs(30)).is_none()
             })
             .map(|spec| spec.name)
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
         let expected = [
             "gateway.oauth.wait",
             "gateway.code_mode.set",
@@ -719,7 +1138,7 @@ mod tests {
             "gateway.mcp.disable",
         ]
         .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
+        .collect::<BTreeSet<_>>();
         assert_eq!(classified, expected);
     }
 
@@ -733,7 +1152,7 @@ mod tests {
         config.mcp.host = Some("127.0.0.1".to_string());
         config.mcp.port = Some(0);
 
-        assert!(detect(&config).await.is_none());
+        assert!(detect(&config).await.expect("detection succeeds").is_none());
     }
 
     #[tokio::test]
@@ -754,12 +1173,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let url = url::Url::parse(&server.uri()).expect("wiremock uri parses");
+        let url = Url::parse(&server.uri()).expect("wiremock uri parses");
         let mut config = LabConfig::default();
         config.mcp.host = Some(url.host_str().expect("wiremock host").to_string());
         config.mcp.port = url.port();
 
-        assert!(detect(&config).await.is_some());
+        assert!(detect(&config).await.expect("detection succeeds").is_some());
     }
 
     #[tokio::test]
@@ -836,12 +1255,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let url = url::Url::parse(&server.uri()).expect("wiremock uri parses");
+        let url = Url::parse(&server.uri()).expect("wiremock uri parses");
         let mut config = LabConfig::default();
         config.mcp.host = Some(url.host_str().expect("wiremock host").to_string());
         config.mcp.port = url.port();
 
-        assert!(detect(&config).await.is_none());
+        assert!(detect(&config).await.expect("detection succeeds").is_none());
     }
 
     #[tokio::test]
@@ -876,8 +1295,9 @@ mod tests {
 
         let live = detect(&config)
             .await
+            .expect("detection succeeds")
             .expect("should fall through to public url");
-        assert_eq!(live.base_url, server.uri());
+        assert_eq!(live.base_url.as_str().trim_end_matches('/'), server.uri());
     }
 
     #[tokio::test]
@@ -1003,7 +1423,7 @@ mod tests {
             .await;
 
         let jwks = test_gateway(server.uri(), None)
-            .verify_oauth_issuer(&url::Url::parse(&server.uri()).unwrap())
+            .verify_oauth_issuer(&Url::parse(&server.uri()).unwrap())
             .await
             .unwrap();
         assert!(jwks.keys.is_empty());
@@ -1013,7 +1433,7 @@ mod tests {
     async fn oauth_proxy_prerequisites_reject_unreachable_metadata() {
         let server = MockServer::start().await;
         let error = test_gateway(server.uri(), None)
-            .verify_oauth_issuer(&url::Url::parse(&server.uri()).unwrap())
+            .verify_oauth_issuer(&Url::parse(&server.uri()).unwrap())
             .await
             .unwrap_err();
         assert!(error.to_string().contains("metadata"));
