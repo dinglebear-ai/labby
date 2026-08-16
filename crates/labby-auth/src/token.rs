@@ -34,6 +34,69 @@ use response::{TokenEndpointError, TokenResponseWithCache, apply_token_cache_hea
 /// the final atomic local-token rotation.
 const REFRESH_CLAIM_LEASE_SECONDS: i64 = 90;
 const REFRESH_CLAIM_RENEW_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+const REFRESH_REPLAY_GRACE_SECONDS: i64 = 5 * 60;
+const MAX_REFRESH_REPLAY_ENTRIES: usize = 256;
+
+fn refresh_replay_key(client_id: &str, refresh_token: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(client_id.len().to_be_bytes());
+    digest.update(client_id.as_bytes());
+    digest.update(refresh_token.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+fn cached_refresh_response(
+    state: &AuthState,
+    client_id: &str,
+    refresh_token: &str,
+) -> Option<TokenResponse> {
+    let key = refresh_replay_key(client_id, refresh_token);
+    let now = now_unix();
+    let response = state
+        .refresh_replay_cache
+        .get(&key)
+        .filter(|entry| entry.value().1 > now)
+        .map(|entry| entry.value().0.clone());
+    if response.is_none() {
+        state
+            .refresh_replay_cache
+            .remove_if(&key, |_, entry| entry.1 <= now);
+    }
+    response
+}
+
+fn cache_refresh_response(
+    state: &AuthState,
+    client_id: &str,
+    refresh_token: &str,
+    response: &TokenResponse,
+) {
+    let Ok(_maintenance) = state.refresh_replay_cache_maintenance.lock() else {
+        warn!(
+            client_id = %client_id,
+            "refresh replay cache maintenance lock poisoned; response remains valid but retries lose grace protection"
+        );
+        return;
+    };
+    let now = now_unix();
+    state.refresh_replay_cache.retain(|_, entry| entry.1 > now);
+    while state.refresh_replay_cache.len() >= MAX_REFRESH_REPLAY_ENTRIES {
+        let oldest = state
+            .refresh_replay_cache
+            .iter()
+            .min_by_key(|entry| entry.value().1)
+            .map(|entry| entry.key().clone());
+        let Some(oldest) = oldest else { break };
+        state.refresh_replay_cache.remove(&oldest);
+    }
+    state.refresh_replay_cache.insert(
+        refresh_replay_key(client_id, refresh_token),
+        (
+            response.clone(),
+            now.saturating_add(REFRESH_REPLAY_GRACE_SECONDS),
+        ),
+    );
+}
 
 struct RefreshClaimLease {
     store: crate::sqlite::SqliteStore,
@@ -1282,6 +1345,15 @@ async fn refresh_token_grant(
         request.client_assertion.as_deref(),
     )
     .await?;
+    if let Some(response) = cached_refresh_response(&state, &client_id, &refresh_token) {
+        info!(
+            grant_type = "refresh_token",
+            client_id = %client_id,
+            refresh_token_id = %fingerprint(&refresh_token),
+            "oauth refresh_token retry reused the prior rotated response"
+        );
+        return Ok(response);
+    }
     let refresh_token_id = fingerprint(&refresh_token);
     debug!(
         grant_type = "refresh_token",
@@ -1323,14 +1395,24 @@ async fn refresh_token_grant(
         claim_lease_seconds = REFRESH_CLAIM_LEASE_SECONDS,
         "oauth refresh_token grant acquired subject serialization before local claim"
     );
-    let stored = stored.ok_or_else(|| {
+    let Some(stored) = stored else {
+        if let Some(response) = cached_refresh_response(&state, &client_id, &refresh_token) {
+            info!(
+                grant_type = "refresh_token",
+                client_id = %client_id,
+                refresh_token_id = %refresh_token_id,
+                lock_wait_ms,
+                "oauth concurrent refresh reused the prior rotated response"
+            );
+            return Ok(response);
+        }
         debug!(
             refresh_token_id = %refresh_token_id,
             client_id = %client_id,
             "oauth token rejected: unknown or expired refresh token"
         );
-        AuthError::InvalidGrant("unknown refresh_token".to_string())
-    })?;
+        return Err(AuthError::InvalidGrant("unknown refresh_token".to_string()));
+    };
     let (mut claim_lease, claim_lost) = RefreshClaimLease::start(
         state.store.clone(),
         refresh_token.clone(),
@@ -1616,6 +1698,7 @@ async fn complete_claimed_refresh(
         .rotate_claimed_refresh_token(refresh_token, claim_id, replacement)
         .await?
         .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".to_string()))?;
+    cache_refresh_response(state, client_id, refresh_token, &response);
 
     info!(
         grant_type = "refresh_token",
@@ -2749,6 +2832,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_grant_replay_returns_the_rotated_response() {
+        let state = test_auth_state_with_refreshable_google().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "replayed-refresh-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "grant_type=refresh_token&refresh_token=replayed-refresh-token&client_id=client",
+                ))
+                .unwrap()
+        };
+
+        let first = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        let replay = app.oneshot(request()).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        let replay_body = axum::body::to_bytes(replay.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(replay_body, first_body);
+    }
+
+    #[tokio::test]
+    async fn concurrent_refresh_grants_share_the_rotated_response() {
+        let state = test_auth_state_with_refreshable_google().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "concurrent-refresh-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let subject_guard = crate::google_refresh::lock("google-subject-123")
+            .lock_owned()
+            .await;
+        let app = router(state);
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "grant_type=refresh_token&refresh_token=concurrent-refresh-token&client_id=client",
+                ))
+                .unwrap()
+        };
+        let first = tokio::spawn(app.clone().oneshot(request()));
+        let second = tokio::spawn(app.oneshot(request()));
+        tokio::task::yield_now().await;
+        drop(subject_guard);
+
+        let first = first.await.unwrap().unwrap();
+        let second = second.await.unwrap().unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second_body = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(second_body, first_body);
+    }
+
+    #[tokio::test]
     async fn refresh_grant_waits_for_subject_lock_before_claiming_local_token() {
         let state = test_auth_state_with_refreshable_google().await;
         state
@@ -3506,7 +3681,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_refresh_has_exactly_one_winner() {
+    async fn concurrent_refresh_requests_observe_one_rotated_response() {
         let state = test_auth_state_with_refreshable_google().await;
         state
             .store
@@ -3537,21 +3712,17 @@ mod tests {
             app.clone().oneshot(request()),
             app.clone().oneshot(request())
         );
-        let statuses = [first.unwrap().status(), second.unwrap().status()];
-        assert_eq!(
-            statuses
-                .iter()
-                .filter(|status| **status == StatusCode::OK)
-                .count(),
-            1
-        );
-        assert_eq!(
-            statuses
-                .iter()
-                .filter(|status| **status == StatusCode::BAD_REQUEST)
-                .count(),
-            1
-        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second_body = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(second_body, first_body);
     }
 
     #[tokio::test]
@@ -3859,7 +4030,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_grant_rejects_reuse_of_rotated_local_token() {
+    async fn refresh_grant_rejects_reuse_after_replay_grace_expires() {
         let state = test_auth_state_with_refreshable_google().await;
         state
             .store
@@ -3875,7 +4046,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let app = router(state);
+        let app = router(state.clone());
         let first = app
             .clone()
             .oneshot(
@@ -3891,6 +4062,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
+        let replay_key = super::refresh_replay_key("client", "once-only-token");
+        state
+            .refresh_replay_cache
+            .get_mut(&replay_key)
+            .expect("successful rotation cached the response")
+            .value_mut()
+            .1 = crate::util::now_unix() - 1;
         let replay = app
             .oneshot(
                 Request::builder()
@@ -3907,7 +4085,7 @@ mod tests {
         assert_eq!(
             replay.status(),
             StatusCode::BAD_REQUEST,
-            "a rotated refresh token must not be reusable"
+            "a rotated refresh token must not be reusable after the retry window"
         );
     }
 }
