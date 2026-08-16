@@ -558,6 +558,7 @@ impl SqliteStore {
             for (table, key) in [
                 ("authorization_requests", "state"),
                 ("authorization_codes", "code"),
+                ("refresh_token_replays", "predecessor_token_hash"),
                 ("refresh_tokens", "refresh_token_hash"),
                 ("browser_sessions", "session_id"),
                 ("browser_login_states", "state"),
@@ -1226,6 +1227,18 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS refresh_token_replays (
+            predecessor_token_hash TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            response TEXT NOT NULL,
+            replacement_token_hash TEXT NOT NULL
+                REFERENCES refresh_tokens(refresh_token_hash) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_refresh_token_replays_expiry
+            ON refresh_token_replays(expires_at);
         CREATE TABLE IF NOT EXISTS google_provider_credentials (
             subject TEXT PRIMARY KEY,
             email TEXT,
@@ -2611,7 +2624,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_and_v8_upgraded_schemas_include_v10_revocations_and_native_poll_hashes() {
+    async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
         let path = temp_db_path();
         let fresh = SqliteStore::open(path.clone()).await.unwrap();
         assert!(
@@ -2637,6 +2650,18 @@ mod tests {
             !table_columns(&fresh, "assertion_jtis")
                 .await
                 .contains(&"native_poll_token_hash".to_string())
+        );
+        assert_eq!(
+            table_columns(&fresh, "refresh_token_replays").await,
+            vec![
+                "predecessor_token_hash".to_string(),
+                "client_id".to_string(),
+                "resource".to_string(),
+                "response".to_string(),
+                "replacement_token_hash".to_string(),
+                "created_at".to_string(),
+                "expires_at".to_string(),
+            ]
         );
         drop(fresh);
         let conn = Connection::open(&path).unwrap();
@@ -2689,12 +2714,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(legacy_rows, 0);
+        assert!(
+            table_columns(&upgraded, "refresh_token_replays")
+                .await
+                .contains(&"replacement_token_hash".to_string())
+        );
         drop(upgraded);
         let conn = Connection::open(path).unwrap();
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
     }
 
@@ -2750,7 +2780,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 10);
+        assert_eq!(schema_version, 11);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await

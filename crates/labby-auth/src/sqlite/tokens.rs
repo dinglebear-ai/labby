@@ -5,9 +5,11 @@
 
 use rusqlite::{OptionalExtension, params};
 
-use crate::at_rest::{maybe_decrypt, maybe_encrypt};
+use crate::at_rest::{maybe_decrypt, maybe_encrypt, require_encrypt};
 use crate::error::AuthError;
-use crate::types::{GoogleProviderCredentialRow, GoogleProviderInvalidation, RefreshTokenRow};
+use crate::types::{
+    GoogleProviderCredentialRow, GoogleProviderInvalidation, RefreshTokenRow, TokenResponse,
+};
 use crate::util::now_unix;
 
 use super::{SqliteStore, hash_token, sqlite_error};
@@ -241,6 +243,8 @@ impl SqliteStore {
         old_token: &str,
         claim_id: &str,
         new_token: RefreshTokenRow,
+        response: &TokenResponse,
+        replay_expires_at: i64,
     ) -> Result<Option<RefreshTokenRow>, AuthError> {
         let old_hash = hash_token(old_token);
         let claim_id = claim_id.to_string();
@@ -251,6 +255,11 @@ impl SqliteStore {
             .as_deref()
             .map(|raw| maybe_encrypt(self.enc_key.as_deref(), raw))
             .transpose()?;
+        let response_json = serde_json::to_string(response)
+            .map_err(|error| AuthError::Storage(format!("serialize refresh replay: {error}")))?;
+        let encrypted_response = require_encrypt(self.enc_key.as_deref(), &response_json)?;
+        let replay_client_id = new_token.client_id.clone();
+        let replay_resource = new_token.resource.clone();
         self.with_conn(move |conn| {
             let transaction = conn.transaction().map_err(sqlite_error)?;
             let deleted = transaction
@@ -284,8 +293,90 @@ impl SqliteStore {
                     ],
                 )
                 .map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO refresh_token_replays (
+                        predecessor_token_hash, client_id, resource, response,
+                        replacement_token_hash, created_at, expires_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        old_hash,
+                        replay_client_id,
+                        replay_resource,
+                        encrypted_response,
+                        new_hash,
+                        now,
+                        replay_expires_at,
+                    ],
+                )
+                .map_err(sqlite_error)?;
             transaction.commit().map_err(sqlite_error)?;
             Ok(Some(new_token))
+        })
+        .await
+    }
+
+    /// Return a still-valid idempotent response for a recently rotated token.
+    /// The successor foreign key makes consumption or revocation invalidate it.
+    pub async fn find_refresh_token_replay(
+        &self,
+        predecessor_token: &str,
+        client_id: &str,
+        requested_resource: Option<&str>,
+    ) -> Result<Option<TokenResponse>, AuthError> {
+        let predecessor_hash = hash_token(predecessor_token);
+        let client_id = client_id.to_string();
+        let requested_resource = requested_resource.map(str::to_string);
+        let now = now_unix();
+        let enc_key = self.enc_key.clone();
+        let encrypted = self
+            .with_conn(move |conn| {
+                conn.query_row(
+                    "SELECT replay.resource, replay.response
+                     FROM refresh_token_replays AS replay
+                     JOIN refresh_tokens AS replacement
+                       ON replacement.refresh_token_hash = replay.replacement_token_hash
+                     WHERE replay.predecessor_token_hash = ?1
+                       AND replay.client_id = ?2
+                       AND replay.expires_at > ?3
+                       AND replacement.expires_at > ?3",
+                    params![predecessor_hash, client_id, now],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_error)
+            })
+            .await?;
+        let Some((resource, encrypted_response)) = encrypted else {
+            return Ok(None);
+        };
+        if requested_resource
+            .as_deref()
+            .is_some_and(|requested| requested != resource)
+        {
+            return Ok(None);
+        }
+        let response_json = maybe_decrypt(enc_key.as_deref(), &encrypted_response)?;
+        serde_json::from_str(&response_json)
+            .map(Some)
+            .map_err(|error| AuthError::Storage(format!("deserialize refresh replay: {error}")))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn expire_refresh_token_replay(
+        &self,
+        predecessor_token: &str,
+    ) -> Result<(), AuthError> {
+        let predecessor_hash = hash_token(predecessor_token);
+        let expires_at = now_unix() - 1;
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE refresh_token_replays SET expires_at = ?2
+                 WHERE predecessor_token_hash = ?1",
+                params![predecessor_hash, expires_at],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
         })
         .await
     }
@@ -352,8 +443,7 @@ impl SqliteStore {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase);
-        let encrypted_refresh_token =
-            crate::at_rest::require_encrypt(self.enc_key.as_deref(), refresh_token)?;
+        let encrypted_refresh_token = require_encrypt(self.enc_key.as_deref(), refresh_token)?;
         let now = now_unix();
         self.with_conn(move |conn| {
             conn.execute(

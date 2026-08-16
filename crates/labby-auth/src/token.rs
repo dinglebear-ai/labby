@@ -35,67 +35,17 @@ use response::{TokenEndpointError, TokenResponseWithCache, apply_token_cache_hea
 const REFRESH_CLAIM_LEASE_SECONDS: i64 = 90;
 const REFRESH_CLAIM_RENEW_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 const REFRESH_REPLAY_GRACE_SECONDS: i64 = 5 * 60;
-const MAX_REFRESH_REPLAY_ENTRIES: usize = 256;
 
-fn refresh_replay_key(client_id: &str, refresh_token: &str) -> String {
-    let mut digest = Sha256::new();
-    digest.update(client_id.len().to_be_bytes());
-    digest.update(client_id.as_bytes());
-    digest.update(refresh_token.as_bytes());
-    URL_SAFE_NO_PAD.encode(digest.finalize())
-}
-
-fn cached_refresh_response(
+async fn cached_refresh_response(
     state: &AuthState,
     client_id: &str,
     refresh_token: &str,
-) -> Option<TokenResponse> {
-    let key = refresh_replay_key(client_id, refresh_token);
-    let now = now_unix();
-    let response = state
-        .refresh_replay_cache
-        .get(&key)
-        .filter(|entry| entry.value().1 > now)
-        .map(|entry| entry.value().0.clone());
-    if response.is_none() {
-        state
-            .refresh_replay_cache
-            .remove_if(&key, |_, entry| entry.1 <= now);
-    }
-    response
-}
-
-fn cache_refresh_response(
-    state: &AuthState,
-    client_id: &str,
-    refresh_token: &str,
-    response: &TokenResponse,
-) {
-    let Ok(_maintenance) = state.refresh_replay_cache_maintenance.lock() else {
-        warn!(
-            client_id = %client_id,
-            "refresh replay cache maintenance lock poisoned; response remains valid but retries lose grace protection"
-        );
-        return;
-    };
-    let now = now_unix();
-    state.refresh_replay_cache.retain(|_, entry| entry.1 > now);
-    while state.refresh_replay_cache.len() >= MAX_REFRESH_REPLAY_ENTRIES {
-        let oldest = state
-            .refresh_replay_cache
-            .iter()
-            .min_by_key(|entry| entry.value().1)
-            .map(|entry| entry.key().clone());
-        let Some(oldest) = oldest else { break };
-        state.refresh_replay_cache.remove(&oldest);
-    }
-    state.refresh_replay_cache.insert(
-        refresh_replay_key(client_id, refresh_token),
-        (
-            response.clone(),
-            now.saturating_add(REFRESH_REPLAY_GRACE_SECONDS),
-        ),
-    );
+    requested_resource: Option<&str>,
+) -> Result<Option<TokenResponse>, AuthError> {
+    state
+        .store
+        .find_refresh_token_replay(refresh_token, client_id, requested_resource)
+        .await
 }
 
 struct RefreshClaimLease {
@@ -1345,7 +1295,14 @@ async fn refresh_token_grant(
         request.client_assertion.as_deref(),
     )
     .await?;
-    if let Some(response) = cached_refresh_response(&state, &client_id, &refresh_token) {
+    if let Some(response) = cached_refresh_response(
+        &state,
+        &client_id,
+        &refresh_token,
+        requested_resource.as_deref(),
+    )
+    .await?
+    {
         info!(
             grant_type = "refresh_token",
             client_id = %client_id,
@@ -1396,7 +1353,14 @@ async fn refresh_token_grant(
         "oauth refresh_token grant acquired subject serialization before local claim"
     );
     let Some(stored) = stored else {
-        if let Some(response) = cached_refresh_response(&state, &client_id, &refresh_token) {
+        if let Some(response) = cached_refresh_response(
+            &state,
+            &client_id,
+            &refresh_token,
+            requested_resource.as_deref(),
+        )
+        .await?
+        {
             info!(
                 grant_type = "refresh_token",
                 client_id = %client_id,
@@ -1693,12 +1657,19 @@ async fn complete_claimed_refresh(
         elevated_scope.clone(),
         Some(replacement_refresh_token),
     )?;
+    let response_ttl = i64::try_from(response.expires_in).unwrap_or(i64::MAX);
+    let replay_expires_at = now.saturating_add(REFRESH_REPLAY_GRACE_SECONDS.min(response_ttl));
     state
         .store
-        .rotate_claimed_refresh_token(refresh_token, claim_id, replacement)
+        .rotate_claimed_refresh_token(
+            refresh_token,
+            claim_id,
+            replacement,
+            &response,
+            replay_expires_at,
+        )
         .await?
         .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".to_string()))?;
-    cache_refresh_response(state, client_id, refresh_token, &response);
 
     info!(
         grant_type = "refresh_token",
@@ -2891,9 +2862,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let subject_guard = crate::google_refresh::lock("google-subject-123")
-            .lock_owned()
-            .await;
+        let subject_lock = crate::google_refresh::lock("google-subject-123");
+        let subject_guard = subject_lock.clone().lock_owned().await;
         let app = router(state);
         let request = || {
             Request::builder()
@@ -2907,7 +2877,13 @@ mod tests {
         };
         let first = tokio::spawn(app.clone().oneshot(request()));
         let second = tokio::spawn(app.oneshot(request()));
-        tokio::task::yield_now().await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while std::sync::Arc::strong_count(&subject_lock) < 5 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both refresh requests reached the held subject lock");
         drop(subject_guard);
 
         let first = first.await.unwrap().unwrap();
@@ -4062,13 +4038,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
-        let replay_key = super::refresh_replay_key("client", "once-only-token");
         state
-            .refresh_replay_cache
-            .get_mut(&replay_key)
-            .expect("successful rotation cached the response")
-            .value_mut()
-            .1 = crate::util::now_unix() - 1;
+            .store
+            .expire_refresh_token_replay("once-only-token")
+            .await
+            .unwrap();
         let replay = app
             .oneshot(
                 Request::builder()
@@ -4087,5 +4061,190 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "a rotated refresh token must not be reusable after the retry window"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_replay_rejects_a_revoked_replacement_token() {
+        let state = test_auth_state_with_refreshable_google().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "pre-revocation-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state.clone());
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "grant_type=refresh_token&refresh_token=pre-revocation-token&client_id=client",
+                ))
+                .unwrap()
+        };
+
+        let first = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first_json: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+        let replacement = first_json["refresh_token"]
+            .as_str()
+            .expect("rotated refresh token");
+        state.store.revoke_refresh_token(replacement).await.unwrap();
+
+        let replay = app.oneshot(request()).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_replay_rejects_a_consumed_replacement_token() {
+        let state = test_auth_state_with_refreshable_google().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "first-generation-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+        let first_request = || {
+            form_request(
+                "/token",
+                "grant_type=refresh_token&refresh_token=first-generation-token&client_id=client"
+                    .to_string(),
+            )
+        };
+        let first = app.clone().oneshot(first_request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first_json: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+        let second_generation = first_json["refresh_token"]
+            .as_str()
+            .expect("second-generation refresh token");
+
+        let second = app
+            .clone()
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", second_generation),
+                    ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+
+        let stale_replay = app.oneshot(first_request()).await.unwrap();
+        assert_eq!(stale_replay.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_replay_survives_auth_state_restart() {
+        let state = test_auth_state_with_refreshable_google().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "restart-replay-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "grant_type=refresh_token&refresh_token=restart-replay-token&client_id=client",
+                ))
+                .unwrap()
+        };
+        let first = router(state.clone()).oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        let restarted = AuthState::for_tests(
+            (*state.config).clone(),
+            state.store.clone(),
+            (*state.signing_keys).clone(),
+            (*state.google).clone(),
+        );
+        let replay = router(restarted).oneshot(request()).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        let replay_body = axum::body::to_bytes(replay.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(replay_body, first_body);
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_replay_rejects_a_different_resource() {
+        let state = test_auth_state_with_refreshable_google().await;
+        state.set_allowed_resource_urls(["https://other.example.com/mcp".to_string()]);
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "resource-bound-replay-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+        let first = app
+            .clone()
+            .oneshot(form_request(
+                "/token",
+                "grant_type=refresh_token&refresh_token=resource-bound-replay-token&client_id=client"
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let replay = app
+            .oneshot(form_request(
+                "/token",
+                "grant_type=refresh_token&refresh_token=resource-bound-replay-token&client_id=client&resource=https%3A%2F%2Fother.example.com%2Fmcp"
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
     }
 }

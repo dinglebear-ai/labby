@@ -17,7 +17,7 @@ use crate::jwt::SigningKeys;
 use crate::resource_registry::ResourceRegistry;
 use crate::sqlite::SqliteStore;
 #[cfg(feature = "http-axum")]
-use crate::types::{RegisteredClient, TokenResponse};
+use crate::types::RegisteredClient;
 
 const RATE_LIMIT_RETRY_AFTER_MS: u64 = 60_000;
 const RATE_LIMIT_MAX_IP_BUCKETS: usize = 4_096;
@@ -268,12 +268,6 @@ pub struct AuthState {
     /// semaphore, not a mutex: unrelated documents may still fetch in parallel.
     #[cfg(feature = "http-axum")]
     pub(crate) remote_fetch_permits: Arc<Semaphore>,
-    /// Successful refresh responses retained briefly so authenticated clients
-    /// can safely retry a request whose response they did not observe.
-    #[cfg(feature = "http-axum")]
-    pub(crate) refresh_replay_cache: Arc<DashMap<String, (TokenResponse, i64)>>,
-    #[cfg(feature = "http-axum")]
-    pub(crate) refresh_replay_cache_maintenance: Arc<std::sync::Mutex<()>>,
 }
 
 impl AuthState {
@@ -368,10 +362,6 @@ impl AuthState {
             remote_fetch_lock_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
-            #[cfg(feature = "http-axum")]
-            refresh_replay_cache: Arc::new(DashMap::new()),
-            #[cfg(feature = "http-axum")]
-            refresh_replay_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -550,10 +540,6 @@ impl AuthState {
             remote_fetch_lock_maintenance: Arc::new(std::sync::Mutex::new(())),
             #[cfg(feature = "http-axum")]
             remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
-            #[cfg(feature = "http-axum")]
-            refresh_replay_cache: Arc::new(DashMap::new()),
-            #[cfg(feature = "http-axum")]
-            refresh_replay_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
         }
     }
 }
