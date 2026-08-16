@@ -4234,10 +4234,16 @@ mod tests {
                     .to_string(),
             )
         };
-        assert_eq!(
-            app.clone().oneshot(refresh()).await.unwrap().status(),
-            StatusCode::OK
-        );
+        let rotated = app.clone().oneshot(refresh()).await.unwrap();
+        assert_eq!(rotated.status(), StatusCode::OK);
+        let rotated_body = axum::body::to_bytes(rotated.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let rotated_json: serde_json::Value = serde_json::from_slice(&rotated_body).unwrap();
+        let successor = rotated_json["refresh_token"]
+            .as_str()
+            .expect("rotated refresh token")
+            .to_string();
         let revoke = form_request(
             "/revoke",
             "token=revoked-predecessor-token&client_id=client".to_string(),
@@ -4247,7 +4253,21 @@ mod tests {
             StatusCode::OK
         );
         assert_eq!(
-            app.oneshot(refresh()).await.unwrap().status(),
+            app.clone().oneshot(refresh()).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", successor.as_str()),
+                    ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap()
+            .status(),
             StatusCode::BAD_REQUEST
         );
     }
