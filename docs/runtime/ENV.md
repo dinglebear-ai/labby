@@ -102,30 +102,33 @@ mcp auth */protected-route */discover/import/code *) prefers the live
 `labby serve` daemon's HTTP API over its own local `config.toml` mutation --
 see `docs/services/GATEWAY.md` for why that split exists. To reach a daemon
 running on a different host (not just the one the CLI happens to run on),
-the invoking machine needs exactly two things in its `~/.labby/.env`:
+the invoking machine should configure an explicit client target and the
+daemon's bearer token:
 
 ```env
 LABBY_MCP_HTTP_TOKEN=same-token-as-the-daemon
-LABBY_PUBLIC_URL=https://labby.example.com
+LABBY_SERVER_URL=https://labby.example.com
 ```
 
 - `LABBY_MCP_HTTP_TOKEN` must be the *same* token the daemon itself uses for
   bearer auth (copy it from the daemon host's `~/.labby/.env`). Without it,
   the CLI still finds and reaches the daemon but every dispatch fails with
   `auth_failed`.
-- `LABBY_PUBLIC_URL` (or `LABBY_MCP_GATEWAY_URL` if the gateway is split onto a
-  separate hostname from the main app) is how the CLI locates the daemon
-  when it isn't on the same host. Detection tries the local bind address
-  first (`LABBY_MCP_HTTP_HOST`/`LABBY_MCP_HTTP_PORT`, then `config.toml`'s
-  `[mcp]` section, then `127.0.0.1:8765`) and falls through to
-  `LABBY_MCP_GATEWAY_URL` then `LABBY_PUBLIC_URL` in order, using whichever
-  responds first to `/health`.
-- If neither URL is reachable (or the token is missing/wrong), the CLI
-  falls back to mutating its own local `config.toml` instead of erroring --
-  which keeps bootstrap flows (`labby setup --provision`, the very first
-  `gateway add` before `labby serve` exists) working, but means a config
-  change made this way won't show up on a *different* running daemon until
-  one of the above is fixed.
+- `CLAUDE_PLUGIN_OPTION_SERVER_URL` is the invocation-scoped target supplied by
+  the Labby Claude plugin. It takes precedence over `LABBY_SERVER_URL`.
+- `LABBY_SERVER_URL` is the ordinary CLI/stdio client target. Both explicit
+  targets fail closed: invalid, unreachable, unauthorized, incompatible, or
+  post-detection failures are returned and never read or execute against a
+  local `config.toml`.
+- Without either explicit target, detection remains opportunistic: local bind,
+  then `LABBY_MCP_GATEWAY_URL`, then `LABBY_PUBLIC_URL`. Bounded exhaustion may
+  fall back to standalone local state for bootstrap compatibility.
+- A terminal `/mcp` is normalized to the daemon base while a reverse-proxy path
+  prefix is preserved. Remote targets require HTTPS; loopback HTTP is allowed.
+  Redirects, URL credentials, query strings, and fragments are rejected.
+- The target and `LABBY_MCP_HTTP_TOKEN` form one trusted operator authority
+  domain. Do not inherit the token while pointing either explicit variable at
+  a server you do not administer.
 
 Verified against a completely bare `~/.labby/` containing nothing but the
 two lines above (no `config.toml`, no local databases): both a read
@@ -148,9 +151,9 @@ piped straight back, with no local `GatewayManager`, upstream pool, or OAuth
 state of its own. This is what keeps a locally spawned stdio MCP client
 (e.g. an editor or agent configured to run `labby mcp` instead of connecting
 to the daemon directly over HTTP) from becoming a second, silently-diverging
-gateway instance. Same two env vars as above make this reachable from a
-different host; same fallback (standalone, full local instance) applies if
-no daemon is reachable.
+gateway instance. Explicit targets use bounded MCP initialization and fail
+closed; standalone fallback applies only after opportunistic discovery returns
+no daemon.
 
 ## Service Environment Variables
 
