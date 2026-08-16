@@ -1,10 +1,10 @@
-//! Binary-owned setup checks for Claude plugin hooks.
+//! Binary-owned setup checks for manually invoked plugin setup commands.
 //!
-//! Hooks should call into `labby setup plugin-hook` instead of carrying their
-//! own per-plugin shell bootstrap. This module inspects and repairs local
-//! filesystem prerequisites, syncs CLAUDE_PLUGIN_OPTION_* env vars into
-//! ~/.labby/.env, exports current .env values as plugin field names, and
-//! validates connectivity to the lab MCP server.
+//! This module inspects and repairs local filesystem prerequisites, syncs
+//! CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env, exports current .env
+//! values as plugin field names, and validates connectivity to the lab MCP
+//! server. The plugin no longer installs lifecycle hooks; operators invoke
+//! these compatibility commands manually.
 
 use std::collections::HashMap;
 use std::fs;
@@ -133,7 +133,11 @@ pub struct ConnectivityOutcome {
     pub server_url: String,
     pub reachable: bool,
     pub latency_ms: Option<u64>,
+    /// Status from the endpoint named by `status_source`.
     pub status: Option<u16>,
+    pub status_source: Option<&'static str>,
+    /// Status returned by `/health`, whenever that endpoint responded.
+    pub health_status: Option<u16>,
     pub message: String,
 }
 
@@ -149,8 +153,8 @@ pub struct PluginHookReport {
     pub connectivity: ConnectivityOutcome,
 }
 
-/// Run the full plugin-hook sequence: repair dirs → sync env vars → validate
-/// connectivity. Runs repair phase by default (called from SessionStart hook).
+/// Run the full manually invoked plugin setup sequence: repair dirs → sync env
+/// vars → validate connectivity.
 pub fn run(mode: Mode) -> Result<SetupReport, ToolError> {
     run_for_paths(mode, lab_home(), env_path())
 }
@@ -164,14 +168,24 @@ pub fn sync_plugin_env() -> Result<PluginSyncOutcome, ToolError> {
 }
 
 pub fn sync_plugin_env_to(env: PathBuf) -> Result<PluginSyncOutcome, ToolError> {
-    let entries: Vec<EnvEntry> = PLUGIN_OPTION_MAP
+    let entries = plugin_entries_from(|option_var| std::env::var(option_var).ok());
+    sync_plugin_entries_to(env, entries)
+}
+
+fn plugin_entries_from(mut read: impl FnMut(&str) -> Option<String>) -> Vec<EnvEntry> {
+    PLUGIN_OPTION_MAP
         .iter()
         .filter_map(|(option_var, lab_var)| {
-            let value = std::env::var(option_var).ok().filter(|v| !v.is_empty())?;
+            let value = read(option_var).filter(|value| !value.trim().is_empty())?;
             Some(EnvEntry::new(lab_var.to_string(), value))
         })
-        .collect();
+        .collect()
+}
 
+fn sync_plugin_entries_to(
+    env: PathBuf,
+    entries: Vec<EnvEntry>,
+) -> Result<PluginSyncOutcome, ToolError> {
     let options_found = entries.len();
     if options_found == 0 {
         return Ok(PluginSyncOutcome {
@@ -204,7 +218,7 @@ pub fn sync_plugin_env_to(env: PathBuf) -> Result<PluginSyncOutcome, ToolError> 
         &env,
         MergeRequest {
             entries,
-            force: false,
+            force: true,
             expected_mtime: None,
         },
     )
@@ -277,17 +291,26 @@ pub fn export_plugin_env_from(env: PathBuf) -> Result<PluginExportOutcome, ToolE
 
 /// Validate connectivity to the lab MCP server at `{server_url}/health`.
 ///
-/// Uses `CLAUDE_PLUGIN_OPTION_SERVER_URL`, then `LABBY_SERVER_URL`, if
-/// `server_url` is not provided.
+/// Selects `CLAUDE_PLUGIN_OPTION_SERVER_URL`, then `LABBY_SERVER_URL`, then
+/// loopback. An optional requested URL must match that active origin.
 /// Non-blocking: a failed probe is reported as `reachable: false`, not an error.
 pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutcome {
     let plugin_target = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").ok();
     let product_target = std::env::var("LABBY_SERVER_URL").ok();
-    let configured = resolve_connectivity_target(
+    validate_connectivity_with_targets(
         server_url,
         plugin_target.as_deref(),
         product_target.as_deref(),
-    );
+    )
+    .await
+}
+
+async fn validate_connectivity_with_targets(
+    server_url: Option<&str>,
+    plugin_target: Option<&str>,
+    product_target: Option<&str>,
+) -> ConnectivityOutcome {
+    let configured = resolve_connectivity_target(plugin_target, product_target);
     let requested = server_url.filter(|value| !value.trim().is_empty());
     let (base, health_url) = match validated_connectivity_target(requested, &configured) {
         Ok(target) => target,
@@ -297,6 +320,8 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
                 reachable: false,
                 latency_ms: None,
                 status: None,
+                status_source: None,
+                health_status: None,
                 message,
             };
         }
@@ -317,6 +342,8 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
                 reachable: false,
                 latency_ms: None,
                 status: None,
+                status_source: None,
+                health_status: None,
                 message: format!("failed to build HTTP client: {e}"),
             };
         }
@@ -332,13 +359,20 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
                     && let Ok(mcp_response) = client.get(mcp_url).send().await
                 {
                     let mcp_status = mcp_response.status().as_u16();
-                    if mcp_fallback_is_reachable(status, mcp_status) {
+                    let has_bearer_challenge = mcp_response
+                        .headers()
+                        .get(reqwest::header::WWW_AUTHENTICATE)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(has_bearer_challenge);
+                    if mcp_fallback_is_reachable(status, mcp_status, has_bearer_challenge) {
                         let latency = start.elapsed().as_millis() as u64;
                         return ConnectivityOutcome {
                             server_url: base,
                             reachable: true,
                             latency_ms: Some(latency),
                             status: Some(mcp_status),
+                            status_source: Some("mcp"),
+                            health_status: Some(status),
                             message: format!(
                                 "MCP endpoint reachable ({mcp_status}) in {latency}ms; health returned {status}"
                             ),
@@ -352,6 +386,8 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
                 reachable: status < 400,
                 latency_ms: Some(latency),
                 status: Some(status),
+                status_source: Some("health"),
+                health_status: Some(status),
                 message: format!("connected ({status}) in {latency}ms"),
             }
         }
@@ -360,23 +396,34 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
             reachable: false,
             latency_ms: None,
             status: None,
+            status_source: None,
+            health_status: None,
             message: format!("unreachable: {e}"),
         },
     }
 }
 
-fn mcp_fallback_is_reachable(health_status: u16, mcp_status: u16) -> bool {
-    health_status >= 500 && mcp_status < 500
+fn mcp_fallback_is_reachable(
+    health_status: u16,
+    mcp_status: u16,
+    has_bearer_challenge: bool,
+) -> bool {
+    health_status >= 500 && mcp_status == 401 && has_bearer_challenge
+}
+
+fn has_bearer_challenge(value: &str) -> bool {
+    value
+        .split(|character: char| character.is_ascii_whitespace() || character == ',')
+        .find(|part| !part.is_empty())
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer"))
 }
 
 fn resolve_connectivity_target(
-    requested: Option<&str>,
     plugin_target: Option<&str>,
     product_target: Option<&str>,
 ) -> String {
-    requested
+    plugin_target
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| plugin_target.filter(|value| !value.trim().is_empty()))
         .or_else(|| product_target.filter(|value| !value.trim().is_empty()))
         .unwrap_or("http://localhost:8765")
         .to_string()
@@ -386,8 +433,8 @@ fn resolve_connectivity_target(
 ///
 /// This is deliberately an allow-list policy rather than a general-purpose
 /// URL fetcher: the setup probe has no reason to contact an arbitrary host.
-/// A caller override is accepted only when it normalizes to exactly the same
-/// origin as `CLAUDE_PLUGIN_OPTION_SERVER_URL`. Redirects are disabled by the
+/// A requested URL is accepted only when it normalizes to exactly the same
+/// origin as the configured plugin target. Redirects are disabled by the
 /// caller, so a trusted origin cannot bounce the probe into metadata/LAN space.
 fn validated_connectivity_target(
     requested: Option<&str>,
@@ -579,9 +626,39 @@ mod tests {
 
     #[test]
     fn connectivity_target_uses_product_server_url_when_plugin_option_is_absent() {
-        let target = resolve_connectivity_target(None, None, Some("https://dinglebear.ai/mcp"));
+        let target = resolve_connectivity_target(None, Some("https://dinglebear.ai/mcp"));
 
         assert_eq!(target, "https://dinglebear.ai/mcp");
+    }
+
+    #[test]
+    fn configured_connectivity_target_cannot_be_replaced_by_a_request_override() {
+        let target = resolve_connectivity_target(None, Some("https://dinglebear.ai"));
+
+        assert_eq!(target, "https://dinglebear.ai");
+    }
+
+    #[test]
+    fn connectivity_target_precedence_ignores_blank_values() {
+        assert_eq!(
+            resolve_connectivity_target(
+                Some("https://plugin.example"),
+                Some("https://product.example"),
+            ),
+            "https://plugin.example"
+        );
+        assert_eq!(
+            resolve_connectivity_target(Some("  "), Some("https://product.example")),
+            "https://product.example"
+        );
+        assert_eq!(
+            resolve_connectivity_target(Some(""), Some("")),
+            "http://localhost:8765"
+        );
+        assert_eq!(
+            resolve_connectivity_target(None, None),
+            "http://localhost:8765"
+        );
     }
 
     #[test]
@@ -593,10 +670,92 @@ mod tests {
     }
 
     #[test]
+    fn plugin_sync_replaces_stale_server_url_and_preserves_unrelated_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env = temp.path().join(".env");
+        fs::write(
+            &env,
+            "# keep this comment\nUNRELATED=value\nLABBY_SERVER_URL=https://old.example\n",
+        )
+        .expect("seed env");
+        let entries = plugin_entries_from(|key| {
+            (key == "CLAUDE_PLUGIN_OPTION_SERVER_URL").then(|| "https://new.example".to_string())
+        });
+
+        let outcome = sync_plugin_entries_to(env.clone(), entries).expect("sync plugin env");
+
+        assert_eq!(outcome.written, 1);
+        assert!(outcome.skipped.is_empty());
+        let contents = fs::read_to_string(&env).expect("read env");
+        assert!(contents.contains("# keep this comment"));
+        assert!(contents.contains("UNRELATED=value"));
+        assert!(contents.contains("LABBY_SERVER_URL=https://new.example"));
+        assert!(!contents.contains("https://old.example"));
+        let export = export_plugin_env_from(env).expect("export plugin env");
+        let server_url = export
+            .fields
+            .iter()
+            .find(|entry| entry.field == "server_url")
+            .expect("server_url export");
+        assert_eq!(server_url.value.as_deref(), Some("https://new.example"));
+        assert!(!server_url.sensitive);
+    }
+
+    #[test]
     fn oauth_challenge_proves_mcp_reachability_when_health_is_unpublished() {
-        assert!(mcp_fallback_is_reachable(502, 401));
-        assert!(!mcp_fallback_is_reachable(502, 502));
-        assert!(!mcp_fallback_is_reachable(404, 401));
+        assert!(mcp_fallback_is_reachable(502, 401, true));
+        assert!(!mcp_fallback_is_reachable(502, 401, false));
+        assert!(!mcp_fallback_is_reachable(502, 502, false));
+        assert!(!mcp_fallback_is_reachable(502, 404, false));
+        assert!(!mcp_fallback_is_reachable(404, 401, true));
+    }
+
+    #[test]
+    fn bearer_challenge_scheme_is_case_insensitive() {
+        assert!(has_bearer_challenge("Bearer scope=\"lab\""));
+        assert!(has_bearer_challenge("bearer scope=\"lab\""));
+        assert!(!has_bearer_challenge("Basic realm=\"lab\""));
+    }
+
+    #[tokio::test]
+    async fn unconfigured_request_cannot_replace_the_loopback_default() {
+        let outcome =
+            validate_connectivity_with_targets(Some("https://169.254.169.254"), None, None).await;
+
+        assert!(!outcome.reachable);
+        assert_eq!(outcome.server_url, "<rejected>");
+        assert!(outcome.message.contains("configured plugin server origin"));
+    }
+
+    #[tokio::test]
+    async fn connectivity_probe_uses_authenticated_mcp_fallback_after_health_failure() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(502))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mcp"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .insert_header("WWW-Authenticate", "Bearer scope=\"lab\""),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let outcome = validate_connectivity_with_targets(None, None, Some(&server.uri())).await;
+
+        assert!(outcome.reachable);
+        assert_eq!(outcome.status, Some(401));
+        assert_eq!(outcome.status_source, Some("mcp"));
+        assert_eq!(outcome.health_status, Some(502));
+        assert!(outcome.message.contains("health returned 502"));
     }
 
     #[test]

@@ -91,10 +91,11 @@ Rules:
 
 ## Remote Gateway CLI Usage
 
-`LABBY_SERVER_URL` is the explicit client-side Labby daemon target. Plugin
-setup persists its `server_url` user setting under this name so later setup,
-CLI, and stdio invocations do not silently revert to loopback. It configures no
-daemon listener; server bind configuration remains separate.
+`LABBY_SERVER_URL` is the persisted fallback for plugin setup connectivity
+checks and plugin-setting export. It configures neither the daemon listener nor
+general gateway CLI/stdio discovery; those use the variables documented below.
+As client-only setup state, it is intentionally outside the generated
+per-service environment inventory.
 
 `labby gateway <subcommand>` (add/update/remove/reload/enable/disable/list/
 mcp auth */protected-route */discover/import/code *) prefers the live

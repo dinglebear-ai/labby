@@ -858,7 +858,7 @@ Options:
           Emit JSON instead of human-readable tables
 
       --server-url <SERVER_URL>
-          Server URL to probe; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or http://localhost:8765
+          Requested server URL; it must match the active plugin, persisted, or http://localhost:8765 target
 
       --color <COLOR>
           Control human-readable CLI styling
