@@ -90,6 +90,11 @@ impl SqliteStore {
         Ok(store)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn reopen_for_test(&self) -> Result<Self, AuthError> {
+        Self::open_with_key(self.path.as_ref().clone(), self.enc_key.as_deref().cloned()).await
+    }
+
     pub async fn pragma(&self, name: &str) -> Result<String, AuthError> {
         let pragma = match name {
             "journal_mode" | "busy_timeout" | "foreign_keys" => name.to_string(),
@@ -2719,6 +2724,61 @@ mod tests {
                 .await
                 .contains(&"replacement_token_hash".to_string())
         );
+        upgraded
+            .with_conn(|conn| {
+                let foreign_key_action: String = conn
+                    .query_row(
+                        "SELECT on_delete FROM pragma_foreign_key_list('refresh_token_replays')
+                         WHERE \"table\" = 'refresh_tokens'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(sqlite_error)?;
+                assert_eq!(foreign_key_action, "CASCADE");
+                let has_expiry_index: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_index_list('refresh_token_replays')
+                         WHERE name = 'idx_refresh_token_replays_expiry')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(sqlite_error)?;
+                assert!(has_expiry_index);
+                conn.execute(
+                    "INSERT OR IGNORE INTO registered_clients (client_id, redirect_uris, created_at)
+                     VALUES ('client', '[]', 1)",
+                    [],
+                )
+                .map_err(sqlite_error)?;
+                conn.execute(
+                    "INSERT INTO refresh_tokens
+                     (refresh_token_hash, client_id, subject, resource, scope, created_at, expires_at)
+                     VALUES ('replacement-hash', 'client', 'subject', '', 'lab', 1, 9999999999)",
+                    [],
+                )
+                .map_err(sqlite_error)?;
+                conn.execute(
+                    "INSERT INTO refresh_token_replays
+                     (predecessor_token_hash, client_id, resource, response,
+                      replacement_token_hash, created_at, expires_at)
+                     VALUES ('predecessor-hash', 'client', '', 'encrypted',
+                             'replacement-hash', 1, 9999999999)",
+                    [],
+                )
+                .map_err(sqlite_error)?;
+                conn.execute(
+                    "DELETE FROM refresh_tokens WHERE refresh_token_hash = 'replacement-hash'",
+                    [],
+                )
+                .map_err(sqlite_error)?;
+                let replay_count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM refresh_token_replays", [], |row| row.get(0))
+                    .map_err(sqlite_error)?;
+                assert_eq!(replay_count, 0);
+                Ok(())
+            })
+            .await
+            .unwrap();
         drop(upgraded);
         let conn = Connection::open(path).unwrap();
         assert_eq!(

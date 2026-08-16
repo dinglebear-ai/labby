@@ -362,13 +362,63 @@ impl SqliteStore {
             .map_err(|error| AuthError::Storage(format!("deserialize refresh replay: {error}")))
     }
 
+    /// Return the client bound to a still-valid replayable predecessor.
+    pub async fn find_refresh_token_replay_client(
+        &self,
+        predecessor_token: &str,
+    ) -> Result<Option<String>, AuthError> {
+        let predecessor_hash = hash_token(predecessor_token);
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT replay.client_id
+                 FROM refresh_token_replays AS replay
+                 JOIN refresh_tokens AS replacement
+                   ON replacement.refresh_token_hash = replay.replacement_token_hash
+                 WHERE replay.predecessor_token_hash = ?1
+                   AND replay.expires_at > ?2
+                   AND replacement.expires_at > ?2",
+                params![predecessor_hash, now],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    /// Revoke the successor represented by a replayable predecessor.
+    /// The foreign-key cascade removes the replay row in the same transaction.
+    pub async fn revoke_refresh_token_replay(
+        &self,
+        predecessor_token: &str,
+        client_id: &str,
+    ) -> Result<(), AuthError> {
+        let predecessor_hash = hash_token(predecessor_token);
+        let client_id = client_id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM refresh_tokens
+                 WHERE refresh_token_hash = (
+                   SELECT replacement_token_hash
+                   FROM refresh_token_replays
+                   WHERE predecessor_token_hash = ?1 AND client_id = ?2
+                 )",
+                params![predecessor_hash, client_id],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
     #[cfg(test)]
     pub(crate) async fn expire_refresh_token_replay(
         &self,
         predecessor_token: &str,
     ) -> Result<(), AuthError> {
         let predecessor_hash = hash_token(predecessor_token);
-        let expires_at = now_unix() - 1;
+        let expires_at = now_unix();
         self.with_conn(move |conn| {
             conn.execute(
                 "UPDATE refresh_token_replays SET expires_at = ?2
@@ -377,6 +427,24 @@ impl SqliteStore {
             )
             .map_err(sqlite_error)?;
             Ok(())
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn refresh_token_replay_expires_at(
+        &self,
+        predecessor_token: &str,
+    ) -> Result<Option<i64>, AuthError> {
+        let predecessor_hash = hash_token(predecessor_token);
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT expires_at FROM refresh_token_replays WHERE predecessor_token_hash = ?1",
+                params![predecessor_hash],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)
         })
         .await
     }
