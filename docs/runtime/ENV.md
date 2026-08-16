@@ -91,6 +91,11 @@ Rules:
 
 ## Remote Gateway CLI Usage
 
+`LABBY_SERVER_URL` is the explicit client-side Labby daemon target. Plugin
+setup persists its `server_url` user setting under this name so later setup,
+CLI, and stdio invocations do not silently revert to loopback. It configures no
+daemon listener; server bind configuration remains separate.
+
 `labby gateway <subcommand>` (add/update/remove/reload/enable/disable/list/
 mcp auth */protected-route */discover/import/code *) prefers the live
 `labby serve` daemon's HTTP API over its own local `config.toml` mutation --

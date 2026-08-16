@@ -37,6 +37,10 @@ Plugin settings (server URL, auth mode, token, …) are declared in
 running `labby setup plugin-hook` manually after changing settings — this is no
 longer triggered automatically by a ConfigChange hook.
 
+The `server_url` setting is persisted as `LABBY_SERVER_URL`. Connectivity
+checks prefer the invocation-scoped plugin setting, then that persisted client
+target, and use loopback only when neither is configured.
+
 When upstream OAuth is configured, set `public_url` to the explicit public base
 URL for the Labby server. Labby derives the upstream browser callback from that
 value and refuses to initialize the HTTP OAuth runtime when it is missing; the

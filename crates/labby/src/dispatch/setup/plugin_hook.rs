@@ -59,10 +59,11 @@ pub struct SetupReport {
 /// Mapping from `CLAUDE_PLUGIN_OPTION_<OPTION>` to the LABBY_* env var name.
 ///
 /// Only options that have a direct LABBY_* env var equivalent are listed.
-/// `server_url` is intentionally absent — it's a client-side MCP connection
-/// target, not a server env var. `mcp_host`/`mcp_port` are config.toml fields
-/// with no env var override, so they're also absent.
+/// `LABBY_SERVER_URL` is the product-owned client target; it does not configure
+/// the daemon bind address. `mcp_host`/`mcp_port` are config.toml fields with no
+/// env var override, so they're absent.
 const PLUGIN_OPTION_MAP: &[(&str, &str)] = &[
+    ("CLAUDE_PLUGIN_OPTION_SERVER_URL", "LABBY_SERVER_URL"),
     ("CLAUDE_PLUGIN_OPTION_API_TOKEN", "LABBY_MCP_HTTP_TOKEN"),
     ("CLAUDE_PLUGIN_OPTION_AUTH_MODE", "LABBY_AUTH_MODE"),
     ("CLAUDE_PLUGIN_OPTION_PUBLIC_URL", "LABBY_PUBLIC_URL"),
@@ -91,6 +92,7 @@ const PLUGIN_OPTION_MAP: &[(&str, &str)] = &[
 /// Reverse map: LABBY_* env var → plugin userConfig field name, for export.
 const ENV_TO_FIELD_MAP: &[(&str, &str, bool)] = &[
     // (lab_env_var, userConfig_field_name, is_sensitive)
+    ("LABBY_SERVER_URL", "server_url", false),
     ("LABBY_MCP_HTTP_TOKEN", "api_token", true),
     ("LABBY_AUTH_MODE", "auth_mode", false),
     ("LABBY_PUBLIC_URL", "public_url", false),
@@ -275,13 +277,17 @@ pub fn export_plugin_env_from(env: PathBuf) -> Result<PluginExportOutcome, ToolE
 
 /// Validate connectivity to the lab MCP server at `{server_url}/health`.
 ///
-/// Uses `CLAUDE_PLUGIN_OPTION_SERVER_URL` if `server_url` is not provided.
+/// Uses `CLAUDE_PLUGIN_OPTION_SERVER_URL`, then `LABBY_SERVER_URL`, if
+/// `server_url` is not provided.
 /// Non-blocking: a failed probe is reported as `reachable: false`, not an error.
 pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutcome {
-    let configured = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "http://localhost:8765".to_string());
+    let plugin_target = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").ok();
+    let product_target = std::env::var("LABBY_SERVER_URL").ok();
+    let configured = resolve_connectivity_target(
+        server_url,
+        plugin_target.as_deref(),
+        product_target.as_deref(),
+    );
     let requested = server_url.filter(|value| !value.trim().is_empty());
     let (base, health_url) = match validated_connectivity_target(requested, &configured) {
         Ok(target) => target,
@@ -320,6 +326,26 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
     match client.get(health_url).send().await {
         Ok(response) => {
             let status = response.status().as_u16();
+            if status >= 500 {
+                let mcp_url = url::Url::parse(&format!("{base}/mcp"));
+                if let Ok(mcp_url) = mcp_url
+                    && let Ok(mcp_response) = client.get(mcp_url).send().await
+                {
+                    let mcp_status = mcp_response.status().as_u16();
+                    if mcp_fallback_is_reachable(status, mcp_status) {
+                        let latency = start.elapsed().as_millis() as u64;
+                        return ConnectivityOutcome {
+                            server_url: base,
+                            reachable: true,
+                            latency_ms: Some(latency),
+                            status: Some(mcp_status),
+                            message: format!(
+                                "MCP endpoint reachable ({mcp_status}) in {latency}ms; health returned {status}"
+                            ),
+                        };
+                    }
+                }
+            }
             let latency = start.elapsed().as_millis() as u64;
             ConnectivityOutcome {
                 server_url: base.clone(),
@@ -337,6 +363,23 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
             message: format!("unreachable: {e}"),
         },
     }
+}
+
+fn mcp_fallback_is_reachable(health_status: u16, mcp_status: u16) -> bool {
+    health_status >= 500 && mcp_status < 500
+}
+
+fn resolve_connectivity_target(
+    requested: Option<&str>,
+    plugin_target: Option<&str>,
+    product_target: Option<&str>,
+) -> String {
+    requested
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| plugin_target.filter(|value| !value.trim().is_empty()))
+        .or_else(|| product_target.filter(|value| !value.trim().is_empty()))
+        .unwrap_or("http://localhost:8765")
+        .to_string()
 }
 
 /// Resolve the connectivity probe to the single operator-configured origin.
@@ -533,6 +576,28 @@ fn io_error(check: &'static str, path: &Path, error: std::io::Error) -> ToolErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connectivity_target_uses_product_server_url_when_plugin_option_is_absent() {
+        let target = resolve_connectivity_target(None, None, Some("https://dinglebear.ai/mcp"));
+
+        assert_eq!(target, "https://dinglebear.ai/mcp");
+    }
+
+    #[test]
+    fn plugin_server_url_is_persisted_as_the_product_client_target() {
+        assert!(
+            PLUGIN_OPTION_MAP.contains(&("CLAUDE_PLUGIN_OPTION_SERVER_URL", "LABBY_SERVER_URL",))
+        );
+        assert!(ENV_TO_FIELD_MAP.contains(&("LABBY_SERVER_URL", "server_url", false,)));
+    }
+
+    #[test]
+    fn oauth_challenge_proves_mcp_reachability_when_health_is_unpublished() {
+        assert!(mcp_fallback_is_reachable(502, 401));
+        assert!(!mcp_fallback_is_reachable(502, 502));
+        assert!(!mcp_fallback_is_reachable(404, 401));
+    }
 
     #[test]
     fn connectivity_target_is_pinned_to_configured_origin() {

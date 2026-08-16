@@ -248,7 +248,7 @@ pub const ACTIONS: &[ActionSpec] = &[
             name: "server_url",
             ty: "string",
             required: false,
-            description: "Override server URL; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL or http://localhost:8765",
+            description: "Override server URL; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or http://localhost:8765",
         }],
     },
     ActionSpec {

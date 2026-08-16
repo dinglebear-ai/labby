@@ -114,7 +114,8 @@ pub enum SetupCommand {
     PluginExport,
     /// Validate connectivity to the lab MCP server.
     PluginConnectivity {
-        /// Server URL to probe; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL or http://localhost:8765.
+        /// Server URL to probe; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL,
+        /// LABBY_SERVER_URL, or http://localhost:8765.
         #[arg(long)]
         server_url: Option<String>,
     },
