@@ -369,7 +369,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 // A pooled runner can die while idle. Because it emitted no valid
                 // protocol event for this execution, no host-visible side effect
                 // crossed the sandbox boundary and one replay is safe.
-                lease.evict();
+                lease.evict().await;
                 tracing::warn!(
                     surface = "dispatch",
                     service = "code_mode",
@@ -392,15 +392,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     }
                     DriveOutcome::RunnerUnavailableBeforeActivity(err)
                     | DriveOutcome::RunnerUnhealthy(err) => {
-                        retry.evict();
+                        retry.evict().await;
                         Err(err)
                     }
                 }
             }
             DriveOutcome::RunnerUnhealthy(err) => {
                 // Crash / timeout / protocol fault after activity: discard the
-                // runner without replaying the execution.
-                lease.evict();
+                // runner without replaying the execution, and await teardown.
+                lease.evict().await;
                 Err(err)
             }
         }
@@ -411,17 +411,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         &self,
         cfg: RunnerConfig,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
-        let spawn = super::pool::RunnerSpawn::try_default()?;
-        let mut runner = PooledRunner::spawn(&spawn).await?;
+        let (spawn, microsandbox) = super::runner_backend::resolve_runner_spawn()?;
+        let mut runner = PooledRunner::spawn(&spawn, microsandbox.as_ref()).await?;
         let outcome = self.drive_runner(&mut runner, &cfg).await;
-        // The runner handle's Drop kills the process on every path here, so a
-        // standalone runner is never leaked or reused.
-        match outcome {
+        let result = match outcome {
             DriveOutcome::Completed(response) => Ok(response),
             DriveOutcome::ExecutionError(err)
             | DriveOutcome::RunnerUnavailableBeforeActivity(err)
             | DriveOutcome::RunnerUnhealthy(err) => Err(err),
-        }
+        };
+        runner.shutdown().await;
+        result
     }
 
     /// Drive the Start → tool-call/artifact → Done/Error protocol loop against a
@@ -523,11 +523,24 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     let Some(line_result) = line else {
                         // EOF: the runner process died unexpectedly. Surface a
                         // clean error and evict so a replacement spawns.
-                        drop(child.wait().await);
+                        let status = child.wait().await;
+                        stderr.flush_settle().await;
+                        let diagnostics = stderr.take_since_and_clear(stderr_start).await;
+                        let diagnostics = labby_runtime::redact::sanitize_error_text(
+                            &diagnostics.join("\n"),
+                            512,
+                        );
+                        let message = if diagnostics.is_empty() {
+                            format!("Code Mode runner exited before completion ({status:?})")
+                        } else {
+                            format!(
+                                "Code Mode runner exited before completion ({status:?}): {diagnostics}"
+                            )
+                        };
                         let error = CodeModeExecutionError::with_trace(
                             ToolError::Sdk {
                                 sdk_kind: "server_error".to_string(),
-                                message: "Code Mode runner exited before completion".to_string(),
+                                message,
                             },
                             sorted_calls(&state.calls),
                         );

@@ -755,11 +755,15 @@ LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian
 All three variables are required to opt in. The image must already be cached;
 the runner uses `--pull never` and never performs an implicit registry fetch.
 Labby creates one restricted microVM per runner process with one CPU, 256 MiB
-memory, no network, a 30-minute maximum lifetime, and a five-minute idle
-timeout. The validated Labby runner executable is the only host file mounted,
+memory and no network. Its lifecycle is tied to the pooled runner rather than a
+short VM idle timer, so a parked warm runner cannot expire between ordinary
+requests. A 24-hour hard lifetime bounds orphaned guests after ungraceful host
+death; a live pool recycles its runner before reaching that backstop.
+The validated Labby runner executable is the only host file mounted,
 read-only at `/opt/labby/labby`. The parent attaches with `msb exec --stream`,
 which preserves the existing byte-faithful stdio protocol. Dropping or evicting
-the runner force-removes its microVM.
+the runner attempts a bounded force-removal; failure is logged and triggers a
+separately bounded best-effort fallback.
 
 This changes only the execution boundary. Tool discovery, authorization,
 exposure filters, OAuth subjects, secrets, upstream dispatch, result caps, and
@@ -783,9 +787,11 @@ engine**, with no Boa fallback and no `code_mode_wasm` feature. `codemode` runs
 in the Javy/QuickJS child runner over stdio. The Javy toolchain is pulled in by
 the `gateway` feature.
 
-The runner starts with an empty environment in a temporary directory. With the
-Microsandbox backend, that empty environment belongs to the `msb` host process
-and the Javy runner additionally executes inside the no-network guest. It does not
+The direct-process runner starts with an empty environment in a temporary
+directory. With the Microsandbox backend, `env_clear()` applies to the host
+`msb` transport; no Labby host environment or gateway credentials are forwarded,
+while the guest may retain image/runtime defaults. The Javy runner additionally
+executes inside the no-network guest. It does not
 provide Node, Deno, Bun, `fetch`, `connect`, `XMLHttpRequest`, `require`, or host
 module `import()` access. `callTool` is the only host bridge exposed to user code.
 

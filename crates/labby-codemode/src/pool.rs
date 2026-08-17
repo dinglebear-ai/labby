@@ -44,22 +44,22 @@ pub struct RunnerSpawn {
     pub program: std::path::PathBuf,
     /// Arguments passed to the runner executable.
     pub args: Vec<String>,
-    /// Optional outer microVM transport. The guest still runs `program` with
-    /// `args`; only its process boundary changes.
-    pub microsandbox: Option<MicrosandboxSpawn>,
 }
 
 /// Validated Microsandbox host configuration for one runner process.
 #[derive(Debug, Clone)]
-pub struct MicrosandboxSpawn {
-    pub executable: std::path::PathBuf,
-    pub image: String,
+pub(crate) struct MicrosandboxSpawn {
+    pub(crate) executable: std::path::PathBuf,
+    pub(crate) image: String,
 }
 
 impl RunnerSpawn {
     /// Resolve the default self-hosted Code Mode runner invocation.
     pub fn try_default() -> Result<Self, ToolError> {
-        super::runner_backend::resolve_runner_spawn()
+        Ok(Self {
+            program: super::runner_exe::resolve_runner_exe()?,
+            args: vec!["internal".into(), "code-mode-runner".into()],
+        })
     }
 }
 
@@ -72,6 +72,7 @@ pub struct RunnerPool {
     config: PoolConfig,
     /// Host-supplied runner re-invocation (program + args).
     spawn: RunnerSpawn,
+    microsandbox: Option<MicrosandboxSpawn>,
     /// One slot per pooled runner. `None` = empty slot to (re)spawn into. The
     /// outer `Mutex` is only ever held briefly to move the runner in/out; the
     /// free-list guarantees single-owner access for the lease lifetime.
@@ -91,15 +92,17 @@ impl RunnerPool {
     /// checkout returns an ephemeral runner — i.e. the spawn-per-execution
     /// fallback.
     pub fn from_env() -> Result<Self, ToolError> {
+        let (spawn, microsandbox) = super::runner_backend::resolve_runner_spawn()?;
         Ok(Self::with_config_and_spawn(
             PoolConfig::from_env(),
-            RunnerSpawn::try_default()?,
+            spawn,
+            microsandbox,
         ))
     }
 
     /// Build a pool with an explicit, host-supplied runner spawn seam.
     pub fn with_spawn(spawn: RunnerSpawn) -> Self {
-        Self::with_config_and_spawn(PoolConfig::from_env(), spawn)
+        Self::with_config_and_spawn(PoolConfig::from_env(), spawn, None)
     }
 
     #[cfg(test)]
@@ -107,10 +110,15 @@ impl RunnerPool {
         Self::with_config_and_spawn(
             config,
             RunnerSpawn::try_default().expect("test process must expose current executable"),
+            None,
         )
     }
 
-    fn with_config_and_spawn(config: PoolConfig, spawn: RunnerSpawn) -> Self {
+    fn with_config_and_spawn(
+        config: PoolConfig,
+        spawn: RunnerSpawn,
+        microsandbox: Option<MicrosandboxSpawn>,
+    ) -> Self {
         let slots = (0..config.size)
             .map(|_| Arc::new(Mutex::new(None)))
             .collect::<Vec<_>>();
@@ -122,6 +130,7 @@ impl RunnerPool {
         Self {
             config,
             spawn,
+            microsandbox,
             slots,
             free_slots: Arc::new(StdMutex::new(free_slots)),
             overflow_permits: Arc::new(Semaphore::new(overflow)),
@@ -189,7 +198,7 @@ impl RunnerPool {
             pool_size = self.config.size,
             "pool saturated; spawning ephemeral Code Mode runner"
         );
-        let runner = PooledRunner::spawn(&self.spawn).await?;
+        let runner = PooledRunner::spawn(&self.spawn, self.microsandbox.as_ref()).await?;
         Ok(RunnerLease::ephemeral(runner, permit))
     }
 
@@ -214,8 +223,12 @@ impl RunnerPool {
     async fn take_or_spawn_slot(&self, index: usize) -> Result<PooledRunner, ToolError> {
         let mut guard = self.slots[index].lock().await;
         match guard.take() {
+            Some(runner) if runner.microsandbox_lifetime_elapsed() => {
+                runner.shutdown().await;
+                PooledRunner::spawn(&self.spawn, self.microsandbox.as_ref()).await
+            }
             Some(runner) => Ok(runner),
-            None => PooledRunner::spawn(&self.spawn).await,
+            None => PooledRunner::spawn(&self.spawn, self.microsandbox.as_ref()).await,
         }
     }
 
@@ -346,14 +359,15 @@ impl RunnerLease {
                         "recycling pooled Code Mode runner after threshold"
                     );
                     // Drop (kill) the runner; leave the slot empty to respawn.
-                    drop(runner);
+                    runner.shutdown().await;
                 } else {
                     *slot.lock().await = Some(runner);
                 }
                 return_slot(free_slots, *index, returned);
             }
             // Ephemeral runner, or pooled with no runner (already taken): drop.
-            (_, runner) => drop(runner),
+            (_, Some(runner)) => runner.shutdown().await,
+            (_, None) => {}
         }
     }
 
@@ -362,8 +376,10 @@ impl RunnerLease {
     /// The runner is always dropped (killed); a pooled slot is left empty (the
     /// runner is never returned) so the next checkout spawns a fresh replacement.
     /// The slot index still returns to the free-list so the slot is reusable.
-    pub(crate) fn evict(mut self) {
-        drop(self.runner.take());
+    pub(crate) async fn evict(mut self) {
+        if let Some(runner) = self.runner.take() {
+            runner.shutdown().await;
+        }
         if let LeaseKind::Pooled {
             free_slots,
             index,
@@ -447,7 +463,7 @@ mod tests {
         let mut lease = pool.checkout_stub().await.expect("checkout");
         let first_pid = lease.runner_mut().child_pid;
         // Simulate a crash/fault: evict instead of release.
-        lease.evict();
+        lease.evict().await;
 
         let mut lease2 = pool.checkout_stub().await.expect("re-checkout");
         let second_pid = lease2.runner_mut().child_pid;
