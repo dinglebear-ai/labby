@@ -42,6 +42,9 @@ use rmcp::model::{
     FormElicitationCapability, Implementation, MetaObject, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, RequestMetaObject, Tool,
 };
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -2420,6 +2423,90 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
         pool.upstream_tool_last_error("cold-apps").await.is_none(),
         "skipping cold discovery should not mark the upstream failed"
     );
+}
+
+#[derive(Clone)]
+struct ColdSubsetUpstream;
+
+impl ServerHandler for ColdSubsetUpstream {
+    fn get_info(&self) -> rmcp::model::ServerInfo {
+        rmcp::model::ServerInfo::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+        )
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+            Tool::new(
+                "cold_subset_tool",
+                "Discovered on the first scoped listing",
+                Arc::new(serde_json::Map::new()),
+            ),
+        ]))
+    }
+}
+
+#[tokio::test]
+async fn protected_subset_first_list_tools_discovers_its_allowed_upstream() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let service = StreamableHttpService::new(
+        || Ok(ColdSubsetUpstream),
+        Arc::new(NeverSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_allowed_hosts(vec![address.to_string()])
+            .with_json_response(true),
+    );
+    let upstream_task = tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
+            .await
+            .expect("upstream server");
+    });
+
+    let mut upstream = fixture_upstream_config("cold-subset");
+    upstream.url = Some(format!("http://{address}/mcp"));
+    upstream.proxy_resources = false;
+    let pool = Arc::new(UpstreamPool::new());
+    let manager = code_mode_manager_with_pool(false, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "connexin",
+            ["cold-subset"],
+            std::iter::empty::<&str>(),
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["mcp:read"]))
+        .await
+        .expect("list tools");
+
+    assert_eq!(
+        result
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["cold_subset_tool"]
+    );
+    upstream_task.abort();
 }
 
 #[tokio::test]

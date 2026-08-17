@@ -114,6 +114,22 @@ pub(crate) fn forwardable_client_capabilities(
     )
 }
 
+/// Whether an upstream may be opened on a dedicated capability-relay
+/// connection.
+///
+/// Most stdio servers are safe to spawn once per downstream capability set.
+/// Singleton servers that own a fixed listener or other process-global state
+/// can opt into the pooled connection with `LABBY_UPSTREAM_RELAY_MODE=pooled`.
+/// The operator is then responsible for ensuring the pooled upstream can serve
+/// clients whose capabilities are not mirrored into its handshake.
+#[cfg(feature = "gateway")]
+pub(crate) fn upstream_uses_capability_relay(config: &crate::config::UpstreamConfig) -> bool {
+    !config
+        .env
+        .get("LABBY_UPSTREAM_RELAY_MODE")
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("pooled"))
+}
+
 pub(crate) fn subject_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {
     auth_context_from_extensions(extensions).map(|auth| auth.sub.as_str())
 }

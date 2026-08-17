@@ -293,7 +293,7 @@ pub(crate) fn install_upstream_discovery_concurrency_default(value: Option<usize
 /// from `config.toml`, when it has one handy (preferred — reflects the latest
 /// reload immediately). Callers without one handy pass `None`, falling back to
 /// the seeded process-wide default from the last reload.
-pub(crate) fn upstream_discovery_concurrency(config_value: Option<usize>) -> usize {
+pub fn upstream_discovery_concurrency(config_value: Option<usize>) -> usize {
     std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
