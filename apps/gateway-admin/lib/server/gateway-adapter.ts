@@ -624,11 +624,15 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
     proxy_resources: input.config.proxy_resources ?? true,
     proxy_prompts: input.config.proxy_prompts ?? true,
     proxy_mcp_ui: input.config.proxy_mcp_ui ?? true,
-    proxy_skills: input.config.proxy_skills ?? false,
+    ...(input.config.proxy_skills !== undefined
+      ? { proxy_skills: input.config.proxy_skills }
+      : {}),
     expose_tools: input.config.expose_tools ?? null,
     expose_resources: input.config.expose_resources ?? null,
     expose_prompts: input.config.expose_prompts ?? null,
-    expose_skills: input.config.expose_skills ?? null,
+    ...(input.config.expose_skills !== undefined
+      ? { expose_skills: input.config.expose_skills }
+      : {}),
   }
   if (input.config.oauth) {
     spec.oauth = {
