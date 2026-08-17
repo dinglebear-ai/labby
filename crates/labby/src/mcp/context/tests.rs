@@ -65,7 +65,7 @@ name = "singleton"
 command = "singleton-server"
 
 [env]
-LABBY_UPSTREAM_RELAY_MODE = "pooled"
+MCP_UPSTREAM_RELAY_MODE = "pooled"
 "#,
     )
     .expect("singleton upstream config parses");
