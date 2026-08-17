@@ -159,6 +159,11 @@ fn code_mode_description_contains_protocol_contract() {
     assert!(description.contains("none currently configured"));
     assert!(description.contains("writeArtifact"));
     assert!(description.contains("call_budget_exceeded"));
+    assert!(description.contains("executes `fn` in the current run"));
+    assert!(description.contains("best-effort append-only journal"));
+    assert!(description.contains("successful Code Mode response does not prove"));
+    assert!(!description.contains("runs once"));
+    assert!(!description.contains("replays its recorded result"));
     assert!(
         !description.contains("search.dts"),
         "description must not imply primary codemode discovery returns legacy dts"
@@ -202,6 +207,12 @@ fn codemode_input_schema_includes_optional_filters() {
         prop_names,
         std::collections::BTreeSet::from(["code", "tools", "upstreams"])
     );
+    for forbidden_control in ["resume_token", "confirm", "pause", "reject", "rollback"] {
+        assert!(
+            !prop_names.contains(forbidden_control),
+            "Code Mode must not expose a {forbidden_control} lifecycle control"
+        );
+    }
     assert_eq!(schema["properties"]["code"]["minLength"], json!(1));
     assert_eq!(
         schema["properties"]["upstreams"]["items"]["type"],

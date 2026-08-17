@@ -522,13 +522,14 @@ globalThis.__labSettlePendingOperation = (message) => {{
     if (pending.kind !== "step_begin") {{
       throw new Error("runner received a step decision for a non-step operation");
     }}
-    // Replay: the host journaled this step on a prior pass — return the cached
-    // value WITHOUT running fn.
+    // Reserved future replay response: return the supplied value WITHOUT
+    // running fn. The current host never sends this branch.
     if (Object.prototype.hasOwnProperty.call(input, "replay") && input.replay !== null && input.replay !== undefined) {{
       pending.resolve(__labDecodeResult(input.replay));
       return;
     }}
-    // Execute: run fn, then journal its result via a StepResult round-trip.
+    // Current path: run fn, then offer its result for journal recording via a
+    // StepResult round-trip.
     const beginSeq = pending.__stepBeginSeq;
     Promise.resolve().then(pending.fn).then((value) => {{
       const encoded = __labEncodeResult(value === undefined ? null : value);

@@ -598,11 +598,10 @@ fn execution_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
 /// are injected and callable for this caller + scope: unscoped admin/trusted
 /// callers only.
 ///
-/// Exposed `pub` (re-exported from the crate root) so the MCP surface can gate
-/// the durable pause/resume path off it: local-provider calls dispatch OFF the
-/// decider path (`runner_drive.rs::enqueue_local_provider_call`), so they are
-/// never journaled and would double-apply on resume. A run for which local
-/// providers are allowed must therefore never begin a resumable durable run.
+/// Exposed `pub` (re-exported from the crate root) so the MCP surface can apply
+/// the same capability boundary. Local-provider calls dispatch through their
+/// own decision/record hooks (`runner_drive.rs::enqueue_local_provider_call`),
+/// but the current host does not persist or replay them.
 #[must_use]
 pub fn local_providers_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
     caller.is_admin() && !scope.is_scoped()

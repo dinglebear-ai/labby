@@ -632,16 +632,20 @@ additional per-call confirmation or pause step on top of that. Concretely:
 - **CLI:** Code Mode execution is operator-driven and always execute-capable,
   so destructive upstream calls are permitted unconditionally.
 
-Code Mode persists a **durable, read/replay-only step journal** of every
-`codemode.step(name, fn)` boundary (append-only, owner-scoped, redacted at
-rest). It has **no** `resume_token` and **no** `confirm` parameter on the
-`codemode` MCP tool, and **no** pause/resume/reject mechanism: the journal is
-orthogonal to dispatch and never interrupts, gates, or confirms a running
-snippet. This preserves the permanent decision to remove the destructive-call
-pause gate — the journal is a record, not a gate. A caller that can invoke a
-full Code Mode entry point can call destructive tools immediately. The separate
-`codemode_read` boundary is an enforced capability restriction, not a
-pause/confirm gate.
+Code Mode keeps a best-effort **append-only step journal** and read-only notebook
+projection for each `codemode.step(name, fn)` boundary (owner-scoped and
+redacted at rest). The callback executes in the current run; current runtime
+code never reads an older journal row to resume or replay it. Persistence is
+detached after the response, so a successful Code Mode response is not proof
+that the journal flush completed.
+
+The `codemode` MCP tool has **no** `resume_token` or `confirm` parameter and no
+pause/resume/reject mechanism. The journal is orthogonal to dispatch and never
+interrupts, gates, or confirms a running snippet. This preserves the permanent
+decision to remove the destructive-call pause gate — the journal is a record,
+not a gate. A caller that can invoke a full Code Mode entry point can call
+destructive tools immediately. The separate `codemode_read` boundary is an
+enforced capability restriction, not a pause/confirm gate.
 
 ## Scope
 

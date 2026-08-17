@@ -717,7 +717,7 @@ mod tests {
         assert!(js.contains("raw === entry.id || raw === entry.path || raw === entry.helper"));
         assert!(js.contains("ambiguous_target"));
         assert!(js.contains("unknown_tool"));
-        // codemode.step is now a real two-phase durable primitive that delegates
+        // codemode.step delegates execution and best-effort journal recording
         // to the runner-side __labCodemodeStep bridge (not the old inline stub).
         assert!(js.contains("globalThis.__labCodemodeStep(name, fn)"));
         // codemode.batch is an isolation helper: mixed success/failure jobs

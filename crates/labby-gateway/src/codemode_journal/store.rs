@@ -1,7 +1,8 @@
 //! `StepJournalStore`: a small connection-pooled append-only SQLite store for
 //! `codemode.step` boundaries. Mirrors `crate::usage::store::UsageStore`'s
 //! pool/pragma/permission scaffolding (owner-only `0600`, WAL,
-//! `synchronous=NORMAL`). Read/replay-only: it never gates or pauses a run.
+//! `synchronous=NORMAL`). It exposes only append and internal read operations;
+//! it never gates, resumes, replays, or pauses a run.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
