@@ -29,6 +29,7 @@ use super::pool::runner_handle::PooledRunner;
 pub(crate) mod config;
 #[cfg(windows)]
 pub(crate) mod job_guard;
+mod microsandbox;
 pub(crate) mod runner_handle;
 
 /// Host-configurable runner re-invocation: the program to exec and the args to
@@ -43,16 +44,22 @@ pub struct RunnerSpawn {
     pub program: std::path::PathBuf,
     /// Arguments passed to the runner executable.
     pub args: Vec<String>,
+    /// Optional outer microVM transport. The guest still runs `program` with
+    /// `args`; only its process boundary changes.
+    pub microsandbox: Option<MicrosandboxSpawn>,
+}
+
+/// Validated Microsandbox host configuration for one runner process.
+#[derive(Debug, Clone)]
+pub struct MicrosandboxSpawn {
+    pub executable: std::path::PathBuf,
+    pub image: String,
 }
 
 impl RunnerSpawn {
     /// Resolve the default self-hosted Code Mode runner invocation.
     pub fn try_default() -> Result<Self, ToolError> {
-        let program = super::runner_exe::resolve_runner_exe()?;
-        Ok(Self {
-            program,
-            args: vec!["internal".to_string(), "code-mode-runner".to_string()],
-        })
+        super::runner_backend::resolve_runner_spawn()
     }
 }
 
@@ -182,7 +189,7 @@ impl RunnerPool {
             pool_size = self.config.size,
             "pool saturated; spawning ephemeral Code Mode runner"
         );
-        let runner = PooledRunner::spawn(&self.spawn)?;
+        let runner = PooledRunner::spawn(&self.spawn).await?;
         Ok(RunnerLease::ephemeral(runner, permit))
     }
 
@@ -208,7 +215,7 @@ impl RunnerPool {
         let mut guard = self.slots[index].lock().await;
         match guard.take() {
             Some(runner) => Ok(runner),
-            None => PooledRunner::spawn(&self.spawn),
+            None => PooledRunner::spawn(&self.spawn).await,
         }
     }
 

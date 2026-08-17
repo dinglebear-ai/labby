@@ -19,10 +19,11 @@ use std::sync::Arc;
 
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader as TokioBufReader;
-use tokio::process::{ChildStdin, Command};
+use tokio::process::ChildStdin;
 use tokio::sync::{Mutex, Notify};
 use tokio_util::codec::{FramedRead, LinesCodec};
 
+use super::microsandbox::{MicrosandboxGuard, runner_command};
 use crate::error::ToolError;
 
 /// Per-line safety cap mirrored from the original driver: 64 MiB heap + framing
@@ -131,13 +132,14 @@ pub(crate) struct PooledRunner {
     /// per-execution jail subdirs the runner creates always have a stable base;
     /// its `Drop` removes the tree when the runner handle is dropped.
     _temp_dir: tempfile::TempDir,
+    microsandbox: Option<MicrosandboxGuard>,
 }
 
 impl PooledRunner {
     /// Spawn a fresh long-lived runner process using the host-supplied
     /// re-invocation (program + args). Defaults to `current_exe()` +
     /// `["internal", "code-mode-runner"]` via [`crate::pool::RunnerSpawn::try_default`].
-    pub(crate) fn spawn(spawn: &super::super::pool::RunnerSpawn) -> Result<Self, ToolError> {
+    pub(crate) async fn spawn(spawn: &super::super::pool::RunnerSpawn) -> Result<Self, ToolError> {
         // Each runner gets its own isolated cwd. It is a long-lived TempDir; the
         // runner creates a fresh per-execution subdir under it on every `Start`.
         let temp_dir = tempfile::TempDir::new().map_err(|err| ToolError::Sdk {
@@ -145,10 +147,11 @@ impl PooledRunner {
             message: format!("failed to create Code Mode sandbox directory: {err}"),
         })?;
 
-        let mut cmd = Command::new(&spawn.program);
-        cmd.args(&spawn.args)
-            .current_dir(temp_dir.path())
-            .env_clear()
+        let (mut cmd, microsandbox) = runner_command(spawn).await?;
+        if microsandbox.is_none() {
+            cmd.current_dir(temp_dir.path());
+        }
+        cmd.env_clear()
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -197,6 +200,7 @@ impl PooledRunner {
             _job_guard: job_guard,
             drain_task,
             _temp_dir: temp_dir,
+            microsandbox,
         })
     }
 
@@ -270,7 +274,7 @@ impl PooledRunner {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to create stub sandbox directory: {err}"),
         })?;
-        let mut cmd = Command::new(program);
+        let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
         cmd.current_dir(temp_dir.path())
             .env_clear()
@@ -304,6 +308,7 @@ impl PooledRunner {
             _job_guard: job_guard,
             drain_task,
             _temp_dir: temp_dir,
+            microsandbox: None,
         })
     }
 }
@@ -320,6 +325,9 @@ impl Drop for PooledRunner {
             use nix::sys::signal::Signal;
             use nix::unistd::Pid;
             let _ = nix::sys::signal::killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        }
+        if let Some(mut sandbox) = self.microsandbox.take() {
+            sandbox.remove();
         }
     }
 }
@@ -387,7 +395,7 @@ fn spawn_stderr_drain(
 
 #[cfg(test)]
 mod tests {
-    use super::StderrBuffer;
+    use super::{PooledRunner, StderrBuffer};
 
     #[tokio::test]
     async fn stderr_buffer_take_since_and_clear_releases_retained_lines() {
@@ -414,5 +422,52 @@ mod tests {
         buffer.clear().await;
 
         assert!(buffer.lines.lock().await.is_empty());
+    }
+
+    /// Real KVM smoke. Example:
+    ///
+    /// ```text
+    /// LABBY_MICROSANDBOX_SMOKE_MSB=/absolute/path/to/msb \
+    /// LABBY_MICROSANDBOX_SMOKE_RUNNER=/absolute/path/to/labby \
+    /// LABBY_MICROSANDBOX_SMOKE_IMAGE=debian \
+    /// cargo test -p labby-codemode microsandbox_runner_round_trip -- --ignored
+    /// ```
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires Linux KVM, Microsandbox, a cached image, and a Labby binary"]
+    async fn microsandbox_runner_round_trip() {
+        use futures::StreamExt as _;
+        use tokio::io::AsyncWriteExt as _;
+
+        let msb =
+            std::env::var_os("LABBY_MICROSANDBOX_SMOKE_MSB").expect("LABBY_MICROSANDBOX_SMOKE_MSB");
+        let runner = std::env::var_os("LABBY_MICROSANDBOX_SMOKE_RUNNER")
+            .expect("LABBY_MICROSANDBOX_SMOKE_RUNNER");
+        let image = std::env::var("LABBY_MICROSANDBOX_SMOKE_IMAGE")
+            .expect("LABBY_MICROSANDBOX_SMOKE_IMAGE");
+        let spawn = crate::pool::RunnerSpawn {
+            program: runner.into(),
+            args: vec!["internal".into(), "code-mode-runner".into()],
+            microsandbox: Some(crate::pool::MicrosandboxSpawn {
+                executable: msb.into(),
+                image,
+            }),
+        };
+
+        let mut runner = PooledRunner::spawn(&spawn).await.expect("spawn microVM");
+        runner
+            .stdin
+            .write_all(b"{\"type\":\"start\",\"code\":\"async () => 42\",\"proxy\":\"\"}\n")
+            .await
+            .expect("write start");
+        runner.stdin.flush().await.expect("flush start");
+        let line = tokio::time::timeout(std::time::Duration::from_secs(15), runner.lines.next())
+            .await
+            .expect("runner response timeout")
+            .expect("runner stdout closed")
+            .expect("runner protocol line");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid protocol JSON");
+        assert_eq!(value["type"], "done");
+        assert_eq!(value["result"]["value"], 42);
     }
 }

@@ -276,6 +276,7 @@ fn test_labby_runner_spawn() -> crate::dispatch::gateway::code_mode::RunnerSpawn
     crate::dispatch::gateway::code_mode::RunnerSpawn {
         program,
         args: vec!["internal".to_string(), "code-mode-runner".to_string()],
+        microsandbox: None,
     }
 }
 
