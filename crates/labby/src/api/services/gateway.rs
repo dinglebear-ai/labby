@@ -159,17 +159,31 @@ fn private_tool_error(
     started: std::time::Instant,
     headers: &HeaderMap,
 ) -> ApiError {
-    tracing::warn!(
-        surface = "api",
-        service = "gateway",
-        action,
-        elapsed_ms = started.elapsed().as_millis(),
-        kind = error.kind(),
-        request_id = headers
-            .get("x-request-id")
-            .and_then(|value| value.to_str().ok()),
-        "dispatch failed"
-    );
+    let elapsed_ms = started.elapsed().as_millis();
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok());
+    if error.kind() == "internal_error" {
+        tracing::error!(
+            surface = "api",
+            service = "gateway",
+            action,
+            elapsed_ms,
+            kind = error.kind(),
+            request_id,
+            "dispatch failed"
+        );
+    } else {
+        tracing::warn!(
+            surface = "api",
+            service = "gateway",
+            action,
+            elapsed_ms,
+            kind = error.kind(),
+            request_id,
+            "dispatch failed"
+        );
+    }
     ApiError::new(error).with_service_action("gateway", action)
 }
 

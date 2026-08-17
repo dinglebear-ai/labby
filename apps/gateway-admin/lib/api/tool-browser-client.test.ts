@@ -57,3 +57,55 @@ test('tool search discards a response from an earlier authenticated session', as
     (error: unknown) => error instanceof DOMException && error.name === 'AbortError',
   )
 })
+
+test('tool search rechecks the session after a delayed response body', async () => {
+  setAuthenticatedSession('body-admin')
+  let resolveBody: ((value: object) => void) | undefined
+  const response = new Response(null, { status: 200 })
+  response.json = () => new Promise((resolve) => { resolveBody = resolve })
+  globalThis.fetch = async () => response
+
+  const pending = searchCodeModeTools('gateway')
+  await Promise.resolve()
+  setAuthenticatedSession('next-admin')
+  resolveBody?.({ results: [], total: 0, truncated: false })
+
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof DOMException && error.name === 'AbortError',
+  )
+})
+
+test('tool search refreshes a stale CSRF session and retries once', async () => {
+  setAuthenticatedSession()
+  const csrfHeaders: Array<string | null> = []
+  let call = 0
+  globalThis.fetch = async (_input, init) => {
+    call += 1
+    if (call === 1) {
+      csrfHeaders.push(new Headers(init?.headers).get('x-csrf-token'))
+      return new Response(JSON.stringify({ kind: 'validation_failed', message: 'invalid csrf token' }), {
+        status: 422,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (call === 2) {
+      return new Response(JSON.stringify({
+        authenticated: true,
+        user: { sub: 'admin-user', email: 'admin-user@example.com' },
+        expires_at: 10000,
+        csrf_token: 'csrf-refreshed',
+        is_admin: true,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    csrfHeaders.push(new Headers(init?.headers).get('x-csrf-token'))
+    return new Response(JSON.stringify({ results: [], total: 0, truncated: false }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  await searchCodeModeTools('gateway')
+  assert.deepEqual(csrfHeaders, [CSRF, 'csrf-refreshed'])
+  assert.equal(call, 3)
+})

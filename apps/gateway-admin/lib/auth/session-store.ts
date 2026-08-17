@@ -57,7 +57,9 @@ function setState(next: BrowserSessionState) {
 }
 
 function sessionIdentity(state: BrowserSessionState) {
-  return state.status === 'authenticated' ? `authenticated:${state.user.sub}` : state.status
+  return state.status === 'authenticated'
+    ? `authenticated:${state.user.sub}:${state.isAdmin ? 'admin' : 'user'}:${state.csrfToken}:${state.expiresAt}`
+    : state.status
 }
 
 function normalizePayload(payload: SessionPayload): BrowserSessionState {

@@ -573,7 +573,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "$ref": "#/components/schemas/CodeModeToolDescribeRequest"
               }
             }
           },
@@ -585,7 +585,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/CodeModeToolDescribeResponseDoc"
                 }
               }
             }
@@ -610,8 +610,38 @@
               }
             }
           },
+          "404": {
+            "description": "Tool not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Response exceeds the bounded payload limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Catalog discovery failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -639,7 +669,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "$ref": "#/components/schemas/CodeModeToolSearchRequest"
               }
             }
           },
@@ -651,7 +681,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/CodeModeToolSearchResponseDoc"
                 }
               }
             }
@@ -676,8 +706,38 @@
               }
             }
           },
+          "404": {
+            "description": "Tool not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Response exceeds the bounded payload limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Catalog discovery failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1616,6 +1676,203 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "CodeModeToolDescribeRequest": {
+        "type": "object",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          }
+        }
+      },
+      "CodeModeToolDescribeResponseDoc": {
+        "type": "object",
+        "required": [
+          "path",
+          "id",
+          "namespace",
+          "name",
+          "description",
+          "helper",
+          "signature",
+          "tags"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "helper": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "safety": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CodeModeToolSafetyDoc"
+              }
+            ]
+          },
+          "signature": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "typescript": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "typescript_omitted": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CodeModeToolSafetyDoc": {
+        "type": "object",
+        "properties": {
+          "destructive": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "CodeModeToolSearchHitDoc": {
+        "type": "object",
+        "required": [
+          "path",
+          "id",
+          "kind",
+          "namespace",
+          "name",
+          "description",
+          "signature",
+          "tags",
+          "score"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "safety": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CodeModeToolSafetyDoc"
+              }
+            ]
+          },
+          "score": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "signature": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CodeModeToolSearchRequest": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "query": {
+            "type": "string"
+          }
+        }
+      },
+      "CodeModeToolSearchResponseDoc": {
+        "type": "object",
+        "required": [
+          "results",
+          "total",
+          "truncated"
+        ],
+        "properties": {
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodeModeToolSearchHitDoc"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
           }
         }
       },

@@ -1,4 +1,5 @@
 import { getBrowserSessionEpoch, getSessionCsrfToken } from '@/lib/auth/session-store'
+import { refreshBrowserSession } from './service-action-client'
 import { GatewayApiError } from './gateway-client-core'
 
 export type ToolSafety = { read_only?: boolean; destructive?: boolean }
@@ -14,21 +15,35 @@ export type ToolDescription = {
 }
 
 async function post<T>(path: string, body: object, signal?: AbortSignal): Promise<T> {
-  const epoch = getBrowserSessionEpoch()
-  const csrfToken = getSessionCsrfToken()
-  const response = await fetch(path, {
-    method: 'POST', credentials: 'include', cache: 'no-store', signal,
-    headers: {
-      'content-type': 'application/json',
-      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
-    }, body: JSON.stringify(body),
-  })
-  if (epoch !== getBrowserSessionEpoch()) throw new DOMException('Session changed', 'AbortError')
-  if (!response.ok) {
+  const request = async () => {
+    const epoch = getBrowserSessionEpoch()
+    const csrfToken = getSessionCsrfToken()
+    const response = await fetch(path, {
+      method: 'POST', credentials: 'include', cache: 'no-store', signal,
+      headers: {
+        'content-type': 'application/json',
+        ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+      }, body: JSON.stringify(body),
+    })
     const payload = await response.json().catch(() => ({ message: 'Tools unavailable' }))
-    throw new GatewayApiError(payload.message ?? 'Tools unavailable', response.status, payload.kind, response.headers.get('x-request-id') ?? undefined)
+    if (epoch !== getBrowserSessionEpoch()) throw new DOMException('Session changed', 'AbortError')
+    if (!response.ok) {
+      throw new GatewayApiError(payload.message ?? 'Tools unavailable', response.status, payload.kind, response.headers.get('x-request-id') ?? undefined)
+    }
+    return payload as T
   }
-  return response.json()
+
+  try {
+    return await request()
+  } catch (error) {
+    const staleSession = error instanceof GatewayApiError &&
+      [401, 403, 422].includes(error.status) &&
+      (error.code === 'auth_failed' || error.message.toLowerCase().includes('csrf'))
+    if (!staleSession) throw error
+    const session = await refreshBrowserSession()
+    if (session.status !== 'authenticated') throw error
+    return request()
+  }
 }
 
 export const searchCodeModeTools = (query: string, signal?: AbortSignal) =>

@@ -6,15 +6,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { describeCodeModeTool, searchCodeModeTools, type ToolDescription, type ToolSearchHit } from '@/lib/api/tool-browser-client'
 
-function setUrl(query: string, tool?: string) {
-  const url = new URL(window.location.href)
-  if (query) url.searchParams.set('q', query)
-  else url.searchParams.delete('q')
-  if (tool) url.searchParams.set('tool', tool)
-  else url.searchParams.delete('tool')
-  window.history.pushState({}, '', `${url.pathname}${url.search}`)
-}
-
 export function ToolBrowser() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<ToolSearchHit[]>([])
@@ -22,64 +13,39 @@ export function ToolBrowser() {
   const [detail, setDetail] = useState<ToolDescription | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const searchRequest = useRef<AbortController | null>(null)
-  const detailRequest = useRef<AbortController | null>(null)
+  const activeRequest = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    const url = new URL(window.location.href)
-    const initial = (url.searchParams.get('q') ?? '').slice(0, 1024)
-    setQuery(initial)
-    const target = (url.searchParams.get('tool') ?? '').slice(0, 4096)
-    if (initial.trim()) void runSearch(initial, false)
-    if (target.trim()) void loadDetail(target, false)
-    const restore = () => {
-      const next = new URL(window.location.href)
-      const nextQuery = (next.searchParams.get('q') ?? '').slice(0, 1024)
-      const nextTarget = (next.searchParams.get('tool') ?? '').slice(0, 4096)
-      setQuery(nextQuery)
-      void runSearch(nextQuery, false)
-      if (nextTarget) void loadDetail(nextTarget, false)
-      else setDetail(null)
-    }
-    window.addEventListener('popstate', restore)
-    return () => {
-      window.removeEventListener('popstate', restore)
-      searchRequest.current?.abort()
-      detailRequest.current?.abort()
-    }
-    // Navigation restoration is intentionally registered once; the handlers
-    // read the URL and current refs at event time.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => activeRequest.current?.abort()
   }, [])
 
-  async function runSearch(value: string, updateUrl = true) {
-    searchRequest.current?.abort(); const controller = new AbortController(); searchRequest.current = controller
+  async function runSearch(value: string) {
+    activeRequest.current?.abort(); const controller = new AbortController(); activeRequest.current = controller
     setDetail(null); setError(null)
-    if (!value.trim()) { setResults([]); setTotal(0); if (updateUrl) setUrl(''); return }
+    if (!value.trim()) { setResults([]); setTotal(0); setLoading(false); return }
     setLoading(true)
     try {
       const response = await searchCodeModeTools(value, controller.signal)
-      if (searchRequest.current !== controller) return
+      if (activeRequest.current !== controller) return
       setResults(response.results); setTotal(response.total)
-      if (updateUrl) setUrl(value)
     } catch (cause) {
-      if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tools unavailable')
-    } finally { if (searchRequest.current === controller) setLoading(false) }
+      if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tools unavailable')
+    } finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
   async function selectTool(hit: ToolSearchHit) {
-    await loadDetail(hit.id, true)
+    await loadDetail(hit.id)
   }
 
-  async function loadDetail(target: string, updateUrl: boolean) {
-    detailRequest.current?.abort(); const controller = new AbortController(); detailRequest.current = controller
-    setDetail(null); setError(null); setLoading(true); if (updateUrl) setUrl(query, target)
+  async function loadDetail(target: string) {
+    activeRequest.current?.abort(); const controller = new AbortController(); activeRequest.current = controller
+    setDetail(null); setError(null); setLoading(true)
     try {
       const response = await describeCodeModeTool(target, controller.signal)
-      if (detailRequest.current === controller) setDetail(response)
+      if (activeRequest.current === controller) setDetail(response)
     }
-    catch (cause) { if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tool not found') }
-    finally { if (detailRequest.current === controller) setLoading(false) }
+    catch (cause) { if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tool not found') }
+    finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
   return <main className="mx-auto w-full max-w-7xl p-6 lg:p-10">
