@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use labby_runtime::agent_error::redact_secret_like_segments;
 use labby_runtime::error::ToolError;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -244,7 +244,113 @@ impl StepJournalStore {
 }
 
 fn open_connections(path: &Path, count: usize) -> Result<Vec<Connection>, ToolError> {
-    (0..count).map(|_| open_connection(path)).collect()
+    if path.exists() {
+        validate_existing_database(path)?;
+    } else {
+        initialize_database(path)?;
+    }
+    (0..count)
+        .map(|_| open_validated_connection(path))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum SchemaFailure {
+    UnsupportedVersion,
+    SchemaMismatch,
+    Corrupt,
+}
+
+impl SchemaFailure {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsupportedVersion => "unsupported_version",
+            Self::SchemaMismatch => "schema_mismatch",
+            Self::Corrupt => "corrupt",
+        }
+    }
+}
+
+fn schema_error(path: &Path, reason: SchemaFailure, detail: impl std::fmt::Display) -> ToolError {
+    storage_error(format!(
+        "journal schema validation failed [{}] for `{}`: {detail}",
+        reason.as_str(),
+        path.display()
+    ))
+}
+
+fn validate_existing_database(path: &Path) -> Result<(), ToolError> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| schema_error(path, SchemaFailure::Corrupt, error))?;
+    let version = conn
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| schema_error(path, classify_validation_error(&error), error))?;
+    if version != SCHEMA_VERSION {
+        return Err(schema_error(
+            path,
+            SchemaFailure::UnsupportedVersion,
+            format_args!("expected version {SCHEMA_VERSION}, found {version}"),
+        ));
+    }
+
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(step_journal)")
+        .map_err(|error| schema_error(path, classify_validation_error(&error), error))?;
+    let columns = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(|error| schema_error(path, classify_validation_error(&error), error))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| schema_error(path, classify_validation_error(&error), error))?;
+    let expected = [
+        ("execution_id", "TEXT", 1, 1),
+        ("step_ordinal", "INTEGER", 1, 2),
+        ("seq_base", "INTEGER", 1, 0),
+        ("name", "TEXT", 1, 0),
+        ("value", "TEXT", 1, 0),
+        ("ok", "INTEGER", 1, 0),
+        ("elapsed_ms", "INTEGER", 1, 0),
+        ("recorded_at", "INTEGER", 1, 0),
+        ("actor_key", "TEXT", 0, 0),
+        ("route_scope", "TEXT", 1, 0),
+        ("capability_filter_fingerprint", "TEXT", 0, 0),
+        ("replayed_from", "TEXT", 0, 0),
+    ];
+    let compatible = columns.len() == expected.len()
+        && columns.iter().zip(expected).all(|(actual, expected)| {
+            actual.0 == expected.0
+                && actual.1.eq_ignore_ascii_case(expected.1)
+                && actual.2 == expected.2
+                && actual.3 == expected.3
+        });
+    if !compatible {
+        return Err(schema_error(
+            path,
+            SchemaFailure::SchemaMismatch,
+            "step_journal columns do not match schema v1",
+        ));
+    }
+    Ok(())
+}
+
+fn classify_validation_error(error: &rusqlite::Error) -> SchemaFailure {
+    match error {
+        rusqlite::Error::SqliteFailure(code, _)
+            if matches!(
+                code.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            ) =>
+        {
+            SchemaFailure::Corrupt
+        }
+        _ => SchemaFailure::SchemaMismatch,
+    }
 }
 
 #[cfg(unix)]
@@ -261,7 +367,7 @@ fn ensure_restrictive_permissions(path: &Path) -> Result<(), ToolError> {
         .map_err(|error| storage_error(format!("harden ACL `{}`: {error}", path.display())))
 }
 
-fn open_connection(path: &Path) -> Result<Connection, ToolError> {
+fn initialize_database(path: &Path) -> Result<(), ToolError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             storage_error(format!(
@@ -272,6 +378,23 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
     }
     let conn = Connection::open(path).map_err(sqlite_error)?;
     ensure_restrictive_permissions(path)?;
+    configure_connection(&conn)?;
+    conn.execute_batch(CREATE_TABLE).map_err(sqlite_error)?;
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(sqlite_error)?;
+    restrict_sidecars(path)?;
+    Ok(())
+}
+
+fn open_validated_connection(path: &Path) -> Result<Connection, ToolError> {
+    let conn = Connection::open(path).map_err(sqlite_error)?;
+    ensure_restrictive_permissions(path)?;
+    configure_connection(&conn)?;
+    restrict_sidecars(path)?;
+    Ok(conn)
+}
+
+fn configure_connection(conn: &Connection) -> Result<(), ToolError> {
     conn.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
         .map_err(sqlite_error)?;
     conn.pragma_update(None, "journal_mode", "WAL")
@@ -281,16 +404,17 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
     // the last few writes on a hard crash is an acceptable tradeoff.
     conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(sqlite_error)?;
-    conn.execute_batch(CREATE_TABLE).map_err(sqlite_error)?;
-    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
-        .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn restrict_sidecars(path: &Path) -> Result<(), ToolError> {
     for suffix in ["-wal", "-shm"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
         if sidecar.exists() {
             ensure_restrictive_permissions(&sidecar)?;
         }
     }
-    Ok(conn)
+    Ok(())
 }
 
 /// An `io::Write` that errors as soon as the accumulated byte count would exceed
@@ -360,6 +484,20 @@ fn storage_error(message: String) -> ToolError {
 mod tests {
     use super::*;
 
+    fn assert_schema_failure(error: ToolError, reason: &str) {
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("[{reason}]")),
+            "expected {reason}, got {message}"
+        );
+    }
+
+    fn create_database(path: &Path, sql: &str, version: i64) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(sql).unwrap();
+        conn.pragma_update(None, "user_version", version).unwrap();
+    }
+
     fn row(exec: &str, ord: u64, name: &str) -> StepJournalRow {
         StepJournalRow {
             execution_id: exec.into(),
@@ -408,6 +546,82 @@ mod tests {
         // Re-flushing the same key must not error or duplicate.
         store.flush(vec![row("e1", 0, "a")]).await.unwrap();
         assert_eq!(store.load("e1").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn valid_v1_reopens_from_two_independent_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.db");
+        let first = StepJournalStore::open(path.clone()).await.unwrap();
+        first.flush(vec![row("e1", 0, "a")]).await.unwrap();
+        drop(first);
+
+        let second = StepJournalStore::open(path.clone()).await.unwrap();
+        let third = StepJournalStore::open(path).await.unwrap();
+        assert_eq!(second.load("e1").await.unwrap().len(), 1);
+        third.flush(vec![row("e2", 0, "b")]).await.unwrap();
+        assert_eq!(second.load("e2").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn newer_schema_is_rejected_without_relabeling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.db");
+        create_database(&path, CREATE_TABLE, SCHEMA_VERSION + 1);
+        let before = std::fs::read(&path).unwrap();
+
+        let error = StepJournalStore::open(path.clone()).await.unwrap_err();
+        assert_schema_failure(error, "unsupported_version");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION + 1);
+    }
+
+    #[tokio::test]
+    async fn corrupt_database_is_rejected_without_rewriting_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.db");
+        let before = b"this is not a sqlite database".to_vec();
+        std::fs::write(&path, &before).unwrap();
+
+        let error = StepJournalStore::open(path.clone()).await.unwrap_err();
+        assert_schema_failure(error, "corrupt");
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn v1_missing_table_is_rejected_without_rewriting_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.db");
+        create_database(
+            &path,
+            "CREATE TABLE unrelated (id INTEGER);",
+            SCHEMA_VERSION,
+        );
+        let before = std::fs::read(&path).unwrap();
+
+        let error = StepJournalStore::open(path.clone()).await.unwrap_err();
+        assert_schema_failure(error, "schema_mismatch");
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn v1_wrong_columns_are_rejected_without_rewriting_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.db");
+        create_database(
+            &path,
+            "CREATE TABLE step_journal (execution_id TEXT PRIMARY KEY, value BLOB);",
+            SCHEMA_VERSION,
+        );
+        let before = std::fs::read(&path).unwrap();
+
+        let error = StepJournalStore::open(path.clone()).await.unwrap_err();
+        assert_schema_failure(error, "schema_mismatch");
+        assert_eq!(std::fs::read(path).unwrap(), before);
     }
 
     #[tokio::test]

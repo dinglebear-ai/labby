@@ -132,7 +132,7 @@ fn filter_tools_for_access(
         .collect()
 }
 
-async fn catalog_from_tools(
+pub(super) async fn catalog_from_tools(
     manager: &GatewayManager,
     raw_tools: Vec<UpstreamTool>,
     include_snippets: bool,
