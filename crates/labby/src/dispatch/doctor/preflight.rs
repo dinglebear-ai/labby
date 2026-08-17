@@ -207,7 +207,7 @@ async fn oauth_findings(config: &crate::config::LabConfig) -> Vec<Finding> {
         }
     };
 
-    let gateway = match crate::live_gateway::detect(config).await {
+    let gateway = match crate::live_gateway::detect(config, "doctor").await {
         Ok(Some(gateway)) => gateway,
         Ok(None) => {
             findings.push(finding(
@@ -253,6 +253,7 @@ async fn oauth_findings(config: &crate::config::LabConfig) -> Vec<Finding> {
         "live Labby daemon is reachable",
     ));
 
+    let action_catalog = gateway.action_catalog().await;
     for (check, action) in [
         (
             "proxy:oauth-lease-create",
@@ -267,13 +268,13 @@ async fn oauth_findings(config: &crate::config::LabConfig) -> Vec<Finding> {
             "gateway.oauth.resource_lease.release",
         ),
     ] {
-        match gateway.supports_action(action).await {
-            Ok(true) => findings.push(finding(
+        match &action_catalog {
+            Ok(actions) if actions.contains(action) => findings.push(finding(
                 check,
                 Severity::Ok,
                 format!("live daemon supports `{action}`"),
             )),
-            Ok(false) => findings.push(finding(
+            Ok(_) => findings.push(finding(
                 check,
                 Severity::Fail,
                 format!("live daemon does not support `{action}`"),

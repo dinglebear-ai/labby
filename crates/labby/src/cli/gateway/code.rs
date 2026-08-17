@@ -90,7 +90,7 @@ async fn execute_code_mode(
     config: &LabConfig,
     code: &str,
 ) -> Result<serde_json::Value> {
-    if let Some(live) = remote::detect(config).await? {
+    if let Some(live) = remote::detect(config, "cli").await? {
         match live.call_codemode_tool(code).await {
             Ok(value) => return Ok(value),
             Err(error) => {

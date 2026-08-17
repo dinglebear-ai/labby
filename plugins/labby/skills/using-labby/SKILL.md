@@ -175,11 +175,11 @@ For deeper Code Mode details, read `references/code-mode.md`.
 
 ## Configuration
 
-Config lives in `~/.labby/.env` and `config.toml` using Lab's documented load order. Common env keys:
+Config lives in `~/.labby/.env` and `config.toml` using Labby's documented load order. Common env keys:
 
 ```bash
-LAB_MCP_HTTP_TOKEN=...
-LAB_GW_<NAME>_AUTH_HEADER=Bearer ...
+LABBY_MCP_HTTP_TOKEN=...
+LABBY_GW_<NAME>_AUTH_HEADER=Bearer ...
 ```
 
 Labby-owned config is operator/gateway config. Use generated env docs and
@@ -187,7 +187,7 @@ gateway service-config actions for current fields.
 
 ## Dev Commands
 
-Inside the Lab repo, default verification is all-features:
+Inside the Labby repo, default verification is all-features:
 
 ```bash
 just check

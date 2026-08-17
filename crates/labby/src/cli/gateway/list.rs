@@ -55,7 +55,7 @@ async fn fetch_servers(
     manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
 ) -> Result<Vec<ServerView>, crate::dispatch::error::ToolError> {
-    if let Some(live) = remote::detect(config).await? {
+    if let Some(live) = remote::detect(config, "cli").await? {
         let value = live
             .dispatch_action("gateway.list", serde_json::json!({}))
             .await?;

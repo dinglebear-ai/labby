@@ -376,8 +376,9 @@ the stdio process runs as a pure `crate::mcp::bridge::BridgeServerHandler`:
 every `tools/`, `resources/`, and `prompts/` request received over stdio is
 forwarded to the live daemon's own MCP endpoint via a streamable-HTTP
 `Peer<RoleClient>`, and the response is piped straight back -- this process
-holds no gateway state of its own. Only when no daemon is reachable does it
-fall back to building a full standalone instance, same as today.
+holds no gateway state of its own. Only when bounded opportunistic discovery
+returns no daemon does it fall back to a full standalone instance. Invalid or
+unreachable explicit targets fail closed instead.
 
 ## Examples
 

@@ -1,13 +1,19 @@
+---
+title: "Remote Gateway Target Resolution"
+created: "2026-08-15"
+updated: "2026-08-16"
+---
+
 # Remote Gateway Target Resolution
 
 ## Problem
 
 Labby can run as a local daemon or as a thin client of an existing daemon. The
-Labby plugin already supplies `CLAUDE_PLUGIN_OPTION_SERVER_URL` to its MCP
-transport, and setup uses that value for connectivity checks. Gateway CLI and
-stdio daemon discovery do not currently consume it. If their opportunistic
-probe fails, they silently create a local gateway view and read another
-`config.toml`, which can contradict the connected daemon and Code Mode catalog.
+Labby plugin already supplied `CLAUDE_PLUGIN_OPTION_SERVER_URL` to its MCP
+transport, and setup used that value for connectivity checks. Gateway CLI and
+stdio daemon discovery previously did not consume it. When their opportunistic
+probe failed, they could create a local gateway view and read another
+`config.toml`, contradicting the connected daemon and Code Mode catalog.
 
 ## Required behavior
 

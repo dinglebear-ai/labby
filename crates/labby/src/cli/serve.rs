@@ -212,7 +212,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // full rationale; this mirrors what the `gateway` CLI subcommands
     // already do for their own dispatch.
     #[cfg(feature = "gateway")]
-    if stdio_mode && let Some(live) = crate::live_gateway::detect(config).await? {
+    if stdio_mode && let Some(live) = crate::live_gateway::detect(config, "mcp").await? {
         tracing::info!(
             subsystem = "startup",
             phase = "bridge.detected",

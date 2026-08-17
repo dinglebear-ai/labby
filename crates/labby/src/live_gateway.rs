@@ -10,17 +10,18 @@
 //! manager directly; every other surface has to detect the daemon for
 //! itself, which is what this module does.
 //!
-//! Detection isn't loopback-only: it tries, in order, the local bind address
-//! (fast path when co-located with the daemon), then the gateway's own
-//! configured public URLs (`LABBY_MCP_GATEWAY_URL`, `LABBY_PUBLIC_URL` --
-//! resolved the same way `LabConfig::public_urls()` already does everywhere
-//! else). That means a thin client reaches the real daemon whether it runs
-//! inside the same container/host as `labby serve` or from any other machine
-//! that shares `~/.labby/.env` (for `LABBY_MCP_HTTP_TOKEN`).
+//! An invocation-scoped `CLAUDE_PLUGIN_OPTION_SERVER_URL`, then an operator-set
+//! `LABBY_SERVER_URL`, is authoritative and fails closed. Without either one,
+//! detection is opportunistic: it tries the local bind address first, then the
+//! gateway's configured public URLs (`LABBY_MCP_GATEWAY_URL`,
+//! `LABBY_PUBLIC_URL`). Only exhaustion of that bounded candidate walk permits
+//! standalone local behavior.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use rmcp::RoleClient;
 use rmcp::service::RunningService;
 use serde_json::Value;
@@ -36,6 +37,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 /// Bound MCP initialize and short-lived Code Mode calls, not session lifetime.
 const MCP_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bound the discovery catalog before parsing untrusted remote JSON.
+const MAX_ACTION_CATALOG_BYTES: usize = 1024 * 1024;
+/// Bound the public identity document before parsing untrusted remote JSON.
+const MAX_DISCOVERY_DOCUMENT_BYTES: usize = 64 * 1024;
 /// Bound ordinary thin-client dispatches after the short reachability probe.
 /// Long-poll actions opt out explicitly in `dispatch_timeout_for_action`.
 const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -73,14 +78,9 @@ struct ProbeFailure {
     message: String,
 }
 
-/// Candidate base URLs to try, in priority order: the local bind address
-/// `labby serve` itself would resolve (identical env-var → config → default
-/// order as `cli/serve.rs`: `LABBY_MCP_HTTP_HOST`/`LABBY_MCP_HTTP_PORT`, then
-/// `config.mcp.host`/`.port`, then `127.0.0.1:8765`), followed by the
-/// gateway's own configured public URLs. The local candidate is tried first
-/// because it's a fast same-host round trip when co-located with the daemon;
-/// the public URLs are what let a thin client reach the daemon from anywhere
-/// else.
+/// Resolve one authoritative explicit target when configured. Otherwise,
+/// return opportunistic candidates in priority order: the local bind address
+/// `labby serve` itself would resolve, followed by the configured public URLs.
 fn resolve_target_set(config: &LabConfig) -> Result<TargetSet, ToolError> {
     resolve_target_set_from(
         std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
@@ -194,16 +194,56 @@ fn invalid_target(reason: &str) -> ToolError {
     }
 }
 
+fn normalize_token(token: Option<String>) -> Option<String> {
+    token.filter(|value| !value.is_empty())
+}
+
 /// Probe candidate base URLs in order and return a client for the first
 /// reachable one.
 ///
-/// Returns `None` if every candidate fails (daemon not running anywhere
-/// reachable, network error, non-2xx `/health` on all of them) -- callers
-/// must fall back to running standalone. A live daemon is a nice-to-have
-/// consistency guarantee here, not a hard requirement, so standalone use
-/// (bootstrap, `labby doctor`, the very first `gateway add`) keeps working.
-pub async fn detect(config: &LabConfig) -> Result<Option<LiveGateway>, ToolError> {
-    let targets = resolve_target_set(config)?;
+/// `Ok(None)` means only that bounded opportunistic discovery exhausted every
+/// candidate, so callers may run standalone for bootstrap compatibility.
+/// Invalid or failed explicit targets return `Err` and suppress local fallback.
+pub async fn detect(
+    config: &LabConfig,
+    surface: &'static str,
+) -> Result<Option<LiveGateway>, ToolError> {
+    let targets = match resolve_target_set(config) {
+        Ok(targets) => targets,
+        Err(error) => {
+            tracing::warn!(
+                surface,
+                service = "gateway",
+                action = "remote.detect",
+                source = configured_explicit_source().unwrap_or("unknown"),
+                kind = error.kind(),
+                fallback_suppressed = true,
+                "explicit remote gateway target is invalid"
+            );
+            return Err(error);
+        }
+    };
+    let token = normalize_token(std::env::var("LABBY_MCP_HTTP_TOKEN").ok());
+    detect_targets(targets, token, DISCOVERY_TIMEOUT, surface).await
+}
+
+fn configured_explicit_source() -> Option<&'static str> {
+    if std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").is_ok_and(|value| !value.trim().is_empty())
+    {
+        Some("CLAUDE_PLUGIN_OPTION_SERVER_URL")
+    } else if std::env::var("LABBY_SERVER_URL").is_ok_and(|value| !value.trim().is_empty()) {
+        Some("LABBY_SERVER_URL")
+    } else {
+        None
+    }
+}
+
+async fn detect_targets(
+    targets: TargetSet,
+    token: Option<String>,
+    discovery_timeout: Duration,
+    surface: &'static str,
+) -> Result<Option<LiveGateway>, ToolError> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -211,19 +251,17 @@ pub async fn detect(config: &LabConfig) -> Result<Option<LiveGateway>, ToolError
             sdk_kind: "service_unavailable".to_string(),
             message: format!("remote Labby client initialization failed: {error}"),
         })?;
-    let token = std::env::var("LABBY_MCP_HTTP_TOKEN").ok();
-
     match targets {
         TargetSet::Explicit { base_url, source } => {
             let started = Instant::now();
-            match probe_target(&client, &base_url, token.as_deref()).await {
+            match probe_target(&client, &base_url, token.as_deref(), true).await {
                 Ok(actions) => Ok(Some(LiveGateway::new(
                     base_url, true, source, token, client, actions,
                 ))),
                 Err(failure) => {
                     let error = probe_error(&base_url, &failure, true);
                     tracing::warn!(
-                        surface = "cli",
+                        surface,
                         service = "gateway",
                         action = "remote.detect",
                         source,
@@ -242,7 +280,9 @@ pub async fn detect(config: &LabConfig) -> Result<Option<LiveGateway>, ToolError
         TargetSet::Opportunistic(candidates) => {
             let future = async {
                 for base_url in candidates {
-                    if let Ok(actions) = probe_target(&client, &base_url, token.as_deref()).await {
+                    if let Ok(actions) =
+                        probe_target(&client, &base_url, token.as_deref(), false).await
+                    {
                         return Some(LiveGateway::new(
                             base_url,
                             false,
@@ -255,7 +295,7 @@ pub async fn detect(config: &LabConfig) -> Result<Option<LiveGateway>, ToolError
                 }
                 None
             };
-            Ok(tokio::time::timeout(DISCOVERY_TIMEOUT, future)
+            Ok(tokio::time::timeout(discovery_timeout, future)
                 .await
                 .unwrap_or(None))
         }
@@ -266,6 +306,7 @@ async fn probe_target(
     client: &reqwest::Client,
     base_url: &Url,
     token: Option<&str>,
+    explicit: bool,
 ) -> Result<Option<BTreeSet<String>>, ProbeFailure> {
     let health = client
         .get(base_url.join("health").expect("validated base URL joins"))
@@ -278,19 +319,24 @@ async fn probe_target(
     }
 
     if token.is_none() && labby_discovery_identifies_daemon(client, base_url).await {
-        return Ok(fetch_actions(client, base_url, None).await.ok());
+        return match fetch_actions(client, base_url, None).await {
+            Ok(actions) => Ok(Some(actions)),
+            Err(_) if !explicit => Ok(None),
+            Err(failure) => Err(failure),
+        };
     }
 
     let actions = fetch_actions(client, base_url, token).await?;
-    actions
-        .contains("gateway.reload")
-        .then_some(Some(actions))
-        .ok_or_else(|| ProbeFailure {
+    if actions.contains("gateway.reload") {
+        Ok(Some(actions))
+    } else {
+        Err(ProbeFailure {
             stage: ProbeStage::Identity,
             status: None,
             kind: "service_unavailable",
             message: "endpoint is not a compatible Labby daemon".to_string(),
         })
+    }
 }
 
 async fn fetch_actions(
@@ -315,13 +361,62 @@ async fn fetch_actions(
     if !response.status().is_success() {
         return Err(probe_status_error(ProbeStage::Actions, response.status()));
     }
-    let actions = response.json::<Value>().await.map_err(|_| ProbeFailure {
+    let body = read_action_catalog_body(response).await?;
+    let actions = serde_json::from_slice::<Vec<Value>>(&body).map_err(|_| ProbeFailure {
         stage: ProbeStage::Actions,
         status: None,
         kind: "service_unavailable",
         message: "gateway actions response is invalid".to_string(),
     })?;
-    Ok(action_names(&actions))
+    let mut names = BTreeSet::new();
+    for action in actions {
+        let Some(name) = action
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+        else {
+            return Err(ProbeFailure {
+                stage: ProbeStage::Actions,
+                status: None,
+                kind: "service_unavailable",
+                message: "gateway actions response is invalid".to_string(),
+            });
+        };
+        names.insert(name.to_string());
+    }
+    Ok(names)
+}
+
+async fn read_action_catalog_body(response: reqwest::Response) -> Result<Vec<u8>, ProbeFailure> {
+    let too_large = || ProbeFailure {
+        stage: ProbeStage::Actions,
+        status: None,
+        kind: "service_unavailable",
+        message: format!(
+            "gateway actions response exceeds the {MAX_ACTION_CATALOG_BYTES} byte limit"
+        ),
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ACTION_CATALOG_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ProbeFailure {
+            stage: ProbeStage::Actions,
+            status: None,
+            kind: "service_unavailable",
+            message: "gateway actions response could not be read".to_string(),
+        })?;
+        if body.len().saturating_add(chunk.len()) > MAX_ACTION_CATALOG_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 async fn labby_discovery_identifies_daemon(client: &reqwest::Client, base_url: &Url) -> bool {
@@ -340,7 +435,10 @@ async fn labby_discovery_identifies_daemon(client: &reqwest::Client, base_url: &
     if !response.status().is_success() {
         return false;
     }
-    let Ok(discovery) = response.json::<Value>().await else {
+    let Ok(body) = read_bounded_body(response, MAX_DISCOVERY_DOCUMENT_BYTES).await else {
+        return false;
+    };
+    let Ok(discovery) = serde_json::from_slice::<Value>(&body) else {
         return false;
     };
     discovery
@@ -353,13 +451,23 @@ async fn labby_discovery_identifies_daemon(client: &reqwest::Client, base_url: &
             .is_some()
 }
 
-fn action_names(actions: &Value) -> BTreeSet<String> {
-    actions
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
-        .collect()
+async fn read_bounded_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, ()> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(());
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ())?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn probe_transport_error(stage: ProbeStage, error: reqwest::Error) -> ProbeFailure {
@@ -434,7 +542,7 @@ async fn is_labby_gateway_daemon(
     let Ok(base_url) = normalize_base_url(base_url) else {
         return false;
     };
-    probe_target(client, &base_url, token).await.is_ok()
+    probe_target(client, &base_url, token, false).await.is_ok()
 }
 
 impl LiveGateway {
@@ -473,12 +581,7 @@ impl LiveGateway {
             "gateway.oauth.resource_lease.renew",
             "gateway.oauth.resource_lease.release",
         ];
-        let actions = match &self.actions {
-            Some(actions) => actions.clone(),
-            None => fetch_actions(&self.client, &self.base_url, self.token.as_deref())
-                .await
-                .map_err(|failure| probe_error(&self.base_url, &failure, self.explicit))?,
-        };
+        let actions = self.action_catalog().await?;
         for action in REQUIRED {
             if !actions.contains(action) {
                 return Err(ToolError::Sdk {
@@ -558,29 +661,13 @@ impl LiveGateway {
         })
     }
 
-    pub async fn supports_action(&self, action: &str) -> Result<bool, ToolError> {
-        if let Some(actions) = &self.actions {
-            return Ok(actions.contains(action));
+    pub async fn action_catalog(&self) -> Result<BTreeSet<String>, ToolError> {
+        match &self.actions {
+            Some(actions) => Ok(actions.clone()),
+            None => fetch_actions(&self.client, &self.base_url, self.token.as_deref())
+                .await
+                .map_err(|failure| probe_error(&self.base_url, &failure, self.explicit)),
         }
-        let mut request = self.client.get(
-            self.base_url
-                .join("v1/gateway/actions")
-                .expect("validated base URL joins"),
-        );
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token);
-        }
-        let response = request.send().await.map_err(live_gateway_network_error)?;
-        let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
-        if !status.is_success() {
-            return Err(tool_error_from_response(status, &body));
-        }
-        Ok(body.as_array().is_some_and(|actions| {
-            actions
-                .iter()
-                .any(|candidate| candidate.get("name").and_then(Value::as_str) == Some(action))
-        }))
     }
 
     pub async fn create_resource_lease(
@@ -653,11 +740,14 @@ impl LiveGateway {
 
         let response = request.send().await.map_err(live_gateway_network_error)?;
         let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
-
         if status.is_success() {
-            return Ok(body);
+            return response.json().await.map_err(|error| ToolError::Sdk {
+                sdk_kind: "decode_error".to_string(),
+                message: format!("invalid response from live gateway daemon: {error}"),
+            });
         }
+
+        let body: Value = response.json().await.unwrap_or(Value::Null);
 
         let sdk_kind = body
             .get("kind")
@@ -691,13 +781,21 @@ impl LiveGateway {
 
         let mut arguments = serde_json::Map::new();
         arguments.insert("code".to_string(), Value::String(code.to_string()));
-        let result = tokio::time::timeout(
-            MCP_INITIALIZATION_TIMEOUT,
+        let result = bounded_codemode_call(
             peer.call_tool(CallToolRequestParams::new("codemode").with_arguments(arguments)),
+            MCP_INITIALIZATION_TIMEOUT,
         )
-        .await
-        .map_err(|_| anyhow::anyhow!("remote Code Mode call timed out"))??;
-        service.cancel().await.ok();
+        .await?;
+        if let Err(error) = service.cancel().await {
+            tracing::warn!(
+                surface = "cli",
+                service = "gateway",
+                action = "gateway.code.exec",
+                origin = %sanitized_origin(&self.base_url),
+                error = %error,
+                "remote Code Mode MCP shutdown failed"
+            );
+        }
 
         if let Some(structured) = result.structured_content {
             return Ok(structured);
@@ -752,7 +850,16 @@ impl LiveGateway {
         &self,
         handler: H,
     ) -> Result<RunningService<RoleClient, H>, ToolError> {
-        tokio::time::timeout(MCP_INITIALIZATION_TIMEOUT, self.connect_service(handler))
+        self.connect_service_with_timeout(handler, MCP_INITIALIZATION_TIMEOUT)
+            .await
+    }
+
+    async fn connect_service_with_timeout<H: rmcp::ClientHandler>(
+        &self,
+        handler: H,
+        timeout: Duration,
+    ) -> Result<RunningService<RoleClient, H>, ToolError> {
+        tokio::time::timeout(timeout, self.connect_service(handler))
             .await
             .map_err(|_| ToolError::Sdk {
                 sdk_kind: "bridge_transport_error".to_string(),
@@ -763,6 +870,23 @@ impl LiveGateway {
                 message: format!("remote Labby MCP initialization failed: {error}"),
             })
     }
+}
+
+async fn bounded_codemode_call<F, T, E>(future: F, timeout: Duration) -> Result<T, ToolError>
+where
+    F: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    tokio::time::timeout(timeout, future)
+        .await
+        .map_err(|_| ToolError::Sdk {
+            sdk_kind: "bridge_transport_error".to_string(),
+            message: "remote Code Mode call timed out".to_string(),
+        })?
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "bridge_transport_error".to_string(),
+            message: format!("remote Code Mode call failed: {error}"),
+        })
 }
 
 fn dispatch_timeout_for_action(action: &str, default: Duration) -> Option<Duration> {
@@ -789,21 +913,6 @@ fn typed_response_error(error: serde_json::Error) -> ToolError {
     ToolError::Sdk {
         sdk_kind: "decode_error".to_string(),
         message: format!("invalid typed response from live gateway daemon: {error}"),
-    }
-}
-
-fn tool_error_from_response(status: reqwest::StatusCode, body: &Value) -> ToolError {
-    ToolError::Sdk {
-        sdk_kind: body
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or("internal_error")
-            .to_string(),
-        message: body
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("live gateway daemon returned HTTP {status}")),
     }
 }
 
@@ -834,6 +943,13 @@ mod tests {
             dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
             actions: None,
         }
+    }
+
+    async fn detect_opportunistically(
+        config: &LabConfig,
+    ) -> Result<Option<LiveGateway>, ToolError> {
+        let targets = resolve_target_set_from(None, None, None, None, config)?;
+        detect_targets(targets, None, DISCOVERY_TIMEOUT, "test").await
     }
 
     #[test]
@@ -929,6 +1045,73 @@ mod tests {
         }
     }
 
+    #[test]
+    fn empty_bearer_token_is_treated_as_absent() {
+        assert_eq!(normalize_token(None), None);
+        assert_eq!(normalize_token(Some(String::new())), None);
+        assert_eq!(
+            normalize_token(Some("token".to_string())),
+            Some("token".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_tokenless_actions_failure_is_not_swallowed() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/labby.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiBaseUrl": server.uri(),
+                "paletteCatalogUrl": format!("{}/v1/palette/catalog", server.uri()),
+                "paletteExecuteUrl": format!("{}/v1/palette/execute", server.uri()),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let target = TargetSet::Explicit {
+            base_url: normalize_base_url(&server.uri()).unwrap(),
+            source: "LABBY_SERVER_URL",
+        };
+        let error = match detect_targets(target, None, DISCOVERY_TIMEOUT, "test").await {
+            Err(error) => error,
+            Ok(_) => panic!("explicit actions failure must fail closed"),
+        };
+
+        assert_eq!(error.kind(), "auth_required");
+        assert!(error.to_string().contains("local fallback suppressed"));
+    }
+
+    #[tokio::test]
+    async fn opportunistic_discovery_respects_aggregate_deadline() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
+            .mount(&server)
+            .await;
+        let target = TargetSet::Opportunistic(vec![normalize_base_url(&server.uri()).unwrap()]);
+        let started = Instant::now();
+
+        let detected = detect_targets(target, None, Duration::from_millis(25), "test")
+            .await
+            .expect("opportunistic timeout is not an error");
+
+        assert!(detected.is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[tokio::test]
     async fn remote_probe_does_not_follow_redirects() {
         ensure_tls_provider();
@@ -945,12 +1128,114 @@ mod tests {
             .build()
             .unwrap();
         let base_url = normalize_base_url(&source.uri()).unwrap();
-        let failure = probe_target(&client, &base_url, Some("sensitive-token"))
+        let failure = probe_target(&client, &base_url, Some("sensitive-token"), true)
             .await
             .expect_err("redirect must be rejected");
 
         assert_eq!(failure.status, Some(reqwest::StatusCode::FOUND));
         assert!(destination.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authenticated_actions_and_dispatch_do_not_follow_redirects() {
+        ensure_tls_provider();
+        let destination = MockServer::start().await;
+        let source = MockServer::start().await;
+        for (method_name, endpoint) in [("GET", "/v1/gateway/actions"), ("POST", "/v1/gateway")] {
+            Mock::given(method(method_name))
+                .and(path(endpoint))
+                .and(header("authorization", "Bearer sensitive-token"))
+                .respond_with(
+                    ResponseTemplate::new(302)
+                        .insert_header("location", format!("{}{endpoint}", destination.uri())),
+                )
+                .mount(&source)
+                .await;
+        }
+
+        let mut gateway = test_gateway(source.uri(), Some("sensitive-token".to_string()));
+        gateway.explicit = true;
+        let catalog_error = gateway
+            .action_catalog()
+            .await
+            .expect_err("actions redirect must fail");
+        assert_eq!(catalog_error.kind(), "service_unavailable");
+        let dispatch_error = gateway
+            .dispatch_action("gateway.list", json!({}))
+            .await
+            .expect_err("dispatch redirect must fail");
+        assert_eq!(dispatch_error.kind(), "internal_error");
+        assert!(destination.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_initialization_does_not_follow_redirects() {
+        ensure_tls_provider();
+        let destination = MockServer::start().await;
+        let source = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .and(header("authorization", "Bearer sensitive-token"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/mcp", destination.uri())),
+            )
+            .mount(&source)
+            .await;
+
+        let gateway = test_gateway(source.uri(), Some("sensitive-token".to_string()));
+        let error = gateway
+            .connect_service_with_timeout((), Duration::from_secs(1))
+            .await
+            .expect_err("MCP redirect must fail initialization");
+
+        assert_eq!(error.kind(), "bridge_transport_error");
+        assert!(destination.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stalled_mcp_initialization_is_bounded() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
+            .mount(&server)
+            .await;
+
+        let gateway = test_gateway(server.uri(), None);
+        let started = Instant::now();
+        let error = gateway
+            .connect_service_with_timeout((), Duration::from_millis(25))
+            .await
+            .expect_err("stalled MCP initialization must time out");
+
+        assert_eq!(error.kind(), "bridge_transport_error");
+        let envelope = error.to_agent_value();
+        assert_eq!(envelope["origin"], "bridge");
+        assert_eq!(envelope["recovery"]["action"], "start_dependency");
+        assert_eq!(envelope["recovery"]["same_arguments"], "conditional");
+        assert_eq!(envelope["side_effects"], "unknown");
+        assert!(started.elapsed() < Duration::from_millis(150));
+    }
+
+    #[tokio::test]
+    async fn stalled_codemode_call_is_bounded_with_bridge_recovery() {
+        let started = Instant::now();
+        let error = bounded_codemode_call(
+            std::future::pending::<Result<(), std::io::Error>>(),
+            Duration::from_millis(25),
+        )
+        .await
+        .expect_err("stalled Code Mode call must time out");
+
+        assert_eq!(error.kind(), "bridge_transport_error");
+        let envelope = error.to_agent_value();
+        assert_eq!(envelope["origin"], "bridge");
+        assert_eq!(envelope["recovery"]["action"], "start_dependency");
+        assert_eq!(envelope["recovery"]["same_arguments"], "conditional");
+        assert_eq!(envelope["side_effects"], "unknown");
+        assert!(started.elapsed() < Duration::from_millis(150));
     }
 
     #[test]
@@ -1010,6 +1295,23 @@ mod tests {
             .expect_err("dispatch should fail");
         assert_eq!(error.kind(), "missing_param");
         assert_eq!(error.user_message(), "upstream is required");
+    }
+
+    #[tokio::test]
+    async fn dispatch_action_rejects_malformed_success_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&server)
+            .await;
+
+        let error = test_gateway(server.uri(), None)
+            .dispatch_action("gateway.list", json!({}))
+            .await
+            .expect_err("malformed success must not become JSON null");
+
+        assert_eq!(error.kind(), "decode_error");
     }
 
     #[tokio::test]
@@ -1152,7 +1454,12 @@ mod tests {
         config.mcp.host = Some("127.0.0.1".to_string());
         config.mcp.port = Some(0);
 
-        assert!(detect(&config).await.expect("detection succeeds").is_none());
+        assert!(
+            detect_opportunistically(&config)
+                .await
+                .expect("detection succeeds")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1178,7 +1485,12 @@ mod tests {
         config.mcp.host = Some(url.host_str().expect("wiremock host").to_string());
         config.mcp.port = url.port();
 
-        assert!(detect(&config).await.expect("detection succeeds").is_some());
+        assert!(
+            detect_opportunistically(&config)
+                .await
+                .expect("detection succeeds")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -1260,7 +1572,12 @@ mod tests {
         config.mcp.host = Some(url.host_str().expect("wiremock host").to_string());
         config.mcp.port = url.port();
 
-        assert!(detect(&config).await.expect("detection succeeds").is_none());
+        assert!(
+            detect_opportunistically(&config)
+                .await
+                .expect("detection succeeds")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1293,7 +1610,7 @@ mod tests {
             mcp_gateway: None,
         });
 
-        let live = detect(&config)
+        let live = detect_opportunistically(&config)
             .await
             .expect("detection succeeds")
             .expect("should fall through to public url");
@@ -1371,19 +1688,12 @@ mod tests {
             ])))
             .mount(&server)
             .await;
-        let gateway = test_gateway(server.uri(), None);
-        assert!(
-            gateway
-                .supports_action("gateway.oauth.resource_lease.create")
-                .await
-                .unwrap()
-        );
-        assert!(
-            !gateway
-                .supports_action("gateway.oauth.resource_lease.release")
-                .await
-                .unwrap()
-        );
+        let actions = test_gateway(server.uri(), None)
+            .action_catalog()
+            .await
+            .unwrap();
+        assert!(actions.contains("gateway.oauth.resource_lease.create"));
+        assert!(!actions.contains("gateway.oauth.resource_lease.release"));
     }
 
     #[tokio::test]
@@ -1402,6 +1712,94 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("release"));
+    }
+
+    #[tokio::test]
+    async fn capability_catalog_is_fetched_once_and_malformed_json_is_typed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = test_gateway(server.uri(), None)
+            .verify_resource_lease_actions()
+            .await
+            .expect_err("malformed catalog must not look like missing actions");
+
+        assert_eq!(error.kind(), "service_unavailable");
+        assert!(error.to_string().contains("actions response is invalid"));
+    }
+
+    #[tokio::test]
+    async fn capability_catalog_rejects_wrong_shape_and_malformed_entries() {
+        for body in [
+            json!({}),
+            json!([{"description": "missing name"}]),
+            json!([{"name": ""}]),
+            json!([{"name": "   "}]),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/gateway/actions"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+
+            let error = test_gateway(server.uri(), None)
+                .action_catalog()
+                .await
+                .expect_err("invalid catalog shape must be rejected");
+            assert_eq!(error.kind(), "service_unavailable");
+            assert!(error.to_string().contains("actions response is invalid"));
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_document_is_bounded() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/labby.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+                b' ';
+                MAX_DISCOVERY_DOCUMENT_BYTES
+                    + 1
+            ]))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        assert!(
+            !labby_discovery_identifies_daemon(
+                &client,
+                &normalize_base_url(&server.uri()).unwrap()
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_catalog_rejects_oversized_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+                b' ';
+                MAX_ACTION_CATALOG_BYTES
+                    + 1
+            ]))
+            .mount(&server)
+            .await;
+
+        let error = test_gateway(server.uri(), None)
+            .action_catalog()
+            .await
+            .expect_err("oversized catalog must be rejected before JSON parsing");
+        assert_eq!(error.kind(), "service_unavailable");
+        assert!(error.to_string().contains("byte limit"));
     }
 
     #[tokio::test]

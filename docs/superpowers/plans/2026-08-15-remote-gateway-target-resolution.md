@@ -34,7 +34,6 @@
 - `crates/labby/src/proxy/oauth.rs`: explicit target error propagation and reuse of discovered action capabilities.
 - `crates/labby/src/dispatch/doctor/preflight.rs`: detailed failed finding for explicit target errors.
 - `docs/runtime/ENV.md`, `docs/services/GATEWAY.md`, `plugins/labby/README.md`: operator contract and examples.
-- `.lavra/research/2026-08-15-remote-gateway-target-eng-review.md`: review evidence incorporated by this rewrite.
 
 ### Task 1: Implement safe authoritative target resolution
 
@@ -396,7 +395,7 @@ Expected: success from the connected daemon. Repeat with `LABBY_SERVER_URL=http:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docs/design/REMOTE_GATEWAY_TARGET.md docs/runtime/ENV.md docs/services/GATEWAY.md plugins/labby/README.md .lavra/research/2026-08-15-remote-gateway-target-eng-review.md
+git add docs/design/REMOTE_GATEWAY_TARGET.md docs/runtime/ENV.md docs/services/GATEWAY.md plugins/labby/README.md
 git add docs/generated  # only when Step 3 produced reviewed generated changes
 git commit -m "docs: define authoritative remote gateway routing"
 ```

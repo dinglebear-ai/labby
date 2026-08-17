@@ -35,7 +35,7 @@ pub(super) async fn dispatch_gateway_action(
     action: String,
     params: Value,
 ) -> Result<Value, ToolError> {
-    if let Some(live) = remote::detect(config).await? {
+    if let Some(live) = remote::detect(config, "cli").await? {
         return live.dispatch_action(&action, params).await;
     }
     let manager = manager.get().await.map_err(|e| ToolError::Sdk {

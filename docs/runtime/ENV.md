@@ -112,8 +112,8 @@ LABBY_SERVER_URL=https://labby.example.com
 
 - `LABBY_MCP_HTTP_TOKEN` must be the *same* token the daemon itself uses for
   bearer auth (copy it from the daemon host's `~/.labby/.env`). Without it,
-  the CLI still finds and reaches the daemon but every dispatch fails with
-  `auth_failed`.
+  protected operations fail with `auth_required` or `auth_failed`, as
+  applicable.
 - `CLAUDE_PLUGIN_OPTION_SERVER_URL` is the invocation-scoped target supplied by
   the Labby Claude plugin. It takes precedence over `LABBY_SERVER_URL`.
 - `LABBY_SERVER_URL` is the ordinary CLI/stdio client target. Both explicit
@@ -130,14 +130,11 @@ LABBY_SERVER_URL=https://labby.example.com
   domain. Do not inherit the token while pointing either explicit variable at
   a server you do not administer.
 
-Verified against a completely bare `~/.labby/` containing nothing but the
-two lines above (no `config.toml`, no local databases): both a read
-(`gateway list`) and a mutation (`gateway add`) reached and used the live
-remote daemon correctly, and the mutation did not write a local
-`config.toml` at all. The local `GatewayManager` (and its `~/.labby/auth.db`)
-is now built lazily and only comes into existence if remote detection
-genuinely fails -- a successful remote dispatch touches no local files at
-all.
+Verified from a temporary bare client home with no `config.toml` or local
+database: `gateway get` reached the configured live daemon through both
+explicit target variables without creating local state. The local
+`GatewayManager` is built lazily only when opportunistic detection returns no
+daemon; explicit failures and successful remote dispatches never create it.
 
 ## Remote MCP Stdio Usage
 

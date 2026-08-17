@@ -33,7 +33,7 @@ impl ProxyOauthContext {
             .public_url
             .clone()
             .context("proxy OAuth requires a stable Labby public issuer")?;
-        let gateway = crate::live_gateway::detect(config)
+        let gateway = crate::live_gateway::detect(config, "cli")
             .await
             .context("proxy OAuth live-daemon discovery failed")?
             .context("proxy OAuth requires a reachable live Labby daemon")?;
