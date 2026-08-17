@@ -19,6 +19,14 @@ use super::types::Report;
 
 /// Standard MCP-path dispatch: builds `ServiceClients` from env on demand.
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
+    dispatch_with_surface(action, params, "mcp").await
+}
+
+pub async fn dispatch_with_surface(
+    action: &str,
+    params: Value,
+    surface: &'static str,
+) -> Result<Value, ToolError> {
     match action {
         "help" => return Ok(help_payload("doctor", ACTIONS)),
         "schema" => {
@@ -51,7 +59,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
             return to_json(proxy::check_proxy(p).await?);
         }
         "proxy.preflight" => {
-            return to_json(preflight::check_proxy_preflight().await);
+            return to_json(preflight::check_proxy_preflight(surface).await);
         }
         // "oauth.relay.check" intentionally has no early-return arm here:
         // it falls through to `dispatch_with_clients_and_relay` below (which
@@ -75,6 +83,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
         crate::oauth::public_relay::current_public_relay_manager(),
         action,
         params,
+        surface,
     )
     .await
 }
@@ -85,7 +94,7 @@ pub async fn dispatch_with_clients(
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
-    dispatch_with_clients_and_relay(clients, None, action, params).await
+    dispatch_with_clients_and_relay(clients, None, action, params, "api").await
 }
 
 pub async fn dispatch_with_clients_and_relay(
@@ -93,6 +102,7 @@ pub async fn dispatch_with_clients_and_relay(
     public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
     action: &str,
     params: Value,
+    surface: &'static str,
 ) -> Result<Value, ToolError> {
     let start = std::time::Instant::now();
     tracing::info!(
@@ -127,7 +137,7 @@ pub async fn dispatch_with_clients_and_relay(
             let p = parse_proxy_check(&params)?;
             to_json(proxy::check_proxy(p).await?)
         }
-        "proxy.preflight" => to_json(preflight::check_proxy_preflight().await),
+        "proxy.preflight" => to_json(preflight::check_proxy_preflight(surface).await),
         "oauth.relay.check" => {
             let p = parse_relay_check(&params)?;
             to_json(super::relay::check_public_relay(public_relay.clone(), p.probe_targets).await)

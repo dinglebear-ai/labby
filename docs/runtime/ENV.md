@@ -115,7 +115,9 @@ LABBY_SERVER_URL=https://labby.example.com
   protected operations fail with `auth_required` or `auth_failed`, as
   applicable.
 - `CLAUDE_PLUGIN_OPTION_SERVER_URL` is the invocation-scoped target supplied by
-  the Labby Claude plugin. It takes precedence over `LABBY_SERVER_URL`.
+  the Labby Claude plugin. It takes precedence over `LABBY_SERVER_URL` and is
+  authenticated only with its paired `CLAUDE_PLUGIN_OPTION_API_TOKEN`; it
+  never inherits `LABBY_MCP_HTTP_TOKEN`.
 - `LABBY_SERVER_URL` is the ordinary CLI/stdio client target. Both explicit
   targets fail closed: invalid, unreachable, unauthorized, incompatible, or
   post-detection failures are returned and never read or execute against a
@@ -126,13 +128,15 @@ LABBY_SERVER_URL=https://labby.example.com
 - A terminal `/mcp` is normalized to the daemon base while a reverse-proxy path
   prefix is preserved. Remote targets require HTTPS; loopback HTTP is allowed.
   Redirects, URL credentials, query strings, and fragments are rejected.
-- The target and `LABBY_MCP_HTTP_TOKEN` form one trusted operator authority
-  domain. Do not inherit the token while pointing either explicit variable at
-  a server you do not administer.
+- `LABBY_SERVER_URL` and `LABBY_MCP_HTTP_TOKEN` form one trusted operator
+  authority domain. The invocation-scoped plugin target and
+  `CLAUDE_PLUGIN_OPTION_API_TOKEN` form a separate paired authority domain.
+  Do not point either target at a server you do not administer.
 
 Verified from a temporary bare client home with no `config.toml` or local
 database: `gateway get` reached the configured live daemon through both
-explicit target variables without creating local state. The local
+explicit target variables with their paired credentials, without creating
+local state. The local
 `GatewayManager` is built lazily only when opportunistic detection returns no
 daemon; explicit failures and successful remote dispatches never create it.
 

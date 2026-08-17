@@ -37,10 +37,16 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 /// Bound MCP initialize and short-lived Code Mode calls, not session lifetime.
 const MCP_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bound remote Code Mode execution independently from MCP initialization.
+const CODEMODE_EXECUTION_TIMEOUT: Duration = Duration::from_mins(2);
+const MCP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 /// Bound the discovery catalog before parsing untrusted remote JSON.
 const MAX_ACTION_CATALOG_BYTES: usize = 1024 * 1024;
 /// Bound the public identity document before parsing untrusted remote JSON.
 const MAX_DISCOVERY_DOCUMENT_BYTES: usize = 64 * 1024;
+const MAX_OAUTH_DOCUMENT_BYTES: usize = 1024 * 1024;
+const MAX_DISPATCH_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const RESPONSE_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bound ordinary thin-client dispatches after the short reachability probe.
 /// Long-poll actions opt out explicitly in `dispatch_timeout_for_action`.
 const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -59,8 +65,26 @@ pub struct LiveGateway {
 
 #[derive(Clone, Debug)]
 enum TargetSet {
-    Explicit { base_url: Url, source: &'static str },
+    Explicit {
+        base_url: Url,
+        source: ExplicitSource,
+    },
     Opportunistic(Vec<Url>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExplicitSource {
+    Plugin,
+    Operator,
+}
+
+impl ExplicitSource {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Plugin => "CLAUDE_PLUGIN_OPTION_SERVER_URL",
+            Self::Operator => "LABBY_SERVER_URL",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,21 +102,6 @@ struct ProbeFailure {
     message: String,
 }
 
-/// Resolve one authoritative explicit target when configured. Otherwise,
-/// return opportunistic candidates in priority order: the local bind address
-/// `labby serve` itself would resolve, followed by the configured public URLs.
-fn resolve_target_set(config: &LabConfig) -> Result<TargetSet, ToolError> {
-    resolve_target_set_from(
-        std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
-            .ok()
-            .as_deref(),
-        std::env::var("LABBY_SERVER_URL").ok().as_deref(),
-        std::env::var("LABBY_MCP_HTTP_HOST").ok(),
-        std::env::var("LABBY_MCP_HTTP_PORT").ok(),
-        config,
-    )
-}
-
 /// Pure resolution logic, split out from `candidate_base_urls` so it's
 /// testable without mutating process-global env vars (which would race with
 /// other tests in the same binary).
@@ -104,8 +113,8 @@ fn resolve_target_set_from(
     config: &LabConfig,
 ) -> Result<TargetSet, ToolError> {
     for (source, value) in [
-        ("CLAUDE_PLUGIN_OPTION_SERVER_URL", plugin_url),
-        ("LABBY_SERVER_URL", server_url),
+        (ExplicitSource::Plugin, plugin_url),
+        (ExplicitSource::Operator, server_url),
     ] {
         if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
             return Ok(TargetSet::Explicit {
@@ -208,14 +217,25 @@ pub async fn detect(
     config: &LabConfig,
     surface: &'static str,
 ) -> Result<Option<LiveGateway>, ToolError> {
-    let targets = match resolve_target_set(config) {
+    let plugin_url = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").ok();
+    let server_url = std::env::var("LABBY_SERVER_URL").ok();
+    let explicit_source = explicit_source_from(plugin_url.as_deref(), server_url.as_deref());
+    let targets = match resolve_target_set_from(
+        plugin_url.as_deref(),
+        server_url.as_deref(),
+        std::env::var("LABBY_MCP_HTTP_HOST").ok(),
+        std::env::var("LABBY_MCP_HTTP_PORT").ok(),
+        config,
+    ) {
         Ok(targets) => targets,
         Err(error) => {
             tracing::warn!(
                 surface,
                 service = "gateway",
                 action = "remote.detect",
-                source = configured_explicit_source().unwrap_or("unknown"),
+                source = explicit_source
+                    .map(ExplicitSource::name)
+                    .unwrap_or("unknown"),
                 kind = error.kind(),
                 fallback_suppressed = true,
                 "explicit remote gateway target is invalid"
@@ -223,16 +243,41 @@ pub async fn detect(
             return Err(error);
         }
     };
-    let token = normalize_token(std::env::var("LABBY_MCP_HTTP_TOKEN").ok());
+    let token = token_for_target_from(
+        &targets,
+        std::env::var("CLAUDE_PLUGIN_OPTION_API_TOKEN").ok(),
+        std::env::var("LABBY_MCP_HTTP_TOKEN").ok(),
+    );
     detect_targets(targets, token, DISCOVERY_TIMEOUT, surface).await
 }
 
-fn configured_explicit_source() -> Option<&'static str> {
-    if std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").is_ok_and(|value| !value.trim().is_empty())
-    {
-        Some("CLAUDE_PLUGIN_OPTION_SERVER_URL")
-    } else if std::env::var("LABBY_SERVER_URL").is_ok_and(|value| !value.trim().is_empty()) {
-        Some("LABBY_SERVER_URL")
+fn token_for_target_from(
+    targets: &TargetSet,
+    plugin_token: Option<String>,
+    product_token: Option<String>,
+) -> Option<String> {
+    let token = match targets {
+        TargetSet::Explicit {
+            source: ExplicitSource::Plugin,
+            ..
+        } => plugin_token,
+        TargetSet::Explicit {
+            source: ExplicitSource::Operator,
+            ..
+        }
+        | TargetSet::Opportunistic(_) => product_token,
+    };
+    normalize_token(token)
+}
+
+fn explicit_source_from(
+    plugin_url: Option<&str>,
+    server_url: Option<&str>,
+) -> Option<ExplicitSource> {
+    if plugin_url.is_some_and(|value| !value.trim().is_empty()) {
+        Some(ExplicitSource::Plugin)
+    } else if server_url.is_some_and(|value| !value.trim().is_empty()) {
+        Some(ExplicitSource::Operator)
     } else {
         None
     }
@@ -256,7 +301,12 @@ async fn detect_targets(
             let started = Instant::now();
             match probe_target(&client, &base_url, token.as_deref(), true).await {
                 Ok(actions) => Ok(Some(LiveGateway::new(
-                    base_url, true, source, token, client, actions,
+                    base_url,
+                    true,
+                    source.name(),
+                    token,
+                    client,
+                    actions,
                 ))),
                 Err(failure) => {
                     let error = probe_error(&base_url, &failure, true);
@@ -264,7 +314,7 @@ async fn detect_targets(
                         surface,
                         service = "gateway",
                         action = "remote.detect",
-                        source,
+                        source = source.name(),
                         origin = %sanitized_origin(&base_url),
                         elapsed_ms = started.elapsed().as_millis(),
                         kind = error.kind(),
@@ -315,7 +365,11 @@ async fn probe_target(
         .await
         .map_err(|error| probe_transport_error(ProbeStage::Health, error))?;
     if !health.status().is_success() {
-        return Err(probe_status_error(ProbeStage::Health, health.status()));
+        return Err(probe_status_error(
+            ProbeStage::Health,
+            health.status(),
+            false,
+        ));
     }
 
     if token.is_none() && labby_discovery_identifies_daemon(client, base_url).await {
@@ -359,7 +413,11 @@ async fn fetch_actions(
         .await
         .map_err(|error| probe_transport_error(ProbeStage::Actions, error))?;
     if !response.status().is_success() {
-        return Err(probe_status_error(ProbeStage::Actions, response.status()));
+        return Err(probe_status_error(
+            ProbeStage::Actions,
+            response.status(),
+            token.is_some(),
+        ));
     }
     let body = read_action_catalog_body(response).await?;
     let actions = serde_json::from_slice::<Vec<Value>>(&body).map_err(|_| ProbeFailure {
@@ -470,6 +528,65 @@ async fn read_bounded_body(response: reqwest::Response, limit: usize) -> Result<
     Ok(body)
 }
 
+async fn read_tool_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    limit: usize,
+    label: &str,
+    sdk_kind: &str,
+) -> Result<T, ToolError> {
+    let body = read_tool_body(response, limit, label, sdk_kind).await?;
+    serde_json::from_slice(&body).map_err(|error| ToolError::Sdk {
+        sdk_kind: sdk_kind.to_string(),
+        message: format!("{label} is invalid: {error}"),
+    })
+}
+
+async fn read_tool_body(
+    response: reqwest::Response,
+    limit: usize,
+    label: &str,
+    sdk_kind: &str,
+) -> Result<Vec<u8>, ToolError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "response_too_large".to_string(),
+            message: format!("{label} exceeds the {limit} byte limit"),
+        });
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    loop {
+        let next = tokio::time::timeout(RESPONSE_BODY_IDLE_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: sdk_kind.to_string(),
+                message: format!("{label} body read timed out"),
+            })?;
+        let Some(chunk) = next else { break };
+        let chunk = chunk.map_err(|error| ToolError::Sdk {
+            sdk_kind: sdk_kind.to_string(),
+            message: format!("{label} body could not be read: {error}"),
+        })?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(ToolError::Sdk {
+                sdk_kind: "response_too_large".to_string(),
+                message: format!("{label} exceeds the {limit} byte limit"),
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
 fn probe_transport_error(stage: ProbeStage, error: reqwest::Error) -> ProbeFailure {
     ProbeFailure {
         stage,
@@ -483,10 +600,15 @@ fn probe_transport_error(stage: ProbeStage, error: reqwest::Error) -> ProbeFailu
     }
 }
 
-fn probe_status_error(stage: ProbeStage, status: reqwest::StatusCode) -> ProbeFailure {
+fn probe_status_error(
+    stage: ProbeStage,
+    status: reqwest::StatusCode,
+    credentials_supplied: bool,
+) -> ProbeFailure {
     let kind = match status.as_u16() {
+        401 if credentials_supplied => "auth_failed",
         401 => "auth_required",
-        403 => "auth_failed",
+        403 => "forbidden",
         _ => "service_unavailable",
     };
     ProbeFailure {
@@ -620,10 +742,13 @@ impl LiveGateway {
                 ),
             });
         }
-        let metadata: Value = response.json().await.map_err(|error| ToolError::Sdk {
-            sdk_kind: "proxy_auth_unavailable".to_string(),
-            message: format!("OAuth authorization-server metadata is invalid: {error}"),
-        })?;
+        let metadata: Value = read_tool_json(
+            response,
+            MAX_OAUTH_DOCUMENT_BYTES,
+            "OAuth authorization-server metadata",
+            "proxy_auth_unavailable",
+        )
+        .await?;
         if metadata.get("issuer").and_then(Value::as_str) != Some(stable_issuer) {
             return Err(ToolError::Sdk {
                 sdk_kind: "proxy_auth_unavailable".to_string(),
@@ -639,9 +764,26 @@ impl LiveGateway {
                 sdk_kind: "proxy_auth_unavailable".to_string(),
                 message: "OAuth metadata does not advertise a JWKS URI".to_string(),
             })?;
+        let jwks_url = Url::parse(jwks_uri).map_err(|_| ToolError::Sdk {
+            sdk_kind: "proxy_auth_unavailable".to_string(),
+            message: "OAuth metadata advertises an invalid JWKS URI".to_string(),
+        })?;
+        let secure_transport = jwks_url.scheme() == "https"
+            || (jwks_url.scheme() == "http" && is_loopback_url(&jwks_url));
+        if !secure_transport
+            || !jwks_url.username().is_empty()
+            || jwks_url.password().is_some()
+            || !same_origin(issuer, &jwks_url)
+        {
+            return Err(ToolError::Sdk {
+                sdk_kind: "proxy_auth_unavailable".to_string(),
+                message: "OAuth JWKS URI must use the configured issuer origin without userinfo"
+                    .to_string(),
+            });
+        }
         let response = self
             .client
-            .get(jwks_uri)
+            .get(jwks_url)
             .timeout(PROBE_TIMEOUT)
             .send()
             .await
@@ -655,10 +797,13 @@ impl LiveGateway {
                 message: format!("OAuth JWKS returned HTTP {}", response.status()),
             });
         }
-        response.json().await.map_err(|error| ToolError::Sdk {
-            sdk_kind: "proxy_auth_unavailable".to_string(),
-            message: format!("OAuth JWKS is invalid: {error}"),
-        })
+        read_tool_json(
+            response,
+            MAX_OAUTH_DOCUMENT_BYTES,
+            "OAuth JWKS",
+            "proxy_auth_unavailable",
+        )
+        .await
     }
 
     pub async fn action_catalog(&self) -> Result<BTreeSet<String>, ToolError> {
@@ -741,13 +886,23 @@ impl LiveGateway {
         let response = request.send().await.map_err(live_gateway_network_error)?;
         let status = response.status();
         if status.is_success() {
-            return response.json().await.map_err(|error| ToolError::Sdk {
-                sdk_kind: "decode_error".to_string(),
-                message: format!("invalid response from live gateway daemon: {error}"),
-            });
+            return read_tool_json(
+                response,
+                MAX_DISPATCH_RESPONSE_BYTES,
+                "live gateway daemon response",
+                "decode_error",
+            )
+            .await;
         }
 
-        let body: Value = response.json().await.unwrap_or(Value::Null);
+        let body = read_tool_body(
+            response,
+            MAX_DISPATCH_RESPONSE_BYTES,
+            "live gateway daemon error response",
+            "decode_error",
+        )
+        .await?;
+        let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
 
         let sdk_kind = body
             .get("kind")
@@ -771,22 +926,24 @@ impl LiveGateway {
     /// speaks the MCP streamable-HTTP protocol directly via a short-lived
     /// connection, the same way `labby-gateway`'s own upstream pool connects
     /// to any other MCP server (see `pool/connect.rs`).
-    pub async fn call_codemode_tool(&self, code: &str) -> anyhow::Result<Value> {
+    pub async fn call_codemode_tool(&self, code: &str) -> Result<Value, ToolError> {
         use rmcp::model::CallToolRequestParams;
 
-        let service = tokio::time::timeout(MCP_INITIALIZATION_TIMEOUT, self.connect_service(()))
-            .await
-            .map_err(|_| anyhow::anyhow!("remote Code Mode MCP initialization timed out"))??;
+        let service = self
+            .connect_service_with_timeout((), MCP_INITIALIZATION_TIMEOUT)
+            .await?;
         let peer = service.peer().clone();
 
         let mut arguments = serde_json::Map::new();
         arguments.insert("code".to_string(), Value::String(code.to_string()));
-        let result = bounded_codemode_call(
+        let (call_result, cancel_result) = bounded_codemode_call_and_cleanup(
             peer.call_tool(CallToolRequestParams::new("codemode").with_arguments(arguments)),
-            MCP_INITIALIZATION_TIMEOUT,
+            CODEMODE_EXECUTION_TIMEOUT,
+            MCP_CLEANUP_TIMEOUT,
+            service.cancel(),
         )
-        .await?;
-        if let Err(error) = service.cancel().await {
+        .await;
+        if let Err(error) = cancel_result {
             tracing::warn!(
                 surface = "cli",
                 service = "gateway",
@@ -796,16 +953,7 @@ impl LiveGateway {
                 "remote Code Mode MCP shutdown failed"
             );
         }
-
-        if let Some(structured) = result.structured_content {
-            return Ok(structured);
-        }
-        let text = result
-            .content
-            .iter()
-            .find_map(|block| block.as_text().map(|t| t.text.clone()))
-            .unwrap_or_default();
-        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+        codemode_result_value(call_result?)
     }
 
     /// Open a long-lived MCP streamable-HTTP connection to the daemon's
@@ -889,6 +1037,58 @@ where
         })
 }
 
+async fn bounded_codemode_call_and_cleanup<F, T, E, C, CU, CE>(
+    future: F,
+    timeout: Duration,
+    cleanup_timeout: Duration,
+    cleanup: C,
+) -> (Result<T, ToolError>, Result<CU, ToolError>)
+where
+    F: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+    C: Future<Output = Result<CU, CE>>,
+    CE: std::fmt::Display,
+{
+    let result = bounded_codemode_call(future, timeout).await;
+    let cleanup_result = match tokio::time::timeout(cleanup_timeout, cleanup).await {
+        Err(_) => Err(ToolError::Sdk {
+            sdk_kind: "bridge_transport_error".to_string(),
+            message: "remote Code Mode MCP shutdown timed out".to_string(),
+        }),
+        Ok(Err(error)) => Err(ToolError::Sdk {
+            sdk_kind: "bridge_transport_error".to_string(),
+            message: format!("remote Code Mode MCP shutdown failed: {error}"),
+        }),
+        Ok(Ok(value)) => Ok(value),
+    };
+    (result, cleanup_result)
+}
+
+fn codemode_result_value(result: rmcp::model::CallToolResult) -> Result<Value, ToolError> {
+    let text = result
+        .content
+        .iter()
+        .find_map(|block| block.as_text().map(|text| text.text.clone()))
+        .unwrap_or_default();
+    let payload = result
+        .structured_content
+        .unwrap_or_else(|| serde_json::from_str(&text).unwrap_or(Value::String(text)));
+    if result.is_error == Some(true) {
+        let sdk_kind = payload
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("bridge_transport_error")
+            .to_string();
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .map(labby_runtime::redact::redact_secret_like_segments)
+            .unwrap_or_else(|| "remote Code Mode tool returned an error".to_string());
+        return Err(ToolError::Sdk { sdk_kind, message });
+    }
+    Ok(payload)
+}
+
 fn dispatch_timeout_for_action(action: &str, default: Duration) -> Option<Duration> {
     if labby_gateway::gateway::requires_authoritative_result(action) {
         None
@@ -920,6 +1120,8 @@ fn typed_response_error(error: serde_json::Error) -> ToolError {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1011,12 +1213,83 @@ mod tests {
         let TargetSet::Explicit { base_url, source } = targets else {
             panic!("expected explicit target");
         };
-        assert_eq!(source, "CLAUDE_PLUGIN_OPTION_SERVER_URL");
+        assert_eq!(source, ExplicitSource::Plugin);
         assert_eq!(base_url.as_str(), "https://plugin.example/prefix/");
         assert_eq!(
             base_url.join("health").unwrap().as_str(),
             "https://plugin.example/prefix/health"
         );
+    }
+
+    #[test]
+    fn explicit_target_credentials_are_scoped_to_the_selected_authority() {
+        let plugin = resolve_target_set_from(
+            Some("https://plugin.example"),
+            Some("https://operator.example"),
+            None,
+            None,
+            &LabConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            token_for_target_from(
+                &plugin,
+                Some("plugin-token".to_string()),
+                Some("product-admin-token".to_string())
+            ),
+            Some("plugin-token".to_string())
+        );
+        assert_eq!(
+            token_for_target_from(&plugin, None, Some("product-admin-token".to_string())),
+            None,
+            "plugin override must never inherit the ambient product token"
+        );
+
+        let operator = resolve_target_set_from(
+            None,
+            Some("https://operator.example"),
+            None,
+            None,
+            &LabConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            token_for_target_from(&operator, None, Some("product-admin-token".to_string())),
+            Some("product-admin-token".to_string())
+        );
+    }
+
+    #[test]
+    fn probe_status_errors_preserve_authentication_and_authorization_recovery() {
+        for (status, credentials_supplied, expected_kind, expected_recovery) in [
+            (
+                reqwest::StatusCode::UNAUTHORIZED,
+                false,
+                "auth_required",
+                "reauthenticate",
+            ),
+            (
+                reqwest::StatusCode::UNAUTHORIZED,
+                true,
+                "auth_failed",
+                "reauthenticate",
+            ),
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                true,
+                "forbidden",
+                "do_not_retry",
+            ),
+        ] {
+            let failure = probe_status_error(ProbeStage::Actions, status, credentials_supplied);
+            let envelope =
+                probe_error(&Url::parse("https://example.com/").unwrap(), &failure, true)
+                    .to_agent_value();
+            assert_eq!(envelope["kind"], expected_kind);
+            assert_eq!(envelope["recovery"]["action"], expected_recovery);
+            assert_eq!(envelope["recovery"]["same_arguments"], "never");
+            assert_eq!(envelope["side_effects"], "none_expected");
+        }
     }
 
     #[test]
@@ -1081,7 +1354,7 @@ mod tests {
 
         let target = TargetSet::Explicit {
             base_url: normalize_base_url(&server.uri()).unwrap(),
-            source: "LABBY_SERVER_URL",
+            source: ExplicitSource::Operator,
         };
         let error = match detect_targets(target, None, DISCOVERY_TIMEOUT, "test").await {
             Err(error) => error,
@@ -1222,12 +1495,19 @@ mod tests {
     #[tokio::test]
     async fn stalled_codemode_call_is_bounded_with_bridge_recovery() {
         let started = Instant::now();
-        let error = bounded_codemode_call(
+        let cleanup_observed = Arc::new(AtomicBool::new(false));
+        let cleanup_flag = cleanup_observed.clone();
+        let (result, cleanup_result) = bounded_codemode_call_and_cleanup(
             std::future::pending::<Result<(), std::io::Error>>(),
             Duration::from_millis(25),
+            Duration::from_millis(25),
+            async move {
+                cleanup_flag.store(true, Ordering::SeqCst);
+                Ok::<(), std::io::Error>(())
+            },
         )
-        .await
-        .expect_err("stalled Code Mode call must time out");
+        .await;
+        let error = result.expect_err("stalled Code Mode call must time out");
 
         assert_eq!(error.kind(), "bridge_transport_error");
         let envelope = error.to_agent_value();
@@ -1235,7 +1515,45 @@ mod tests {
         assert_eq!(envelope["recovery"]["action"], "start_dependency");
         assert_eq!(envelope["recovery"]["same_arguments"], "conditional");
         assert_eq!(envelope["side_effects"], "unknown");
+        assert!(cleanup_result.is_ok());
+        assert!(cleanup_observed.load(Ordering::SeqCst));
         assert!(started.elapsed() < Duration::from_millis(150));
+    }
+
+    #[tokio::test]
+    async fn stalled_codemode_cleanup_is_bounded() {
+        let started = Instant::now();
+        let (result, cleanup_result) = bounded_codemode_call_and_cleanup(
+            async { Ok::<_, std::io::Error>(()) },
+            Duration::from_millis(25),
+            Duration::from_millis(25),
+            std::future::pending::<Result<(), std::io::Error>>(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            cleanup_result
+                .expect_err("stalled cleanup must time out")
+                .kind(),
+            "bridge_transport_error"
+        );
+        assert!(started.elapsed() < Duration::from_millis(150));
+    }
+
+    #[test]
+    fn codemode_completed_error_is_not_reported_as_success() {
+        let result = rmcp::model::CallToolResult::structured_error(serde_json::json!({
+            "kind": "auth_failed",
+            "message": "configured token was rejected"
+        }));
+        let error = codemode_result_value(result).expect_err("isError must fail");
+
+        assert_eq!(error.kind(), "auth_failed");
+        assert_eq!(
+            error.to_agent_value()["recovery"]["action"],
+            "reauthenticate"
+        );
     }
 
     #[test]
@@ -1312,6 +1630,26 @@ mod tests {
             .expect_err("malformed success must not become JSON null");
 
         assert_eq!(error.kind(), "decode_error");
+    }
+
+    #[tokio::test]
+    async fn dispatch_action_rejects_oversized_response_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+                b' ';
+                MAX_DISPATCH_RESPONSE_BYTES
+                    + 1
+            ]))
+            .mount(&server)
+            .await;
+
+        let error = test_gateway(server.uri(), None)
+            .dispatch_action("gateway.list", json!({}))
+            .await
+            .expect_err("oversized dispatch response must be bounded");
+        assert_eq!(error.kind(), "response_too_large");
     }
 
     #[tokio::test]
@@ -1828,6 +2166,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_proxy_rejects_cross_origin_jwks_without_requesting_it() {
+        let issuer_server = MockServer::start().await;
+        let target_server = MockServer::start().await;
+        let issuer = issuer_server.uri();
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "jwks_uri": format!("{}/jwks", target_server.uri())
+            })))
+            .mount(&issuer_server)
+            .await;
+
+        let error = test_gateway(issuer_server.uri(), None)
+            .verify_oauth_issuer(&Url::parse(&issuer_server.uri()).unwrap())
+            .await
+            .expect_err("metadata must not delegate JWKS authority cross-origin");
+
+        assert_eq!(error.kind(), "proxy_auth_unavailable");
+        assert!(target_server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn oauth_proxy_prerequisites_reject_unreachable_metadata() {
         let server = MockServer::start().await;
         let error = test_gateway(server.uri(), None)
@@ -1864,8 +2225,8 @@ mod tests {
                 .mount(&server)
                 .await;
         }
-        let renewal_observed = std::sync::Arc::new(tokio::sync::Notify::new());
-        let renewal_observed_response = std::sync::Arc::clone(&renewal_observed);
+        let renewal_observed = Arc::new(tokio::sync::Notify::new());
+        let renewal_observed_response = Arc::clone(&renewal_observed);
         let renewed_lease = lease.clone();
         Mock::given(method("POST"))
             .and(path("/v1/gateway"))

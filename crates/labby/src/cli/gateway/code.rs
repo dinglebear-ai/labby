@@ -95,7 +95,7 @@ async fn execute_code_mode(
             Ok(value) => return Ok(value),
             Err(error) => {
                 if !live.allows_local_fallback() {
-                    return Err(error.context(format!(
+                    return Err(anyhow::Error::new(error).context(format!(
                         "Code Mode execution through configured Labby server ({}) failed",
                         live.source()
                     )));

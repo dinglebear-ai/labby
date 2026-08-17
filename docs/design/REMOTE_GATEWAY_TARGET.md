@@ -34,7 +34,11 @@ probe failed, they could create a local gateway view and read another
   must not fall back to a local `config.toml`.
 - When no explicit target is configured, preserve the existing local-bind and
   public-URL probes followed by standalone local fallback.
-- Never send `LABBY_MCP_HTTP_TOKEN` to a different origin after a redirect.
+- Bind credentials to the target authority: the plugin target uses only
+  `CLAUDE_PLUGIN_OPTION_API_TOKEN`, while `LABBY_SERVER_URL` and opportunistic
+  discovery use `LABBY_MCP_HTTP_TOKEN`. Never let an invocation-scoped target
+  inherit the ambient product token, and never send either token to a
+  different origin after a redirect.
   The shared remote client must use `reqwest::redirect::Policy::none()` for
   health, identity, dispatch, and MCP initialization requests.
 - Build health, action, dispatch, and MCP endpoints with `Url::join`; raw URL
@@ -67,7 +71,7 @@ probe failed, they could create a local gateway view and read another
 - Do not add response-source metadata to every gateway action envelope; clear
   routing failures and regression coverage are sufficient for this repair.
 - Do not add concurrent public probing, global client caching, metrics,
-  certificate pinning, target-scoped token storage, or private-network
+  certificate pinning, persisted target-scoped token storage, or private-network
   allowlists in this repair.
 
 ## Acceptance criteria
