@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
-import { searchCodeModeTools } from './tool-browser-client.ts'
+import { describeCodeModeTool, searchCodeModeTools } from './tool-browser-client.ts'
 
 const CSRF = 'csrf-tool-browser'
 
@@ -138,5 +138,53 @@ test('tool search rejects malformed successful JSON with its request ID', async 
     (error: unknown) => error instanceof Error &&
       'code' in error && error.code === 'invalid_response' &&
       'requestId' in error && error.requestId === 'req-invalid',
+  )
+})
+
+test('tool search rejects schema-invalid successful JSON with its request ID', async () => {
+  setAuthenticatedSession()
+  globalThis.fetch = async () => new Response(JSON.stringify({ results: null, total: 0, truncated: false }), {
+    status: 200,
+    headers: { 'x-request-id': 'req-invalid-shape' },
+  })
+
+  await assert.rejects(
+    searchCodeModeTools('gateway'),
+    (error: unknown) => error instanceof Error &&
+      'code' in error && error.code === 'invalid_response' &&
+      'requestId' in error && error.requestId === 'req-invalid-shape',
+  )
+})
+
+test('tool describe uses its endpoint, CSRF token, and response bound', async () => {
+  setAuthenticatedSession()
+  let requestUrl = ''
+  let requestInit: RequestInit | undefined
+  globalThis.fetch = async (input, init) => {
+    requestUrl = String(input); requestInit = init
+    return new Response(JSON.stringify({
+      path: 'alpha.ping', id: 'alpha::ping', namespace: 'alpha', name: 'ping',
+      description: 'Ping', helper: 'codemode.alpha.ping', signature: '()', tags: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+
+  const result = await describeCodeModeTool('alpha::ping')
+  assert.equal(result.id, 'alpha::ping')
+  assert.equal(requestUrl, '/v1/gateway/codemode/tools/describe')
+  assert.deepEqual(JSON.parse(String(requestInit?.body)), { target: 'alpha::ping' })
+  assert.equal(new Headers(requestInit?.headers).get('x-csrf-token'), CSRF)
+})
+
+test('tool describe rejects oversized responses with request correlation', async () => {
+  setAuthenticatedSession()
+  globalThis.fetch = async () => new Response('x'.repeat(128 * 1024 + 1), {
+    status: 200,
+    headers: { 'x-request-id': 'req-describe-large' },
+  })
+  await assert.rejects(
+    describeCodeModeTool('alpha::ping'),
+    (error: unknown) => error instanceof Error &&
+      'code' in error && error.code === 'response_too_large' &&
+      'requestId' in error && error.requestId === 'req-describe-large',
   )
 })

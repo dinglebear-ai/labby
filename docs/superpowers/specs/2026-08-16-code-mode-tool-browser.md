@@ -51,7 +51,7 @@ Response:
 {
   "results": [
     {
-      "path": "codemode.github.search_issues",
+      "path": "github.search_issues",
       "id": "github::search_issues",
       "kind": "tool",
       "namespace": "github",
@@ -85,7 +85,7 @@ Never syntactically truncate TypeScript.
 
 ## Input and output bounds
 
-- Query: non-empty after normalization, maximum 1,024 UTF-8 bytes.
+- Query: empty after normalization returns the standard search hint; maximum 1,024 UTF-8 bytes.
 - Target: non-empty after trim, maximum 4,096 UTF-8 bytes.
 - Limit: clamp to `1..=50`.
 - Description: maximum 4 KiB after existing sanitization.

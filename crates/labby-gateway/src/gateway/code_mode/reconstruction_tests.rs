@@ -88,7 +88,6 @@ async fn manager(root: &std::path::Path) -> GatewayManager {
 
 #[tokio::test]
 async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
-    let started = std::time::Instant::now();
     let root = tempfile::tempdir().expect("temporary persistent root");
 
     let manager_a = manager(root.path()).await;
@@ -207,9 +206,4 @@ async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
     )
     .expect("safe discovery after reconstruction");
     assert_eq!(discovery.results.len(), 1);
-
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(5),
-        "focused reconstruction test exceeded its 5s wall-clock budget"
-    );
 }

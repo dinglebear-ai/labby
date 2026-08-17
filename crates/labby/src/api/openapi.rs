@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::{OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::SchemaType;
@@ -116,13 +116,20 @@ pub struct AgentErrorResponse {
     pub existing_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CodeModeToolSearchRequest {
     pub query: String,
-    pub limit: Option<usize>,
+    #[serde(default = "default_code_mode_tool_search_limit")]
+    pub limit: usize,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+const fn default_code_mode_tool_search_limit() -> usize {
+    50
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CodeModeToolDescribeRequest {
     pub target: String,
 }

@@ -164,12 +164,15 @@ fn private_tool_error(
         .get("x-request-id")
         .and_then(|value| value.to_str().ok());
     if error.kind() == "internal_error" {
+        let diagnostic =
+            labby_runtime::agent_error::redact_secret_like_segments(&error.to_string());
         tracing::error!(
             surface = "api",
             service = "gateway",
             action,
             elapsed_ms,
             kind = error.kind(),
+            error = %diagnostic,
             request_id,
             "dispatch failed"
         );
@@ -1085,6 +1088,40 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn api_admin_tool_describe_enforces_auth_validation_and_neutral_not_found() {
+        let read = gateway_routes_with_auth_context(test_manager(), read_only_auth_context());
+        let forbidden = post_tool_browser(
+            read,
+            "/codemode/tools/describe",
+            json!({"target":"alpha::ping"}),
+        )
+        .await;
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let admin = gateway_routes_with_auth_context(test_manager(), admin_auth_context());
+        let oversized = post_tool_browser(
+            admin.clone(),
+            "/codemode/tools/describe",
+            json!({"target":"x".repeat(labby_codemode::TARGET_MAX_BYTES + 1)}),
+        )
+        .await;
+        assert_eq!(oversized.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let unknown = post_tool_browser(
+            admin,
+            "/codemode/tools/describe",
+            json!({"target":"alpha::missing"}),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(unknown.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["kind"], "unknown_tool");
     }
 
     #[test]

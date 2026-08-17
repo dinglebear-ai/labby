@@ -56,6 +56,7 @@ fn normalized_tool_safety(tool: &UpstreamTool) -> Option<CodeModeToolSafety> {
     (!safety.is_empty()).then_some(safety)
 }
 
+#[cfg(test)]
 fn embedding_corpus_fingerprint(tools: &[UpstreamTool]) -> String {
     let mut corpus = tools
         .iter()
@@ -79,6 +80,40 @@ fn embedding_corpus_fingerprint(tools: &[UpstreamTool]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn rendered_embedding_corpus_fingerprint(entries: &[ToolDescriptor]) -> String {
+    let mut corpus = entries
+        .iter()
+        .map(|entry| format!("{}\0{}", entry.id, entry.description))
+        .collect::<Vec<_>>();
+    corpus.sort_unstable();
+    let mut digest = Sha256::new();
+    for item in corpus {
+        digest.update((item.len() as u64).to_be_bytes());
+        digest.update(item.as_bytes());
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn render_from_cached_catalog(
+    fingerprint: String,
+    entries: std::sync::Arc<[ToolDescriptor]>,
+    catalog_json: std::sync::Arc<str>,
+    serialized_size: usize,
+) -> ToolsRender {
+    let embedding_fingerprint = rendered_embedding_corpus_fingerprint(&entries);
+    ToolsRender {
+        fingerprint,
+        embedding_fingerprint,
+        entries,
+        catalog_json,
+        serialized_size,
+    }
 }
 
 /// Build (or serve from cache) the Code Mode discovery catalog for the proxy.
@@ -149,7 +184,6 @@ pub(super) async fn catalog_from_tools(
         "snippets:hidden".to_string()
     };
 
-    let embedding_fingerprint = embedding_corpus_fingerprint(&raw_tools);
     let fingerprint = {
         let mut ids: Vec<String> = raw_tools
             .iter()
@@ -176,19 +210,15 @@ pub(super) async fn catalog_from_tools(
             entry_count = entries.len(),
             "Code Mode discovery catalog served from render cache"
         );
+        let render =
+            render_from_cached_catalog(fingerprint, entries, catalog_json, serialized_size);
         // Best-effort embedding warm-up on the cache-hit path too — a no-op
         // unless semantic search is configured and the embedding cache is
         // cold for this fingerprint (fail-open; never fails catalog serving).
         let _warmed = manager
-            .ensure_embeddings_for_fingerprint(&embedding_fingerprint, &entries)
+            .ensure_embeddings_for_fingerprint(&render.embedding_fingerprint, &render.entries)
             .await;
-        return Ok(ToolsRender {
-            fingerprint,
-            embedding_fingerprint,
-            entries,
-            catalog_json,
-            serialized_size,
-        });
+        return Ok(render);
     }
 
     let flight = manager.catalog_render_flight(&fingerprint).await;
@@ -196,22 +226,20 @@ pub(super) async fn catalog_from_tools(
     if let Some((entries, catalog_json, serialized_size)) =
         manager.cached_catalog_render(&fingerprint).await
     {
-        return Ok(ToolsRender {
+        return Ok(render_from_cached_catalog(
             fingerprint,
-            embedding_fingerprint,
             entries,
             catalog_json,
             serialized_size,
-        });
+        ));
     }
     if let Some(cache) = flight.result.lock().await.clone() {
-        return Ok(ToolsRender {
+        return Ok(render_from_cached_catalog(
             fingerprint,
-            embedding_fingerprint,
-            entries: cache.entries,
-            catalog_json: cache.catalog_json,
-            serialized_size: cache.serialized_size,
-        });
+            cache.entries,
+            cache.catalog_json,
+            cache.serialized_size,
+        ));
     }
 
     // Cache miss — build entries (includes `generate_tool_types` per entry).
@@ -250,6 +278,7 @@ pub(super) async fn catalog_from_tools(
                 .then_with(|| a.name.cmp(&b.name))
         })
     });
+    let embedding_fingerprint = rendered_embedding_corpus_fingerprint(&entries);
 
     // The catalog is injected as `const tools` into the javy runner and never
     // enters the model context, so it is served complete and uncapped.
@@ -501,6 +530,27 @@ mod tests {
         assert_ne!(
             embedding_corpus_fingerprint(std::slice::from_ref(&plain)),
             embedding_corpus_fingerprint(std::slice::from_ref(&renamed))
+        );
+    }
+
+    #[test]
+    fn snippet_membership_changes_rendered_embedding_identity() {
+        use labby_codemode::snippet::store::{SnippetInfo, SnippetSource};
+
+        let tool = ToolDescriptor::tool("fixture", "query", "Query data", None, None);
+        let snippet = ToolDescriptor::snippet(&SnippetInfo {
+            name: "summarize".to_string(),
+            description: Some("Summarize results".to_string()),
+            tags: vec![],
+            inputs: Default::default(),
+            source: SnippetSource::User,
+            path: "summarize.md".into(),
+            shadowed: false,
+        });
+
+        assert_ne!(
+            rendered_embedding_corpus_fingerprint(std::slice::from_ref(&tool)),
+            rendered_embedding_corpus_fingerprint(&[tool, snippet])
         );
     }
 

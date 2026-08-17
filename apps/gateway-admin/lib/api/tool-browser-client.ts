@@ -33,7 +33,35 @@ async function boundedJson(response: Response, maxBytes: number) {
   }
 }
 
-async function post<T>(path: string, body: object, maxBytes: number, signal?: AbortSignal): Promise<T> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isSearchHit(value: unknown): value is ToolSearchHit {
+  if (!isRecord(value)) return false
+  return value.kind === 'tool' &&
+    ['path', 'id', 'namespace', 'name', 'description', 'signature'].every((key) => typeof value[key] === 'string') &&
+    isStringArray(value.tags) && typeof value.score === 'number' && Number.isFinite(value.score)
+}
+
+function isSearchResponse(value: unknown): value is ToolSearchResponse {
+  return isRecord(value) && Array.isArray(value.results) && value.results.every(isSearchHit) &&
+    typeof value.total === 'number' && Number.isSafeInteger(value.total) && value.total >= 0 &&
+    typeof value.truncated === 'boolean' && (value.hint === undefined || typeof value.hint === 'string')
+}
+
+function isDescription(value: unknown): value is ToolDescription {
+  if (!isRecord(value)) return false
+  return ['path', 'id', 'namespace', 'name', 'description', 'helper', 'signature'].every((key) => typeof value[key] === 'string') &&
+    isStringArray(value.tags) && (value.typescript === undefined || typeof value.typescript === 'string') &&
+    (value.typescript_omitted === undefined || typeof value.typescript_omitted === 'string')
+}
+
+async function post<T>(path: string, body: object, maxBytes: number, validate: (value: unknown) => value is T, signal?: AbortSignal): Promise<T> {
   const request = async () => {
     const epoch = getBrowserSessionEpoch()
     const csrfToken = getSessionCsrfToken()
@@ -49,7 +77,10 @@ async function post<T>(path: string, body: object, maxBytes: number, signal?: Ab
     if (!response.ok) {
       throw new GatewayApiError(payload.message ?? 'Tools unavailable', response.status, payload.kind, response.headers.get('x-request-id') ?? undefined)
     }
-    return payload as T
+    if (!validate(payload)) {
+      throw new GatewayApiError('Tools returned an invalid response', 502, 'invalid_response', response.headers.get('x-request-id') ?? undefined)
+    }
+    return payload
   }
 
   try {
@@ -66,6 +97,6 @@ async function post<T>(path: string, body: object, maxBytes: number, signal?: Ab
 }
 
 export const searchCodeModeTools = (query: string, signal?: AbortSignal) =>
-  post<ToolSearchResponse>('/v1/gateway/codemode/tools/search', { query, limit: 50 }, SEARCH_RESPONSE_MAX_BYTES, signal)
+  post<ToolSearchResponse>('/v1/gateway/codemode/tools/search', { query, limit: 50 }, SEARCH_RESPONSE_MAX_BYTES, isSearchResponse, signal)
 export const describeCodeModeTool = (target: string, signal?: AbortSignal) =>
-  post<ToolDescription>('/v1/gateway/codemode/tools/describe', { target }, DESCRIBE_RESPONSE_MAX_BYTES, signal)
+  post<ToolDescription>('/v1/gateway/codemode/tools/describe', { target }, DESCRIBE_RESPONSE_MAX_BYTES, isDescription, signal)

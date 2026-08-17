@@ -8,7 +8,11 @@ import { subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { describeCodeModeTool, searchCodeModeTools, type ToolDescription, type ToolSearchHit } from '@/lib/api/tool-browser-client'
 import { GatewayApiError } from '@/lib/api/gateway-client-core'
 
-type BrowserError = { message: string; status?: number; requestId?: string }
+type BrowserError = { message: string; status?: number; requestId?: string; retry?: () => void }
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
 
 export function toolBrowserError(error: unknown, fallback: string): BrowserError {
   if (error instanceof GatewayApiError) {
@@ -41,15 +45,17 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
 
   async function runSearch(value: string) {
     activeRequest.current?.abort(); const controller = new AbortController(); activeRequest.current = controller
-    setDetail(null); setError(null)
-    if (!value.trim()) { setResults([]); setTotal(0); setLoading(false); return }
+    setDetail(null); setError(null); setResults([]); setTotal(0)
+    if (!value.trim()) { setLoading(false); return }
     setLoading(true)
     try {
       const response = await searchCodeModeTools(value, controller.signal)
       if (activeRequest.current !== controller) return
       setResults(response.results); setTotal(response.total)
     } catch (cause) {
-      if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(toolBrowserError(cause, 'Tools unavailable'))
+      if (activeRequest.current === controller && !isAbortError(cause)) {
+        setError({ ...toolBrowserError(cause, 'Tools unavailable'), retry: () => void runSearch(value) })
+      }
     } finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
@@ -64,7 +70,11 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
       const response = await describeCodeModeTool(target, controller.signal)
       if (activeRequest.current === controller) setDetail(response)
     }
-    catch (cause) { if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(toolBrowserError(cause, 'Tool not found')) }
+    catch (cause) {
+      if (activeRequest.current === controller && !isAbortError(cause)) {
+        setError({ ...toolBrowserError(cause, 'Tool not found'), retry: () => void loadDetail(target) })
+      }
+    }
     finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
@@ -77,10 +87,10 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
       <Input aria-label="Search tools" maxLength={1024} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by tool, namespace, description, or tag" />
       <Button type="submit" disabled={loading}>{loading ? 'Loading…' : 'Search'}</Button>
     </form>
-    {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && <Button variant="ghost" size="sm" onClick={() => void runSearch(query)}>Retry</Button>}</div>}
+    {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && error.retry && <Button variant="ghost" size="sm" onClick={error.retry}>Retry</Button>}</div>}
     <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
       <section aria-label="Tool results" className="space-y-3">
-        <p className="text-xs text-aurora-text-muted">{total ? `${total} matches${results.length < total ? ` · showing ${results.length}` : ''}` : query && !loading ? 'No matching tools' : 'Enter a query to search the live catalog'}</p>
+        <p className="text-xs text-aurora-text-muted">{total ? `${total} matches${results.length < total ? ` · showing ${results.length}` : ''}` : query && !loading && !error ? 'No matching tools' : !error ? 'Enter a query to search the live catalog' : ''}</p>
         {results.map((hit) => <button key={hit.id} type="button" onClick={() => void selectTool(hit)} className="block w-full rounded-xl border border-aurora-border-default bg-aurora-panel-medium p-4 text-left transition hover:border-aurora-accent-primary/50 hover:bg-aurora-panel-strong">
           <div className="flex items-center justify-between gap-3"><code className="text-sm font-semibold text-aurora-accent-primary">{hit.path}</code><Safety safety={hit.safety} /></div>
           <p className="mt-2 line-clamp-2 text-sm text-aurora-text-secondary">{hit.description || 'No description provided.'}</p>

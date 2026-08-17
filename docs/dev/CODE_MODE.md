@@ -319,7 +319,8 @@ Legacy `search` entries include both raw JSON Schemas and generated TypeScript:
 - `dts` — focused TypeScript declarations with JSDoc for that tool.
 
 The `codemode.search` helper uses a reduced in-execution catalog (`kind`, `id`,
-`path`, `upstream`, `name`, `description`, `signature`, and optional `safety`)
+`path`, `namespace`, `name`, `helper`, `description`, `signature`, `tags`,
+snippet `inputs`, and optional tool `safety`)
 so normal runs do not inject full schema, output schema, dts payloads, or snippet
 source. `safety.read_only` and `safety.destructive` are optional advisory facts:
 missing or contradictory hints are omitted rather than serialized as `false`,

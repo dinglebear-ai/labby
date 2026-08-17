@@ -1688,7 +1688,8 @@
           "target": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "CodeModeToolDescribeResponseDoc": {
         "type": "object",
@@ -1836,16 +1837,14 @@
         ],
         "properties": {
           "limit": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "minimum": 0
           },
           "query": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "CodeModeToolSearchResponseDoc": {
         "type": "object",

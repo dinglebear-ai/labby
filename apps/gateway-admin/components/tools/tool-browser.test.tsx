@@ -76,3 +76,46 @@ test('tool browser renders hostile catalog text literally and clears it on sessi
     await view.unmount()
   }
 })
+
+test('tool browser clears stale search results and retries the failed detail operation', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated', user: { sub: 'admin', email: 'admin@example.com' },
+    expiresAt: 100, csrfToken: 'csrf', isAdmin: true,
+  })
+  let describeAttempts = 0
+  let searchAttempts = 0
+  globalThis.fetch = async (input) => {
+    const path = String(input)
+    if (path.endsWith('/search')) {
+      searchAttempts += 1
+      if (searchAttempts > 1) return new Response(JSON.stringify({ kind: 'internal_error', message: 'failed' }), { status: 500, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify({
+        results: [{ path: 'alpha.ping', id: 'alpha::ping', kind: 'tool', namespace: 'alpha', name: 'ping', description: 'Ping', signature: '()', tags: [], score: 10 }],
+        total: 1, truncated: false,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    describeAttempts += 1
+    if (describeAttempts === 1) return new Response(JSON.stringify({ kind: 'internal_error', message: 'failed' }), { status: 500, headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify({ path: 'alpha.ping', id: 'alpha::ping', namespace: 'alpha', name: 'ping', description: 'Ping', helper: 'codemode.alpha.ping', signature: '()', tags: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+
+  const view = await renderClient(<ToolBrowser initialQuery="ping" />)
+  try {
+    const form = view.container.querySelector('form'); assert.ok(form)
+    await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /alpha\.ping/))
+    const result = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('alpha.ping')); assert.ok(result)
+    await act(async () => { result.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /temporarily unavailable/))
+    const retry = [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'Retry'); assert.ok(retry)
+    await act(async () => { retry.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /codemode\.alpha\.ping/))
+    assert.equal(describeAttempts, 2)
+
+    await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /temporarily unavailable/))
+    assert.doesNotMatch(view.container.textContent ?? '', /alpha\.ping/)
+    assert.doesNotMatch(view.container.textContent ?? '', /No matching tools/)
+  } finally { await view.unmount() }
+})

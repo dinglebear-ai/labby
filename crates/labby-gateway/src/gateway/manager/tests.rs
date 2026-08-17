@@ -28,7 +28,6 @@ use super::{GatewayManager, GatewayRuntimeHandle};
 mod cleanup;
 mod code_mode;
 mod config_ops;
-mod discovery_measurement;
 mod enrichment;
 mod imports;
 mod inspection;
