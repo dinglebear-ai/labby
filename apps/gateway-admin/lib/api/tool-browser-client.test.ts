@@ -60,15 +60,16 @@ test('tool search discards a response from an earlier authenticated session', as
 
 test('tool search rechecks the session after a delayed response body', async () => {
   setAuthenticatedSession('body-admin')
-  let resolveBody: ((value: object) => void) | undefined
+  let resolveBody: ((value: ArrayBuffer) => void) | undefined
   const response = new Response(null, { status: 200 })
-  response.json = () => new Promise((resolve) => { resolveBody = resolve })
+  response.arrayBuffer = () => new Promise((resolve) => { resolveBody = resolve })
   globalThis.fetch = async () => response
 
   const pending = searchCodeModeTools('gateway')
   await Promise.resolve()
   setAuthenticatedSession('next-admin')
-  resolveBody?.({ results: [], total: 0, truncated: false })
+  const encoded = new TextEncoder().encode(JSON.stringify({ results: [], total: 0, truncated: false }))
+  resolveBody?.(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer)
 
   await assert.rejects(
     pending,
@@ -108,4 +109,19 @@ test('tool search refreshes a stale CSRF session and retries once', async () => 
   await searchCodeModeTools('gateway')
   assert.deepEqual(csrfHeaders, [CSRF, 'csrf-refreshed'])
   assert.equal(call, 3)
+})
+
+test('tool search rejects an oversized response before JSON parsing', async () => {
+  setAuthenticatedSession()
+  globalThis.fetch = async () => new Response('x'.repeat(256 * 1024 + 1), {
+    status: 200,
+    headers: { 'x-request-id': 'req-large' },
+  })
+
+  await assert.rejects(
+    searchCodeModeTools('gateway'),
+    (error: unknown) => error instanceof Error &&
+      'code' in error && error.code === 'response_too_large' &&
+      'requestId' in error && error.requestId === 'req-large',
+  )
 })

@@ -20,8 +20,8 @@ export function toolBrowserError(error: unknown, fallback: string): BrowserError
   return { message: error instanceof Error ? error.message : fallback }
 }
 
-export function ToolBrowser() {
-  const [query, setQuery] = useState('')
+export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {}) {
+  const [query, setQuery] = useState(initialQuery)
   const [results, setResults] = useState<ToolSearchHit[]>([])
   const [total, setTotal] = useState(0)
   const [detail, setDetail] = useState<ToolDescription | null>(null)

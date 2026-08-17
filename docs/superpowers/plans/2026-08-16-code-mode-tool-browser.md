@@ -426,7 +426,7 @@ firstDescribe.resolve(firstTool)
 expect(screen.getByRole('dialog')).toHaveTextContent('github::second')
 ```
 
-Also test logout, 401, 403, 5xx with request ID, no matches, invalid URL state, back/forward, oversized-DTS omission, and literal rendering of `<script>alert(1)</script>`.
+Also test logout, 401, 403, 5xx with request ID, no matches, oversized-DTS omission, and literal rendering of `<script>alert(1)</script>`.
 
 - [ ] **Step 2: Run and verify failure**
 
@@ -450,7 +450,7 @@ Extend browser session state with `authEpoch: number`. Increment it on login, lo
 
 Search and selection remain component-local so catalog terms and internal IDs are not retained in browser history. Every new query, target, or `authEpoch` aborts prior requests, clears stale results/details, and checks the captured request identity before publishing a response.
 
-Use local component state only. Preserve unrelated query parameters. Closing the drawer removes only `tool`.
+Use local component state only. Do not persist catalog queries or tool identifiers in URL/history.
 
 - [ ] **Step 6: Render accessible text-only UI**
 

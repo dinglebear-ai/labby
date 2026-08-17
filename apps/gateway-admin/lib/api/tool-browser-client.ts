@@ -14,7 +14,26 @@ export type ToolDescription = {
   typescript?: string; typescript_omitted?: string
 }
 
-async function post<T>(path: string, body: object, signal?: AbortSignal): Promise<T> {
+const SEARCH_RESPONSE_MAX_BYTES = 256 * 1024
+const DESCRIBE_RESPONSE_MAX_BYTES = 128 * 1024
+
+async function boundedJson(response: Response, maxBytes: number) {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new GatewayApiError('Tools response exceeds the browser safety limit', 502, 'response_too_large', response.headers.get('x-request-id') ?? undefined)
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (bytes.byteLength > maxBytes) {
+    throw new GatewayApiError('Tools response exceeds the browser safety limit', 502, 'response_too_large', response.headers.get('x-request-id') ?? undefined)
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes))
+  } catch {
+    return { message: 'Tools returned an invalid response' }
+  }
+}
+
+async function post<T>(path: string, body: object, maxBytes: number, signal?: AbortSignal): Promise<T> {
   const request = async () => {
     const epoch = getBrowserSessionEpoch()
     const csrfToken = getSessionCsrfToken()
@@ -25,7 +44,7 @@ async function post<T>(path: string, body: object, signal?: AbortSignal): Promis
         ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
       }, body: JSON.stringify(body),
     })
-    const payload = await response.json().catch(() => ({ message: 'Tools unavailable' }))
+    const payload = await boundedJson(response, maxBytes)
     if (epoch !== getBrowserSessionEpoch()) throw new DOMException('Session changed', 'AbortError')
     if (!response.ok) {
       throw new GatewayApiError(payload.message ?? 'Tools unavailable', response.status, payload.kind, response.headers.get('x-request-id') ?? undefined)
@@ -47,6 +66,6 @@ async function post<T>(path: string, body: object, signal?: AbortSignal): Promis
 }
 
 export const searchCodeModeTools = (query: string, signal?: AbortSignal) =>
-  post<ToolSearchResponse>('/v1/gateway/codemode/tools/search', { query, limit: 50 }, signal)
+  post<ToolSearchResponse>('/v1/gateway/codemode/tools/search', { query, limit: 50 }, SEARCH_RESPONSE_MAX_BYTES, signal)
 export const describeCodeModeTool = (target: string, signal?: AbortSignal) =>
-  post<ToolDescription>('/v1/gateway/codemode/tools/describe', { target }, signal)
+  post<ToolDescription>('/v1/gateway/codemode/tools/describe', { target }, DESCRIBE_RESPONSE_MAX_BYTES, signal)

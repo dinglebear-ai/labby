@@ -64,7 +64,6 @@ Response:
     }
   ],
   "total": 1,
-  "truncated": false,
   "truncated": false
 }
 ```
@@ -153,7 +152,7 @@ Dedicated ignored benchmarks record cold render/DTS/catalog cost and warm lexica
 | Describe | Hidden/random target | Identical generic not-found | Tool not found | same kind only |
 | Describe | Selected DTS exceeds 64 KiB | Omit complete DTS | Parameters unavailable: size limit | bytes/omission class |
 | Catalog churn | Tool disappears after search | Live re-resolve | Tool no longer available | unknown_tool/request ID |
-| Browser race | Older request completes later | Abort and identity-check epoch/query/target | Latest URL state only | server request telemetry only |
+| Browser race | Older request completes later | Abort and identity-check epoch/query/target | Latest component state only | server request telemetry only |
 | Auth transition | Prior admin response is in flight | Abort, clear local state, increment epoch | Fresh loading/empty state | no identity data |
 
 ## Explicitly deferred
