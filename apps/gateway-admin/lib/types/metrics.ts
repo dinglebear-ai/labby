@@ -279,6 +279,12 @@ export interface ToolCallPage {
   total: number
   filtered: number
   facets: ToolCallFacets
+  collected: {
+    actors: boolean
+    ips: boolean
+    surfaces: boolean
+    tokens: boolean
+  }
 }
 
 export interface ToolCallFacets {

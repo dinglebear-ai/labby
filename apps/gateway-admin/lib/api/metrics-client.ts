@@ -665,6 +665,7 @@ export async function fetchToolCalls(
         ips: [...new Set(stream.map((record) => record.ip).filter(Boolean))].sort(),
         surfaces: [...new Set(stream.map((record) => record.surface))].sort(),
       },
+      collected: { actors: true, ips: true, surfaces: true, tokens: true },
     }
   }
   const now = Date.now()
@@ -702,5 +703,6 @@ export async function fetchToolCalls(
       ips: [],
       surfaces: [],
     },
+    collected: { actors: true, ips: false, surfaces: false, tokens: false },
   }
 }

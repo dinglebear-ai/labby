@@ -91,6 +91,12 @@ test('fetchToolCalls serves the usage explorer from persisted gateway rows', asy
     assert.equal(page.total, 2)
     assert.equal(page.filtered, 1)
     assert.equal(page.calls[0].error_kind, 'timeout')
+    assert.deepEqual(page.collected, {
+      actors: true,
+      ips: false,
+      surfaces: false,
+      tokens: false,
+    })
   } finally {
     globalThis.fetch = originalFetch
   }

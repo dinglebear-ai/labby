@@ -96,6 +96,11 @@ function UsageExplorer() {
     [data],
   )
   const ipOptions = data?.facets.ips ?? []
+  const collected = data?.collected
+  const showIps = collected?.ips ?? false
+  const showSurfaces = collected?.surfaces ?? false
+  const showTokens = collected?.tokens ?? false
+  const tableColumns = 4 + Number(showSurfaces) + Number(showTokens)
 
   const resetPaging = () => setOffset(0)
   const filtered = data?.filtered ?? 0
@@ -129,7 +134,7 @@ function UsageExplorer() {
     },
     {
       label: 'Source IPs',
-      value: data ? data.facets.ips.length : '—',
+      value: data ? (showIps ? data.facets.ips.length : 'Not collected') : '—',
       icon: <Network size={12} strokeWidth={1.8} />,
     },
   ]
@@ -192,15 +197,17 @@ function UsageExplorer() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={ip} onValueChange={(v) => { setIp(v); resetPaging() }}>
-              <SelectTrigger className="sm:w-40"><SelectValue placeholder="IP" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All IPs</SelectItem>
-                {ipOptions.map((addr) => (
-                  <SelectItem key={addr} value={addr}>{addr}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {showIps ? (
+              <Select value={ip} onValueChange={(v) => { setIp(v); resetPaging() }}>
+                <SelectTrigger className="sm:w-40"><SelectValue placeholder="IP" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All IPs</SelectItem>
+                  {ipOptions.map((addr) => (
+                    <SelectItem key={addr} value={addr}>{addr}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
             <Select value={outcome} onValueChange={(v) => { setOutcome(v); resetPaging() }}>
               <SelectTrigger className="sm:w-36"><SelectValue placeholder="Outcome" /></SelectTrigger>
               <SelectContent>
@@ -222,16 +229,16 @@ function UsageExplorer() {
                   <TableHead className="w-[120px]">Time</TableHead>
                   <TableHead>Tool · action</TableHead>
                   <TableHead>Agent</TableHead>
-                  <TableHead className="w-[80px]">Surface</TableHead>
+                  {showSurfaces ? <TableHead className="w-[80px]">Surface</TableHead> : null}
                   <TableHead className="w-[110px]">Outcome</TableHead>
-                  <TableHead className="w-[90px] text-right">Tokens</TableHead>
+                  {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
                   <TableHead className="w-[90px] text-right">Latency</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {error && !data ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center">
+                      <TableCell colSpan={tableColumns} className="py-8 text-center">
                       <span className="text-sm text-aurora-error">Couldn&apos;t load calls. </span>
                       <button
                         type="button"
@@ -245,12 +252,12 @@ function UsageExplorer() {
                 ) : isLoading && !data ? (
                   Array.from({ length: 8 }, (_, i) => (
                     <TableRow key={i}>
-                      <TableCell colSpan={7}><Skeleton className="h-5 w-full" /></TableCell>
+                      <TableCell colSpan={tableColumns}><Skeleton className="h-5 w-full" /></TableCell>
                     </TableRow>
                   ))
                 ) : !data || data.calls.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-sm text-aurora-text-muted">
+                    <TableCell colSpan={tableColumns} className="py-10 text-center text-sm text-aurora-text-muted">
                       No calls match these filters.
                     </TableCell>
                   </TableRow>
@@ -265,12 +272,14 @@ function UsageExplorer() {
                         ) : null}
                       </TableCell>
                       <TableCell>
-                        <div className="text-aurora-text-primary">{call.agent_label}</div>
-                        <div className="font-mono text-[11px] text-aurora-text-muted">
-                          {call.ip || 'unknown IP'}
+                        <div className="text-aurora-text-primary">
+                          {call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}
                         </div>
+                        {showIps ? (
+                          <div className="font-mono text-[11px] text-aurora-text-muted">{call.ip}</div>
+                        ) : null}
                       </TableCell>
-                      <TableCell><SurfaceTag surface={call.surface} /></TableCell>
+                      {showSurfaces ? <TableCell><SurfaceTag surface={call.surface} /></TableCell> : null}
                       <TableCell>
                         <span className="inline-flex items-center gap-2">
                           <OutcomeDot outcome={call.outcome} />
@@ -279,9 +288,11 @@ function UsageExplorer() {
                           </span>
                         </span>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-aurora-text-muted">
-                        {formatCompactNumber(call.input_tokens + call.output_tokens)}
-                      </TableCell>
+                      {showTokens ? (
+                        <TableCell className="text-right tabular-nums text-aurora-text-muted">
+                          {formatCompactNumber(call.input_tokens + call.output_tokens)}
+                        </TableCell>
+                      ) : null}
                       <TableCell className="text-right tabular-nums text-aurora-text-muted">
                         {formatDuration(call.elapsed_ms)}
                       </TableCell>
