@@ -18,13 +18,61 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::error::ToolError;
 
 use super::pool::config::PoolConfig;
 use super::pool::runner_handle::PooledRunner;
+
+static MICROSANDBOX_ADMISSION: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn microsandbox_admission() -> Arc<Semaphore> {
+    Arc::clone(
+        MICROSANDBOX_ADMISSION
+            .get_or_init(|| Arc::new(Semaphore::new(config::microsandbox_max_runners()))),
+    )
+}
+
+fn timeout_error() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "timeout".to_string(),
+        message: "Code Mode execution timed out".to_string(),
+    }
+}
+
+pub(crate) async fn spawn_before_deadline(
+    spawn: &RunnerSpawn,
+    microsandbox: Option<&MicrosandboxSpawn>,
+    deadline: tokio::time::Instant,
+) -> Result<PooledRunner, ToolError> {
+    let permit = if microsandbox.is_some() {
+        Some(
+            tokio::time::timeout_at(deadline, microsandbox_admission().acquire_owned())
+                .await
+                .map_err(|_| timeout_error())?
+                .map_err(|_| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: "Code Mode Microsandbox admission semaphore closed".to_string(),
+                })?,
+        )
+    } else {
+        None
+    };
+    let runner =
+        tokio::time::timeout_at(deadline, PooledRunner::spawn(spawn, microsandbox, permit))
+            .await
+            .map_err(|_| timeout_error())??;
+    Ok(runner)
+}
+
+struct PoolState {
+    free_slots: VecDeque<usize>,
+    shutting_down: bool,
+}
 
 pub(crate) mod config;
 #[cfg(windows)]
@@ -80,7 +128,9 @@ pub struct RunnerPool {
     /// Indices of currently-idle slots. Popping is the atomic "claim a slot"
     /// operation; the popped index is held by the lease and pushed back on
     /// finalize.
-    free_slots: Arc<StdMutex<VecDeque<usize>>>,
+    state: Arc<StdMutex<PoolState>>,
+    active_leases: Arc<AtomicUsize>,
+    drained: Arc<Notify>,
     /// Bounds simultaneous ephemeral (overflow) runners when the pool is saturated.
     overflow_permits: Arc<Semaphore>,
 }
@@ -132,7 +182,12 @@ impl RunnerPool {
             spawn,
             microsandbox,
             slots,
-            free_slots: Arc::new(StdMutex::new(free_slots)),
+            state: Arc::new(StdMutex::new(PoolState {
+                free_slots,
+                shutting_down: false,
+            })),
+            active_leases: Arc::new(AtomicUsize::new(0)),
+            drained: Arc::new(Notify::new()),
             overflow_permits: Arc::new(Semaphore::new(overflow)),
         }
     }
@@ -154,17 +209,30 @@ impl RunnerPool {
     /// saturation spawns a bounded ephemeral runner. The lease MUST be finalized
     /// via [`RunnerLease::release`] / [`RunnerLease::evict`] (or dropped, which
     /// evicts) so the slot index returns to the free-list.
-    pub(crate) async fn checkout(&self) -> Result<RunnerLease, ToolError> {
+    pub(crate) async fn checkout(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<RunnerLease, ToolError> {
         // Pooled fast path: atomically claim a free slot index.
         if !self.config.is_disabled() {
-            let claimed = self.free_slots.lock().expect("free-list lock").pop_front();
+            let claimed = {
+                let mut state = self.state.lock().expect("pool state lock");
+                ensure_running(&state)?;
+                let claimed = state.free_slots.pop_front();
+                if claimed.is_some() {
+                    self.active_leases.fetch_add(1, Ordering::AcqRel);
+                }
+                claimed
+            };
             if let Some(index) = claimed {
-                let runner = self.take_or_spawn_slot(index).await;
+                let runner = self.take_or_spawn_slot(index, deadline).await;
                 match runner {
                     Ok(runner) => {
                         return Ok(RunnerLease::pooled(
                             Arc::clone(&self.slots[index]),
-                            Arc::clone(&self.free_slots),
+                            Arc::clone(&self.state),
+                            Arc::clone(&self.active_leases),
+                            Arc::clone(&self.drained),
                             index,
                             runner,
                             self.config,
@@ -173,10 +241,12 @@ impl RunnerPool {
                     Err(err) => {
                         // Spawn failed; return the slot to the free-list so it is
                         // retried later rather than permanently lost.
-                        self.free_slots
+                        self.state
                             .lock()
-                            .expect("free-list lock")
+                            .expect("pool state lock")
+                            .free_slots
                             .push_back(index);
+                        lease_finished(&self.active_leases, &self.drained);
                         return Err(err);
                     }
                 }
@@ -184,13 +254,14 @@ impl RunnerPool {
         }
 
         // Saturated (or disabled): spawn a bounded ephemeral runner.
-        let permit = Arc::clone(&self.overflow_permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: "Code Mode runner pool overflow semaphore closed".to_string(),
-            })?;
+        let permit =
+            tokio::time::timeout_at(deadline, Arc::clone(&self.overflow_permits).acquire_owned())
+                .await
+                .map_err(|_| timeout_error())?
+                .map_err(|_| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: "Code Mode runner pool overflow semaphore closed".to_string(),
+                })?;
         tracing::debug!(
             surface = "dispatch",
             service = "code_mode",
@@ -198,37 +269,102 @@ impl RunnerPool {
             pool_size = self.config.size,
             "pool saturated; spawning ephemeral Code Mode runner"
         );
-        let runner = PooledRunner::spawn(&self.spawn, self.microsandbox.as_ref()).await?;
-        Ok(RunnerLease::ephemeral(runner, permit))
+        {
+            let state = self.state.lock().expect("pool state lock");
+            ensure_running(&state)?;
+            self.active_leases.fetch_add(1, Ordering::AcqRel);
+        }
+        let runner =
+            match spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await {
+                Ok(runner) => runner,
+                Err(err) => {
+                    lease_finished(&self.active_leases, &self.drained);
+                    return Err(err);
+                }
+            };
+        Ok(RunnerLease::ephemeral(
+            runner,
+            permit,
+            Arc::clone(&self.active_leases),
+            Arc::clone(&self.drained),
+        ))
     }
 
     /// Spawn a guaranteed-fresh ephemeral runner using the pool's configured
     /// runner executable. This is used for a single safe replay after a pooled
     /// runner dies before emitting any protocol activity, so a second stale
     /// pooled slot can never turn the retry into another false failure.
-    pub(crate) async fn checkout_fresh(&self) -> Result<RunnerLease, ToolError> {
-        let permit = Arc::clone(&self.overflow_permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: "Code Mode runner pool overflow semaphore closed".to_string(),
-            })?;
-        let runner = PooledRunner::spawn(&self.spawn)?;
-        Ok(RunnerLease::ephemeral(runner, permit))
+    pub(crate) async fn checkout_fresh(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<RunnerLease, ToolError> {
+        let permit =
+            tokio::time::timeout_at(deadline, Arc::clone(&self.overflow_permits).acquire_owned())
+                .await
+                .map_err(|_| timeout_error())?
+                .map_err(|_| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: "Code Mode runner pool overflow semaphore closed".to_string(),
+                })?;
+        {
+            let state = self.state.lock().expect("pool state lock");
+            ensure_running(&state)?;
+            self.active_leases.fetch_add(1, Ordering::AcqRel);
+        }
+        let runner =
+            match spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await {
+                Ok(runner) => runner,
+                Err(err) => {
+                    lease_finished(&self.active_leases, &self.drained);
+                    return Err(err);
+                }
+            };
+        Ok(RunnerLease::ephemeral(
+            runner,
+            permit,
+            Arc::clone(&self.active_leases),
+            Arc::clone(&self.drained),
+        ))
     }
 
     /// Take the runner out of a claimed slot, spawning a fresh one if the slot is
     /// empty (first use or post-eviction).
-    async fn take_or_spawn_slot(&self, index: usize) -> Result<PooledRunner, ToolError> {
+    async fn take_or_spawn_slot(
+        &self,
+        index: usize,
+        deadline: tokio::time::Instant,
+    ) -> Result<PooledRunner, ToolError> {
         let mut guard = self.slots[index].lock().await;
         match guard.take() {
             Some(runner) if runner.microsandbox_lifetime_elapsed() => {
-                runner.shutdown().await;
-                PooledRunner::spawn(&self.spawn, self.microsandbox.as_ref()).await
+                drop(tokio::time::timeout_at(deadline, runner.shutdown()).await);
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(timeout_error());
+                }
+                spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await
             }
             Some(runner) => Ok(runner),
-            None => PooledRunner::spawn(&self.spawn, self.microsandbox.as_ref()).await,
+            None => spawn_before_deadline(&self.spawn, self.microsandbox.as_ref(), deadline).await,
+        }
+    }
+
+    /// Stop admitting work, wait for outstanding leases, then explicitly reap
+    /// every parked runner. Safe to call more than once.
+    pub async fn shutdown(&self) {
+        self.state.lock().expect("pool state lock").shutting_down = true;
+        loop {
+            // Register first so the final lease cannot notify between the
+            // count observation and waiter registration.
+            let drained = self.drained.notified();
+            if self.active_leases.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            drained.await;
+        }
+        for slot in &self.slots {
+            if let Some(runner) = slot.lock().await.take() {
+                runner.shutdown().await;
+            }
         }
     }
 
@@ -238,7 +374,15 @@ impl RunnerPool {
     #[cfg(test)]
     pub(crate) async fn checkout_stub(&self) -> Result<RunnerLease, ToolError> {
         if !self.config.is_disabled() {
-            let claimed = self.free_slots.lock().expect("free-list lock").pop_front();
+            let claimed = {
+                let mut state = self.state.lock().expect("pool state lock");
+                ensure_running(&state)?;
+                let claimed = state.free_slots.pop_front();
+                if claimed.is_some() {
+                    self.active_leases.fetch_add(1, Ordering::AcqRel);
+                }
+                claimed
+            };
             if let Some(index) = claimed {
                 let mut guard = self.slots[index].lock().await;
                 let runner = match guard.take() {
@@ -248,7 +392,9 @@ impl RunnerPool {
                 drop(guard);
                 return Ok(RunnerLease::pooled(
                     Arc::clone(&self.slots[index]),
-                    Arc::clone(&self.free_slots),
+                    Arc::clone(&self.state),
+                    Arc::clone(&self.active_leases),
+                    Arc::clone(&self.drained),
                     index,
                     runner,
                     self.config,
@@ -259,7 +405,28 @@ impl RunnerPool {
             .acquire_owned()
             .await
             .expect("overflow semaphore open");
-        Ok(RunnerLease::ephemeral(PooledRunner::spawn_stub()?, permit))
+        {
+            let state = self.state.lock().expect("pool state lock");
+            ensure_running(&state)?;
+            self.active_leases.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(RunnerLease::ephemeral(
+            PooledRunner::spawn_stub()?,
+            permit,
+            Arc::clone(&self.active_leases),
+            Arc::clone(&self.drained),
+        ))
+    }
+}
+
+fn ensure_running(state: &PoolState) -> Result<(), ToolError> {
+    if state.shutting_down {
+        Err(ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "Code Mode runner pool is shutting down".to_string(),
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -278,7 +445,9 @@ pub(crate) struct RunnerLease {
 enum LeaseKind {
     Pooled {
         slot: Arc<Mutex<Option<PooledRunner>>>,
-        free_slots: Arc<StdMutex<VecDeque<usize>>>,
+        state: Arc<StdMutex<PoolState>>,
+        active_leases: Arc<AtomicUsize>,
+        drained: Arc<Notify>,
         index: usize,
         recycle_after: u64,
         /// Set once the slot index has been returned to the free-list so neither
@@ -287,13 +456,18 @@ enum LeaseKind {
     },
     Ephemeral {
         _permit: OwnedSemaphorePermit,
+        active_leases: Arc<AtomicUsize>,
+        drained: Arc<Notify>,
+        returned: bool,
     },
 }
 
 impl RunnerLease {
     fn pooled(
         slot: Arc<Mutex<Option<PooledRunner>>>,
-        free_slots: Arc<StdMutex<VecDeque<usize>>>,
+        state: Arc<StdMutex<PoolState>>,
+        active_leases: Arc<AtomicUsize>,
+        drained: Arc<Notify>,
         index: usize,
         runner: PooledRunner,
         config: PoolConfig,
@@ -301,7 +475,9 @@ impl RunnerLease {
         Self {
             kind: LeaseKind::Pooled {
                 slot,
-                free_slots,
+                state,
+                active_leases,
+                drained,
                 index,
                 recycle_after: config.recycle_after,
                 returned: false,
@@ -310,9 +486,19 @@ impl RunnerLease {
         }
     }
 
-    fn ephemeral(runner: PooledRunner, permit: OwnedSemaphorePermit) -> Self {
+    fn ephemeral(
+        runner: PooledRunner,
+        permit: OwnedSemaphorePermit,
+        active_leases: Arc<AtomicUsize>,
+        drained: Arc<Notify>,
+    ) -> Self {
         Self {
-            kind: LeaseKind::Ephemeral { _permit: permit },
+            kind: LeaseKind::Ephemeral {
+                _permit: permit,
+                active_leases,
+                drained,
+                returned: false,
+            },
             runner: Some(runner),
         }
     }
@@ -342,7 +528,9 @@ impl RunnerLease {
             (
                 LeaseKind::Pooled {
                     slot,
-                    free_slots,
+                    state,
+                    active_leases,
+                    drained,
                     index,
                     recycle_after,
                     returned,
@@ -363,12 +551,14 @@ impl RunnerLease {
                 } else {
                     *slot.lock().await = Some(runner);
                 }
-                return_slot(free_slots, *index, returned);
+                return_slot(state, *index);
+                finish_lease(active_leases, drained, returned);
             }
             // Ephemeral runner, or pooled with no runner (already taken): drop.
             (_, Some(runner)) => runner.shutdown().await,
             (_, None) => {}
         }
+        self.finish();
     }
 
     /// Discard the runner after a crash, timeout, or protocol fault.
@@ -381,24 +571,56 @@ impl RunnerLease {
             runner.shutdown().await;
         }
         if let LeaseKind::Pooled {
-            free_slots,
+            state,
             index,
             returned,
             ..
         } = &mut self.kind
+            && !*returned
         {
-            return_slot(free_slots, *index, returned);
+            return_slot(state, *index);
+        }
+        self.finish();
+    }
+
+    fn finish(&mut self) {
+        match &mut self.kind {
+            LeaseKind::Pooled {
+                active_leases,
+                drained,
+                returned,
+                ..
+            }
+            | LeaseKind::Ephemeral {
+                active_leases,
+                drained,
+                returned,
+                ..
+            } => finish_lease(active_leases, drained, returned),
         }
     }
 }
 
 /// Return a claimed slot index to the free-list exactly once.
-fn return_slot(free_slots: &Arc<StdMutex<VecDeque<usize>>>, index: usize, returned: &mut bool) {
-    if *returned {
-        return;
+fn return_slot(state: &Arc<StdMutex<PoolState>>, index: usize) {
+    state
+        .lock()
+        .expect("pool state lock")
+        .free_slots
+        .push_back(index);
+}
+
+fn lease_finished(active_leases: &AtomicUsize, drained: &Notify) {
+    if active_leases.fetch_sub(1, Ordering::AcqRel) == 1 {
+        drained.notify_waiters();
     }
-    *returned = true;
-    free_slots.lock().expect("free-list lock").push_back(index);
+}
+
+fn finish_lease(active_leases: &AtomicUsize, drained: &Notify, returned: &mut bool) {
+    if !*returned {
+        *returned = true;
+        lease_finished(active_leases, drained);
+    }
 }
 
 impl Drop for RunnerLease {
@@ -410,14 +632,16 @@ impl Drop for RunnerLease {
         // index still returns to the free-list so the slot is reusable.
         drop(self.runner.take());
         if let LeaseKind::Pooled {
-            free_slots,
+            state,
             index,
             returned,
             ..
         } = &mut self.kind
+            && !*returned
         {
-            return_slot(free_slots, *index, returned);
+            return_slot(state, *index);
         }
+        self.finish();
     }
 }
 
@@ -453,6 +677,19 @@ mod tests {
             "a released pooled runner must be reused (same PID) on the next checkout"
         );
         lease2.release().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_release_returns_one_slot_index() {
+        let pool = RunnerPool::with_config(cfg(1, 100, 1));
+        let lease = pool.checkout_stub().await.expect("checkout");
+        lease.release().await;
+        assert_eq!(
+            pool.state.lock().expect("pool state").free_slots.len(),
+            1,
+            "explicit finalization and Drop must not publish the slot twice"
+        );
+        pool.shutdown().await;
     }
 
     /// Evicting a runner kills it and leaves the slot empty; the next checkout
@@ -648,5 +885,53 @@ mod tests {
             "dropped lease must evict the runner (fresh PID next checkout)"
         );
         lease2.release().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_leases_and_drains_parked_slots() {
+        let pool = Arc::new(RunnerPool::with_config(cfg(1, 100, 1)));
+        let lease = pool.checkout_stub().await.expect("checkout");
+        let shutdown_pool = Arc::clone(&pool);
+        let shutdown = tokio::spawn(async move { shutdown_pool.shutdown().await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must wait for active leases"
+        );
+        lease.release().await;
+        shutdown.await.expect("shutdown task");
+
+        assert!(
+            pool.slots[0].lock().await.is_none(),
+            "parked runner drained"
+        );
+        let err = pool.checkout_stub().await.err().expect("pool is closed");
+        assert!(err.to_string().contains("shutting down"));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn checkout_deadline_includes_overflow_semaphore_wait() {
+        let pool = RunnerPool::with_config_and_spawn(
+            cfg(0, 100, 1),
+            RunnerSpawn {
+                program: "cat".into(),
+                args: Vec::new(),
+            },
+            None,
+        );
+        let first = pool
+            .checkout(tokio::time::Instant::now() + std::time::Duration::from_secs(2))
+            .await
+            .expect("first checkout");
+        let err = pool
+            .checkout(tokio::time::Instant::now() + std::time::Duration::from_millis(30))
+            .await
+            .err()
+            .expect("second checkout must time out waiting for admission");
+        assert_eq!(err.kind(), "timeout");
+        first.release().await;
+        pool.shutdown().await;
     }
 }

@@ -749,13 +749,18 @@ protocol:
 ```bash
 LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox
 LABBY_CODE_MODE_MICROSANDBOX_EXE=/absolute/path/to/msb
-LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian
+LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 ```
 
-All three variables are required to opt in. The image must already be cached;
-the runner uses `--pull never` and never performs an implicit registry fetch.
+All three variables are required to opt in. The image must be an immutable
+`name@sha256:<64 hex>` OCI digest reference and must already be cached; URLs,
+userinfo, queries, and tag-only references are rejected. The runner uses
+`--pull never` and never performs an implicit registry fetch.
 Labby creates one restricted microVM per runner process with one CPU, 256 MiB
-memory and no network. Its lifecycle is tied to the pooled runner rather than a
+memory and no network. A process-wide admission gate defaults to four concurrent
+guests and is capped at 16, independently of the generic process-pool limits.
+Its lifecycle is tied to the pooled runner rather than a
 short VM idle timer, so a parked warm runner cannot expire between ordinary
 requests. A 24-hour hard lifetime bounds orphaned guests after ungraceful host
 death; a live pool recycles its runner before reaching that backstop.
@@ -764,6 +769,9 @@ read-only at `/opt/labby/labby`. The parent attaches with `msb exec --stream`,
 which preserves the existing byte-faithful stdio protocol. Dropping or evicting
 the runner attempts a bounded force-removal; failure is logged and triggers a
 separately bounded best-effort fallback.
+Each guest carries the `labby.owner=codemode` label. Startup removes stale
+labeled guests before admitting work, and graceful service shutdown awaits pool
+drainage. An unconfirmed cleanup opens a fail-closed creation circuit.
 
 This changes only the execution boundary. Tool discovery, authorization,
 exposure filters, OAuth subjects, secrets, upstream dispatch, result caps, and

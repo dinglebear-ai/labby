@@ -39,33 +39,29 @@ fn microsandbox_spawn() -> Result<(RunnerSpawn, Option<MicrosandboxSpawn>), Tool
 
     #[cfg(target_os = "linux")]
     {
-        let runner = super::runner_exe::resolve_runner_exe()?;
+        let runner = RunnerSpawn::try_default()?;
         let msb = required_absolute_executable(MSB_EXE_ENV)?;
         let image = required_nonempty(MSB_IMAGE_ENV)?;
+        let image_digest = image
+            .rsplit_once('@')
+            .map_or("sha256:<validated>", |(_, digest)| digest);
         tracing::info!(
             backend = "microsandbox",
-            image,
-            runner = %runner.display(),
+            image_digest,
+            runner = %runner.program.display(),
             msb = %msb.display(),
             network = "disabled",
             "using Microsandbox for Code Mode runner isolation"
         );
 
         Ok((
-            RunnerSpawn {
-                program: runner,
-                args: runner_args(),
-            },
+            runner,
             Some(MicrosandboxSpawn {
                 executable: msb,
                 image,
             }),
         ))
     }
-}
-
-fn runner_args() -> Vec<String> {
-    vec!["internal".into(), "code-mode-runner".into()]
 }
 
 fn required_nonempty(name: &str) -> Result<String, ToolError> {
@@ -76,12 +72,34 @@ fn required_nonempty(name: &str) -> Result<String, ToolError> {
 
 fn validate_image_reference(name: &str, value: &str) -> Result<String, ToolError> {
     let value = value.trim();
-    if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_whitespace) {
+    let Some((image_name, digest)) = value.split_once('@') else {
         return Err(invalid_param(format!(
-            "{name} must be one non-empty OCI image reference"
+            "{name} must be an immutable OCI reference in the form name@sha256:<64 hex>"
+        )));
+    };
+    let digest_hex = digest.strip_prefix("sha256:").ok_or_else(|| {
+        invalid_param(format!(
+            "{name} must use an immutable sha256 digest in the form name@sha256:<64 hex>"
+        ))
+    })?;
+    let invalid_name = image_name.is_empty()
+        || image_name.starts_with('-')
+        || image_name.starts_with('/')
+        || image_name.contains('@')
+        || image_name.contains("://")
+        || image_name.contains('?')
+        || image_name.contains('#')
+        || image_name.chars().any(char::is_whitespace);
+    if invalid_name || digest_hex.len() != 64 || !digest_hex.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(invalid_param(format!(
+            "{name} must be an immutable OCI reference in the form name@sha256:<64 hex>"
         )));
     }
-    Ok(value.to_string())
+    Ok(format!(
+        "{image_name}@sha256:{}",
+        digest_hex.to_ascii_lowercase()
+    ))
 }
 
 fn required_absolute_executable(name: &str) -> Result<PathBuf, ToolError> {
@@ -102,7 +120,11 @@ fn validate_absolute_executable(name: &str, path: &Path) -> Result<PathBuf, Tool
             path.display()
         ),
     })?;
-    if !is_executable(&canonical) {
+    let meta = std::fs::metadata(&canonical).map_err(|err| ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: format!("failed to inspect `{}`: {err}", canonical.display()),
+    })?;
+    if !is_executable(&meta) {
         return Err(ToolError::Sdk {
             sdk_kind: "internal_error".into(),
             message: format!(
@@ -111,18 +133,18 @@ fn validate_absolute_executable(name: &str, path: &Path) -> Result<PathBuf, Tool
             ),
         });
     }
-    reject_untrusted_executable(&canonical, name)?;
+    reject_untrusted_executable(&canonical, name, &meta)?;
     Ok(canonical)
 }
 
-fn reject_untrusted_executable(path: &Path, name: &str) -> Result<(), ToolError> {
+fn reject_untrusted_executable(
+    path: &Path,
+    name: &str,
+    meta: &std::fs::Metadata,
+) -> Result<(), ToolError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
-        let meta = std::fs::metadata(path).map_err(|err| ToolError::Sdk {
-            sdk_kind: "internal_error".into(),
-            message: format!("failed to inspect `{}`: {err}", path.display()),
-        })?;
         if meta.mode() & 0o022 != 0 {
             return Err(ToolError::Sdk {
                 sdk_kind: "internal_error".into(),
@@ -144,14 +166,11 @@ fn reject_untrusted_executable(path: &Path, name: &str) -> Result<(), ToolError>
         }
     }
     #[cfg(not(unix))]
-    let _ = (path, name);
+    let _ = (path, name, meta);
     Ok(())
 }
 
-fn is_executable(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
+fn is_executable(meta: &std::fs::Metadata) -> bool {
     if !meta.is_file() {
         return false;
     }
@@ -176,19 +195,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_reference_rejects_option_injection_and_whitespace() {
-        for value in ["", "-q", "debian latest"] {
+    fn image_reference_requires_an_immutable_sha256_digest() {
+        for value in [
+            "",
+            "-q",
+            "debian latest",
+            "debian:latest",
+            "https://registry.example/debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "user@registry.example/debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "registry.example/debian?tag=latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "debian@sha256:abc",
+            "debian@sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "debian@sha256:gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        ] {
             assert!(validate_image_reference(MSB_IMAGE_ENV, value).is_err());
         }
-        assert_eq!(
-            validate_image_reference(MSB_IMAGE_ENV, "debian@sha256:abc").expect("valid image"),
-            "debian@sha256:abc"
-        );
     }
 
     #[test]
-    fn direct_runner_args_remain_protocol_compatible() {
-        assert_eq!(runner_args(), ["internal", "code-mode-runner"]);
+    fn image_reference_normalizes_the_sha256_digest() {
+        let uppercase_digest = "A".repeat(64);
+        assert_eq!(
+            validate_image_reference(
+                MSB_IMAGE_ENV,
+                &format!("registry.example:5000/team/debian:stable@sha256:{uppercase_digest}")
+            )
+            .expect("valid image"),
+            format!(
+                "registry.example:5000/team/debian:stable@sha256:{}",
+                "a".repeat(64)
+            )
+        );
     }
 
     #[cfg(unix)]

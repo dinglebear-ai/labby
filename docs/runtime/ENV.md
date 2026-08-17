@@ -166,7 +166,8 @@ opt into Microsandbox runner isolation with all three variables:
 ```env
 LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox
 LABBY_CODE_MODE_MICROSANDBOX_EXE=/absolute/root-or-service-owned/path/to/msb
-LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian
+LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 ```
 
 - `LABBY_CODE_MODE_RUNNER_BACKEND` accepts `process` (default) or
@@ -174,9 +175,13 @@ LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian
 - `LABBY_CODE_MODE_MICROSANDBOX_EXE` is required for `microsandbox` and must be
   an absolute executable path owned by root or the service user and not writable
   by group/other.
-- `LABBY_CODE_MODE_MICROSANDBOX_IMAGE` is required for `microsandbox`, must be a
-  single OCI image reference, and must already be cached. Runtime pulls are
-  disabled with `--pull never`.
+- `LABBY_CODE_MODE_MICROSANDBOX_IMAGE` is required for `microsandbox`, must be
+  an immutable OCI digest reference (`name@sha256:<64 hex>`), and must already
+  be cached. URLs, userinfo, queries, and tag-only references are rejected.
+  Runtime pulls are disabled with `--pull never`.
+- `LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS` optionally bounds concurrent
+  microVMs process-wide (default `4`, hard maximum `16`) independently of the
+  generic runner-pool size and overflow settings.
 
 The host must separately provide working KVM access plus compatible `msb` and
 `libkrunfw` installations. See [CODE_MODE.md](../dev/CODE_MODE.md#microsandbox-runner-isolation-opt-in).

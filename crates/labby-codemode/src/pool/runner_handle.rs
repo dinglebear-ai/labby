@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use tokio::process::ChildStdin;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit};
 use tokio_util::codec::{FramedRead, LinesCodec};
 
 use super::microsandbox::{MicrosandboxGuard, runner_command};
@@ -171,6 +171,7 @@ impl PooledRunner {
     pub(crate) async fn spawn(
         spawn: &super::super::pool::RunnerSpawn,
         microsandbox_config: Option<&super::super::pool::MicrosandboxSpawn>,
+        admission_permit: Option<OwnedSemaphorePermit>,
     ) -> Result<Self, ToolError> {
         // Each runner gets its own isolated cwd. It is a long-lived TempDir; the
         // runner creates a fresh per-execution subdir under it on every `Start`.
@@ -179,7 +180,8 @@ impl PooledRunner {
             message: format!("failed to create Code Mode sandbox directory: {err}"),
         })?;
 
-        let (mut cmd, microsandbox) = runner_command(spawn, microsandbox_config).await?;
+        let (mut cmd, microsandbox) =
+            runner_command(spawn, microsandbox_config, admission_permit).await?;
         if microsandbox.is_none() {
             cmd.current_dir(temp_dir.path());
         }
@@ -523,7 +525,7 @@ mod tests {
             image,
         };
 
-        let mut runner = PooledRunner::spawn(&spawn, Some(&microsandbox))
+        let mut runner = PooledRunner::spawn(&spawn, Some(&microsandbox), None)
             .await
             .expect("spawn microVM");
         runner
