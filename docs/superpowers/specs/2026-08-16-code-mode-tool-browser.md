@@ -101,7 +101,7 @@ Never syntactically truncate TypeScript.
 - Normalize lowercase ASCII alphanumerics and spaces exactly as the current lexical Code Mode search does.
 - Preserve current lexical field weights, token coverage, deterministic tie-breaking, empty-query hint, and `1..=50` limit behavior.
 - Browser v1 does not promise semantic ordering equivalence with sandbox search.
-- A machine-readable fixture is executed by both Rust lexical tests and the sandbox JS test harness for the common contract: normalization, lexical weights, limit, exact resolution, ambiguity, and hidden/unknown behavior.
+- Rust table tests lock the browser lexical contract: normalization, lexical weights, limit, exact resolution, ambiguity, and hidden/unknown behavior. Sandbox JavaScript search remains an independent contract and may use semantic ranking.
 - Candidate scoring uses borrowed entry indices and numeric scores. Clone strings only for final results. Maintain `total` separately and retain at most the best 50 candidates.
 
 ## Authority and confidentiality

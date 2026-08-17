@@ -33,12 +33,11 @@
 
 - `crates/labby-codemode/src/discovery.rs` — neutral lexical scoring, bounded response DTOs, and target resolution.
 - `crates/labby-codemode/src/tests_discovery.rs` — fixture-driven lexical/security tests.
-- `crates/labby-codemode/tests/fixtures/discovery-v1.json` — common Rust/JS parity subset.
+- `crates/labby-codemode/tests/fixtures/discovery-v1.json` — deterministic activation/performance fixture.
 - `crates/labby-gateway/src/gateway/manager/code_mode_discovery.rs` — one-render root-admin orchestration and projection caps.
 - `apps/gateway-admin/components/tools/tool-browser.tsx` — search, results, states, and detail drawer.
 - `apps/gateway-admin/components/tools/tool-browser.test.tsx` — component and race tests.
 - `apps/gateway-admin/app/(admin)/tools/page.tsx` — route shell.
-- `apps/gateway-admin/lib/browser/tool-browser.browser.test.ts` — auth, navigation, text-safety, and stale-response proof.
 
 ### Modified files
 
@@ -221,9 +220,9 @@ Exclude snippets before scoring. Do not generate, clone, or serialize DTS in sea
 
 Validate target before catalog work. Iterate only entries where `kind == Tool` and `discovery_entry_visible(entry, scope)`. Resolve exact ID/path/helper or one bare name. Produce visible ambiguity candidates only. Select the existing `entry.dts` after resolution and apply the complete-omission size rule.
 
-- [ ] **Step 6: Execute the common fixture in Rust and JavaScript tests**
+- [x] **Step 6: Lock the native lexical contract in Rust table tests**
 
-The shared JSON fixture covers normalization, lexical weights, one/two/many-token coverage, ties, limit, exact/path/helper/bare resolution, visible ambiguity, Unicode input, and hidden/unknown equivalence. Do not assert semantic ordering parity.
+Rust table tests cover normalization, lexical weights, coverage, ties, limits, Unicode bounds, and hidden/unknown equivalence. The engineering review rejected permanent exact JS/Rust scoring parity; sandbox search remains an independent contract and may use semantic ranking.
 
 - [ ] **Step 7: Add `CodeModeSurface::Api` exhaustiveness tests**
 

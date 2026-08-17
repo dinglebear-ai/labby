@@ -29,7 +29,7 @@ async function boundedJson(response: Response, maxBytes: number) {
   try {
     return JSON.parse(new TextDecoder().decode(bytes))
   } catch {
-    return { message: 'Tools returned an invalid response' }
+    throw new GatewayApiError('Tools returned an invalid response', 502, 'invalid_response', response.headers.get('x-request-id') ?? undefined)
   }
 }
 

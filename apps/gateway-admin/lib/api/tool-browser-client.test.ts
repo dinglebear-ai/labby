@@ -125,3 +125,18 @@ test('tool search rejects an oversized response before JSON parsing', async () =
       'requestId' in error && error.requestId === 'req-large',
   )
 })
+
+test('tool search rejects malformed successful JSON with its request ID', async () => {
+  setAuthenticatedSession()
+  globalThis.fetch = async () => new Response('{broken', {
+    status: 200,
+    headers: { 'x-request-id': 'req-invalid' },
+  })
+
+  await assert.rejects(
+    searchCodeModeTools('gateway'),
+    (error: unknown) => error instanceof Error &&
+      'code' in error && error.code === 'invalid_response' &&
+      'requestId' in error && error.requestId === 'req-invalid',
+  )
+})
