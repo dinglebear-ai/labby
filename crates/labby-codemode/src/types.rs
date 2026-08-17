@@ -837,7 +837,7 @@ pub enum CodeModeSurface {
 }
 
 impl CodeModeSurface {
-    /// Stable lowercase surface tag (`"mcp"` / `"cli"`) used by hosts when
+    /// Stable lowercase surface tag (`"mcp"`, `"cli"`, or `"api"`) used by hosts when
     /// building their own runtime-owner / logging context.
     #[must_use]
     pub fn tag(self) -> &'static str {

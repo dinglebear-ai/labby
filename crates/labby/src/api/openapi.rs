@@ -658,6 +658,33 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
             [],
         ))
         .build();
+    let admin_tool_operation = |summary: &'static str| {
+        OperationBuilder::new()
+            .tag("gateway")
+            .summary(Some(summary))
+            .description(Some(
+                "Private admin browser projection of the live Code Mode catalog.",
+            ))
+            .request_body(Some(
+                RequestBodyBuilder::new()
+                    .content("application/json", generic_json())
+                    .required(Some(Required::True))
+                    .build(),
+            ))
+            .responses(
+                ResponsesBuilder::new()
+                    .response("200", ok_response("Code Mode tool discovery result"))
+                    .response("401", auth_response())
+                    .response("403", agent_error_response("Admin scope required"))
+                    .response("422", agent_error_response("Invalid request"))
+                    .build(),
+            )
+            .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
+                "bearer_auth",
+                [],
+            ))
+            .build()
+    };
 
     vec![
         (
@@ -670,6 +697,24 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
             SERVER_LOGS_QUERY_API_ROUTE.to_string(),
             PathItemBuilder::new()
                 .operation(utoipa::openapi::HttpMethod::Get, server_logs_query)
+                .build(),
+        ),
+        (
+            "/v1/gateway/codemode/tools/search".to_string(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    admin_tool_operation("Search live Code Mode tools"),
+                )
+                .build(),
+        ),
+        (
+            "/v1/gateway/codemode/tools/describe".to_string(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    admin_tool_operation("Describe a live Code Mode tool"),
+                )
                 .build(),
         ),
     ]

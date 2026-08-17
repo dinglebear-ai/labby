@@ -1,4 +1,4 @@
-import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
+import { getBrowserSessionEpoch, getSessionCsrfToken } from '@/lib/auth/session-store'
 import { GatewayApiError } from './gateway-client-core'
 
 export type ToolSafety = { read_only?: boolean; destructive?: boolean }
@@ -15,9 +15,13 @@ export type ToolDescription = {
 
 async function post<T>(path: string, body: object, signal?: AbortSignal): Promise<T> {
   const epoch = getBrowserSessionEpoch()
+  const csrfToken = getSessionCsrfToken()
   const response = await fetch(path, {
     method: 'POST', credentials: 'include', cache: 'no-store', signal,
-    headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    headers: {
+      'content-type': 'application/json',
+      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+    }, body: JSON.stringify(body),
   })
   if (epoch !== getBrowserSessionEpoch()) throw new DOMException('Session changed', 'AbortError')
   if (!response.ok) {

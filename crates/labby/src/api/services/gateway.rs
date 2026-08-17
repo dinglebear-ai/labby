@@ -47,30 +47,33 @@ async fn search_tools(
     auth: Option<Extension<AuthContext>>,
     Json(request): Json<ToolSearchRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    private_tool_browser_admin(&auth)?;
+    let started = std::time::Instant::now();
+    private_tool_browser_admin(&auth)
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
     if request.query.len() > labby_codemode::QUERY_MAX_BYTES {
-        return Err(ToolError::InvalidParam {
-            message: format!(
-                "query exceeds {} UTF-8 bytes",
-                labby_codemode::QUERY_MAX_BYTES
-            ),
-            param: "query".into(),
-        }
-        .into());
+        return Err(private_tool_error(
+            ToolError::InvalidParam {
+                message: format!(
+                    "query exceeds {} UTF-8 bytes",
+                    labby_codemode::QUERY_MAX_BYTES
+                ),
+                param: "query".into(),
+            },
+            "tools.search",
+            started,
+            &headers,
+        ));
     }
     let manager = state
         .gateway_manager
         .clone()
-        .ok_or_else(manager_not_wired)?;
-    let context =
-        labby_gateway::gateway::manager::AdminToolBrowserContext::from_authenticated_admin(
-            auth.as_ref().map(|value| value.0.sub.clone()),
-        );
-    let started = std::time::Instant::now();
+        .ok_or_else(manager_not_wired)
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
+    let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let response = manager
-        .search_admin_tools(context, &request.query, request.limit)
+        .search_admin_tools(subject, &request.query, request.limit)
         .await
-        .map_err(|error| ApiError::new(error).with_service_action("gateway", "tools.search"))?;
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
     tracing::info!(
         surface = "api",
         service = "gateway",
@@ -92,30 +95,33 @@ async fn describe_tool(
     auth: Option<Extension<AuthContext>>,
     Json(request): Json<ToolDescribeRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    private_tool_browser_admin(&auth)?;
+    let started = std::time::Instant::now();
+    private_tool_browser_admin(&auth)
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
     if request.target.len() > labby_codemode::TARGET_MAX_BYTES {
-        return Err(ToolError::InvalidParam {
-            message: format!(
-                "target exceeds {} UTF-8 bytes",
-                labby_codemode::TARGET_MAX_BYTES
-            ),
-            param: "target".into(),
-        }
-        .into());
+        return Err(private_tool_error(
+            ToolError::InvalidParam {
+                message: format!(
+                    "target exceeds {} UTF-8 bytes",
+                    labby_codemode::TARGET_MAX_BYTES
+                ),
+                param: "target".into(),
+            },
+            "tools.describe",
+            started,
+            &headers,
+        ));
     }
     let manager = state
         .gateway_manager
         .clone()
-        .ok_or_else(manager_not_wired)?;
-    let context =
-        labby_gateway::gateway::manager::AdminToolBrowserContext::from_authenticated_admin(
-            auth.as_ref().map(|value| value.0.sub.clone()),
-        );
-    let started = std::time::Instant::now();
+        .ok_or_else(manager_not_wired)
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
+    let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let response = manager
-        .describe_admin_tool(context, &request.target)
+        .describe_admin_tool(subject, &request.target)
         .await
-        .map_err(|error| ApiError::new(error).with_service_action("gateway", "tools.describe"))?;
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
     tracing::info!(
         surface = "api",
         service = "gateway",
@@ -145,6 +151,26 @@ fn manager_not_wired() -> ToolError {
         sdk_kind: "internal_error".into(),
         message: "gateway manager not wired".into(),
     }
+}
+
+fn private_tool_error(
+    error: ToolError,
+    action: &'static str,
+    started: std::time::Instant,
+    headers: &HeaderMap,
+) -> ApiError {
+    tracing::warn!(
+        surface = "api",
+        service = "gateway",
+        action,
+        elapsed_ms = started.elapsed().as_millis(),
+        kind = error.kind(),
+        request_id = headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        "dispatch failed"
+    );
+    ApiError::new(error).with_service_action("gateway", action)
 }
 
 fn no_referrer<T: serde::Serialize>(body: Json<T>) -> impl IntoResponse {

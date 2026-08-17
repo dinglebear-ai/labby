@@ -22,36 +22,64 @@ export function ToolBrowser() {
   const [detail, setDetail] = useState<ToolDescription | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const request = useRef<AbortController | null>(null)
+  const searchRequest = useRef<AbortController | null>(null)
+  const detailRequest = useRef<AbortController | null>(null)
 
   useEffect(() => {
     const url = new URL(window.location.href)
     const initial = (url.searchParams.get('q') ?? '').slice(0, 1024)
     setQuery(initial)
+    const target = (url.searchParams.get('tool') ?? '').slice(0, 4096)
     if (initial.trim()) void runSearch(initial, false)
-    return () => request.current?.abort()
+    if (target.trim()) void loadDetail(target, false)
+    const restore = () => {
+      const next = new URL(window.location.href)
+      const nextQuery = (next.searchParams.get('q') ?? '').slice(0, 1024)
+      const nextTarget = (next.searchParams.get('tool') ?? '').slice(0, 4096)
+      setQuery(nextQuery)
+      void runSearch(nextQuery, false)
+      if (nextTarget) void loadDetail(nextTarget, false)
+      else setDetail(null)
+    }
+    window.addEventListener('popstate', restore)
+    return () => {
+      window.removeEventListener('popstate', restore)
+      searchRequest.current?.abort()
+      detailRequest.current?.abort()
+    }
+    // Navigation restoration is intentionally registered once; the handlers
+    // read the URL and current refs at event time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function runSearch(value: string, updateUrl = true) {
-    request.current?.abort(); request.current = new AbortController()
+    searchRequest.current?.abort(); const controller = new AbortController(); searchRequest.current = controller
     setDetail(null); setError(null)
     if (!value.trim()) { setResults([]); setTotal(0); if (updateUrl) setUrl(''); return }
     setLoading(true)
     try {
-      const response = await searchCodeModeTools(value, request.current.signal)
+      const response = await searchCodeModeTools(value, controller.signal)
+      if (searchRequest.current !== controller) return
       setResults(response.results); setTotal(response.total)
       if (updateUrl) setUrl(value)
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tools unavailable')
-    } finally { setLoading(false) }
+    } finally { if (searchRequest.current === controller) setLoading(false) }
   }
 
   async function selectTool(hit: ToolSearchHit) {
-    request.current?.abort(); request.current = new AbortController()
-    setDetail(null); setError(null); setLoading(true); setUrl(query, hit.id)
-    try { setDetail(await describeCodeModeTool(hit.id, request.current.signal)) }
+    await loadDetail(hit.id, true)
+  }
+
+  async function loadDetail(target: string, updateUrl: boolean) {
+    detailRequest.current?.abort(); const controller = new AbortController(); detailRequest.current = controller
+    setDetail(null); setError(null); setLoading(true); if (updateUrl) setUrl(query, target)
+    try {
+      const response = await describeCodeModeTool(target, controller.signal)
+      if (detailRequest.current === controller) setDetail(response)
+    }
     catch (cause) { if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tool not found') }
-    finally { setLoading(false) }
+    finally { if (detailRequest.current === controller) setLoading(false) }
   }
 
   return <main className="mx-auto w-full max-w-7xl p-6 lg:p-10">
