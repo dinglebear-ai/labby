@@ -50,6 +50,7 @@ pub(super) struct OauthStatusDiscoverySnapshot {
     pub(super) error: Option<String>,
 }
 
+mod code_mode_discovery;
 mod code_mode_resolve;
 mod code_mode_runtime;
 mod config_ops;
@@ -72,6 +73,7 @@ mod virtual_servers;
 // monolith's public `manager::` paths; they currently have no callers outside
 // the manager tree, so the re-exports are allowed to be unused in non-test
 // builds (the test suite imports them through these paths).
+pub use self::code_mode_discovery::AdminToolBrowserContext;
 pub use self::code_mode_resolve::CallbackToolLookup;
 #[allow(unused_imports)]
 pub use self::config_ops::BatchAddOutcome;
