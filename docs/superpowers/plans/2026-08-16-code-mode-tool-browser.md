@@ -477,7 +477,7 @@ Add the existing auth test file to the commit when modified.
 ### Task 6: Browser Proof, Documentation, and Full Gates
 
 **Files:**
-- Create: `apps/gateway-admin/lib/browser/tool-browser.browser.test.ts`
+- Extend: `apps/gateway-admin/components/tools/tool-browser.test.tsx`
 - Modify: `docs/dev/CODE_MODE.md`
 - Modify: generated API-route/OpenAPI docs only through `just docs-generate`.
 
@@ -503,7 +503,7 @@ Add direct unauthenticated endpoint denial, admin→logout→new-session without
 - [ ] **Step 2: Run and verify failure**
 
 ```bash
-cd apps/gateway-admin && pnpm test:browser -- tool-browser.browser.test.ts
+cd apps/gateway-admin && node --import tsx --test components/tools/tool-browser.test.tsx
 ```
 
 Expected: FAIL until browser fixtures and route are wired.
@@ -529,7 +529,7 @@ Expected: docs checks pass and the final search returns no matches because these
 - [ ] **Step 6: Run browser, frontend, Rust, and repository gates**
 
 ```bash
-cd apps/gateway-admin && pnpm test:browser -- tool-browser.browser.test.ts
+cd apps/gateway-admin && node --import tsx --test components/tools/tool-browser.test.tsx
 just web-build
 cargo nextest run -p labby-codemode
 cargo nextest run -p labby-gateway
@@ -556,7 +556,7 @@ Expected: no forbidden lifecycle vocabulary, no client-supplied authority fields
 - [ ] **Step 8: Commit**
 
 ```bash
-git add apps/gateway-admin/lib/browser/tool-browser.browser.test.ts docs/dev/CODE_MODE.md docs/generated
+git add apps/gateway-admin/components/tools/tool-browser.test.tsx docs/dev/CODE_MODE.md docs/generated
 git commit -m "docs(codemode): document private admin tool discovery"
 ```
 
