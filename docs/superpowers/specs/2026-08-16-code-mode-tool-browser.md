@@ -13,6 +13,18 @@ Implementation does not begin until both gates pass:
 
 If either gate fails, keep `lab-837l6.3` deferred and do not ship `/tools` from this plan.
 
+### Recorded activation measurement
+
+The deterministic 4,000-tool fixture passed on 2026-08-17. Both cold paths
+acquire one render, generate 4,000 eager DTS values, serialize the existing
+3,477,571-byte full catalog, return 50 DTOs in a 12,113-byte response, and call
+zero upstream tools. The least-expensive safe JavaScript Web alternative still
+starts one Code Mode runner/runtime solely to execute discovery; the direct
+borrowed projection starts none. Eliminating that otherwise unnecessary process
+and sandbox lifecycle is material, so the native activation gate is **GO**.
+This measurement does not claim native discovery avoids the current eager cold
+render/DTS/catalog cost; those remain shared and explicitly measured.
+
 ## V1 architecture
 
 - `/tools` is the only production consumer.
@@ -155,4 +167,3 @@ Dedicated ignored benchmarks record cold render/DTS/catalog cost and warm lexica
 - Lazy/parallel DTS generation or a separate type endpoint.
 - Persistent/multi-entry caches and new indexes.
 - Tool execution and exposure editing.
-

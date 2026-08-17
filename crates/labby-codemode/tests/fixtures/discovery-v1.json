@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "tool_count": 4000,
+  "namespace": "fixture",
+  "name_prefix": "tool_",
+  "description": "Search deterministic fixture records",
+  "query": "fixture records",
+  "limit": 50
+}
