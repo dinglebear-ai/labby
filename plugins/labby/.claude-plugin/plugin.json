@@ -22,9 +22,9 @@
     "server_url": {
       "type": "string",
       "title": "Server URL",
-      "description": "Base URL of the Labby MCP HTTP server (labby serve). Defaults to loopback so bearer tokens never go to a public host by accident. For remote use, set this explicitly to the Labby server URL you own or have been instructed to trust. Do NOT include a trailing /mcp — the plugin appends it.",
+      "description": "Base URL of the Labby MCP HTTP server. Defaults to Dookie's host-side production proxy on port 40100; the Incus container listens internally on 8765. For remote use, set this explicitly to the Labby server URL you own or have been instructed to trust. Do NOT include a trailing /mcp — the plugin appends it.",
       "required": true,
-      "default": "http://localhost:8765"
+      "default": "http://localhost:40100"
     },
     "api_token": {
       "type": "string",
