@@ -811,7 +811,7 @@ export function ConsoleSidebar() {
               placeItems: 'center',
             }}
           >
-            <LabbyIcon size={34} />
+            <LabbyIcon size={30} />
           </div>
           {collapsed ? null : (
             <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 7 }}>

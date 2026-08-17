@@ -7,9 +7,8 @@ import {
   ArrowLeft,
   Cable,
   Download,
-  LayoutList,
   Plus,
-  Rows3,
+  RefreshCw,
   Search,
   SlidersHorizontal,
   TriangleAlert,
@@ -52,7 +51,6 @@ import { GatewayToolsTable } from './gateway-tools-table'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { gatewayActionTone } from './gateway-theme'
-import { CodeModeHeaderToggle } from './code-mode-toggle'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
@@ -652,58 +650,18 @@ export function GatewayListView({
               </Button>
             ) : null}
             {!showToolsView ? (
-              <>
-                <CodeModeHeaderToggle />
-                <McpConfigHeaderActions
-                  discoveredConfigs={discoveredConfigs}
-                  isDiscovering={isDiscoveringConfigs}
-                  isImporting={isImportingConfigs}
-                  onDiscover={onDiscoverConfigs}
-                  onImport={onImportConfigs}
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => onPrimaryLensChange('tools')}
-                  className={cn(
-                    gatewayActionTone(),
-                    'size-9 lg:hidden hover:bg-aurora-hover-bg hover:text-aurora-text-primary',
-                  )}
-                  aria-label="Switch to tools view"
-                >
-                  <SlidersHorizontal className="size-3.5" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => onDensityChange('comfortable')}
-                  className={cn(
-                    gatewayActionTone(),
-                    'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary lg:inline-flex',
-                    density === 'comfortable' && 'border-aurora-accent-primary/45 text-aurora-accent-strong',
-                  )}
-                  aria-label="Comfortable density"
-                  aria-pressed={density === 'comfortable'}
-                  title="Comfortable density"
-                >
-                  <LayoutList className="size-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => onDensityChange('condensed')}
-                  className={cn(
-                    gatewayActionTone(),
-                    'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary lg:inline-flex',
-                    density === 'condensed' && 'border-aurora-accent-primary/45 text-aurora-accent-strong',
-                  )}
-                  aria-label="Condensed density"
-                  aria-pressed={density === 'condensed'}
-                  title="Condensed density"
-                >
-                  <Rows3 className="size-4" />
-                </Button>
-              </>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => onPrimaryLensChange('tools')}
+                className={cn(
+                  gatewayActionTone(),
+                  'size-9 lg:hidden hover:bg-aurora-hover-bg hover:text-aurora-text-primary',
+                )}
+                aria-label="Switch to tools view"
+              >
+                <SlidersHorizontal className="size-3.5" />
+              </Button>
             ) : null}
             <Button
               onClick={onCreate}
@@ -737,10 +695,6 @@ export function GatewayListView({
           AURORA_PAGE_SHELL,
         )}
       >
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.32] [background-image:linear-gradient(rgba(41,182,246,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(41,182,246,0.035)_1px,transparent_1px)] [background-size:28px_28px]"
-          aria-hidden="true"
-        />
         <div className={cn(AURORA_PAGE_FRAME, 'relative z-10 gap-4')}>
           <section className={cn(AURORA_MEDIUM_PANEL, 'p-1.5 lg:hidden')}>
             <div className="grid grid-cols-4 gap-1">
@@ -794,11 +748,46 @@ export function GatewayListView({
               activeLens={gatewayFilters.primaryLens}
               toolsViewActive={showToolsView}
               onLensChange={onPrimaryLensChange}
+              actions={
+                <>
+                  <Button variant="outline" size="icon" title="Reload all servers" aria-label="Reload all servers" onClick={() => void Promise.all(filteredGateways.map((gateway) => onReload(gateway)))}>
+                    <RefreshCw className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    title="Scan MCP configs"
+                    aria-label="Scan MCP configs"
+                    disabled={isDiscoveringConfigs || isImportingConfigs}
+                    onClick={onDiscoverConfigs}
+                  >
+                    <Search className={cn('size-3.5', isDiscoveringConfigs && 'animate-pulse')} />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    title="Download gateway diagnostics snapshot"
+                    aria-label="Download gateway diagnostics snapshot"
+                    onClick={() => {
+                      const blob = new Blob([JSON.stringify(filteredGateways, null, 2)], { type: 'application/json' })
+                      const href = URL.createObjectURL(blob)
+                      const anchor = document.createElement('a')
+                      anchor.href = href
+                      anchor.download = 'labby-gateway-snapshot.json'
+                      anchor.click()
+                      URL.revokeObjectURL(href)
+                    }}
+                  >
+                    <Download className="size-3.5" />
+                  </Button>
+                </>
+              }
             />
           </div>
 
           <div className="grid gap-4">
-            <GatewayFilters
+            <div className="lg:hidden">
+              <GatewayFilters
               mode={showToolsView ? 'tools' : 'gateways'}
               search={activeSearch}
               gatewayFilters={{
@@ -815,7 +804,8 @@ export function GatewayListView({
               onToolFilterToggle={onToolFilterToggle}
               onExposureChange={onExposureChange}
               onClearFilters={onClearFilters}
-            />
+              />
+            </div>
 
             {/* min-w-0: without it this grid item's min-content contribution is
                 the table's 1010px min-width, which inflates the track past the
@@ -885,50 +875,6 @@ export function GatewayListView({
           </div>
         </div>
       </div>
-    </>
-  )
-}
-
-function McpConfigHeaderActions({
-  discoveredConfigs,
-  isDiscovering,
-  isImporting,
-  onDiscover,
-  onImport,
-}: {
-  discoveredConfigs: DiscoveredMcpServer[] | null
-  isDiscovering: boolean
-  isImporting: boolean
-  onDiscover: () => void
-  onImport: (names?: string[]) => void
-}) {
-  const importable = discoveredConfigs?.filter((server) => !server.already_configured && !server.tombstoned) ?? []
-  const disabled = isDiscovering || isImporting
-
-  return (
-    <>
-      <Button
-        variant="outline"
-        size="icon"
-        onClick={onDiscover}
-        disabled={disabled}
-        className={cn(gatewayActionTone(), 'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex')}
-        aria-label="Scan MCP configs"
-        title="Scan MCP configs"
-      >
-        <Search className={cn('size-4', isDiscovering && 'animate-pulse')} />
-      </Button>
-      <Button
-        variant="outline"
-        size="icon"
-        onClick={() => onImport()}
-        disabled={disabled || importable.length === 0}
-        className={cn(gatewayActionTone('accent'), 'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex')}
-        aria-label="Import all MCP configs"
-        title="Import all MCP configs"
-      >
-        <Download className={cn('size-4', isImporting && 'animate-pulse')} />
-      </Button>
     </>
   )
 }
