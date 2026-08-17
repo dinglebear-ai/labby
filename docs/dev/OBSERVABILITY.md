@@ -245,6 +245,7 @@ The operator UI deliberately separates these two retention shapes:
 
 - **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
 - **Traces** reads the bounded admin-only `server_logs.query` window and correlates emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. It can therefore show dispatch surfaces, input/output tokens, upstream spans, response sizes, and error events when those structured fields were emitted. Entries without a correlation identifier remain visible as incomplete single-event flows rather than receiving an invented identity.
+- **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Those panels must be labeled as retained samples; token values are the `chars / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
 
 Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
 

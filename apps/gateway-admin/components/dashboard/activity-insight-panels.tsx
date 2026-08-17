@@ -182,7 +182,7 @@ export function FanOutPanel({
     <DashboardPanel
       title="Code Mode fan-out"
       icon={<Network className="size-4" />}
-      meta={`${pct(fanOut.truncation_rate)} truncated`}
+      meta={`${pct(fanOut.truncation_rate)} truncated · retained sample`}
     >
       <div className="grid grid-cols-3 gap-x-4 gap-y-4">
         <FanOutStat value={formatCompactNumber(fanOut.total_calls)} label="Fanned-out" />

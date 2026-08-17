@@ -26,7 +26,12 @@ export interface ServerLogsQuery {
   max_scan_bytes?: number
 }
 
-export function queryServerLogs(params: ServerLogsQuery = {}, signal?: AbortSignal) {
+export interface ServerLogsRequestOptions {
+  baseUrl?: string
+  signal?: AbortSignal
+}
+
+export function queryServerLogs(params: ServerLogsQuery = {}, options?: ServerLogsRequestOptions) {
   if (process.env.NEXT_PUBLIC_MOCK_DATA === 'true') {
     const now = Date.now()
     const entries = [
@@ -53,9 +58,9 @@ export function queryServerLogs(params: ServerLogsQuery = {}, signal?: AbortSign
   return performServiceAction<ServerLogsResult, ServerLogsApiError>({
     action: 'server_logs.query',
     params,
-    signal,
+    signal: options?.signal,
     serviceLabel: 'Server logs',
-    url: serverLogsActionUrl(),
+    url: serverLogsActionUrl(options?.baseUrl),
     createError: (message, status, code, param) => new ServerLogsApiError(message, status, code, param),
   })
 }

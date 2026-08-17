@@ -17,10 +17,18 @@ test('fetchDashboardMetrics uses the existing gateway usage actions', async () =
           top_tools: [{ upstream: 'github', tool: 'search', calls: 1 }],
           top_actors: [{ actor: 'codex', calls: 1 }],
         }
-      : {
+      : body.action === 'gateway.usage.calls' ? {
           calls: [{ ts_unix: 1_800_000_000, upstream: 'github', tool: 'search', actor: 'codex', outcome: 'ok', elapsed_ms: 12 }],
           total_matching: 1,
           next_cursor: null,
+        } : {
+          kind: 'server_logs',
+          entries: [{
+            timestamp: new Date(Date.now() - 1000).toISOString(), level: 'INFO', target: 'labby', message: 'dispatch ok',
+            service: 'gateway', action: 'gateway.list', kind: null, file: 'labby.jsonl',
+            fields: { surface: 'api', input_tokens: 10, output_tokens: 20 },
+          }],
+          matched: 1, scanned_lines: 1, malformed_lines: 0, scanned_bytes: 100, max_scan_bytes: 1000, truncated: false,
         }
     return new Response(JSON.stringify(payload), {
       status: 200,
@@ -31,8 +39,10 @@ test('fetchDashboardMetrics uses the existing gateway usage actions', async () =
   try {
     const { fetchDashboardMetrics } = await import('./metrics-client.ts')
     const result = await fetchDashboardMetrics('24h')
-    assert.deepEqual(actions.sort(), ['gateway.usage.calls', 'gateway.usage.metrics'])
+    assert.deepEqual(actions.sort(), ['gateway.usage.calls', 'gateway.usage.metrics', 'server_logs.query'])
     assert.equal(result.tool_calls.total, 1)
+    assert.deepEqual(result.surfaces, [{ surface: 'api', calls: 1 }])
+    assert.equal(result.tokens.total, 30)
   } finally {
     globalThis.fetch = originalFetch
   }

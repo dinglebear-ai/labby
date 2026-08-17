@@ -73,7 +73,7 @@ export interface DashboardMetrics {
   since_ms: number
   until_ms: number
 
-  /** Whether a metric dimension is persisted by the current gateway usage store. */
+  /** Whether a metric dimension is available from durable usage or retained observability. */
   collected: {
     tokens: boolean
     surfaces: boolean
@@ -102,7 +102,7 @@ export interface DashboardMetrics {
     input: number
     output: number
     total: number
-    /** `total / tool_calls.total`, rounded. */
+    /** Average over token-bearing dispatch events, rounded. */
     avg_per_call: number
   }
 

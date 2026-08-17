@@ -1,11 +1,13 @@
 import { normalizeGatewayApiBase } from './gateway-config.ts'
 import { gatewayRequestInit } from './gateway-request.ts'
 import { withRequestTiming } from './request-timing.ts'
+import { queryServerLogs } from './server-logs-client.ts'
 import {
   aggregateGatewayUsage,
   type GatewayUsageCalls,
   type GatewayUsageMetrics,
 } from '../dashboard/gateway-usage-adapter.ts'
+import { enrichDashboardWithObservability } from '../observability/dashboard-observability.ts'
 import type {
   ActorFacet,
   ActorKind,
@@ -529,15 +531,25 @@ export async function fetchDashboardMetrics(
   }
   const now = Date.now()
   const params = usageWindowParams(window, now)
-  const [summary, rows] = await Promise.all([
+  const [summary, rows, logResult] = await Promise.all([
     postGatewayUsageAction<GatewayUsageMetrics>('gateway.usage.metrics', params, options),
     postGatewayUsageAction<GatewayUsageCalls>(
       'gateway.usage.calls',
       { ...params, limit: 1000, include_total: true },
       options,
     ),
+    queryServerLogs(
+      { limit: 1000, max_scan_bytes: 64 * 1024 * 1024 },
+      { baseUrl: options?.baseUrl, signal: options?.signal },
+    ).catch((error: unknown) => {
+      if (options?.signal?.aborted) throw error
+      return null
+    }),
   ])
-  return aggregateGatewayUsage(window, now, summary, rows)
+  const metrics = aggregateGatewayUsage(window, now, summary, rows)
+  return logResult
+    ? enrichDashboardWithObservability(metrics, logResult.entries, window, now)
+    : metrics
 }
 
 export async function fetchToolDetail(
