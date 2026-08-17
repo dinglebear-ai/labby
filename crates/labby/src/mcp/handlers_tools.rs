@@ -25,7 +25,7 @@ use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 #[cfg(feature = "gateway")]
@@ -39,6 +39,7 @@ use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
     code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
     gateway_status_app_resource_uri_for_tool, gateway_status_app_skybridge_uri_for_tool,
+    settings_app_resource_uri_for_tool, settings_app_skybridge_uri_for_tool,
 };
 use crate::mcp::handlers_resources::{
     admin_app_resources_visible, server_logs_app_resource_uri_for_tool,
@@ -132,6 +133,10 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let gateway_status_app_visible =
             admin_app_resources_visible(auth) && self.gateway_status_app_available_on_mcp().await;
+        #[cfg(feature = "gateway")]
+        let settings_app_visible = admin_app_resources_visible(auth)
+            && self.route_scope.allows_service("setup")
+            && self.service_visible_on_mcp("setup").await;
         let mut builtin_names = HashSet::new();
         for svc in self.registry.services() {
             // `service_visible_on_mcp` already checks `route_scope.allows_service`.
@@ -231,6 +236,13 @@ impl LabMcpServer {
         if gateway_status_app_visible {
             descriptors.push(self.registry.permanent_tools().gateway_status_tool());
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
+            gateway_tool_count += 1;
+        }
+
+        #[cfg(feature = "gateway")]
+        if settings_app_visible {
+            descriptors.push(self.registry.permanent_tools().settings_tool());
+            advertised_names.insert(SETTINGS_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
@@ -531,6 +543,13 @@ pub(crate) fn gateway_status_tool_meta(tool_name: &str) -> MetaObject {
     )
 }
 
+#[cfg(feature = "gateway")]
+pub(crate) fn settings_tool_meta(tool_name: &str) -> MetaObject {
+    let resource_uri = settings_app_resource_uri_for_tool(tool_name)
+        .expect("Settings tool must have an associated UI resource");
+    owned_app_tool_meta(resource_uri, settings_app_skybridge_uri_for_tool(tool_name))
+}
+
 /// Bind one tool to its MCP Apps and optional OpenAI skybridge resources.
 fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> MetaObject {
     let mut meta = serde_json::Map::new();
@@ -651,6 +670,29 @@ pub(crate) fn gateway_status_tool_schema() -> Arc<serde_json::Map<String, Value>
             "additionalProperties": false
         }) else {
             unreachable!("Gateway Status schema is an object")
+        };
+        Arc::new(schema)
+    });
+    Arc::clone(&SCHEMA)
+}
+
+#[cfg(feature = "gateway")]
+pub(crate) fn settings_tool_schema() -> Arc<serde_json::Map<String, Value>> {
+    static SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(|| {
+        let Value::Object(schema) = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["open", "schema", "state", "config.update", "env.update"],
+                    "default": "open",
+                    "description": "Open the settings app or invoke one of its schema-backed callbacks."
+                },
+                "params": { "type": "object", "additionalProperties": true }
+            },
+            "additionalProperties": false
+        }) else {
+            unreachable!("Settings schema is an object")
         };
         Arc::new(schema)
     });

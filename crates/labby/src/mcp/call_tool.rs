@@ -32,7 +32,7 @@ use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_coalesce::schedule_catalog_notification;
@@ -633,6 +633,59 @@ impl LabMcpServer {
                         valid: vec!["open".to_string(), "refresh".to_string()],
                         hint: None,
                     }),
+                };
+                let result =
+                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let elapsed_ms = start.elapsed().as_millis();
+                let input_tokens = estimate_tokens_args(&args);
+                let (result, outcome) = format_dispatch_result(
+                    result,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    &self.request_subject_log_tag(&context),
+                    self.request_actor_key(&context),
+                    input_tokens,
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    outcome,
+                )
+                .await;
+                return Ok(result.into());
+            }
+
+            let handles_settings = service == SETTINGS_TOOL_NAME
+                && admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
+                && self.route_scope.allows_service("setup")
+                && self.service_visible_on_mcp("setup").await;
+            if handles_settings {
+                let synthetic_action = if action.is_empty() {
+                    "open"
+                } else {
+                    action.as_str()
+                };
+                let setup_action = match synthetic_action {
+                    "open" | "schema" => Some("settings.schema"),
+                    "state" => Some("settings.state"),
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                let result = if let Some(setup_action) = setup_action {
+                    crate::dispatch::setup::dispatch(setup_action, params).await
+                } else {
+                    Err(ToolError::UnknownAction {
+                        message: format!("unknown Settings action `{synthetic_action}`"),
+                        valid: vec!["open", "schema", "state", "config.update", "env.update"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                        hint: None,
+                    })
                 };
                 let result =
                     result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));

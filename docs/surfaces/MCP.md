@@ -51,7 +51,7 @@ Every builtin service tool returns the dispatch envelope as
 { "ok": true, "service": "gateway", "action": "gateway.list", "data": {} }
 ```
 
-Builtin service tools — plus the `add_server` and `gateway_status` admin app
+Builtin service tools — plus the `add_server`, `gateway_status`, and `settings` admin app
 tools — advertise this envelope as their MCP `outputSchema`. The normative
 contract is [mcp-tool-output.md](../contracts/mcp-tool-output.md) and the
 published schema is
@@ -172,7 +172,7 @@ advisory to clients but not inert.
 Per-action truth (`destructive`, `requires_admin`) is available for the seven
 registered service tools via `{"action": "help"}` or the `lab://<service>/actions`
 resource. It is **not** available for `codemode`, `codemode_ui`, `mcp_app`,
-`add_server`, or `gateway_status`, which are not registry services.
+`add_server`, `gateway_status`, or `settings`, which are not registry services.
 
 Note that tool visibility and `lab://<service>/actions` are scoped by
 `route_scope`, **not** by the caller's admin scope: action metadata crosses that

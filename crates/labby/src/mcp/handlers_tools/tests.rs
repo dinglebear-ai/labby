@@ -13,17 +13,18 @@ use crate::dispatch::upstream::types::{
 use crate::mcp::catalog::ToolCatalogSnapshot;
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
     CODE_MODE_APP_URI, GATEWAY_STATUS_APP_SKYBRIDGE_URI, GATEWAY_STATUS_APP_URI,
-    SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI,
+    SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SETTINGS_APP_SKYBRIDGE_URI,
+    SETTINGS_APP_URI,
 };
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
     code_mode_trace_output_schema, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_schema, server_logs_tool_meta,
+    mcp_app_tool_schema, server_logs_tool_meta, settings_tool_meta, settings_tool_schema,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -1044,6 +1045,27 @@ fn gateway_status_tool_meta_and_schema_bind_the_status_app() {
         serde_json::json!(["open", "refresh"])
     );
     assert_eq!(schema["additionalProperties"], false);
+}
+
+#[test]
+fn settings_tool_meta_and_schema_bind_the_settings_app() {
+    let meta = settings_tool_meta(SETTINGS_TOOL_NAME);
+    assert!(
+        meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| { uri.starts_with(SETTINGS_APP_URI) && uri.contains("?v=") })
+    );
+    assert!(
+        meta.0["openai/outputTemplate"].as_str().is_some_and(|uri| {
+            uri.starts_with(SETTINGS_APP_SKYBRIDGE_URI) && uri.contains("?v=")
+        })
+    );
+    let schema = settings_tool_schema();
+    let actions = schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("Settings actions");
+    assert!(actions.contains(&serde_json::json!("state")));
+    assert!(actions.contains(&serde_json::json!("config.update")));
 }
 
 #[test]
@@ -3353,7 +3375,7 @@ async fn list_tools_paginates_large_builtin_catalog() {
         )
         .await
         .expect("third page");
-    assert_eq!(third.tools.len(), 50);
+    assert_eq!(third.tools.len(), 51);
     assert!(third.next_cursor.is_none());
     assert!(
         running
@@ -3409,7 +3431,9 @@ async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
     let rebuilt = collect_names(reverse_large_test_registry(250)).await;
 
     assert_eq!(ascending, rebuilt);
-    assert_eq!(ascending.len(), 250);
+    // The schema-backed Settings app is a synthetic admin tool in addition to
+    // the registry entries used by this pagination fixture.
+    assert_eq!(ascending.len(), 251);
     assert!(ascending.is_sorted());
 }
 

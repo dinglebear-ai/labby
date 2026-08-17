@@ -25,6 +25,7 @@ use crate::mcp::call_tool_codemode::{
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    SETTINGS_TOOL_NAME,
 };
 use crate::mcp::catalog::{CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 use crate::mcp::completion::action_schema;
@@ -34,7 +35,7 @@ use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_app_text_note,
     code_mode_execute_schema, code_mode_tool_meta, code_mode_trace_output_schema,
     code_mode_ui_description, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_description, mcp_app_tool_schema,
+    mcp_app_tool_description, mcp_app_tool_schema, settings_tool_meta, settings_tool_schema,
 };
 use crate::registry::RegisteredService;
 
@@ -181,6 +182,16 @@ fn gateway_status_annotations() -> ToolAnnotations {
         .open_world(false)
 }
 
+#[cfg(feature = "gateway")]
+#[must_use]
+fn settings_annotations() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(true)
+        .idempotent(false)
+        .open_world(false)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PermanentToolRegistry;
 
@@ -289,6 +300,19 @@ impl PermanentToolRegistry {
         .with_annotations(gateway_status_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
         .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME))
+    }
+
+    #[cfg(feature = "gateway")]
+    #[must_use]
+    pub(crate) fn settings_tool(&self) -> Tool {
+        Tool::new(
+            SETTINGS_TOOL_NAME,
+            "Open and manage schema-backed Labby settings, including Code Mode, proxy, surface, and feature controls.",
+            settings_tool_schema(),
+        )
+        .with_annotations(settings_annotations())
+        .with_raw_output_schema(dispatch_envelope_output_schema())
+        .with_meta(settings_tool_meta(SETTINGS_TOOL_NAME))
     }
 
     #[cfg(feature = "gateway")]

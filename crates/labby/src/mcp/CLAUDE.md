@@ -216,6 +216,11 @@ Resources are read-only. Do not use them for mutations.
 - `ui://lab/gateway/add-server` — the admin-only Add Server app bound to the
   synthetic `add_server` tool. Its `test` and `create` callbacks delegate to
   `gateway.test` and `gateway.add`; do not duplicate gateway persistence logic.
+- `ui://lab/gateway/status` — the admin-only live gateway connection and
+  capability app bound to the synthetic `gateway_status` tool.
+- `ui://lab/settings/editor` — the admin-only schema-backed settings app bound
+  to the synthetic `settings` tool. Its callbacks delegate to the canonical
+  `setup settings.*` dispatch actions; do not add a second configuration model.
 - any other `ui://<upstream>/…` — an upstream mcp-ui widget resource (referenced
   by a tool result's `_meta.ui.resourceUri`). Routed to the owning upstream peer
   via `pool.read_upstream_ui_resource` (catalog reverse-lookup, native URI

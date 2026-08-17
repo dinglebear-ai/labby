@@ -29,7 +29,7 @@ the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 |---|---|---|---|
 | **Builtin service** | `gateway`, `doctor`, `setup`, `server_logs`, `snippets`, `fs`, `lab_admin` | Labby (`format_dispatch_result`) | Dispatch envelope (C2) |
 | **Code Mode** | `codemode`, `codemode_ui` | Labby (`code_mode_execute_trace`) | Trace schema (C4) |
-| **Synthetic / app** | `mcp_app`, `add_server`, `gateway_status` | Labby, per-tool | Per audit — accurate schema or none |
+| **Synthetic / app** | `mcp_app`, `add_server`, `gateway_status`, `settings` | Labby, per-tool | Per audit — accurate schema or none |
 | **Upstream (proxied)** | any `<upstream>::<tool>` | The upstream server | Relayed (C5) |
 
 > **Visibility caveat.** Under `hide_raw_tools` (whenever Code Mode is enabled), every builtin
