@@ -453,8 +453,8 @@ export function GatewayTable({
     return (
       <span
         className={cn(
-          'min-w-0 max-w-full font-mono text-aurora-text-muted transition-colors group-hover:text-aurora-text-primary/82',
-          compact ? 'text-[9px] leading-3' : 'text-[11px] leading-5',
+          'min-w-0 max-w-full font-mono text-[color-mix(in_srgb,var(--aurora-text-primary)_78%,var(--aurora-text-muted))] transition-colors group-hover:text-aurora-text-primary',
+          compact ? 'text-[10.5px] leading-4' : 'text-[12px] leading-5',
           isCommand ? 'whitespace-normal break-all' : 'truncate',
         )}
         title={preview}
@@ -462,7 +462,7 @@ export function GatewayTable({
         {isCommand && parts.args ? (
           <>
             <span className="font-semibold text-aurora-text-primary/86">{parts.command}</span>
-            <span className="text-aurora-text-muted"> {parts.args}</span>
+            <span className="text-[color-mix(in_srgb,var(--aurora-text-primary)_72%,var(--aurora-text-muted))]"> {parts.args}</span>
           </>
         ) : (
           preview

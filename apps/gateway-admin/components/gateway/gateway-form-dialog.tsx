@@ -205,6 +205,7 @@ const emptyCustomState = {
   proxyResources: true,
   proxyPrompts: true,
   proxyMcpUi: true,
+  proxySkills: false,
 }
 
 export function GatewayFormDialog({
@@ -243,6 +244,7 @@ export function GatewayFormDialog({
   const [proxyResources, setProxyResources] = useState(true)
   const [proxyPrompts, setProxyPrompts] = useState(true)
   const [proxyMcpUi, setProxyMcpUi] = useState(true)
+  const [proxySkills, setProxySkills] = useState(false)
   const [uiState, dispatchUi] = useReducer(gatewayFormUiReducer, initialGatewayFormUiState)
   const setUi = useCallback(<Key extends keyof GatewayFormUiState,>(
     key: Key,
@@ -510,6 +512,7 @@ export function GatewayFormDialog({
         setProxyResources(gateway.config.proxy_resources ?? true)
         setProxyPrompts(gateway.config.proxy_prompts ?? true)
         setProxyMcpUi(gateway.config.proxy_mcp_ui ?? true)
+        setProxySkills(gateway.config.proxy_skills ?? false)
       }
       } else {
         setMode('custom')
@@ -529,6 +532,7 @@ export function GatewayFormDialog({
         setProxyResources(emptyCustomState.proxyResources)
         setProxyPrompts(emptyCustomState.proxyPrompts)
         setProxyMcpUi(emptyCustomState.proxyMcpUi)
+        setProxySkills(emptyCustomState.proxySkills)
         setSelectedService('')
         setServiceValues({})
         setEnableServer(true)
@@ -726,6 +730,9 @@ export function GatewayFormDialog({
         proxy_resources: proxyResources,
         proxy_prompts: proxyPrompts,
         proxy_mcp_ui: proxyMcpUi,
+        ...(proxySkills || gateway?.config.proxy_skills
+          ? { proxy_skills: proxySkills }
+          : {}),
       },
     }
   }
@@ -983,6 +990,7 @@ export function GatewayFormDialog({
     cfg.proxy_resources = proxyResources
     cfg.proxy_prompts = proxyPrompts
     cfg.proxy_mcp_ui = proxyMcpUi
+    cfg.proxy_skills = proxySkills
     return { [n]: cfg }
   }
 
@@ -1009,7 +1017,7 @@ export function GatewayFormDialog({
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { onFormChange() }, [name, url, command, stdioEnv, transport, proxyResources, proxyPrompts, proxyMcpUi, jsonDrawerOpen])
+  useEffect(() => { onFormChange() }, [name, url, command, stdioEnv, transport, proxyResources, proxyPrompts, proxyMcpUi, proxySkills, jsonDrawerOpen])
 
   useEffect(() => {
     if (syncingRef.current || !open || mode !== 'custom') return
@@ -1041,6 +1049,7 @@ export function GatewayFormDialog({
       if (typeof cfg.proxy_resources === 'boolean') setProxyResources(cfg.proxy_resources)
       if (typeof cfg.proxy_prompts === 'boolean') setProxyPrompts(cfg.proxy_prompts)
       if (typeof cfg.proxy_mcp_ui === 'boolean') setProxyMcpUi(cfg.proxy_mcp_ui)
+      if (typeof cfg.proxy_skills === 'boolean') setProxySkills(cfg.proxy_skills)
       // Defer reset — same reason as onFormChange: the useEffect fires after React
       // flushes the setName/setUrl/setTransport calls; guard must still be true then.
       setTimeout(() => { syncingRef.current = false }, 0)
@@ -1501,6 +1510,22 @@ export function GatewayFormDialog({
                     id="proxy-prompts"
                     checked={proxyPrompts}
                     onCheckedChange={setProxyPrompts}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="proxy-skills" className="font-medium">
+                      Proxy skills
+                    </Label>
+                    <p className="text-sm text-aurora-text-muted">
+                      Aggregate this server&apos;s Agent Skills into Labby
+                    </p>
+                  </div>
+                  <Switch
+                    id="proxy-skills"
+                    checked={proxySkills}
+                    onCheckedChange={setProxySkills}
                   />
                 </div>
 

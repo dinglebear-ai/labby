@@ -12,9 +12,11 @@ export interface GatewayConfig {
   proxy_resources?: boolean
   proxy_prompts?: boolean
   proxy_mcp_ui?: boolean
+  proxy_skills?: boolean
   expose_tools?: string[]
   expose_resources?: string[] | null
   expose_prompts?: string[] | null
+  expose_skills?: string[] | null
 }
 
 /** Read-side config returned by the API. Extends the write form with server-assigned, read-only fields. */

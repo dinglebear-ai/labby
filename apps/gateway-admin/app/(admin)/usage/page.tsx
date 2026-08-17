@@ -147,7 +147,7 @@ function UsageExplorer() {
 
   return (
     <>
-      <AppHeader breadcrumbs={[{ label: 'Overview', href: '/' }, { label: 'Usage explorer' }]} />
+      <AppHeader breadcrumbs={[{ label: 'Usage' }]} />
 
       <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)}>
         {/* Hero — the mock's eyebrow + title + action cluster with the stat

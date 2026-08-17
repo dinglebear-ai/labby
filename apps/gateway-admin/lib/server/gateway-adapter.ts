@@ -73,9 +73,11 @@ export interface BackendGatewayConfigView {
   proxy_resources?: boolean
   proxy_prompts?: boolean
   proxy_mcp_ui?: boolean
+  proxy_skills?: boolean
   expose_tools?: string[] | null
   expose_resources?: string[] | null
   expose_prompts?: string[] | null
+  expose_skills?: string[] | null
   imported_from?: GatewayImportSource | null
 }
 
@@ -424,6 +426,7 @@ export function normalizeServerView(
       proxy_resources: config.proxy_resources,
       proxy_prompts: config.proxy_prompts,
       proxy_mcp_ui: config.proxy_mcp_ui,
+      proxy_skills: config.proxy_skills,
     },
     status: {
       healthy: (view.connected ?? false) && warnings.length === 0,
@@ -517,9 +520,11 @@ export function normalizeGateway(
       proxy_resources: config.proxy_resources ?? true,
       proxy_prompts: config.proxy_prompts ?? true,
       proxy_mcp_ui: config.proxy_mcp_ui ?? true,
+      proxy_skills: config.proxy_skills ?? false,
       expose_tools: exposePatterns ?? undefined,
       expose_resources: config.expose_resources ?? undefined,
       expose_prompts: config.expose_prompts ?? undefined,
+      expose_skills: config.expose_skills ?? undefined,
       imported_from: config.imported_from ?? undefined,
     },
     status: {
@@ -619,9 +624,11 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
     proxy_resources: input.config.proxy_resources ?? true,
     proxy_prompts: input.config.proxy_prompts ?? true,
     proxy_mcp_ui: input.config.proxy_mcp_ui ?? true,
+    proxy_skills: input.config.proxy_skills ?? false,
     expose_tools: input.config.expose_tools ?? null,
     expose_resources: input.config.expose_resources ?? null,
     expose_prompts: input.config.expose_prompts ?? null,
+    expose_skills: input.config.expose_skills ?? null,
   }
   if (input.config.oauth) {
     spec.oauth = {
@@ -695,12 +702,20 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
     patch.proxy_mcp_ui = config.proxy_mcp_ui
   }
 
+  if (config.proxy_skills !== undefined) {
+    patch.proxy_skills = config.proxy_skills
+  }
+
   if (config.expose_tools !== undefined) {
     patch.expose_tools = config.expose_tools
   }
 
   if (config.expose_resources !== undefined) {
     patch.expose_resources = config.expose_resources
+  }
+
+  if (config.expose_skills !== undefined) {
+    patch.expose_skills = config.expose_skills
   }
 
   if (config.expose_prompts !== undefined) {
