@@ -10,8 +10,8 @@
 //! 3. Existing key order is preserved.
 //! 4. Comments (`#`) and blank lines pass through unchanged.
 //! 5. Dedupe by key — one entry per key in the output.
-//! 6. Conflicts (key exists with different value): skip-and-warn unless
-//!    `force = true`.
+//! 6. Conflicts (key exists with different value): skip-and-warn unless the
+//!    request or individual entry is forced.
 //! 7. Values containing whitespace, `#`, or shell metacharacters are
 //!    double-quoted with `\"` / `\\` escaping.
 //! 8. Idempotence: running merge with the same inputs is a no-op (no backup,
@@ -41,6 +41,8 @@ static BACKUP_COUNTER: AtomicU32 = AtomicU32::new(0);
 pub struct EnvEntry {
     pub key: String,
     pub value: String,
+    /// Override an existing conflicting value for this entry only.
+    pub force: bool,
 }
 
 impl EnvEntry {
@@ -48,7 +50,14 @@ impl EnvEntry {
         Self {
             key: key.into(),
             value: value.into(),
+            force: false,
         }
+    }
+
+    #[must_use]
+    pub fn force(mut self) -> Self {
+        self.force = true;
+        self
     }
 }
 
@@ -204,6 +213,7 @@ pub fn snapshot_mtime(path: &Path) -> Option<SystemTime> {
 }
 
 /// Merge `req.entries` into `path`, writing atomically with backup + prune.
+/// Writers using this primitive are serialized through a sibling lock file.
 pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError> {
     let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
@@ -213,6 +223,25 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
             reason: WriteFailReason::from_io(&e),
         })?;
     }
+
+    // Serialize every sanctioned writer across processes. A separate stable
+    // lock path remains valid while the target itself is atomically replaced.
+    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| MergeError::WriteFailed {
+            path: lock_path.clone(),
+            reason: WriteFailReason::from_io(&error),
+        })?;
+    set_secure_perms(&lock_path)?;
+    lock_file.lock().map_err(|error| MergeError::WriteFailed {
+        path: lock_path,
+        reason: WriteFailReason::from_io(&error),
+    })?;
 
     // Read existing file (empty if absent).
     let existing_raw = match fs::read_to_string(path) {
@@ -257,6 +286,7 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
             .find(|existing| existing.key == entry.key)
         {
             slot.value = entry.value.clone();
+            slot.force = entry.force;
         } else {
             request_entries.push(entry.clone());
         }
@@ -278,7 +308,7 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
                 // Idempotent — no change.
             }
             Some(_) => {
-                if req.force {
+                if req.force || entry.force {
                     overrides.insert(entry.key.clone(), entry.value.clone());
                     written_count += 1;
                 } else {
@@ -377,6 +407,7 @@ pub fn preview(path: &Path, req: &MergeRequest) -> Result<MergePreview, MergeErr
             .find(|existing| existing.key == entry.key)
         {
             slot.value = entry.value.clone();
+            slot.force = entry.force;
         } else {
             request_entries.push(entry.clone());
         }
@@ -398,7 +429,7 @@ pub fn preview(path: &Path, req: &MergeRequest) -> Result<MergePreview, MergeErr
                     status: PreviewStatus::Unchanged,
                 });
             }
-            Some(_) if req.force => {
+            Some(_) if req.force || entry.force => {
                 preview.written += 1;
                 preview.changes.push(PreviewChange {
                     key: entry.key,
@@ -741,6 +772,65 @@ mod tests {
         assert_eq!(outcome.written, 1);
         assert!(outcome.backup_path.is_some());
         assert!(fs::read_to_string(&path).unwrap().contains("FOO=baz"));
+    }
+
+    #[test]
+    fn entry_force_overwrites_only_selected_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_initial(dir.path(), ".env", "SERVER=old\nAUTH=oauth\n");
+        let outcome = merge(
+            &path,
+            MergeRequest {
+                entries: vec![
+                    EnvEntry::new("SERVER", "new").force(),
+                    EnvEntry::new("AUTH", "bearer"),
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome.written, 1);
+        assert_eq!(outcome.skipped.len(), 1);
+        let after = fs::read_to_string(path).unwrap();
+        assert!(after.contains("SERVER=new"));
+        assert!(after.contains("AUTH=oauth"));
+    }
+
+    #[test]
+    fn merge_waits_for_path_lock_before_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_initial(dir.path(), ".env", "FOO=initial\n");
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        let lock_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .unwrap();
+        lock_file.lock().unwrap();
+
+        let merge_path = path.clone();
+        let handle = std::thread::spawn(move || {
+            merge(
+                &merge_path,
+                MergeRequest {
+                    entries: vec![EnvEntry::new("BAR", "added")],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert!(!handle.is_finished());
+        fs::write(&path, "FOO=updated\n").unwrap();
+        fs::File::unlock(&lock_file).unwrap();
+        handle.join().unwrap();
+
+        let after = fs::read_to_string(path).unwrap();
+        assert!(after.contains("FOO=updated"));
+        assert!(after.contains("BAR=added"));
     }
 
     #[test]

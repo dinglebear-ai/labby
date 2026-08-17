@@ -115,7 +115,7 @@ pub enum SetupCommand {
     /// Validate connectivity to the lab MCP server.
     PluginConnectivity {
         /// Requested server URL; it must match the active plugin, persisted, or
-        /// http://localhost:8765 target.
+        /// http://localhost:40100 host-proxy target.
         #[arg(long)]
         server_url: Option<String>,
     },

@@ -858,7 +858,7 @@ Options:
           Emit JSON instead of human-readable tables
 
       --server-url <SERVER_URL>
-          Requested server URL; it must match the active plugin, persisted, or http://localhost:8765 target
+          Requested server URL; it must match the active plugin, persisted, or http://localhost:40100 host-proxy target
 
       --color <COLOR>
           Control human-readable CLI styling

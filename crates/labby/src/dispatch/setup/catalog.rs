@@ -248,7 +248,7 @@ pub const ACTIONS: &[ActionSpec] = &[
             name: "server_url",
             ty: "string",
             required: false,
-            description: "Requested server URL; it must match the active target selected from CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or the loopback default",
+            description: "Requested server URL; it must match the active target selected from CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or the localhost:40100 host-proxy default",
         }],
     },
     ActionSpec {

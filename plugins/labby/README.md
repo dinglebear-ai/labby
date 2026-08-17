@@ -39,7 +39,8 @@ longer triggered automatically by a ConfigChange hook.
 
 The `server_url` setting is persisted as `LABBY_SERVER_URL`. Connectivity
 checks prefer the invocation-scoped plugin setting, then that persisted client
-target, and use loopback only when neither is configured.
+target, and use Dookie's `http://localhost:40100` host proxy only when neither
+is configured. Production Labby remains container-local on port 8765.
 
 When upstream OAuth is configured, set `public_url` to the explicit public base
 URL for the Labby server. Labby derives the upstream browser callback from that

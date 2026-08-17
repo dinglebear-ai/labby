@@ -138,6 +138,10 @@ pub struct ConnectivityOutcome {
     pub status_source: Option<&'static str>,
     /// Status returned by `/health`, whenever that endpoint responded.
     pub health_status: Option<u16>,
+    /// Status returned by `/mcp` when the fallback probe received a response.
+    pub mcp_status: Option<u16>,
+    /// Stable reason the MCP fallback failed, when it was attempted.
+    pub mcp_failure: Option<&'static str>,
     pub message: String,
 }
 
@@ -153,8 +157,7 @@ pub struct PluginHookReport {
     pub connectivity: ConnectivityOutcome,
 }
 
-/// Run the full manually invoked plugin setup sequence: repair dirs → sync env
-/// vars → validate connectivity.
+/// Check or repair the local filesystem prerequisites used by plugin setup.
 pub fn run(mode: Mode) -> Result<SetupReport, ToolError> {
     run_for_paths(mode, lab_home(), env_path())
 }
@@ -177,7 +180,12 @@ fn plugin_entries_from(mut read: impl FnMut(&str) -> Option<String>) -> Vec<EnvE
         .iter()
         .filter_map(|(option_var, lab_var)| {
             let value = read(option_var).filter(|value| !value.trim().is_empty())?;
-            Some(EnvEntry::new(lab_var.to_string(), value))
+            let entry = EnvEntry::new(lab_var.to_string(), value);
+            Some(if *lab_var == "LABBY_SERVER_URL" {
+                entry.force()
+            } else {
+                entry
+            })
         })
         .collect()
 }
@@ -214,24 +222,32 @@ fn sync_plugin_entries_to(
             })?;
     }
 
-    let outcome = env_merge::merge(
-        &env,
-        MergeRequest {
-            entries,
-            force: true,
-            expected_mtime: None,
-        },
-    )
-    .map_err(|e| ToolError::Sdk {
-        sdk_kind: e.kind().to_string(),
-        message: e.to_string(),
-    })?;
+    let outcome = merge_plugin_entries(&env, entries)?;
 
     Ok(PluginSyncOutcome {
         written: outcome.written,
         skipped: outcome.skipped,
         options_found,
         env_path: env.display().to_string(),
+    })
+}
+
+fn merge_plugin_entries(
+    env: &Path,
+    entries: Vec<EnvEntry>,
+) -> Result<env_merge::MergeOutcome, ToolError> {
+    let expected_mtime = env_merge::snapshot_mtime(env);
+    env_merge::merge(
+        env,
+        MergeRequest {
+            entries,
+            force: false,
+            expected_mtime,
+        },
+    )
+    .map_err(|error| ToolError::Sdk {
+        sdk_kind: error.kind().to_string(),
+        message: error.to_string(),
     })
 }
 
@@ -322,6 +338,8 @@ async fn validate_connectivity_with_targets(
                 status: None,
                 status_source: None,
                 health_status: None,
+                mcp_status: None,
+                mcp_failure: None,
                 message,
             };
         }
@@ -344,6 +362,8 @@ async fn validate_connectivity_with_targets(
                 status: None,
                 status_source: None,
                 health_status: None,
+                mcp_status: None,
+                mcp_failure: None,
                 message: format!("failed to build HTTP client: {e}"),
             };
         }
@@ -353,42 +373,65 @@ async fn validate_connectivity_with_targets(
     match client.get(health_url).send().await {
         Ok(response) => {
             let status = response.status().as_u16();
-            if status >= 500 {
+            let mut mcp_status = None;
+            let mut mcp_failure = None;
+            if !(200..300).contains(&status) {
                 let mcp_url = url::Url::parse(&format!("{base}/mcp"));
-                if let Ok(mcp_url) = mcp_url
-                    && let Ok(mcp_response) = client.get(mcp_url).send().await
-                {
-                    let mcp_status = mcp_response.status().as_u16();
-                    let has_bearer_challenge = mcp_response
-                        .headers()
-                        .get(reqwest::header::WWW_AUTHENTICATE)
-                        .and_then(|value| value.to_str().ok())
-                        .is_some_and(has_bearer_challenge);
-                    if mcp_fallback_is_reachable(status, mcp_status, has_bearer_challenge) {
-                        let latency = start.elapsed().as_millis() as u64;
-                        return ConnectivityOutcome {
-                            server_url: base,
-                            reachable: true,
-                            latency_ms: Some(latency),
-                            status: Some(mcp_status),
-                            status_source: Some("mcp"),
-                            health_status: Some(status),
-                            message: format!(
-                                "MCP endpoint reachable ({mcp_status}) in {latency}ms; health returned {status}"
-                            ),
-                        };
-                    }
+                match mcp_url {
+                    Ok(mcp_url) => match client.get(mcp_url).send().await {
+                        Ok(mcp_response) => {
+                            let response_status = mcp_response.status().as_u16();
+                            mcp_status = Some(response_status);
+                            let has_bearer = mcp_response
+                                .headers()
+                                .get_all(reqwest::header::WWW_AUTHENTICATE)
+                                .iter()
+                                .filter_map(|value| value.to_str().ok())
+                                .any(has_bearer_challenge);
+                            if mcp_fallback_is_reachable(status, response_status, has_bearer) {
+                                let latency = start.elapsed().as_millis() as u64;
+                                return ConnectivityOutcome {
+                                    server_url: base,
+                                    reachable: true,
+                                    latency_ms: Some(latency),
+                                    status: Some(response_status),
+                                    status_source: Some("mcp"),
+                                    health_status: Some(status),
+                                    mcp_status: Some(response_status),
+                                    mcp_failure: None,
+                                    message: format!(
+                                        "MCP endpoint reachable ({response_status}) in {latency}ms; health returned {status}"
+                                    ),
+                                };
+                            }
+                            mcp_failure = Some(if response_status == 401 {
+                                "missing_bearer_challenge"
+                            } else {
+                                "unexpected_status"
+                            });
+                        }
+                        Err(_) => mcp_failure = Some("transport_error"),
+                    },
+                    Err(_) => mcp_failure = Some("invalid_url"),
                 }
             }
             let latency = start.elapsed().as_millis() as u64;
             ConnectivityOutcome {
                 server_url: base.clone(),
-                reachable: status < 400,
+                reachable: (200..300).contains(&status),
                 latency_ms: Some(latency),
                 status: Some(status),
                 status_source: Some("health"),
                 health_status: Some(status),
-                message: format!("connected ({status}) in {latency}ms"),
+                mcp_status,
+                mcp_failure,
+                message: if let Some(reason) = mcp_failure {
+                    format!(
+                        "health returned {status}; MCP fallback failed ({reason}) in {latency}ms"
+                    )
+                } else {
+                    format!("health returned {status} in {latency}ms")
+                },
             }
         }
         Err(e) => ConnectivityOutcome {
@@ -398,6 +441,8 @@ async fn validate_connectivity_with_targets(
             status: None,
             status_source: None,
             health_status: None,
+            mcp_status: None,
+            mcp_failure: None,
             message: format!("unreachable: {e}"),
         },
     }
@@ -408,14 +453,13 @@ fn mcp_fallback_is_reachable(
     mcp_status: u16,
     has_bearer_challenge: bool,
 ) -> bool {
-    health_status >= 500 && mcp_status == 401 && has_bearer_challenge
+    !(200..300).contains(&health_status) && mcp_status == 401 && has_bearer_challenge
 }
 
 fn has_bearer_challenge(value: &str) -> bool {
     value
         .split(|character: char| character.is_ascii_whitespace() || character == ',')
-        .find(|part| !part.is_empty())
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer"))
+        .any(|part| part.eq_ignore_ascii_case("bearer"))
 }
 
 fn resolve_connectivity_target(
@@ -425,7 +469,7 @@ fn resolve_connectivity_target(
     plugin_target
         .filter(|value| !value.trim().is_empty())
         .or_else(|| product_target.filter(|value| !value.trim().is_empty()))
-        .unwrap_or("http://localhost:8765")
+        .unwrap_or("http://localhost:40100")
         .to_string()
 }
 
@@ -625,20 +669,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connectivity_target_uses_product_server_url_when_plugin_option_is_absent() {
-        let target = resolve_connectivity_target(None, Some("https://dinglebear.ai/mcp"));
-
-        assert_eq!(target, "https://dinglebear.ai/mcp");
-    }
-
-    #[test]
-    fn configured_connectivity_target_cannot_be_replaced_by_a_request_override() {
-        let target = resolve_connectivity_target(None, Some("https://dinglebear.ai"));
-
-        assert_eq!(target, "https://dinglebear.ai");
-    }
-
-    #[test]
     fn connectivity_target_precedence_ignores_blank_values() {
         assert_eq!(
             resolve_connectivity_target(
@@ -653,11 +683,11 @@ mod tests {
         );
         assert_eq!(
             resolve_connectivity_target(Some(""), Some("")),
-            "http://localhost:8765"
+            "http://localhost:40100"
         );
         assert_eq!(
             resolve_connectivity_target(None, None),
-            "http://localhost:8765"
+            "http://localhost:40100"
         );
     }
 
@@ -675,21 +705,25 @@ mod tests {
         let env = temp.path().join(".env");
         fs::write(
             &env,
-            "# keep this comment\nUNRELATED=value\nLABBY_SERVER_URL=https://old.example\n",
+            "# keep this comment\nUNRELATED=value\nLABBY_SERVER_URL=https://old.example\nLABBY_AUTH_MODE=oauth\n",
         )
         .expect("seed env");
-        let entries = plugin_entries_from(|key| {
-            (key == "CLAUDE_PLUGIN_OPTION_SERVER_URL").then(|| "https://new.example".to_string())
+        let entries = plugin_entries_from(|key| match key {
+            "CLAUDE_PLUGIN_OPTION_SERVER_URL" => Some("https://new.example".to_string()),
+            "CLAUDE_PLUGIN_OPTION_AUTH_MODE" => Some("bearer".to_string()),
+            _ => None,
         });
 
         let outcome = sync_plugin_entries_to(env.clone(), entries).expect("sync plugin env");
 
         assert_eq!(outcome.written, 1);
-        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.skipped.len(), 1);
         let contents = fs::read_to_string(&env).expect("read env");
         assert!(contents.contains("# keep this comment"));
         assert!(contents.contains("UNRELATED=value"));
         assert!(contents.contains("LABBY_SERVER_URL=https://new.example"));
+        assert!(contents.contains("LABBY_AUTH_MODE=oauth"));
+        assert!(!contents.contains("LABBY_AUTH_MODE=bearer"));
         assert!(!contents.contains("https://old.example"));
         let export = export_plugin_env_from(env).expect("export plugin env");
         let server_url = export
@@ -703,18 +737,35 @@ mod tests {
 
     #[test]
     fn oauth_challenge_proves_mcp_reachability_when_health_is_unpublished() {
+        assert!(mcp_fallback_is_reachable(404, 401, true));
         assert!(mcp_fallback_is_reachable(502, 401, true));
         assert!(!mcp_fallback_is_reachable(502, 401, false));
         assert!(!mcp_fallback_is_reachable(502, 502, false));
         assert!(!mcp_fallback_is_reachable(502, 404, false));
-        assert!(!mcp_fallback_is_reachable(404, 401, true));
+        assert!(!mcp_fallback_is_reachable(204, 401, true));
     }
 
     #[test]
     fn bearer_challenge_scheme_is_case_insensitive() {
         assert!(has_bearer_challenge("Bearer scope=\"lab\""));
         assert!(has_bearer_challenge("bearer scope=\"lab\""));
+        assert!(has_bearer_challenge(
+            "Basic realm=\"lab\", Bearer scope=\"lab\""
+        ));
         assert!(!has_bearer_challenge("Basic realm=\"lab\""));
+    }
+
+    #[test]
+    fn plugin_manifest_defaults_to_dookie_host_proxy() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../plugins/labby/.claude-plugin/plugin.json"
+        ))
+        .expect("plugin manifest");
+
+        assert_eq!(
+            manifest["userConfig"]["server_url"]["default"],
+            "http://localhost:40100"
+        );
     }
 
     #[tokio::test]
@@ -735,16 +786,16 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/health"))
-            .respond_with(ResponseTemplate::new(502))
+            .respond_with(ResponseTemplate::new(404))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path("/mcp"))
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .insert_header("WWW-Authenticate", "Bearer scope=\"lab\""),
-            )
+            .respond_with(ResponseTemplate::new(401).insert_header(
+                "WWW-Authenticate",
+                "Basic realm=\"lab\", bearer scope=\"lab\"",
+            ))
             .expect(1)
             .mount(&server)
             .await;
@@ -754,8 +805,40 @@ mod tests {
         assert!(outcome.reachable);
         assert_eq!(outcome.status, Some(401));
         assert_eq!(outcome.status_source, Some("mcp"));
-        assert_eq!(outcome.health_status, Some(502));
-        assert!(outcome.message.contains("health returned 502"));
+        assert_eq!(outcome.health_status, Some(404));
+        assert_eq!(outcome.mcp_status, Some(401));
+        assert_eq!(outcome.mcp_failure, None);
+        assert!(outcome.message.contains("health returned 404"));
+    }
+
+    #[tokio::test]
+    async fn failed_mcp_fallback_is_reported_structurally() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(302))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mcp"))
+            .respond_with(
+                ResponseTemplate::new(401).insert_header("WWW-Authenticate", "Basic realm=\"lab\""),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let outcome = validate_connectivity_with_targets(None, None, Some(&server.uri())).await;
+
+        assert!(!outcome.reachable);
+        assert_eq!(outcome.status, Some(302));
+        assert_eq!(outcome.status_source, Some("health"));
+        assert_eq!(outcome.mcp_status, Some(401));
+        assert_eq!(outcome.mcp_failure, Some("missing_bearer_challenge"));
     }
 
     #[test]
