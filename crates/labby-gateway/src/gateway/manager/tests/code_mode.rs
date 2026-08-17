@@ -913,7 +913,7 @@ async fn catalog_embeddings_stay_cold_when_semantic_search_unconfigured() {
     // returns immediately for an unconfigured host.
     assert!(
         manager
-            .cached_embeddings(&render.fingerprint)
+            .cached_embeddings(&render.embedding_fingerprint)
             .await
             .is_none()
     );

@@ -88,6 +88,20 @@ fn all_tools_are_in_process(tools: &[UpstreamTool]) -> bool {
 }
 
 impl GatewayManager {
+    pub(crate) async fn catalog_render_flight(
+        &self,
+        fingerprint: &str,
+    ) -> Arc<crate::gateway::code_mode::CatalogRenderFlight> {
+        let mut flights = self.code_mode_catalog_render_flights.lock().await;
+        flights.retain(|_, flight| flight.strong_count() > 0);
+        if let Some(flight) = flights.get(fingerprint).and_then(std::sync::Weak::upgrade) {
+            return flight;
+        }
+        let flight = Arc::new(crate::gateway::code_mode::CatalogRenderFlight::default());
+        flights.insert(fingerprint.to_string(), Arc::downgrade(&flight));
+        flight
+    }
+
     pub async fn code_mode_config(&self) -> CodeModeConfig {
         self.config.read().await.code_mode.clone()
     }

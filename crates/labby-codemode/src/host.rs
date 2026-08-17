@@ -38,6 +38,10 @@ pub struct ToolsRender {
     /// caches (e.g. embedding vectors) off this without recomputing it
     /// themselves.
     pub fingerprint: String,
+    /// Identity of the semantic ranking corpus (`id` + `description` only).
+    /// Safety/schema-only render changes can therefore refresh discovery
+    /// without needlessly re-embedding unchanged ranking text.
+    pub embedding_fingerprint: String,
     /// The descriptors (tools + snippets) visible to this execution. A boxed
     /// slice, not a `Vec`: nothing ever mutates this in place (the only way
     /// to do so behind an `Arc` is `Arc::get_mut`/`Arc::make_mut`, and no
@@ -59,6 +63,7 @@ impl ToolsRender {
     pub fn empty() -> Self {
         Self {
             fingerprint: String::new(),
+            embedding_fingerprint: String::new(),
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,
@@ -298,6 +303,7 @@ impl CodeModeHost for NoopHost {
     ) -> Result<ToolsRender, ToolError> {
         Ok(ToolsRender {
             fingerprint: "noop".to_string(),
+            embedding_fingerprint: "noop".to_string(),
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,

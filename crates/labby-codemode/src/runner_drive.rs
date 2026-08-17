@@ -1405,6 +1405,7 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "counting".to_string(),
+                    embedding_fingerprint: "counting".to_string(),
                     entries: Arc::from([]),
                     catalog_json: Arc::from("[]"),
                     serialized_size: 2,
@@ -1658,6 +1659,7 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "recording".to_string(),
+                    embedding_fingerprint: "recording".to_string(),
                     entries: Arc::from([]),
                     catalog_json: Arc::from("[]"),
                     serialized_size: 2,

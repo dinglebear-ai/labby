@@ -999,6 +999,7 @@ mod tests {
             };
             Ok(ToolsRender {
                 fingerprint: "fixture".to_string(),
+                embedding_fingerprint: "fixture".to_string(),
                 entries,
                 catalog_json: Arc::clone(&self.catalog_json),
                 serialized_size: self.catalog_json.len(),

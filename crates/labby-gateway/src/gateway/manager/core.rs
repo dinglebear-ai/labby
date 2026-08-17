@@ -153,6 +153,9 @@ impl GatewayManager {
             code_mode_refresh_deadline: Arc::new(Mutex::new(None)),
             code_mode_refresh_inflight: Arc::new(Mutex::new(())),
             code_mode_catalog_render_cache: Arc::new(Mutex::new(None)),
+            code_mode_catalog_render_flights: Arc::new(
+                Mutex::new(std::collections::HashMap::new()),
+            ),
             code_mode_embedding_cache: Arc::new(RwLock::new(None)),
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),

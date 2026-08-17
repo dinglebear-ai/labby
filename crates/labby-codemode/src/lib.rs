@@ -92,7 +92,7 @@ pub use types::{
     CodeModeCaller, CodeModeCallerCapabilities, CodeModeCatalogKind, CodeModeExecutedCall,
     CodeModeExecutionError, CodeModeExecutionResponse, CodeModeExecutionSource, CodeModeHistory,
     CodeModeHistoryEntry, CodeModeHistoryKind, CodeModeSnippetInputEntry, CodeModeSourceLookup,
-    CodeModeSourceStore, CodeModeSurface, CodeModeToolAccess, ToolDescriptor, ToolScope, UiLink,
-    destructive_permitted, namespaced_tool_id, split_namespaced_id,
+    CodeModeSourceStore, CodeModeSurface, CodeModeToolAccess, CodeModeToolSafety, ToolDescriptor,
+    ToolScope, UiLink, destructive_permitted, namespaced_tool_id, split_namespaced_id,
 };
 pub use util::serialized_catalog_size;

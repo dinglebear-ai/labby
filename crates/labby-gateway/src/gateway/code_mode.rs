@@ -35,8 +35,8 @@ pub use code_mode_host::JournalOwner;
 
 /// Cached rendered Code Mode discovery catalog.
 ///
-/// Keyed by a fingerprint string (sorted `upstream::tool` ids joined with `\n`
-/// plus the snippet fingerprint). When the pool's healthy tool set has not
+/// Keyed by a fingerprint string covering sorted tool ids, callable shape,
+/// normalized intrinsic safety facts, and snippet state. When those have not
 /// changed between lookups, this avoids re-running `generate_tool_types` and
 /// re-serializing the catalog JSON. It does NOT avoid re-generating the
 /// discovery/proxy JS strings themselves (`generate_discovery_js` /
@@ -98,6 +98,7 @@ pub use code_mode_host::JournalOwner;
 /// an entry; nothing upstream of them enforces it. A new consumer that skips
 /// it is a real information-disclosure bug, not a style issue (this is
 /// exactly what `describe_types` shipped with initially and had to be fixed).
+#[derive(Clone)]
 pub(crate) struct CatalogRenderCache {
     /// Fingerprint of the healthy tool list when this cache was built.
     pub fingerprint: String,
@@ -116,6 +117,15 @@ pub(crate) struct CatalogRenderCache {
     pub catalog_json: std::sync::Arc<str>,
     /// Serialized catalog size in bytes (for the tracing log).
     pub serialized_size: usize,
+}
+
+/// Per-fingerprint render build flight. The lock elects one builder; `result`
+/// lets already-waiting same-key callers share that builder's Arc-backed
+/// output even if a different fingerprint replaces the manager's hot slot.
+#[derive(Default)]
+pub(crate) struct CatalogRenderFlight {
+    pub build: tokio::sync::Mutex<()>,
+    pub result: tokio::sync::Mutex<Option<CatalogRenderCache>>,
 }
 
 /// Cached snippet metadata for Code Mode discovery.

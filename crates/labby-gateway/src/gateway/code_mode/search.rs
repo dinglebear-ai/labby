@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
-use labby_codemode::{ToolDescriptor, ToolScope, ToolsRender, serialized_catalog_size};
+use labby_codemode::{CodeModeToolSafety, ToolDescriptor, ToolScope, ToolsRender};
 use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
@@ -24,14 +24,61 @@ use labby_runtime::lab_home;
 /// the upstream keeps the tool's name unchanged — a rename-only fingerprint
 /// would otherwise keep serving a stale `.dts` from `codemode.describe()`.
 fn tool_shape_digest(tool: &UpstreamTool) -> String {
+    let safety = normalized_tool_safety(tool);
     let payload = serde_json::json!({
         "description": tool.tool.description,
         "input_schema": tool.input_schema,
         "output_schema": tool.output_schema,
+        "safety": safety,
     });
     let serialized = serde_json::to_string(&payload).unwrap_or_default();
     let digest = Sha256::digest(serialized.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn normalized_tool_safety(tool: &UpstreamTool) -> Option<CodeModeToolSafety> {
+    let annotations = tool.tool.annotations.as_ref();
+    let destructive_hint = annotations.and_then(|value| value.destructive_hint);
+    let destructive = if destructive_hint == Some(true) || tool.destructive {
+        Some(true)
+    } else if destructive_hint == Some(false) {
+        Some(false)
+    } else {
+        None
+    };
+    let read_only = (annotations.and_then(|value| value.read_only_hint) == Some(true)
+        && destructive != Some(true))
+    .then_some(true);
+    let safety = CodeModeToolSafety {
+        read_only,
+        destructive,
+    };
+    (!safety.is_empty()).then_some(safety)
+}
+
+fn embedding_corpus_fingerprint(tools: &[UpstreamTool]) -> String {
+    let mut corpus = tools
+        .iter()
+        .map(|tool| {
+            format!(
+                "{}::{}\0{}",
+                tool.upstream_name,
+                tool.tool.name,
+                tool.tool.description.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    corpus.sort_unstable();
+    let mut digest = Sha256::new();
+    for item in corpus {
+        digest.update((item.len() as u64).to_be_bytes());
+        digest.update(item.as_bytes());
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Build (or serve from cache) the Code Mode discovery catalog for the proxy.
@@ -102,6 +149,7 @@ async fn catalog_from_tools(
         "snippets:hidden".to_string()
     };
 
+    let embedding_fingerprint = embedding_corpus_fingerprint(&raw_tools);
     let fingerprint = {
         let mut ids: Vec<String> = raw_tools
             .iter()
@@ -132,13 +180,37 @@ async fn catalog_from_tools(
         // unless semantic search is configured and the embedding cache is
         // cold for this fingerprint (fail-open; never fails catalog serving).
         let _warmed = manager
-            .ensure_embeddings_for_fingerprint(&fingerprint, &entries)
+            .ensure_embeddings_for_fingerprint(&embedding_fingerprint, &entries)
             .await;
         return Ok(ToolsRender {
             fingerprint,
+            embedding_fingerprint,
             entries,
             catalog_json,
             serialized_size,
+        });
+    }
+
+    let flight = manager.catalog_render_flight(&fingerprint).await;
+    let _build_guard = flight.build.lock().await;
+    if let Some((entries, catalog_json, serialized_size)) =
+        manager.cached_catalog_render(&fingerprint).await
+    {
+        return Ok(ToolsRender {
+            fingerprint,
+            embedding_fingerprint,
+            entries,
+            catalog_json,
+            serialized_size,
+        });
+    }
+    if let Some(cache) = flight.result.lock().await.clone() {
+        return Ok(ToolsRender {
+            fingerprint,
+            embedding_fingerprint,
+            entries: cache.entries,
+            catalog_json: cache.catalog_json,
+            serialized_size: cache.serialized_size,
         });
     }
 
@@ -146,6 +218,7 @@ async fn catalog_from_tools(
     let mut entries = raw_tools
         .into_iter()
         .map(|tool| {
+            let safety = normalized_tool_safety(&tool);
             let upstream = tool.upstream_name.to_string();
             let name = tool.tool.name.to_string();
             let description = tool
@@ -154,12 +227,13 @@ async fn catalog_from_tools(
                 .as_ref()
                 .map(|description| description.to_string())
                 .unwrap_or_default();
-            ToolDescriptor::tool(
+            ToolDescriptor::tool_with_safety(
                 &upstream,
                 &name,
                 &sanitize_tool_text(&description, 2048),
                 sanitize_schema(tool.input_schema),
                 sanitize_schema(tool.output_schema),
+                safety,
             )
         })
         .collect::<Vec<_>>();
@@ -179,11 +253,11 @@ async fn catalog_from_tools(
 
     // The catalog is injected as `const tools` into the javy runner and never
     // enters the model context, so it is served complete and uncapped.
-    let serialized_size = serialized_catalog_size(&entries)?;
     let catalog_json = serde_json::to_string(&entries).map_err(|err| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: format!("failed to serialize Code Mode discovery catalog: {err}"),
     })?;
+    let serialized_size = catalog_json.len();
     // Wrap ONCE here — every consumer below (the stored cache entry, the
     // returned render, and any later `describe_types` re-fetch of this same
     // fingerprint) shares this allocation via a cheap Arc clone instead of a
@@ -191,14 +265,14 @@ async fn catalog_from_tools(
     let entries: std::sync::Arc<[ToolDescriptor]> = std::sync::Arc::from(entries);
     let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 
-    manager
-        .store_catalog_render_cache(super::CatalogRenderCache {
-            fingerprint: fingerprint.clone(),
-            entries: std::sync::Arc::clone(&entries),
-            catalog_json: std::sync::Arc::clone(&catalog_json),
-            serialized_size,
-        })
-        .await;
+    let cache = super::CatalogRenderCache {
+        fingerprint: fingerprint.clone(),
+        entries: std::sync::Arc::clone(&entries),
+        catalog_json: std::sync::Arc::clone(&catalog_json),
+        serialized_size,
+    };
+    *flight.result.lock().await = Some(cache.clone());
+    manager.store_catalog_render_cache(cache).await;
 
     // Best-effort catalog embedding warm-up: never blocks or fails catalog
     // construction (`ensure_embeddings_for_fingerprint` is fail-open by
@@ -209,11 +283,12 @@ async fn catalog_from_tools(
     // latency-critical, so this tradeoff is accepted rather than using a
     // detached `tokio::spawn`.
     let _warmed = manager
-        .ensure_embeddings_for_fingerprint(&fingerprint, &entries)
+        .ensure_embeddings_for_fingerprint(&embedding_fingerprint, &entries)
         .await;
 
     Ok(ToolsRender {
         fingerprint,
+        embedding_fingerprint,
         entries,
         catalog_json,
         serialized_size,
@@ -357,6 +432,176 @@ fn normalize_path(path: &Path) -> String {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    fn safety_fixture(annotations: Option<rmcp::model::ToolAnnotations>) -> UpstreamTool {
+        let mut tool = rmcp::model::Tool::new(
+            "query".to_string(),
+            "Query data",
+            Arc::new(serde_json::Map::new()),
+        );
+        tool.annotations = annotations;
+        UpstreamTool {
+            tool,
+            input_schema: None,
+            output_schema: None,
+            upstream_name: Arc::from("fixture"),
+            destructive: false,
+        }
+    }
+
+    #[test]
+    fn safety_normalization_is_compact_and_fail_closed() {
+        assert_eq!(normalized_tool_safety(&safety_fixture(None)), None);
+        assert_eq!(
+            normalized_tool_safety(&safety_fixture(Some(
+                rmcp::model::ToolAnnotations::new().read_only(true)
+            ))),
+            Some(CodeModeToolSafety {
+                read_only: Some(true),
+                destructive: None,
+            })
+        );
+        assert_eq!(
+            normalized_tool_safety(&safety_fixture(Some(
+                rmcp::model::ToolAnnotations::new().destructive(false)
+            ))),
+            Some(CodeModeToolSafety {
+                read_only: None,
+                destructive: Some(false),
+            })
+        );
+
+        let mut contradictory = safety_fixture(Some(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(true)
+                .destructive(true),
+        ));
+        contradictory.destructive = true;
+        assert_eq!(
+            normalized_tool_safety(&contradictory),
+            Some(CodeModeToolSafety {
+                read_only: None,
+                destructive: Some(true),
+            })
+        );
+    }
+
+    #[test]
+    fn safety_changes_render_identity_but_not_embedding_identity() {
+        let plain = safety_fixture(None);
+        let annotated = safety_fixture(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
+        assert_ne!(tool_shape_digest(&plain), tool_shape_digest(&annotated));
+        assert_eq!(
+            embedding_corpus_fingerprint(std::slice::from_ref(&plain)),
+            embedding_corpus_fingerprint(std::slice::from_ref(&annotated))
+        );
+
+        let mut renamed = annotated;
+        renamed.tool.description = Some("Different ranking text".into());
+        assert_ne!(
+            embedding_corpus_fingerprint(std::slice::from_ref(&plain)),
+            embedding_corpus_fingerprint(std::slice::from_ref(&renamed))
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_identity_renders_share_arc_allocations() {
+        let dir = tempfile::tempdir().expect("temporary config root");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
+        let tool = safety_fixture(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
+        let renders = futures::future::join_all(
+            (0..16).map(|_| catalog_from_tools(&manager, vec![tool.clone()], false)),
+        )
+        .await
+        .into_iter()
+        .map(|result| result.expect("render succeeds"))
+        .collect::<Vec<_>>();
+
+        for render in &renders[1..] {
+            assert!(Arc::ptr_eq(&renders[0].entries, &render.entries));
+            assert!(Arc::ptr_eq(&renders[0].catalog_json, &render.catalog_json));
+        }
+        assert_eq!(
+            renders[0].entries[0].safety,
+            Some(CodeModeToolSafety {
+                read_only: Some(true),
+                destructive: None,
+            })
+        );
+        assert!(renders[0].catalog_json.contains("\"read_only\":true"));
+    }
+
+    #[tokio::test]
+    async fn render_flights_release_on_cancellation_and_do_not_block_other_keys() {
+        let dir = tempfile::tempdir().expect("temporary config root");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
+        let first = manager.catalog_render_flight("first").await;
+        let second = manager.catalog_render_flight("second").await;
+        assert!(!Arc::ptr_eq(&first, &second));
+
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let leader = tokio::spawn({
+            let first = Arc::clone(&first);
+            async move {
+                let _guard = first.build.lock().await;
+                let _ = locked_tx.send(());
+                std::future::pending::<()>().await;
+            }
+        });
+        locked_rx.await.expect("leader acquired flight");
+
+        let second_guard =
+            tokio::time::timeout(std::time::Duration::from_millis(100), second.build.lock())
+                .await
+                .expect("different fingerprint must not head-of-line block");
+        drop(second_guard);
+        leader.abort();
+        drop(leader.await);
+        let first_guard =
+            tokio::time::timeout(std::time::Duration::from_millis(100), first.build.lock())
+                .await
+                .expect("cancelled leader must release its flight");
+        drop(first_guard);
+    }
+
+    #[tokio::test]
+    #[ignore = "4,000-tool cold-render performance budget"]
+    async fn four_thousand_tool_cold_render_stays_within_budget() {
+        let dir = tempfile::tempdir().expect("temporary config root");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            crate::gateway::runtime::GatewayRuntimeHandle::default(),
+        );
+        let tools = (0..4_000)
+            .map(|index| {
+                let mut tool =
+                    safety_fixture(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
+                tool.tool.name = format!("tool_{index}").into();
+                tool
+            })
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let render = catalog_from_tools(&manager, tools, false)
+            .await
+            .expect("4k cold render");
+        let elapsed = started.elapsed();
+        let bytes_per_tool = render.serialized_size / render.entries.len();
+
+        eprintln!(
+            "4k cold render: elapsed_ms={} serialized_bytes={} bytes_per_tool={bytes_per_tool}",
+            elapsed.as_millis(),
+            render.serialized_size
+        );
+        assert!(elapsed < std::time::Duration::from_secs(10));
+        assert!(render.serialized_size < 4_000_000);
+        assert!(bytes_per_tool < 1_000);
+    }
 
     // ── Issue #210 (lab-41e7m.3): catalog output-shape coverage ─────────────
     //

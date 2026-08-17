@@ -101,6 +101,10 @@ pub struct ToolDescriptor {
     pub name: String,
     pub namespace: String,
     pub description: String,
+    /// Advisory intrinsic safety facts from the live descriptor. Dispatch
+    /// remains authoritative; absence means unknown, never `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety: Option<CodeModeToolSafety>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +115,26 @@ pub struct ToolDescriptor {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<CodeModeSnippetInputEntry>,
+}
+
+/// Compact, source-neutral safety facts for discovery presentation.
+///
+/// Optional booleans preserve fail-closed semantics: an omitted fact is
+/// unknown. This type deliberately carries no approval/access policy or raw
+/// upstream annotation text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeModeToolSafety {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destructive: Option<bool>,
+}
+
+impl CodeModeToolSafety {
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.read_only.is_none() && self.destructive.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
@@ -140,6 +164,18 @@ impl ToolDescriptor {
         schema: Option<Value>,
         output_schema: Option<Value>,
     ) -> Self {
+        Self::tool_with_safety(namespace, tool, description, schema, output_schema, None)
+    }
+
+    #[must_use]
+    pub fn tool_with_safety(
+        namespace: &str,
+        tool: &str,
+        description: &str,
+        schema: Option<Value>,
+        output_schema: Option<Value>,
+        safety: Option<CodeModeToolSafety>,
+    ) -> Self {
         let types = super::ts_signatures::generate_tool_types(
             namespace,
             tool,
@@ -153,6 +189,7 @@ impl ToolDescriptor {
             name: tool.to_string(),
             namespace: namespace.to_string(),
             description: description.to_string(),
+            safety,
             schema,
             output_schema,
             signature: types.signature,
@@ -182,6 +219,7 @@ impl ToolDescriptor {
             name: info.name.clone(),
             namespace: "snippet".to_string(),
             description,
+            safety: None,
             schema: Some(snippet_inputs_schema(&info.inputs)),
             // Deliberate: a snippet returns an arbitrary JavaScript value, so
             // there is no honest output schema to publish. `dts` is likewise
@@ -247,6 +285,8 @@ pub(crate) struct CodeModeDiscoveryEntry {
     pub(crate) name: String,
     pub(crate) helper: String,
     pub(crate) description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) safety: Option<CodeModeToolSafety>,
     pub(crate) signature: String,
     pub(crate) tags: Vec<String>,
     pub(crate) inputs: Vec<CodeModeSnippetInputEntry>,
@@ -285,6 +325,7 @@ impl CodeModeDiscoveryEntry {
             name: entry.name.clone(),
             helper,
             description: entry.description.clone(),
+            safety: entry.safety,
             signature: entry.signature.clone(),
             tags: entry.tags.clone(),
             inputs: entry.inputs.clone(),

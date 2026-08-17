@@ -68,7 +68,8 @@ no final Tool description can exceed the host-facing limit.
 Inside the sandbox:
 
 - `await codemode.search("GitHub pull requests")` searches the reduced
-  in-execution catalog.
+  in-execution catalog and includes compact intrinsic safety facts when the
+  live descriptor supplies an unambiguous fact.
 - `await codemode.describe("github.list_pull_requests")` returns compact docs
   for an exact tool or snippet target.
 - `await codemode.run("gateway-summary", input)` resolves and runs a snippet
@@ -318,10 +319,14 @@ Legacy `search` entries include both raw JSON Schemas and generated TypeScript:
 - `dts` — focused TypeScript declarations with JSDoc for that tool.
 
 The `codemode.search` helper uses a reduced in-execution catalog (`kind`, `id`,
-`path`, `upstream`, `name`, `description`, and `signature`) so normal runs do not
-inject full schema, output schema, dts payloads, or snippet source. When a schema
-is missing or too complex for the TypeScript emitter, generated signatures fall
-back to `unknown`.
+`path`, `upstream`, `name`, `description`, `signature`, and optional `safety`)
+so normal runs do not inject full schema, output schema, dts payloads, or snippet
+source. `safety.read_only` and `safety.destructive` are optional advisory facts:
+missing or contradictory hints are omitted rather than serialized as `false`,
+and snippets omit `safety` because they are composite programs. These facts do
+not grant access, request approval, or replace the live descriptor and policy
+checks immediately before dispatch. When a schema is missing or too complex for
+the TypeScript emitter, generated signatures fall back to `unknown`.
 
 ### Builtin services as in-process peers
 
