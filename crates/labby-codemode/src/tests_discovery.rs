@@ -20,6 +20,8 @@ fn bounded_search_excludes_types_and_snippets() {
     assert!(!json.contains("typescript"));
     assert!(!json.contains("snippet"));
     assert!(json.len() <= SEARCH_RESPONSE_MAX_BYTES);
+    let value = serde_json::to_value(&response).unwrap();
+    assert_eq!(value["results"][0]["tags"], serde_json::json!([]));
 }
 
 #[test]

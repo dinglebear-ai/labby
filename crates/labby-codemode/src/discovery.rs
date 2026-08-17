@@ -26,7 +26,6 @@ pub struct CodeModeSearchHit {
     pub name: String,
     pub description: String,
     pub signature: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     pub score: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,7 +50,6 @@ pub struct CodeModeDescribeResponse {
     pub description: String,
     pub helper: String,
     pub signature: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety: Option<CodeModeToolSafety>,

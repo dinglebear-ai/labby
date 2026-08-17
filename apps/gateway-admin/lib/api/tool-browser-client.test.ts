@@ -156,6 +156,59 @@ test('tool search rejects schema-invalid successful JSON with its request ID', a
   )
 })
 
+test('tool search rejects malformed safety metadata', async () => {
+  setAuthenticatedSession()
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    results: [{
+      path: 'alpha.ping', id: 'alpha::ping', kind: 'tool', namespace: 'alpha', name: 'ping',
+      description: 'Ping', signature: '()', tags: [], score: 1, safety: { destructive: 'false' },
+    }],
+    total: 1,
+    truncated: false,
+  }), { status: 200 })
+
+  await assert.rejects(
+    searchCodeModeTools('ping'),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'invalid_response',
+  )
+})
+
+test('tool search normalizes unexpected error JSON and preserves correlation', async () => {
+  setAuthenticatedSession()
+  globalThis.fetch = async () => new Response('null', {
+    status: 500,
+    headers: { 'x-request-id': 'req-error-shape' },
+  })
+
+  await assert.rejects(
+    searchCodeModeTools('ping'),
+    (error: unknown) => error instanceof Error &&
+      'status' in error && error.status === 500 &&
+      'requestId' in error && error.requestId === 'req-error-shape' &&
+      error.message === 'Tools unavailable',
+  )
+})
+
+test('tool search retries unexpected 401 JSON after refreshing the session', async () => {
+  setAuthenticatedSession()
+  let call = 0
+  globalThis.fetch = async () => {
+    call += 1
+    if (call === 1) return new Response('null', { status: 401 })
+    if (call === 2) return new Response(JSON.stringify({
+      authenticated: true,
+      user: { sub: 'admin-user', email: 'admin-user@example.com' },
+      expires_at: 10000,
+      csrf_token: 'csrf-refreshed',
+      is_admin: true,
+    }), { status: 200 })
+    return new Response(JSON.stringify({ results: [], total: 0, truncated: false }), { status: 200 })
+  }
+
+  await searchCodeModeTools('ping')
+  assert.equal(call, 3)
+})
+
 test('tool describe uses its endpoint, CSRF token, and response bound', async () => {
   setAuthenticatedSession()
   let requestUrl = ''
@@ -186,5 +239,18 @@ test('tool describe rejects oversized responses with request correlation', async
     (error: unknown) => error instanceof Error &&
       'code' in error && error.code === 'response_too_large' &&
       'requestId' in error && error.requestId === 'req-describe-large',
+  )
+})
+
+test('tool describe rejects malformed safety metadata', async () => {
+  setAuthenticatedSession()
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    path: 'alpha.ping', id: 'alpha::ping', namespace: 'alpha', name: 'ping',
+    description: 'Ping', helper: 'codemode.alpha.ping', signature: '()', tags: [],
+    safety: { read_only: 1 },
+  }), { status: 200 })
+  await assert.rejects(
+    describeCodeModeTool('alpha::ping'),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'invalid_response',
   )
 })

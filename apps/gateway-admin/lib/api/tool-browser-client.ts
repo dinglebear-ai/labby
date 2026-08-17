@@ -41,11 +41,20 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
+function isSafety(value: unknown): value is ToolSafety {
+  if (!isRecord(value)) return false
+  const keys = Object.keys(value)
+  return keys.every((key) => key === 'read_only' || key === 'destructive') &&
+    (value.read_only === undefined || typeof value.read_only === 'boolean') &&
+    (value.destructive === undefined || typeof value.destructive === 'boolean')
+}
+
 function isSearchHit(value: unknown): value is ToolSearchHit {
   if (!isRecord(value)) return false
   return value.kind === 'tool' &&
     ['path', 'id', 'namespace', 'name', 'description', 'signature'].every((key) => typeof value[key] === 'string') &&
-    isStringArray(value.tags) && typeof value.score === 'number' && Number.isFinite(value.score)
+    isStringArray(value.tags) && typeof value.score === 'number' && Number.isFinite(value.score) &&
+    (value.safety === undefined || isSafety(value.safety))
 }
 
 function isSearchResponse(value: unknown): value is ToolSearchResponse {
@@ -58,7 +67,8 @@ function isDescription(value: unknown): value is ToolDescription {
   if (!isRecord(value)) return false
   return ['path', 'id', 'namespace', 'name', 'description', 'helper', 'signature'].every((key) => typeof value[key] === 'string') &&
     isStringArray(value.tags) && (value.typescript === undefined || typeof value.typescript === 'string') &&
-    (value.typescript_omitted === undefined || typeof value.typescript_omitted === 'string')
+    (value.typescript_omitted === undefined || typeof value.typescript_omitted === 'string') &&
+    (value.safety === undefined || isSafety(value.safety))
 }
 
 async function post<T>(path: string, body: object, maxBytes: number, validate: (value: unknown) => value is T, signal?: AbortSignal): Promise<T> {
@@ -75,7 +85,12 @@ async function post<T>(path: string, body: object, maxBytes: number, validate: (
     const payload = await boundedJson(response, maxBytes)
     if (epoch !== getBrowserSessionEpoch()) throw new DOMException('Session changed', 'AbortError')
     if (!response.ok) {
-      throw new GatewayApiError(payload.message ?? 'Tools unavailable', response.status, payload.kind, response.headers.get('x-request-id') ?? undefined)
+      const requestId = response.headers.get('x-request-id') ?? undefined
+      const message = isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'Tools unavailable'
+      const kind = isRecord(payload) && typeof payload.kind === 'string'
+        ? payload.kind
+        : response.status === 401 ? 'auth_failed' : undefined
+      throw new GatewayApiError(message, response.status, kind, requestId)
     }
     if (!validate(payload)) {
       throw new GatewayApiError('Tools returned an invalid response', 502, 'invalid_response', response.headers.get('x-request-id') ?? undefined)

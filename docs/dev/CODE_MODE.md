@@ -323,7 +323,7 @@ The `codemode.search` helper uses a reduced in-execution catalog (`kind`, `id`,
 snippet `inputs`, and optional tool `safety`)
 so normal runs do not inject full schema, output schema, dts payloads, or snippet
 source. `safety.read_only` and `safety.destructive` are optional advisory facts:
-missing or contradictory hints are omitted rather than serialized as `false`,
+unknown or contradictory facts are omitted, while explicit `false` hints remain `false`,
 and snippets omit `safety` because they are composite programs. These facts do
 not grant access, request approval, or replace the live descriptor and policy
 checks immediately before dispatch. When a schema is missing or too complex for
