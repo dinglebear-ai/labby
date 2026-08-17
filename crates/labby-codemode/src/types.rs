@@ -833,6 +833,7 @@ pub struct CodeModeCallerCapabilities {
 pub enum CodeModeSurface {
     Mcp,
     Cli,
+    Api,
 }
 
 impl CodeModeSurface {
@@ -843,6 +844,7 @@ impl CodeModeSurface {
         match self {
             CodeModeSurface::Mcp => "mcp",
             CodeModeSurface::Cli => "cli",
+            CodeModeSurface::Api => "api",
         }
     }
 }
@@ -855,7 +857,7 @@ impl CodeModeSurface {
 pub fn destructive_permitted(surface: CodeModeSurface, caller: &CodeModeCaller) -> bool {
     match surface {
         CodeModeSurface::Cli => true,
-        CodeModeSurface::Mcp => caller.can_execute(),
+        CodeModeSurface::Mcp | CodeModeSurface::Api => caller.can_execute(),
     }
 }
 

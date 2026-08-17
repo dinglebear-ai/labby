@@ -27,6 +27,7 @@ pub mod error {
 mod artifacts;
 mod broker;
 mod config;
+mod discovery;
 mod error_contract;
 mod execute;
 mod git;
@@ -53,6 +54,8 @@ mod util;
 mod wrapper;
 
 #[cfg(test)]
+mod tests_discovery;
+#[cfg(test)]
 mod tests_ids_schema;
 #[cfg(test)]
 mod tests_normalize;
@@ -65,6 +68,12 @@ pub use artifacts::install_artifact_config_defaults;
 pub use broker::CodeModeBroker;
 pub(crate) use broker::lab_action_unknown_tool_hint;
 pub use config::{MAX_SOURCE_BYTES, SERVICE, install_call_budget_config_defaults};
+pub use discovery::{
+    CodeModeDescribeResponse, CodeModeSearchHit, CodeModeSearchResponse,
+    DESCRIBE_RESPONSE_MAX_BYTES, DESCRIPTION_MAX_BYTES, DTS_MAX_BYTES, QUERY_MAX_BYTES,
+    SEARCH_RESPONSE_MAX_BYTES, SIGNATURE_MAX_BYTES, TAG_MAX_BYTES, TAGS_MAX, TARGET_MAX_BYTES,
+    describe_visible_tool, search_visible_tools,
+};
 /// Single source of truth for the discovery-catalog scope formulas. Hosts
 /// recomputing the sandbox's scope-filtered entry set (e.g. a gateway's
 /// `semantic_rank`) MUST use these rather than restating the formulas.
