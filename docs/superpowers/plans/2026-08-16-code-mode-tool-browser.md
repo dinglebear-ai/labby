@@ -448,7 +448,7 @@ Extend browser session state with `authEpoch: number`. Increment it on login, lo
 
 - [ ] **Step 5: Implement submit-based page state**
 
-The URL owns `q` and `tool`. Search only on explicit form submit or navigation restoration. Every new query, target, or `authEpoch` aborts prior requests, clears stale results/details, and checks the captured request identity before publishing a response.
+Search and selection remain component-local so catalog terms and internal IDs are not retained in browser history. Every new query, target, or `authEpoch` aborts prior requests, clears stale results/details, and checks the captured request identity before publishing a response.
 
 Use local component state only. Preserve unrelated query parameters. Closing the drawer removes only `tool`.
 
@@ -496,10 +496,10 @@ await page.getByRole('button', { name: 'Search tools' }).click()
 await expect(page.getByText('github::search_issues')).toBeVisible()
 await page.getByText('github::search_issues').click()
 await expect(page.getByRole('dialog')).toContainText('declare function')
-await expect(page).toHaveURL(/tool=github%3A%3Asearch_issues/)
+await expect(page.getByRole('complementary', { name: 'Tool details' })).toContainText('github::search_issues')
 ```
 
-Add direct unauthenticated endpoint denial, admin→logout→new-session without reload, reverse-order response completion, hidden/random identical not-found, literal hostile DTS rendering, no embedded production fixture, and back/forward drawer tests.
+Add direct unauthenticated endpoint denial, admin→logout→new-session without reload, reverse-order response completion, hidden/random identical not-found, literal hostile DTS rendering, and no embedded production fixture.
 
 - [ ] **Step 2: Run and verify failure**
 
@@ -569,4 +569,3 @@ git commit -m "docs(codemode): document private admin tool discovery"
 - **Placeholder scan:** No implementation placeholder remains. Conditional activation has an explicit measurable pass/fail rule and stop behavior.
 - **Type consistency:** Rust and TypeScript response fields match the spec, including `typescript_omitted`; no task references the removed broker, shared-action, semantic, snippet, or SWR interfaces.
 - **Review completeness:** All architecture, simplicity, security, and performance recommendations are either implemented in the active tasks or named under the spec’s explicit deferrals.
-

@@ -4,7 +4,21 @@ import { FormEvent, useEffect, useRef, useState } from 'react'
 import { SearchCode, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { describeCodeModeTool, searchCodeModeTools, type ToolDescription, type ToolSearchHit } from '@/lib/api/tool-browser-client'
+import { GatewayApiError } from '@/lib/api/gateway-client-core'
+
+type BrowserError = { message: string; status?: number; requestId?: string }
+
+export function toolBrowserError(error: unknown, fallback: string): BrowserError {
+  if (error instanceof GatewayApiError) {
+    if (error.status === 401) return { message: 'Sign in to search tools.', status: 401, requestId: error.requestId }
+    if (error.status === 403) return { message: 'Administrator access is required.', status: 403, requestId: error.requestId }
+    if (error.status >= 500) return { message: 'Tools are temporarily unavailable.', status: error.status, requestId: error.requestId }
+    return { message: error.message, status: error.status, requestId: error.requestId }
+  }
+  return { message: error instanceof Error ? error.message : fallback }
+}
 
 export function ToolBrowser() {
   const [query, setQuery] = useState('')
@@ -12,11 +26,17 @@ export function ToolBrowser() {
   const [total, setTotal] = useState(0)
   const [detail, setDetail] = useState<ToolDescription | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<BrowserError | null>(null)
   const activeRequest = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    return () => activeRequest.current?.abort()
+    const clearForSessionChange = () => {
+      activeRequest.current?.abort()
+      activeRequest.current = null
+      setResults([]); setTotal(0); setDetail(null); setError(null); setLoading(false)
+    }
+    const unsubscribe = subscribeToBrowserSession(clearForSessionChange)
+    return () => { unsubscribe(); activeRequest.current?.abort() }
   }, [])
 
   async function runSearch(value: string) {
@@ -29,7 +49,7 @@ export function ToolBrowser() {
       if (activeRequest.current !== controller) return
       setResults(response.results); setTotal(response.total)
     } catch (cause) {
-      if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tools unavailable')
+      if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(toolBrowserError(cause, 'Tools unavailable'))
     } finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
@@ -44,7 +64,7 @@ export function ToolBrowser() {
       const response = await describeCodeModeTool(target, controller.signal)
       if (activeRequest.current === controller) setDetail(response)
     }
-    catch (cause) { if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : 'Tool not found') }
+    catch (cause) { if (activeRequest.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(toolBrowserError(cause, 'Tool not found')) }
     finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
@@ -57,7 +77,7 @@ export function ToolBrowser() {
       <Input aria-label="Search tools" maxLength={1024} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by tool, namespace, description, or tag" />
       <Button type="submit" disabled={loading}>{loading ? 'Loading…' : 'Search'}</Button>
     </form>
-    {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" />{error}<Button variant="ghost" size="sm" onClick={() => void runSearch(query)}>Retry</Button></div>}
+    {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && <Button variant="ghost" size="sm" onClick={() => void runSearch(query)}>Retry</Button>}</div>}
     <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
       <section aria-label="Tool results" className="space-y-3">
         <p className="text-xs text-aurora-text-muted">{total ? `${total} matches${results.length < total ? ` · showing ${results.length}` : ''}` : query && !loading ? 'No matching tools' : 'Enter a query to search the live catalog'}</p>

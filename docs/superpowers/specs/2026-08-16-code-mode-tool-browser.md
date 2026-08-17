@@ -65,7 +65,7 @@ Response:
   ],
   "total": 1,
   "truncated": false,
-  "limit": 50
+  "truncated": false
 }
 ```
 
@@ -115,18 +115,18 @@ Never syntactically truncate TypeScript.
 - Do not accept caller, surface, scope, subject, route, allowlist, or OAuth authority in request bodies.
 - Do not log query, target, result IDs, descriptions, DTS, subject, scopes, or allowlists. Log action, elapsed time, result count/response bytes, request ID, and error kind.
 - Render description, signature, tags, and DTS only through React text nodes or `<pre><code>`; never HTML/Markdown injection.
-- Set `Referrer-Policy: no-referrer` for the page so URL-backed `q` and `tool` values do not leave the origin.
+- Set `Referrer-Policy: no-referrer` for the authenticated app shell as defense in depth.
 
 ## Browser behavior
 
 - Sidebar destination: **Tools**.
 - Search submits explicitly; v1 has no per-keystroke debounce.
-- URL parameters `q` and `tool` are the source of truth and preserve unrelated parameters.
+- Query and selected-tool state remain component-local; catalog searches and internal IDs are not persisted in URL/history.
 - Component-local requests use `AbortController`; a newer search/selection or auth transition aborts the old request.
 - The auth session store exposes a monotonic, non-sensitive `authEpoch` incremented on login, logout, refresh, and scope/session replacement. Tool browser state clears whenever it changes.
 - No SWR/global discovery cache is used in v1.
 - States: initial guidance, loading, results, no matches, invalid input, sign-in required, forbidden, backend unavailable with request ID, stale selection, and oversized TypeScript omission.
-- Back/forward navigation restores the matching query and drawer without showing a response from a different query, target, or auth epoch.
+- Auth/session changes abort in-flight work and clear already-published results and details.
 
 ## Performance evidence
 

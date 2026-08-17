@@ -67,6 +67,15 @@ struct Candidate {
     score: u32,
 }
 
+#[derive(Serialize)]
+struct SearchResponseRef<'a> {
+    results: &'a [CodeModeSearchHit],
+    total: usize,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'static str>,
+}
+
 pub fn search_visible_tools(
     entries: &[ToolDescriptor],
     scope: &ToolScope,
@@ -84,7 +93,8 @@ pub fn search_visible_tools(
         });
     }
     let limit = limit.clamp(1, 50);
-    let mut candidates = Vec::new();
+    let mut candidates = Vec::with_capacity(limit);
+    let mut total = 0_usize;
     for (index, entry) in entries.iter().enumerate() {
         if entry.kind != CodeModeCatalogKind::Tool || !discovery_entry_visible(entry, scope) {
             continue;
@@ -117,18 +127,18 @@ pub fn search_visible_tools(
             (tokens.len() * 3).div_ceil(5)
         };
         if covered >= required {
+            total += 1;
             candidates.push(Candidate { index, score });
+            candidates.sort_unstable_by(|a, b| compare_candidate(*a, *b, entries));
+            candidates.truncate(limit);
         }
     }
-    let total = candidates.len();
-    candidates.sort_unstable_by(|a, b| compare_candidate(*a, *b, entries));
-    candidates.truncate(limit);
     let mut results = candidates
         .into_iter()
         .map(|candidate| hit(&entries[candidate.index], candidate.score))
         .collect::<Vec<_>>();
-    while serialized_len(&CodeModeSearchResponse {
-        results: results.clone(),
+    while serialized_len(&SearchResponseRef {
+        results: &results,
         total,
         truncated: total > results.len(),
         hint: None,
