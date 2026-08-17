@@ -209,7 +209,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "plugin_hook",
-        description: "Run binary-owned local setup checks for Claude plugin hooks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
+        description: "Run binary-owned local plugin setup checks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
         destructive: true,
         requires_admin: true,
         // Composite payload: { setup: SetupReport, sync: PluginSyncOutcome|null, connectivity: ConnectivityOutcome }.
@@ -248,7 +248,7 @@ pub const ACTIONS: &[ActionSpec] = &[
             name: "server_url",
             ty: "string",
             required: false,
-            description: "Override server URL; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL or http://localhost:8765",
+            description: "Requested server URL; it must match the active target selected from CLAUDE_PLUGIN_OPTION_SERVER_URL, LABBY_SERVER_URL, or the localhost:40100 host-proxy default",
         }],
     },
     ActionSpec {
