@@ -3,6 +3,7 @@ import {
   BookOpen,
   Cable,
   FileCode2,
+  GitBranch,
   LayoutDashboard,
   type LucideIcon,
 } from 'lucide-react'
@@ -106,6 +107,14 @@ export const consoleNavSections: ConsoleNavSection[] = [
         icon: Activity,
         kbd: '⌘5',
         tooltip: 'Usage — ⌘5 · tool call volume and latency',
+      },
+      {
+        id: 'Traces',
+        label: 'Traces',
+        href: '/traces',
+        icon: GitBranch,
+        kbd: '⌘6',
+        tooltip: 'Traces — ⌘6 · correlated request flows',
       },
     ],
   },

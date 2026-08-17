@@ -23,6 +23,10 @@ export function snippetsActionUrl(baseUrl?: string): string {
   return `${normalizeGatewayApiBase(baseUrl)}/snippets`
 }
 
+export function serverLogsActionUrl(baseUrl?: string): string {
+  return `${normalizeGatewayApiBase(baseUrl)}/server_logs`
+}
+
 export function gatewayDetailHref(id: string): string {
   return `/gateway/?id=${encodeURIComponent(id)}`
 }

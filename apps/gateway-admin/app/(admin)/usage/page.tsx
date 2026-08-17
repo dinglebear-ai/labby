@@ -67,6 +67,13 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced
 }
 
+function formatBytes(value: number | null | undefined) {
+  if (value === null || value === undefined) return '—'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
 function UsageExplorer() {
   const params = useSearchParams()
   const initialWindow = isWindow(params.get('window')) ? (params.get('window') as MetricsWindow) : '24h'
@@ -100,7 +107,7 @@ function UsageExplorer() {
   const showIps = collected?.ips ?? false
   const showSurfaces = collected?.surfaces ?? false
   const showTokens = collected?.tokens ?? false
-  const tableColumns = 4 + Number(showSurfaces) + Number(showTokens)
+  const tableColumns = 5 + Number(showSurfaces) + Number(showTokens)
 
   const resetPaging = () => setOffset(0)
   const filtered = data?.filtered ?? 0
@@ -134,7 +141,7 @@ function UsageExplorer() {
     },
     {
       label: 'Source IPs',
-      value: data ? (showIps ? data.facets.ips.length : 'Not collected') : '—',
+      value: data ? (showIps ? data.facets.ips.length : 'Private') : '—',
       icon: <Network size={12} strokeWidth={1.8} />,
     },
   ]
@@ -232,6 +239,7 @@ function UsageExplorer() {
                   {showSurfaces ? <TableHead className="w-[80px]">Surface</TableHead> : null}
                   <TableHead className="w-[110px]">Outcome</TableHead>
                   {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
+                  <TableHead className="w-[90px] text-right">Response</TableHead>
                   <TableHead className="w-[90px] text-right">Latency</TableHead>
                 </TableRow>
               </TableHeader>
@@ -293,6 +301,9 @@ function UsageExplorer() {
                           {formatCompactNumber(call.input_tokens + call.output_tokens)}
                         </TableCell>
                       ) : null}
+                      <TableCell className="text-right font-mono text-[11px] tabular-nums text-aurora-text-muted">
+                        {formatBytes(call.response_bytes)}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums text-aurora-text-muted">
                         {formatDuration(call.elapsed_ms)}
                       </TableCell>

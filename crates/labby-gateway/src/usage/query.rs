@@ -43,6 +43,9 @@ pub struct UsageCursor {
 pub struct UsageToolCount {
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub calls: i64,
 }
 
@@ -68,9 +71,13 @@ pub struct UpstreamCallRecordView {
     pub ts_unix: i64,
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub actor: String,
     pub outcome: String,
     pub elapsed_ms: i64,
+    pub response_bytes: Option<i64>,
 }
 
 pub(super) const TOP_N: usize = 10;

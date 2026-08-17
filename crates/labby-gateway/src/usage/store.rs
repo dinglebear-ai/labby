@@ -20,7 +20,7 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 // actual writers regardless of connection count, so this does not buy write
 // parallelism, only concurrent readers alongside a writer.
 const SQLITE_POOL_SIZE: usize = 4;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 /// Max rows deleted per `DELETE` statement in `prune_older_than`'s batching
 /// loop, so a large prune backlog doesn't hold the writer lock in one shot.
 const PRUNE_BATCH_SIZE: i64 = 5_000;
@@ -77,15 +77,20 @@ impl UsageStore {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO upstream_calls (
-                    ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    ts_unix, upstream_name, tool_name, capability, operation,
+                    subject_scoped, actor, outcome, elapsed_ms, response_bytes
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     record.ts_unix,
                     record.upstream_name,
                     record.tool_name,
+                    record.capability,
+                    record.operation,
+                    record.subject_scoped,
                     record.actor,
                     record.outcome,
                     record.elapsed_ms,
+                    record.response_bytes,
                 ],
             )
             .map_err(sqlite_error)?;
@@ -234,9 +239,13 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
             ts_unix INTEGER NOT NULL,
             upstream_name TEXT NOT NULL,
             tool_name TEXT NOT NULL,
+            capability TEXT NOT NULL DEFAULT 'tools',
+            operation TEXT NOT NULL DEFAULT 'tool.call',
+            subject_scoped INTEGER NOT NULL DEFAULT 0,
             actor TEXT NOT NULL DEFAULT 'unattributed',
             outcome TEXT NOT NULL,
-            elapsed_ms INTEGER NOT NULL
+            elapsed_ms INTEGER NOT NULL,
+            response_bytes INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_ts ON upstream_calls(ts_unix);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_page ON upstream_calls(ts_unix DESC, id DESC);
@@ -245,6 +254,7 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor ON upstream_calls(actor);",
     )
     .map_err(sqlite_error)?;
+    migrate_v2(&conn)?;
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .map_err(sqlite_error)?;
     for suffix in ["-wal", "-shm"] {
@@ -254,6 +264,32 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
         }
     }
     Ok(conn)
+}
+
+fn migrate_v2(conn: &Connection) -> Result<(), ToolError> {
+    let mut statement = conn
+        .prepare("PRAGMA table_info(upstream_calls)")
+        .map_err(sqlite_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(sqlite_error)?
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+        .map_err(sqlite_error)?;
+    drop(statement);
+    for (name, definition) in [
+        ("capability", "TEXT NOT NULL DEFAULT 'tools'"),
+        ("operation", "TEXT NOT NULL DEFAULT 'tool.call'"),
+        ("subject_scoped", "INTEGER NOT NULL DEFAULT 0"),
+        ("response_bytes", "INTEGER"),
+    ] {
+        if !columns.contains(name) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE upstream_calls ADD COLUMN {name} {definition};"
+            ))
+            .map_err(sqlite_error)?;
+        }
+    }
+    Ok(())
 }
 
 impl UsageStore {
@@ -276,14 +312,22 @@ impl UsageStore {
                          COALESCE(AVG(elapsed_ms), 0.0) FROM upstream_calls {where_clause}"
                     ),
                     rusqlite::params_from_iter(bind.iter()),
-                    |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0), row.get(2)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                            row.get(2)?,
+                        ))
+                    },
                 )
                 .map_err(sqlite_error)?;
 
             let mut top_tools_stmt = conn
                 .prepare(&format!(
-                    "SELECT upstream_name, tool_name, COUNT(*) as calls FROM upstream_calls {where_clause} \
-                     GROUP BY upstream_name, tool_name ORDER BY calls DESC LIMIT {}",
+                    "SELECT upstream_name, tool_name, capability, operation, subject_scoped, \
+                     COUNT(*) as calls FROM upstream_calls {where_clause} \
+                     GROUP BY upstream_name, tool_name, capability, operation, subject_scoped \
+                     ORDER BY calls DESC LIMIT {}",
                     super::query::TOP_N
                 ))
                 .map_err(sqlite_error)?;
@@ -292,7 +336,10 @@ impl UsageStore {
                     Ok(super::query::UsageToolCount {
                         upstream: row.get(0)?,
                         tool: row.get(1)?,
-                        calls: row.get(2)?,
+                        capability: row.get(2)?,
+                        operation: row.get(3)?,
+                        subject_scoped: row.get(4)?,
+                        calls: row.get(5)?,
                     })
                 })
                 .map_err(sqlite_error)?
@@ -387,7 +434,8 @@ impl UsageStore {
             ));
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT id, ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms \
+                    "SELECT id, ts_unix, upstream_name, tool_name, capability, operation, \
+                     subject_scoped, actor, outcome, elapsed_ms, response_bytes \
                      FROM upstream_calls {page_where} \
                      ORDER BY ts_unix DESC, id DESC LIMIT ?{}",
                     bind.len()
@@ -400,9 +448,13 @@ impl UsageStore {
                         ts_unix: row.get(1)?,
                         upstream: row.get(2)?,
                         tool: row.get(3)?,
-                        actor: row.get(4)?,
-                        outcome: row.get(5)?,
-                        elapsed_ms: row.get(6)?,
+                        capability: row.get(4)?,
+                        operation: row.get(5)?,
+                        subject_scoped: row.get(6)?,
+                        actor: row.get(7)?,
+                        outcome: row.get(8)?,
+                        elapsed_ms: row.get(9)?,
+                        response_bytes: row.get(10)?,
                     })
                 })
                 .map_err(sqlite_error)?
@@ -493,9 +545,13 @@ mod tests {
             ts_unix,
             upstream_name: "github".to_string(),
             tool_name: "search_repos".to_string(),
+            capability: "tools".to_string(),
+            operation: "tool.call".to_string(),
+            subject_scoped: false,
             actor: "unattributed".to_string(),
             outcome: "ok".to_string(),
             elapsed_ms: 42,
+            response_bytes: Some(512),
         }
     }
 
@@ -515,6 +571,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn open_migrates_v1_usage_rows_without_losing_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "PRAGMA user_version = 1;
+                 CREATE TABLE upstream_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts_unix INTEGER NOT NULL,
+                    upstream_name TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    actor TEXT NOT NULL DEFAULT 'unattributed',
+                    outcome TEXT NOT NULL,
+                    elapsed_ms INTEGER NOT NULL
+                 );
+                 INSERT INTO upstream_calls
+                    (ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms)
+                 VALUES (1000, 'github', 'search_repos', 'unattributed', 'ok', 42);",
+            )
+            .unwrap();
+        }
+
+        let store = UsageStore::open(path).await.unwrap();
+        let rows = store
+            .list_calls(super::super::query::UsageCallsQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .0;
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].capability, "tools");
+        assert_eq!(rows[0].operation, "tool.call");
+        assert!(!rows[0].subject_scoped);
+        assert_eq!(rows[0].response_bytes, None);
     }
 
     #[tokio::test]

@@ -239,7 +239,14 @@ Set `LABBY_GATEWAY_USAGE_DISABLED=1` to disable capture entirely (no store is op
 
 In-flight fire-and-forget writes are capped by a semaphore (`WRITE_SEMAPHORE_PERMITS`, 64 permits) — a saturated burst drops the write and logs a warning rather than queuing unboundedly or spawning an unbounded number of tasks. `~/.labby/usage.db` is created with owner-only (`0600`) permissions since `actor` is a stable per-user identifier, even though nothing in the store is a credential.
 
-This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. The recorded schema is intentionally minimal: `ts_unix`, `upstream_name`, `tool_name`, `actor`, `outcome`, `elapsed_ms` (see `crates/labby-gateway/src/usage/types.rs`). See `docs/superpowers/plans/2026-07-09-gateway-usage-telemetry.md` for the original design rationale — note the shipped schema diverges from that plan (the `capability`/`operation`/`subject_scoped`/`error_kind`/`response_bytes` fields proposed there were dropped during review as unused).
+This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. Schema version 2 records `ts_unix`, `upstream_name`, `tool_name`, `capability`, `operation`, `subject_scoped`, `actor`, `outcome`, `elapsed_ms`, and nullable `response_bytes` (see `crates/labby-gateway/src/usage/types.rs`). Existing version-1 databases migrate in place. `response_bytes` is present only when an upstream returned a complete response; queue, connection, upstream-error, and timeout outcomes keep it null.
+
+The operator UI deliberately separates these two retention shapes:
+
+- **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
+- **Traces** reads the bounded admin-only `server_logs.query` window and correlates emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. It can therefore show dispatch surfaces, input/output tokens, upstream spans, response sizes, and error events when those structured fields were emitted. Entries without a correlation identifier remain visible as incomplete single-event flows rather than receiving an invented identity.
+
+Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
 
 ### Health Probes
 

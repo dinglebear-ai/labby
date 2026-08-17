@@ -228,6 +228,10 @@ export interface ToolCallRecord {
   input_tokens: number
   output_tokens: number
   elapsed_ms: number
+  /** Serialized upstream response size when the gateway received a response. */
+  response_bytes?: number | null
+  /** Whether the upstream connection was scoped to an OAuth subject. */
+  subject_scoped?: boolean
 }
 
 /** Single-tool drill-down (drawer). */

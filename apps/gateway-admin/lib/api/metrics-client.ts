@@ -500,7 +500,7 @@ function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
     id: `${call.ts_unix}:${index}:${call.upstream}:${call.tool}`,
     ts: call.ts_unix * 1000,
     tool: `${call.upstream}::${call.tool}`,
-    action: null,
+    action: call.operation ?? null,
     agent_id: call.actor,
     agent_label: call.actor,
     agent_kind: 'agent',
@@ -511,6 +511,8 @@ function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
     input_tokens: 0,
     output_tokens: 0,
     elapsed_ms: call.elapsed_ms,
+    response_bytes: call.response_bytes ?? null,
+    subject_scoped: call.subject_scoped ?? false,
   }))
 }
 

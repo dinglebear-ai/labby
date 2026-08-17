@@ -14,7 +14,14 @@ export interface GatewayUsageMetrics {
   total_calls: number
   error_calls: number
   avg_elapsed_ms: number
-  top_tools: Array<{ upstream: string; tool: string; calls: number }>
+  top_tools: Array<{
+    upstream: string
+    tool: string
+    capability?: string
+    operation?: string
+    subject_scoped?: boolean
+    calls: number
+  }>
   top_actors: Array<{ actor: string; calls: number }>
 }
 
@@ -22,9 +29,13 @@ export interface GatewayUsageCall {
   ts_unix: number
   upstream: string
   tool: string
+  capability?: string
+  operation?: string
+  subject_scoped?: boolean
   actor: string
   outcome: string
   elapsed_ms: number
+  response_bytes?: number | null
 }
 
 export interface GatewayUsageCalls {
