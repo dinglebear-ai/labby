@@ -10,6 +10,8 @@ artifacts.
   lifecycle, product contracts, rollout, and verification.
 - [SERIALIZATION.md](./SERIALIZATION.md) — serde ownership, MCP/HTTP envelope
   rules, and CLI output boundaries.
+- [REMOTE_GATEWAY_TARGET.md](./REMOTE_GATEWAY_TARGET.md) — authoritative remote
+  daemon selection, validation, fallback, and credential-boundary rules.
 - [CLI_DESIGN_SYSTEM.md](./CLI_DESIGN_SYSTEM.md) — human-readable CLI visual
   language and color policy.
 - [component-development.md](./component-development.md) — Labby component
@@ -27,4 +29,3 @@ artifacts.
 - [CLAUDE_CODE_AURORA_THEME.md](./CLAUDE_CODE_AURORA_THEME.md)
 - [cli-output.md](./cli-output.md)
 - [cli-output-mockup.html](./cli-output-mockup.html)
-

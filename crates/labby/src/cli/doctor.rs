@@ -214,9 +214,13 @@ async fn load_optional_public_relay_manager()
 
 async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCode> {
     let Some(route) = args.route else {
-        let value = crate::dispatch::doctor::dispatch("proxy.preflight", serde_json::json!({}))
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let value = crate::dispatch::doctor::dispatch_with_surface(
+            "proxy.preflight",
+            serde_json::json!({}),
+            "cli",
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
         let report: Report = serde_json::from_value(value)?;
 
         if format.is_json() {
