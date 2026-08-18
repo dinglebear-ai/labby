@@ -61,6 +61,11 @@ const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
 /// execution timeout. Give promise/microtask settlement a brief grace period,
 /// then evict a runner that never emits Done/Error.
 const RUNNER_SETTLEMENT_GRACE: Duration = Duration::from_secs(5);
+/// Normal ToolResult/ToolError -> Done/Error acknowledgement budget reserved
+/// inside the execution deadline. Keep this much smaller than the 5-second
+/// hung-runner watchdog: it protects the control-plane handshake without
+/// materially shortening legitimate upstream tool execution.
+const RUNNER_RESULT_ACK_RESERVE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy)]
 struct SettlementWatch {
@@ -78,6 +83,28 @@ impl SettlementWatch {
             deadline: grace_deadline.min(execution_deadline),
             grace_limited: grace_deadline < execution_deadline,
         }
+    }
+}
+
+/// Deadline exposed to an external tool call. Reserve a small control-plane
+/// acknowledgement window inside the same wall-clock execution budget so a tool
+/// that runs right up to the outer deadline cannot leave the host with no time
+/// to deliver its ToolResult/ToolError and receive Done/Error. This is
+/// deliberately much smaller than `RUNNER_SETTLEMENT_GRACE`: the latter is a
+/// hung-runner diagnostic watchdog, not time that should be taken away from every
+/// healthy upstream call. Very short executions that cannot leave at least one
+/// equal-sized tool slice keep their original deadline.
+fn external_tool_deadline(
+    now: tokio::time::Instant,
+    execution_deadline: tokio::time::Instant,
+) -> tokio::time::Instant {
+    let remaining = execution_deadline
+        .checked_duration_since(now)
+        .unwrap_or_default();
+    if remaining > RUNNER_RESULT_ACK_RESERVE.saturating_mul(2) {
+        execution_deadline - RUNNER_RESULT_ACK_RESERVE
+    } else {
+        execution_deadline
     }
 }
 
@@ -845,6 +872,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let surface = cfg.surface;
     let execution_id = cfg.execution_id.clone();
     let cancellation = cancellation.clone();
+    let tool_deadline = external_tool_deadline(tokio::time::Instant::now(), deadline);
     pending_tool_calls.push(Box::pin(async move {
         let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
@@ -857,7 +885,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
             .call_tool_id_before_deadline(
                 &id,
                 params,
-                deadline,
+                tool_deadline,
                 caller,
                 surface,
                 &capability_filter,
@@ -1360,6 +1388,79 @@ mod tests {
         }
     }
 
+    struct DelayedToolHost {
+        inner: NoopHost,
+        delay: Duration,
+    }
+
+    impl CodeModeHost for DelayedToolHost {
+        async fn list_tools(
+            &self,
+            caller: &CodeModeCaller,
+            surface: CodeModeSurface,
+            scope: &ToolScope,
+            include_snippets: bool,
+            use_cache: bool,
+        ) -> Result<crate::host::ToolsRender, ToolError> {
+            self.inner
+                .list_tools(caller, surface, scope, include_snippets, use_cache)
+                .await
+        }
+
+        async fn call_tool(
+            &self,
+            _id: &str,
+            _params: Value,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+            _ctx: ExecCtx,
+        ) -> Result<ToolCallOutcome, CodeModeCallError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(ToolCallOutcome {
+                value: json!({"unexpected": true}),
+                ui: None,
+            })
+        }
+
+        async fn resolve_snippet(
+            &self,
+            name: &str,
+            input: Value,
+        ) -> Result<crate::host::ResolvedSnippet, ToolError> {
+            self.inner.resolve_snippet(name, input).await
+        }
+
+        async fn semantic_rank(
+            &self,
+            query: String,
+            top_k: usize,
+            caller: &CodeModeCaller,
+            surface: CodeModeSurface,
+            scope: &ToolScope,
+        ) -> Result<Vec<(String, f32)>, ToolError> {
+            self.inner
+                .semantic_rank(query, top_k, caller, surface, scope)
+                .await
+        }
+
+        async fn config(&self) -> labby_runtime::CodeModeConfig {
+            self.inner.config().await
+        }
+
+        fn runner_pool(&self) -> &RunnerPool {
+            self.inner.runner_pool()
+        }
+
+        fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+            self.inner.openapi_registry()
+        }
+
+        fn openapi_http_client(&self) -> reqwest::Client {
+            self.inner.openapi_http_client()
+        }
+    }
+
     #[test]
     fn settlement_watch_uses_full_grace_when_execution_budget_allows() {
         let now = tokio::time::Instant::now();
@@ -1388,6 +1489,134 @@ mod tests {
 
         assert_eq!(watch.deadline, execution_deadline);
         assert!(!watch.grace_limited);
+    }
+
+    #[test]
+    fn external_tool_deadline_reserves_runner_settlement_budget() {
+        let now = tokio::time::Instant::now();
+        let execution_deadline = now + Duration::from_secs(30);
+
+        assert_eq!(
+            external_tool_deadline(now, execution_deadline),
+            execution_deadline - RUNNER_RESULT_ACK_RESERVE
+        );
+    }
+
+    #[test]
+    fn external_tool_deadline_keeps_short_execution_budget_intact() {
+        let now = tokio::time::Instant::now();
+        let execution_deadline = now + Duration::from_millis(400);
+
+        assert_eq!(
+            external_tool_deadline(now, execution_deadline),
+            execution_deadline
+        );
+    }
+
+    /// A slow external tool must time out early enough that the sandbox can
+    /// consume the ToolError and acknowledge completion inside the same run,
+    /// rather than surfacing an ambiguous post-tool settlement failure.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn external_tool_timeout_leaves_budget_for_runner_acknowledgement() {
+        let host = DelayedToolHost {
+            inner: NoopHost::default(),
+            delay: Duration::from_secs(2),
+        };
+        let broker = CodeModeBroker::new(Some(&host));
+        let script = r#"
+IFS= read -r _
+printf '%s\n' '{"type":"tool_call","seq":1,"id":"stub::slow","params":{}}'
+IFS= read -r reply
+case "$reply" in
+  *'"type":"tool_error"'*) ;;
+  *) exit 23 ;;
+esac
+printf '%s\n' '{"type":"done","result":{"state":"json","value":{"acknowledged":true}},"logs":[]}'
+sleep 3600
+"#;
+        let mut runner =
+            PooledRunner::spawn_stub_script(script).expect("spawn acknowledgement stub");
+        let started = std::time::Instant::now();
+        let outcome = broker
+            .drive_runner(&mut runner, &test_config(Duration::from_secs(2)))
+            .await;
+
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "external timeout must leave time for the runner acknowledgement"
+        );
+        match outcome {
+            DriveOutcome::Completed(response) => {
+                assert_eq!(response.result, Some(json!({"acknowledged": true})));
+                assert_eq!(response.calls.len(), 1);
+                assert!(!response.calls[0].ok);
+                assert_eq!(response.calls[0].error_kind.as_deref(), Some("timeout"));
+            }
+            DriveOutcome::ExecutionError(error)
+            | DriveOutcome::RunnerUnhealthy(error)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(error) => {
+                panic!("tool timeout should settle through Done, got {error:?}");
+            }
+        }
+    }
+
+    /// The default 512-call fan-out ceiling must still fit its ToolError -> Done
+    /// control-plane traffic inside the reserved acknowledgement slice when all
+    /// calls hit the same external deadline together. This exercises the worst
+    /// common-case burst rather than only a single call.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn result_ack_reserve_handles_default_max_call_fanout() {
+        let script = r#"
+IFS= read -r _
+i=1
+while [ $i -le 512 ]; do
+  printf '{"type":"tool_call","seq":%s,"id":"stub::slow","params":{}}\n' "$i"
+  i=$((i + 1))
+done
+i=1
+while [ $i -le 512 ]; do
+  IFS= read -r reply
+  case "$reply" in
+    *'"type":"tool_error"'*) ;;
+    *) exit 24 ;;
+  esac
+  i=$((i + 1))
+done
+printf '%s\n' '{"type":"done","result":{"state":"json","value":{"acked":512}},"logs":[]}'
+sleep 3600
+"#;
+        let host = DelayedToolHost {
+            inner: NoopHost::default(),
+            delay: Duration::from_secs(2),
+        };
+        let broker = CodeModeBroker::new(Some(&host));
+        let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn fanout stub");
+        let started = std::time::Instant::now();
+        let outcome = broker
+            .drive_runner(&mut runner, &test_config(Duration::from_secs(2)))
+            .await;
+
+        assert!(started.elapsed() < Duration::from_secs(3));
+        match outcome {
+            DriveOutcome::Completed(response) => {
+                assert_eq!(response.result, Some(json!({"acked": 512})));
+                assert_eq!(response.calls.len(), 512);
+                assert!(response.calls.iter().all(|call| !call.ok));
+                assert!(
+                    response
+                        .calls
+                        .iter()
+                        .all(|call| { call.error_kind.as_deref() == Some("timeout") })
+                );
+            }
+            DriveOutcome::ExecutionError(error)
+            | DriveOutcome::RunnerUnhealthy(error)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(error) => {
+                panic!("fanout acknowledgements must settle inside the reserve: {error:?}");
+            }
+        }
     }
 
     /// The `openapi` provider must dispatch WITHOUT taking `LOCAL_PROVIDER_LOCK`,

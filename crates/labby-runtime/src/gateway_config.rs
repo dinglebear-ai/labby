@@ -86,6 +86,34 @@ fn default_mcp_scopes() -> Vec<String> {
     vec!["mcp:read".to_string(), "mcp:write".to_string()]
 }
 
+// ─── Lab-owned MCP Apps ──────────────────────────────────────────────────────
+
+/// Visibility switches for Labby-owned MCP App surfaces other than the
+/// always-on `mcp_app` manager. Code Mode keeps its existing
+/// `CodeModeConfig::mcp_ui_enabled` field for backward-compatible config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpAppsConfig {
+    /// Advertise the synthetic Add Server app tool and its UI resources.
+    #[serde(default = "default_true")]
+    pub add_server: bool,
+    /// Attach the Server Logs app metadata and advertise its UI resources.
+    #[serde(default = "default_true")]
+    pub server_logs: bool,
+    /// Advertise the synthetic Gateway Status app tool and its UI resources.
+    #[serde(default = "default_true")]
+    pub gateway_status: bool,
+}
+
+impl Default for McpAppsConfig {
+    fn default() -> Self {
+        Self {
+            add_server: true,
+            server_logs: true,
+            gateway_status: true,
+        }
+    }
+}
+
 // ─── Code Mode ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1480,6 +1508,9 @@ pub struct GatewayConfig {
     /// Gateway-wide Code Mode exposure and execution settings.
     #[serde(default)]
     pub code_mode: CodeModeConfig,
+    /// Visibility of Labby-owned MCP App surfaces other than Code Mode.
+    #[serde(default)]
+    pub mcp_apps: McpAppsConfig,
     /// Maximum time to wait for one proxied upstream MCP response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -1968,6 +1999,25 @@ client_secret_env = "SECRET"
         .unwrap();
         assert!(!cfg.mcp_ui_enabled);
         assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn mcp_apps_config_defaults_all_managed_apps_enabled() {
+        let cfg: McpAppsConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, McpAppsConfig::default());
+        assert!(cfg.add_server);
+        assert!(cfg.server_logs);
+        assert!(cfg.gateway_status);
+    }
+
+    #[test]
+    fn mcp_apps_config_supports_independent_visibility_switches() {
+        let cfg: McpAppsConfig =
+            toml::from_str("add_server = false\nserver_logs = true\ngateway_status = false\n")
+                .unwrap();
+        assert!(!cfg.add_server);
+        assert!(cfg.server_logs);
+        assert!(!cfg.gateway_status);
     }
 
     #[test]

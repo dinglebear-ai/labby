@@ -39,6 +39,7 @@ use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
     code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
     gateway_status_app_resource_uri_for_tool, gateway_status_app_skybridge_uri_for_tool,
+    mcp_apps_app_resource_uri_for_tool, mcp_apps_app_skybridge_uri_for_tool,
 };
 use crate::mcp::handlers_resources::{
     admin_app_resources_visible, server_logs_app_resource_uri_for_tool,
@@ -131,10 +132,12 @@ impl LabMcpServer {
         let visibility_mode = visibility.mode_label();
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
+        #[cfg(feature = "gateway")]
+        let mcp_apps_config = self.mcp_apps_config().await;
         let server_logs_app_visible = {
             #[cfg(feature = "gateway")]
             {
-                admin_app_resources_visible(auth)
+                mcp_apps_config.server_logs && admin_app_resources_visible(auth)
             }
             #[cfg(not(feature = "gateway"))]
             {
@@ -228,11 +231,14 @@ impl LabMcpServer {
                     advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
                     gateway_tool_count += 1;
                 }
-
-                descriptors.push(self.registry.permanent_tools().mcp_app_tool());
-                advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
-                gateway_tool_count += 1;
             }
+        }
+
+        #[cfg(feature = "gateway")]
+        if self.route_scope.is_root() && tool_execute_scope_allowed(auth) {
+            descriptors.push(self.registry.permanent_tools().mcp_app_tool());
+            advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
+            gateway_tool_count += 1;
         }
 
         #[cfg(feature = "gateway")]
@@ -330,6 +336,7 @@ impl LabMcpServer {
             }
         }
 
+        #[cfg(feature = "gateway")]
         if !self.route_scope.exposes_tools() {
             let keep_code_mode = self.route_scope.exposes_code_mode();
             descriptors.retain(|descriptor| {
@@ -487,10 +494,10 @@ pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]
     )
 }
 
-/// Description for the text-only `mcp_app` control tool.
+/// Description for the always-on `mcp_app` manager.
 #[cfg(feature = "gateway")]
 pub(crate) const fn mcp_app_tool_description() -> &'static str {
-    "Enable, disable, or inspect Labby's Code Mode inspector surface. This controls the explicit codemode_ui tool and discoverable Labby-owned app resources; codemode remains available and can return nested upstream MCP App metadata dynamically."
+    "Open the Labby MCP Apps manager or enable, disable, and inspect Labby-owned app surfaces. Targets include the Code Mode inspector, gateway status, server logs, Add Server, or all managed apps. The manager itself cannot be disabled."
 }
 
 #[cfg(feature = "gateway")]
@@ -503,13 +510,25 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                     "type": "string",
                     "enum": ["status", "enable", "disable"],
                     "default": "status",
-                    "description": "Inspect or change whether the explicit Code Mode MCP App is advertised."
+                    "description": "Inspect or change whether one or more Labby-owned MCP Apps are advertised."
                 },
                 "target": {
                     "type": "string",
-                    "enum": ["codemode"],
+                    "enum": ["codemode", "gateway_status", "server_logs", "add_server", "all"],
                     "default": "codemode",
-                    "description": "Lab-owned MCP App target."
+                    "description": "Legacy direct target shape. Use all for the switchboard snapshot or a bulk change."
+                },
+                "params": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "enum": ["codemode", "gateway_status", "server_logs", "add_server", "all"],
+                            "default": "codemode",
+                            "description": "Labby-owned MCP App target used by the shared app host."
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false
@@ -519,6 +538,14 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
         Arc::new(schema)
     });
     Arc::clone(&SCHEMA)
+}
+
+#[cfg(feature = "gateway")]
+/// Build MCP Apps metadata for the always-on MCP App manager.
+pub(crate) fn mcp_app_tool_meta(tool_name: &str) -> MetaObject {
+    let resource_uri = mcp_apps_app_resource_uri_for_tool(tool_name)
+        .expect("MCP App manager must have an associated UI resource");
+    owned_app_tool_meta(resource_uri, mcp_apps_app_skybridge_uri_for_tool(tool_name))
 }
 
 #[cfg(feature = "gateway")]

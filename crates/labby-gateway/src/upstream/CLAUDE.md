@@ -110,6 +110,21 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 - The pool is constructed in `cli/serve.rs` and injected into `AppState` and `LabMcpServer`.
 - Circuit breaker state is internal to the pool. Surfaces call `record_failure()` and `record_success()`. Open circuits use exponential quarantine, and every failed reprobe resets the quarantine clock.
 - Every caller-attributed upstream RPC must pass through the per-upstream bulkhead. Do not bypass `timed_capability_call` or the relay generation registration when adding tool, prompt, resource, or task paths. The documented exceptions are the fan-out aggregation passes — discovery (`pool/discover.rs`) and prompt/resource listing (`pool/prompts_list.rs`, `pool/resources_list.rs`) — which run under their own discovery concurrency/timeout bounds, keep deliberate partial-result semantics, and record per-upstream failures via the circuit breaker, `*_last_error`, and classified `warn!` logs instead.
+- **SEP-2243 tool-header recovery is exact and single-shot.** rmcp derives
+  `Mcp-Param-*` mirrors from `x-mcp-header` annotations learned by `tools/list`
+  on each transport. Pooled, OAuth-subject, and MRTR relay connections may hold
+  independent schema caches. On rmcp's typed `ErrorCode::HEADER_MISMATCH`, the
+  tool-call primitive re-lists tools on that exact peer to refresh rmcp's
+  transport-local schema cache and retries the same request once under the
+  original deadline. The relay path must keep that refresh/replay state in the
+  boxed `send_relay_tool_request_with_header_recovery` helper: inlining it into
+  `call_tool_relayed` makes the already-large future exceed Tokio worker stack
+  headroom when relays nest across multiple Labby hops, even on calls that never
+  take the recovery branch. Do not synthesize parameter headers from arbitrary
+  arguments, broaden the matcher to ordinary MCP errors, inline the recovery
+  state back into the relay future, or add an unbounded retry loop: annotated
+  headers are a selective privacy boundary and HeaderMismatch is the
+  pre-dispatch signal that makes one replay safe.
 - OAuth credential mutation is an execution barrier, not merely a token-cache
   update. Callback replacement, refresh, clear, and shared-provider revocation
   must route through `pool/oauth_invalidation.rs` so initialized subject peers,

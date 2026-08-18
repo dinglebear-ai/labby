@@ -1584,6 +1584,7 @@ Commands:
   remove           Remove a gateway and reconcile runtime state
   quarantine       Manage Lab-backed virtual servers quarantined during config migration
   protected-route  Manage public MCP routes protected by Lab OAuth
+  loadout          Manage reusable gateway capability loadouts
   reload           Reload gateways from config and reconcile runtime state
   mcp              Manage upstream MCP server lifecycle and OAuth
   clients          Inspect inbound MCP clients/sessions connected to this gateway
@@ -1593,6 +1594,7 @@ Commands:
   public-urls      Show resolved public URL configuration (app and MCP gateway)
   code             Search, inspect, and execute Code Mode snippets through dispatch
   enrich           Generate and approve Code Mode upstream hint proposals
+  skills           Inspect and manage Agent Skills exposed by gateway upstreams
   usage            Query gateway upstream call-usage telemetry
   help             Print this message or the help of the given subcommand(s)
 
@@ -1724,6 +1726,9 @@ Options:
           [default: false]
           [possible values: true, false]
 
+      --expose-skill <EXPOSE_SKILLS>
+          Initial skill-name exposure allowlist. Repeat for multiple patterns
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -1780,6 +1785,12 @@ Options:
           Turn Agent Skills aggregation on or off for this upstream
 
           [possible values: true, false]
+
+      --expose-skill <EXPOSE_SKILLS>
+          Replace the skill-name exposure allowlist. Repeat for multiple patterns
+
+      --clear-expose-skills
+          Clear the skill-name allowlist and expose all validated Skills
 
   -h, --help
           Print help
@@ -2014,6 +2025,9 @@ Options:
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
 
+      --loadout <LOADOUT>
+          Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
+
       --target-upstream <TARGET_UPSTREAM>
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
@@ -2022,6 +2036,9 @@ Options:
 
       --expose-code-mode
           Expose codemode on this gateway subset
+
+      --stage-for-restart
+          Persist this route for the next Labby restart instead of attempting a hot route mount
 
   -h, --help
           Print help
@@ -2075,6 +2092,9 @@ Options:
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
 
+      --loadout <LOADOUT>
+          Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
+
       --target-upstream <TARGET_UPSTREAM>
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
@@ -2083,6 +2103,9 @@ Options:
 
       --expose-code-mode
           Expose codemode on this gateway subset
+
+      --stage-for-restart
+          Persist this route change for the next Labby restart instead of attempting a hot route mutation
 
   -h, --help
           Print help
@@ -2102,6 +2125,9 @@ Arguments:
 Options:
       --json
           Emit JSON instead of human-readable tables
+
+      --stage-for-restart
+          Persist a gateway-subset removal for the next Labby restart
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -2157,6 +2183,9 @@ Options:
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
 
+      --loadout <LOADOUT>
+          Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
+
       --target-upstream <TARGET_UPSTREAM>
           Upstream names to expose for --gateway-subset. Repeat or comma-separate
 
@@ -2166,11 +2195,242 @@ Options:
       --expose-code-mode
           Expose codemode on this gateway subset
 
+      --stage-for-restart
+          Persist this route for the next Labby restart instead of attempting a hot route mount
+
   -h, --help
           Print help
 ```
 
 ## `labby gateway protected-route help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
+## `labby gateway loadout`
+
+```text
+Manage reusable gateway capability loadouts
+
+Usage: loadout [OPTIONS] <COMMAND>
+
+Commands:
+  list    List configured Loadouts
+  get     Get one Loadout
+  add     Add a reusable Loadout
+  update  Patch selected Loadout fields without resetting unspecified fields
+  remove  Remove an unreferenced Loadout
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway loadout list`
+
+```text
+List configured Loadouts
+
+Usage: list [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway loadout get`
+
+```text
+Get one Loadout
+
+Usage: get [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway loadout add`
+
+```text
+Add a reusable Loadout
+
+Usage: add [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --description <DESCRIPTION>
+
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --upstream <UPSTREAMS>
+          Upstream names selected by this Loadout. Repeat or comma-separate
+
+      --service <SERVICES>
+          Built-in Lab services selected by this Loadout. Repeat or comma-separate
+
+      --no-tools
+          Hide direct MCP Tools on this Loadout
+
+      --no-resources
+          Hide MCP Resources on this Loadout. Skills require Resources
+
+      --no-prompts
+          Hide MCP Prompts on this Loadout
+
+      --no-skills
+          Hide Agent Skills on this Loadout
+
+      --code-mode
+          Expose Code Mode on this Loadout
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway loadout update`
+
+```text
+Patch selected Loadout fields without resetting unspecified fields
+
+Usage: update [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --new-name <NEW_NAME>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --description <DESCRIPTION>
+
+
+      --clear-description
+
+
+      --upstream <UPSTREAMS>
+          Replace upstream selection. Repeat or comma-separate
+
+      --clear-upstreams
+          Clear all selected upstreams
+
+      --service <SERVICES>
+          Replace service selection. Repeat or comma-separate
+
+      --clear-services
+          Clear all selected built-in services
+
+      --expose-tools <EXPOSE_TOOLS>
+          [possible values: true, false]
+
+      --expose-resources <EXPOSE_RESOURCES>
+          [possible values: true, false]
+
+      --expose-prompts <EXPOSE_PROMPTS>
+          [possible values: true, false]
+
+      --expose-skills <EXPOSE_SKILLS>
+          [possible values: true, false]
+
+      --expose-code-mode <EXPOSE_CODE_MODE>
+          [possible values: true, false]
+
+      --stage-for-restart
+          Stage this Loadout patch for the next Labby restart. Required when the Loadout is mounted by an enabled protected route
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway loadout remove`
+
+```text
+Remove an unreferenced Loadout
+
+Usage: remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --stage-for-restart
+          Stage removal for restart after protected-route references have been staged away
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway loadout help`
 
 ```text
 Print this message or the help of the given subcommand(s)
@@ -3133,6 +3393,177 @@ Options:
 ```
 
 ## `labby gateway enrich help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
+## `labby gateway skills`
+
+```text
+Inspect and manage Agent Skills exposed by gateway upstreams
+
+Usage: skills [OPTIONS] <COMMAND>
+
+Commands:
+  list        List Skills support, trust state, validation results, and exposure
+  trust       Trust an upstream's Agent Skills and allow Labby to enumerate them
+  untrust     Stop trusting an upstream's Agent Skills
+  expose      Replace the skill-name exposure allowlist. Repeat --pattern for multiple patterns
+  expose-all  Clear the skill exposure allowlist so every validated skill may be exposed
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway skills list`
+
+```text
+List Skills support, trust state, validation results, and exposure
+
+Usage: list [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --upstream <UPSTREAM>
+          Limit the operator view to one upstream
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway skills trust`
+
+```text
+Trust an upstream's Agent Skills and allow Labby to enumerate them
+
+Usage: trust [OPTIONS] <UPSTREAM>
+
+Arguments:
+  <UPSTREAM>
+
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+  -y, --yes
+          Skip the trust confirmation prompt
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway skills untrust`
+
+```text
+Stop trusting an upstream's Agent Skills
+
+Usage: untrust [OPTIONS] <UPSTREAM>
+
+Arguments:
+  <UPSTREAM>
+
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway skills expose`
+
+```text
+Replace the skill-name exposure allowlist. Repeat --pattern for multiple patterns
+
+Usage: expose [OPTIONS] --pattern <PATTERNS> <UPSTREAM>
+
+Arguments:
+  <UPSTREAM>
+
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --pattern <PATTERNS>
+          Exact skill name or wildcard pattern. Repeat to build the allowlist
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway skills expose-all`
+
+```text
+Clear the skill exposure allowlist so every validated skill may be exposed
+
+Usage: expose-all [OPTIONS] <UPSTREAM>
+
+Arguments:
+  <UPSTREAM>
+
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway skills help`
 
 ```text
 Print this message or the help of the given subcommand(s)
