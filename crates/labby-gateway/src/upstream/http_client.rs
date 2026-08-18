@@ -778,6 +778,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_message_preserves_mcp_param_headers() {
+        let server = MockServer::start().await;
+        let param_header_matched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let param_header_matched_for_response = Arc::clone(&param_header_matched);
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(move |request: &wiremock::Request| {
+                let actual = request
+                    .headers
+                    .get("mcp-param-owner")
+                    .and_then(|value| value.to_str().ok());
+                if actual == Some("dinglebear-ai") {
+                    param_header_matched_for_response
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": -32601, "message": "test response"}
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let message: ClientJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "pull_request_read",
+                "arguments": {"owner": "dinglebear-ai", "repo": "labby"}
+            }
+        }))
+        .expect("valid tools/call request");
+        let mut custom_headers = HashMap::new();
+        custom_headers.insert(
+            HeaderName::from_static("mcp-param-owner"),
+            HeaderValue::from_static("dinglebear-ai"),
+        );
+
+        build(1024 * 1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                message,
+                None,
+                None,
+                custom_headers,
+            )
+            .await
+            .expect("request with rmcp parameter mirror succeeds");
+
+        assert!(
+            param_header_matched.load(std::sync::atomic::Ordering::SeqCst),
+            "BodyCappedHttpClient must not strip rmcp's Mcp-Param-* headers"
+        );
+    }
+
+    #[tokio::test]
     async fn allows_response_under_cap() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
