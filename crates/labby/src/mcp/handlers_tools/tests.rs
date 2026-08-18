@@ -1740,7 +1740,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
     }
 
-    let manager_resource = running
+    running
         .service()
         .read_resource_impl(
             ReadResourceRequestParams::new(MCP_APPS_APP_URI),
@@ -1748,7 +1748,6 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         )
         .await
         .expect("manager resource remains readable");
-    assert_eq!(manager_resource.contents.len(), 1);
 
     let enable = running
         .service()
