@@ -5062,3 +5062,41 @@ async fn call_tool_add_server_denies_non_admin_scope_at_dispatch() {
         Value::String(ADD_SERVER_TOOL_NAME.into())
     );
 }
+
+#[tokio::test]
+async fn settings_mutations_use_the_setup_destructive_policy() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+
+    for action in ["config.update", "env.update"] {
+        let request = CallToolRequestParams::new(SETTINGS_TOOL_NAME).with_arguments(
+            serde_json::Map::from_iter([("action".to_string(), Value::String(action.to_string()))]),
+        );
+        assert!(
+            running
+                .service()
+                .tool_request_is_destructive(&request, &context)
+                .await,
+            "Settings mutation `{action}` must inherit the destructive setup action policy"
+        );
+    }
+
+    let read = CallToolRequestParams::new(SETTINGS_TOOL_NAME).with_arguments(
+        serde_json::Map::from_iter([("action".to_string(), Value::String("state".to_string()))]),
+    );
+    assert!(
+        !running
+            .service()
+            .tool_request_is_destructive(&read, &context)
+            .await
+    );
+}

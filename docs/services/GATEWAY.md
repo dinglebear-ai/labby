@@ -243,7 +243,10 @@ The callbacks delegate to the existing `setup` service's `settings.schema`,
 `settings.state`, `settings.config.update`, and `settings.env.update` actions.
 The tool and resource require `lab:admin` and are omitted when the active route
 does not expose `setup`. Writes retain the setup dispatcher's backup-first,
-atomic-write, validation, and confirmation behavior.
+atomic-write, validation, and MRTR elicitation behavior. `config.update` and
+`env.update` inherit the destructive policy of their canonical `setup` actions;
+the app does not send a payload-level confirmation flag or bypass the host's
+native confirmation UI.
 
 `code_mode.result_shape_policy` defaults to `"off"`. When set to `"truncate"`,
 Labby shapes only successful completed final `result` values after the `__ui`

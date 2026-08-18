@@ -1146,6 +1146,25 @@ impl LabMcpServer {
                 });
             }
 
+            if service == SETTINGS_TOOL_NAME {
+                let setup_action = match action {
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                return setup_action.is_some_and(|setup_action| {
+                    self.registry
+                        .services()
+                        .iter()
+                        .find(|entry| entry.name == "setup")
+                        .is_some_and(|entry| {
+                            entry.actions.iter().any(|candidate| {
+                                candidate.name == setup_action && candidate.destructive
+                            })
+                        })
+                });
+            }
+
             if self.code_mode_visibility().await.hides_raw_tools()
                 && service != SERVER_LOGS_TOOL_NAME
             {
