@@ -3683,8 +3683,9 @@ async fn list_tools_paginates_large_builtin_catalog() {
         first.tools.len(),
         crate::mcp::pagination::MCP_LIST_PAGE_SIZE
     );
-    assert_eq!(first.tools[0].name.as_ref(), "service_000");
-    assert_eq!(first.tools[99].name.as_ref(), "service_099");
+    assert_eq!(first.tools[0].name.as_ref(), MCP_APP_TOOL_NAME);
+    assert_eq!(first.tools[1].name.as_ref(), "service_000");
+    assert_eq!(first.tools[99].name.as_ref(), "service_098");
     assert!(
         first
             .next_cursor
@@ -3722,8 +3723,8 @@ async fn list_tools_paginates_large_builtin_catalog() {
         second.tools.len(),
         crate::mcp::pagination::MCP_LIST_PAGE_SIZE
     );
-    assert_eq!(second.tools[0].name.as_ref(), "service_100");
-    assert_eq!(second.tools[99].name.as_ref(), "service_199");
+    assert_eq!(second.tools[0].name.as_ref(), "service_099");
+    assert_eq!(second.tools[99].name.as_ref(), "service_198");
     assert!(
         second
             .next_cursor
@@ -3749,7 +3750,9 @@ async fn list_tools_paginates_large_builtin_catalog() {
         )
         .await
         .expect("third page");
-    assert_eq!(third.tools.len(), 50);
+    assert_eq!(third.tools.len(), 51);
+    assert_eq!(third.tools[0].name.as_ref(), "service_199");
+    assert_eq!(third.tools[50].name.as_ref(), "service_249");
     assert!(third.next_cursor.is_none());
     assert!(
         running
@@ -3805,7 +3808,8 @@ async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
     let rebuilt = collect_names(reverse_large_test_registry(250)).await;
 
     assert_eq!(ascending, rebuilt);
-    assert_eq!(ascending.len(), 250);
+    assert_eq!(ascending.len(), 251);
+    assert_eq!(ascending[0], MCP_APP_TOOL_NAME);
     assert!(ascending.is_sorted());
 }
 
