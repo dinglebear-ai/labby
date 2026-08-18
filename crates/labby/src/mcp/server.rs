@@ -34,6 +34,7 @@ use crate::dispatch::gateway::manager::GatewayManager;
 use crate::mcp::context::{actor_key_from_extensions, subject_from_extensions};
 use crate::mcp::provenance;
 use crate::mcp::route_scope::McpRouteScope;
+use crate::mcp::runtime::McpRouteRuntime;
 use crate::registry::ToolRegistry;
 
 /// Process-global counter minting a unique `relay_session_id` per
@@ -348,6 +349,10 @@ pub struct LabMcpServer {
     /// handler per request, so the factory shares this registry across those
     /// handlers. Partial pagination never advances a baseline.
     pub(crate) last_listed_tool_contract: ToolContractBaselines,
+    /// Long-lived state shared by every request handler on this MCP route.
+    /// Stateless HTTP creates a fresh handler per POST, so paginated live
+    /// catalogs resume through this state instead of repeating upstream I/O.
+    pub(crate) route_runtime: Arc<McpRouteRuntime>,
     /// Observed inbound MCP client registry — shared with `GatewayManager`
     /// via `with_client_registry` so `gateway.clients.list` can read it.
     #[cfg(feature = "gateway")]
@@ -360,9 +365,11 @@ pub struct LabMcpServer {
     pub logging_level: Arc<AtomicU8>,
     /// Visibility and dispatch constraints for this MCP route.
     pub(crate) route_scope: McpRouteScope,
-    /// Unique id for this route's downstream agent connection. Used as the
-    /// second half of the upstream relay cache key so a cached relay connection
-    /// is bound to exactly this agent (see `dispatch/upstream/pool/relay.rs`).
+    /// Unique id for this handler's downstream relay scope. On stdio that is
+    /// the connection lifetime; on stateless HTTP it is deliberately one POST,
+    /// because the downstream peer dies with that response and must never be
+    /// reused for a later interactive relay. The historical field name is kept
+    /// to avoid a noisy mechanical rename.
     pub(crate) relay_session_id: u64,
     #[cfg(test)]
     pub(crate) code_mode_widget_callbacks_enabled_for_test: bool,
@@ -1014,6 +1021,7 @@ mod tests {
             peers,
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",
