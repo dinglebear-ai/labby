@@ -8,9 +8,36 @@ function number(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
-function timestamp(entry: ServerLogEntry): number {
+function timestamp(entry: ServerLogEntry): number | null {
   const parsed = entry.timestamp ? Date.parse(entry.timestamp) : Number.NaN
-  return Number.isFinite(parsed) ? parsed : 0
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function correlationId(entry: ServerLogEntry): string | null {
+  return text(entry.fields.trace_id) ?? text(entry.fields.request_id) ?? text(entry.fields.execution_id)
+}
+
+type EventPhase = 'start' | 'finish' | 'error' | null
+
+const SUCCESS_MESSAGES = new Set(['dispatch ok', 'upstream dispatch ok', 'gateway codemode ok'])
+const ERROR_MESSAGES = new Set(['dispatch error', 'upstream dispatch error', 'gateway codemode failed'])
+const START_MESSAGES = new Set(['dispatch start', 'upstream dispatch start', 'gateway codemode start'])
+
+function eventPhase(entry: ServerLogEntry): EventPhase {
+  const explicit = text(entry.fields.event)?.toLowerCase()
+  if (explicit === 'start' || explicit === 'finish' || explicit === 'error') return explicit
+  const message = entry.message?.toLowerCase()
+  if (!message) return null
+  if (SUCCESS_MESSAGES.has(message)) return 'finish'
+  if (ERROR_MESSAGES.has(message)) return 'error'
+  if (START_MESSAGES.has(message)) return 'start'
+  return null
+}
+
+function isChildSpan(entry: ServerLogEntry): boolean {
+  return text(entry.fields.surface) === 'dispatch'
+    || entry.service === 'upstream.pool'
+    || text(entry.fields.upstream) !== null
 }
 
 function percentile(values: number[], fraction: number): number {
@@ -27,43 +54,82 @@ function ranked(values: string[]) {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 }
 
-export function buildTraceSummary(entries: ServerLogEntry[]): TraceSummary {
+function trimTruncatedBoundary(entries: ServerLogEntry[], truncated: boolean): ServerLogEntry[] {
+  if (!truncated || entries.length === 0) return entries
+  const oldest = entries.at(-1)
+  if (!oldest) return entries
+  const boundaryId = correlationId(oldest)
+  if (!boundaryId) return entries.slice(0, -1)
+  return entries.filter((entry) => correlationId(entry) !== boundaryId)
+}
+
+export function buildTraceSummary(
+  inputEntries: ServerLogEntry[],
+  options: { truncated?: boolean } = {},
+): TraceSummary {
+  const entries = trimTruncatedBoundary(inputEntries, options.truncated ?? false)
   const groups = new Map<string, ServerLogEntry[]>()
   entries.forEach((entry, index) => {
-    const fields = entry.fields
-    const correlation = text(fields.trace_id) ?? text(fields.request_id) ?? text(fields.execution_id)
+    const correlation = correlationId(entry)
     const fallback = `${entry.file}:${entry.timestamp ?? 'unknown'}:${index}`
     const id = correlation ?? fallback
     groups.set(id, [...(groups.get(id) ?? []), entry])
   })
 
   const traces = [...groups.entries()].map(([id, events]): RequestTrace => {
-    const ordered = [...events].sort((a, b) => timestamp(a) - timestamp(b))
+    const ordered = [...events].sort((a, b) => {
+      const left = timestamp(a)
+      const right = timestamp(b)
+      if (left === null && right === null) return 0
+      if (left === null) return 1
+      if (right === null) return -1
+      return left - right
+    })
     const fields = ordered.map((entry) => entry.fields)
-    const first = ordered[0]
-    const last = ordered.at(-1) ?? first
-    const error = ordered.find((entry) =>
-      entry.level === 'ERROR' || entry.level === 'WARN' || text(entry.fields.event) === 'error' || entry.kind,
-    )
-    const hasFinish = ordered.some((entry) =>
-      ['finish', 'error'].includes(text(entry.fields.event) ?? '') || number(entry.fields.elapsed_ms) > 0,
-    )
-    const elapsed = Math.max(
-      ...fields.map((value) => number(value.elapsed_ms)),
-      timestamp(last) - timestamp(first),
-      0,
-    )
+    const rootEvents = ordered.filter((entry) => !isChildSpan(entry))
+    const rootStart = rootEvents.find((entry) => eventPhase(entry) === 'start')
+      ?? rootEvents[0]
+      ?? ordered[0]
+    const rootTerminal = [...rootEvents].reverse().find((entry) => {
+      const phase = eventPhase(entry)
+      return phase === 'finish' || phase === 'error'
+    })
+    const terminalPhase = rootTerminal ? eventPhase(rootTerminal) : null
+    const startTimestamp = rootStart ? timestamp(rootStart) : null
+    const terminalTimestamp = rootTerminal ? timestamp(rootTerminal) : null
+    const wallElapsed = startTimestamp !== null && terminalTimestamp !== null
+      ? Math.max(0, terminalTimestamp - startTimestamp)
+      : 0
+    const explicitElapsed = rootTerminal ? number(rootTerminal.fields.elapsed_ms) : 0
     const upstreams = [...new Set(fields.map((value) => text(value.upstream)).filter((value): value is string => value !== null))]
+    const rootFields = rootEvents.map((entry) => entry.fields)
+    const startedAt = startTimestamp
+      ?? ordered.map(timestamp).find((value): value is number => value !== null)
+      ?? 0
+
     return {
       id,
-      started_at: timestamp(first),
-      elapsed_ms: Math.round(elapsed),
-      surface: fields.map((value) => text(value.surface)).find(Boolean) ?? 'internal',
-      service: first.service ?? fields.map((value) => text(value.service)).find(Boolean) ?? 'runtime',
-      action: first.action ?? fields.map((value) => text(value.action)).find(Boolean) ?? first.message ?? 'event',
-      actor_key: fields.map((value) => text(value.actor_key)).find(Boolean) ?? null,
-      outcome: error ? 'failed' : hasFinish ? 'ok' : 'incomplete',
-      error_kind: error?.kind ?? text(error?.fields.kind) ?? null,
+      started_at: startedAt,
+      elapsed_ms: Math.round(Math.max(explicitElapsed, wallElapsed)),
+      surface: rootFields.map((value) => text(value.surface)).find(Boolean)
+        ?? fields.map((value) => text(value.surface)).find(Boolean)
+        ?? 'internal',
+      service: rootStart?.service
+        ?? rootEvents.map((entry) => entry.service).find(Boolean)
+        ?? ordered[0]?.service
+        ?? 'runtime',
+      action: rootStart?.action
+        ?? rootEvents.map((entry) => entry.action).find(Boolean)
+        ?? ordered[0]?.action
+        ?? rootStart?.message
+        ?? 'event',
+      actor_key: rootFields.map((value) => text(value.actor_key)).find(Boolean)
+        ?? fields.map((value) => text(value.actor_key)).find(Boolean)
+        ?? null,
+      outcome: terminalPhase === 'error' ? 'failed' : terminalPhase === 'finish' ? 'ok' : 'incomplete',
+      error_kind: terminalPhase === 'error'
+        ? rootTerminal?.kind ?? text(rootTerminal?.fields.kind) ?? null
+        : null,
       upstreams,
       response_bytes: Math.max(...fields.map((value) => number(value.response_bytes)), 0),
       input_tokens: Math.max(...fields.map((value) => number(value.input_tokens)), 0),

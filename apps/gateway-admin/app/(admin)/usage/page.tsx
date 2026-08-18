@@ -107,7 +107,7 @@ function UsageExplorer() {
   const showIps = collected?.ips ?? false
   const showSurfaces = collected?.surfaces ?? false
   const showTokens = collected?.tokens ?? false
-  const tableColumns = 5 + Number(showSurfaces) + Number(showTokens)
+  const tableColumns = 6 + Number(showSurfaces) + Number(showTokens)
 
   const resetPaging = () => setOffset(0)
   const filtered = data?.filtered ?? 0

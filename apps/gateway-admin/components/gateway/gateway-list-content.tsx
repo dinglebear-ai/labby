@@ -51,9 +51,11 @@ import { GatewayToolsTable } from './gateway-tools-table'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { gatewayActionTone } from './gateway-theme'
+import { CodeModeHeaderToggle } from './code-mode-toggle'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
+const BULK_RELOAD_CONCURRENCY = 4
 const GatewayFormDialog = dynamic(
   () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
   { ssr: false },
@@ -121,7 +123,6 @@ export interface GatewayListViewProps {
   onPrimaryLensChange: (lens: GatewayPrimaryLens | 'tools') => void
   onBackToGateways: () => void
   onMobileSheetOpenChange: (open: boolean) => void
-  onDensityChange: (density: 'comfortable' | 'condensed') => void
   onSearchChange: (value: string) => void
   onGatewayFilterToggle: (group: 'status' | 'source' | 'transport', value: string) => void
   onToolFilterToggle: (group: 'gatewayIds' | 'source' | 'transport', value: string) => void
@@ -134,6 +135,8 @@ export interface GatewayListViewProps {
   onEdit: (gateway: Gateway) => void
   onTest: (gateway: Gateway) => void
   onReload: (gateway: Gateway) => void
+  onReloadVisible: (gateways: Gateway[]) => void
+  isReloadingVisible: boolean
   cleanupSummaryByGatewayId?: Record<
     string,
     { preview?: { label: string; occurredAt: string }; cleanup?: { label: string; occurredAt: string } }
@@ -154,7 +157,7 @@ export function GatewayListContent() {
     buildDefaultGatewayFilters(DEFAULT_GATEWAY_LENS),
   )
   const [toolFilters, setToolFilters] = useState<ToolFilterState>(DEFAULT_TOOL_FILTERS)
-  const [density, setDensity] = useState<'comfortable' | 'condensed'>(DEFAULT_DENSITY)
+  const density: 'comfortable' | 'condensed' = DEFAULT_DENSITY
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
   const deferredGatewayFilters = useDeferredValue(lastGatewayFilters)
   const deferredToolFilters = useDeferredValue(toolFilters)
@@ -164,6 +167,7 @@ export function GatewayListContent() {
   const [discoveredConfigs, setDiscoveredConfigs] = useState<DiscoveredMcpServer[] | null>(null)
   const [isDiscoveringConfigs, setIsDiscoveringConfigs] = useState(false)
   const [isImportingConfigs, setIsImportingConfigs] = useState(false)
+  const [isReloadingVisible, setIsReloadingVisible] = useState(false)
   const [testResult, setTestResult] = useState<{
     gateway: Gateway
     result: Awaited<ReturnType<typeof testGateway>>
@@ -416,6 +420,32 @@ export function GatewayListContent() {
     }
   }
 
+  const handleReloadVisible = async (gatewaysToReload: Gateway[]) => {
+    if (isReloadingVisible || gatewaysToReload.length === 0) return
+    setIsReloadingVisible(true)
+    let reloaded = 0
+    let failed = 0
+    try {
+      for (let index = 0; index < gatewaysToReload.length; index += BULK_RELOAD_CONCURRENCY) {
+        const chunk = gatewaysToReload.slice(index, index + BULK_RELOAD_CONCURRENCY)
+        const results = await Promise.allSettled(chunk.map(async (gateway) => {
+          const result = await reloadGateway(gateway.id)
+          if (!result.success) throw new Error(result.message)
+          return result
+        }))
+        reloaded += results.filter((result) => result.status === 'fulfilled').length
+        failed += results.filter((result) => result.status === 'rejected').length
+      }
+      if (failed === 0) {
+        toast.success(`Reloaded ${reloaded} visible server${reloaded === 1 ? '' : 's'}.`)
+      } else {
+        toast.warning(`Reloaded ${reloaded} visible servers; ${failed} failed.`)
+      }
+    } finally {
+      setIsReloadingVisible(false)
+    }
+  }
+
   const handleDelete = async (gateway: Gateway) => {
     try {
       if (gateway.source === 'in_process') {
@@ -556,7 +586,6 @@ export function GatewayListContent() {
         onPrimaryLensChange={handlePrimaryLens}
         onBackToGateways={handleBackToGateways}
         onMobileSheetOpenChange={setMobileSheetOpen}
-        onDensityChange={setDensity}
         onSearchChange={handleSearchChange}
         onGatewayFilterToggle={handleGatewayFilterToggle}
         onToolFilterToggle={handleToolFilterToggle}
@@ -569,6 +598,8 @@ export function GatewayListContent() {
         onEdit={handleEdit}
         onTest={handleTest}
         onReload={handleReload}
+        onReloadVisible={(visible) => void handleReloadVisible(visible)}
+        isReloadingVisible={isReloadingVisible}
         onCleanup={handleCleanup}
         onClearCleanupHistory={handleClearCleanupHistory}
         onToggleEnabled={handleToggleEnabled}
@@ -610,7 +641,6 @@ export function GatewayListView({
   onPrimaryLensChange,
   onBackToGateways,
   onMobileSheetOpenChange,
-  onDensityChange,
   onSearchChange,
   onGatewayFilterToggle,
   onToolFilterToggle,
@@ -624,6 +654,8 @@ export function GatewayListView({
   onEdit,
   onTest,
   onReload,
+  onReloadVisible,
+  isReloadingVisible,
   onCleanup,
   onClearCleanupHistory,
   onToggleEnabled,
@@ -635,6 +667,7 @@ export function GatewayListView({
         breadcrumbs={[{ label: 'Gateway' }]}
         actions={
           <div className="flex items-center gap-2">
+            {!showToolsView ? <CodeModeHeaderToggle /> : null}
             {showToolsView ? (
               <Button
                 variant="outline"
@@ -750,8 +783,15 @@ export function GatewayListView({
               onLensChange={onPrimaryLensChange}
               actions={
                 <>
-                  <Button variant="outline" size="icon" title="Reload all servers" aria-label="Reload all servers" onClick={() => void Promise.all(filteredGateways.map((gateway) => onReload(gateway)))}>
-                    <RefreshCw className="size-3.5" />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    title="Reload visible servers"
+                    aria-label="Reload visible servers"
+                    disabled={isReloadingVisible || filteredGateways.length === 0}
+                    onClick={() => onReloadVisible(filteredGateways)}
+                  >
+                    <RefreshCw className={cn('size-3.5', isReloadingVisible && 'animate-spin')} />
                   </Button>
                   <Button
                     variant="outline"
@@ -786,7 +826,7 @@ export function GatewayListView({
           </div>
 
           <div className="grid gap-4">
-            <div className="lg:hidden">
+            <div data-gateway-filters="all-viewports">
               <GatewayFilters
               mode={showToolsView ? 'tools' : 'gateways'}
               search={activeSearch}

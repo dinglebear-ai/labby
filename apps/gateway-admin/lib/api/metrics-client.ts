@@ -539,7 +539,7 @@ export async function fetchDashboardMetrics(
       options,
     ),
     queryServerLogs(
-      { limit: 1000, max_scan_bytes: 64 * 1024 * 1024 },
+      { limit: 500, max_scan_bytes: 2 * 1024 * 1024, stop_after_limit: true },
       { baseUrl: options?.baseUrl, signal: options?.signal },
     ).catch((error: unknown) => {
       if (options?.signal?.aborted) throw error

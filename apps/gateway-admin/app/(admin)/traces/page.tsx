@@ -18,7 +18,7 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import { queryServerLogs } from '@/lib/api/server-logs-client'
+import { queryServerLogs, ServerLogsApiError } from '@/lib/api/server-logs-client'
 import { buildTraceSummary } from '@/lib/observability/trace-model'
 import { formatDuration, formatRelativeTime } from '@/lib/dashboard/dashboard-metrics'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
@@ -35,12 +35,25 @@ function valueLabel(value: unknown): string {
 
 export default function TracesPage() {
   const [search, setSearch] = useState('')
-  const { data, error, isLoading, mutate } = useSWR(
+  const { data, error, isLoading, isValidating, mutate } = useSWR(
     ['server-traces', TRACE_QUERY_LIMIT],
-    () => queryServerLogs({ limit: TRACE_QUERY_LIMIT, max_scan_bytes: 8 * 1024 * 1024 }),
-    { refreshInterval: 15_000, revalidateOnFocus: false },
+    () => queryServerLogs({
+      limit: TRACE_QUERY_LIMIT,
+      max_scan_bytes: 4 * 1024 * 1024,
+      stop_after_limit: true,
+      correlated_only: true,
+    }),
+    { refreshInterval: 30_000, revalidateOnFocus: false },
   )
-  const summary = useMemo(() => buildTraceSummary(data?.entries ?? []), [data])
+  const summary = useMemo(
+    () => buildTraceSummary(data?.entries ?? [], { truncated: data?.truncated ?? false }),
+    [data],
+  )
+  const traceErrorMessage = error instanceof ServerLogsApiError && error.status === 403
+    ? 'Retained traces require the lab:admin scope.'
+    : error instanceof Error
+      ? error.message
+      : 'Could not load retained traces.'
   const needle = search.trim().toLowerCase()
   const traces = needle
     ? summary.traces.filter((trace) =>
@@ -66,8 +79,8 @@ export default function TracesPage() {
           eyebrow="Observe"
           title="Request Traces"
           actions={
-            <Button variant="outline" size="sm" onClick={() => mutate()} disabled={isLoading}>
-              <RefreshCw className={cn('mr-2 size-4', isLoading && 'animate-spin')} />
+            <Button variant="outline" size="sm" onClick={() => void mutate()} disabled={isValidating}>
+              <RefreshCw className={cn('mr-2 size-4', isValidating && 'animate-spin')} />
               Refresh
             </Button>
           }
@@ -92,7 +105,7 @@ export default function TracesPage() {
 
             {error && !data ? (
               <div className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/8 p-4 text-sm text-aurora-error">
-                Couldn&apos;t load retained traces. The signed-in session needs the <code>lab:admin</code> scope.
+                {traceErrorMessage}
               </div>
             ) : traces.length === 0 ? (
               <div className="py-10 text-center text-sm text-aurora-text-muted">

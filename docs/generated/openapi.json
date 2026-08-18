@@ -2621,6 +2621,9 @@
           "action": {
             "type": "string"
           },
+          "correlated_only": {
+            "type": "boolean"
+          },
           "file": {
             "type": "string"
           },
@@ -2641,6 +2644,9 @@
           },
           "service": {
             "type": "string"
+          },
+          "stop_after_limit": {
+            "type": "boolean"
           },
           "target": {
             "type": "string"

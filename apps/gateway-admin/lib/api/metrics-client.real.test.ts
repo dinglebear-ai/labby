@@ -3,12 +3,14 @@ import assert from 'node:assert/strict'
 
 process.env.NEXT_PUBLIC_MOCK_DATA = 'false'
 
-test('fetchDashboardMetrics uses the existing gateway usage actions', async () => {
+test('fetchDashboardMetrics uses bounded retained-log sampling', async () => {
   const actions: string[] = []
+  let serverLogParams: Record<string, unknown> | undefined
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_input, init) => {
-    const body = JSON.parse(String(init?.body)) as { action: string }
+    const body = JSON.parse(String(init?.body)) as { action: string; params?: Record<string, unknown> }
     actions.push(body.action)
+    if (body.action === 'server_logs.query') serverLogParams = body.params
     const payload = body.action === 'gateway.usage.metrics'
       ? {
           total_calls: 1,
@@ -40,6 +42,11 @@ test('fetchDashboardMetrics uses the existing gateway usage actions', async () =
     const { fetchDashboardMetrics } = await import('./metrics-client.ts')
     const result = await fetchDashboardMetrics('24h')
     assert.deepEqual(actions.sort(), ['gateway.usage.calls', 'gateway.usage.metrics', 'server_logs.query'])
+    assert.deepEqual(serverLogParams, {
+      limit: 500,
+      max_scan_bytes: 2 * 1024 * 1024,
+      stop_after_limit: true,
+    })
     assert.equal(result.tool_calls.total, 1)
     assert.deepEqual(result.surfaces, [{ surface: 'api', calls: 1 }])
     assert.equal(result.tokens.total, 30)

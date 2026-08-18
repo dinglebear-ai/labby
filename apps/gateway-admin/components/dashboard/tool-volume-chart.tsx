@@ -10,7 +10,7 @@ import {
 import type { MetricsBucket, MetricsWindow } from '@/lib/types/metrics'
 
 const CONFIG: ChartConfig = {
-  calls: { label: 'Tool calls', color: 'var(--aurora-accent-primary)' },
+  succeeded: { label: 'Succeeded', color: 'var(--aurora-accent-primary)' },
   failed: { label: 'Failed', color: 'var(--aurora-error)' },
 }
 
@@ -31,7 +31,7 @@ export function ToolVolumeChart({
 }) {
   const rows = data.map((bucket) => ({
     label: bucketLabel(bucket.ts, window),
-    calls: Math.max(0, bucket.calls - bucket.failed),
+    succeeded: Math.max(0, bucket.calls - bucket.failed),
     failed: bucket.failed,
   }))
 
@@ -48,9 +48,9 @@ export function ToolVolumeChart({
         />
         <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
         <Bar
-          dataKey="calls"
+          dataKey="succeeded"
           stackId="calls"
-          fill="var(--color-calls)"
+          fill="var(--color-succeeded)"
           radius={[2, 2, 0, 0]}
           isAnimationActive={false}
         />

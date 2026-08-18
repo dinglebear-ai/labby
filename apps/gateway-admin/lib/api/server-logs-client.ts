@@ -24,6 +24,8 @@ export interface ServerLogsQuery {
   kind?: string
   query?: string
   max_scan_bytes?: number
+  stop_after_limit?: boolean
+  correlated_only?: boolean
 }
 
 export interface ServerLogsRequestOptions {
@@ -43,6 +45,7 @@ export function queryServerLogs(params: ServerLogsQuery = {}, options?: ServerLo
       mockEntry(now - 4168, 'req-19ca', 'finish', 'INFO', { surface: 'api', service: 'gateway', action: 'gateway.list', elapsed_ms: 32 }),
       mockEntry(now - 8900, 'req-c030', 'start', 'INFO', { surface: 'mcp', service: 'gateway', action: 'tool.call', actor_key: 'actor-8f21' }),
       mockEntry(now - 8650, 'req-c030', 'error', 'WARN', { surface: 'dispatch', service: 'upstream.pool', action: 'upstream.request', upstream: 'slack', operation: 'tool.call', elapsed_ms: 250, kind: 'timeout' }),
+      mockEntry(now - 8640, 'req-c030', 'error', 'WARN', { surface: 'mcp', service: 'gateway', action: 'tool.call', elapsed_ms: 260, kind: 'timeout' }),
     ]
     return Promise.resolve({
       kind: 'server_logs' as const,

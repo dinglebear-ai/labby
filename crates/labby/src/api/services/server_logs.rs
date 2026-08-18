@@ -39,6 +39,8 @@ struct ServerLogsQuery {
     query: Option<String>,
     file: Option<String>,
     max_scan_bytes: Option<u64>,
+    stop_after_limit: Option<bool>,
+    correlated_only: Option<bool>,
 }
 
 async fn query(

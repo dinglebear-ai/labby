@@ -88,7 +88,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `lab_admin` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp |
 | `server_logs` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
 | `server_logs` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
-| `server_logs` | `server_logs.query` | false | false | true | lab:admin | `limit: integer`<br>`level: string`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer` | `ServerLogsQueryResult` | cli, mcp, api |
+| `server_logs` | `server_logs.query` | false | false | true | lab:admin | `limit: integer`<br>`level: string`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer`<br>`stop_after_limit: boolean`<br>`correlated_only: boolean` | `ServerLogsQueryResult` | cli, mcp, api |
 | `setup` | `bootstrap` | false | true | true | lab:admin |  | `BootstrapOutcome` | cli, mcp, api, web |
 | `setup` | `check` | false | false | false |  |  | `SetupReport` | cli, mcp, api, web |
 | `setup` | `draft.commit` | false | true | true | lab:admin | `force: boolean` | `CommitOutcome` | cli, mcp, api, web |

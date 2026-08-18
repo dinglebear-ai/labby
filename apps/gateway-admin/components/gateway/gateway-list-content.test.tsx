@@ -111,7 +111,6 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
         onPrimaryLensChange={() => {}}
         onBackToGateways={() => {}}
         onMobileSheetOpenChange={() => {}}
-        onDensityChange={() => {}}
         onSearchChange={() => {}}
         onGatewayFilterToggle={() => {}}
         onToolFilterToggle={() => {}}
@@ -121,6 +120,8 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
         onEdit={() => {}}
         onTest={() => {}}
         onReload={() => {}}
+        onReloadVisible={() => {}}
+        isReloadingVisible={false}
         onToggleEnabled={() => {}}
         onCleanup={() => {}}
         onClearCleanupHistory={() => {}}
@@ -135,6 +136,9 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
   assert.match(markup, /data-mobile-summary="tools"/)
   assert.match(markup, /aria-label="Switch to tools view"/)
   assert.match(markup, /Add Server/)
+  assert.match(markup, /data-gateway-filters="all-viewports"/)
   assert.match(markup, /Search servers, commands, or endpoints/)
+  assert.match(markup, /aria-label="Toggle Code Mode"/)
+  assert.match(markup, /aria-label="Reload visible servers"/)
   assert.match(markup, />2</)
 })
