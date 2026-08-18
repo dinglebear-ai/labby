@@ -132,11 +132,16 @@ while guaranteeing JS-state isolation by construction.
   on a guaranteed-fresh ephemeral runner; no host-visible side effect could have
   crossed the protocol boundary yet. A crash after protocol activity, timeout, or
   protocol fault is **evicted without replay**.
-- **Settlement deadline semantics.** After the final tool result is relayed, the
-  runner gets up to 5 seconds to emit `Done`/`Error`, but never beyond the outer
-  execution deadline. `runner_settlement_timeout` is emitted only when the full
-  dedicated grace expires; if the outer deadline arrives first, surface the
-  ordinary Code Mode `timeout` instead.
+- **Settlement deadline semantics.** External `callTool` work reserves a 250 ms
+  result-ack window inside the same per-execution wall-clock budget when at least
+  twice that budget remains. This leaves time to relay `ToolResult`/`ToolError` and
+  receive `Done`/`Error` without materially shortening healthy upstream calls.
+  The separate hung-runner watchdog remains 5 seconds. After the final tool result
+  is relayed, the runner gets up to that 5-second grace, but never beyond the outer execution
+  deadline. `runner_settlement_timeout` is emitted only when the full dedicated
+  grace expires; if the outer deadline arrives first, surface the ordinary Code
+  Mode `timeout` instead. Very short executions that cannot fit the reserve keep
+  their original tool deadline and therefore remain outer-deadline limited.
 - **Recycle-after-K.** A pooled runner is killed+respawned after `recycle_after`
   executions (default 100) as cheap insurance against native-side fragmentation.
 - **Backpressure.** When all pooled slots are busy, a checkout spawns a bounded
