@@ -212,7 +212,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // full rationale; this mirrors what the `gateway` CLI subcommands
     // already do for their own dispatch.
     #[cfg(feature = "gateway")]
-    if stdio_mode && let Some(live) = crate::live_gateway::detect(config).await {
+    if stdio_mode && let Some(live) = crate::live_gateway::detect(config, "mcp").await? {
         tracing::info!(
             subsystem = "startup",
             phase = "bridge.detected",
@@ -1576,7 +1576,7 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
 
     let client_handler = BridgeClientHandler::new();
     let service = live
-        .connect_service(client_handler)
+        .connect_service_bounded(client_handler)
         .await
         .context("connect to live labby serve daemon for stdio bridging")?;
     let handler = BridgeServerHandler::new(service);

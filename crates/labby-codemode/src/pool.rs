@@ -183,6 +183,22 @@ impl RunnerPool {
         Ok(RunnerLease::ephemeral(runner, permit))
     }
 
+    /// Spawn a guaranteed-fresh ephemeral runner using the pool's configured
+    /// runner executable. This is used for a single safe replay after a pooled
+    /// runner dies before emitting any protocol activity, so a second stale
+    /// pooled slot can never turn the retry into another false failure.
+    pub(crate) async fn checkout_fresh(&self) -> Result<RunnerLease, ToolError> {
+        let permit = Arc::clone(&self.overflow_permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: "Code Mode runner pool overflow semaphore closed".to_string(),
+            })?;
+        let runner = PooledRunner::spawn(&self.spawn)?;
+        Ok(RunnerLease::ephemeral(runner, permit))
+    }
+
     /// Take the runner out of a claimed slot, spawning a fresh one if the slot is
     /// empty (first use or post-eviction).
     async fn take_or_spawn_slot(&self, index: usize) -> Result<PooledRunner, ToolError> {

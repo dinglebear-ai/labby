@@ -697,11 +697,13 @@ run, so isolation holds by construction.
 - **Bounded pool, one execution per runner.** `N` runners serve `N` concurrent
   executions. When all are busy, an extra request is served by a bounded
   ephemeral (overflow) runner rather than queueing unboundedly.
-- **Robustness.** A runner that crashes, times out, or violates the protocol is
-  killed and replaced (the failing run surfaces a clean error — `timeout` on
-  wall-clock expiry — never a hang). A pooled runner is also recycled
-  (killed + respawned) after a fixed number of executions as cheap insurance
-  against native-side leaks.
+- **Robustness.** If a pooled runner exits before emitting any valid protocol
+  event, it is killed and the execution is replayed once on a guaranteed-fresh
+  ephemeral runner; at that boundary no host-visible side effect can have run.
+  A crash after protocol activity, timeout, or protocol violation is killed and
+  surfaces a clean error without replay (`timeout` on wall-clock expiry). A
+  pooled runner is also recycled after a fixed number of executions as cheap
+  insurance against native-side leaks.
 - **Configuration / kill switch** (environment, read at startup):
   - `LABBY_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
     `16`). **`LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back

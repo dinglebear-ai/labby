@@ -750,6 +750,9 @@ async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
         .arg("--pid-file")
         .arg(&pid_file)
         .env("LABBY_HOME", temp.path())
+        .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
+        .env("LABBY_SERVER_URL", server.uri())
+        .env("LABBY_MCP_HTTP_TOKEN", "")
         .env("LABBY_PUBLIC_URL", server.uri())
         .env("LABBY_AUTH_MODE", "oauth")
         .env("LABBY_AUTH_SQLITE_PATH", temp.path().join("auth.db"))
@@ -772,7 +775,10 @@ async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("local OAuth exposure is not enabled"));
+    assert!(
+        stderr.contains("local OAuth exposure is not enabled"),
+        "unexpected stderr: {stderr}"
+    );
     assert!(!stderr.contains("lease-id-must-not-appear"));
     assert!(!stderr.contains("subject-must-not-be-logged"));
 
@@ -893,6 +899,9 @@ exit 2
         .arg("--pid-file")
         .arg(&child_pid_file)
         .env("LABBY_HOME", root)
+        .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
+        .env("LABBY_SERVER_URL", server.uri())
+        .env("LABBY_MCP_HTTP_TOKEN", "")
         .env("LABBY_PUBLIC_URL", server.uri())
         .env("LABBY_AUTH_MODE", "oauth")
         .env("LABBY_AUTH_SQLITE_PATH", root.join("auth.db"))

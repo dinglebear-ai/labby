@@ -84,6 +84,8 @@ __pycache__/
 
 # ── Documentation artifacts (session/plan docs, not reference) ───────────────
 .docs/
+.codex-plan-tmp/
+Labby Gateway Console.html
 
 
 # ── Rust ─────────────────────────────────────────────────────────────────────

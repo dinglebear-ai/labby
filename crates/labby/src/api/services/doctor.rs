@@ -47,6 +47,7 @@ async fn handle(
                 state.public_relay.clone(),
                 &action,
                 params,
+                "api",
             )
             .await
         },

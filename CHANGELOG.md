@@ -57,6 +57,24 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.13.3](https://github.com/dinglebear-ai/labby/compare/v1.13.2...v1.13.3) (2026-08-18)
+
+
+### Fixed
+
+* **container:** refresh patched Debian base packages ([#439](https://github.com/dinglebear-ai/labby/issues/439)) ([478ec68](https://github.com/dinglebear-ai/labby/commit/478ec68cdfca2e1d3d1d3fe4747d1a79593b3de3))
+
+## [1.13.2](https://github.com/dinglebear-ai/labby/compare/v1.13.1...v1.13.2) (2026-08-18)
+
+
+### Fixed
+
+* **auth:** tolerate concurrent refresh retries ([#427](https://github.com/dinglebear-ai/labby/issues/427)) ([56fee44](https://github.com/dinglebear-ai/labby/commit/56fee44250601533bd7eb166fde56e00e26b3c22))
+* **gateway:** stop unsupported subscription retries ([#438](https://github.com/dinglebear-ai/labby/issues/438)) ([f0cc063](https://github.com/dinglebear-ai/labby/commit/f0cc063dbc88075ac64b20415cd5c11edad058a7))
+* make remote gateway targets authoritative ([#429](https://github.com/dinglebear-ai/labby/issues/429)) ([fc75b29](https://github.com/dinglebear-ai/labby/commit/fc75b29249a23ce253ea30e07a4d74cf5d7bb364))
+* **release:** restore container and Incus smoke builds ([#425](https://github.com/dinglebear-ai/labby/issues/425)) ([63bb92d](https://github.com/dinglebear-ai/labby/commit/63bb92d92ef1dffbff73acb045c694b682c1ebd0))
+* **setup:** honor configured remote plugin target ([#428](https://github.com/dinglebear-ai/labby/issues/428)) ([196d811](https://github.com/dinglebear-ai/labby/commit/196d811e4ea70322b95647e573d92c6f6c148f7d))
+
 ## [1.13.1](https://github.com/dinglebear-ai/labby/compare/v1.13.0...v1.13.1) (2026-08-15)
 
 

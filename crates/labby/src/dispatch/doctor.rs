@@ -17,7 +17,9 @@ mod system;
 mod types;
 
 pub use catalog::ACTIONS;
-pub use dispatch::{dispatch, dispatch_with_clients, dispatch_with_clients_and_relay};
+pub use dispatch::{
+    dispatch, dispatch_with_clients, dispatch_with_clients_and_relay, dispatch_with_surface,
+};
 pub use relay::check_public_relay;
 pub use system::{run_auth_checks, run_system_checks};
 pub use types::{Finding, Report, Severity};

@@ -1,26 +1,26 @@
 # Configuration Reference
 
-Config lives in `~/.labby/.env`. Loaded at startup by `crates/lab/src/config.rs`.
+Config lives in `~/.labby/.env`. Loaded at startup by `crates/labby/src/config.rs`.
 
 Runtime gateway settings live in `config.toml`; verify exact fields against
-`crates/lab/src/config.rs` before editing.
+`crates/labby/src/config.rs` before editing.
 
 ## Env Var Naming Convention
 
 ```
-LAB_MCP_HTTP_TOKEN            # static bearer token for Labby HTTP/MCP
-LAB_GW_<NAME>_AUTH_HEADER     # auth header for one gateway upstream
+LABBY_MCP_HTTP_TOKEN            # static bearer token for Labby HTTP/MCP
+LABBY_GW_<NAME>_AUTH_HEADER     # auth header for one gateway upstream
 ```
 
 Use `docs/generated/env-reference.md` for current Labby-owned env vars. For
 gateway auth, prefer `gateway.add`/`gateway.update` with `bearer_token_env` and
-let Labby derive `LAB_GW_<NAME>_AUTH_HEADER` when possible.
+let Labby derive `LABBY_GW_<NAME>_AUTH_HEADER` when possible.
 
 ## Logging
 
 ```
-LAB_LOG=labby=info,lab_apis=warn    # tracing filter directive (default)
-LAB_LOG_FORMAT=json               # emit newline-delimited JSON (for prod/CI)
+LABBY_LOG=labby=info,labby_apis=warn  # tracing filter directive (default)
+LABBY_LOG_FORMAT=json                # emit newline-delimited JSON (for prod/CI)
 ```
 
 ## Code Mode Config

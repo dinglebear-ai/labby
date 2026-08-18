@@ -195,6 +195,27 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
+    if current < 11 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS refresh_token_replays (
+                   predecessor_token_hash TEXT PRIMARY KEY,
+                   client_id TEXT NOT NULL,
+                   resource TEXT NOT NULL,
+                   response TEXT NOT NULL,
+                   replacement_token_hash TEXT NOT NULL
+                     REFERENCES refresh_tokens(refresh_token_hash) ON DELETE CASCADE,
+                   created_at INTEGER NOT NULL,
+                   expires_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_refresh_token_replays_expiry
+                   ON refresh_token_replays(expires_at);
+                 PRAGMA user_version = 11;",
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+    }
     Ok(())
 }
 
