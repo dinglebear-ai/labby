@@ -57,6 +57,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.13.3](https://github.com/dinglebear-ai/labby/compare/v1.13.2...v1.13.3) (2026-08-18)
+
+
+### Fixed
+
+* **container:** refresh patched Debian base packages ([#439](https://github.com/dinglebear-ai/labby/issues/439)) ([478ec68](https://github.com/dinglebear-ai/labby/commit/478ec68cdfca2e1d3d1d3fe4747d1a79593b3de3))
+
 ## [1.13.2](https://github.com/dinglebear-ai/labby/compare/v1.13.1...v1.13.2) (2026-08-18)
 
 
