@@ -783,6 +783,69 @@ async fn code_mode_mcp_ui_setting_persists_notifies_and_skips_pool_rebuild() {
 }
 
 #[tokio::test]
+async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let runtime = GatewayRuntimeHandle::default();
+    let mut manager = GatewayManager::new(path.clone(), runtime.clone());
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+    manager.set_notifier(crate::gateway::types::CatalogChangeNotifier::new(notify_tx));
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .await;
+    assert!(runtime.current_pool().await.is_none());
+
+    let updated = manager
+        .set_mcp_app_visibility(
+            "all",
+            false,
+            Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
+        )
+        .await
+        .expect("persist MCP App visibility");
+
+    assert!(!updated.code_mode.mcp_ui_enabled);
+    assert!(!updated.mcp_apps.gateway_status);
+    assert!(!updated.mcp_apps.server_logs);
+    assert!(!updated.mcp_apps.add_server);
+    assert!(!manager.code_mode_app_state().is_enabled());
+    assert!(
+        runtime.current_pool().await.is_none(),
+        "app-only settings must not create or rebuild the upstream pool"
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(1), notify_rx.recv())
+        .await
+        .expect("MCP App catalog notification timed out")
+        .expect("MCP App catalog notification channel closed");
+    assert!(event.diff.tools_changed);
+    assert!(event.diff.resources_changed);
+    assert!(!event.diff.prompts_changed);
+    assert_eq!(
+        event.source,
+        labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP
+    );
+    assert!(
+        notify_rx.try_recv().is_err(),
+        "a bulk visibility change should emit exactly one catalog event"
+    );
+
+    let persisted = load_gateway_config(&path).expect("load persisted config");
+    assert!(!persisted.code_mode.mcp_ui_enabled);
+    assert!(!persisted.mcp_apps.gateway_status);
+    assert!(!persisted.mcp_apps.server_logs);
+    assert!(!persisted.mcp_apps.add_server);
+
+    let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    restarted.seed_config_unchecked_for_tests(persisted).await;
+    assert!(!restarted.code_mode_app_state().is_enabled());
+    let restarted_apps = restarted.mcp_apps_config().await;
+    assert!(!restarted_apps.gateway_status);
+    assert!(!restarted_apps.server_logs);
+    assert!(!restarted_apps.add_server);
+}
+
+#[tokio::test]
 async fn code_mode_runtime_change_notifies_from_the_previous_regime() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

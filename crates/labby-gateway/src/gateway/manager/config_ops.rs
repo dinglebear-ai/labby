@@ -556,13 +556,18 @@ impl GatewayManager {
         let current = self.current_config().await;
         self.code_mode_app_state
             .set_enabled(current.code_mode.mcp_ui_enabled);
+        let notification_source = if origin == Some(SOURCE_MCP_CALL_MCP_APP) {
+            SOURCE_MCP_CALL_MCP_APP
+        } else {
+            SOURCE_GATEWAY_MCP_APPS_SET
+        };
         self.notify_catalog_changes(
             &GatewayCatalogDiff {
                 tools_changed: true,
                 resources_changed: true,
                 prompts_changed: false,
             },
-            origin.unwrap_or(SOURCE_GATEWAY_MCP_APPS_SET),
+            notification_source,
         );
         tracing::info!(
             surface = "dispatch",
