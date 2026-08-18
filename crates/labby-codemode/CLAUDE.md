@@ -127,8 +127,11 @@ while guaranteeing JS-state isolation by construction.
   free-list so concurrent checkouts never collide.
 - **Disposition.** `drive_runner` classifies each run: clean `Done` or a
   per-execution `Error` → the runner is parked and **released** back to the pool
-  (it stayed alive with a fresh runtime); a crash (EOF/exit), timeout, or protocol
-  fault → the runner is **evicted** (killed) and the slot respawns next checkout.
+  (it stayed alive with a fresh runtime). If a pooled runner exits before emitting
+  any valid protocol event, it is **evicted** and the execution is replayed once
+  on a guaranteed-fresh ephemeral runner; no host-visible side effect could have
+  crossed the protocol boundary yet. A crash after protocol activity, timeout, or
+  protocol fault is **evicted without replay**.
 - **Recycle-after-K.** A pooled runner is killed+respawned after `recycle_after`
   executions (default 100) as cheap insurance against native-side fragmentation.
 - **Backpressure.** When all pooled slots are busy, a checkout spawns a bounded
@@ -251,7 +254,7 @@ env_clear lands" comment — that state is in the past.
 | File | Purpose |
 |------|---------|
 | `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → fresh runtime → run → `Done`/`Error` → reset + park), per-execution seq + cwd-jail reset, `PR_SET_DUMPABLE`. |
-| `runner_drive.rs` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnhealthy`), wall-clock timeout, and finalizes the lease (release vs evict). |
+| `runner_drive.rs` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
 | `pool.rs` | `RunnerPool` + `RunnerLease`: bounded warm pool, free-list slot ownership, recycle-after-K, bounded ephemeral overflow, kill switch. |
 | `pool/runner_handle.rs` | `PooledRunner`: one long-lived runner process + its stdin/lines/stderr-drain, process-group/Job-Object guard, spawn (`env_clear`, `process_group`, `kill_on_drop`). |
 | `pool/config.rs` | `PoolConfig`: env-driven pool size / recycle / overflow knobs and the kill switch. |
