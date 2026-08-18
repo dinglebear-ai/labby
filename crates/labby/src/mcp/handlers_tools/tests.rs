@@ -17,13 +17,14 @@ use crate::mcp::catalog::{
 };
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
-    CODE_MODE_APP_URI, GATEWAY_STATUS_APP_SKYBRIDGE_URI, GATEWAY_STATUS_APP_URI,
+    CODE_MODE_APP_URI, CODE_MODE_APP_URI_PREFIX, GATEWAY_STATUS_APP_SKYBRIDGE_URI,
+    GATEWAY_STATUS_APP_URI, MCP_APPS_APP_SKYBRIDGE_URI, MCP_APPS_APP_URI,
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI,
 };
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
     code_mode_trace_output_schema, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_schema, server_logs_tool_meta,
+    mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -956,7 +957,7 @@ fn code_mode_ui_tool_meta_points_to_canonical_ui_resource() {
 }
 
 #[test]
-fn mcp_app_schema_is_text_only_and_reversible() {
+fn mcp_app_schema_and_meta_cover_managed_apps() {
     let schema = mcp_app_tool_schema();
     assert_eq!(
         schema["properties"]["action"]["enum"],
@@ -964,9 +965,36 @@ fn mcp_app_schema_is_text_only_and_reversible() {
     );
     assert_eq!(
         schema["properties"]["target"]["enum"],
-        serde_json::json!(["codemode"])
+        serde_json::json!([
+            "codemode",
+            "gateway_status",
+            "server_logs",
+            "add_server",
+            "all"
+        ])
+    );
+    assert_eq!(schema["properties"]["target"]["default"], "codemode");
+    assert_eq!(
+        schema["properties"]["params"]["properties"]["target"]["enum"],
+        schema["properties"]["target"]["enum"]
+    );
+    assert_eq!(
+        schema["properties"]["params"]["additionalProperties"],
+        false
     );
     assert_eq!(schema["additionalProperties"], false);
+
+    let meta = mcp_app_tool_meta(MCP_APP_TOOL_NAME);
+    assert!(
+        meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(MCP_APPS_APP_URI) && uri.contains("?v="))
+    );
+    assert!(
+        meta.0["openai/outputTemplate"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(MCP_APPS_APP_SKYBRIDGE_URI))
+    );
 }
 
 #[test]
@@ -1138,11 +1166,64 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         .iter()
         .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
         .expect("mcp_app tool");
-    assert!(control.meta.is_none(), "mcp_app must remain text-only");
+    let control_meta = control
+        .meta
+        .as_ref()
+        .expect("mcp_app must own app metadata");
+    assert!(
+        control_meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(MCP_APPS_APP_URI))
+    );
 }
 
 #[tokio::test]
-async fn mcp_app_status_is_text_only_and_reports_runtime_state() {
+async fn mcp_app_manager_stays_visible_when_code_mode_is_disabled() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("tools with code mode disabled");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
+    );
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != CODE_MODE_UI_TOOL_NAME)
+    );
+
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(peer, &["lab:admin"]))
+        .await
+        .expect("resources with code mode disabled");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .any(|resource| resource.uri.starts_with(MCP_APPS_APP_URI))
+    );
+}
+
+#[tokio::test]
+async fn mcp_app_status_reports_runtime_state() {
     let server = test_server(
         completion_test_registry(),
         Some(code_mode_manager(true).await),
@@ -1374,6 +1455,154 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
             .iter()
             .any(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
     );
+}
+
+#[tokio::test]
+async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
+    let manager = code_mode_manager(true).await;
+    let shared_state = manager.code_mode_app_state();
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(Arc::clone(&manager)),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.code_mode_app_state = shared_state;
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    // The shared app host wraps action params under `params`; exercise that shape
+    // instead of only the direct top-level MCP schema used by text clients.
+    let disable = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "disable", "params": { "target": "all" } })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(peer.clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("bulk disable result");
+    assert!(!disable.is_error.unwrap_or(false));
+    let structured = disable.structured_content.expect("structured bulk disable");
+    assert_eq!(structured["target"], "all");
+    assert_eq!(structured["enabled"], false);
+    assert_eq!(structured["changed"], true);
+    for target in ["codemode", "gateway_status", "server_logs", "add_server"] {
+        assert_eq!(structured["apps"][target]["enabled"], false, "{target}");
+    }
+
+    let cfg = manager.current_config().await;
+    assert!(!cfg.code_mode.mcp_ui_enabled);
+    assert!(!cfg.mcp_apps.gateway_status);
+    assert!(!cfg.mcp_apps.server_logs);
+    assert!(!cfg.mcp_apps.add_server);
+    assert!(!running.service().code_mode_app_state.is_enabled());
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("tools after bulk disable");
+    let names = tools
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&CODE_MODE_TOOL_NAME));
+    assert!(names.contains(&MCP_APP_TOOL_NAME));
+    assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
+    assert!(!names.contains(&GATEWAY_STATUS_TOOL_NAME));
+    assert!(!names.contains(&ADD_SERVER_TOOL_NAME));
+    let logs = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == SERVER_LOGS_TOOL_NAME)
+        .expect("server_logs text service remains available");
+    assert!(
+        logs.meta.is_none(),
+        "server_logs app metadata must be disabled"
+    );
+
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("resources after bulk disable");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .any(|resource| resource.uri.starts_with(MCP_APPS_APP_URI)),
+        "the recovery manager resource must stay listed"
+    );
+    for hidden_prefix in [
+        CODE_MODE_APP_URI_PREFIX,
+        GATEWAY_STATUS_APP_URI,
+        SERVER_LOGS_APP_URI,
+        ADD_SERVER_APP_URI,
+    ] {
+        assert!(
+            resources
+                .resources
+                .iter()
+                .all(|resource| !resource.uri.starts_with(hidden_prefix)),
+            "managed resource remained listed: {hidden_prefix}"
+        );
+    }
+    for stale_uri in [
+        CODE_MODE_APP_URI,
+        GATEWAY_STATUS_APP_URI,
+        SERVER_LOGS_APP_URI,
+        ADD_SERVER_APP_URI,
+    ] {
+        let stale = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(stale_uri),
+                scoped_context(peer.clone(), &["lab:admin"]),
+            )
+            .await
+            .expect_err("disabled app resource must be unreadable");
+        assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
+    }
+
+    let manager_resource = running
+        .service()
+        .read_resource_impl(
+            ReadResourceRequestParams::new(MCP_APPS_APP_URI),
+            scoped_context(peer.clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("manager resource remains readable");
+    assert_eq!(manager_resource.contents.len(), 1);
+
+    let enable = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "enable", "target": "all" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(peer, &["lab:admin"]),
+        )
+        .await
+        .expect("bulk enable result");
+    assert!(!enable.is_error.unwrap_or(false));
+    let cfg = manager.current_config().await;
+    assert!(cfg.code_mode.mcp_ui_enabled);
+    assert!(cfg.mcp_apps.gateway_status);
+    assert!(cfg.mcp_apps.server_logs);
+    assert!(cfg.mcp_apps.add_server);
+    assert!(running.service().code_mode_app_state.is_enabled());
 }
 
 #[tokio::test]

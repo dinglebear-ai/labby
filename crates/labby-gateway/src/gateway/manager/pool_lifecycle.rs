@@ -305,6 +305,7 @@ impl GatewayManager {
                 code_mode_namespace_tokens(&current),
                 current.code_mode.enabled != cfg.code_mode.enabled
                     || current.code_mode.mcp_ui_enabled != cfg.code_mode.mcp_ui_enabled
+                    || current.mcp_apps != cfg.mcp_apps
                     || current.virtual_servers != cfg.virtual_servers
                     || current.protected_mcp_routes != cfg.protected_mcp_routes,
             )
@@ -335,6 +336,7 @@ impl GatewayManager {
             *self.config.write().await = cfg;
             let diff = GatewayCatalogDiff {
                 tools_changed: lab_owned_surface_changed,
+                resources_changed: lab_owned_surface_changed,
                 ..GatewayCatalogDiff::default()
             };
             self.notify_catalog_changes(&diff, SOURCE_GATEWAY_RELOAD_SELECTIVE);

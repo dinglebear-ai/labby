@@ -79,6 +79,10 @@ impl McpRouteScope {
         }
     }
 
+    pub(crate) fn is_root(&self) -> bool {
+        matches!(self, Self::Root)
+    }
+
     pub(crate) fn exposes_code_mode(&self) -> bool {
         match self {
             Self::Root => true,
@@ -116,6 +120,7 @@ mod tests {
         assert!(scope.allows_service("gateway"));
         assert!(scope.allows_upstream("gateway-alpha"));
         assert!(scope.exposes_code_mode());
+        assert!(scope.is_root());
         assert_eq!(scope.label(), "root");
     }
 
@@ -132,6 +137,7 @@ mod tests {
         assert!(scope.allows_upstream("gateway-alpha"));
         assert!(!scope.allows_upstream("hidden-upstream"));
         assert!(scope.exposes_code_mode());
+        assert!(!scope.is_root());
         assert_eq!(scope.label(), "protected:ops");
     }
 
