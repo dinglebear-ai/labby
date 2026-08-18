@@ -8,11 +8,11 @@
 !apps/palette-tauri/scripts/desktop-smoke.env.example
 # Use /config.toml (root-anchored) so .cargo/config.toml is NOT excluded.
 /config.toml
-# The gateway writes a sibling <config>.lock next to whatever config it opens
-# (see lock_path() in crates/labby-gateway/src/gateway/config.rs). Running
-# labby from the repo root therefore drops /config.toml.lock here; ignoring
-# /config.toml alone let an empty one get committed once already.
+# The gateway writes sibling <config>.lock and <config>.mutation.lock sidecars
+# next to whatever config it opens. Running labby/tests from the repo root can
+# therefore drop both here; neither runtime synchronization file belongs in git.
 /config.toml.lock
+/config.toml.mutation.lock
 .broadcastr
 # ── Runtime artifacts ────────────────────────────────────────────────────────
 /logs/

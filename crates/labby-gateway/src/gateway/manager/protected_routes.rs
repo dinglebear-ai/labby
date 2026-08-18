@@ -5,7 +5,7 @@ use crate::gateway::config::{
     insert_protected_mcp_route, remove_protected_mcp_route, update_protected_mcp_route,
 };
 use labby_runtime::error::ToolError;
-use labby_runtime::gateway_config::ProtectedMcpRouteConfig;
+use labby_runtime::gateway_config::{GatewayConfig, ProtectedMcpRouteConfig};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -43,8 +43,14 @@ impl GatewayManager {
     /// index, so this view is the control-plane source of truth for pending
     /// restart work.
     pub async fn protected_route_list_state(&self) -> Result<Vec<Value>, ToolError> {
-        let desired = self.load_config_for_mutation().await?.protected_mcp_routes;
-        let runtime = self.config.read().await.protected_mcp_routes.clone();
+        let desired_cfg = self.load_config_for_mutation().await?;
+        let runtime_cfg = self.config.read().await.clone();
+        let global_restart_required = super::config_transaction::protected_routes_have_restart_debt(
+            &runtime_cfg,
+            &desired_cfg,
+        );
+        let desired = desired_cfg.protected_mcp_routes;
+        let runtime = runtime_cfg.protected_mcp_routes;
         let names = desired
             .iter()
             .chain(runtime.iter())
@@ -55,10 +61,7 @@ impl GatewayManager {
             let desired_route = desired.iter().find(|route| route.name == name);
             let runtime_route = runtime.iter().find(|route| route.name == name);
             let changed = desired_route != runtime_route;
-            let subset_related = desired_route
-                .is_some_and(ProtectedMcpRouteConfig::is_gateway_subset)
-                || runtime_route.is_some_and(ProtectedMcpRouteConfig::is_gateway_subset);
-            let restart_required = changed && subset_related;
+            let restart_required = changed && global_restart_required;
             let pending_operation = if !restart_required {
                 None
             } else if runtime_route.is_none() {
@@ -124,6 +127,15 @@ impl GatewayManager {
         reject_hot_gateway_subset_mutation(&route, "add")?;
         let _mutation_guard = self.acquire_config_mutation().await?;
         let mut cfg = self.load_config_for_mutation().await?;
+        let runtime_cfg = self.config.read().await.clone();
+        reject_pending_route_restart(&runtime_cfg, &cfg, "add")?;
+        if let Some(runtime_existing) = runtime_cfg
+            .protected_mcp_routes
+            .iter()
+            .find(|existing| existing.name == route.name)
+        {
+            reject_hot_gateway_subset_mutation(runtime_existing, "add")?;
+        }
         let route = insert_protected_mcp_route(&mut cfg, route)?;
         self.persist_config_owned(_mutation_guard, cfg).await?;
         tracing::info!(
@@ -150,12 +162,21 @@ impl GatewayManager {
     ) -> Result<ProtectedMcpRouteConfig, ToolError> {
         let _mutation_guard = self.acquire_config_mutation().await?;
         let mut cfg = self.load_config_for_mutation().await?;
+        let runtime_cfg = self.config.read().await.clone();
+        reject_pending_route_restart(&runtime_cfg, &cfg, "update")?;
         if let Some(existing) = cfg
             .protected_mcp_routes
             .iter()
             .find(|route| route.name == name)
         {
             reject_hot_gateway_subset_mutation(existing, "update")?;
+        }
+        if let Some(runtime_existing) = runtime_cfg
+            .protected_mcp_routes
+            .iter()
+            .find(|existing| existing.name == name)
+        {
+            reject_hot_gateway_subset_mutation(runtime_existing, "update")?;
         }
         reject_hot_gateway_subset_mutation(&route, "update")?;
         let route = update_protected_mcp_route(&mut cfg, name, route)?;
@@ -184,12 +205,21 @@ impl GatewayManager {
     ) -> Result<ProtectedMcpRouteConfig, ToolError> {
         let _mutation_guard = self.acquire_config_mutation().await?;
         let mut cfg = self.load_config_for_mutation().await?;
+        let runtime_cfg = self.config.read().await.clone();
+        reject_pending_route_restart(&runtime_cfg, &cfg, "remove")?;
         if let Some(existing) = cfg
             .protected_mcp_routes
             .iter()
             .find(|route| route.name == name)
         {
             reject_hot_gateway_subset_mutation(existing, "remove")?;
+        }
+        if let Some(runtime_existing) = runtime_cfg
+            .protected_mcp_routes
+            .iter()
+            .find(|existing| existing.name == name)
+        {
+            reject_hot_gateway_subset_mutation(runtime_existing, "remove")?;
         }
         let route = remove_protected_mcp_route(&mut cfg, name)?;
         self.persist_config_owned(_mutation_guard, cfg).await?;
@@ -212,28 +242,52 @@ impl GatewayManager {
         &self,
         route: ProtectedMcpRouteConfig,
     ) -> Result<Value, ToolError> {
-        if !route.is_gateway_subset() {
-            return Err(ToolError::InvalidParam {
-                message: "staging is only needed for gateway_subset protected routes; use gateway.protected_route.add for a directly hot-reloadable backend route".to_string(),
-                param: "route.target".to_string(),
-            });
-        }
         let started = std::time::Instant::now();
         let _mutation_guard = self.acquire_config_mutation().await?;
         let mut cfg = self.load_config_for_mutation().await?;
-        let runtime_existing = self
-            .config
-            .read()
-            .await
+        let runtime_cfg = self.config.read().await.clone();
+        let runtime_existing = runtime_cfg
             .protected_mcp_routes
             .iter()
             .find(|existing| existing.name == route.name)
             .cloned();
+        let pending_restart =
+            super::config_transaction::protected_routes_have_restart_debt(&runtime_cfg, &cfg);
+        if !pending_restart
+            && !route.is_gateway_subset()
+            && !runtime_existing
+                .as_ref()
+                .is_some_and(ProtectedMcpRouteConfig::is_gateway_subset)
+        {
+            return Err(ToolError::InvalidParam {
+                message: "staging is only needed for a gateway_subset desired route or when replacing a still-mounted gateway_subset route; use gateway.protected_route.add for a directly hot-reloadable backend route".to_string(),
+                param: "route.target".to_string(),
+            });
+        }
         let route = insert_protected_mcp_route(&mut cfg, route)?;
-        let result = staged_route_result(route.clone(), Some(&route), runtime_existing.as_ref());
+        let runtime_result = runtime_cfg
+            .protected_mcp_routes
+            .iter()
+            .find(|runtime| runtime.name == route.name);
+        let restart_required =
+            super::config_transaction::protected_routes_have_restart_debt(&runtime_cfg, &cfg);
+        let result = staged_route_result(
+            route.clone(),
+            Some(&route),
+            runtime_result,
+            restart_required,
+        );
         let restart_required = result["restart_required"].as_bool().unwrap_or(true);
-        self.persist_desired_config_owned(_mutation_guard, cfg)
-            .await?;
+        if restart_required {
+            self.persist_desired_config_owned(_mutation_guard, cfg)
+                .await?;
+        } else {
+            // Once the last gateway-subset restart dependency is gone, every
+            // remaining desired route difference is hot-safe. Publish that
+            // accumulated direct-route state now so a no-restart result can
+            // never get ahead of the live route index.
+            self.persist_config_owned(_mutation_guard, cfg).await?;
+        }
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -261,14 +315,14 @@ impl GatewayManager {
             .iter()
             .find(|existing| existing.name == name)
             .cloned();
-        let runtime_existing = self
-            .config
-            .read()
-            .await
+        let runtime_cfg = self.config.read().await.clone();
+        let runtime_existing = runtime_cfg
             .protected_mcp_routes
             .iter()
             .find(|existing| existing.name == name)
             .cloned();
+        let pending_restart =
+            super::config_transaction::protected_routes_have_restart_debt(&runtime_cfg, &cfg);
         let subset_related = route.is_gateway_subset()
             || desired_existing
                 .as_ref()
@@ -276,17 +330,36 @@ impl GatewayManager {
             || runtime_existing
                 .as_ref()
                 .is_some_and(ProtectedMcpRouteConfig::is_gateway_subset);
-        if !subset_related {
+        if !subset_related && !pending_restart {
             return Err(ToolError::InvalidParam {
                 message: "staging is only needed when the current or replacement route is a gateway_subset; use gateway.protected_route.update for a directly hot-reloadable backend route".to_string(),
                 param: "route.target".to_string(),
             });
         }
         let route = update_protected_mcp_route(&mut cfg, name, route)?;
-        let result = staged_route_result(route.clone(), Some(&route), runtime_existing.as_ref());
+        let runtime_result = runtime_cfg
+            .protected_mcp_routes
+            .iter()
+            .find(|runtime| runtime.name == route.name);
+        let restart_required =
+            super::config_transaction::protected_routes_have_restart_debt(&runtime_cfg, &cfg);
+        let result = staged_route_result(
+            route.clone(),
+            Some(&route),
+            runtime_result,
+            restart_required,
+        );
         let restart_required = result["restart_required"].as_bool().unwrap_or(true);
-        self.persist_desired_config_owned(_mutation_guard, cfg)
-            .await?;
+        if restart_required {
+            self.persist_desired_config_owned(_mutation_guard, cfg)
+                .await?;
+        } else {
+            // Once the last gateway-subset restart dependency is gone, every
+            // remaining desired route difference is hot-safe. Publish that
+            // accumulated direct-route state now so a no-restart result can
+            // never get ahead of the live route index.
+            self.persist_config_owned(_mutation_guard, cfg).await?;
+        }
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -311,31 +384,46 @@ impl GatewayManager {
             .iter()
             .find(|existing| existing.name == name)
             .cloned();
-        let runtime_existing = self
-            .config
-            .read()
-            .await
+        let runtime_cfg = self.config.read().await.clone();
+        let runtime_existing = runtime_cfg
             .protected_mcp_routes
             .iter()
             .find(|existing| existing.name == name)
             .cloned();
+        let pending_restart =
+            super::config_transaction::protected_routes_have_restart_debt(&runtime_cfg, &cfg);
         let subset_related = desired_existing
             .as_ref()
             .is_some_and(ProtectedMcpRouteConfig::is_gateway_subset)
             || runtime_existing
                 .as_ref()
                 .is_some_and(ProtectedMcpRouteConfig::is_gateway_subset);
-        if !subset_related {
+        if !subset_related && !pending_restart {
             return Err(ToolError::InvalidParam {
                 message: "staging is only needed for a gateway_subset protected route; use gateway.protected_route.remove for a directly hot-reloadable backend route".to_string(),
                 param: "name".to_string(),
             });
         }
         let route = remove_protected_mcp_route(&mut cfg, name)?;
-        let result = staged_route_result(route.clone(), None, runtime_existing.as_ref());
+        let restart_required =
+            super::config_transaction::protected_routes_have_restart_debt(&runtime_cfg, &cfg);
+        let result = staged_route_result(
+            route.clone(),
+            None,
+            runtime_existing.as_ref(),
+            restart_required,
+        );
         let restart_required = result["restart_required"].as_bool().unwrap_or(true);
-        self.persist_desired_config_owned(_mutation_guard, cfg)
-            .await?;
+        if restart_required {
+            self.persist_desired_config_owned(_mutation_guard, cfg)
+                .await?;
+        } else {
+            // Once the last gateway-subset restart dependency is gone, every
+            // remaining desired route difference is hot-safe. Publish that
+            // accumulated direct-route state now so a no-restart result can
+            // never get ahead of the live route index.
+            self.persist_config_owned(_mutation_guard, cfg).await?;
+        }
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -389,9 +477,10 @@ fn staged_route_result(
     route: ProtectedMcpRouteConfig,
     desired: Option<&ProtectedMcpRouteConfig>,
     runtime: Option<&ProtectedMcpRouteConfig>,
+    restart_required: bool,
 ) -> Value {
-    let restart_required = desired != runtime;
-    let pending_operation = if !restart_required {
+    let local_changed = desired != runtime;
+    let pending_operation = if !local_changed {
         None
     } else if runtime.is_none() {
         Some("add")
@@ -400,8 +489,10 @@ fn staged_route_result(
     } else {
         Some("update")
     };
-    let restart_note = if restart_required {
-        "The protected gateway_subset desired state was saved to durable config but this process is still serving the startup-mounted route set. Restart labby serve to apply it."
+    let restart_note = if restart_required && local_changed {
+        "The protected route desired state was saved to durable config but this process is still serving the startup-mounted route set. Restart labby serve to apply it."
+    } else if restart_required {
+        "This route now matches its runtime state, but other protected route changes are still staged. Restart labby serve to apply the remaining desired route set."
     } else {
         "The desired protected route state now matches the route set mounted by this process; no restart is required."
     };
@@ -410,6 +501,22 @@ fn staged_route_result(
         "restart_required": restart_required,
         "pending_operation": pending_operation,
         "restart_note": restart_note,
+    })
+}
+
+fn reject_pending_route_restart(
+    runtime: &GatewayConfig,
+    desired: &GatewayConfig,
+    operation: &str,
+) -> Result<(), ToolError> {
+    if !super::config_transaction::protected_routes_have_restart_debt(runtime, desired) {
+        return Ok(());
+    }
+    Err(ToolError::Sdk {
+        sdk_kind: "restart_required".to_string(),
+        message: format!(
+            "protected MCP route changes are already staged for restart; restart labby serve before using hot {operation}, or continue editing the pending route through the staged actions"
+        ),
     })
 }
 

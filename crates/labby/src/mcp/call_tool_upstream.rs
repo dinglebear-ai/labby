@@ -44,6 +44,7 @@ use crate::mcp::context::{
 };
 use crate::mcp::envelope::build_error_extra;
 use crate::mcp::error::canonical_kind;
+use crate::mcp::handlers_tools::strip_resource_backed_ui_meta;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::result_format::{
     error_result_from_envelope, estimate_tokens, estimate_tokens_args, format_dispatch_result,
@@ -508,13 +509,16 @@ impl LabMcpServer {
                         return Ok(result);
                     };
                     let elapsed_ms = start.elapsed().as_millis();
-                    let (result, kind) = normalize_upstream_result(
+                    let (mut result, kind) = normalize_upstream_result(
                         service,
                         upstream_action,
                         &upstream_name,
                         result,
                         &safety,
                     );
+                    if !self.route_scope.exposes_resources() {
+                        strip_resource_backed_ui_meta(&mut result.meta);
+                    }
                     // A completed `isError: true` result is a tool-execution
                     // failure for the model, never a health failure.
                     let outcome = if kind == "ok" {
@@ -765,13 +769,16 @@ impl LabMcpServer {
                             return Ok(result);
                         };
                         let elapsed_ms = start.elapsed().as_millis();
-                        let (result, kind) = normalize_upstream_result(
+                        let (mut result, kind) = normalize_upstream_result(
                             service,
                             upstream_action,
                             &upstream_name,
                             result,
                             &safety,
                         );
+                        if !self.route_scope.exposes_resources() {
+                            strip_resource_backed_ui_meta(&mut result.meta);
+                        }
                         let output_tokens = serde_json::to_string(&result)
                             .map(|output| estimate_tokens(&output))
                             .unwrap_or(0);

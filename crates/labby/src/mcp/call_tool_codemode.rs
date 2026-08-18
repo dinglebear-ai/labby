@@ -892,7 +892,12 @@ impl LabMcpServer {
             captured_ui_resource_uri = captured_resource_uri.unwrap_or("<none>"),
             "gateway codemode ok"
         );
-        Ok(code_mode_result(output, structured, &response))
+        Ok(code_mode_result(
+            output,
+            structured,
+            &response,
+            self.route_scope.exposes_resources(),
+        ))
     }
 }
 
@@ -925,13 +930,17 @@ fn code_mode_result(
     text: String,
     structured: Value,
     response: &CodeModeExecutionResponse,
+    expose_resource_ui: bool,
 ) -> CallToolResult {
-    let ui_meta = response.ui.as_ref().map(|ui| {
-        MetaObject(serde_json::Map::from_iter([(
-            "ui".to_string(),
-            ui.ui_meta.clone(),
-        )]))
-    });
+    let ui_meta = expose_resource_ui
+        .then_some(response.ui.as_ref())
+        .flatten()
+        .map(|ui| {
+            MetaObject(serde_json::Map::from_iter([(
+                "ui".to_string(),
+                ui.ui_meta.clone(),
+            )]))
+        });
     call_result_with_structured(text, structured, ui_meta)
 }
 

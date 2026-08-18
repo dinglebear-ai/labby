@@ -196,7 +196,7 @@ A Loadout target is mutually exclusive with inline target upstreams, target serv
 
 Protected gateway-subset routes are mounted when labby serve starts. The direct add/update/remove actions therefore still return restart_required rather than pretending the live router changed. First-class control-plane clients use the staged route actions for these mutations: gateway.protected_route.stage_add, stage_update, and stage_remove. Staging writes the desired durable config but deliberately leaves the running route set untouched. The response derives restart_required and pending_operation from desired-vs-runtime state, so cancelling a staged change can correctly report that no restart remains. gateway.protected_route.list_state uses the same comparison and reports pending add/update/remove state until the next restart.
 
-The WebUI automatically stages Loadout/gateway-subset route changes and labels them Restart · add/update/remove. The CLI automatically stages additions and updates whose replacement target is a gateway subset; use --stage-for-restart when updating a currently-mounted subset to a direct route or when removing a mounted subset. Restart labby serve to apply the desired route set. A referenced Loadout cannot be removed until all protected routes, including disabled routes, stop referencing it.
+The WebUI automatically stages Loadout/gateway-subset route changes and labels them Restart · add/update/remove. Once any protected-route change crosses a gateway-subset boundary, the running process freezes the complete protected-route collection at its startup revision until restart; follow-up direct route edits are staged into the same desired transaction rather than half-publishing a rename or related change. The CLI automatically stages additions and updates whose replacement target is a gateway subset; use --stage-for-restart when updating a currently-mounted subset to a direct route, removing a mounted subset, or continuing route edits while restart debt is already pending. Restart labby serve to apply the desired route set. A referenced Loadout cannot be removed until all protected routes, including disabled routes, stop referencing it.
 
 ## Loadout validation and course correction
 
@@ -216,7 +216,7 @@ Loadout validation fails closed with actionable errors:
 A Loadout is enforced at the real MCP boundaries, not only in UI/config.
 
 - Tools disabled: direct upstream and Lab service tools are omitted/denied. Code Mode remains available when its separate gate is enabled.
-- Resources disabled: resources/list and resource-template listing return empty; resources/read is denied with a Loadout-specific message.
+- Resources disabled: resources/list and resource-template listing return empty; resources/read is denied with a Loadout-specific message. Text Code Mode may remain enabled, but Labby suppresses codemode_ui and strips resource-backed MCP App bindings from advertised tools and tool results so clients are never pointed at UI resources this route cannot read.
 - Prompts disabled: prompts/list returns empty and prompts/get is denied with a Loadout-specific message.
 - Skills disabled: skills/list returns an empty private/no-cache catalog, skills/get is denied, and Skill resource reads are denied.
 - Code Mode disabled: existing route-scope Code Mode denial remains authoritative.

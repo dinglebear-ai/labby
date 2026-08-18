@@ -302,8 +302,10 @@ export function ProtectedMcpRoutesPanel() {
       const existing = editingName
         ? routes.find((candidate) => candidate.name === editingName)
         : undefined
-      const needsRestartStage = route.target?.kind === 'gateway_subset'
+      const needsRestartStage = pendingRestartCount > 0
+        || route.target?.kind === 'gateway_subset'
         || existing?.target?.kind === 'gateway_subset'
+        || existing?.restart_required === true
       if (needsRestartStage) {
         const staged = isEditing && editingName
           ? await stageProtectedRouteUpdate(editingName, route, controller.signal)
@@ -373,7 +375,7 @@ export function ProtectedMcpRoutesPanel() {
     const controller = new AbortController()
     setPendingAction(`remove:${route.name}`)
     try {
-      if (route.target?.kind === 'gateway_subset' || route.restart_required) {
+      if (pendingRestartCount > 0 || route.target?.kind === 'gateway_subset' || route.restart_required) {
         const staged = await stageProtectedRouteRemove(route.name, controller.signal)
         toast.success(
           staged.restart_required

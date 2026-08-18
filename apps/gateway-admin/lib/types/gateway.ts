@@ -302,8 +302,8 @@ export type GatewayLoadoutInput = Omit<GatewayLoadout, 'restart_required' | 'pen
 
 export interface GatewayLoadoutStageResult {
   loadout: GatewayLoadout
-  restart_required: true
-  pending_operation: 'update' | 'remove'
+  restart_required: boolean
+  pending_operation: 'add' | 'update' | 'remove' | null
   restart_note: string
 }
 

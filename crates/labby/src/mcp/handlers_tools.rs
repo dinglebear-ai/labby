@@ -48,6 +48,21 @@ use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
 
+/// Remove MCP App bindings whose backing resources are not readable on the
+/// current route. Keep unrelated metadata intact.
+pub(crate) fn strip_resource_backed_ui_meta(meta: &mut Option<MetaObject>) {
+    let should_clear = if let Some(meta) = meta.as_mut() {
+        meta.0.remove("ui");
+        meta.0.remove("openai/outputTemplate");
+        meta.0.is_empty()
+    } else {
+        false
+    };
+    if should_clear {
+        *meta = None;
+    }
+}
+
 impl LabMcpServer {
     pub(crate) async fn list_tools_impl(
         &self,
@@ -304,6 +319,14 @@ impl LabMcpServer {
                 if pool.upstream_tool_last_error(upstream).await.is_some() {
                     upstream_tool_error_count += 1;
                 }
+            }
+        }
+
+        if !self.route_scope.exposes_resources() {
+            #[cfg(feature = "gateway")]
+            descriptors.retain(|descriptor| descriptor.name.as_ref() != CODE_MODE_UI_TOOL_NAME);
+            for descriptor in &mut descriptors {
+                strip_resource_backed_ui_meta(&mut descriptor.meta);
             }
         }
 

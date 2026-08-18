@@ -150,10 +150,15 @@ impl GatewayManager {
             });
         }
         let loadout = update_loadout(&mut cfg, name, loadout)?;
+        let runtime_loadout = runtime_cfg
+            .loadouts
+            .iter()
+            .find(|runtime| runtime.name == loadout.name);
+        let result = staged_loadout_result(loadout.clone(), Some(&loadout), runtime_loadout);
         self.persist_desired_config_owned(_mutation_guard, cfg)
             .await?;
         log_loadout_mutation("gateway.loadout.stage_update", &loadout, started.elapsed());
-        Ok(staged_loadout_result("update", loadout))
+        Ok(result)
     }
 
     pub(crate) async fn loadout_stage_patch(
@@ -181,10 +186,15 @@ impl GatewayManager {
         // the next boot valid while allowing a route removal + Loadout removal
         // to be staged together without breaking the still-running route.
         let loadout = remove_loadout(&mut cfg, name)?;
+        let runtime_loadout = runtime_cfg
+            .loadouts
+            .iter()
+            .find(|runtime| runtime.name == loadout.name);
+        let result = staged_loadout_result(loadout.clone(), None, runtime_loadout);
         self.persist_desired_config_owned(_mutation_guard, cfg)
             .await?;
         log_loadout_mutation("gateway.loadout.stage_remove", &loadout, started.elapsed());
-        Ok(staged_loadout_result("remove", loadout))
+        Ok(result)
     }
 
     pub async fn loadout_remove(&self, name: &str) -> Result<GatewayLoadoutConfig, ToolError> {
@@ -272,12 +282,31 @@ fn active_loadout_routes<'a>(cfg: &'a GatewayConfig, loadout: &str) -> Vec<&'a s
         .collect()
 }
 
-fn staged_loadout_result(operation: &str, loadout: GatewayLoadoutConfig) -> Value {
+fn staged_loadout_result(
+    loadout: GatewayLoadoutConfig,
+    desired: Option<&GatewayLoadoutConfig>,
+    runtime: Option<&GatewayLoadoutConfig>,
+) -> Value {
+    let restart_required = desired != runtime;
+    let pending_operation = if !restart_required {
+        None
+    } else if runtime.is_none() {
+        Some("add")
+    } else if desired.is_none() {
+        Some("remove")
+    } else {
+        Some("update")
+    };
+    let restart_note = if restart_required {
+        "The Loadout desired state was saved to durable config but a protected gateway route in this process is still mounted with the startup Loadout projection. Restart labby serve to apply it."
+    } else {
+        "The desired Loadout state now matches the projection mounted by this process; no restart is required."
+    };
     json!({
         "loadout": loadout,
-        "restart_required": true,
-        "pending_operation": operation,
-        "restart_note": "The Loadout change was saved to durable config but a protected gateway route in this process is still mounted with the startup Loadout projection. Restart labby serve to apply it.",
+        "restart_required": restart_required,
+        "pending_operation": pending_operation,
+        "restart_note": restart_note,
     })
 }
 
