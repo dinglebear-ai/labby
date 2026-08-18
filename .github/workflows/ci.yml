@@ -433,7 +433,7 @@ jobs:
       # cargo fmt never invokes rustc, so skip the full setup-rust-kache
       # composite (apt preflight + cache wiring) and install only rustfmt.
       - name: Install Rust toolchain with rustfmt
-        uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: "1.97.1"
           components: rustfmt
@@ -868,7 +868,9 @@ jobs:
         with:
           node-version: "22"
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.97.1"
       - name: Neutralize rustc wrapper (native Windows)
         shell: pwsh
         run: |
@@ -1164,7 +1166,9 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: apps/palette-tauri/src-tauri
