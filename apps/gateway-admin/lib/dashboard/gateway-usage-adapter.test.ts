@@ -73,9 +73,23 @@ test('keeps dimensional top-tool rows distinct and attributes failures to the ma
   )
 
   assert.deepEqual(metrics.tools.top, [
-    { name: 'github::search', calls: 2, failed: 1 },
-    { name: 'github::search · OAuth', calls: 1, failed: 0 },
+    {
+      name: 'github::search',
+      id: 'github\u0000search\u0000tools\u0000tool.call\u0000shared',
+      label: 'github::search',
+      calls: 2,
+      failed: 1,
+    },
+    {
+      name: 'github::search',
+      id: 'github\u0000search\u0000tools\u0000tool.call\u0000subject',
+      label: 'github::search · OAuth',
+      calls: 1,
+      failed: 0,
+    },
   ])
+  assert.equal(new Set(metrics.tools.top.map((tool) => tool.id)).size, 2)
+  assert.deepEqual(new Set(metrics.tools.top.map((tool) => tool.name)), new Set(['github::search']))
 })
 
 test('marks row-derived panels sampled when the call page has more rows', () => {

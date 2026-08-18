@@ -120,7 +120,9 @@ export function aggregateGatewayUsage(
     usageDimensionKey,
   )
   const tools: ToolUsageEntry[] = summary.top_tools.map((tool) => ({
-    name: usageDimensionName(tool),
+    name: toolName(tool),
+    id: usageDimensionKey(tool),
+    label: usageDimensionName(tool),
     calls: tool.calls,
     failed: failedByDimension.get(usageDimensionKey(tool)) ?? 0,
   }))

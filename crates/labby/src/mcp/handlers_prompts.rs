@@ -682,7 +682,7 @@ mod tests {
             registry: Arc::new(build_default_registry()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,
-            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Default::default(),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),

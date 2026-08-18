@@ -399,6 +399,52 @@ pub(crate) async fn notify_catalog_peers(
     );
 }
 
+/// Replay recent resource updates to one newly registered subscription.
+///
+/// rmcp emits `subscriptions/acknowledged` before invoking Labby's `listen`
+/// handler. The upstream notifier journals resource updates before fanout, so
+/// this replay closes the acknowledgement-to-registration gap for edge events.
+pub(crate) async fn catch_up_resource_updates(peers: &PeerRegistry, registered: &RegisteredPeer) {
+    let updates = peers.recent_resource_updates_for(registered).await;
+    if updates.is_empty() {
+        return;
+    }
+    let notification_timeout = crate::config::resolved_catalog_notification_timeout();
+    let replay = async {
+        for (_upstream, uri) in &updates {
+            if registered
+                .target
+                .notify_resource_updated(uri)
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    };
+    // Bound the complete catch-up, not each individual event, so even a full
+    // journal cannot multiply the configured notification timeout.
+    let ok = tokio::time::timeout(notification_timeout, replay)
+        .await
+        .unwrap_or(false);
+    if ok {
+        tracing::debug!(
+            surface = "mcp",
+            service = "peers",
+            action = "resource.notify.catchup",
+            registration_id = registered.registration_id,
+            update_count = updates.len(),
+            "replayed recent resource updates to newly registered subscription"
+        );
+        return;
+    }
+    peers
+        .write()
+        .await
+        .retain(|peer| peer.registration_id != registered.registration_id);
+}
+
 /// Forward one normalized resource update to subscriptions that accepted the
 /// exact URI and whose protected route exposes the owning upstream.
 pub(crate) async fn notify_resource_update_peers(peers: &PeerRegistry, upstream: &str, uri: &str) {
@@ -519,10 +565,11 @@ mod tests {
 
     use rmcp::service::{MaybeSendFuture, NotificationContext};
     use rmcp::{ClientHandler, RoleClient, ServerHandler, ServiceExt};
-    use tokio::sync::{Notify, RwLock};
+    use tokio::sync::Notify;
 
     use super::{
-        CatalogNotificationChanges, notify_catalog_peers, publish_contract_if_baseline_matches,
+        CatalogNotificationChanges, catch_up_resource_updates, notify_catalog_peers,
+        publish_contract_if_baseline_matches,
     };
     use crate::mcp::catalog::CatalogChangeSet;
     use crate::mcp::catalog_churn::InFlightToolCall;
@@ -585,6 +632,7 @@ mod tests {
     struct TestClient {
         tool_count: Arc<AtomicUsize>,
         resource_count: Arc<AtomicUsize>,
+        resource_update_count: Arc<AtomicUsize>,
         prompt_count: Arc<AtomicUsize>,
         notify: Arc<Notify>,
     }
@@ -634,6 +682,16 @@ mod tests {
             self.notify.notify_one();
             std::future::ready(())
         }
+
+        fn on_resource_updated(
+            &self,
+            _params: rmcp::model::ResourceUpdatedNotificationParam,
+            _context: NotificationContext<RoleClient>,
+        ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+            self.resource_update_count.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_one();
+            std::future::ready(())
+        }
     }
 
     async fn connected_peer_fixture() -> (
@@ -647,7 +705,7 @@ mod tests {
             >,
         >,
     ) {
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (client, client_service, server_handle) = connect_peer(&peers, true).await;
         (peers, client, client_service, server_handle)
     }
@@ -690,6 +748,33 @@ mod tests {
         .expect("server peer registered");
 
         (client, client_service, server_handle)
+    }
+
+    #[tokio::test]
+    async fn resource_update_catchup_replays_an_event_journaled_before_registration() {
+        let peers: PeerRegistry = Default::default();
+        let uri = "lab://upstream/leaf/file:///tmp/subscription-resource";
+        peers.record_resource_update("leaf", uri).await;
+
+        let (client, client_service, server_handle) = connect_peer(&peers, true).await;
+        let registered = {
+            let mut guard = peers.write().await;
+            guard[0].contract.route_scope = crate::mcp::route_scope::McpRouteScope::Root;
+            guard[0].clone()
+        };
+        catch_up_resource_updates(&peers, &registered).await;
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while client.resource_update_count.load(Ordering::SeqCst) < 1 {
+                client.notify.notified().await;
+            }
+        })
+        .await
+        .expect("journaled resource update replayed after registration");
+        assert_eq!(client.resource_update_count.load(Ordering::SeqCst), 1);
+
+        drop(client_service);
+        server_handle.abort();
     }
 
     #[test]
@@ -788,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_list_changes_only_notify_routes_that_expose_that_upstream() {
         let _catalog_lock = serial_catalog();
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (alpha, alpha_service, alpha_handle) = connect_peer(&peers, false).await;
         let (beta, beta_service, beta_handle) = connect_peer(&peers, false).await;
         {
@@ -853,7 +938,7 @@ mod tests {
     #[tokio::test]
     async fn unchanged_upstream_tool_signal_remains_suppressed_for_a_current_peer() {
         let _catalog_lock = serial_catalog();
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (client, client_service, server_handle) = connect_peer(&peers, false).await;
 
         notify_catalog_peers(
@@ -883,7 +968,7 @@ mod tests {
     #[tokio::test]
     async fn unpublished_subscription_receives_first_tool_change_signal() {
         let _catalog_lock = serial_catalog();
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (client, client_service, server_handle) = connect_peer(&peers, false).await;
         peers.write().await[0].last_contract = None;
 
@@ -911,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn notify_catalog_peers_notifies_only_peers_whose_contract_moved() {
         let _catalog_lock = serial_catalog();
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (moved_client, moved_service, moved_handle) = connect_peer(&peers, true).await;
         let (unchanged_client, unchanged_service, unchanged_handle) =
             connect_peer(&peers, false).await;
@@ -961,7 +1046,7 @@ mod tests {
     async fn scheduled_notifications_coalesce_into_one_delivery() {
         let _catalog_lock = serial_catalog();
         reset_for_test();
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (client, client_service, server_handle) = connect_peer(&peers, true).await;
 
         // Five emitters firing in quick succession — a reconcile plus its
@@ -999,7 +1084,7 @@ mod tests {
     async fn scheduled_notification_defers_until_the_turn_closes() {
         let _catalog_lock = serial_catalog();
         reset_for_test();
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (client, client_service, server_handle) = connect_peer(&peers, true).await;
 
         let call = InFlightToolCall::enter();
@@ -1036,7 +1121,7 @@ mod tests {
     #[tokio::test]
     async fn closed_peers_are_pruned_and_live_ones_are_kept() {
         let _catalog_lock = serial_catalog();
-        let peers = Arc::new(RwLock::new(Vec::new()));
+        let peers = Default::default();
         let (_doomed_client, doomed_service, doomed_handle) = connect_peer(&peers, true).await;
         let (_live_client, live_service, live_handle) = connect_peer(&peers, true).await;
         assert_eq!(peers.read().await.len(), 2);

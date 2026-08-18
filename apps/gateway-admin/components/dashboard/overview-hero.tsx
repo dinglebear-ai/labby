@@ -242,7 +242,7 @@ export function OverviewHero({
   )
 
   // The mock's strip, in order: Connected · Offline · Tools · Prompts ·
-  // Resources · Tool calls · Failed · Tokens · P95 latency. Only Failed
+  // Resources · Upstream calls · Failed · Tokens · P95 latency. Only Failed
   // carries a tone; every other value renders in primary text.
   const stats: HeroStat[] = [
     { label: 'Connected', value: live.connectedServers, icon: Cable },
@@ -251,7 +251,7 @@ export function OverviewHero({
     { label: 'Prompts', value: discoveredPrompts, icon: MessageSquare },
     { label: 'Resources', value: discoveredResources, icon: FileText },
     {
-      label: 'Tool calls',
+      label: 'Upstream calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',
       icon: Activity,
     },

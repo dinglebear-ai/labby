@@ -196,7 +196,7 @@ export function FanOutPanel({
   )
 }
 
-/** Lowest-traffic tools — candidates to prune or investigate. */
+/** Lowest-traffic upstream targets — candidates to prune or investigate. */
 export function LeastUsedPanel({
   tools,
   distinct,
@@ -209,7 +209,7 @@ export function LeastUsedPanel({
   return (
     <DashboardPanel title="Least used" icon={<TrendingDown className="size-4" />}>
       {tools.length === 0 ? (
-        <p className="text-sm text-aurora-text-muted">No tool calls in this window.</p>
+        <p className="text-sm text-aurora-text-muted">No upstream calls in this window.</p>
       ) : (
         <ul className="flex flex-col gap-0.5">
           {tools.map((tool) => (
@@ -227,7 +227,7 @@ export function LeastUsedPanel({
         </ul>
       )}
       <p className="mt-1 text-xs text-aurora-text-muted">
-        {distinct} distinct tool{distinct === 1 ? '' : 's'} dispatched.
+        {distinct} distinct target{distinct === 1 ? '' : 's'} dispatched.
       </p>
     </DashboardPanel>
   )

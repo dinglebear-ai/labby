@@ -2072,7 +2072,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         LabMcpServer {
             registry: Arc::new(crate::registry::ToolRegistry::new()),
             gateway_manager: Some(manager),
-            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Default::default(),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),
@@ -2191,7 +2191,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         LabMcpServer {
             registry: Arc::new(registry),
             gateway_manager: Some(manager),
-            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Default::default(),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),
@@ -2265,7 +2265,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         LabMcpServer {
             registry: Arc::new(registry),
             gateway_manager: None,
-            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Default::default(),
             code_mode_app_state,
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { ArrowUpRight, Wrench } from 'lucide-react'
+import { Activity, ArrowUpRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useToolDetail } from '@/lib/hooks/use-usage-drilldown'
@@ -37,12 +37,12 @@ export function ToolDetailDrawer({
     <DetailDrawer
       open={tool !== null}
       onClose={onClose}
-      icon={<Wrench className="size-5" />}
+      icon={<Activity className="size-5" />}
       title={<span className="font-mono">{tool ?? ''}</span>}
-      subtitle={`Tool usage · ${WINDOW_LABELS[window]}`}
+      subtitle={`Upstream target · ${WINDOW_LABELS[window]}`}
     >
       {error && !detail ? (
-        <ErrorNotice message="Couldn't load tool details." onRetry={() => mutate()} />
+        <ErrorNotice message="Couldn't load target details." onRetry={() => mutate()} />
       ) : !detail || isLoading ? (
         <div className="flex flex-col gap-6">
           <Skeleton className="h-20 w-full" />
@@ -53,7 +53,7 @@ export function ToolDetailDrawer({
         <>
           <DrawerStatGrid
             items={[
-              { label: 'Tool calls', value: formatCompactNumber(detail.calls) },
+              { label: 'Calls', value: formatCompactNumber(detail.calls) },
               {
                 label: 'Failed',
                 value: formatCompactNumber(detail.failed),

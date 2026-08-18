@@ -671,7 +671,7 @@ async fn wait_for_progress(
     events: &DriverEvents,
     count: usize,
 ) -> Result<Vec<ProgressNotificationParam>> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let values = events.progress.lock().await.clone();
             if values.len() >= count {
@@ -681,7 +681,28 @@ async fn wait_for_progress(
         }
     })
     .await
-    .context("timed out waiting for progress notifications")
+    {
+        Ok(values) => Ok(values),
+        Err(_) => {
+            let values = events.progress.lock().await.clone();
+            let received = values
+                .iter()
+                .map(|value| {
+                    format!(
+                        "{:?}:{}",
+                        value.progress_token,
+                        value.message.as_deref().unwrap_or("<no-message>")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "timed out waiting for {count} progress notifications; received {} [{}]",
+                values.len(),
+                received
+            )
+        }
+    }
 }
 
 async fn wait_for_task_status(
@@ -929,16 +950,9 @@ async fn run_driver() -> Result<()> {
             .iter()
             .all(|value| value.progress_token == progress_token)
     );
-    ensure!(
-        progress
-            .iter()
-            .any(|value| value.message.as_deref() == Some("quarter"))
-    );
-    ensure!(
-        progress
-            .iter()
-            .any(|value| value.message.as_deref() == Some("three-quarters"))
-    );
+    ensure!(progress.len() == 2);
+    ensure!(progress[0].message.as_deref() == Some("quarter"));
+    ensure!(progress[1].message.as_deref() == Some("three-quarters"));
 
     let CallToolResponse::Task(created) = peer
         .call_tool_once(CallToolRequestParams::new(task_name.clone()))

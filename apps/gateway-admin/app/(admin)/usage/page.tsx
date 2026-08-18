@@ -130,7 +130,7 @@ function UsageExplorer() {
       icon: <Clock size={12} strokeWidth={1.8} />,
     },
     {
-      label: 'Tools',
+      label: 'Targets',
       value: data ? data.facets.tools.length : '—',
       icon: <Wrench size={12} strokeWidth={1.8} />,
     },
@@ -174,7 +174,7 @@ function UsageExplorer() {
           meta={WINDOW_LABELS[window]}
         >
           <p className="text-[11px] leading-[1.35] text-aurora-text-muted">
-            Every dispatched tool call in the window — filter by tool, agent, outcome, or text.
+            Every retained upstream call in the window — filter by target, agent, outcome, or text.
           </p>
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
             <div className="relative flex-1 sm:min-w-[220px]">
@@ -182,14 +182,14 @@ function UsageExplorer() {
               <Input
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); resetPaging() }}
-                placeholder="Search tool, action, agent, error…"
+                placeholder="Search target, operation, agent, error…"
                 className="pl-9"
               />
             </div>
             <Select value={tool} onValueChange={(v) => { setTool(v); resetPaging() }}>
-              <SelectTrigger className="sm:w-40"><SelectValue placeholder="Tool" /></SelectTrigger>
+              <SelectTrigger className="sm:w-40"><SelectValue placeholder="Target" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>All tools</SelectItem>
+                <SelectItem value={ALL}>All targets</SelectItem>
                 {toolOptions.map((name) => (
                   <SelectItem key={name} value={name}>{name}</SelectItem>
                 ))}
@@ -226,7 +226,7 @@ function UsageExplorer() {
           </div>
         </DashboardPanel>
 
-        <DashboardPanel title="Tool calls" icon={<Activity className="size-4" />} meta={tableMeta}>
+        <DashboardPanel title="Upstream calls" icon={<Activity className="size-4" />} meta={tableMeta}>
           {/* The panel body carries the mock's 12/14 padding; a dense table
               wants the card's full width, so it is pulled back flush. */}
           <div style={{ margin: '-12px -14px' }}>
@@ -234,7 +234,7 @@ function UsageExplorer() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[120px]">Time</TableHead>
-                  <TableHead>Tool · action</TableHead>
+                  <TableHead>Target · operation</TableHead>
                   <TableHead>Agent</TableHead>
                   {showSurfaces ? <TableHead className="w-[80px]">Surface</TableHead> : null}
                   <TableHead className="w-[110px]">Outcome</TableHead>
