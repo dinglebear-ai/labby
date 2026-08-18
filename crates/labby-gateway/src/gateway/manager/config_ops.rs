@@ -16,7 +16,9 @@ use crate::gateway::types::{
     GatewayCatalogDiff, GatewayRuntimeView, GatewayView, ServiceConfigView,
 };
 use crate::upstream::types::UpstreamRuntimeOwner;
-use labby_runtime::catalog_notify::{SOURCE_GATEWAY_CODE_MODE_SET, SOURCE_MCP_CALL_MCP_APP};
+use labby_runtime::catalog_notify::{
+    SOURCE_GATEWAY_CODE_MODE_SET, SOURCE_GATEWAY_MCP_APPS_SET, SOURCE_MCP_CALL_MCP_APP,
+};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, McpAppsConfig, UpstreamConfig};
 
@@ -560,7 +562,7 @@ impl GatewayManager {
                 resources_changed: true,
                 prompts_changed: false,
             },
-            origin.unwrap_or(SOURCE_GATEWAY_CODE_MODE_SET),
+            origin.unwrap_or(SOURCE_GATEWAY_MCP_APPS_SET),
         );
         tracing::info!(
             surface = "dispatch",
