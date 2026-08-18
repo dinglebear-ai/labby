@@ -737,6 +737,67 @@ async fn send_relay_request(
     result
 }
 
+async fn send_relay_tool_request_with_header_recovery(
+    peer: &Peer<RoleClient>,
+    routes: &Arc<RelayRouteState>,
+    cancellation_sender: Option<&HttpCancellationSender>,
+    upstream_name: &str,
+    params: CallToolRequestParams,
+    request_meta: Option<RequestMetaObject>,
+    downstream_request_id: RequestId,
+    downstream_cancel: CancellationToken,
+    timeout: Duration,
+    deadline: tokio::time::Instant,
+) -> Result<ServerResult, ServiceError> {
+    let retry_params = params.clone();
+    let retry_request_meta = request_meta.clone();
+    let retry_downstream_request_id = downstream_request_id.clone();
+    let retry_downstream_cancel = downstream_cancel.clone();
+    let response = send_relay_request(
+        peer,
+        routes,
+        cancellation_sender,
+        ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+        request_meta,
+        downstream_request_id,
+        downstream_cancel,
+        timeout,
+        deadline,
+    )
+    .await;
+    if !response
+        .as_ref()
+        .is_err_and(|error| is_tool_header_mismatch(error))
+    {
+        return response;
+    }
+
+    tokio::select! {
+        refreshed = refresh_tool_header_cache(peer, upstream_name) => refreshed?,
+        () = retry_downstream_cancel.cancelled() => {
+            return Err(ServiceError::Cancelled {
+                reason: Some("downstream request cancelled during header-schema refresh".to_string()),
+            });
+        }
+        () = tokio::time::sleep_until(deadline) => {
+            return Err(ServiceError::Timeout { timeout });
+        }
+    }
+
+    send_relay_request(
+        peer,
+        routes,
+        cancellation_sender,
+        ClientRequest::CallToolRequest(CallToolRequest::new(retry_params)),
+        retry_request_meta,
+        retry_downstream_request_id,
+        retry_downstream_cancel,
+        timeout,
+        deadline,
+    )
+    .await
+}
+
 fn downstream_cancelled(reason: &str) -> String {
     ServiceError::Cancelled {
         reason: Some(reason.to_string()),
@@ -947,51 +1008,24 @@ impl UpstreamPool {
                 return Some(Err(super::CapabilityCallError::QueueSaturated { message }));
             }
         };
-        let retry_params = params.clone();
-        let retry_request_meta = request_meta.clone();
-        let retry_downstream_request_id = downstream_request_id.clone();
-        let retry_downstream_cancel = downstream_cancel.clone();
-        let mut response = send_relay_request(
+        // Keep the HeaderMismatch refresh/replay state out of this already-large
+        // relay future. Multi-hop relays nest this future recursively; carrying
+        // the retry branch inline pushed Tokio worker stacks over the edge even
+        // when HeaderMismatch recovery was never exercised. Boxing the focused
+        // request future keeps the normal relay connection path stack-bounded.
+        let response = Box::pin(send_relay_tool_request_with_header_recovery(
             &peer,
             &routes,
             cancellation_sender.as_ref(),
-            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            &config.name,
+            params,
             request_meta,
             downstream_request_id,
             downstream_cancel,
             timeout,
             deadline,
-        )
+        ))
         .await;
-        if response
-            .as_ref()
-            .is_err_and(|error| is_tool_header_mismatch(error))
-        {
-            let refresh = tokio::select! {
-                refreshed = refresh_tool_header_cache(&peer, &config.name) => refreshed,
-                () = retry_downstream_cancel.cancelled() => Err(ServiceError::Cancelled {
-                    reason: Some("downstream request cancelled during header-schema refresh".to_string()),
-                }),
-                () = tokio::time::sleep_until(deadline) => Err(ServiceError::Timeout { timeout }),
-            };
-            match refresh {
-                Ok(()) => {
-                    response = send_relay_request(
-                        &peer,
-                        &routes,
-                        cancellation_sender.as_ref(),
-                        ClientRequest::CallToolRequest(CallToolRequest::new(retry_params)),
-                        retry_request_meta,
-                        retry_downstream_request_id,
-                        retry_downstream_cancel,
-                        timeout,
-                        deadline,
-                    )
-                    .await;
-                }
-                Err(error) => response = Err(error),
-            }
-        }
         match response {
             Ok(result) => {
                 let result = match result {
