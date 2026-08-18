@@ -199,7 +199,7 @@ cargo build -p labby --all-features --features proxy-testkit --locked \
 # driver verifies modern discovery; multi-page tools, prompts, resources, and
 # templates; tool and MRTR forwarding; task lifecycle; progress and cancellation;
 # mutable subscription catalogs; resource reads; completion; and provenance.
-"${repo_root}/target/debug/examples/mcp_multihop_conformance" driver \
+"${cargo_target_dir}/debug/examples/mcp_multihop_conformance" driver \
   >"${output_dir}/labby-multihop.log" 2>&1
 grep --fixed-strings --line-regexp "Labby multi-hop conformance passed" \
   "${output_dir}/labby-multihop.log" >/dev/null

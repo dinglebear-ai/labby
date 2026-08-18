@@ -693,11 +693,16 @@ run, so isolation holds by construction.
   A crash after protocol activity, timeout, or protocol violation is killed and
   surfaces a clean error without replay (`timeout` on wall-clock expiry). A
   pooled runner is also recycled after a fixed number of executions as cheap
-  insurance against native-side leaks. After the final tool result is relayed,
-  the runner gets up to 5 seconds to emit `done`/`error`, capped by the overall
-  execution deadline. Only expiry of that full dedicated grace is reported as a
-  runner settlement timeout; an earlier outer deadline remains an ordinary Code
-  Mode timeout.
+  insurance against native-side leaks. External `callTool` operations reserve a
+  250 ms result-ack window inside the same per-execution wall-clock budget when
+  at least twice that budget remains, so host work cannot consume the runner's
+  acknowledgement budget without materially shortening normal calls. The
+  separate hung-runner watchdog remains 5 seconds. After the final tool result is
+  relayed, the runner gets up to that 5-second grace to emit `done`/`error`, capped by the
+  overall execution deadline. Only expiry of the full dedicated grace is reported
+  as a runner settlement timeout; an earlier outer deadline remains an ordinary
+  Code Mode timeout. Very short executions that cannot fit the reserve keep their
+  original tool deadline.
 - **Configuration / kill switch** (environment, read at startup):
   - `LABBY_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
     `16`). **`LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back
