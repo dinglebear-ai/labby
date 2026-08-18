@@ -62,6 +62,25 @@ const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
 /// then evict a runner that never emits Done/Error.
 const RUNNER_SETTLEMENT_GRACE: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy)]
+struct SettlementWatch {
+    deadline: tokio::time::Instant,
+    /// True when the dedicated settlement grace expires before the overall
+    /// execution deadline. False means the outer execution deadline is the
+    /// actual limiter and must surface as an ordinary Code Mode timeout.
+    grace_limited: bool,
+}
+
+impl SettlementWatch {
+    fn new(now: tokio::time::Instant, execution_deadline: tokio::time::Instant) -> Self {
+        let grace_deadline = now + RUNNER_SETTLEMENT_GRACE;
+        Self {
+            deadline: grace_deadline.min(execution_deadline),
+            grace_limited: grace_deadline < execution_deadline,
+        }
+    }
+}
+
 struct CancelExecutionOnDrop(CancellationToken);
 
 impl Drop for CancelExecutionOnDrop {
@@ -277,9 +296,41 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 lease.release().await;
                 Err(err)
             }
+            DriveOutcome::RunnerUnavailableBeforeActivity(err) => {
+                // A pooled runner can die while idle. Because it emitted no valid
+                // protocol event for this execution, no host-visible side effect
+                // crossed the sandbox boundary and one replay is safe.
+                lease.evict();
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "pool.retry_fresh",
+                    kind = err.kind(),
+                    error = %err,
+                    "Code Mode runner died before protocol activity; retrying once on a fresh runner"
+                );
+
+                let mut retry = pool.checkout_fresh().await?;
+                let retry_outcome = self.drive_runner(retry.runner_mut(), &cfg).await;
+                match retry_outcome {
+                    DriveOutcome::Completed(response) => {
+                        retry.release().await;
+                        Ok(response)
+                    }
+                    DriveOutcome::ExecutionError(err) => {
+                        retry.release().await;
+                        Err(err)
+                    }
+                    DriveOutcome::RunnerUnavailableBeforeActivity(err)
+                    | DriveOutcome::RunnerUnhealthy(err) => {
+                        retry.evict();
+                        Err(err)
+                    }
+                }
+            }
             DriveOutcome::RunnerUnhealthy(err) => {
-                // Crash / timeout / protocol fault: discard the runner so the
-                // pool respawns a clean replacement.
+                // Crash / timeout / protocol fault after activity: discard the
+                // runner without replaying the execution.
                 lease.evict();
                 Err(err)
             }
@@ -298,7 +349,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // standalone runner is never leaked or reused.
         match outcome {
             DriveOutcome::Completed(response) => Ok(response),
-            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => Err(err),
+            DriveOutcome::ExecutionError(err)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(err)
+            | DriveOutcome::RunnerUnhealthy(err) => Err(err),
         }
     }
 
@@ -328,11 +381,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let deadline = tokio::time::Instant::now() + cfg.timeout;
         let cancellation = CancellationToken::new();
         let _cancel_execution_on_drop = CancelExecutionOnDrop(cancellation.clone());
-        let mut settlement_deadline: Option<tokio::time::Instant> = None;
+        let mut settlement_watch: Option<SettlementWatch> = None;
         // Epoch for per-call start offsets (waterfall timing in the trace).
         let execution_start = std::time::Instant::now();
         let artifact_run_id = Ulid::new().to_string();
         let mut state = DriveState::new(&artifact_run_id);
+        let mut saw_protocol_activity = false;
         // Mark this run active before any artifact dir exists, so a concurrent
         // run's first-write prune can never delete our directory mid-run. The
         // RAII guard clears the id on every exit path (including early returns).
@@ -351,7 +405,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let lines = &mut runner.lines;
 
         loop {
-            let read_deadline = settlement_deadline.unwrap_or(deadline);
+            let read_deadline = settlement_watch.map_or(deadline, |watch| watch.deadline);
             tokio::select! {
                 line = tokio::time::timeout_at(read_deadline, lines.next()) => {
                     let line = match line {
@@ -361,10 +415,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             // for runner teardown. Dropping the futures alone is
                             // not enough evidence that cancellation propagated.
                             cancellation.cancel();
-                            let settlement_timed_out = settlement_deadline.is_some()
+                            let settlement_grace_timed_out = settlement_watch
+                                .is_some_and(|watch| watch.grace_limited)
                                 && pending_tool_calls.is_empty();
                             terminate_code_mode_runner(child, child_pid).await;
-                            let error = if settlement_timed_out {
+                            let error = if settlement_grace_timed_out {
                                 tracing::warn!(
                                     surface = "dispatch",
                                     service = "code_mode",
@@ -396,16 +451,18 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         // EOF: the runner process died unexpectedly. Surface a
                         // clean error and evict so a replacement spawns.
                         drop(child.wait().await);
-                        return DriveOutcome::RunnerUnhealthy(
-                            CodeModeExecutionError::with_trace(
-                                ToolError::Sdk {
-                                    sdk_kind: "server_error".to_string(),
-                                    message:
-                                        "Code Mode runner exited before completion".to_string(),
-                                },
-                                sorted_calls(&state.calls),
-                            ),
+                        let error = CodeModeExecutionError::with_trace(
+                            ToolError::Sdk {
+                                sdk_kind: "server_error".to_string(),
+                                message: "Code Mode runner exited before completion".to_string(),
+                            },
+                            sorted_calls(&state.calls),
                         );
+                        return if saw_protocol_activity {
+                            DriveOutcome::RunnerUnhealthy(error)
+                        } else {
+                            DriveOutcome::RunnerUnavailableBeforeActivity(error)
+                        };
                     };
                     let line = match classify_line_result(line_result) {
                         Ok(line) => line,
@@ -420,7 +477,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     // Any new protocol activity ends the post-tool settlement
                     // watch. A fresh watch is armed when the pending call set
                     // becomes empty again.
-                    settlement_deadline = None;
+                    settlement_watch = None;
                     let msg = match serde_json::from_str::<CodeModeRunnerOutput>(&line) {
                         Ok(msg) => msg,
                         Err(err) => {
@@ -438,6 +495,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             );
                         }
                     };
+                    saw_protocol_activity = true;
 
                     match msg {
                         CodeModeRunnerOutput::ToolCall { seq, id, params } => {
@@ -689,14 +747,22 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     if pending_tool_calls.is_empty()
                         && (state.calls_enqueued > 0 || state.internal_calls_enqueued > 0)
                     {
-                        let settle = tokio::time::Instant::now() + RUNNER_SETTLEMENT_GRACE;
-                        settlement_deadline = Some(settle.min(deadline));
+                        let now = tokio::time::Instant::now();
+                        let watch = SettlementWatch::new(now, deadline);
+                        let available_ms = watch
+                            .deadline
+                            .checked_duration_since(now)
+                            .unwrap_or_default()
+                            .as_millis();
+                        settlement_watch = Some(watch);
                         tracing::debug!(
                             surface = "dispatch",
                             service = "code_mode",
                             action = "codemode.settlement",
                             call_count = state.calls.len(),
                             grace_ms = RUNNER_SETTLEMENT_GRACE.as_millis(),
+                            available_ms,
+                            grace_limited = watch.grace_limited,
                             "all Code Mode tool calls settled; awaiting runner completion"
                         );
                     }
@@ -714,8 +780,12 @@ enum DriveOutcome {
     /// The runner reported a per-execution `Error` and then parked itself; the
     /// process is healthy and may be reused.
     ExecutionError(CodeModeExecutionError),
-    /// The runner crashed, timed out, or violated the protocol; it must be
-    /// killed and replaced.
+    /// The runner exited before emitting any valid protocol event. The runner
+    /// must be replaced, and the execution may be replayed once because no
+    /// host-visible side effect could have crossed the protocol boundary.
+    RunnerUnavailableBeforeActivity(CodeModeExecutionError),
+    /// The runner crashed, timed out, or violated the protocol after execution
+    /// began; it must be killed and replaced without replaying the run.
     RunnerUnhealthy(CodeModeExecutionError),
 }
 
@@ -1270,6 +1340,7 @@ mod tests {
     #![allow(clippy::panic)]
     use super::*;
     use crate::host::NoopHost;
+    use crate::pool::RunnerSpawn;
 
     fn test_config(timeout: Duration) -> RunnerConfig {
         RunnerConfig {
@@ -1287,6 +1358,36 @@ mod tests {
             openapi_http_client: labby_openapi::http::build_dispatch_client()
                 .expect("test dispatch client"),
         }
+    }
+
+    #[test]
+    fn settlement_watch_uses_full_grace_when_execution_budget_allows() {
+        let now = tokio::time::Instant::now();
+        let execution_deadline = now + Duration::from_secs(10);
+        let watch = SettlementWatch::new(now, execution_deadline);
+
+        assert_eq!(watch.deadline, now + RUNNER_SETTLEMENT_GRACE);
+        assert!(watch.grace_limited);
+    }
+
+    #[test]
+    fn settlement_watch_preserves_outer_deadline_as_the_actual_limiter() {
+        let now = tokio::time::Instant::now();
+        let execution_deadline = now + Duration::from_millis(250);
+        let watch = SettlementWatch::new(now, execution_deadline);
+
+        assert_eq!(watch.deadline, execution_deadline);
+        assert!(!watch.grace_limited);
+    }
+
+    #[test]
+    fn settlement_watch_treats_equal_deadlines_as_outer_limited() {
+        let now = tokio::time::Instant::now();
+        let execution_deadline = now + RUNNER_SETTLEMENT_GRACE;
+        let watch = SettlementWatch::new(now, execution_deadline);
+
+        assert_eq!(watch.deadline, execution_deadline);
+        assert!(!watch.grace_limited);
     }
 
     /// The `openapi` provider must dispatch WITHOUT taking `LOCAL_PROVIDER_LOCK`,
@@ -1351,7 +1452,9 @@ sleep 3600
             .await;
         let response = match outcome {
             DriveOutcome::Completed(response) => response,
-            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => {
+            DriveOutcome::ExecutionError(err)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(err)
+            | DriveOutcome::RunnerUnhealthy(err) => {
                 panic!("run must complete, got error kind `{}`", err.kind())
             }
         };
@@ -1507,7 +1610,9 @@ sleep 3600
             .await;
         let response = match outcome {
             DriveOutcome::Completed(response) => response,
-            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => {
+            DriveOutcome::ExecutionError(err)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(err)
+            | DriveOutcome::RunnerUnhealthy(err) => {
                 panic!(
                     "over-ceiling internal calls must fail open, got error kind `{}`",
                     err.kind()
@@ -1603,7 +1708,9 @@ sleep 3600
             .await;
         match outcome {
             DriveOutcome::Completed(_) => {}
-            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => {
+            DriveOutcome::ExecutionError(err)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(err)
+            | DriveOutcome::RunnerUnhealthy(err) => {
                 panic!(
                     "over-ceiling describe_types calls must fail open, got error kind `{}`",
                     err.kind()
@@ -1763,7 +1870,9 @@ sleep 3600
         let outcome = broker.drive_runner(&mut runner, &cfg).await;
         match outcome {
             DriveOutcome::Completed(_) => {}
-            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => {
+            DriveOutcome::ExecutionError(err)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(err)
+            | DriveOutcome::RunnerUnhealthy(err) => {
                 panic!("run must complete, got error kind `{}`", err.kind())
             }
         }
@@ -1790,6 +1899,61 @@ sleep 3600
                 .all(|(exec, _, _)| exec.as_deref() == Some("exec_test")),
             "execution_id must reach record_step"
         );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn drive_runner_marks_pre_protocol_exit_retryable() {
+        let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
+        let script = "IFS= read -r _\nexit 17\n";
+        let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn exit stub");
+        let outcome = broker
+            .drive_runner(&mut runner, &test_config(Duration::from_secs(5)))
+            .await;
+
+        match outcome {
+            DriveOutcome::RunnerUnavailableBeforeActivity(err) => {
+                assert_eq!(err.kind(), "server_error");
+                assert!(err.to_string().contains("exited before completion"));
+            }
+            DriveOutcome::Completed(_)
+            | DriveOutcome::ExecutionError(_)
+            | DriveOutcome::RunnerUnhealthy(_) => {
+                panic!("an EOF before the first protocol event must be retryable");
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn run_via_pool_retries_pre_protocol_exit_on_fresh_runner() {
+        let marker_dir = tempfile::tempdir().expect("marker tempdir");
+        let marker = marker_dir.path().join("first-run");
+        let script = format!(
+            r#"
+if [ ! -e "{marker}" ]; then
+  IFS= read -r _
+  : > "{marker}"
+  exit 17
+fi
+IFS= read -r _
+printf '%s\n' '{{"type":"done","result":{{"state":"json","value":{{"retried":true}}}},"logs":[]}}'
+sleep 3600
+"#,
+            marker = marker.display()
+        );
+        let pool = RunnerPool::with_spawn(RunnerSpawn {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), script],
+        });
+        let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
+        let response = broker
+            .run_via_pool(&pool, test_config(Duration::from_secs(5)))
+            .await
+            .expect("fresh runner retry must succeed");
+
+        assert_eq!(response.result, Some(json!({"retried": true})));
+        assert!(marker.exists(), "the first runner must have exited");
     }
 
     /// Regression for the 60-second outer stall: after the host has settled
@@ -1822,8 +1986,45 @@ sleep 3600
                 assert_eq!(err.kind(), "timeout");
                 assert!(err.to_string().contains("did not settle"));
             }
-            DriveOutcome::Completed(_) | DriveOutcome::ExecutionError(_) => {
+            DriveOutcome::Completed(_)
+            | DriveOutcome::ExecutionError(_)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(_) => {
                 panic!("a runner that never emits Done/Error must be evicted")
+            }
+        }
+    }
+
+    /// When a tool settles too late for the full post-tool grace to fit inside
+    /// the execution budget, the outer Code Mode deadline is the real limiter.
+    /// Do not mislabel that as a runner settlement failure.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn drive_runner_reports_outer_timeout_when_settlement_budget_is_truncated() {
+        let script = r#"
+exec 3<&0
+cat <&3 >/dev/null &
+sleep 0.55
+printf '{"type":"tool_call","seq":1,"id":"stub::tool","params":{}}\n'
+sleep 3600
+"#;
+        let host = NoopHost::default();
+        let broker = CodeModeBroker::new(Some(&host));
+        let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn script stub");
+        let outcome = broker
+            .drive_runner(&mut runner, &test_config(Duration::from_millis(800)))
+            .await;
+
+        match outcome {
+            DriveOutcome::RunnerUnhealthy(err) => {
+                assert_eq!(err.kind(), "timeout");
+                let message = err.to_string();
+                assert!(message.contains("Code Mode execution timed out"));
+                assert!(!message.contains("did not settle"));
+            }
+            DriveOutcome::Completed(_)
+            | DriveOutcome::ExecutionError(_)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(_) => {
+                panic!("the outer deadline must terminate the late-settling runner")
             }
         }
     }
@@ -1847,7 +2048,9 @@ sleep 3600
                     "wall-clock expiry must surface the `timeout` kind"
                 );
             }
-            DriveOutcome::Completed(_) | DriveOutcome::ExecutionError(_) => {
+            DriveOutcome::Completed(_)
+            | DriveOutcome::ExecutionError(_)
+            | DriveOutcome::RunnerUnavailableBeforeActivity(_) => {
                 panic!("a never-replying runner must time out as RunnerUnhealthy")
             }
         }

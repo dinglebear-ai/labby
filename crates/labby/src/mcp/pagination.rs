@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use rmcp::ErrorData;
 use rmcp::model::PaginatedRequestParams;
 
@@ -6,6 +8,19 @@ use labby_runtime::agent_error::AgentErrorContext;
 use crate::mcp::agent_error::invalid_params as invalid_params_agent_error;
 
 pub(crate) const MCP_LIST_PAGE_SIZE: usize = 100;
+
+static CATALOG_SNAPSHOT_REVISION: AtomicU64 = AtomicU64::new(1);
+
+/// Mint an opaque revision that identifies one exact retained catalog snapshot.
+///
+/// The revision only needs to be unique for the lifetime of this process: after
+/// a restart the snapshot store is empty and old cursors correctly fail closed.
+pub(crate) fn next_catalog_snapshot_revision() -> String {
+    format!(
+        "{:016x}",
+        CATALOG_SNAPSHOT_REVISION.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 pub(crate) struct PageCollector<T> {
     start: usize,
@@ -32,7 +47,20 @@ impl<T> PageCollector<T> {
         })
     }
 
-    /// Bind this page to the complete sorted contract that produced it.
+    /// Revision embedded in a versioned cursor supplied by the caller.
+    ///
+    /// Catalog handlers that retain a server-side snapshot can use this before
+    /// rebuilding anything expensive, so a cursor page resumes the exact
+    /// result set that produced it instead of re-running discovery.
+    pub(crate) fn expected_revision(&self) -> Option<&str> {
+        self.expected_revision.as_deref()
+    }
+
+    pub(crate) const fn start_offset(&self) -> usize {
+        self.start
+    }
+
+    /// Bind this page to the complete result set that produced it.
     ///
     /// A subsequent page must present the same revision embedded in the cursor;
     /// otherwise an offset could resume against a different catalog and silently
@@ -89,6 +117,46 @@ impl<T> PageCollector<T> {
             )
         });
         Ok((self.page, next_cursor))
+    }
+}
+
+/// First-page collector for catalogs whose construction performs live I/O.
+///
+/// The ordinary `PageCollector` stops after one page plus lookahead. For a live
+/// upstream catalog that would force every follow-up cursor page to repeat the
+/// discovery fan-out. This collector still bounds the wire page, but continues
+/// walking once so the complete result set can be retained in shared route
+/// state and resumed without I/O.
+pub(crate) struct CatalogSnapshotCollector<T> {
+    page: PageCollector<T>,
+    catalog: Vec<T>,
+}
+
+impl<T: Clone> CatalogSnapshotCollector<T> {
+    pub(crate) fn new(page: PageCollector<T>) -> Self {
+        Self {
+            page,
+            catalog: Vec::new(),
+        }
+    }
+
+    pub(crate) fn accept(&mut self, item: T) {
+        self.catalog.push(item.clone());
+        self.page.accept(item);
+    }
+
+    /// A snapshot build deliberately consumes the complete live catalog.
+    pub(crate) const fn finished(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn bind_revision(&mut self, revision: &str) -> Result<(), ErrorData> {
+        self.page.bind_revision(revision)
+    }
+
+    pub(crate) fn finish(self) -> Result<(Vec<T>, Option<String>, Vec<T>), ErrorData> {
+        let (page, next_cursor) = self.page.finish()?;
+        Ok((page, next_cursor, self.catalog))
     }
 }
 
@@ -158,7 +226,7 @@ fn parse_cursor(cursor: &str) -> Result<(usize, Option<String>), ErrorData> {
         .map_err(|_| invalid_cursor("cursor must be a non-negative integer offset"))
 }
 
-fn invalid_cursor(message: &str) -> ErrorData {
+pub(crate) fn invalid_cursor(message: &str) -> ErrorData {
     invalid_params_agent_error(
         "invalid_cursor",
         message,
@@ -265,6 +333,28 @@ mod tests {
         assert_eq!(
             err.data.as_ref().expect("error data")["kind"],
             serde_json::json!("invalid_cursor")
+        );
+    }
+
+    #[test]
+    fn catalog_snapshot_collector_keeps_complete_result_while_paging() {
+        let page = PageCollector::new(None).expect("page collector");
+        let mut collector = CatalogSnapshotCollector::new(page);
+        for item in 0..250 {
+            collector.accept(item);
+        }
+        let revision = next_catalog_snapshot_revision();
+        collector
+            .bind_revision(&revision)
+            .expect("bind snapshot revision");
+
+        let (page, cursor, catalog) = collector.finish().expect("snapshot page");
+
+        assert_eq!(page, (0..MCP_LIST_PAGE_SIZE).collect::<Vec<_>>());
+        assert_eq!(catalog, (0..250).collect::<Vec<_>>());
+        assert_eq!(
+            cursor.as_deref(),
+            Some(format!("v1:100:{revision}").as_str())
         );
     }
 

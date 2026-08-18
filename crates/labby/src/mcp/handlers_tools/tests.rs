@@ -216,6 +216,7 @@ fn test_server(
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         code_mode_app_state: Default::default(),
         last_listed_tool_contract: Default::default(),
+        route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(logging_level))),
@@ -4276,6 +4277,7 @@ async fn server_reads_current_pool_from_gateway_manager() {
         peers: Arc::clone(&notifier.peers),
         code_mode_app_state: notifier.code_mode_app_state.clone(),
         last_listed_tool_contract: Default::default(),
+        route_runtime: Default::default(),
         client_registry: notifier.client_registry.clone(),
         transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(

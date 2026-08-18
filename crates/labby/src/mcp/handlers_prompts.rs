@@ -9,6 +9,7 @@
 //!
 //! No behavior change — relocation only.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmcp::ErrorData;
@@ -25,12 +26,15 @@ use crate::mcp::agent_error::{
     internal as internal_agent_error, invalid_params as invalid_params_agent_error,
 };
 
+use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
-use crate::mcp::context::oauth_upstream_subject_for_request;
-#[cfg(feature = "gateway")]
-use crate::mcp::context::{auth_context_from_extensions, forwardable_client_capabilities};
+use crate::mcp::context::{forwardable_client_capabilities, oauth_upstream_subject_for_request};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
-use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
+use crate::mcp::pagination::{
+    CatalogSnapshotCollector, PageCollector, error_kind as pagination_error_kind, invalid_cursor,
+    next_catalog_snapshot_revision,
+};
+use crate::mcp::runtime::catalog_snapshot_audience;
 use crate::mcp::server::LabMcpServer;
 
 fn prompt_error_context(
@@ -87,7 +91,9 @@ impl LabMcpServer {
                 .with_ttl_ms(0)
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
-        let mut prompts = match PageCollector::new(request) {
+        let auth = auth_context_from_extensions(&context.extensions);
+        let snapshot_audience = catalog_snapshot_audience(auth);
+        let mut page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -116,23 +122,70 @@ impl LabMcpServer {
             }
         };
 
+        if let Some(revision) = page_collector.expected_revision().map(str::to_owned) {
+            let snapshot = self
+                .route_runtime
+                .prompt_snapshot(&snapshot_audience, &revision)
+                .await;
+            let Some(snapshot) = snapshot else {
+                return Err(invalid_cursor(
+                    "prompt-list snapshot expired or is unavailable; restart from the first page",
+                ));
+            };
+            page_collector.bind_revision(&revision)?;
+            for prompt in snapshot.iter().cloned() {
+                page_collector.accept(prompt);
+                if page_collector.finished() {
+                    break;
+                }
+            }
+            let (prompts, next_cursor) = page_collector.finish()?;
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_prompts",
+                subject,
+                page_prompt_count = prompts.len(),
+                catalog_prompt_count = snapshot.len(),
+                catalog_source = "snapshot",
+                has_next_cursor = next_cursor.is_some(),
+                elapsed_ms,
+                "prompt list ok"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_prompts",
+                elapsed_ms,
+                DispatchLogOutcome::Success,
+            )
+            .await;
+            let mut result = ListPromptsResult::with_all_items(prompts)
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private);
+            result.next_cursor = next_cursor;
+            return Ok(result);
+        }
+
+        if page_collector.start_offset() > 0 {
+            return Err(invalid_cursor(
+                "prompt-list cursor must include the result-set revision; restart from the first page",
+            ));
+        }
+
+        let mut prompts = CatalogSnapshotCollector::new(page_collector);
         let builtin_prompts = crate::mcp::prompts::list_all().prompts;
         let builtin_names: Vec<String> = builtin_prompts
             .iter()
             .map(|prompt| prompt.name.to_string())
             .collect();
-
         for prompt in builtin_prompts {
             prompts.accept(prompt);
-            if prompts.finished() {
-                break;
-            }
         }
 
         #[cfg(feature = "gateway")]
-        if !prompts.finished()
-            && let Some(pool) = self.current_upstream_pool().await
-        {
+        if let Some(pool) = self.current_upstream_pool().await {
             let catalog_deadline = tokio::time::Instant::now() + pool.request_timeout();
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
             let upstream_prompts = pool
@@ -144,40 +197,33 @@ impl LabMcpServer {
                 .await;
             for prompt in upstream_prompts {
                 prompts.accept(prompt);
-                if prompts.finished() {
-                    break;
-                }
             }
-            if !prompts.finished() {
-                let auth = auth_context_from_extensions(&context.extensions);
-                if let Some(oauth_subject) =
-                    oauth_upstream_subject_for_request(auth, self.request_subject(&context))
-                {
-                    let configs = self.route_scoped_oauth_upstream_configs().await;
-                    let scoped_prompts = pool
-                        .subject_scoped_prompts_until(
-                            &configs,
-                            oauth_subject.as_ref(),
-                            &builtin_name_refs,
-                            catalog_deadline,
-                        )
-                        .await;
-                    for prompt in scoped_prompts.into_iter().filter(|prompt| {
-                        prompt
-                            .name
-                            .split_once('/')
-                            .is_none_or(|(upstream, _)| self.route_scope.allows_upstream(upstream))
-                    }) {
-                        prompts.accept(prompt);
-                        if prompts.finished() {
-                            break;
-                        }
-                    }
+            if let Some(oauth_subject) =
+                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+            {
+                let configs = self.route_scoped_oauth_upstream_configs().await;
+                let scoped_prompts = pool
+                    .subject_scoped_prompts_until(
+                        &configs,
+                        oauth_subject.as_ref(),
+                        &builtin_name_refs,
+                        catalog_deadline,
+                    )
+                    .await;
+                for prompt in scoped_prompts.into_iter().filter(|prompt| {
+                    prompt
+                        .name
+                        .split_once('/')
+                        .is_none_or(|(upstream, _)| self.route_scope.allows_upstream(upstream))
+                }) {
+                    prompts.accept(prompt);
                 }
             }
         }
 
-        let (prompts, next_cursor) = match prompts.finish() {
+        let revision = next_catalog_snapshot_revision();
+        prompts.bind_revision(&revision)?;
+        let (prompts, next_cursor, complete_catalog) = match prompts.finish() {
             Ok(page) => page,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -205,6 +251,12 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
+        let catalog_prompt_count = complete_catalog.len();
+        if next_cursor.is_some() {
+            self.route_runtime
+                .store_prompt_snapshot(snapshot_audience, revision, Arc::from(complete_catalog))
+                .await;
+        }
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -212,6 +264,10 @@ impl LabMcpServer {
             service = "labby",
             action = "list_prompts",
             subject,
+            page_prompt_count = prompts.len(),
+            catalog_prompt_count,
+            catalog_source = "live_snapshot",
+            has_next_cursor = next_cursor.is_some(),
             elapsed_ms,
             "prompt list ok"
         );
@@ -662,6 +718,7 @@ mod tests {
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",

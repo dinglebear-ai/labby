@@ -11,6 +11,7 @@
 //!
 //! No behavior change — relocation only.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmcp::ErrorData;
@@ -43,7 +44,11 @@ use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
-use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
+use crate::mcp::pagination::{
+    CatalogSnapshotCollector, PageCollector, error_kind as pagination_error_kind, invalid_cursor,
+    next_catalog_snapshot_revision,
+};
+use crate::mcp::runtime::catalog_snapshot_audience;
 use crate::mcp::server::LabMcpServer;
 
 /// In-band error-contract discovery: the published JSON Schema for the
@@ -399,7 +404,7 @@ impl LabMcpServer {
                 .with_ttl_ms(0)
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
-        let mut resources = match PageCollector::new(request) {
+        let mut page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -427,6 +432,90 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
+        let snapshot_audience = catalog_snapshot_audience(auth);
+
+        // Cursor pages must resume the exact catalog captured by page one. In
+        // particular, do not turn every offset into another fleet-wide
+        // resources/list fan-out.
+        if let Some(revision) = page_collector.expected_revision().map(str::to_owned) {
+            let snapshot = self
+                .route_runtime
+                .resource_snapshot(&snapshot_audience, &revision)
+                .await;
+            let Some(snapshot) = snapshot else {
+                let error = invalid_cursor(
+                    "resource-list snapshot expired or is unavailable; restart from the first page",
+                );
+                let elapsed_ms = start.elapsed().as_millis();
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_resources",
+                    subject,
+                    elapsed_ms,
+                    kind = "invalid_cursor",
+                    catalog_source = "snapshot_miss",
+                    "resource list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_resources",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "invalid_cursor",
+                    },
+                )
+                .await;
+                return Err(error);
+            };
+            page_collector.bind_revision(&revision)?;
+            for resource in snapshot.iter().cloned() {
+                page_collector.accept(resource);
+                if page_collector.finished() {
+                    break;
+                }
+            }
+            let (resources, next_cursor) = page_collector.finish()?;
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_resources",
+                subject,
+                elapsed_ms,
+                catalog_source = "snapshot",
+                catalog_resource_count = snapshot.len(),
+                page_resource_count = resources.len(),
+                has_next_cursor = next_cursor.is_some(),
+                "resource list ok"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_resources",
+                elapsed_ms,
+                DispatchLogOutcome::Success,
+            )
+            .await;
+            let mut result = ListResourcesResult::with_all_items(resources)
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private);
+            result.next_cursor = next_cursor;
+            return Ok(result);
+        }
+
+        // Bare numeric cursors predate revision-bound resource snapshots. They
+        // cannot safely resume a result set, and rejecting before discovery
+        // prevents one stale cursor from triggering a new fleet refresh.
+        if page_collector.start_offset() > 0 {
+            return Err(invalid_cursor(
+                "resource-list cursor must include the result-set revision; restart from the first page",
+            ));
+        }
+
+        let mut resources = CatalogSnapshotCollector::new(page_collector);
 
         resources.accept(
             Resource::new("lab://catalog", "catalog")
@@ -592,7 +681,33 @@ impl LabMcpServer {
             }
         }
 
-        let (resources, next_cursor) = match resources.finish() {
+        let revision = next_catalog_snapshot_revision();
+        if let Err(error) = resources.bind_revision(&revision) {
+            let elapsed_ms = start.elapsed().as_millis();
+            let kind = pagination_error_kind(&error);
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_resources",
+                subject,
+                elapsed_ms,
+                kind,
+                "resource list failed"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_resources",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind,
+                },
+            )
+            .await;
+            return Err(error);
+        }
+        let (resources, next_cursor, complete_catalog) = match resources.finish() {
             Ok(page) => page,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -620,6 +735,12 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
+        let catalog_resource_count = complete_catalog.len();
+        if next_cursor.is_some() {
+            self.route_runtime
+                .store_resource_snapshot(snapshot_audience, revision, Arc::from(complete_catalog))
+                .await;
+        }
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -628,6 +749,10 @@ impl LabMcpServer {
             action = "list_resources",
             subject,
             elapsed_ms,
+            catalog_source = "live_snapshot",
+            catalog_resource_count,
+            page_resource_count = resources.len(),
+            has_next_cursor = next_cursor.is_some(),
             "resource list ok"
         );
         self.emit_dispatch_notification(
@@ -668,8 +793,63 @@ impl LabMcpServer {
                 .with_ttl_ms(0)
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
-        let mut templates = PageCollector::new(request)?;
+        let auth = auth_context_from_extensions(&context.extensions);
+        let snapshot_audience = catalog_snapshot_audience(auth);
+        let mut page_collector = PageCollector::new(request)?;
 
+        if let Some(revision) = page_collector.expected_revision().map(str::to_owned) {
+            let snapshot = self
+                .route_runtime
+                .resource_template_snapshot(&snapshot_audience, &revision)
+                .await;
+            let Some(snapshot) = snapshot else {
+                return Err(invalid_cursor(
+                    "resource-template snapshot expired or is unavailable; restart from the first page",
+                ));
+            };
+            page_collector.bind_revision(&revision)?;
+            for template in snapshot.iter().cloned() {
+                page_collector.accept(template);
+                if page_collector.finished() {
+                    break;
+                }
+            }
+            let (templates, next_cursor) = page_collector.finish()?;
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_resource_templates",
+                subject,
+                template_count = templates.len(),
+                catalog_template_count = snapshot.len(),
+                catalog_source = "snapshot",
+                has_next_cursor = next_cursor.is_some(),
+                elapsed_ms,
+                "resource template list ok"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_resource_templates",
+                elapsed_ms,
+                DispatchLogOutcome::Success,
+            )
+            .await;
+            let mut result = ListResourceTemplatesResult::with_all_items(templates)
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private);
+            result.next_cursor = next_cursor;
+            return Ok(result);
+        }
+
+        if page_collector.start_offset() > 0 {
+            return Err(invalid_cursor(
+                "resource-template cursor must include the result-set revision; restart from the first page",
+            ));
+        }
+
+        let mut templates = CatalogSnapshotCollector::new(page_collector);
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             for template in pool
@@ -677,13 +857,23 @@ impl LabMcpServer {
                 .await
             {
                 templates.accept(template);
-                if templates.finished() {
-                    break;
-                }
             }
         }
 
-        let (templates, next_cursor) = templates.finish()?;
+        let revision = next_catalog_snapshot_revision();
+        templates.bind_revision(&revision)?;
+        let (templates, next_cursor, complete_catalog) = templates.finish()?;
+        let catalog_template_count = complete_catalog.len();
+        if next_cursor.is_some() {
+            self.route_runtime
+                .store_resource_template_snapshot(
+                    snapshot_audience,
+                    revision,
+                    Arc::from(complete_catalog),
+                )
+                .await;
+        }
+
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
             surface = "mcp",
@@ -691,6 +881,9 @@ impl LabMcpServer {
             action = "list_resource_templates",
             subject,
             template_count = templates.len(),
+            catalog_template_count,
+            catalog_source = "live_snapshot",
+            has_next_cursor = next_cursor.is_some(),
             elapsed_ms,
             "resource template list ok"
         );
@@ -1951,6 +2144,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -2069,6 +2263,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -2142,6 +2337,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             code_mode_app_state,
             last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -2957,7 +3153,14 @@ for (const value of [
             crate::mcp::pagination::MCP_LIST_PAGE_SIZE
         );
         assert_eq!(first.resources[0].uri, "lab://catalog");
-        assert_eq!(first.next_cursor.as_deref(), Some("100"));
+        assert!(
+            first
+                .next_cursor
+                .as_deref()
+                .is_some_and(|cursor| cursor.starts_with("v1:100:")),
+            "resource pagination must bind the cursor to the captured catalog: {:?}",
+            first.next_cursor
+        );
         assert_eq!(first.ttl_ms, Some(0));
         assert_eq!(first.cache_scope, Some(rmcp::model::CacheScope::Private));
         let wire = serde_json::to_value(&first).expect("serialize resource list");
@@ -2974,16 +3177,30 @@ for (const value of [
             "first page should include synthetic service resources"
         );
 
+        // Streamable HTTP creates a fresh handler for the next POST. Prove the
+        // cursor resumes only from the shared route runtime by giving the
+        // second handler an empty registry: rebuilding would return no service
+        // resources, while the retained snapshot still contains the original
+        // 250-entry catalog.
+        let shared_route_runtime = Arc::clone(&running.service().route_runtime);
+        let mut second_server = large_resource_server(0);
+        second_server.route_runtime = shared_route_runtime;
+        let (second_transport, _second_client_transport) = tokio::io::duplex(64);
+        let second_running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            second_server,
+            second_transport,
+            None,
+        );
         let second_request =
             PaginatedRequestParams::default().with_cursor(first.next_cursor.clone());
-        let second = running
+        let second = second_running
             .service()
             .list_resources_impl(
                 Some(second_request),
-                scoped_context(running.peer().clone(), &["lab:read"]),
+                scoped_context(second_running.peer().clone(), &["lab:read"]),
             )
             .await
-            .expect("second page");
+            .expect("second page from shared snapshot");
 
         let expected_first_service_on_second_page =
             format!("lab://resource_service_{first_page_service_resources:03}/actions");

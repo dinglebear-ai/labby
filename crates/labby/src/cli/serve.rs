@@ -1652,6 +1652,7 @@ async fn run_stdio(
         peers: Arc::clone(&notifier.peers),
         code_mode_app_state: notifier.code_mode_app_state.clone(),
         last_listed_tool_contract: Default::default(),
+        route_runtime: Default::default(),
         #[cfg(feature = "gateway")]
         client_registry: notifier.client_registry.clone(),
         transport_label: "stdio",
@@ -1775,6 +1776,7 @@ fn build_mcp_service_with_scope(
     // vec) so that gateway reload notifications reach every connected session.
     let shared_peers = Arc::clone(&notifier.peers);
     let shared_code_mode_app_state = notifier.code_mode_app_state.clone();
+    let shared_route_runtime: Arc<crate::mcp::runtime::McpRouteRuntime> = Default::default();
     #[cfg(feature = "gateway")]
     let shared_client_registry = notifier.client_registry.clone();
     let route_scope_label = route_scope.label();
@@ -1816,6 +1818,7 @@ fn build_mcp_service_with_scope(
                 // therefore intentionally empty; listen catches up
                 // conservatively instead of inheriting another conversation.
                 last_listed_tool_contract: Default::default(),
+                route_runtime: Arc::clone(&shared_route_runtime),
                 #[cfg(feature = "gateway")]
                 client_registry,
                 transport_label: "http",

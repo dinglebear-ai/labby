@@ -1297,6 +1297,7 @@ mod tests {
                 peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
                 code_mode_app_state: Default::default(),
                 last_listed_tool_contract: Default::default(),
+                route_runtime: Default::default(),
                 client_registry: Default::default(),
                 transport_label: "test",
                 logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
