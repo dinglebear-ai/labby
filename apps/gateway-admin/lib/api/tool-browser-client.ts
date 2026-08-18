@@ -22,9 +22,30 @@ async function boundedJson(response: Response, maxBytes: number) {
   if (Number.isFinite(declared) && declared > maxBytes) {
     throw new GatewayApiError('Tools response exceeds the browser safety limit', 502, 'response_too_large', response.headers.get('x-request-id') ?? undefined)
   }
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  if (bytes.byteLength > maxBytes) {
-    throw new GatewayApiError('Tools response exceeds the browser safety limit', 502, 'response_too_large', response.headers.get('x-request-id') ?? undefined)
+  const reader = response.body?.getReader()
+  const chunks: Uint8Array[] = []
+  let received = 0
+  if (reader) {
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        received += value.byteLength
+        if (received > maxBytes) {
+          await reader.cancel()
+          throw new GatewayApiError('Tools response exceeds the browser safety limit', 502, 'response_too_large', response.headers.get('x-request-id') ?? undefined)
+        }
+        chunks.push(value)
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  }
+  const bytes = new Uint8Array(received)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
   }
   try {
     return JSON.parse(new TextDecoder().decode(bytes))

@@ -60,21 +60,47 @@ test('tool search discards a response from an earlier authenticated session', as
 
 test('tool search rechecks the session after a delayed response body', async () => {
   setAuthenticatedSession('body-admin')
-  let resolveBody: ((value: ArrayBuffer) => void) | undefined
-  const response = new Response(null, { status: 200 })
-  response.arrayBuffer = () => new Promise((resolve) => { resolveBody = resolve })
+  let releaseBody: (() => void) | undefined
+  const encoded = new TextEncoder().encode(JSON.stringify({ results: [], total: 0, truncated: false }))
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      releaseBody = () => {
+        controller.enqueue(encoded)
+        controller.close()
+      }
+    },
+  }), { status: 200 })
   globalThis.fetch = async () => response
 
   const pending = searchCodeModeTools('gateway')
   await Promise.resolve()
   setAuthenticatedSession('next-admin')
-  const encoded = new TextEncoder().encode(JSON.stringify({ results: [], total: 0, truncated: false }))
-  resolveBody?.(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer)
+  releaseBody?.()
 
   await assert.rejects(
     pending,
     (error: unknown) => error instanceof DOMException && error.name === 'AbortError',
   )
+})
+
+test('tool search cancels a chunked response as soon as it exceeds the safety limit', async () => {
+  setAuthenticatedSession()
+  let cancelled = false
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(256 * 1024))
+      controller.enqueue(new Uint8Array(1))
+    },
+    cancel() { cancelled = true },
+  }), { status: 200, headers: { 'x-request-id': 'req-stream-large' } })
+
+  await assert.rejects(
+    searchCodeModeTools('gateway'),
+    (error: unknown) => error instanceof Error &&
+      'code' in error && error.code === 'response_too_large' &&
+      'requestId' in error && error.requestId === 'req-stream-large',
+  )
+  assert.equal(cancelled, true)
 })
 
 test('tool search refreshes a stale CSRF session and retries once', async () => {

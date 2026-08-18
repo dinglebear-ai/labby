@@ -95,6 +95,9 @@ Never syntactically truncate TypeScript.
 - Serialized search response: maximum 256 KiB.
 - Serialized describe response: maximum 128 KiB.
 - Apply caps at the Rust response projection before JSON serialization. One-byte-over tests are required.
+- The browser enforces the same serialized caps while incrementally consuming
+  the response stream and cancels as soon as a cap is crossed; it must not rely
+  on `Content-Length` or allocate an unbounded body before checking the limit.
 
 ## Search contract
 

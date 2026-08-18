@@ -329,6 +329,18 @@ not grant access, request approval, or replace the live descriptor and policy
 checks immediately before dispatch. When a schema is missing or too complex for
 the TypeScript emitter, generated signatures fall back to `unknown`.
 
+### Authenticated Web tool browser
+
+The Gateway Admin UI exposes `/tools` for authenticated operators carrying
+`lab:admin`. Its private `POST /v1/gateway/codemode/tools/search` and
+`POST /v1/gateway/codemode/tools/describe` routes project the same live,
+scope-filtered descriptors used by Code Mode without executing JavaScript or
+calling an upstream tool. Search responses are capped at 256 KiB and describe
+responses at 128 KiB; the browser reads response streams incrementally and
+cancels them immediately when either cap is exceeded, including when a server
+omits `Content-Length`. The static page contains no catalog fixture or tool
+definition, and safety metadata remains advisory rather than dispatch authority.
+
 ### Builtin services as in-process peers
 
 Builtin Labby services (`gateway`, `doctor`, `setup`, …) join the Code Mode
