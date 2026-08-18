@@ -669,18 +669,56 @@ async fn call_service_action(
 
 async fn wait_for_http_ready(base_url: &str) -> Result<()> {
     let client = reqwest::Client::new();
-    for _ in 0..80 {
-        if client
-            .get(format!("{base_url}/ready"))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success())
-        {
-            return Ok(());
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if client
+                .get(format!("{base_url}/ready"))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    })
+    .await
+    .with_context(|| format!("middle Labby HTTP daemon did not become ready at {base_url}"))?;
+    Ok(())
+}
+
+async fn wait_for_nested_tool_catalog(peer: &Peer<RoleClient>) -> Result<Vec<Tool>> {
+    let mut last_leaf_tools = 0;
+    let mut last_observed = Vec::<String>::new();
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let tools = peer.list_all_tools().await?;
+            last_leaf_tools = tools
+                .iter()
+                .filter(|tool| tool.name.ends_with("needs_input") || tool.name.contains("echo_"))
+                .count();
+            last_observed = tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .take(30)
+                .collect();
+            if last_leaf_tools > TOOL_COUNT {
+                return Ok::<_, rmcp::service::ServiceError>(tools);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    match ready {
+        Ok(Ok(tools)) => Ok(tools),
+        Ok(Err(error)) => Err(error.into()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "timed out waiting for nested leaf tool catalog; got {last_leaf_tools} leaf tools; observed {last_observed:?}"
+            )
+        }),
     }
-    anyhow::bail!("middle Labby HTTP daemon did not become ready at {base_url}")
 }
 
 async fn reload_http_gateway(base_url: &str, token: &str) -> Result<()> {
@@ -806,9 +844,11 @@ async fn run_driver() -> Result<()> {
     let root_home = temp.path().join("root-home");
     let middle_home = temp.path().join("middle-home");
     let marker_dir = temp.path().join("markers");
+    let child_cwd = temp.path().join("cwd");
     std::fs::create_dir_all(&root_home)?;
     std::fs::create_dir_all(&middle_home)?;
     std::fs::create_dir_all(&marker_dir)?;
+    std::fs::create_dir_all(&child_cwd)?;
 
     let example = std::env::current_exe()?;
     let debug_dir = example
@@ -855,6 +895,10 @@ async fn run_driver() -> Result<()> {
         .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
         .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
         .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
+        // Labby intentionally resolves ./config.toml before HOME-scoped config.
+        // Use an empty controlled cwd so an ambient developer/CI config cannot
+        // shadow the fixture configs written under middle_home.
+        .current_dir(&child_cwd)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
@@ -883,7 +927,10 @@ async fn run_driver() -> Result<()> {
             .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
             .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
-            .env("LABBY_LOG", "labby=debug,labby_gateway=debug");
+            .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
+            // Same isolation as the middle daemon: never let a caller's cwd
+            // config.toml override the generated root fixture config.
+            .current_dir(&child_cwd);
     }))?;
     let wire_progress = Arc::new(Mutex::new(Vec::new()));
     let transport = DriverProgressObserver::new(transport, Arc::clone(&wire_progress));
@@ -926,28 +973,7 @@ async fn run_driver() -> Result<()> {
     force_full_reload_on_next_request(&root_home, 30_003)?;
     call_service_action(&peer, "gateway", "gateway.reload").await?;
 
-    let mut tools = Vec::new();
-    let mut leaf_tools = 0;
-    for _ in 0..30 {
-        tools = peer.list_all_tools().await?;
-        leaf_tools = tools
-            .iter()
-            .filter(|tool| tool.name.ends_with("needs_input") || tool.name.contains("echo_"))
-            .count();
-        if leaf_tools > TOOL_COUNT {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    let observed = tools
-        .iter()
-        .map(|tool| tool.name.as_ref())
-        .take(30)
-        .collect::<Vec<_>>();
-    ensure!(
-        leaf_tools > TOOL_COUNT,
-        "expected all nested leaf tools, got {leaf_tools}; observed {observed:?}"
-    );
+    let tools = wait_for_nested_tool_catalog(&peer).await?;
     let echo_name = nested_name(&tools, |tool| tool.name.as_ref(), "echo_074")?.to_string();
     let needs_input_name =
         nested_name(&tools, |tool| tool.name.as_ref(), "needs_input")?.to_string();

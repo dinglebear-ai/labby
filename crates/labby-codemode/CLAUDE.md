@@ -142,6 +142,12 @@ while guaranteeing JS-state isolation by construction.
   grace expires; if the outer deadline arrives first, surface the ordinary Code
   Mode `timeout` instead. Very short executions that cannot fit the reserve keep
   their original tool deadline and therefore remain outer-deadline limited.
+  Arming the reserve emits `action = "codemode.result_ack.reserve"`,
+  `event = "armed"`, `reserve_ms`, and a process-lifetime monotonic
+  `result_ack_reserve_use_count` at DEBUG. A genuine full-grace expiry emits
+  `action = "codemode.settlement"`, `event = "watchdog_expired"`, and
+  `settlement_watchdog_expiry_count` at WARN. These counters stay in local
+  structured logs; never expose process-wide values in caller result payloads.
 - **Recycle-after-K.** A pooled runner is killed+respawned after `recycle_after`
   executions (default 100) as cheap insurance against native-side fragmentation.
 - **Backpressure.** When all pooled slots are busy, a checkout spawns a bounded

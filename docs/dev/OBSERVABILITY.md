@@ -196,6 +196,16 @@ surrounding caller context, including `request_id` when present. Timeouts must
 be logged as explicit failures rather than disappearing into generic disconnect
 noise.
 
+SEP-2243 tool-header recovery has its own structured sub-events. A typed rmcp
+`HEADER_MISMATCH` emits `action = "tool.header_mismatch"`, `event = "detected"`,
+`upstream`, and `mismatch_count`. The same-peer `tools/list` refresh emits
+`action = "tool.header_cache.refresh"` with `event = "start|finish|error"` and
+`schema_refresh_count`; a replay emits `action = "tool.header_cache.retry"` with
+`event = "finish|error"` and the corresponding retry counter. Gateway runtime
+status exposes these cumulative per-upstream values as `header_recovery`, omitted
+while all counts are zero. Never emit tool arguments or synthesized
+`Mcp-Param-*` values in these events.
+
 Resource catalog fan-out uses `operation = "resources.list"`. Each upstream
 emits `upstream.request.start` followed by `upstream.request.finish` or
 `upstream.request.error`, including `subject_scoped = true` for OAuth resource
@@ -409,6 +419,12 @@ descriptors by themselves. Reconcile logs therefore separate namespace
 determinants from suppressed raw-tool churn. Final Code Mode responses are also
 capped at the documented byte budget after trace composition, so truncation is
 deterministic and visible instead of surfacing as a client transport failure.
+Code Mode result-ack reserve activation logs once per execution at DEBUG as
+`action = "codemode.result_ack.reserve"`, `event = "armed"`, with `reserve_ms`
+and monotonic `result_ack_reserve_use_count`. Only a genuine full settlement
+grace expiry logs at WARN as `action = "codemode.settlement"`,
+`event = "watchdog_expired"`, with `settlement_watchdog_expiry_count`; an outer
+execution timeout must not increment or masquerade as that watchdog signal.
 
 - `LABBY_MCP_CATALOG_COALESCE_MS` — settle window (default `250`, clamped 1–10000)
 - `LABBY_MCP_CATALOG_MAX_HOLD_MS` — total deferral bound (default `5000`, clamped 100–120000)

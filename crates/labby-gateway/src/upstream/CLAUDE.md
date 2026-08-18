@@ -124,7 +124,16 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
   arguments, broaden the matcher to ordinary MCP errors, inline the recovery
   state back into the relay future, or add an unbounded retry loop: annotated
   headers are a selective privacy boundary and HeaderMismatch is the
-  pre-dispatch signal that makes one replay safe.
+  pre-dispatch signal that makes one replay safe. Recovery observability uses
+  `action = "tool.header_mismatch"`, `tool.header_cache.refresh`, and
+  `tool.header_cache.retry`; each event carries the upstream name and its
+  monotonic counter. `gateway.status` additionally exposes non-zero
+  `header_recovery` counters per upstream. The regression test
+  `relay_header_recovery_future_stays_structurally_boxed` enforces the durable
+  invariant directly: the HeaderMismatch refresh/replay helper returns a
+  `BoxFuture`, so unrelated growth in `call_tool_relayed` cannot weaken or
+  spuriously trip the guard. Do not inline that recovery state back into the
+  outer relay future.
 - OAuth credential mutation is an execution barrier, not merely a token-cache
   update. Callback replacement, refresh, clear, and shared-provider revocation
   must route through `pool/oauth_invalidation.rs` so initialized subject peers,

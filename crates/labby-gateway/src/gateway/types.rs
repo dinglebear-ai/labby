@@ -197,6 +197,21 @@ pub struct PendingImportView {
     pub enrichment_suggestion_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayHeaderRecoveryMetricsView {
+    pub mismatch_detected: u64,
+    pub schema_refreshes: u64,
+    pub retry_successes: u64,
+    pub retry_failures: u64,
+}
+
+impl GatewayHeaderRecoveryMetricsView {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayRuntimeView {
     pub name: String,
@@ -228,6 +243,13 @@ pub struct GatewayRuntimeView {
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependency_hint: Option<DependencyHintView>,
+    /// Cumulative SEP-2243 header-schema self-healing activity for this
+    /// upstream. Omitted while all counters are zero.
+    #[serde(
+        default,
+        skip_serializing_if = "GatewayHeaderRecoveryMetricsView::is_empty"
+    )]
+    pub header_recovery: GatewayHeaderRecoveryMetricsView,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
