@@ -43,7 +43,7 @@ pub(crate) struct NativeAuthorizationStartResponse {
     pub poll_token: String,
 }
 
-/// The `/token` success response (lab-auth omits `refresh_token` when the
+/// The `/token` success response (labby-auth omits `refresh_token` when the
 /// upstream IdP did not return one). Token fields use `Secret`, which redacts
 /// itself in `Debug`, so the derived `Debug` is safe.
 #[derive(Clone, Debug, Deserialize)]

@@ -186,7 +186,7 @@ async fn collect_capped(
 
 /// GET `url` with a hardened, per-request-pinned client, capping the body at
 /// `cap` bytes. Used for spec fetch at load time. The client is built fresh here
-/// (the SSRF pin is applied at build time — see [`pinned_client_for`]), so there
+/// (the SSRF pin is applied at build time by `pinned_client_for`), so there
 /// is no shared client to thread in.
 pub async fn fetch_url_capped(
     url: &url::Url,

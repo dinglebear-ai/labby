@@ -19,7 +19,7 @@ pub(crate) fn generate_code_verifier() -> String {
 }
 
 /// The S256 challenge for a verifier: base64url(no-pad) of SHA-256(verifier).
-/// Matches lab-auth's `pkce_challenge` (vendor/lab-auth/src/token.rs:271-273).
+/// Matches `labby-auth`'s `pkce_challenge` in `crates/labby-auth/src/token.rs`.
 pub(crate) fn code_challenge_s256(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }

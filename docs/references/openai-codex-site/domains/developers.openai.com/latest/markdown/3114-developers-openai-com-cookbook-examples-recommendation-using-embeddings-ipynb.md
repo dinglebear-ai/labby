@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/recommendation\_using\_embeddings [Redirecting from `/cookbook/examples/recommendation\_using\_embeddings.ipynb/` to `/cookbook/examples/recommendation\_using\_embeddings`](/cookbook/examples/recommendation_using_embeddings)

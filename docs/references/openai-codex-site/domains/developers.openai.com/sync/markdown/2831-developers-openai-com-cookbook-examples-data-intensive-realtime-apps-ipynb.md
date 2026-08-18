@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/data-intensive-realtime-apps [Redirecting from `/cookbook/examples/data-intensive-realtime-apps.ipynb/` to `/cookbook/examples/data-intensive-realtime-apps`](/cookbook/examples/data-intensive-realtime-apps)

@@ -1,16 +1,14 @@
 # =============================================================================
-# .cargo/config.toml — Cargo workspace configuration for lab
+# .cargo/config.toml — Cargo workspace configuration for Labby
 #
 # Most build settings (linker, profile tuning, jobs) live in the developer's
 # ~/.cargo/config.toml. This file only adds workspace-local settings that the
 # global config cannot provide.
 #
-# See docs/RUST.md for expected global config and system tool requirements.
-# See https://github.com/jmagar/rmcp-template/blob/main/docs/RUST.md for the
-# canonical family reference.
+# See docs/TECH.md for workspace build requirements and cache guidance.
 # =============================================================================
 
-# Keep Lab cache-friendly even if a developer's global Cargo config differs.
+# Keep Labby cache-friendly even if a developer's global Cargo config differs.
 # Compiler caching is inherited from the host Cargo config (kache on the
 # managed fleet); this repo does not add another rustc wrapper layer.
 [build]

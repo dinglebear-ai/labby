@@ -41,7 +41,7 @@ When a request fails, operators must be able to answer:
 Observability is split across two layers:
 
 - `lab` owns caller context and dispatch logging
-- `lab-apis` owns outbound request logging and transport failure detail
+- `labby-apis` owns outbound request logging and transport failure detail
 
 That means:
 
@@ -150,7 +150,7 @@ authorization or filtering.
 
 ### Shared Outbound Requests
 
-`lab-apis::core::HttpClient` must emit:
+`labby-apis::core::HttpClient` must emit:
 
 - one `request.start` event before every outbound call
 - one `request.finish` event on success

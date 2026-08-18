@@ -261,7 +261,7 @@ mod tests {
     /// each path in [`BEARER_ONLY_ROUTER_FORBIDDEN_PATHS`] and asserts
     /// IT IS 404 (i.e. the route is NOT mounted).
     ///
-    /// Catches future drift where lab-auth contributors add endpoints to
+    /// Catches future drift where labby-auth contributors add endpoints to
     /// [`router`] but forget to keep the headless subset in lock-step.
     #[tokio::test(flavor = "current_thread")]
     async fn bearer_only_router_route_list_matches_pinned_snapshot() {

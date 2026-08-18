@@ -1,14 +1,14 @@
 ---
 title: "Contract: Stdio MCP Proxy"
 created: "2026-07-31"
-updated: "2026-08-01"
+updated: "2026-08-18"
 ---
 
 # Contract: Stdio MCP Proxy
 
 Status: implemented
 Surfaces: CLI, Streamable HTTP, internal HTTP API
-Related: [guide](../guides/STDIO_MCP_PROXY.md), [spec](../specs/stdio-mcp-proxy.md), [research](../reports/2026-07-31-stdio-mcp-proxy-research.md), [implementation plan](../superpowers/plans/2026-07-31-stdio-mcp-proxy-implementation.md), `docs/dev/ERRORS.md`, `docs/design/SERIALIZATION.md`
+Related: [guide](../guides/STDIO_MCP_PROXY.md), [ERRORS.md](../dev/ERRORS.md), [SERIALIZATION.md](../design/SERIALIZATION.md)
 
 This contract pins the stable CLI grammar, configuration vocabulary, output shape, HTTP discovery behavior, auth challenges, and internal OAuth lease API for `labby proxy`.
 

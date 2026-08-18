@@ -955,7 +955,7 @@ async fn code_mode_runtime_change_notifies_from_the_previous_regime() {
 // Store-seam env persistence guard (rewritten in the gateway extraction).
 //
 // The host-owned service-client cache + `refresh_count()` instrumentation moved
-// out of `lab-gateway` into `lab`'s `LabConfigStore`, so the manager no longer
+// out of `labby-gateway` into `lab`'s `LabConfigStore`, so the manager no longer
 // exposes `with_service_clients`. The credential-write half of that contract is
 // now owned by the `GatewayConfigStore` seam: env vars are persisted through
 // `store.persist_*`, exercised here against the default `FsGatewayConfigStore`

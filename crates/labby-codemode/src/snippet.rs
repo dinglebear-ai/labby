@@ -4,4 +4,5 @@
 //! tool, HTTP route, CLI command, and `ACTIONS` catalog) lives in the host
 //! binary as a thin adapter over this module.
 
+/// Snippet storage, validation, resolution, and input-merging primitives.
 pub mod store;

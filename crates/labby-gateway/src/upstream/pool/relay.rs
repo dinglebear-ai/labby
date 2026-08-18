@@ -1092,7 +1092,7 @@ impl UpstreamPool {
     /// that is cached per `(upstream, downstream-session, oauth-subject)`.
     ///
     /// Unlike [`UpstreamPool::call_tool`] (a pooled, multiplexed `()`
-    /// connection), the connection here is served with a [`RelayClientHandler`]
+    /// connection), the connection here is served with a `RelayClientHandler`
     /// bound to `downstream`, so any server→client request the upstream raises
     /// mid-call (elicitation/sampling/roots) is forwarded to that one agent.
     ///

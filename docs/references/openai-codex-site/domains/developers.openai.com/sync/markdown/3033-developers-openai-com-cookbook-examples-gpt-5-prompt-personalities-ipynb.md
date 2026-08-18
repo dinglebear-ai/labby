@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/gpt-5/prompt\_personalities [Redirecting from `/cookbook/examples/gpt-5/prompt\_personalities.ipynb/` to `/cookbook/examples/gpt-5/prompt\_personalities`](/cookbook/examples/gpt-5/prompt_personalities)

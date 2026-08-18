@@ -610,7 +610,7 @@ fn gateway_actions_include_servers_and_schema() {
 
 /// Test stub registry that knows a single `deploy` service with a small action
 /// catalog. The host's real default-registry builder lives in `lab`, not
-/// `lab-gateway`; gateway dispatch tests that exercise service-aware behavior
+/// `labby-gateway`; gateway dispatch tests that exercise service-aware behavior
 /// (`gateway.service_actions`, virtual-server enable/policy validation) inject
 /// this so `service_meta`/`service_actions`/`contains_service` resolve `deploy`.
 struct DeployTestRegistry;
@@ -2012,7 +2012,7 @@ async fn supported_services_payload_is_an_array() {
 #[ignore = "filter_built_in_upstream_apis is a no-op post-pivot (no BuiltInUpstreamApi services left); deploy/setup are never omitted — prod change required"]
 async fn supported_services_omits_upstreams_when_policy_disabled() {
     // NOTE: the default-registry builder + upstream-API filter live in the `lab`
-    // binary, not `lab-gateway`. This test is permanently `#[ignore]`d (the filter
+    // binary, not `labby-gateway`. This test is permanently `#[ignore]`d (the filter
     // is a no-op post-pivot), so an `EmptyServiceRegistry` keeps it compiling here.
     let registry = std::sync::Arc::new(crate::gateway::service_registry::EmptyServiceRegistry);
     let manager = test_manager().with_builtin_service_registry(registry);
@@ -2395,7 +2395,7 @@ async fn gateway_get_rejects_missing_name() {
 
 /// `gateway.test` with a `spec` whose `command` field names a stdio upstream
 /// **executes that command as a real child process**.  This test uses `echo` so
-/// the subprocess exits cleanly on all platforms.  See docs/UPSTREAM.md §"Testing
+/// the subprocess exits cleanly on all platforms.  See docs/services/UPSTREAM.md §"Testing
 /// with Stdio Upstreams" and the SECURITY NOTE in the `gateway.test` handler.
 #[tokio::test]
 async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {

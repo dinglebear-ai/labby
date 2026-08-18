@@ -376,7 +376,7 @@ mod tests {
     fn test_manager_with_path() -> (Arc<GatewayManager>, std::path::PathBuf) {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
         let path = std::env::temp_dir().join(format!(
-            "lab-gateway-api-test-{}-{}.toml",
+            "labby-gateway-api-test-{}-{}.toml",
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ));

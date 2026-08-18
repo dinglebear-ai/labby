@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/agentkit/agentkit\_walkthrough [Redirecting from `/cookbook/examples/agentkit/agentkit\_walkthrough.ipynb/` to `/cookbook/examples/agentkit/agentkit\_walkthrough`](/cookbook/examples/agentkit/agentkit_walkthrough)

@@ -16,10 +16,15 @@ use labby_runtime::error::ToolError;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+/// Code Mode alias for the shared agent-error origin classification.
 pub type CodeModeErrorOrigin = AgentErrorOrigin;
+/// Code Mode alias for the shared recovery-action classification.
 pub type CodeModeRecoveryAction = AgentRecoveryAction;
+/// Code Mode alias for exact-same-arguments retry guidance.
 pub type CodeModeSameArgumentsRetry = AgentSameArgumentsRetry;
+/// Code Mode alias for failed-operation side-effect risk.
 pub type CodeModeSideEffectRisk = AgentSideEffectRisk;
+/// Code Mode alias for structured recovery advice.
 pub type CodeModeRecoveryAdvice = AgentRecoveryAdvice;
 
 /// MCP tool annotations that informed retry and side-effect guidance.
@@ -50,8 +55,11 @@ pub struct CodeModeCallError {
     /// Fully-qualified `<namespace>::<tool>` identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Subsystem family that produced the failure.
     pub origin: CodeModeErrorOrigin,
+    /// Recommended recovery behavior for an agent caller.
     pub recovery: CodeModeRecoveryAdvice,
+    /// Whether the failed operation may already have produced side effects.
     pub side_effects: CodeModeSideEffectRisk,
     /// Original upstream-local kind before Labby canonicalization.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,8 +67,10 @@ pub struct CodeModeCallError {
     /// Sanitized original failure text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
+    /// Upstream MCP safety hints considered when deriving retry guidance.
     #[serde(default, skip_serializing_if = "CodeModeToolSafetyHints::is_empty")]
     pub safety: CodeModeToolSafetyHints,
+    /// Sanitized evidence retained from a completed upstream tool failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<CodeModeErrorEvidence>,
 }
@@ -122,6 +132,7 @@ impl<'de> Deserialize<'de> for CodeModeCallError {
 }
 
 impl CodeModeCallError {
+    /// Construct a Code Mode error from a stable kind and caller-facing message.
     #[must_use]
     pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {
         let kind = kind.into();
@@ -277,6 +288,8 @@ Upstream transport error:
         }
     }
 
+    /// Attach a tool identifier when one has not already been recorded.
+    /// Attach a fully-qualified tool identifier when one is not already present.
     #[must_use]
     pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
         if self.tool.is_none() {
@@ -285,23 +298,31 @@ Upstream transport error:
         self
     }
 
+    /// Override the derived error-origin classification.
+    /// Override the canonical subsystem origin.
     #[must_use]
     pub fn with_origin(mut self, origin: CodeModeErrorOrigin) -> Self {
         self.origin = origin;
         self
     }
 
+    /// Override the derived side-effect risk classification.
+    /// Override the canonical side-effect risk.
     #[must_use]
     pub fn with_side_effects(mut self, side_effects: CodeModeSideEffectRisk) -> Self {
         self.side_effects = side_effects;
         self
     }
 
+    /// Return the stable machine-readable error kind.
+    /// Return the stable machine-readable failure kind.
     #[must_use]
     pub fn kind(&self) -> &str {
         &self.kind
     }
 
+    /// Return the caller-facing error message.
+    /// Return the human-readable model-facing diagnosis.
     #[must_use]
     pub fn user_message(&self) -> &str {
         &self.message

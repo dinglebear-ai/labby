@@ -8,7 +8,7 @@
 //!
 //! # Why the file list is explicit
 //!
-//! Each file is named in [`EMBEDDED_FILES`] rather than discovered by walking
+//! Each file is named in the private `EMBEDDED_FILES` table rather than discovered by walking
 //! a directory. `include_str!` needs a literal path anyway, and an explicit
 //! list means adding a file to a skill is a visible diff here — a skill's
 //! manifest is what a user's approval binds to, so its contents should not be

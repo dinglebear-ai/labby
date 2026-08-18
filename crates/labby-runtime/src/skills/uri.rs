@@ -90,7 +90,7 @@ impl SkillUri {
     /// against a manifest; do not slice this positionally.
     ///
     /// For a URI Labby minted, this equals the owning upstream's own full path
-    /// — that is the inverse of the label prepended by [`with_origin`], and the
+    /// — that is the inverse of the label prepended by [`Self::with_origin`], and the
     /// value a proxied read is routed on.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -133,7 +133,7 @@ impl SkillUri {
 
     /// The whole `<skill-path>/<file-path>` after the scheme.
     ///
-    /// This is what a *server* published. For a URI Labby minted, [`path`] is
+    /// This is what a *server* published. For a URI Labby minted, [`Self::path`] is
     /// this same value as the owning upstream serves it — stripping the label
     /// Labby prepended — which is what makes the mapping invertible.
     #[must_use]
@@ -184,7 +184,7 @@ impl SkillUri {
         parse_skill_uri(&format!("skill://{origin}/{}/{}", self.scheme, self.full))
     }
 
-    /// Reverse [`with_origin`], recovering the exact native upstream URI.
+    /// Reverse [`Self::with_origin`], recovering the exact native upstream URI.
     pub fn upstream_uri_for_origin(&self, origin: &str) -> Option<String> {
         if self.scheme != "skill" || self.origin() != origin {
             return None;

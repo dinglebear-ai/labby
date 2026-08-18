@@ -5,7 +5,7 @@
 //! SEP-2640 is explicit that this is a *consistency* check, not a trust
 //! boundary: digests are unsigned and are supplied by the same server that
 //! supplies the content, and the spec names gateways specifically —
-//! "[a]ny intermediary on the path, such as a gateway, can rewrite both the
+//! "\[a]ny intermediary on the path, such as a gateway, can rewrite both the
 //! listing and the content together. Hosts MUST NOT treat a digest match as a
 //! security boundary."
 //!

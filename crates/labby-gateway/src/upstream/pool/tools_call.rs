@@ -453,7 +453,7 @@ impl UpstreamPool {
     }
 
     /// [`Self::call_tool_once`] while preserving the upstream failure class
-    /// for the MCP proxy (mirrors [`Self::call_tool_classified`]).
+    /// for the MCP proxy (mirrors the private `call_tool_classified` path).
     ///
     /// Health accounting is owned entirely by `timed_capability_call`: a
     /// [`CapabilityCallError::Mcp`] means the pool recorded SUCCESS (a valid

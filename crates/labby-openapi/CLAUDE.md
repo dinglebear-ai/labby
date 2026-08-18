@@ -13,7 +13,7 @@ Code Mode operations for the `openapi` provider. It exists to keep `rmcp-openapi
 - **This crate owns the outbound HTTP.** The hardened `reqwest::Client` in `http.rs` is built
   with `redirect::Policy::none()`, `https_only(true)`, explicit connect/read timeouts, and the
   workspace-canonical "resolve → validate every IP → pin one → re-check the connected peer IP"
-  SSRF pattern (mirrors `labby-apis::acp_registry::installer`). The peer-IP re-check is the
+  SSRF pattern. The peer-IP re-check is the
   load-bearing DNS-rebinding defense — a hostname string check is NOT sufficient.
 - **All SSRF checks go through `labby_primitives::ssrf`** (`parse_validated_https_url`,
   `check_ip_not_private`, …). Do NOT hand-roll RFC1918/loopback/CGNAT checks.

@@ -55,4 +55,4 @@ Do not add an empty Cargo feature as a placeholder for a future product.
 ACP, ACP Registry, the in-product MCP Registry browser/client, Marketplace,
 Fleet/device runtime, Deploy-product, and Stash are not current services or SDK
 modules. Historical implementation contracts are archived under
-[../references/retired-labby](../references/retired-labby/).
+[../archive/retired-labby](../archive/retired-labby/).

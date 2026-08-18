@@ -64,16 +64,23 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         lambda p: starts(p, "docs/")
         or p in {"README.md", "CHANGELOG.md", "CLAUDE.md", "AGENTS.md", "GEMINI.md"},
     )
-    # Prose docs (docs/**, README.md, CLAUDE.md, ...) cannot invalidate the
-    # generated artifacts, so they do not trigger docs_check: only the
-    # generated outputs themselves, the classifier files, the Justfile, and
-    # Rust sources (added below) can make `just docs-check` go stale.
+    # `just docs-check` validates both generated inventories and local links in
+    # maintained Markdown. Canonical prose participates in the check; explicit
+    # historical/work-product trees (archive, sessions, superpowers) do not.
     docs_check = any_match(
         paths,
-        lambda p: starts(p, "docs/generated/")
+        lambda p: (
+            starts(p, "docs/")
+            and not starts(p, "docs/archive/", "docs/sessions/", "docs/superpowers/")
+        )
         or p
         in {
+            "README.md",
+            "CLAUDE.md",
+            "AGENTS.md",
+            "GEMINI.md",
             "crates/labby/tests/ci_changed_paths.rs",
+            "scripts/check-doc-links.py",
             "scripts/ci/changed_paths.py",
             "Justfile",
         },

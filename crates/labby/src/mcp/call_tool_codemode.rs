@@ -202,7 +202,7 @@ impl Drop for StepBufferDropGuard {
 /// Static body for the primary `codemode` MCP tool description.
 ///
 /// The final model-visible description is rendered with the current enabled,
-/// route-scoped upstream namespace snapshot by [`code_mode_description`].
+/// route-scoped upstream namespace snapshot by `code_mode_description`.
 pub(crate) const CODE_MODE_DESCRIPTION_BODY: &str = "\
 Execute JavaScript in a sandbox with access to the Labby gateway catalog.
 

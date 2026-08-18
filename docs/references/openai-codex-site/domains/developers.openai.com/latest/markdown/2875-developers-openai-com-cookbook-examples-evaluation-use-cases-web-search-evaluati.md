@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/evaluation/use-cases/web-search-evaluation [Redirecting from `/cookbook/examples/evaluation/use-cases/web-search-evaluation.ipynb/` to `/cookbook/examples/evaluation/use-cases/web-search-evaluation`](/cookbook/examples/evaluation/use-cases/web-search-evaluation)

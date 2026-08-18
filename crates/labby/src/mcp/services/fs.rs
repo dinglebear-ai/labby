@@ -1,6 +1,6 @@
 //! MCP adapter for the `fs` workspace filesystem browser service.
 //!
-//! The catalog and dispatch logic live in `crates/lab/src/dispatch/fs/`.
+//! The catalog and dispatch logic live in `crates/labby/src/dispatch/fs/`.
 //!
 //! # Why this file filters `fs.preview` out
 //!

@@ -3,7 +3,7 @@
 //!
 //! These mirror the small leaf helpers in the `lab` binary's
 //! `dispatch::helpers` module, but without the binary-only test override hooks
-//! (`TEST_LABBY_HOME` / thread-local `ENV_OVERRIDE`). `lab-gateway` and friends
+//! (`TEST_LABBY_HOME` / thread-local `ENV_OVERRIDE`). `labby-gateway` and friends
 //! use these production-path versions; the `lab` binary keeps its own copies
 //! with the test seams its unit tests rely on.
 

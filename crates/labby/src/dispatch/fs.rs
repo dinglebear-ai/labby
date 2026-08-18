@@ -14,10 +14,10 @@
 //! Phases 2 and 3 add `fs.list` (MCP + HTTP) and `fs.preview` (HTTP only)
 //! on top of this scaffold.
 //!
-//! # Not in lab-apis
+//! # Not in labby-apis
 //!
-//! This service is intentionally local-only with no `lab-apis` counterpart,
-//! matching the `lab_admin` precedent. See `crates/lab/Cargo.toml` for the
+//! This service is intentionally local-only with no `labby-apis` counterpart,
+//! matching the `lab_admin` precedent. See `crates/labby/Cargo.toml` for the
 //! feature flag.
 
 pub mod catalog;

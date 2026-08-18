@@ -170,7 +170,7 @@ pub(crate) enum AbsentAuth {
     ///
     /// This is the *fallback* for that transport, not its normal path: the
     /// gateway propagates the real caller's authorization in `_meta`, and
-    /// [`AbsentAuth::Propagated`] carries it. Reaching `Untrusted` means the
+    /// [`CallerAuthorization::Propagated`] carries it. Reaching `Untrusted` means the
     /// propagation was missing, so the request fails closed.
     Untrusted,
 }
@@ -178,7 +178,7 @@ pub(crate) enum AbsentAuth {
 /// How a request's authorization was established, once transport is accounted
 /// for.
 ///
-/// Built by [`LabMcpServer::caller_authorization`] so every gate sees the same
+/// Built by [`resolve_caller_authorization`] so every gate sees the same
 /// resolution rather than each re-deriving it.
 #[derive(Debug, Clone)]
 pub(crate) enum CallerAuthorization<'a> {

@@ -19,6 +19,7 @@ use crate::agent_error::{
 /// the variant so [`ToolError::kind`] remains a `const fn`.
 #[derive(Debug, Clone)]
 pub struct AgentContractPayload {
+    /// Human-readable message preserved from the producing subsystem.
     pub message: String,
     /// Extra envelope fields beyond `kind`/`message` and the refined metadata
     /// below — e.g. `tool`, `cause`, `original_kind`, `safety`, `evidence`,
@@ -26,47 +27,77 @@ pub struct AgentContractPayload {
     pub extra: Map<String, Value>,
     /// Refined metadata that must override the kind-derived recomputation.
     pub origin: Option<AgentErrorOrigin>,
+    /// Refined recovery advice that overrides kind-derived defaults.
     pub recovery: Option<AgentRecoveryAdvice>,
+    /// Refined side-effect risk that overrides kind-derived defaults.
     pub side_effects: Option<AgentSideEffectRisk>,
 }
 
+/// Canonical surface-neutral failure vocabulary for Labby dispatch operations.
 #[derive(Debug, Clone)]
 pub enum ToolError {
+    /// The requested service action is not registered.
     UnknownAction {
+        /// Human-readable error message.
         message: String,
+        /// Valid action names available to the caller.
         valid: Vec<String>,
+        /// Optional closest-match or recovery hint.
         hint: Option<String>,
     },
+    /// A required action parameter was omitted.
     MissingParam {
+        /// Human-readable error message.
         message: String,
+        /// Missing parameter name.
         param: String,
     },
+    /// An action parameter failed validation.
     InvalidParam {
+        /// Human-readable error message.
         message: String,
+        /// Invalid parameter name.
         param: String,
     },
+    /// A requested named service instance does not exist.
     #[allow(dead_code)]
     UnknownInstance {
+        /// Human-readable error message.
         message: String,
+        /// Valid instance labels available to the caller.
         valid: Vec<String>,
     },
+    /// A short tool identifier matched more than one candidate.
     AmbiguousTool {
+        /// Human-readable error message.
         message: String,
+        /// Fully-qualified candidates that disambiguate the request.
         valid: Vec<String>,
     },
+    /// The operation requires an explicit destructive-action confirmation.
     ConfirmationRequired {
+        /// Human-readable confirmation requirement.
         message: String,
     },
+    /// The requested mutation conflicts with existing state.
     Conflict {
+        /// Human-readable conflict description.
         message: String,
+        /// Identifier of the state or object that already exists.
         existing_id: String,
     },
+    /// The caller lacks the scopes or policy grant required for the operation.
     Forbidden {
+        /// Human-readable authorization failure.
         message: String,
+        /// Scopes required to perform the operation.
         required_scopes: Vec<String>,
     },
+    /// Failure originating from a reusable SDK or runtime subsystem.
     Sdk {
+        /// Stable subsystem error kind promoted into the surface envelope.
         sdk_kind: String,
+        /// Human-readable error message.
         message: String,
     },
     /// Pre-computed agent-error contract from a producing subsystem (e.g. a
@@ -77,7 +108,9 @@ pub enum ToolError {
     /// refined `origin`/`recovery` (including `retry_after_ms`)/`side_effects`
     /// win over the kind-derived recomputation.
     Contract {
+        /// Stable error kind supplied by the producing subsystem.
         kind: String,
+        /// Full agent-facing payload and refined recovery metadata.
         payload: Box<AgentContractPayload>,
     },
 }
@@ -100,6 +133,7 @@ impl std::fmt::Display for ToolError {
 impl std::error::Error for ToolError {}
 
 impl ToolError {
+    /// Return the stable machine-readable error kind.
     #[must_use]
     pub const fn kind(&self) -> &str {
         match self {
@@ -116,6 +150,7 @@ impl ToolError {
         }
     }
 
+    /// Return the human-readable message intended for the caller.
     #[must_use]
     pub fn user_message(&self) -> &str {
         match self {
@@ -132,6 +167,7 @@ impl ToolError {
         }
     }
 
+    /// Return variant-specific additive fields for the structured error envelope.
     #[must_use]
     pub fn extra_fields(&self) -> Value {
         match self {
@@ -192,11 +228,13 @@ impl ToolError {
         }
     }
 
+    /// Serialize this error into the canonical agent-facing JSON envelope.
     #[must_use]
     pub fn to_agent_value(&self) -> Value {
         self.to_agent_value_with_context(&AgentErrorContext::default())
     }
 
+    /// Serialize this error with additional request/subsystem context.
     #[must_use]
     pub fn to_agent_value_with_context(&self, context: &AgentErrorContext) -> Value {
         let extra = self.extra_fields();
@@ -205,6 +243,7 @@ impl ToolError {
         build_agent_error_value(self.kind(), self.user_message(), Some(&extra), &context)
     }
 
+    /// Return whether this error represents an internal/server-side failure.
     #[must_use]
     pub fn is_internal(&self) -> bool {
         matches!(
@@ -213,6 +252,7 @@ impl ToolError {
         )
     }
 
+    /// Construct an `internal_error` SDK variant from a human-readable message.
     #[must_use]
     pub fn internal_message(message: impl Into<String>) -> Self {
         Self::Sdk {

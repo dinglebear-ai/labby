@@ -7,7 +7,7 @@
 //!
 //! All three operator allowlists — `expose_tools`, `expose_resources`, and
 //! `expose_prompts` — compile through the *same* fail-closed resolver
-//! ([`resolve_named_exposure_policy`]). There is deliberately no second policy
+//! (`resolve_named_exposure_policy`). There is deliberately no second policy
 //! implementation: an unparseable allowlist hides everything for that
 //! capability rather than silently degrading to "expose all".
 
@@ -188,7 +188,7 @@ pub(super) fn resolve_exposure_policy(
     resolve_named_exposure_policy(upstream_name, "expose_tools", "tools", expose_tools)
 }
 
-/// [`resolve_exposure_policy`] for paths that run once per request.
+/// Request-path counterpart to `resolve_exposure_policy`.
 ///
 /// The OAuth subject-scoped paths have no cached `UpstreamEntry::exposure_policy`
 /// to read, so they resolve the allowlist from live config on every `list_tools`,
@@ -239,7 +239,7 @@ pub(super) fn resolve_resource_exposure_policy(
     )
 }
 
-/// [`resolve_resource_exposure_policy`] for paths that run once per request.
+/// Request-path counterpart to `resolve_resource_exposure_policy`.
 ///
 /// Resource listing, direct reads, MRTR-relayed reads, and completion all
 /// resolve from live config per request, so they need the same WARN-suppression
@@ -264,7 +264,7 @@ pub(super) fn resolve_prompt_exposure_policy(
     resolve_named_exposure_policy(upstream_name, "expose_prompts", "prompts", expose_prompts)
 }
 
-/// [`resolve_prompt_exposure_policy`] for paths that run once per request.
+/// Request-path counterpart to `resolve_prompt_exposure_policy`.
 pub fn resolve_request_prompt_exposure_policy(
     upstream_name: &str,
     expose_prompts: Option<Vec<String>>,

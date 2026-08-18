@@ -91,7 +91,7 @@ pub struct GatewayManager {
     /// Owns `config.toml` rendering (with foreign-key preservation), the `.env`
     /// credential file helpers, the process-wide Code Mode flag, and public-URL
     /// resolution — all of which depend on the host's full `LabConfig` and are
-    /// shared with non-gateway Labby code, so they cannot live in `lab-gateway`.
+    /// shared with non-gateway Labby code, so they cannot live in `labby-gateway`.
     pub(super) store: Arc<dyn GatewayConfigStore>,
     pub(super) runtime: GatewayRuntimeHandle,
     pub(super) config: Arc<RwLock<GatewayConfig>>,

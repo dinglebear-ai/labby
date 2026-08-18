@@ -3,7 +3,7 @@
 //! host binding.
 //!
 //! This tree was extracted from Labby's `crate::dispatch::gateway`. It is
-//! surface-neutral: it depends on the `lab-runtime` config/error contracts, the
+//! surface-neutral: it depends on the `labby-runtime` config/error contracts, the
 //! `labby-codemode` execution kernel, the `labby-auth` upstream OAuth runtime, and
 //! this crate's `upstream` pool. The host (`lab`) injects the small seams it
 //! cannot own — config persistence ([`config_store::GatewayConfigStore`]) and

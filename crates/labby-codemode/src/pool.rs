@@ -39,11 +39,14 @@ pub(crate) mod runner_handle;
 /// runner; a different host binary can supply its own program/args seam.
 #[derive(Debug, Clone)]
 pub struct RunnerSpawn {
+    /// Executable used to launch the runner subprocess.
     pub program: std::path::PathBuf,
+    /// Arguments passed to the runner executable.
     pub args: Vec<String>,
 }
 
 impl RunnerSpawn {
+    /// Resolve the default self-hosted Code Mode runner invocation.
     pub fn try_default() -> Result<Self, ToolError> {
         let program = super::runner_exe::resolve_runner_exe()?;
         Ok(Self {

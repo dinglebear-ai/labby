@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/gpt-5/prompt-optimization-cookbook [Redirecting from `/cookbook/examples/gpt-5/prompt-optimization-cookbook.ipynb/` to `/cookbook/examples/gpt-5/prompt-optimization-cookbook`](/cookbook/examples/gpt-5/prompt-optimization-cookbook)

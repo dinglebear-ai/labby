@@ -245,7 +245,7 @@ partially published release.
 
 **Tag format:** `vX.Y.Z` — no other formats are accepted.
 
-**Version policy:** single version across the entire workspace. `lab` and `lab-apis` always share the same version number.
+**Version policy:** single version across the entire workspace. `lab` and `labby-apis` always share the same version number.
 
 ## Artifact Distribution
 

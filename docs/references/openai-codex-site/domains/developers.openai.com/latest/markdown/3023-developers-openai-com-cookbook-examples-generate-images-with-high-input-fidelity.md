@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/generate\_images\_with\_high\_input\_fidelity [Redirecting from `/cookbook/examples/generate\_images\_with\_high\_input\_fidelity.ipynb/` to `/cookbook/examples/generate\_images\_with\_high\_input\_fidelity`](/cookbook/examples/generate_images_with_high_input_fidelity)

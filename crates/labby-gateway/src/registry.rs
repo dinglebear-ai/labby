@@ -13,7 +13,7 @@
 //! service handle that the Labby-side connector downcasts back to its concrete
 //! `RegisteredService`.
 //!
-//! This keeps `lab-gateway` free of `ActionSpec` / `ToolRegistry` / dispatch
+//! This keeps `labby-gateway` free of `ActionSpec` / `ToolRegistry` / dispatch
 //! function pointers and free of any call to Labby's default registry builder.
 
 use std::any::Any;

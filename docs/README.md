@@ -1,255 +1,130 @@
-# Lab Docs
+# Labby Product Documentation
 
-This directory is the documentation entrypoint for `lab`.
+This directory is the canonical documentation entrypoint for the current Labby product.
 
-The docs are split by topic so contributors do not have to recover architecture, protocol rules, product behavior, and operator workflows from one large design document.
+The live Rust/TypeScript implementation and the generated catalogs under [generated/](./generated/README.md) are the ground truth for what is compiled, registered, and exposed. Product prose should explain that implementation rather than preserve old product shapes.
+
+Historical material that still has durable value lives under `docs/archive/` and is explicitly non-canonical. Transient research caches, session logs, generated smoke output, and completed implementation plans are not committed as product documentation; Git history retains them when historical archaeology is needed.
 
 ## Start Here
 
-- Read [ARCH.md](./ARCH.md) to understand the crate split, runtime surfaces, and shared contracts.
-- Use [crate-extract/README.md](./crate-extract/README.md) for the reusable crate/package extraction spec, contract, execution strategy, and open questions.
-- Use [adr/README.md](./adr/README.md) for accepted architecture decision records.
-- Read [CONVENTIONS.md](./CONVENTIONS.md) before changing implementation patterns or core APIs.
-- Use [SERVICES.md](./dev/SERVICES.md), [CLI.md](./surfaces/CLI.md), and [MCP.md](./surfaces/MCP.md) for current surface-specific behavior. [MCP_CONFORMANCE.md](./surfaces/MCP_CONFORMANCE.md) records the rmcp 3.1.0 and MCP 2026-07-28 conformance contract. [TUI.md](./surfaces/TUI.md) records deferred TUI status.
-- Use [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md) for the human-readable CLI output language and shared color policy.
-- Use [design/component-development.md](./design/component-development.md) and [design/design-system-contract.md](./design/design-system-contract.md) when building or revising Labby web UI components.
-- Use [assets/brand/README.md](./assets/brand/README.md) for the brand mark system, the rendered brand assets and how to regenerate them, and the manual GitHub social-preview upload step.
-- Use [CONFIG.md](./runtime/CONFIG.md), [INCUS.md](./runtime/INCUS.md), [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md), and [OPERATIONS.md](./OPERATIONS.md) for setup, recommended Incus deployment, gateway runtime choices, and operator workflows.
-- Use [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) to expose one
-  stdio MCP server directly over loopback or an owned Tailscale Serve port.
-- Refer to [OAUTH.md](./runtime/OAUTH.md) for bearer vs OAuth mode selection, Google-backed authorization flow, lab-issued JWT behavior, and callback-forwarding constraints.
-- Use [design/GOOGLE_CREDENTIAL_BROKER.md](./design/GOOGLE_CREDENTIAL_BROKER.md)
-  for the shared inbound/outbound Google credential architecture, schema, scope
-  upgrades, API/CLI contracts, migration, rollout, and security model.
-- Use [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
-- Use [GATEWAY.md](./services/GATEWAY.md) when managing upstream MCP gateways over CLI, MCP, `/v1/gateway`, or Gateway-managed OAuth protected MCP routes.
-- Use [SKILLS_AND_LOADOUTS.md](./guides/SKILLS_AND_LOADOUTS.md) for Agent Skills trust/exposure, Loadout route projections, CLI/API/WebUI behavior, graceful degradation, and verification.
-- Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.
-- Use [UNRAID.md](./runtime/UNRAID.md) for the native Unraid `.plg` plugin packaging (`unraid/`), an alternative to the Incus/Docker deployment targets.
-- See [UPSTREAM.md](./services/UPSTREAM.md) for upstream MCP gateway setup, configuration, tool merging, circuit breaker behavior, and resource proxying.
-- Consult [TRANSPORT.md](./surfaces/TRANSPORT.md) for stdio and streamable HTTP transport configuration, middleware stack, stateless discovery, and subscriptions.
-- Use [OBSERVABILITY.md](./dev/OBSERVABILITY.md) for the mandatory logging, correlation, redaction, and verification contract.
-- Use [ERRORS.md](./dev/ERRORS.md) for the shared error taxonomy, envelope shapes, and status mapping contract.
-- Use [contracts/agent-error-contract.md](./contracts/agent-error-contract.md) and [contracts/code-mode-tool-errors.md](./contracts/code-mode-tool-errors.md) for the versioned agent-facing error recovery contract and its published JSON Schemas (`contracts/schemas/`).
-- Use [design/SERIALIZATION.md](./design/SERIALIZATION.md) for the shared serde, envelope, and output-boundary contract.
-- Use [DISPATCH.md](./dev/DISPATCH.md) for the shared surface-neutral dispatch-layer contract and dependency rules.
-- Use [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md) for the current status of the older service-layer migration plan.
-- Use [SERVICE_ONBOARDING.md](./dev/SERVICE_ONBOARDING.md) when you are bringing a new service online end to end.
-- Use [SCAFFOLD_AND_AUDIT.md](./dev/SCAFFOLD_AND_AUDIT.md) for the deferred scaffold/audit command contract.
+- [Architecture](./ARCH.md) — workspace boundaries, runtime flow, and product surfaces.
+- [Technology](./TECH.md) — toolchain, dependencies, build posture, Rustdoc, and release model.
+- [Conventions](./CONVENTIONS.md) — engineering rules that current code is expected to follow.
+- [Service model](./dev/SERVICES.md) — the current registered service inventory and onboarding rules.
+- [CLI](./surfaces/CLI.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
+- [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
+- [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
+- [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
 
-## Reading Paths
+## Current Product Services
 
-### If You Are Adding or Refactoring Code
+The generated [service catalog](./generated/service-catalog.md) is authoritative. The current product documentation is split by service:
 
-1. [ARCH.md](./ARCH.md)
-2. [CONVENTIONS.md](./CONVENTIONS.md)
-3. [SERVICES.md](./dev/SERVICES.md)
-4. Then the surface doc you are touching:
-   [CLI.md](./surfaces/CLI.md), [MCP.md](./surfaces/MCP.md), or the relevant HTTP/web docs
+| Service | Product doc | Notes |
+| --- | --- | --- |
+| `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |
+| `gateway` | [services/GATEWAY.md](./services/GATEWAY.md) | Upstream catalog, protected routes, virtual servers, OAuth, Code Mode host |
+| upstream proxy runtime | [services/UPSTREAM.md](./services/UPSTREAM.md) | HTTP/Unix/stdio upstream MCP connections, discovery, filtering, health, OAuth, skills |
+| `setup` | [services/SETUP.md](./services/SETUP.md) | Bootstrap, settings, repair, plugin lifecycle, proxy setup, host provisioning |
+| `server_logs` | [services/SERVER_LOGS.md](./services/SERVER_LOGS.md) | Labby's own server-process log query and journal tail |
+| `fs` | [services/FILESYSTEM.md](./services/FILESYSTEM.md) | Optional jailed read-only workspace browsing and preview |
+| `snippets` | [services/SNIPPETS.md](./services/SNIPPETS.md) | Reusable Code Mode workflow storage, validation, execution, testing, promotion |
+| `lab_admin` | [services/LAB_ADMIN.md](./services/LAB_ADMIN.md) | Runtime-conditional onboarding audit surface |
+| direct stdio proxy | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | One selected stdio MCP server exposed over Streamable HTTP |
 
-### If You Are Working on Product Behavior
+Do not hand-maintain a duplicate action inventory in prose. Use the generated [action catalog](./generated/action-catalog.md) for exact action names, parameters, scopes, destructive classification, and surfaces.
 
-1. [CLI.md](./surfaces/CLI.md) for command behavior
-2. [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md) for human-readable output language
-3. [MCP.md](./surfaces/MCP.md) for tool and envelope behavior
-4. [TRANSPORT.md](./surfaces/TRANSPORT.md) and the service docs for HTTP/web behavior
-5. [CONFIG.md](./runtime/CONFIG.md) for config and env implications
-6. [OBSERVABILITY.md](./dev/OBSERVABILITY.md) for logging, request tracing, and redaction rules
-7. [ERRORS.md](./dev/ERRORS.md) for stable kinds and structured error behavior
-8. [design/SERIALIZATION.md](./design/SERIALIZATION.md) for serde and output-boundary rules
-9. [DISPATCH.md](./dev/DISPATCH.md) for layer ownership and adapter direction
-10. [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md) for the current status of the older migration plan
+## Public Surfaces
 
-### If You Are Working on a Service Integration
+- [CLI](./surfaces/CLI.md) — command grammar, output modes, confirmation behavior, and operator commands.
+- [MCP](./surfaces/MCP.md) — tool/resource/prompt behavior, Code Mode, MCP Apps, and capability exposure.
+- [MCP conformance](./surfaces/MCP_CONFORMANCE.md) — current protocol-version and conformance contract.
+- [RMCP](./surfaces/RMCP.md) — how Labby integrates the Rust MCP SDK.
+- [Transport](./surfaces/TRANSPORT.md) — stdio, Streamable HTTP, Unix socket, middleware, CORS, DNS-rebinding protection, and subscriptions.
 
-1. [SERVICES.md](./dev/SERVICES.md)
-2. [ARCH.md](./ARCH.md)
-3. [CONVENTIONS.md](./CONVENTIONS.md)
-4. [MCP.md](./surfaces/MCP.md) and [CLI.md](./surfaces/CLI.md) for the public surfaces
-5. [OBSERVABILITY.md](./dev/OBSERVABILITY.md) for instrumentation and verification requirements
-6. [ERRORS.md](./dev/ERRORS.md) and [design/SERIALIZATION.md](./design/SERIALIZATION.md) for transport and envelope consistency
-7. [DISPATCH.md](./dev/DISPATCH.md) for shared operation ownership across CLI, MCP, and API
-8. [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md) for the refactor sequence if you are migrating existing services
+## Runtime And Operations
 
-### If You Are Operating the Project
+- [Configuration](./runtime/CONFIG.md)
+- [Environment](./runtime/ENV.md)
+- [OAuth](./runtime/OAUTH.md)
+- [OAuth callback relay](./runtime/CALLBACK_RELAY.md)
+- [Reverse proxy](./runtime/REVERSE_PROXY.md)
+- [Host gateway runtime](./runtime/HOST_GATEWAY.md)
+- [Incus](./runtime/INCUS.md)
+- [Unraid plugin](./runtime/UNRAID.md)
+- [GitHub Actions runner](./runtime/ACTIONS_RUNNER.md)
+- [CI/CD](./runtime/CICD.md)
+- [Operations](./OPERATIONS.md)
+- [Technology and Rust build](./TECH.md)
 
-1. [CONFIG.md](./runtime/CONFIG.md)
-2. [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) (if directly exposing a stdio server)
-3. [INCUS.md](./runtime/INCUS.md)
-4. [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md)
-5. [TRANSPORT.md](./surfaces/TRANSPORT.md)
-6. [OAUTH.md](./runtime/OAUTH.md) (if deploying with OAuth)
-7. [GATEWAY.md](./services/GATEWAY.md) (if managing upstream MCP gateways)
-8. [UPSTREAM.md](./services/UPSTREAM.md) (if proxying upstream MCP servers)
-9. [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) (when operating the public OAuth relay)
-10. [REVERSE_PROXY.md](./runtime/REVERSE_PROXY.md)
-11. [OPERATIONS.md](./OPERATIONS.md)
-12. [CLI.md](./surfaces/CLI.md)
+## Developer Contracts
 
-## Topic Map
+- [Dispatch](./dev/DISPATCH.md) — surface-neutral operation ownership and dependency direction.
+- [Service model](./dev/SERVICES.md) — service inventory and registration rules.
+- [Service onboarding](./dev/SERVICE_ONBOARDING.md) — end-to-end checklist for a new first-class capability.
+- [Code Mode](./dev/CODE_MODE.md) — Code Mode runtime and host integration.
+- [Errors](./dev/ERRORS.md) — stable error taxonomy and surface mapping.
+- [Observability](./dev/OBSERVABILITY.md) — required fields, correlation, redaction, and verification.
+- [Testing](./dev/TESTING.md) — local and CI verification expectations.
+- [Rustdoc](./dev/RUSTDOC.md) — comprehensive Rust API documentation, doctest, and CI artifact contract.
+- [Serialization](./design/SERIALIZATION.md) — output and wire-shape ownership.
 
-- [ARCH.md](./ARCH.md)
-  System shape, crate boundaries, shared contracts, and runtime flow.
-- [TECH.md](./TECH.md)
-  Stack choices, toolchain, feature posture, verification surfaces, and release tooling.
-- [crate-extract/README.md](./crate-extract/README.md)
-  Architecture, contract, dependency map, execution strategy, and verification plan for extracting Lab into reusable Rust crates, TypeScript packages, and standalone binaries.
-- [adr/README.md](./adr/README.md)
-  Accepted architecture decision records.
-- [MCP.md](./surfaces/MCP.md)
-  Transport model, prompts/completions/logging capabilities, one-tool-per-service design, discovery, envelopes, and destructive-op elicitation.
-- [RMCP.md](./surfaces/RMCP.md)
-  RMCP SDK integration contract: transports, feature posture, handler patterns, auth ownership, and capability rules.
-- [OAUTH.md](./runtime/OAUTH.md)
-  HTTP auth modes: static bearer compatibility, internal Google-backed OAuth, lab-issued JWTs, JWKS, RFC 9728 metadata, and redirect/callback forwarding rules.
-- [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md)
-  Public OAuth callback relay cutover, relay-state import, validation, and rollback.
-- [REVERSE_PROXY.md](./runtime/REVERSE_PROXY.md)
-  Reverse-proxy requirements and examples for the web UI, OAuth, native MCP, and protected routes.
-- [GATEWAY.md](./services/GATEWAY.md)
-  Gateway control plane: CRUD, reload/test flows, runtime views, tool exposure policy, and Gateway-managed OAuth protected MCP routes.
-- [UPSTREAM.md](./services/UPSTREAM.md)
-  Upstream MCP proxy gateway: config, discovery, tool collision handling, circuit breaker, resource proxying.
-- [TRANSPORT.md](./surfaces/TRANSPORT.md)
-  Stdio and streamable HTTP transport: middleware stack, stateless discovery, subscriptions, DNS rebinding protection, CORS.
-- [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md)
-  Direct stdio-to-Streamable-HTTP proxy quickstart, configuration, auth,
-  Tailscale ownership, security, cleanup, and troubleshooting.
-- `apps/gateway-admin/README.md`
-  Labby admin UI: local frontend workflow, static export, and same-origin deployment model.
-- [design/component-development.md](./design/component-development.md)
-  Web UI component workflow: feature specs, render iteration, design-system review, and browser verification.
-- [design/design-system-contract.md](./design/design-system-contract.md)
-  Labby web UI design-system contract: Aurora tokens, typography, surfaces, components, page patterns, accessibility, and approval rules.
-- [SERVICES.md](./dev/SERVICES.md)
-  Service inventory, feature gates, plugin metadata, multi-instance support, coverage docs, and add-a-service workflow.
-- [coverage/README.md](./coverage/README.md)
-  Service coverage doc index.
-- [upstream-api/README.md](./upstream-api/README.md)
-  Upstream API/spec reference index.
-- [generated/README.md](./generated/README.md)
-  Generated CLI/MCP catalog docs and refresh notes.
-- [features/README.md](./features/README.md)
-  Focused feature docs and implementation artifacts.
-- [design/README.md](./design/README.md)
-  Design contract and artifact index.
-- [design/tool-annotations/README.md](./design/tool-annotations/README.md)
-  MCP tool-safety hint policy, downstream gating semantics, and verification package.
-- [SERVICE_ONBOARDING.md](./dev/SERVICE_ONBOARDING.md)
-  End-to-end checklist for adding a new service, from upstream spec to verification.
-- [SCAFFOLD_AND_AUDIT.md](./dev/SCAFFOLD_AND_AUDIT.md)
-  Deferred scaffold/audit command contract.
-- [CLI.md](./surfaces/CLI.md)
-  Command structure, output rules, confirmation rules, setup/install surfaces, operator commands, and `labby oauth relay-local`.
-- [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md)
-  Human-readable CLI output language, semantic tokens, status hierarchy, and pipe-safe color policy.
-- [design/CLI_OUTPUT_THEME_API.md](./design/CLI_OUTPUT_THEME_API.md)
-  Proposed Rust API for CLI semantic styling, color policy resolution, and renderer integration.
-- [TUI.md](./surfaces/TUI.md)
-  Deferred TUI status.
-- [CONFIG.md](./runtime/CONFIG.md)
-  Env and TOML config ownership, load order, secrets handling, and instance naming.
-- [INCUS.md](./runtime/INCUS.md)
-  Recommended amd64 Ubuntu 26.04 Incus gateway deployment, bare-metal variant, in-box provisioning, Tailscale TUN passthrough, rollback, and dependency diagnostics.
-- [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md)
-  Gateway runtime choice overview: Incus recommended, bare metal secondary, Docker explicit smoke/dev path.
-- [ENV.md](./runtime/ENV.md)
-  Deployment-ready env examples and auth-mode variables.
-- [OBSERVABILITY.md](./dev/OBSERVABILITY.md)
-  Mandatory logging boundaries, required fields, correlation rules, redaction, and verification gates.
-- [ERRORS.md](./dev/ERRORS.md)
-  Shared error taxonomy, stable `kind` values, MCP and HTTP error envelopes, and status mapping.
-- [contracts/mcp-tool-output.md](./contracts/mcp-tool-output.md)
-  Normative MCP `outputSchema`/`structuredContent` contract: dispatch envelope, Code Mode trace, upstream relay, and the in-sandbox `callTool` unwrap precedence.
-- [contracts/agent-error-contract.md](./contracts/agent-error-contract.md)
-  Versioned agent-facing error contract: required envelope fields, origins, recovery/retry semantics, and surface rules.
-- [contracts/code-mode-tool-errors.md](./contracts/code-mode-tool-errors.md)
-  Code Mode extension of the agent error contract: JS rejection shape, sanitized evidence, and safety hints.
-- [contracts/stdio-mcp-proxy.md](./contracts/stdio-mcp-proxy.md)
-  Stdio MCP proxy bridge contract.
-- [contracts/gateway-schema-resources.md](./contracts/gateway-schema-resources.md)
-  Gateway schema-resource contract.
-- [design/SERIALIZATION.md](./design/SERIALIZATION.md)
-  Serde ownership, stable envelope shapes, CLI output boundaries, and naming rules.
-- [DISPATCH.md](./dev/DISPATCH.md)
-  Surface-neutral dispatch ownership, dependency direction, operation metadata, and adapter responsibilities.
-- [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md)
-  Phase-by-phase guide and checklist for moving existing services into the shared dispatch layer.
-- [CONVENTIONS.md](./CONVENTIONS.md)
-  Locked engineering rules around async, HTTP, testing, docs, API surface, and privacy.
-- [OPERATIONS.md](./OPERATIONS.md)
-  Repo helpers, doctor/health workflows, CI expectations, release behavior, and update rules.
-- [CICD.md](./runtime/CICD.md)
-  GitHub Actions check matrix and release behavior.
-- [TESTING.md](./dev/TESTING.md)
-  Test runner contract and verification expectations.
-- [MARKETPLACE.md](./services/MARKETPLACE.md)
-  Marketplace service, plugin workspace mirrors, save/deploy flows.
+Normative cross-surface contracts live under [contracts/](./contracts/):
 
-## Canonical Source Policy
+- [Agent error contract](./contracts/agent-error-contract.md)
+- [Code Mode tool errors](./contracts/code-mode-tool-errors.md)
+- [MCP tool output](./contracts/mcp-tool-output.md)
+- [Gateway schema resources](./contracts/gateway-schema-resources.md)
+- [Skills extension](./contracts/skills-extension.md)
+- [Stdio MCP proxy](./contracts/stdio-mcp-proxy.md)
 
-These topic docs are the source of truth for the project.
+## Product Design
 
-When updating behavior or decisions:
+- [Design index](./design/README.md)
+- [Web design-system contract](./design/design-system-contract.md)
+- [Component development](./design/component-development.md)
+- [CLI design system](./design/CLI_DESIGN_SYSTEM.md)
+- [Claude Code Aurora theme](./design/CLAUDE_CODE_AURORA_THEME.md)
+- [Google credential broker](./design/GOOGLE_CREDENTIAL_BROKER.md)
+- [Remote gateway target](./design/REMOTE_GATEWAY_TARGET.md)
+- [Brand assets](./assets/brand/README.md)
 
-- edit the topic doc that owns that concern
-- do not recreate a monolithic “master design” file
-- update multiple docs only when a decision genuinely crosses boundaries
+## Plugins And Snippets
 
-## Edit Guide
+- [Plugins](./PLUGINS.md) — checked-in Labby plugin, distribution boundary, and setup lifecycle.
+- [Snippet authoring](./snippets/README.md) — executable Code Mode snippet format and workflow.
 
-Use the smallest correct doc:
+## Generated Product References
 
-- architecture or boundaries: [ARCH.md](./ARCH.md)
-- implementation rules: [CONVENTIONS.md](./CONVENTIONS.md)
-- service model or inventory: [SERVICES.md](./dev/SERVICES.md)
-- CLI UX or command behavior: [CLI.md](./surfaces/CLI.md)
-- CLI output language or color policy: [design/CLI_DESIGN_SYSTEM.md](./design/CLI_DESIGN_SYSTEM.md)
-- MCP tool, discovery, or envelope behavior: [MCP.md](./surfaces/MCP.md)
-- RMCP SDK integration, feature posture, and server-shape rules: [RMCP.md](./surfaces/RMCP.md)
-- HTTP auth modes, JWKS, and JWT validation: [OAUTH.md](./runtime/OAUTH.md)
-- gateway control plane, exposure policy, and protected MCP routes: [GATEWAY.md](./services/GATEWAY.md)
-- ACP service architecture and chat/backend boundary: [acp/README.md](./acp/README.md)
-- mirrored MCP Registry metadata contract: [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md)
-- node runtime roles, fleet ingest, and master gating: [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md)
-- controller/node runtime split and node artifact contract: [NODE_RUNTIME_CONTRACT.md](./runtime/NODE_RUNTIME_CONTRACT.md)
-- deployment topology and rollout guidance: [DEPLOY.md](./runtime/DEPLOY.md)
-- upstream MCP proxy, circuit breaker, resource proxying: [UPSTREAM.md](./services/UPSTREAM.md)
-- transport configuration, middleware, stateless discovery: [TRANSPORT.md](./surfaces/TRANSPORT.md)
-- deferred TUI status: [TUI.md](./surfaces/TUI.md)
-- config, env, secrets, instance naming: [CONFIG.md](./runtime/CONFIG.md)
-- observability, request tracing, redaction: [OBSERVABILITY.md](./dev/OBSERVABILITY.md)
-- error taxonomy and envelope rules: [ERRORS.md](./dev/ERRORS.md)
-- versioned agent error/recovery contract and schemas: [contracts/agent-error-contract.md](./contracts/agent-error-contract.md), [contracts/code-mode-tool-errors.md](./contracts/code-mode-tool-errors.md)
-- serialization and output-shape rules: [design/SERIALIZATION.md](./design/SERIALIZATION.md)
-- dispatch-layer ownership and adapter rules: [DISPATCH.md](./dev/DISPATCH.md)
-- service-layer migration execution plan: [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md)
-- retired/extracted stash versioning service and provider sync model: [STASH.md](./services/STASH.md)
-- retired/extracted marketplace service and plugin workspace flows: [MARKETPLACE.md](./services/MARKETPLACE.md)
-- retired/extracted deploy-service actions: [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md)
-- node CLI/API behavior: [NODES.md](./runtime/NODES.md)
-- fleet WebSocket methods: [FLEET_METHODS.md](./runtime/FLEET_METHODS.md)
-- env examples: [ENV.md](./runtime/ENV.md)
-- testing contract: [TESTING.md](./dev/TESTING.md)
-- CI/CD behavior: [CICD.md](./runtime/CICD.md)
-- operator workflows, CI, releases: [OPERATIONS.md](./OPERATIONS.md)
-- stack and toolchain choices: [TECH.md](./TECH.md)
+Run:
 
-## Common Questions
+```bash
+just docs-generate
+just docs-check
+```
 
-- “Where does business logic belong?”
-  See [ARCH.md](./ARCH.md).
-- “What is the canonical MCP response/error shape?”
-  See [MCP.md](./surfaces/MCP.md).
-- “How should `lab` use the RMCP SDK itself?”
-  See [RMCP.md](./surfaces/RMCP.md).
-- “How do multi-instance services work?”
-  See [CONFIG.md](./runtime/CONFIG.md) and [SERVICES.md](./dev/SERVICES.md).
-- “How should a new service be added?”
-  See [SERVICES.md](./dev/SERVICES.md).
-- “What rules are locked and review-enforced?”
-  See [CONVENTIONS.md](./CONVENTIONS.md).
-- “What is the expected CI and release behavior?”
-  See [OPERATIONS.md](./OPERATIONS.md) and [TECH.md](./TECH.md).
-- “How do we extract Lab into reusable crates/packages?”
-  See [crate-extract/README.md](./crate-extract/README.md).
+Generated artifacts include:
+
+- [service catalog](./generated/service-catalog.md)
+- [action catalog](./generated/action-catalog.md)
+- [environment reference](./generated/env-reference.md)
+- [proxy configuration reference](./generated/proxy-config-reference.md)
+- [API routes](./generated/api-routes.md)
+- [MCP help](./generated/mcp-help.md)
+- [CLI help](./generated/cli-help.md)
+- [feature matrix](./generated/feature-matrix.md)
+- `openapi.json`
+
+Never edit generated artifacts by hand.
+
+## Source-Of-Truth Rules
+
+When documentation and implementation disagree:
+
+1. verify the current implementation and generated catalogs;
+2. fix the canonical product doc that owns the concern;
+3. regenerate code-owned docs when code metadata changed;
+4. update cross-links only where the behavior crosses product boundaries.
+
+Avoid creating duplicate top-level summaries for a topic that already has a canonical service, runtime, surface, design, or developer doc.

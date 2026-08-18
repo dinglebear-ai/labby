@@ -30,7 +30,7 @@
 //! 3. No external clippy.toml configuration to keep in sync.
 //!
 //! The Bootstrap orchestrator exception (`setup → doctor`, see
-//! `crates/lab/src/dispatch/CLAUDE.md` § "Orchestrator Exception") is encoded
+//! `crates/labby/src/dispatch/CLAUDE.md` § "Orchestrator Exception") is encoded
 //! as a normal allowlist edge below.
 
 use std::collections::BTreeSet;
@@ -168,7 +168,7 @@ fn cross_service_imports_match_allowlist() {
     assert!(
         violations.is_empty(),
         "Architecture violation — unsanctioned cross-service dispatch edges \
-         (see crates/lab/src/dispatch/CLAUDE.md and the ALLOWED_EDGES matrix \
+         (see crates/labby/src/dispatch/CLAUDE.md and the ALLOWED_EDGES matrix \
          in this test):\n  {}\n\n\
          If the edge is legitimate, add `(\"{}\", ...)` to ALLOWED_EDGES with a \
          one-line rationale. If it is not, move the shared logic into \
@@ -200,7 +200,7 @@ fn no_peer_service_imports_setup_dispatch() {
     assert!(
         consumers.is_empty(),
         "Architecture violation — these services import `crate::dispatch::setup` \
-         outside the orchestrator (see crates/lab/src/dispatch/CLAUDE.md \
+         outside the orchestrator (see crates/labby/src/dispatch/CLAUDE.md \
          § Orchestrator Exception):\n  {}\n\n\
          Bootstrap dependency direction is one-way: setup → doctor; \
          peers MUST NOT depend on setup.",

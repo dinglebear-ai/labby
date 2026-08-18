@@ -1,14 +1,7 @@
-//! Shared SSH primitives used by deploy and other SSH-backed operators.
+//! Pure OpenSSH configuration parsing primitives.
 //!
-//! This module owns:
-//!
-//! - `SshHostTarget` — one actionable host entry parsed from `~/.ssh/config`.
-//! - `parse_ssh_config` — pure parser for the OpenSSH config file.
-//!
-//! Process-spawning code (`SshSession`, `SshOptions`, `StrictHostKeyChecking`,
-//! `shell_quote`) was moved to `crates/lab/src/dispatch/deploy/ssh_session.rs`
-//! because it depends on `tokio::process::Command` and belongs in the binary,
-//! not in the pure SDK.
+//! This module owns `SshHostTarget` and `parse_ssh_config`. Runtime connection
+//! behavior belongs outside this reusable SDK layer.
 
 use std::collections::HashSet;
 
@@ -31,8 +24,8 @@ pub struct SshHostTarget {
 ///
 /// Wildcard patterns (`Host *`, `Host media-*`) are skipped — they are
 /// templates, not actionable targets. Negated patterns (`!github.com`) are
-/// also skipped. `Match` blocks are ignored for V1 of the deploy service;
-/// they require runtime expansion and shell access we don't want to run.
+/// also skipped. `Match` blocks are ignored because they require runtime
+/// expansion that a pure static parser cannot evaluate.
 #[must_use]
 pub fn parse_ssh_config(contents: &str) -> Vec<SshHostTarget> {
     let mut hosts = Vec::new();

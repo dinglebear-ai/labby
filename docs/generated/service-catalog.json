@@ -15,8 +15,6 @@
     },
     "default_port": null,
     "docs_url": "https://github.com/dinglebear-ai/labby",
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry + PluginMeta"
   },
@@ -36,8 +34,6 @@
     },
     "default_port": null,
     "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry synthetic metadata"
   },
@@ -57,8 +53,6 @@
     },
     "default_port": null,
     "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry synthetic metadata"
   },
@@ -78,8 +72,6 @@
     },
     "default_port": null,
     "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry synthetic metadata"
   },
@@ -99,8 +91,6 @@
     },
     "default_port": null,
     "docs_url": "docs/guides/STDIO_MCP_PROXY.md",
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "CLI runtime + ProxyPreferences"
   },
@@ -120,8 +110,6 @@
     },
     "default_port": null,
     "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry synthetic metadata"
   },
@@ -141,8 +129,6 @@
     },
     "default_port": null,
     "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry + PluginMeta"
   },
@@ -162,8 +148,6 @@
     },
     "default_port": null,
     "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry synthetic metadata"
   }

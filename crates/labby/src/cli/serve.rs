@@ -408,7 +408,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                     .expect("OAuth mode initializes a resource registry"),
             )
             .await
-            .context("initialize lab-auth oauth state")?,
+            .context("initialize labby-auth OAuth state")?,
         )
     } else {
         None
