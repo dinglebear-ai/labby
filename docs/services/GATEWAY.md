@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-17"
 ---
 
 # Gateway Management
@@ -200,14 +200,30 @@ History is process-local, memory-only, maintained under entry/byte caps on a
 best-effort basis, and cleared on restart; do not treat it as a durable audit log
 or a hard storage quota until the backend history-cap follow-up lands.
 
+### Labby MCP App Manager
+
+Root-gateway clients with `lab` or `lab:admin` also receive the always-on
+`mcp_app` tool bound to `ui://lab/apps/manage`. Its UI is the recovery
+switchboard for Labby's own app surfaces: Code Mode Inspector, Gateway Status,
+Server Logs, and Add Server. Status reads require `lab` or `lab:admin`;
+enable/disable mutations require `lab:admin`. The manager is intentionally not
+advertised on protected subset routes and cannot disable itself.
+
+The Code Mode Inspector keeps its compatibility switch at
+`code_mode.mcp_ui_enabled`. The other visibility switches are
+`mcp_apps.gateway_status`, `mcp_apps.server_logs`, and
+`mcp_apps.add_server`, all defaulting to `true`. App-only mutations persist
+without rebuilding the upstream pool and publish both tool and resource
+list-changed notifications.
+
 ### Add Server MCP App
 
-Admin-capable MCP Apps hosts also receive a synthetic `add_server` tool bound to
-`ui://lab/gateway/add-server`. Calling the tool with no arguments opens a
-responsive form for a server name and either an HTTP endpoint or local stdio
-command. The app auto-detects the transport, can probe the proposed server, and
-can add it to the gateway catalog while controlling resource and prompt
-exposure.
+When `mcp_apps.add_server = true`, admin-capable MCP Apps hosts may also
+receive a synthetic `add_server` tool bound to `ui://lab/gateway/add-server`.
+Calling the tool with no arguments opens a responsive form for a server name and
+either an HTTP endpoint or local stdio command. The app auto-detects the
+transport, can probe the proposed server, and can add it to the gateway catalog
+while controlling resource and prompt exposure.
 
 The app callbacks remain thin MCP adapters: `test` delegates to
 `gateway.test`, and `create` delegates to `gateway.add`. The tool and resource
@@ -215,11 +231,12 @@ require `lab:admin`; they are omitted from lower-scope catalogs.
 
 ### Gateway Status MCP App
 
-Admin-capable MCP Apps hosts also receive a synthetic `gateway_status` tool
-bound to `ui://lab/gateway/status`. Calling it opens a responsive, read-only
-snapshot of connected upstreams, their exposed capability counts, transport,
-and warnings. Its `refresh` callback delegates to `gateway.list`, and late
-launch output cannot overwrite a newer manual refresh.
+When `mcp_apps.gateway_status = true`, admin-capable MCP Apps hosts may also
+receive a synthetic `gateway_status` tool bound to `ui://lab/gateway/status`.
+Calling it opens a responsive, read-only snapshot of connected upstreams, their
+exposed capability counts, transport, and warnings. Its `refresh` callback
+delegates to `gateway.list`, and late launch output cannot overwrite a newer
+manual refresh.
 
 The tool and resource require `lab:admin`. They are advertised only when the
 active MCP route has a gateway manager, includes the `gateway` service, and
@@ -248,8 +265,8 @@ Advertised tools per active mode:
 
 | Mode | Advertised MCP tools |
 |------|---------------------|
-| `[code_mode].enabled = true` | `codemode` |
-| Neither | raw Lab service tools + healthy upstream tools |
+| `[code_mode].enabled = true` | `codemode`, optional `codemode_ui`; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
+| Neither | raw Lab service tools + healthy upstream tools; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
 
 Use `codemode` for gateway Code Mode. Discovery happens inside the sandbox with
 `codemode.search()` and `codemode.describe()`.

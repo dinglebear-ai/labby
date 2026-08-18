@@ -76,11 +76,15 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   `dispatch/` and `mcp/services/`. The public surface is intentionally split:
   `codemode` has no static app descriptor but may return dynamic `_meta.ui`
   when an upstream call launches a nested MCP App. `codemode_ui` shares the
-  same execution backend and owns the Code Mode inspector metadata, while
-  `mcp_app` is the text-only
-  `status|enable|disable` recovery control. App mutations require `lab:admin`,
-  are gateway-scoped, and schedule coalesced `tools/list_changed` plus
-  `resources/list_changed` notifications after the open tool turn drains.
+  same execution backend and owns the Code Mode inspector metadata. `mcp_app`
+  is the always-on root-gateway MCP App manager for the inspector, Gateway
+  Status, Server Logs, and Add Server surfaces; it supports per-app and `all`
+  `status|enable|disable` operations and cannot disable itself. App mutations
+  require `lab:admin`, are gateway-scoped, and schedule coalesced
+  `tools/list_changed` plus `resources/list_changed` notifications after the
+  open tool turn drains. `server_logs` keeps its text/service capability when
+  its UI is hidden; `codemode` likewise remains text-only and executable when
+  only the inspector is disabled.
   Code Mode business logic remains in `dispatch/gateway/code_mode.rs` so the
   native CLI can call the same broker without routing through MCP.
 
