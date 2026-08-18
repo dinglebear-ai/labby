@@ -444,6 +444,69 @@ async fn reload_unaffected_upstream_catalog_entry_survives_single_upstream_chang
 }
 
 #[tokio::test]
+async fn gateway_add_reconciles_only_changed_upstream_in_live_pool() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let initial = GatewayConfig {
+        upstream: vec![
+            fixture_http_upstream("alpha"),
+            fixture_http_upstream("bravo"),
+        ],
+        ..GatewayConfig::default()
+    };
+    write_gateway_config(&path, &initial).expect("write initial config");
+
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let pool_before = Arc::new(manager.new_base_pool(
+        initial.upstream_request_timeout(),
+        initial.upstream_relay_timeout(),
+    ));
+    pool_before.seed_lazy_upstreams(&initial.upstream).await;
+    manager.runtime.swap(Some(Arc::clone(&pool_before))).await;
+    assert!(
+        pool_before
+            .upstream_tool_last_error("alpha")
+            .await
+            .is_none()
+    );
+    assert!(
+        pool_before
+            .upstream_tool_last_error("bravo")
+            .await
+            .is_none()
+    );
+
+    manager
+        .add(fixture_http_upstream("charlie"), None, Some("test"), None)
+        .await
+        .expect("transactional gateway add");
+
+    let pool_after = manager
+        .current_pool()
+        .await
+        .expect("pool after gateway add");
+    assert!(
+        Arc::ptr_eq(&pool_before, &pool_after),
+        "transactional add must preserve the live pool and reconcile only the changed upstream"
+    );
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(
+            pool_after.cached_upstream_summary(name).await.is_some(),
+            "{name} must remain seeded after selective transactional add"
+        );
+    }
+    assert!(
+        pool_after.upstream_tool_last_error("alpha").await.is_none(),
+        "transactional add must not probe unrelated alpha"
+    );
+    assert!(
+        pool_after.upstream_tool_last_error("bravo").await.is_none(),
+        "transactional add must not probe unrelated bravo"
+    );
+}
+
+#[tokio::test]
 async fn reload_changed_upstream_rebuilds_pool_instead_of_reusing_stale_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
