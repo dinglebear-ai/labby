@@ -19,7 +19,7 @@ use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
     CODE_MODE_APP_URI, CODE_MODE_APP_URI_PREFIX, GATEWAY_STATUS_APP_SKYBRIDGE_URI,
     GATEWAY_STATUS_APP_URI, MCP_APPS_APP_SKYBRIDGE_URI, MCP_APPS_APP_URI,
-    SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI,
+    SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
 };
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
@@ -1302,7 +1302,7 @@ async fn mcp_app_enable_is_idempotent_for_admin_scope() {
     assert_eq!(structured["notification_scheduled"], false);
     assert!(
         result.meta.is_none(),
-        "control result must remain text-only"
+        "control result must not attach UI metadata"
     );
 }
 
@@ -1455,6 +1455,173 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
             .iter()
             .any(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
     );
+}
+
+#[tokio::test]
+async fn mcp_app_individual_disable_only_changes_selected_surface() {
+    let manager = code_mode_manager(true).await;
+    let shared_state = manager.code_mode_app_state();
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(Arc::clone(&manager)),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.code_mode_app_state = shared_state;
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({
+                    "action": "disable",
+                    "params": { "target": "server_logs" }
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ),
+            scoped_context(peer.clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("individual disable result");
+    assert!(!result.is_error.unwrap_or(false));
+    let structured = result
+        .structured_content
+        .expect("structured disable result");
+    assert_eq!(structured["target"], "server_logs");
+    assert_eq!(structured["enabled"], false);
+    assert_eq!(structured["changed"], true);
+    assert_eq!(structured["apps"]["server_logs"]["enabled"], false);
+    for target in ["codemode", "gateway_status", "add_server"] {
+        assert_eq!(structured["apps"][target]["enabled"], true, "{target}");
+    }
+
+    let cfg = manager.current_config().await;
+    assert!(cfg.code_mode.mcp_ui_enabled);
+    assert!(cfg.mcp_apps.gateway_status);
+    assert!(!cfg.mcp_apps.server_logs);
+    assert!(cfg.mcp_apps.add_server);
+    assert!(running.service().code_mode_app_state.is_enabled());
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("tools after individual disable");
+    for visible in [
+        MCP_APP_TOOL_NAME,
+        CODE_MODE_UI_TOOL_NAME,
+        GATEWAY_STATUS_TOOL_NAME,
+        ADD_SERVER_TOOL_NAME,
+    ] {
+        assert!(
+            tools.tools.iter().any(|tool| tool.name.as_ref() == visible),
+            "{visible} should stay visible"
+        );
+    }
+    let logs = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == SERVER_LOGS_TOOL_NAME)
+        .expect("server_logs text service remains available");
+    assert!(
+        logs.meta.is_none(),
+        "only server_logs app metadata should be hidden"
+    );
+
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(peer, &["lab:admin"]))
+        .await
+        .expect("resources after individual disable");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .all(|resource| !resource.uri.starts_with(SERVER_LOGS_APP_URI_PREFIX))
+    );
+    for visible_prefix in [
+        MCP_APPS_APP_URI,
+        CODE_MODE_APP_URI_PREFIX,
+        GATEWAY_STATUS_APP_URI,
+        ADD_SERVER_APP_URI,
+    ] {
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|resource| resource.uri.starts_with(visible_prefix)),
+            "{visible_prefix} should stay visible"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_app_manager_is_hidden_and_denied_on_protected_routes() {
+    let scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "ops",
+        ["gateway-alpha"],
+        ["gateway", "server_logs"],
+        true,
+    );
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("protected tools");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != MCP_APP_TOOL_NAME)
+    );
+
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("protected resources");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .all(|resource| !resource.uri.starts_with(MCP_APPS_APP_URI))
+    );
+
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "status", "target": "all" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(peer, &["lab:admin"]),
+        )
+        .await
+        .expect("protected manager denial");
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("root gateway route"), "{text}");
 }
 
 #[tokio::test]
