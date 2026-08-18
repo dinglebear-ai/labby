@@ -3765,7 +3765,7 @@ async fn list_tools_paginates_large_builtin_catalog() {
         "only the final revision-validated page publishes the baseline"
     );
     assert!(
-        Arc::ptr_eq(&first.tools[0].input_schema, &second.tools[0].input_schema),
+        Arc::ptr_eq(&first.tools[1].input_schema, &second.tools[0].input_schema),
         "built-in tools should reuse the cached stable action schema across list pages"
     );
 }
