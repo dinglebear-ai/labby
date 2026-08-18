@@ -657,7 +657,7 @@ mod tests {
                         "jsonrpc": "2.0",
                         "id": 1,
                         "error": {
-                            "code": -32020,
+                            "code": rmcp::model::ErrorCode::HEADER_MISMATCH.0,
                             "message": "the request headers and body disagree"
                         }
                     }));
@@ -725,7 +725,7 @@ mod tests {
                         "jsonrpc": "2.0",
                         "id": 1,
                         "error": {
-                            "code": -32020,
+                            "code": rmcp::model::ErrorCode::HEADER_MISMATCH.0,
                             "message": "the request headers and body disagree"
                         }
                     }));
