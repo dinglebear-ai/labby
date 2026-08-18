@@ -2985,6 +2985,68 @@ if (!probe.connected || !probe.healthy || !probe.empty) {{
     }
 
     #[test]
+    fn mcp_apps_manager_is_interactive_and_mobile_responsive() {
+        let descriptor = MCP_APPS_APP_RESOURCE_DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.uri == MCP_APPS_APP_URI)
+            .expect("MCP Apps manager descriptor");
+        let html = mcp_apps_app()
+            .inline_html(descriptor)
+            .expect("MCP Apps manager HTML");
+
+        for expected in [
+            "MCP Apps",
+            "Enable all",
+            "Disable all",
+            "role='switch'",
+            "aria-live=\"polite\"",
+            "host.callAction(\"mcp_app\",\"status\"",
+            "host.callAction(\"mcp_app\",enabled?\"enable\":\"disable\"",
+            "target===\"all\"",
+            "ResizeObserver",
+            "observer.disconnect()",
+            "document.documentElement.scrollHeight",
+            "env(safe-area-inset-bottom)",
+            "@media(max-width:600px)",
+        ] {
+            assert!(
+                html.contains(expected),
+                "MCP Apps manager must include marker {expected:?}"
+            );
+        }
+        for forbidden in ["height+20", "width:Math.ceil", "min-height:100dvh"] {
+            assert!(
+                !html.contains(forbidden),
+                "MCP Apps manager must not include {forbidden:?}"
+            );
+        }
+        assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
+    }
+
+    #[test]
+    fn mcp_apps_manager_preserves_structured_errors() {
+        let source = function_source(
+            MCP_APPS_APP_FALLBACK_HTML,
+            "function normalize(value)",
+            "function apply(raw)",
+        );
+        run_node(&format!(
+            r#"
+{source}
+for (const value of [
+  {{ok:false,error:{{message:'backend exploded'}}}},
+  {{structuredContent:{{ok:false,error:{{message:'nested exploded'}}}}}},
+  {{isError:true,content:[{{type:'text',text:'text exploded'}}]}}
+]) {{
+  let message = '';
+  try {{ normalize(value); }} catch (error) {{ message = error.message; }}
+  if (!message.includes('exploded')) throw new Error('structured error was masked: ' + message);
+}}
+"#
+        ));
+    }
+
+    #[test]
     fn gateway_status_app_handles_live_status_and_mobile_lifecycle() {
         let descriptor = GATEWAY_STATUS_APP_RESOURCE_DESCRIPTORS
             .iter()
