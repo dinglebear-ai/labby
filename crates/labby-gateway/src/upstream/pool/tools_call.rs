@@ -80,23 +80,15 @@ pub(super) fn hidden_tool_call_error(
     }
 }
 
-pub(super) const MCP_HEADER_MISMATCH_CODE: i32 = -32020;
-
 /// Whether the server rejected a request before dispatch because its SEP-2243
-/// routing headers were missing or stale. Restrict recovery to the standard
-/// HeaderMismatch code plus message marker so arbitrary application MCP errors
-/// are never replayed.
+/// routing headers were missing or stale. rmcp models this as the dedicated
+/// `HEADER_MISMATCH` code; the human-readable message is intentionally not part
+/// of the contract and may contain only the concrete validation reason.
 pub(super) fn is_tool_header_mismatch(error: &ServiceError) -> bool {
-    let ServiceError::McpError(data) = error else {
-        return false;
-    };
-    const MARKER: &[u8] = b"header mismatch";
-    data.code.0 == MCP_HEADER_MISMATCH_CODE
-        && data
-            .message
-            .as_bytes()
-            .windows(MARKER.len())
-            .any(|window| window.eq_ignore_ascii_case(MARKER))
+    matches!(
+        error,
+        ServiceError::McpError(data) if data.code == rmcp::model::ErrorCode::HEADER_MISMATCH
+    )
 }
 
 /// Refresh rmcp's per-transport tool-schema cache after HeaderMismatch. A
@@ -568,7 +560,7 @@ mod tests {
                 let attempt = self.tool_calls.fetch_add(1, Ordering::SeqCst);
                 if attempt == 0 {
                     return Err(ErrorData::new(
-                        ErrorCode(super::MCP_HEADER_MISMATCH_CODE),
+                        ErrorCode::HEADER_MISMATCH,
                         "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
                         None,
                     ));
@@ -634,19 +626,18 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_mcp_errors_are_not_header_mismatch_retries() {
+    fn header_mismatch_detection_uses_the_rmcp_error_code() {
         let ordinary = rmcp::ServiceError::McpError(ErrorData::invalid_params(
             "ordinary validation failure",
             None,
         ));
         assert!(!super::is_tool_header_mismatch(&ordinary));
 
-        let same_code_wrong_message = rmcp::ServiceError::McpError(ErrorData::new(
-            ErrorCode(super::MCP_HEADER_MISMATCH_CODE),
-            "application-specific retry request",
+        let sdk_header_mismatch = rmcp::ServiceError::McpError(ErrorData::header_mismatch(
+            "missing Mcp-Param-owner header for `owner`",
             None,
         ));
-        assert!(!super::is_tool_header_mismatch(&same_code_wrong_message));
+        assert!(super::is_tool_header_mismatch(&sdk_header_mismatch));
 
         let same_message_wrong_code = rmcp::ServiceError::McpError(ErrorData::internal_error(
             "header mismatch: application-level message only",

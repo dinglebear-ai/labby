@@ -671,7 +671,7 @@ impl Respond for HeaderRecoveryResponder {
                         "jsonrpc": "2.0",
                         "id": id,
                         "error": {
-                            "code": -32020,
+                            "code": rmcp::model::ErrorCode::HEADER_MISMATCH.0,
                             "message": "header mismatch: missing Mcp-Param-owner header for parameter \"owner\""
                         }
                     }));
@@ -681,7 +681,7 @@ impl Respond for HeaderRecoveryResponder {
                         "jsonrpc": "2.0",
                         "id": id,
                         "error": {
-                            "code": -32020,
+                            "code": rmcp::model::ErrorCode::HEADER_MISMATCH.0,
                             "message": "header mismatch: Mcp-Param-owner did not refresh"
                         }
                     }));

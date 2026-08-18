@@ -2274,7 +2274,7 @@ mod tests {
                 let attempt = self.tool_calls.fetch_add(1, Ordering::SeqCst);
                 if attempt == 0 {
                     return Err(ErrorData::new(
-                        ErrorCode(super::super::tools_call::MCP_HEADER_MISMATCH_CODE),
+                        ErrorCode::HEADER_MISMATCH,
                         "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
                         None,
                     ));
@@ -2345,7 +2345,7 @@ mod tests {
             ) -> Result<CallToolResponse, ErrorData> {
                 self.tool_calls.fetch_add(1, Ordering::SeqCst);
                 Err(ErrorData::new(
-                    ErrorCode(super::super::tools_call::MCP_HEADER_MISMATCH_CODE),
+                    ErrorCode::HEADER_MISMATCH,
                     "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
                     None,
                 ))
