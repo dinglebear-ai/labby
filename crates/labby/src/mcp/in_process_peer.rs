@@ -70,6 +70,7 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
         peers: Arc::new(RwLock::new(Vec::new())),
         code_mode_app_state: Default::default(),
         last_listed_tool_contract: Default::default(),
+        route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: IN_PROCESS_TRANSPORT_LABEL,
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),

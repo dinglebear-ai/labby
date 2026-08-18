@@ -39,6 +39,7 @@ pub mod resource_proxy;
 pub mod resources;
 pub mod result_format;
 pub(crate) mod route_scope;
+pub(crate) mod runtime;
 pub mod server;
 pub mod services;
 #[cfg(feature = "skills")]
