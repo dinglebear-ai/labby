@@ -48,7 +48,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[allow(deprecated)]
 use rmcp::model::LoggingMessageNotificationParam;
@@ -97,10 +97,10 @@ use super::relay_cancellation::{
     PendingRelayRequestId, RelayPermitOutcome, RelaySendOutcome, await_relay_permit,
     await_relay_send, dispatch_relay_cancellation, spawn_bounded_handle_cancellation,
 };
+use super::tools_call::{is_tool_header_mismatch, refresh_tool_header_cache};
 
-const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: std::time::Duration =
-    std::time::Duration::from_millis(500);
+const RELAY_ROUTE_CLEANUP_GRACE: Duration = Duration::from_secs(2);
+const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 const MAX_PENDING_PROGRESS_ROUTES: usize = 256;
 const MAX_PENDING_PROGRESS_PER_ROUTE: usize = 16;
 const MAX_PENDING_REQUEST_CANCELLATIONS: usize = 256;
@@ -306,7 +306,7 @@ impl RelayRouteState {
         &self,
         upstream_request_id: &RequestId,
         previous_started: u64,
-        timeout: std::time::Duration,
+        timeout: Duration,
     ) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
@@ -468,7 +468,7 @@ impl RelayRouteState {
     pub(super) async fn wait_for_task_notification_after(
         &self,
         previous: u64,
-        timeout: std::time::Duration,
+        timeout: Duration,
     ) -> bool {
         if self.task_notification_sequence() > previous {
             return true;
@@ -789,7 +789,7 @@ async fn send_relay_request(
     mut request_meta: Option<RequestMetaObject>,
     downstream_request_id: RequestId,
     downstream_cancel: CancellationToken,
-    timeout: std::time::Duration,
+    timeout: Duration,
     deadline: tokio::time::Instant,
 ) -> Result<ServerResult, ServiceError> {
     let cancellation_token = uuid::Uuid::new_v4().to_string();
@@ -984,6 +984,72 @@ async fn send_relay_request(
 
     routes.schedule_unregister_request(upstream_request_id);
     result
+}
+
+async fn send_relay_tool_request_with_header_recovery(
+    peer: &Peer<RoleClient>,
+    routes: &Arc<RelayRouteState>,
+    downstream: &Peer<RoleServer>,
+    upstream_name: &str,
+    cancellation_sender: Option<&HttpCancellationSender>,
+    params: CallToolRequestParams,
+    request_meta: Option<RequestMetaObject>,
+    downstream_request_id: RequestId,
+    downstream_cancel: CancellationToken,
+    timeout: Duration,
+    deadline: tokio::time::Instant,
+) -> Result<ServerResult, ServiceError> {
+    let retry_params = params.clone();
+    let retry_request_meta = request_meta.clone();
+    let retry_downstream_request_id = downstream_request_id.clone();
+    let retry_downstream_cancel = downstream_cancel.clone();
+    let response = send_relay_request(
+        peer,
+        routes,
+        downstream,
+        upstream_name,
+        cancellation_sender,
+        ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+        request_meta,
+        downstream_request_id,
+        downstream_cancel,
+        timeout,
+        deadline,
+    )
+    .await;
+    if !response
+        .as_ref()
+        .is_err_and(|error| is_tool_header_mismatch(error))
+    {
+        return response;
+    }
+
+    tokio::select! {
+        refreshed = refresh_tool_header_cache(peer, upstream_name) => refreshed?,
+        () = retry_downstream_cancel.cancelled() => {
+            return Err(ServiceError::Cancelled {
+                reason: Some("downstream request cancelled during header-schema refresh".to_string()),
+            });
+        }
+        () = tokio::time::sleep_until(deadline) => {
+            return Err(ServiceError::Timeout { timeout });
+        }
+    }
+
+    send_relay_request(
+        peer,
+        routes,
+        downstream,
+        upstream_name,
+        cancellation_sender,
+        ClientRequest::CallToolRequest(CallToolRequest::new(retry_params)),
+        retry_request_meta,
+        retry_downstream_request_id,
+        retry_downstream_cancel,
+        timeout,
+        deadline,
+    )
+    .await
 }
 
 fn downstream_cancelled(reason: &str) -> String {
@@ -1198,19 +1264,24 @@ impl UpstreamPool {
                 return Some(Err(super::CapabilityCallError::QueueSaturated { message }));
             }
         };
-        let response = send_relay_request(
+        // Keep the HeaderMismatch refresh/replay state out of this already-large
+        // relay future. Multi-hop relays nest this future recursively; carrying
+        // the retry branch inline pushed Tokio worker stacks over the edge even
+        // when HeaderMismatch recovery was never exercised. Boxing the focused
+        // request future keeps the normal relay connection path stack-bounded.
+        let response = Box::pin(send_relay_tool_request_with_header_recovery(
             &peer,
             &routes,
             &downstream_for_request,
             &config.name,
             cancellation_sender.as_ref(),
-            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            params,
             request_meta,
             downstream_request_id,
             downstream_cancel,
             timeout,
             deadline,
-        )
+        ))
         .await;
         match response {
             Ok(result) => {
@@ -2195,11 +2266,12 @@ impl UpstreamPool {
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotificationParam,
         ClientCapabilities, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
-        ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams,
+        ElicitRequestParams, ElicitationSchema, ErrorCode, ErrorData, GetPromptRequestParams,
         GetPromptResponse, Implementation, InputRequest, InputRequests, InputRequiredResult,
         PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam,
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
@@ -2209,7 +2281,7 @@ mod tests {
     use rmcp::service::ClientLifecycleMode;
     use rmcp::service::{NotificationContext, RequestContext, RunningService};
     use rmcp::{ClientHandler, ClientServiceExt, RoleServer, ServerHandler, ServiceExt};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use crate::upstream::types::UpstreamRuntimeMetadata;
 
@@ -2412,7 +2484,7 @@ mod tests {
                 .wait_for_cancellation_handlers_after(
                     &waiting_request,
                     previous,
-                    std::time::Duration::from_secs(1),
+                    Duration::from_secs(1),
                 )
                 .await
         });
@@ -2673,13 +2745,169 @@ mod tests {
         (pool, config, downstream_server)
     }
 
+    #[tokio::test]
+    async fn relayed_header_mismatch_refreshes_schema_and_retries_once() {
+        #[derive(Clone)]
+        struct HeaderMismatchUpstream {
+            list_calls: Arc<AtomicUsize>,
+            tool_calls: Arc<AtomicUsize>,
+        }
+
+        impl ServerHandler for HeaderMismatchUpstream {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+                self.list_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "header.tool",
+                        "relay header recovery fixture",
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                let attempt = self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    return Err(ErrorData::new(
+                        ErrorCode::HEADER_MISMATCH,
+                        "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
+                        None,
+                    ));
+                }
+                Ok(CallToolResult::success(vec![ContentBlock::text("recovered")]).into())
+            }
+        }
+
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let upstream = HeaderMismatchUpstream {
+            list_calls: Arc::clone(&list_calls),
+            tool_calls: Arc::clone(&tool_calls),
+        };
+        let capabilities = relay_test_capabilities();
+        let (pool, config, downstream_server) =
+            cached_relay_pool(upstream, CapableAgent, capabilities.clone()).await;
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("header.tool"),
+                downstream_server.peer().clone(),
+                RequestId::String("header-recovery".into()),
+                CancellationToken::new(),
+                1,
+                capabilities,
+                None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
+            )
+            .await
+            .expect("cached relay exists")
+            .expect("relay HeaderMismatch should self-heal");
+
+        assert!(matches!(result, CallToolResponse::Complete(_)));
+        assert_eq!(list_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn relayed_header_refresh_never_extends_original_deadline() {
+        #[derive(Clone)]
+        struct SlowHeaderRefreshUpstream {
+            list_calls: Arc<AtomicUsize>,
+            tool_calls: Arc<AtomicUsize>,
+        }
+
+        impl ServerHandler for SlowHeaderRefreshUpstream {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+                self.list_calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(rmcp::model::ListToolsResult::with_all_items(vec![]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                Err(ErrorData::new(
+                    ErrorCode::HEADER_MISMATCH,
+                    "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
+                    None,
+                ))
+            }
+        }
+
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let upstream = SlowHeaderRefreshUpstream {
+            list_calls: Arc::clone(&list_calls),
+            tool_calls: Arc::clone(&tool_calls),
+        };
+        let capabilities = relay_test_capabilities();
+        let (pool, config, downstream_server) =
+            cached_relay_pool(upstream, CapableAgent, capabilities.clone()).await;
+        let pool = pool.with_relay_timeout(Duration::from_millis(80));
+        let started = Instant::now();
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("header.tool"),
+                downstream_server.peer().clone(),
+                RequestId::String("header-refresh-deadline".into()),
+                CancellationToken::new(),
+                1,
+                capabilities,
+                None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
+            )
+            .await
+            .expect("cached relay exists")
+            .expect_err("slow schema refresh must obey the original relay deadline");
+
+        assert!(matches!(
+            result,
+            super::super::CapabilityCallError::Timeout { .. }
+        ));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(list_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            1,
+            "deadline expiry must prevent a second tools/call"
+        );
+    }
+
     async fn wait_for_recorded_count<T>(values: &Mutex<Vec<T>>, expected: usize) {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if values.lock().await.len() >= expected {
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -2738,7 +2966,7 @@ mod tests {
                 ))
                 .await
                 .expect("upstream sends cancellation");
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(CallToolResult::success(Vec::new()).into())
         }
     }
@@ -2787,7 +3015,7 @@ mod tests {
             const NATIVE_TASK_ID: &str = "native-notification-task";
             let peer = context.peer.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let task = DetailedTask::new(
                     Task::new(
                         NATIVE_TASK_ID,
@@ -2867,7 +3095,7 @@ mod tests {
             "upstream cancellation should terminate the relayed request: {result:?}"
         );
         tokio::time::timeout(
-            RELAY_ROUTE_CLEANUP_GRACE + std::time::Duration::from_secs(1),
+            RELAY_ROUTE_CLEANUP_GRACE + Duration::from_secs(1),
             routes.wait_for_relay_watcher_finish_after(watcher_sequence),
         )
         .await
@@ -2913,9 +3141,9 @@ mod tests {
                 .await
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             while !upstream.started.load(Ordering::SeqCst) {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -2925,9 +3153,9 @@ mod tests {
         assert!(
             matches!(result, Err(ref error) if error.to_string().contains("downstream request cancelled"))
         );
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             while !upstream.cancelled.load(Ordering::SeqCst) {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -3003,7 +3231,7 @@ mod tests {
         );
 
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(500),
+            started.elapsed() < Duration::from_millis(500),
             "relay-token cancellation must be dispatched before waiting for the upstream request id"
         );
     }
@@ -3401,7 +3629,7 @@ mod tests {
         outcome: &str,
         expected_count: i64,
     ) -> i64 {
-        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let expected = outcome.to_string();
             let count = store
@@ -3418,7 +3646,7 @@ mod tests {
             if count >= expected_count || Instant::now() >= deadline {
                 return count;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -3457,7 +3685,7 @@ mod tests {
         );
         let pool = UpstreamPool::new()
             .with_usage_store(Some(Arc::clone(&store)))
-            .with_relay_timeout(std::time::Duration::from_secs(30));
+            .with_relay_timeout(Duration::from_secs(30));
         let config = super::super::testsupport::test_upstream_config();
         let capabilities = relay_test_capabilities();
         let key = relay_cache_key(&config.name, 41, None);
@@ -3471,7 +3699,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let cancel = cancellation.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
             cancel.cancel();
         });
 
@@ -3496,7 +3724,7 @@ mod tests {
             result,
             super::super::capability_call::CapabilityCallError::Cancelled { .. }
         ));
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(
             wait_for_usage_outcome(&store, "connect_cancelled", 1).await,
             1
@@ -3512,7 +3740,7 @@ mod tests {
             .build()
             .expect("test runtime");
         runtime.block_on(async {
-            let timeout = std::time::Duration::from_millis(40);
+            let timeout = Duration::from_millis(40);
             let dir = tempfile::tempdir().expect("usage tempdir");
             let store = Arc::new(
                 crate::usage::UsageStore::open(dir.path().join("usage.db"))
@@ -3555,7 +3783,7 @@ mod tests {
                 super::super::capability_call::CapabilityCallError::Timeout { .. }
             ));
             assert!(
-                started.elapsed() < timeout + std::time::Duration::from_secs(1),
+                started.elapsed() < timeout + Duration::from_secs(1),
                 "cold connect exceeded the absolute relay budget"
             );
             assert_eq!(
@@ -3656,7 +3884,7 @@ mod tests {
             let session_id = 100 + index as u64;
             let pool = UpstreamPool::new()
                 .with_usage_store(Some(Arc::clone(&store)))
-                .with_relay_timeout(std::time::Duration::from_secs(30));
+                .with_relay_timeout(Duration::from_secs(30));
             let key = relay_cache_key(&config.name, session_id, None);
             let connect_lock = Arc::new(Mutex::new(()));
             pool.relay_connect_locks
@@ -3667,7 +3895,7 @@ mod tests {
             let cancellation = CancellationToken::new();
             let cancel = cancellation.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
                 cancel.cancel();
             });
             invoke_cold_relay_path(
@@ -3698,7 +3926,7 @@ mod tests {
             let session_id = 200 + index as u64;
             let pool = UpstreamPool::new()
                 .with_usage_store(Some(Arc::clone(&store)))
-                .with_relay_timeout(std::time::Duration::from_millis(20));
+                .with_relay_timeout(Duration::from_millis(20));
             let key = relay_cache_key(&config.name, session_id, None);
             let connect_lock = Arc::new(Mutex::new(()));
             pool.relay_connect_locks
@@ -3894,7 +4122,7 @@ mod tests {
         let shared_pool = pool.clone();
         let shared_upstreams = ["first".to_string()];
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+        tokio::time::timeout(Duration::from_secs(1), async move {
             tokio::join!(
                 subject_pool.invalidate_oauth_subject_sessions(
                     "first",
@@ -3948,7 +4176,7 @@ mod tests {
     /// the human-aware-deadline fix; `call_tool_relayed` reads `self.relay_timeout`.
     #[test]
     fn relay_timeout_defaults_to_five_minutes_and_is_configurable() {
-        use std::time::Duration;
+        use Duration;
         let pool = UpstreamPool::new();
         assert_eq!(
             pool.relay_timeout,

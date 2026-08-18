@@ -621,6 +621,154 @@ async fn http_upstream_keeps_modern_lifecycle_without_legacy_probe() {
     assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 0);
 }
 
+#[derive(Clone, Default)]
+struct HeaderRecoveryResponder {
+    list_tools_requests: Arc<AtomicUsize>,
+    tool_calls: Arc<AtomicUsize>,
+}
+
+impl Respond for HeaderRecoveryResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .expect("JSON-RPC method");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+
+        match method {
+            "server/discover" => ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "header-recovery", "version": "1.0.0"},
+                    "ttlMs": 0,
+                    "cacheScope": "private"
+                }
+            })),
+            "tools/list" => {
+                let call = self.list_tools_requests.fetch_add(1, Ordering::SeqCst);
+                let owner_schema = if call == 0 {
+                    json!({"type": "string"})
+                } else {
+                    json!({"type": "string", "x-mcp-header": "owner"})
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "tools": [{
+                            "name": "pull_request_read",
+                            "description": "header recovery proof",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"owner": owner_schema},
+                                "required": ["owner"]
+                            }
+                        }]
+                    }
+                }))
+            }
+            "tools/call" => {
+                let attempt = self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                let owner = request
+                    .headers
+                    .get("mcp-param-owner")
+                    .and_then(|value| value.to_str().ok());
+                if attempt == 0 && owner.is_none() {
+                    return ResponseTemplate::new(200).set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": rmcp::model::ErrorCode::HEADER_MISMATCH.0,
+                            "message": "header mismatch: missing Mcp-Param-owner header for parameter \"owner\""
+                        }
+                    }));
+                }
+                if owner != Some("dinglebear-ai") {
+                    return ResponseTemplate::new(200).set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": rmcp::model::ErrorCode::HEADER_MISMATCH.0,
+                            "message": "header mismatch: Mcp-Param-owner did not refresh"
+                        }
+                    }));
+                }
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": "http-recovered"}],
+                        "isError": false
+                    }
+                }))
+            }
+            other => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected MCP method: {other}")),
+        }
+    }
+}
+
+#[tokio::test]
+async fn http_header_mismatch_refreshes_rmcp_schema_cache_and_mcp_param_header() {
+    let server = MockServer::start().await;
+    let responder = HeaderRecoveryResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let mut config = test_upstream_config();
+    config.name = "header-recovery-http".to_string();
+    config.url = Some(format!("{}/mcp", server.uri()));
+
+    let (connection, tools) = connect_http_upstream(
+        config.url.as_deref().expect("url"),
+        &config,
+        None,
+        None,
+        None,
+        (),
+    )
+    .await
+    .expect("header recovery upstream connects");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
+
+    let mut params = rmcp::model::CallToolRequestParams::new("pull_request_read");
+    params.arguments = Some(serde_json::Map::from_iter([(
+        "owner".to_string(),
+        Value::String("dinglebear-ai".to_string()),
+    )]));
+    let response = super::tools_call::call_tool_once_with_header_recovery(
+        &connection.peer,
+        &config.name,
+        params,
+    )
+    .await
+    .expect("HeaderMismatch should refresh the real HTTP transport schema cache");
+
+    assert!(matches!(
+        response,
+        rmcp::model::CallToolResponse::Complete(_)
+    ));
+    assert_eq!(
+        responder.list_tools_requests.load(Ordering::SeqCst),
+        2,
+        "one recovery tools/list must refresh rmcp's transport-local schema cache"
+    );
+    assert_eq!(
+        responder.tool_calls.load(Ordering::SeqCst),
+        2,
+        "the original tools/call may be replayed exactly once"
+    );
+}
+
 #[tokio::test]
 async fn http_upstream_does_not_downgrade_generic_server_failures() {
     let server = MockServer::start().await;
