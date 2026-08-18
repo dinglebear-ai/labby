@@ -2525,6 +2525,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateless_http_fresh_tools_list_observes_code_mode_app_state_changes() {
+        async fn listed_tool_names(app: axum::Router) -> Vec<String> {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp")
+                        .header("host", "localhost")
+                        .header("content-type", "application/json")
+                        .header("accept", "application/json, text/event-stream")
+                        .header("mcp-protocol-version", "2026-07-28")
+                        .header("mcp-method", "tools/list")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "tools/list",
+                                "params": {
+                                    "_meta": {
+                                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                        "io.modelcontextprotocol/clientInfo": {
+                                            "name": "stateless-app-state-test",
+                                            "version": "1.0"
+                                        },
+                                        "io.modelcontextprotocol/clientCapabilities": {}
+                                    }
+                                }
+                            })
+                            .to_string(),
+                        ))
+                        .expect("tools/list request"),
+                )
+                .await
+                .expect("tools/list response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("tools/list response body");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body).expect("tools/list response is JSON-RPC");
+            body["result"]["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .map(|tool| tool["name"].as_str().expect("tool name").to_string())
+                .collect()
+        }
+
+        let previous_code_mode = crate::config::process_code_mode_enabled();
+        crate::config::set_process_code_mode_enabled(true);
+
+        let notifier = PeerNotifier::default();
+        notifier.code_mode_app_state.set_enabled(false);
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            notifier.clone(),
+            true,
+            false,
+        )
+        .expect("router with HTTP MCP");
+
+        let disabled = listed_tool_names(app.clone()).await;
+        assert!(disabled.iter().any(|name| name == "codemode"));
+        assert!(disabled.iter().any(|name| name == "mcp_app"));
+        assert!(!disabled.iter().any(|name| name == "codemode_ui"));
+
+        notifier.code_mode_app_state.set_enabled(true);
+        let enabled = listed_tool_names(app).await;
+        assert!(enabled.iter().any(|name| name == "codemode_ui"));
+
+        crate::config::set_process_code_mode_enabled(previous_code_mode);
+    }
+
+    #[tokio::test]
     async fn http_mcp_discovers_all_supported_protocols() {
         let app = build_http_router(
             AppState::new(),
