@@ -507,6 +507,125 @@ async fn gateway_add_reconciles_only_changed_upstream_in_live_pool() {
 }
 
 #[tokio::test]
+async fn transactional_selective_probe_does_not_hold_publication_barrier() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let initial = GatewayConfig {
+        upstream: vec![fixture_http_upstream("alpha")],
+        ..GatewayConfig::default()
+    };
+    write_gateway_config(&path, &initial).expect("write initial config");
+
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let pool = Arc::new(manager.new_base_pool(
+        initial.upstream_request_timeout(),
+        initial.upstream_relay_timeout(),
+    ));
+    pool.seed_lazy_upstreams(&initial.upstream).await;
+    manager.runtime.swap(Some(Arc::clone(&pool))).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let mut charlie = fixture_http_upstream("charlie");
+    charlie.url = Some(format!("http://{address}/mcp"));
+
+    let adding = {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.add(charlie, None, Some("test"), None).await })
+    };
+    let (socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .expect("selective probe reached blocking server")
+        .expect("accepted probe connection");
+
+    let (published, published_pool) =
+        tokio::time::timeout(Duration::from_secs(1), manager.published_config_and_pool())
+            .await
+            .expect("publication reader must not wait for changed-upstream network I/O");
+    assert!(
+        published
+            .upstream
+            .iter()
+            .any(|upstream| upstream.name == "charlie"),
+        "candidate config must already be published while the changed upstream probes"
+    );
+    assert!(
+        published_pool
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &pool)),
+        "transactional selective reconcile must preserve the live pool"
+    );
+
+    drop(socket);
+    drop(listener);
+    tokio::time::timeout(Duration::from_secs(5), adding)
+        .await
+        .expect("selective add completes after blocked peer closes")
+        .expect("add task")
+        .expect("probe failure is health state, not transaction failure");
+}
+
+#[tokio::test]
+async fn transactional_selective_runtime_state_failure_restores_live_pool_and_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let initial = GatewayConfig {
+        upstream: vec![fixture_http_upstream("alpha")],
+        ..GatewayConfig::default()
+    };
+    write_gateway_config(&path, &initial).expect("write initial config");
+
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let pool = Arc::new(manager.new_base_pool(
+        initial.upstream_request_timeout(),
+        initial.upstream_relay_timeout(),
+    ));
+    pool.seed_lazy_upstreams(&initial.upstream).await;
+    manager.runtime.swap(Some(Arc::clone(&pool))).await;
+
+    let runtime_state_path = path.with_file_name("config.runtime.json");
+    std::fs::create_dir(&runtime_state_path).expect("block runtime-state file with directory");
+
+    manager
+        .add(fixture_http_upstream("charlie"), None, Some("test"), None)
+        .await
+        .expect_err("runtime-state failure must fail the transaction");
+
+    let live = manager.current_config().await;
+    assert_eq!(
+        live.upstream
+            .iter()
+            .map(|upstream| upstream.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha"],
+        "live config must return to the prior revision"
+    );
+    let current_pool = manager.current_pool().await.expect("live pool");
+    assert!(Arc::ptr_eq(&pool, &current_pool));
+    assert!(
+        current_pool
+            .cached_upstream_summary("alpha")
+            .await
+            .is_some(),
+        "prior upstream must remain in the live pool"
+    );
+    assert!(
+        current_pool
+            .cached_upstream_summary("charlie")
+            .await
+            .is_none(),
+        "failed candidate upstream must be removed from the live pool"
+    );
+    let persisted = load_gateway_config(&path).expect("rollback disk config");
+    assert_eq!(persisted.upstream.len(), 1);
+    assert_eq!(persisted.upstream[0].name, "alpha");
+}
+
+#[tokio::test]
 async fn reload_changed_upstream_rebuilds_pool_instead_of_reusing_stale_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

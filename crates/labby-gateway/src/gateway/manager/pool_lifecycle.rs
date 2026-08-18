@@ -336,10 +336,11 @@ impl GatewayManager {
         let new_mcp_ui_enabled = cfg.code_mode.mcp_ui_enabled;
         let new_ns_tokens = code_mode_namespace_tokens(&cfg);
 
-        let (pool_settings_unchanged, changed_upstreams) = {
+        let (previous_cfg, pool_settings_unchanged, changed_upstreams) = {
             let current = self.config.read().await;
             let changed_upstreams = upstream_changed_names(&current, &cfg);
             (
+                current.clone(),
                 pool_settings_fingerprint(&current) == pool_settings_fingerprint(&cfg),
                 changed_upstreams,
             )
@@ -388,13 +389,32 @@ impl GatewayManager {
                 &old_ns_tokens,
             )
             .await;
-            let _publication = self.publication_barrier.write().await;
-            pool.reconcile_lazy_upstreams(
-                &cfg.upstream,
-                &changed_upstreams,
-                "gateway.reload.transactional_selective",
-            )
-            .await;
+            // Publish the new config and perform only the in-memory changed-name
+            // eviction/seed while holding the publication writer. Never wait on
+            // upstream I/O under this lock: several MCP readers retain the live
+            // pool Arc directly, so a network probe here would stretch a tiny
+            // config/runtime convergence window into the full upstream timeout.
+            {
+                let _publication = self.publication_barrier.write().await;
+                self.store
+                    .set_process_code_mode_enabled(cfg.code_mode.enabled);
+                self.code_mode_app_state
+                    .set_enabled(cfg.code_mode.mcp_ui_enabled);
+                *self.protected_route_index.write().await =
+                    ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
+                *self.config.write().await = cfg.clone();
+                pool.reconcile_lazy_upstreams(
+                    &cfg.upstream,
+                    &changed_upstreams,
+                    "gateway.reload.transactional_selective",
+                )
+                .await;
+            }
+
+            // Only the changed upstreams are cold-probed, after the candidate
+            // revision is published. During this wait the pool/config pair is a
+            // valid lazy-runtime state rather than a private candidate leaking
+            // behind the old config revision.
             probe_reload_upstreams(
                 Arc::clone(pool),
                 &cfg,
@@ -409,15 +429,68 @@ impl GatewayManager {
                 &new_ns_tokens,
             )
             .await;
-            self.reconcile_runtime_state(&cfg, Some(pool.as_ref()))
-                .await?;
-            self.store
-                .set_process_code_mode_enabled(cfg.code_mode.enabled);
-            self.code_mode_app_state
-                .set_enabled(cfg.code_mode.mcp_ui_enabled);
-            *self.protected_route_index.write().await =
-                ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-            *self.config.write().await = cfg;
+
+            // Runtime-state persistence is the only fallible step after the
+            // in-place reconcile. If it fails, restore both the published config
+            // and the changed pool entries before surfacing the error; otherwise
+            // the outer disk rollback would see the old config already live and
+            // incorrectly treat the candidate-mutated pool as a no-op reload.
+            if let Err(error) = self
+                .reconcile_runtime_state(&cfg, Some(pool.as_ref()))
+                .await
+            {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.reload",
+                    event = "selective.rollback.start",
+                    phase = "runtime_state",
+                    error = %error,
+                    changed_upstream_count = changed_upstreams.len(),
+                    "transactional selective reconcile failed; restoring prior live revision"
+                );
+                {
+                    let _publication = self.publication_barrier.write().await;
+                    self.store
+                        .set_process_code_mode_enabled(previous_cfg.code_mode.enabled);
+                    self.code_mode_app_state
+                        .set_enabled(previous_cfg.code_mode.mcp_ui_enabled);
+                    *self.protected_route_index.write().await =
+                        ProtectedRouteIndex::from_routes(&previous_cfg.protected_mcp_routes);
+                    *self.config.write().await = previous_cfg.clone();
+                    pool.reconcile_lazy_upstreams(
+                        &previous_cfg.upstream,
+                        &changed_upstreams,
+                        "gateway.reload.transactional_selective.rollback",
+                    )
+                    .await;
+                }
+                // Leave restored upstreams lazy. Rollback must not depend on
+                // network availability; the next real request can reconnect the
+                // previous runtime on demand.
+                if let Err(rollback_error) = self
+                    .reconcile_runtime_state(&previous_cfg, Some(pool.as_ref()))
+                    .await
+                {
+                    tracing::error!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.reload",
+                        event = "selective.rollback.runtime_state_error",
+                        error = %rollback_error,
+                        "prior live revision restored but runtime-state persistence still failed"
+                    );
+                }
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.reload",
+                    event = "selective.rollback.finish",
+                    changed_upstream_count = changed_upstreams.len(),
+                    "transactional selective live revision restored"
+                );
+                return Err(error);
+            }
 
             let observed = ReconcileCatalogObservation::observe(
                 &before,
