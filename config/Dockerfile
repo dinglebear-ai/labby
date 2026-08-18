@@ -137,10 +137,15 @@ LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
 # ca-certificates: reqwest uses rustls for TLS but still validates against the
 # system CA bundle — required for outbound HTTPS calls.
 # git remains available for operator-managed stdio upstreams and setup workflows.
+# Explicitly install the util-linux package family so a floating Debian base is
+# upgraded to the current security candidates before the release image is scanned.
 # Replace NodeSource's bundled npm from a digest-pinned tarball, then patch
 # fixed bundled dependencies that have not yet landed in an npm release.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git gnupg \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl git gnupg \
+      bsdutils libblkid1 liblastlog2-2 libmount1 libsmartcols1 libuuid1 \
+      login mount util-linux \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \

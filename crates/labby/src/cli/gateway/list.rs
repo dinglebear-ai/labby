@@ -55,12 +55,18 @@ async fn fetch_servers(
     manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
 ) -> Result<Vec<ServerView>, crate::dispatch::error::ToolError> {
-    if let Some(live) = remote::detect(config).await {
+    if let Some(live) = remote::detect(config, "cli").await? {
         let value = live
             .dispatch_action("gateway.list", serde_json::json!({}))
             .await?;
         if let Ok(servers) = serde_json::from_value::<Vec<ServerView>>(value) {
             return Ok(servers);
+        }
+        if !live.allows_local_fallback() {
+            return Err(crate::dispatch::error::ToolError::Sdk {
+                sdk_kind: "decode_error".to_string(),
+                message: "invalid gateway.list response from configured Labby server".to_string(),
+            });
         }
         // Fall through to local dispatch if the live daemon's response
         // didn't parse as expected -- better to answer from local state than

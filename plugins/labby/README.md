@@ -30,6 +30,13 @@ connectivity checks, repair — is owned by `labby setup`. Configure the plugin
 with the URL of the Labby server you intend to trust; the plugin never selects
 a shared hosted gateway for you.
 
+The plugin exports its configured `server_url` as
+`CLAUDE_PLUGIN_OPTION_SERVER_URL`. Plugin-launched Labby processes use that same
+authoritative base for MCP transport, gateway management, Code Mode, and stdio
+bridging, paired only with `CLAUDE_PLUGIN_OPTION_API_TOKEN`; they never inherit
+an ambient `LABBY_MCP_HTTP_TOKEN` for a different authority. If the configured server fails, Labby reports the failure instead of
+silently reading or executing against the invoking user's local/XDG config.
+
 ## Configuration
 
 Plugin settings (server URL, auth mode, token, …) are declared in

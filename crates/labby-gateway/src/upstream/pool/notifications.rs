@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream;
-use rmcp::model::{ServerNotification, SubscriptionFilter};
+use rmcp::model::{ErrorCode, ProtocolVersion, ServerNotification, SubscriptionFilter};
+use rmcp::service::ServiceError;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +37,24 @@ pub(super) fn next_subscription_retry_attempt(attempt: u32, established_for: Dur
         0
     } else {
         attempt.saturating_add(1)
+    }
+}
+
+pub(super) fn subscription_listen_supported_protocol(version: &ProtocolVersion) -> bool {
+    version == &ProtocolVersion::V_2026_07_28
+}
+
+pub(super) fn terminal_subscription_listen_error(error: &ServiceError, retry_attempt: u32) -> bool {
+    match error {
+        ServiceError::McpError(error) if error.code == ErrorCode::METHOD_NOT_FOUND => true,
+        ServiceError::McpError(error) if error.code == ErrorCode::INVALID_PARAMS => {
+            retry_attempt > 0
+        }
+        ServiceError::McpError(error) if error.code == ErrorCode::INTERNAL_ERROR => error
+            .message
+            .to_ascii_lowercase()
+            .contains("subscription limit reached"),
+        _ => false,
     }
 }
 
@@ -274,6 +293,14 @@ impl UpstreamPool {
         let Some(server_info) = peer.peer_info() else {
             return;
         };
+        if !subscription_listen_supported_protocol(&server_info.protocol_version) {
+            tracing::debug!(
+                upstream,
+                protocol_version = %server_info.protocol_version,
+                "skipping subscriptions/listen for legacy upstream protocol"
+            );
+            return;
+        }
 
         let resource_uris = {
             let catalog = self.catalog.read().await;
@@ -323,6 +350,14 @@ impl UpstreamPool {
                 Some(subscription)
             }
             Ok(Err(error)) => {
+                if terminal_subscription_listen_error(&error, 0) {
+                    tracing::warn!(
+                        upstream,
+                        error = %error,
+                        "upstream does not support a usable subscriptions/listen stream; retries suppressed"
+                    );
+                    return;
+                }
                 tracing::warn!(
                     upstream,
                     error = %error,
@@ -380,6 +415,21 @@ impl UpstreamPool {
                         let subscription = match established {
                             Ok(Ok(subscription)) => subscription,
                             Ok(Err(error)) => {
+                                if terminal_subscription_listen_error(&error, retry_attempt) {
+                                    tracing::warn!(
+                                        upstream = %upstream,
+                                        error = %error,
+                                        retry_attempt,
+                                        "upstream subscriptions/listen failure is not retryable on this connection; retries suppressed"
+                                    );
+                                    let _ = pool
+                                        .clear_subscription_resources_if_current(
+                                            &upstream,
+                                            &generation,
+                                        )
+                                        .await;
+                                    return;
+                                }
                                 tracing::warn!(
                                     upstream = %upstream,
                                     error = %error,

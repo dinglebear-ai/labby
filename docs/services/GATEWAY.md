@@ -355,20 +355,22 @@ that builds its own throwaway manager would write `config.toml` correctly
 but leave an already-running daemon (and the WebUI/MCP clients it serves)
 unaware of the change until restarted or sent `SIGUSR1`.
 
-To avoid that divergence, `labby gateway <subcommand>` first probes for a
-live daemon (local bind address, then `LABBY_MCP_GATEWAY_URL`/`LABBY_PUBLIC_URL`
-in order) and, if one responds, dispatches through its real HTTP API
+To avoid that divergence, `labby gateway <subcommand>` first resolves an
+explicit client target (`CLAUDE_PLUGIN_OPTION_SERVER_URL`, then
+`LABBY_SERVER_URL`) or probes opportunistically (local bind address, then
+`LABBY_MCP_GATEWAY_URL`/`LABBY_PUBLIC_URL`). If one responds, it dispatches
+through the daemon's real HTTP API
 (`POST /v1/gateway`, or the `codemode` MCP tool for `gateway code exec`) --
 the same path the WebUI itself uses, since the WebUI is served *by* the live
-daemon and shares its manager directly. Only when no daemon is reachable
-does the CLI fall back to mutating `config.toml` locally, which is what
-keeps bootstrap flows (`labby setup --provision`, the very first
-`gateway add` before `labby serve` exists) working standalone.
+daemon and shares its manager directly. Explicit targets remain authoritative
+through dispatch, response decoding, Code Mode, and stdio MCP initialization;
+failures are returned and local fallback is suppressed. Only bounded
+opportunistic discovery may fall back to local `config.toml`, which keeps
+bootstrap flows working standalone.
 
-Running the CLI from a different machine than the daemon requires
-`LABBY_MCP_HTTP_TOKEN` and `LABBY_PUBLIC_URL` (or `LABBY_MCP_GATEWAY_URL`) in that
-machine's `~/.labby/.env` -- see `docs/runtime/ENV.md` § "Remote Gateway CLI
-Usage" for the exact variables and fallback behavior.
+Running the CLI from a different machine than the daemon should use
+`LABBY_MCP_HTTP_TOKEN` and `LABBY_SERVER_URL`; see `docs/runtime/ENV.md` §
+"Remote Gateway CLI Usage" for the exact precedence and fallback behavior.
 
 The local `GatewayManager` these CLI commands fall back to is built lazily --
 only if remote detection genuinely fails -- so a successful remote dispatch
@@ -391,8 +393,9 @@ the stdio process runs as a pure `crate::mcp::bridge::BridgeServerHandler`:
 every `tools/`, `resources/`, and `prompts/` request received over stdio is
 forwarded to the live daemon's own MCP endpoint via a streamable-HTTP
 `Peer<RoleClient>`, and the response is piped straight back -- this process
-holds no gateway state of its own. Only when no daemon is reachable does it
-fall back to building a full standalone instance, same as today.
+holds no gateway state of its own. Only when bounded opportunistic discovery
+returns no daemon does it fall back to a full standalone instance. Invalid or
+unreachable explicit targets fail closed instead.
 
 ## Examples
 
