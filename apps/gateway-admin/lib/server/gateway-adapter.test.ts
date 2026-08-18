@@ -600,7 +600,9 @@ test('gatewayInputToSpec converts UI input into backend spec payload', () => {
       url: 'http://127.0.0.1:9001/mcp',
       bearer_token_env: 'FIXTURE_TOKEN',
       proxy_resources: true,
+      proxy_skills: true,
       expose_tools: ['alpha.*'],
+      expose_skills: ['review-*'],
     },
   })
 
@@ -612,10 +614,12 @@ test('gatewayInputToSpec converts UI input into backend spec payload', () => {
     bearer_token_env: 'FIXTURE_TOKEN',
     proxy_resources: true,
     proxy_prompts: true,
+    proxy_skills: true,
     proxy_mcp_ui: true,
     expose_tools: ['alpha.*'],
     expose_resources: null,
     expose_prompts: null,
+    expose_skills: ['review-*'],
   })
 })
 
@@ -643,17 +647,21 @@ test('buildGatewayPatch clears the opposite transport fields when switching to s
   })
 })
 
-test('buildGatewayPatch preserves resource and prompt exposure edits', () => {
+test('buildGatewayPatch preserves resource, prompt, and skill exposure edits', () => {
   const patch = buildGatewayPatch({
     config: {
+      proxy_skills: true,
       expose_resources: ['resource://one'],
       expose_prompts: ['prompt-one'],
+      expose_skills: ['review-*'],
     },
   })
 
   assert.deepEqual(patch, {
+    proxy_skills: true,
     expose_resources: ['resource://one'],
     expose_prompts: ['prompt-one'],
+    expose_skills: ['review-*'],
   })
 })
 

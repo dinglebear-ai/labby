@@ -14,11 +14,11 @@ use super::params::{
     GatewayImportParams, GatewayImportTombstoneParams, GatewayMcpCleanupParams,
     GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams, GatewayReloadParams,
     GatewayStatusParams, GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch,
-    GatewayUsageCallsParams, GatewayUsageMetricsParams, ProtectedRouteNameParams,
-    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ResourceLeaseCreateParams,
-    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServiceConfigGetParams,
-    ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
-    VirtualServerSurfaceParams,
+    GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams, LoadoutPatchParams,
+    LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams, ProtectedRouteSpecParams,
+    ProtectedRouteUpdateParams, ResourceLeaseCreateParams, ResourceLeaseReleaseParams,
+    ResourceLeaseRenewParams, ServiceConfigGetParams, ServiceConfigSetParams,
+    VirtualServerMcpPolicyParams, VirtualServerNameParams, VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
@@ -153,6 +153,9 @@ pub async fn dispatch_with_manager_scoped(
         | "gateway.discovered_prompts"
         | "gateway.public_urls.get" => {
             handle_gateway_actions(manager, action, params_value, enrichment_scope).await
+        }
+        action if action.starts_with("gateway.loadout.") => {
+            handle_loadout_actions(manager, action, params_value).await
         }
         action if action.starts_with("gateway.protected_route.") => {
             handle_protected_route_actions(manager, action, params_value).await
@@ -460,6 +463,54 @@ async fn handle_tool_actions(
     }
 }
 
+async fn handle_loadout_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
+        "gateway.loadout.list" => to_json(manager.loadout_list().await),
+        "gateway.loadout.list_state" => to_json(manager.loadout_list_state().await?),
+        "gateway.loadout.get" => {
+            let params: LoadoutNameParams = parse_params(params_value)?;
+            to_json(manager.loadout_get(&params.name).await?)
+        }
+        "gateway.loadout.add" => {
+            let params: LoadoutSpecParams = parse_params(params_value)?;
+            to_json(manager.loadout_add(params.loadout).await?)
+        }
+        "gateway.loadout.update" => {
+            let params: LoadoutUpdateParams = parse_params(params_value)?;
+            to_json(manager.loadout_update(&params.name, params.loadout).await?)
+        }
+        "gateway.loadout.patch" => {
+            let params: LoadoutPatchParams = parse_params(params_value)?;
+            to_json(manager.loadout_patch(&params.name, params.patch).await?)
+        }
+        "gateway.loadout.stage_update" => {
+            let params: LoadoutUpdateParams = parse_params(params_value)?;
+            manager
+                .loadout_stage_update(&params.name, params.loadout)
+                .await
+        }
+        "gateway.loadout.stage_patch" => {
+            let params: LoadoutPatchParams = parse_params(params_value)?;
+            manager
+                .loadout_stage_patch(&params.name, params.patch)
+                .await
+        }
+        "gateway.loadout.stage_remove" => {
+            let params: LoadoutNameParams = parse_params(params_value)?;
+            manager.loadout_stage_remove(&params.name).await
+        }
+        "gateway.loadout.remove" => {
+            let params: LoadoutNameParams = parse_params(params_value)?;
+            to_json(manager.loadout_remove(&params.name).await?)
+        }
+        unknown => unknown_action(unknown),
+    }
+}
+
 async fn handle_protected_route_actions(
     manager: &GatewayManager,
     action: &str,
@@ -467,6 +518,9 @@ async fn handle_protected_route_actions(
 ) -> Result<Value, ToolError> {
     match action {
         "gateway.protected_route.list" => to_json(manager.protected_route_list().await),
+        "gateway.protected_route.list_state" => {
+            to_json(manager.protected_route_list_state().await?)
+        }
         "gateway.protected_route.get" => {
             let params: ProtectedRouteNameParams = parse_params(params_value)?;
             to_json(manager.protected_route_get(&params.name).await?)
@@ -486,6 +540,20 @@ async fn handle_protected_route_actions(
         "gateway.protected_route.remove" => {
             let params: ProtectedRouteNameParams = parse_params(params_value)?;
             to_json(manager.protected_route_remove(&params.name).await?)
+        }
+        "gateway.protected_route.stage_add" => {
+            let params: ProtectedRouteSpecParams = parse_params(params_value)?;
+            manager.protected_route_stage_add(params.route).await
+        }
+        "gateway.protected_route.stage_update" => {
+            let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
+            manager
+                .protected_route_stage_update(&params.name, params.route)
+                .await
+        }
+        "gateway.protected_route.stage_remove" => {
+            let params: ProtectedRouteNameParams = parse_params(params_value)?;
+            manager.protected_route_stage_remove(&params.name).await
         }
         "gateway.protected_route.test" => {
             let params: ProtectedRouteSpecParams = parse_params(params_value)?;
@@ -1013,27 +1081,56 @@ async fn handle_skills_list(
         parse_params(params_value)?
     };
 
+    let started = std::time::Instant::now();
+    let cfg = manager.current_config().await;
+    if let Some(filter) = params.upstream.as_deref()
+        && !cfg.upstream.iter().any(|config| config.name == filter)
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!(
+                "gateway upstream `{filter}` was not found; run `labby gateway skills list` or `labby gateway list` to discover valid upstream names"
+            ),
+        });
+    }
+    tracing::debug!(
+        surface = "dispatch",
+        service = "gateway",
+        action = "gateway.skills.list",
+        upstream = params.upstream.as_deref().unwrap_or("*"),
+        configured_upstreams = cfg.upstream.len(),
+        "gateway skills operator listing start"
+    );
     let Some(pool) = manager.current_pool().await else {
-        return to_json(Vec::<Value>::new());
+        return Err(ToolError::Sdk {
+            sdk_kind: "runtime_unavailable".to_string(),
+            message: "gateway runtime is unavailable; start or reconnect `labby serve`, then retry `gateway.skills.list`".to_string(),
+        });
     };
+    manager
+        .warm_mcp_runtime_catalog_bounded(&cfg, Some(pool.as_ref()), "gateway.skills.list")
+        .await;
 
     let mut rows = Vec::new();
-    for config in manager.current_config().await.upstream {
+    for config in cfg.upstream {
         if let Some(filter) = params.upstream.as_deref()
             && config.name != filter
         {
             continue;
         }
-        if !config.proxy_skills {
-            continue;
-        }
-        let (skills, excluded, truncated, age_secs, error) =
-            match pool.upstream_skills(&config, None).await {
-                Ok(exposed) => (
-                    exposed
+
+        let fallback_support = pool
+            .cached_upstream_summary(&config.name)
+            .await
+            .and_then(|summary| summary.supports_skills);
+        let (supports_skills, skills, rejected, truncated, age_secs, error) =
+            match pool.upstream_skills_operator(&config).await {
+                Ok(operator) => {
+                    let skills = operator
                         .skills
                         .iter()
-                        .map(|skill| {
+                        .map(|item| {
+                            let skill = &item.skill;
                             serde_json::json!({
                                 "name": skill.name,
                                 "uri": skill.entry.uri,
@@ -1047,27 +1144,96 @@ async fn handle_skills_list(
                                     .resources
                                     .as_ref()
                                     .map_or(0, Vec::len),
+                                "exposed": item.exposed,
                             })
                         })
-                        .collect::<Vec<_>>(),
-                    exposed.excluded_count,
-                    exposed.truncated,
-                    exposed.age_secs,
-                    None,
+                        .collect::<Vec<_>>();
+                    let rejected = operator
+                        .rejected
+                        .iter()
+                        .map(|item| {
+                            serde_json::json!({
+                                "uri": item.uri,
+                                "reason": item.reason,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        operator.supports_skills.or(fallback_support),
+                        skills,
+                        rejected,
+                        operator.truncated,
+                        operator.age_secs,
+                        None,
+                    )
+                }
+                Err(error) => (
+                    fallback_support,
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    0,
+                    Some(error),
                 ),
-                Err(error) => (Vec::new(), 0, false, 0, Some(error)),
             };
+        let exposed_count = skills
+            .iter()
+            .filter(|skill| skill.get("exposed").and_then(Value::as_bool) == Some(true))
+            .count();
+
+        if let Some(error) = error.as_deref() {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.skills.list",
+                upstream = %config.name,
+                trusted = config.proxy_skills,
+                supports_skills = ?supports_skills,
+                error = %error,
+                "gateway skills upstream inspection degraded"
+            );
+        } else {
+            tracing::debug!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.skills.list",
+                upstream = %config.name,
+                trusted = config.proxy_skills,
+                supports_skills = ?supports_skills,
+                discovered = skills.len(),
+                exposed = exposed_count,
+                rejected = rejected.len(),
+                truncated,
+                cache_age_secs = age_secs,
+                "gateway skills upstream inspection complete"
+            );
+        }
 
         rows.push(serde_json::json!({
             "upstream": config.name,
             "enabled": config.enabled,
+            "trusted": config.proxy_skills,
+            "supports_skills": supports_skills,
+            "exposure_patterns": config.expose_skills,
             "skills": skills,
-            "excluded_count": excluded,
+            "discovered_count": skills.len(),
+            "exposed_count": exposed_count,
+            "rejected": rejected,
+            "excluded_count": rejected.len(),
             "truncated": truncated,
             "cache_age_secs": age_secs,
             "error": error,
         }));
     }
+    tracing::info!(
+        surface = "dispatch",
+        service = "gateway",
+        action = "gateway.skills.list",
+        upstream = params.upstream.as_deref().unwrap_or("*"),
+        rows = rows.len(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "gateway skills operator listing finish"
+    );
     to_json(rows)
 }
 
@@ -1081,6 +1247,6 @@ async fn handle_skills_list(
     // action is real and permanently unavailable in this build.
     Err(ToolError::Sdk {
         sdk_kind: "feature_not_compiled".to_string(),
-        message: "this build of Labby was compiled without the `skills` feature".to_string(),
+        message: "this build of Labby was compiled without the `skills` feature; install a release build (which includes Skills) or rebuild with `--features skills`, then retry".to_string(),
     })
 }

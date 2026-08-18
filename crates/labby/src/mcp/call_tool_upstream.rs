@@ -314,6 +314,21 @@ impl LabMcpServer {
         actor_key: Option<&str>,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if !self.route_scope.exposes_tools() {
+            tracing::warn!(
+                surface = "mcp",
+                service,
+                action = "call_tool",
+                route_scope = %self.route_scope.label(),
+                kind = "loadout_capability_disabled",
+                "direct upstream tool call denied by loadout"
+            );
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_REQUEST,
+                "direct upstream MCP Tools are disabled by this loadout; use Code Mode if the loadout exposes it, or ask the operator to enable Tools for this loadout".to_string(),
+                None,
+            ));
+        }
         // Upstream tools don't use lab's action/params wrapper — they receive
         // raw arguments. Use "call_tool" as the action label for logging/envelopes.
         let upstream_action = "call_tool";

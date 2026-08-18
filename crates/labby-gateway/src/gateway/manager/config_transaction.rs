@@ -34,6 +34,28 @@ impl GatewayManager {
         })?
     }
 
+    /// Cancellation-safe persistence for desired config that must not be
+    /// published into the running process yet. The owned task retains both
+    /// mutation leases until the atomic file write has completed, which keeps
+    /// staged restart mutations serialized even if the request future drops.
+    pub(crate) async fn persist_desired_config_owned(
+        &self,
+        mutation_guard: ConfigMutationGuard,
+        cfg: GatewayConfig,
+    ) -> Result<(), ToolError> {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let _mutation_guard = mutation_guard;
+            manager.write_config_file(&cfg).await
+        })
+        .await
+        .map_err(|error| {
+            ToolError::internal_message(format!(
+                "gateway desired config persist task failed: {error}"
+            ))
+        })?
+    }
+
     /// Serialize a full read-modify-persist-reconcile transaction both within
     /// this manager and against other Labby processes targeting the same file.
     pub(crate) async fn acquire_config_mutation(&self) -> Result<ConfigMutationGuard, ToolError> {

@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
 # Gateway Management
@@ -109,6 +109,10 @@ Typical patch payloads:
 ```json
 { "action": "gateway.update", "params": { "name": "github", "patch": { "expose_tools": null } } }
 ```
+
+## Agent Skills and Loadouts
+
+Agent Skills over MCP and reusable protected-route Loadouts are first-class Gateway control-plane surfaces. See [Agent Skills and Loadouts](../guides/SKILLS_AND_LOADOUTS.md) for the trust model, exposure semantics, CLI/API actions, route projection rules, graceful degradation, observability, WebUI behavior, and verification commands.
 
 ## Gateway Code Mode
 

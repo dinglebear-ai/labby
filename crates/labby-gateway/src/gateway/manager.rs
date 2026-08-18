@@ -58,6 +58,7 @@ mod core;
 mod enrichment;
 mod import_matchers;
 mod imports;
+mod loadouts;
 mod oauth_resources;
 mod persist;
 mod pool_lifecycle;

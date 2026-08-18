@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -18,6 +19,7 @@ import {
 } from '@/components/ui/table'
 import {
   useGatewayMutations,
+  useLoadouts,
   useProtectedMcpRoutes,
 } from '@/lib/hooks/use-gateways'
 import { doctorApi, isBlockingDoctorSeverity, type DoctorReport } from '@/lib/api/doctor-client'
@@ -35,6 +37,7 @@ type RouteDraft = {
   public_path: string
   upstream: string
   backend_url: string
+  loadout: string
   scopes: string
   health_path: string
 }
@@ -46,6 +49,7 @@ const EMPTY_DRAFT: RouteDraft = {
   public_path: '/',
   upstream: '',
   backend_url: '',
+  loadout: '',
   scopes: '',
   health_path: '',
 }
@@ -58,6 +62,7 @@ function draftFromRoute(route: ProtectedMcpRoute): RouteDraft {
     public_path: route.public_path,
     upstream: route.upstream ?? '',
     backend_url: route.backend_url ?? '',
+    loadout: route.target?.kind === 'gateway_subset' ? route.target.loadout ?? '' : '',
     scopes: route.scopes.join(', '),
     health_path: route.health_path ?? '',
   }
@@ -69,8 +74,11 @@ function routeFromDraft(draft: RouteDraft): ProtectedMcpRouteInput {
     enabled: draft.enabled,
     public_host: draft.public_host.trim(),
     public_path: draft.public_path.trim(),
-    upstream: draft.upstream.trim() || null,
-    backend_url: draft.backend_url.trim(),
+    upstream: draft.loadout.trim() ? null : draft.upstream.trim() || null,
+    backend_url: draft.loadout.trim() ? '' : draft.backend_url.trim(),
+    target: draft.loadout.trim()
+      ? { kind: 'gateway_subset', loadout: draft.loadout.trim() }
+      : null,
     scopes: draft.scopes
       .split(',')
       .map((scope) => scope.trim())
@@ -88,7 +96,7 @@ function isRouteComplete(draft: RouteDraft) {
       draft.name.trim() &&
       draft.public_host.trim() &&
       draft.public_path.trim() &&
-      (draft.backend_url.trim() || draft.upstream.trim()),
+      (draft.loadout.trim() || draft.backend_url.trim() || draft.upstream.trim()),
   )
 }
 
@@ -176,7 +184,7 @@ function protectedRouteDraftHints(
     }
   }
 
-  if (backendUrl) {
+  if (!draft.loadout.trim() && backendUrl) {
     try {
       const parsed = new URL(backendUrl)
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -195,10 +203,14 @@ function protectedRouteDraftHints(
 
 export function ProtectedMcpRoutesPanel() {
   const { data: routes = [], isLoading, error } = useProtectedMcpRoutes()
+  const { data: loadouts = [] } = useLoadouts()
   const {
     addProtectedRoute,
     updateProtectedRoute,
     removeProtectedRoute,
+    stageProtectedRouteAdd,
+    stageProtectedRouteUpdate,
+    stageProtectedRouteRemove,
     testProtectedRoute,
   } = useGatewayMutations()
 
@@ -214,6 +226,7 @@ export function ProtectedMcpRoutesPanel() {
     [routes],
   )
   const isEditing = editingName !== null
+  const pendingRestartCount = routes.filter((route) => route.restart_required).length
 
   useEffect(() => {
     if (isEditing && !routes.some((route) => route.name === editingName)) {
@@ -255,7 +268,7 @@ export function ProtectedMcpRoutesPanel() {
 
   const handleTest = async () => {
     if (!isRouteComplete(draft)) {
-      setFormError('Name, public host, public path, and backend URL are required before testing.')
+      setFormError('Name, public host, public path, and a Loadout, server upstream, or backend URL are required before testing.')
       return
     }
 
@@ -277,7 +290,7 @@ export function ProtectedMcpRoutesPanel() {
 
   const handleSave = async () => {
     if (!isRouteComplete(draft)) {
-      setFormError('Name, public host, public path, and backend URL are required.')
+      setFormError('Name, public host, public path, and a Loadout, server upstream, or backend URL are required.')
       return
     }
 
@@ -286,12 +299,32 @@ export function ProtectedMcpRoutesPanel() {
     setPendingAction('save')
     setFormError(null)
     try {
-      const saved = isEditing && editingName
-        ? await updateProtectedRoute(editingName, route, controller.signal)
-        : await addProtectedRoute(route, controller.signal)
-      setEditingName(saved.name)
-      setDraft(draftFromRoute(saved))
-      toast.success(isEditing ? 'Protected route updated' : 'Protected route added')
+      const existing = editingName
+        ? routes.find((candidate) => candidate.name === editingName)
+        : undefined
+      const needsRestartStage = route.target?.kind === 'gateway_subset'
+        || existing?.target?.kind === 'gateway_subset'
+      if (needsRestartStage) {
+        const staged = isEditing && editingName
+          ? await stageProtectedRouteUpdate(editingName, route, controller.signal)
+          : await stageProtectedRouteAdd(route, controller.signal)
+        setEditingName(staged.route.name)
+        setDraft(draftFromRoute(staged.route))
+        toast.success(
+          staged.restart_required
+            ? isEditing
+              ? 'Protected route update saved. Restart Labby to apply it.'
+              : 'Protected route saved. Restart Labby to mount it.'
+            : 'Protected route desired state now matches the running route set.',
+        )
+      } else {
+        const saved = isEditing && editingName
+          ? await updateProtectedRoute(editingName, route, controller.signal)
+          : await addProtectedRoute(route, controller.signal)
+        setEditingName(saved.name)
+        setDraft(draftFromRoute(saved))
+        toast.success(isEditing ? 'Protected route updated' : 'Protected route added')
+      }
     } catch (error) {
       const message = getErrorMessage(error, 'Failed to save protected route')
       setFormError(message)
@@ -340,11 +373,20 @@ export function ProtectedMcpRoutesPanel() {
     const controller = new AbortController()
     setPendingAction(`remove:${route.name}`)
     try {
-      await removeProtectedRoute(route.name, controller.signal)
+      if (route.target?.kind === 'gateway_subset' || route.restart_required) {
+        const staged = await stageProtectedRouteRemove(route.name, controller.signal)
+        toast.success(
+          staged.restart_required
+            ? 'Protected route removal saved. Restart Labby to apply it.'
+            : 'Staged protected route change cancelled; no restart is required.',
+        )
+      } else {
+        await removeProtectedRoute(route.name, controller.signal)
+        toast.success('Protected route removed')
+      }
       if (editingName === route.name) {
         startCreate()
       }
-      toast.success('Protected route removed')
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to remove protected route'))
     } finally {
@@ -361,7 +403,7 @@ export function ProtectedMcpRoutesPanel() {
             <h3 className="text-sm font-semibold text-aurora-text-primary">Protected MCP routes</h3>
           </div>
           <p className="mt-1 text-sm text-aurora-text-muted">
-            Publish public MCP route prefixes through Lab OAuth while proxying to private upstream MCP backends.
+            Publish public MCP route prefixes through Lab OAuth, targeting a private backend, one upstream, or a reusable Gateway Loadout.
           </p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={startCreate}>
@@ -369,6 +411,13 @@ export function ProtectedMcpRoutesPanel() {
           New route
         </Button>
       </div>
+
+      {pendingRestartCount > 0 ? (
+        <div className="mt-4 rounded-lg border border-aurora-warning/35 bg-aurora-warning/10 px-3 py-2 text-sm text-aurora-text-primary">
+          {pendingRestartCount} protected route change{pendingRestartCount === 1 ? ' is' : 's are'} saved for restart.
+          The running process is still serving its startup-mounted gateway-subset routes.
+        </div>
+      ) : null}
 
       {error ? (
         <div className="mt-4 rounded-lg border border-aurora-error/30 bg-aurora-error/10 px-3 py-2 text-sm text-aurora-error">
@@ -404,10 +453,12 @@ export function ProtectedMcpRoutesPanel() {
                   <TableRow
                     key={route.name}
                     className={cn(
-                      'cursor-pointer',
+                      route.pending_operation === 'remove' ? 'cursor-default opacity-75' : 'cursor-pointer',
                       editingName === route.name && 'bg-aurora-control-surface/30',
                     )}
-                    onClick={() => startEdit(route)}
+                    onClick={() => {
+                      if (route.pending_operation !== 'remove') startEdit(route)
+                    }}
                   >
                     <TableCell className="align-top">
                       <div className="min-w-0">
@@ -424,7 +475,11 @@ export function ProtectedMcpRoutesPanel() {
                     </TableCell>
                     <TableCell className="align-top">
                       <p className="break-all font-mono text-xs text-aurora-text-primary">
-                        {route.upstream ? `upstream:${route.upstream}` : route.backend_url}
+                        {route.target?.kind === 'gateway_subset' && route.target.loadout
+                          ? `loadout:${route.target.loadout}`
+                          : route.upstream
+                            ? `upstream:${route.upstream}`
+                            : route.backend_url}
                       </p>
                       {route.health_path ? (
                         <p className="mt-1 font-mono text-xs text-aurora-text-muted">health {route.health_path}</p>
@@ -435,6 +490,11 @@ export function ProtectedMcpRoutesPanel() {
                         <Badge variant={route.enabled ? 'default' : 'secondary'}>
                           {route.enabled ? 'Enabled' : 'Disabled'}
                         </Badge>
+                        {route.restart_required ? (
+                          <Badge variant="outline" className="border-aurora-warning/50 text-aurora-warning">
+                            Restart · {route.pending_operation ?? 'update'}
+                          </Badge>
+                        ) : null}
                         <Button
                           type="button"
                           variant="outline"
@@ -444,7 +504,7 @@ export function ProtectedMcpRoutesPanel() {
                             event.stopPropagation()
                             void handleRemove(route)
                           }}
-                          disabled={pendingAction === `remove:${route.name}`}
+                          disabled={pendingAction === `remove:${route.name}` || route.pending_operation === 'remove'}
                           aria-label={`Remove protected route ${route.name}`}
                           title="Remove protected route"
                         >
@@ -470,7 +530,7 @@ export function ProtectedMcpRoutesPanel() {
                 {isEditing ? `Edit ${editingName}` : 'Add protected route'}
               </h4>
               <p className="mt-1 text-xs text-aurora-text-muted">
-                Paths should be public prefixes such as /tools. Set a server upstream or a backend MCP URL.
+                Paths should be public prefixes such as /tools. Target a reusable Loadout, one server upstream, or a backend MCP URL.
               </p>
             </div>
             <Switch
@@ -509,12 +569,42 @@ export function ProtectedMcpRoutesPanel() {
               />
             </div>
             <div className="grid gap-1.5">
+              <Label htmlFor="protected-route-loadout">Loadout</Label>
+              <Select
+                value={draft.loadout || "__direct"}
+                onValueChange={(value) => {
+                  const loadout = value === "__direct" ? "" : value
+                  updateDraft("loadout", loadout)
+                  if (loadout) {
+                    updateDraft("upstream", "")
+                    updateDraft("backend_url", "")
+                  }
+                }}
+              >
+                <SelectTrigger id="protected-route-loadout">
+                  <SelectValue placeholder="Direct target" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__direct">Direct upstream / backend</SelectItem>
+                  {loadouts.map((loadout) => (
+                    <SelectItem key={loadout.name} value={loadout.name}>
+                      {loadout.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-aurora-text-muted">
+                A Loadout applies reusable upstream/service selections and capability gates, including Agent Skills.
+              </p>
+            </div>
+            <div className="grid gap-1.5">
               <Label htmlFor="protected-route-upstream">Server upstream</Label>
               <Input
                 id="protected-route-upstream"
                 value={draft.upstream}
                 onChange={(event) => updateDraft('upstream', event.target.value)}
                 placeholder="axon"
+                disabled={Boolean(draft.loadout)}
               />
             </div>
             <div className="grid gap-1.5">
@@ -524,6 +614,7 @@ export function ProtectedMcpRoutesPanel() {
                 value={draft.backend_url}
                 onChange={(event) => updateDraft('backend_url', event.target.value)}
                 placeholder="http://host:3100/mcp"
+                disabled={Boolean(draft.loadout)}
               />
             </div>
             <div className="grid gap-3 sm:grid-cols-2">

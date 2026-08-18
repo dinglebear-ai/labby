@@ -480,6 +480,31 @@ impl LabMcpServer {
                 None,
             ));
         }
+        if !self.route_scope.exposes_skills() {
+            if request.method == SKILLS_GET_METHOD {
+                return Err(ErrorData::new(
+                    rmcp::model::ErrorCode::INVALID_REQUEST,
+                    "Agent Skills are disabled by this loadout; ask the operator to enable Skills and Resources for this loadout".to_string(),
+                    None,
+                ));
+            }
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "skills.list",
+                route_scope = %self.route_scope.label(),
+                "Skills catalog hidden by loadout"
+            );
+            return serde_json::to_value(SkillsListResult {
+                skills: Vec::new(),
+                next_cursor: None,
+                ttl_ms: Some(0),
+                cache_scope: Some(CACHE_SCOPE_PRIVATE.to_string()),
+                meta: None,
+            })
+            .map(CustomResult::new)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None));
+        }
 
         if request.method == SKILLS_GET_METHOD {
             let params = request

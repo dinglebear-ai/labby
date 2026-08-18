@@ -174,7 +174,7 @@ impl LabMcpServer {
         .await;
     }
 
-    fn log_route_scope_denial(
+    pub(crate) fn log_route_scope_denial(
         &self,
         context: &RequestContext<RoleServer>,
         service: &str,
@@ -437,6 +437,15 @@ impl LabMcpServer {
                     .call_tool_codemode_impl(&service, &args, &context)
                     .await
                     .map(Into::into);
+            }
+
+            if !self.route_scope.exposes_tools() {
+                let elapsed_ms = start.elapsed().as_millis();
+                let message = "MCP Tools are disabled by this loadout; use Code Mode if it is exposed, or ask the operator to enable Tools for this loadout";
+                self.log_route_scope_denial(&context, &service, "call_tool", message, elapsed_ms);
+                return Ok(
+                    route_scope_denied_result(&service, "call_tool", message.to_string()).into(),
+                );
             }
 
             let handles_add_server = service == ADD_SERVER_TOOL_NAME

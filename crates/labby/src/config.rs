@@ -331,6 +331,9 @@ pub struct LabConfig {
     /// - `"auto"`: auto-import everything not tombstoned (legacy behavior).
     #[serde(default)]
     pub gateway_import_mode: GatewayImportMode,
+    /// Named reusable gateway capability projections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loadouts: Vec<GatewayLoadoutConfig>,
     /// Public HTTP MCP routes protected by Lab OAuth and proxied by Lab.
     ///
     /// These are intentionally separate from `upstream`: upstreams import tools
@@ -437,6 +440,7 @@ impl LabConfig {
             upstream: self.upstream.clone(),
             upstream_import_tombstones: self.upstream_import_tombstones.clone(),
             upstream_pending: self.upstream_pending.clone(),
+            loadouts: self.loadouts.clone(),
             protected_mcp_routes: self.protected_mcp_routes.clone(),
             virtual_servers: self.virtual_servers.clone(),
             quarantined_virtual_servers: self.quarantined_virtual_servers.clone(),
@@ -454,6 +458,7 @@ impl LabConfig {
         self.upstream = gw.upstream.clone();
         self.upstream_import_tombstones = gw.upstream_import_tombstones.clone();
         self.upstream_pending = gw.upstream_pending.clone();
+        self.loadouts = gw.loadouts.clone();
         self.protected_mcp_routes = gw.protected_mcp_routes.clone();
         self.virtual_servers = gw.virtual_servers.clone();
         self.quarantined_virtual_servers = gw.quarantined_virtual_servers.clone();
@@ -819,12 +824,12 @@ fn invalid_protected_route(
 pub use labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX;
 pub use labby_runtime::gateway_config::{
     CodeModeConfig, CodeModeResultShapePolicy, ConfigError, GatewayConfig, GatewayImportMode,
-    GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
-    ProtectedMcpRouteEffectiveTarget, ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig,
-    UpstreamImportTombstone, UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
-    UpstreamOauthRegistration, VirtualServerConfig, VirtualServerMcpPolicyConfig,
-    VirtualServerSurfacesConfig, WebPreferences, default_mcp_path, default_true,
-    normalize_protected_backend_url,
+    GatewayLoadoutConfig, GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget,
+    ProtectedMcpRouteConfig, ProtectedMcpRouteEffectiveTarget, ProtectedMcpRouteTarget,
+    ResolvedPublicUrls, UpstreamConfig, UpstreamImportTombstone, UpstreamOauthConfig,
+    UpstreamOauthCredentialSource, UpstreamOauthMode, UpstreamOauthRegistration,
+    VirtualServerConfig, VirtualServerMcpPolicyConfig, VirtualServerSurfacesConfig, WebPreferences,
+    default_mcp_path, default_true, normalize_protected_backend_url,
 };
 // Re-exported for the public `labby::config` API surface (consumed by the
 // `upstream_oauth` integration test); not referenced within the binary build,
@@ -3739,6 +3744,7 @@ services = ["removed-service"]
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
                 expose_code_mode: false,
+                loadout: None,
             },
         ));
         let mut cfg = LabConfig {

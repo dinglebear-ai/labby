@@ -20,6 +20,7 @@ import {
   Clock,
   FileText,
   MessageSquare,
+  BookOpen,
   Loader2,
   Search,
   Wrench,
@@ -473,6 +474,13 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const exposureSummary = getDraftExposureSummary(allToolNames, draftSelectedToolNames)
   const resourceExposureEnabled = gateway.config.proxy_resources ?? true
   const promptExposureEnabled = gateway.config.proxy_prompts ?? true
+  const skillExposureEnabled = gateway.config.proxy_skills ?? false
+  const skillSupportLabel =
+    gateway.status.supports_skills === true
+      ? 'Supported'
+      : gateway.status.supports_skills === false
+        ? 'Not advertised'
+        : 'Unknown'
   const toolsTabLabel = isLabGateway ? 'Actions' : 'Tools'
   const runtimeAgeLabel = gateway.status.age_seconds
     ? gateway.status.age_seconds < 60
@@ -591,6 +599,19 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     }
   }
 
+  const handleProxySkillsToggle = async (enabled: boolean) => {
+    try {
+      await updateGateway(gateway.id, {
+        config: {
+          proxy_skills: enabled,
+        },
+      })
+      toast.success(enabled ? 'Agent Skills trusted and enabled' : 'Agent Skills disabled')
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to update Agent Skills trust'))
+    }
+  }
+
   /*
     AppHeader actions — the mock's `isDetailPage` topbar cluster, measured on
     the detail page (not the row expansion): 32px squares, radius-1, a
@@ -690,6 +711,12 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       icon: <MessageSquare size={13} />,
       exposed: gateway.status.exposed_prompt_count,
       discovered: gateway.status.discovered_prompt_count,
+    },
+    {
+      label: 'Skills',
+      icon: <BookOpen size={13} />,
+      exposed: gateway.status.exposed_skill_count ?? 0,
+      discovered: gateway.status.discovered_skill_count ?? 0,
     },
   ]
   const totalExposedPrimitives = exposureStats.reduce((total, stat) => total + stat.exposed, 0)
@@ -803,8 +830,12 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       value: `${gateway.config.oauth_enabled ? 'true' : 'false'} · ${gateway.config.bearer_token_env ?? DETAIL_NO_DATA}`,
     },
     {
-      label: 'proxy_resources / proxy_prompts',
-      value: `${resourceExposureEnabled ? 'true' : 'false'} · ${promptExposureEnabled ? 'true' : 'false'}`,
+      label: 'proxy_resources / proxy_prompts / proxy_skills',
+      value: `${resourceExposureEnabled ? 'true' : 'false'} · ${promptExposureEnabled ? 'true' : 'false'} · ${skillExposureEnabled ? 'true' : 'false'}`,
+    },
+    {
+      label: 'skills extension / trust',
+      value: `${skillSupportLabel} · ${skillExposureEnabled ? 'trusted' : 'not trusted'}`,
     },
     {
       label: 'reconciled_at',
@@ -1400,6 +1431,43 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       checked={promptExposureEnabled}
                       onCheckedChange={handleProxyPromptsToggle}
                     />
+                    {!isLabGateway ? (
+                      <>
+                        <SettingRow
+                          title="Trust Agent Skills"
+                          description="Opt in to aggregating Skills from this upstream. Skill instructions can direct agent behavior."
+                          checked={skillExposureEnabled}
+                          onCheckedChange={handleProxySkillsToggle}
+                        />
+                        <div className="rounded-lg border bg-aurora-control-surface/10 p-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <BookOpen className="size-4 text-aurora-text-muted" />
+                            <p className="text-sm font-semibold text-aurora-text-primary">Skill exposure patterns</p>
+                            <Badge variant="outline">{skillSupportLabel}</Badge>
+                            <Badge variant={skillExposureEnabled ? 'secondary' : 'outline'}>
+                              {skillExposureEnabled ? 'trusted' : 'not trusted'}
+                            </Badge>
+                            <div className="flex-1" />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => router.push(`/skills?upstream=${encodeURIComponent(gateway.name)}`)}
+                            >
+                              View Skills
+                            </Button>
+                          </div>
+                          <p className="mt-1 text-sm text-aurora-text-muted">
+                            {gateway.config.expose_skills == null
+                              ? 'All validated skills are eligible for exposure.'
+                              : gateway.config.expose_skills.length === 0
+                                ? 'No skills are currently exposed.'
+                                : `${gateway.config.expose_skills.length} exposure pattern${gateway.config.expose_skills.length === 1 ? '' : 's'} configured.`}
+                            {' '}Use the Skills catalog to manage individual skills; wildcard patterns remain available in Edit Server.
+                          </p>
+                        </div>
+                      </>
+                    ) : null}
                   </div>
                 </DetailInset>
               </div>

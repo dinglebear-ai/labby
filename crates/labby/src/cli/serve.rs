@@ -1854,7 +1854,11 @@ fn build_protected_mcp_router(
 
     let mut router = axum::Router::new();
     for route in routes {
-        let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(&route)
+        let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+            &route,
+            &state.config.loadouts,
+        )
+        .map_err(anyhow::Error::msg)?
         else {
             continue;
         };
@@ -2720,6 +2724,7 @@ mod tests {
                         upstreams: vec!["gateway-alpha".to_string()],
                         services: vec!["gateway".to_string()],
                         expose_code_mode: false,
+                        loadout: None,
                     },
                 )),
             }],
