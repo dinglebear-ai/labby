@@ -49,6 +49,21 @@ use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
 
+/// Remove MCP App bindings whose backing resources are not readable on the
+/// current route. Keep unrelated metadata intact.
+pub(crate) fn strip_resource_backed_ui_meta(meta: &mut Option<MetaObject>) {
+    let should_clear = if let Some(meta) = meta.as_mut() {
+        meta.0.remove("ui");
+        meta.0.remove("openai/outputTemplate");
+        meta.0.is_empty()
+    } else {
+        false
+    };
+    if should_clear {
+        *meta = None;
+    }
+}
+
 impl LabMcpServer {
     pub(crate) async fn list_tools_impl(
         &self,
@@ -255,7 +270,7 @@ impl LabMcpServer {
                 .iter()
                 .filter(|(_, health)| health.is_open())
                 .count();
-            let upstream_tools = if hide_raw_tools {
+            let upstream_tools = if hide_raw_tools || !self.route_scope.exposes_tools() {
                 Vec::new()
             } else {
                 pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
@@ -280,7 +295,10 @@ impl LabMcpServer {
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            if !hide_raw_tools && let Some(oauth_subject) = oauth_subject.as_ref() {
+            if !hide_raw_tools
+                && self.route_scope.exposes_tools()
+                && let Some(oauth_subject) = oauth_subject.as_ref()
+            {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, upstream_tools) in pool
@@ -310,6 +328,28 @@ impl LabMcpServer {
             }
         }
 
+        if !self.route_scope.exposes_resources() {
+            #[cfg(feature = "gateway")]
+            descriptors.retain(|descriptor| descriptor.name.as_ref() != CODE_MODE_UI_TOOL_NAME);
+            for descriptor in &mut descriptors {
+                strip_resource_backed_ui_meta(&mut descriptor.meta);
+            }
+        }
+
+        #[cfg(feature = "gateway")]
+        if !self.route_scope.exposes_tools() {
+            let keep_code_mode = self.route_scope.exposes_code_mode();
+            descriptors.retain(|descriptor| {
+                keep_code_mode
+                    && matches!(
+                        descriptor.name.as_ref(),
+                        CODE_MODE_TOOL_NAME
+                            | CODE_MODE_READ_TOOL_NAME
+                            | CODE_MODE_UI_TOOL_NAME
+                            | MCP_APP_TOOL_NAME
+                    )
+            });
+        }
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
         let mut page_collector = page_collector;
         let complete_contract = ToolCatalogSnapshot::from_descriptors(&descriptors);

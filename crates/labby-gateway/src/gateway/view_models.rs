@@ -64,6 +64,12 @@ pub struct ServerView {
     #[serde(default)]
     pub exposed_prompt_count: usize,
     #[serde(default)]
+    pub discovered_skill_count: usize,
+    #[serde(default)]
+    pub exposed_skill_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_skills: Option<bool>,
+    #[serde(default)]
     pub surfaces: SurfaceStatesView,
     #[serde(default)]
     pub warnings: Vec<ServerWarningView>,

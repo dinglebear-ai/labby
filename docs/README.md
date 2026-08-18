@@ -23,6 +23,7 @@ The docs are split by topic so contributors do not have to recover architecture,
   upgrades, API/CLI contracts, migration, rollout, and security model.
 - Use [CALLBACK_RELAY.md](./runtime/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
 - Use [GATEWAY.md](./services/GATEWAY.md) when managing upstream MCP gateways over CLI, MCP, `/v1/gateway`, or Gateway-managed OAuth protected MCP routes.
+- Use [SKILLS_AND_LOADOUTS.md](./guides/SKILLS_AND_LOADOUTS.md) for Agent Skills trust/exposure, Loadout route projections, CLI/API/WebUI behavior, graceful degradation, and verification.
 - Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.
 - Use [UNRAID.md](./runtime/UNRAID.md) for the native Unraid `.plg` plugin packaging (`unraid/`), an alternative to the Incus/Docker deployment targets.
 - See [UPSTREAM.md](./services/UPSTREAM.md) for upstream MCP gateway setup, configuration, tool merging, circuit breaker behavior, and resource proxying.

@@ -1695,11 +1695,25 @@
               "gateway.usage.metrics",
               "gateway.usage.calls",
               "gateway.supported_services",
+              "gateway.loadout.list",
+              "gateway.loadout.list_state",
+              "gateway.loadout.get",
+              "gateway.loadout.add",
+              "gateway.loadout.update",
+              "gateway.loadout.patch",
+              "gateway.loadout.stage_update",
+              "gateway.loadout.stage_patch",
+              "gateway.loadout.stage_remove",
+              "gateway.loadout.remove",
               "gateway.protected_route.list",
+              "gateway.protected_route.list_state",
               "gateway.protected_route.get",
               "gateway.protected_route.add",
               "gateway.protected_route.update",
               "gateway.protected_route.remove",
+              "gateway.protected_route.stage_add",
+              "gateway.protected_route.stage_update",
+              "gateway.protected_route.stage_remove",
               "gateway.protected_route.test",
               "gateway.virtual_server.enable",
               "gateway.virtual_server.disable",
@@ -2009,6 +2023,110 @@
           }
         }
       },
+      "GatewayGatewayLoadoutAddParams": {
+        "type": "object",
+        "required": [
+          "loadout"
+        ],
+        "properties": {
+          "loadout": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutGetParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutPatchParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "patch"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "patch": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutRemoveParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutStage_patchParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "patch"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "patch": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutStage_removeParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutStage_updateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "loadout"
+        ],
+        "properties": {
+          "loadout": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutUpdateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "loadout"
+        ],
+        "properties": {
+          "loadout": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "GatewayGatewayMcpCleanupParams": {
         "type": "object",
         "required": [
@@ -2208,6 +2326,43 @@
         ],
         "properties": {
           "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayProtected_routeStage_addParams": {
+        "type": "object",
+        "required": [
+          "route"
+        ],
+        "properties": {
+          "route": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayProtected_routeStage_removeParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayProtected_routeStage_updateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "route"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "route": {
             "type": "string"
           }
         }

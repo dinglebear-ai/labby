@@ -174,7 +174,7 @@ impl LabMcpServer {
         .await;
     }
 
-    fn log_route_scope_denial(
+    pub(crate) fn log_route_scope_denial(
         &self,
         context: &RequestContext<RoleServer>,
         service: &str,
@@ -213,6 +213,26 @@ impl LabMcpServer {
         );
     }
 
+    #[cfg(feature = "gateway")]
+    fn direct_tool_route_scope_denial(
+        &self,
+        context: &RequestContext<RoleServer>,
+        service: &str,
+    ) -> Option<CallToolResponse> {
+        let is_pre_gate_tool = matches!(
+            self.registry.permanent_tools().resolve(service),
+            Some(PermanentToolId::CodeMode | PermanentToolId::CodeModeRead)
+        ) || service == CODE_MODE_UI_TOOL_NAME
+            || service == MCP_APP_TOOL_NAME;
+        if self.route_scope.exposes_tools() || is_pre_gate_tool {
+            return None;
+        }
+
+        const MESSAGE: &str = "MCP Tools are disabled by this loadout; use Code Mode if it is exposed, or ask the operator to enable Tools for this loadout";
+        self.log_route_scope_denial(context, service, "call_tool", MESSAGE, 0);
+        Some(route_scope_denied_result(service, "call_tool", MESSAGE.to_string()).into())
+    }
+
     pub(crate) async fn call_tool_response_impl(
         &self,
         request: CallToolRequestParams,
@@ -223,6 +243,19 @@ impl LabMcpServer {
         {
             return Ok(response);
         }
+        #[cfg(feature = "gateway")]
+        if let Some(response) = self.direct_tool_route_scope_denial(&context, request.name.as_ref())
+        {
+            return Ok(response);
+        }
+        Box::pin(self.call_tool_response_dispatch_impl(request, context)).await
+    }
+
+    async fn call_tool_response_dispatch_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
         // every early return below. A catalog notification emitted while this

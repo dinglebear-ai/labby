@@ -68,6 +68,29 @@ impl LabMcpServer {
             subject,
             "dispatch start"
         );
+        if !self.route_scope.exposes_prompts() {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_prompts",
+                subject,
+                route_scope = %self.route_scope.label(),
+                elapsed_ms,
+                "prompt catalog hidden by loadout"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_prompts",
+                elapsed_ms,
+                DispatchLogOutcome::Success,
+            )
+            .await;
+            return Ok(ListPromptsResult::with_all_items(Vec::new())
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private));
+        }
         let auth = auth_context_from_extensions(&context.extensions);
         let snapshot_audience = catalog_snapshot_audience(auth);
         let mut page_collector = match PageCollector::new(request) {
@@ -279,6 +302,16 @@ impl LabMcpServer {
             prompt = %request.name,
             "dispatch start"
         );
+        if !self.route_scope.exposes_prompts() {
+            let elapsed_ms = start.elapsed().as_millis();
+            let message = "MCP Prompts are disabled by this loadout; ask the operator to enable Prompts for this loadout";
+            self.log_route_scope_denial(&context, "prompts", "get_prompt", message, elapsed_ms);
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_REQUEST,
+                message.to_string(),
+                None,
+            ));
+        }
         let args = request
             .arguments
             .clone()

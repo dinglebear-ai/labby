@@ -43,6 +43,8 @@ export function synthesizeLabGateway(
       exposed_resource_count: 0,
       discovered_prompt_count: 0,
       exposed_prompt_count: 0,
+      discovered_skill_count: 0,
+      exposed_skill_count: 0,
     },
     discovery: {
       tools,

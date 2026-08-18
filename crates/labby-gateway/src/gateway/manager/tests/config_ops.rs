@@ -454,6 +454,73 @@ async fn abort_direct_persist_keeps_durable_and_live_config_coherent() {
 }
 
 #[tokio::test]
+async fn abort_staged_persist_finishes_durable_write_without_publishing_live_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
+        .expect("seed disk");
+    let persisted = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let manager = GatewayManager::with_store(
+        path.clone(),
+        GatewayRuntimeHandle::default(),
+        Arc::new(PauseAfterPersistStore {
+            path: path.clone(),
+            persisted: Arc::clone(&persisted),
+            release: Arc::clone(&release),
+        }),
+    );
+    let live_before = manager.current_config().await.code_mode.mcp_ui_enabled;
+    let desired_value = !live_before;
+    let worker = manager.clone();
+    let request = tokio::spawn(async move {
+        let guard = worker.acquire_config_mutation().await?;
+        let mut candidate = worker.load_config_for_mutation().await?;
+        candidate.code_mode.mcp_ui_enabled = desired_value;
+        worker.persist_desired_config_owned(guard, candidate).await
+    });
+    tokio::task::spawn_blocking({
+        let persisted = Arc::clone(&persisted);
+        move || {
+            let (lock, cv) = &*persisted;
+            let mut ready = lock.lock().expect("persist lock");
+            while !*ready {
+                ready = cv.wait(ready).expect("persist wait");
+            }
+        }
+    })
+    .await
+    .expect("persist waiter");
+    request.abort();
+    let (release_lock, release_cv) = &*release;
+    *release_lock.lock().expect("release lock") = true;
+    release_cv.notify_all();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if load_gateway_config(&path)
+                .expect("durable config")
+                .code_mode
+                .mcp_ui_enabled
+                == desired_value
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("owned staged persist completes");
+    assert_eq!(
+        load_gateway_config(&path).unwrap().code_mode.mcp_ui_enabled,
+        desired_value
+    );
+    assert_eq!(
+        manager.current_config().await.code_mode.mcp_ui_enabled,
+        live_before
+    );
+}
+
+#[tokio::test]
 async fn reload_rollback_covers_batch_update_remove_and_code_mode_mutations() {
     // batch-add
     let batch_dir = tempfile::tempdir().expect("batch tempdir");

@@ -1,6 +1,37 @@
 use std::collections::BTreeSet;
 
-use crate::config::{ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig};
+use crate::config::{GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct McpRouteCapabilityGates {
+    expose_tools: bool,
+    expose_resources: bool,
+    expose_prompts: bool,
+    expose_skills: bool,
+    expose_code_mode: bool,
+}
+
+impl McpRouteCapabilityGates {
+    fn all(expose_code_mode: bool) -> Self {
+        Self {
+            expose_tools: true,
+            expose_resources: true,
+            expose_prompts: true,
+            expose_skills: true,
+            expose_code_mode,
+        }
+    }
+
+    fn from_loadout(loadout: &GatewayLoadoutConfig) -> Self {
+        Self {
+            expose_tools: loadout.expose_tools,
+            expose_resources: loadout.expose_resources,
+            expose_prompts: loadout.expose_prompts,
+            expose_skills: loadout.expose_skills,
+            expose_code_mode: loadout.expose_code_mode,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum McpRouteScope {
@@ -10,6 +41,10 @@ pub(crate) enum McpRouteScope {
         route_name: String,
         upstreams: BTreeSet<String>,
         services: BTreeSet<String>,
+        expose_tools: bool,
+        expose_resources: bool,
+        expose_prompts: bool,
+        expose_skills: bool,
         expose_code_mode: bool,
     },
 }
@@ -27,6 +62,26 @@ impl McpRouteScope {
         S: AsRef<str>,
         T: AsRef<str>,
     {
+        Self::protected_subset_with_capabilities(
+            route_name,
+            upstreams,
+            services,
+            McpRouteCapabilityGates::all(expose_code_mode),
+        )
+    }
+
+    pub(crate) fn protected_subset_with_capabilities<I, J, S, T>(
+        route_name: impl Into<String>,
+        upstreams: I,
+        services: J,
+        capabilities: McpRouteCapabilityGates,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        J: IntoIterator<Item = T>,
+        S: AsRef<str>,
+        T: AsRef<str>,
+    {
         Self::ProtectedSubset {
             route_name: route_name.into(),
             upstreams: upstreams
@@ -37,18 +92,45 @@ impl McpRouteScope {
                 .into_iter()
                 .map(|name| name.as_ref().to_string())
                 .collect(),
-            expose_code_mode,
+            expose_tools: capabilities.expose_tools,
+            expose_resources: capabilities.expose_resources,
+            expose_prompts: capabilities.expose_prompts,
+            expose_skills: capabilities.expose_skills,
+            expose_code_mode: capabilities.expose_code_mode,
         }
     }
 
-    pub(crate) fn from_protected_route(route: &ProtectedMcpRouteConfig) -> Option<Self> {
-        let target: &ProtectedGatewaySubsetTarget = route.gateway_subset_target()?;
-        Some(Self::protected_subset(
+    pub(crate) fn from_protected_route(
+        route: &ProtectedMcpRouteConfig,
+        loadouts: &[GatewayLoadoutConfig],
+    ) -> Result<Option<Self>, String> {
+        let Some(target): Option<&ProtectedGatewaySubsetTarget> = route.gateway_subset_target()
+        else {
+            return Ok(None);
+        };
+        if let Some(loadout_name) = target.loadout.as_deref() {
+            let loadout = loadouts
+                .iter()
+                .find(|loadout| loadout.name == loadout_name)
+                .ok_or_else(|| {
+                    format!(
+                        "protected MCP route `{}` references missing loadout `{loadout_name}`; create the loadout or update the route",
+                        route.name
+                    )
+                })?;
+            return Ok(Some(Self::protected_subset_with_capabilities(
+                route.name.clone(),
+                loadout.upstreams.iter().map(String::as_str),
+                loadout.services.iter().map(String::as_str),
+                McpRouteCapabilityGates::from_loadout(loadout),
+            )));
+        }
+        Ok(Some(Self::protected_subset(
             route.name.clone(),
             target.upstreams.iter().map(String::as_str),
             target.services.iter().map(String::as_str),
             target.expose_code_mode,
-        ))
+        )))
     }
 
     pub(crate) fn label(&self) -> String {
@@ -76,6 +158,36 @@ impl McpRouteScope {
         match self {
             Self::Root => true,
             Self::ProtectedSubset { upstreams, .. } => upstreams.contains(upstream),
+        }
+    }
+
+    pub(crate) fn exposes_tools(&self) -> bool {
+        match self {
+            Self::Root => true,
+            Self::ProtectedSubset { expose_tools, .. } => *expose_tools,
+        }
+    }
+
+    pub(crate) fn exposes_resources(&self) -> bool {
+        match self {
+            Self::Root => true,
+            Self::ProtectedSubset {
+                expose_resources, ..
+            } => *expose_resources,
+        }
+    }
+
+    pub(crate) fn exposes_prompts(&self) -> bool {
+        match self {
+            Self::Root => true,
+            Self::ProtectedSubset { expose_prompts, .. } => *expose_prompts,
+        }
+    }
+
+    pub(crate) fn exposes_skills(&self) -> bool {
+        match self {
+            Self::Root => true,
+            Self::ProtectedSubset { expose_skills, .. } => *expose_skills,
         }
     }
 
@@ -119,6 +231,10 @@ mod tests {
         let scope = McpRouteScope::Root;
         assert!(scope.allows_service("gateway"));
         assert!(scope.allows_upstream("gateway-alpha"));
+        assert!(scope.exposes_tools());
+        assert!(scope.exposes_resources());
+        assert!(scope.exposes_prompts());
+        assert!(scope.exposes_skills());
         assert!(scope.exposes_code_mode());
         assert!(scope.is_root());
         assert_eq!(scope.label(), "root");
@@ -136,6 +252,10 @@ mod tests {
         assert!(!scope.allows_service("logs"));
         assert!(scope.allows_upstream("gateway-alpha"));
         assert!(!scope.allows_upstream("hidden-upstream"));
+        assert!(scope.exposes_tools());
+        assert!(scope.exposes_resources());
+        assert!(scope.exposes_prompts());
+        assert!(scope.exposes_skills());
         assert!(scope.exposes_code_mode());
         assert!(!scope.is_root());
         assert_eq!(scope.label(), "protected:ops");
@@ -145,5 +265,72 @@ mod tests {
     fn protected_subset_can_hide_code_mode() {
         let scope = McpRouteScope::protected_subset("ops", ["unifi"], ["device"], false);
         assert!(!scope.exposes_code_mode());
+    }
+
+    #[test]
+    fn loadout_resolves_capability_gates_and_names() {
+        let route = ProtectedMcpRouteConfig {
+            name: "ops-route".to_string(),
+            enabled: true,
+            public_host: "mcp.example.com".to_string(),
+            public_path: "/ops".to_string(),
+            upstream: None,
+            backend_url: String::new(),
+            backend_mcp_path: "/mcp".to_string(),
+            scopes: vec![],
+            health_path: None,
+            target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    loadout: Some("ops".to_string()),
+                    ..Default::default()
+                },
+            )),
+        };
+        let loadouts = vec![GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            upstreams: vec!["axon".to_string()],
+            services: vec!["device".to_string()],
+            expose_tools: false,
+            expose_resources: true,
+            expose_prompts: false,
+            expose_skills: true,
+            expose_code_mode: true,
+            ..GatewayLoadoutConfig::default()
+        }];
+        let scope = McpRouteScope::from_protected_route(&route, &loadouts)
+            .expect("loadout resolution")
+            .expect("gateway subset");
+        assert!(scope.allows_upstream("axon"));
+        assert!(!scope.allows_upstream("hidden"));
+        assert!(scope.allows_service("device"));
+        assert!(!scope.exposes_tools());
+        assert!(scope.exposes_resources());
+        assert!(!scope.exposes_prompts());
+        assert!(scope.exposes_skills());
+        assert!(scope.exposes_code_mode());
+    }
+
+    #[test]
+    fn missing_loadout_returns_course_correcting_error() {
+        let route = ProtectedMcpRouteConfig {
+            name: "ops-route".to_string(),
+            enabled: true,
+            public_host: "mcp.example.com".to_string(),
+            public_path: "/ops".to_string(),
+            upstream: None,
+            backend_url: String::new(),
+            backend_mcp_path: "/mcp".to_string(),
+            scopes: vec![],
+            health_path: None,
+            target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    loadout: Some("missing".to_string()),
+                    ..Default::default()
+                },
+            )),
+        };
+        let error = McpRouteScope::from_protected_route(&route, &[]).expect_err("missing loadout");
+        assert!(error.contains("missing loadout"));
+        assert!(error.contains("create the loadout or update the route"));
     }
 }

@@ -58,6 +58,7 @@ mod core;
 mod enrichment;
 mod import_matchers;
 mod imports;
+mod loadouts;
 mod oauth_resources;
 mod persist;
 mod pool_lifecycle;
@@ -239,15 +240,19 @@ impl GatewayManager {
     }
 
     pub(super) async fn persist_config(&self, cfg: GatewayConfig) -> Result<(), ToolError> {
+        let runtime_cfg = {
+            let current = self.config.read().await;
+            config_transaction::runtime_config_for_desired(&current, &cfg)
+        };
         self.write_config_file(&cfg).await?;
         let _publication = self.publication_barrier.write().await;
         self.store
-            .set_process_code_mode_enabled(cfg.code_mode.enabled);
+            .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
-            .set_enabled(cfg.code_mode.mcp_ui_enabled);
+            .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
-            ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-        *self.config.write().await = cfg;
+            ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+        *self.config.write().await = runtime_cfg;
         Ok(())
     }
 }

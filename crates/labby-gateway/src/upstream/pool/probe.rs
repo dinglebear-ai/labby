@@ -24,6 +24,7 @@ use super::helpers::{
     AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR, DISCOVERY_TIMEOUT, auth_error_should_backoff_aggressively,
     classify_upstream_error, upstream_transport,
 };
+use super::skills_list::peer_declares_skills;
 use super::tools::MAX_UPSTREAM_TOOLS;
 
 #[cfg(any(test, feature = "testkit"))]
@@ -212,7 +213,8 @@ impl UpstreamPool {
             match catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await
             {
                 Ok(tools) => {
-                    self.replace_catalog_tools(config, tools).await;
+                    self.replace_catalog_tools(config, tools, Some(peer_declares_skills(&peer)))
+                        .await;
                     self.record_success_for(&config.name, UpstreamCapability::Tools)
                         .await;
                     tracing::info!(
@@ -291,11 +293,13 @@ impl UpstreamPool {
             Some(&self.shared_http_client),
         )
         .await?;
+        let supports_skills = peer_declares_skills(&conn.peer);
         {
             let mut connections = self.connections.write().await;
             connections.insert(config.name.clone(), conn);
         }
-        self.replace_catalog_tools(config, tools).await;
+        self.replace_catalog_tools(config, tools, Some(supports_skills))
+            .await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         tracing::info!(

@@ -313,7 +313,7 @@ test('saving a changed protected route updates before deleting the new route', a
     await waitFor(() => {
       assert.deepEqual(onSaveInputs.map(() => 'save'), ['save'])
       assert.deepEqual(actions.filter((action) => action.startsWith('gateway.protected_route.')), [
-        'gateway.protected_route.list',
+        'gateway.protected_route.list_state',
         'gateway.protected_route.update',
       ])
     })
@@ -355,7 +355,7 @@ test('clearing a protected route removes the existing route after saving', async
     await waitFor(() => {
       assert.deepEqual(onSaveInputs.map(() => 'save'), ['save'])
       assert.deepEqual(actions.filter((action) => action.startsWith('gateway.protected_route.')), [
-        'gateway.protected_route.list',
+        'gateway.protected_route.list_state',
         'gateway.protected_route.remove',
       ])
     })
@@ -487,6 +487,8 @@ test('saving a custom HTTP server with no auth sends no bearer credential', asyn
           oauth: undefined,
           proxy_resources: true,
           proxy_prompts: true,
+          proxy_skills: false,
+          expose_skills: null,
           proxy_mcp_ui: true,
         },
       })
@@ -540,6 +542,69 @@ test('saving a custom server preserves the MCP-UI proxy toggle', async () => {
     await waitFor(() => {
       assert.equal(onSaveInputs.length, 1)
       assert.equal((onSaveInputs[0] as CreateGatewayInput).config.proxy_mcp_ui, false)
+    })
+
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('saving a custom server preserves Agent Skills trust and exposure patterns', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      return gatewayActionResponse(init, {})
+    }
+    if (path === '/v1/gateway/oauth/probe') {
+      return jsonResponse({
+        upstream: 'skills-mcp',
+        url: 'https://skills.example/mcp',
+        oauth_discovered: false,
+      })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const onSaveInputs: unknown[] = []
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      onSaveInputs.push(input)
+    })
+
+    const nameInput = document.querySelector('#name') as HTMLInputElement | null
+    const urlInput = document.querySelector('#url') as HTMLInputElement | null
+    const proxySkillsSwitch = document.querySelector('#proxy-skills') as HTMLElement | null
+    assert.ok(nameInput)
+    assert.ok(urlInput)
+    assert.ok(proxySkillsSwitch)
+
+    await setInputValue(window, nameInput, 'skills-mcp')
+    await setInputValue(window, urlInput, 'https://skills.example/mcp')
+    await act(async () => {
+      proxySkillsSwitch.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const exposeAllSkillsSwitch = document.querySelector('#expose-all-skills') as HTMLElement | null
+    assert.ok(exposeAllSkillsSwitch)
+    await act(async () => {
+      exposeAllSkillsSwitch.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const exposeSkillsInput = document.querySelector('#expose-skills') as HTMLInputElement | null
+    assert.ok(exposeSkillsInput)
+    await setInputValue(window, exposeSkillsInput, 'review-*, deploy, review-*')
+    await clickSave()
+
+    await waitFor(() => {
+      assert.equal(onSaveInputs.length, 1)
+      const config = (onSaveInputs[0] as CreateGatewayInput).config
+      assert.equal(config.proxy_skills, true)
+      assert.deepEqual(config.expose_skills, ['review-*', 'deploy'])
     })
 
     await view.unmount()
@@ -652,6 +717,8 @@ test('inline environment editor applies stdio env vars to gateway saves', async 
           oauth: undefined,
           proxy_resources: true,
           proxy_prompts: true,
+          proxy_skills: false,
+          expose_skills: null,
           proxy_mcp_ui: true,
         },
       })
@@ -980,7 +1047,7 @@ function gatewayActionResponse(
   switch (action) {
     case 'gateway.supported_services':
       return jsonResponse([])
-    case 'gateway.protected_route.list':
+    case 'gateway.protected_route.list_state':
       return jsonResponse(options.protectedRoutes ?? [])
     case 'gateway.protected_route.add':
     case 'gateway.protected_route.update':

@@ -213,11 +213,17 @@ pub struct GatewayRuntimeView {
     #[serde(default)]
     pub prompt_count: usize,
     #[serde(default)]
+    pub skill_count: usize,
+    #[serde(default)]
     pub exposed_tool_count: usize,
     #[serde(default)]
     pub exposed_resource_count: usize,
     #[serde(default)]
     pub exposed_prompt_count: usize,
+    #[serde(default)]
+    pub exposed_skill_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_skills: Option<bool>,
     #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -506,6 +512,12 @@ pub struct GatewayMcpRuntimeView {
     pub discovered_prompt_count: usize,
     #[serde(default)]
     pub exposed_prompt_count: usize,
+    #[serde(default)]
+    pub discovered_skill_count: usize,
+    #[serde(default)]
+    pub exposed_skill_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_skills: Option<bool>,
     #[serde(default)]
     pub likely_stale_count: usize,
     #[serde(default)]

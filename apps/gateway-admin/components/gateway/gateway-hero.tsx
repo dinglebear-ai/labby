@@ -8,7 +8,7 @@ import { Cable, Wrench } from 'lucide-react'
  *
  * Two stat groups sit welded to the card's bottom edge — a fleet group
  * (Healthy / Enabled / Total / Disconnected) over a health bar, and an
- * exposure group (Tools / Prompts / Resources) over an exposure bar. The
+ * exposure group (Tools / Prompts / Resources / Skills) over an exposure bar. The
  * fleet cells double as lens filters, which is how the mock boxes the active
  * one, so they carry the same `aria-pressed` contract the old summary cards did.
  *
@@ -198,6 +198,8 @@ export function GatewayHero({
   exposedPrompts,
   discoveredResources,
   exposedResources,
+  discoveredSkills,
+  exposedSkills,
   serverStates,
   endpointLabel,
   activeLens,
@@ -214,6 +216,8 @@ export function GatewayHero({
   exposedPrompts: number
   discoveredResources: number
   exposedResources: number
+  discoveredSkills: number
+  exposedSkills: number
   /** One entry per server, for the segmented health bar. */
   serverStates: { id: string; name: string; color: string; state: string }[]
   endpointLabel?: string
@@ -231,8 +235,9 @@ export function GatewayHero({
         ? `${attention} need${attention === 1 ? 's' : ''} attention`
         : 'all systems nominal'
 
-  const totalDiscovered = discoveredTools + discoveredPrompts + discoveredResources
-  const totalExposed = exposedTools + exposedPrompts + exposedResources
+  const totalDiscovered =
+    discoveredTools + discoveredPrompts + discoveredResources + discoveredSkills
+  const totalExposed = exposedTools + exposedPrompts + exposedResources + exposedSkills
   const exposedPct =
     totalDiscovered === 0 ? 0 : Math.round((totalExposed / totalDiscovered) * 100)
 
@@ -386,6 +391,10 @@ export function GatewayHero({
               <StatCell
                 label="Resources"
                 value={`${exposedResources}/${discoveredResources}`}
+              />
+              <StatCell
+                label="Skills"
+                value={`${exposedSkills}/${discoveredSkills}`}
               />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>

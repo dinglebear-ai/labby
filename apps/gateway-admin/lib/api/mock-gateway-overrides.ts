@@ -4,6 +4,7 @@ import { EXPOSE_NONE_PATTERN } from './tool-exposure-draft.ts'
 export interface MockGatewayOverride {
   exposurePolicy?: ExposurePolicy
   proxyResources?: boolean
+  config?: Partial<Gateway['config']>
 }
 
 const STORAGE_KEY = 'labby.mock.gateway-overrides.v1'
@@ -54,6 +55,10 @@ export function setMockGatewayOverride(id: string, override: MockGatewayOverride
   record[id] = {
     ...record[id],
     ...override,
+    config: {
+      ...record[id]?.config,
+      ...override.config,
+    },
   }
   writeOverridesRecord(record)
 }
@@ -66,12 +71,13 @@ export function applyMockGatewayOverride(
     return gateway
   }
 
+  const overriddenConfig = { ...gateway.config, ...override.config }
   const exposePatterns = override.exposurePolicy?.mode === 'allowlist'
     ? override.exposurePolicy.patterns
     : []
   const exposeAll = override.exposurePolicy?.mode === 'expose_all'
   const exposeNone = exposePatterns.includes(EXPOSE_NONE_PATTERN)
-  const proxyResources = override.proxyResources ?? gateway.config.proxy_resources ?? true
+  const proxyResources = override.proxyResources ?? overriddenConfig.proxy_resources ?? true
 
   const tools = override.exposurePolicy
     ? gateway.discovery.tools.map((tool) => {
@@ -89,10 +95,12 @@ export function applyMockGatewayOverride(
   return {
     ...gateway,
     config: {
-      ...gateway.config,
+      ...overriddenConfig,
       proxy_resources: proxyResources,
       expose_tools:
-        override.exposurePolicy?.mode === 'allowlist' ? override.exposurePolicy.patterns : gateway.config.expose_tools,
+        override.exposurePolicy?.mode === 'allowlist'
+          ? override.exposurePolicy.patterns
+          : overriddenConfig.expose_tools,
     },
     status: {
       ...gateway.status,

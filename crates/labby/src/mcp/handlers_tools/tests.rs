@@ -5,6 +5,10 @@
 //! self-contained (per the test-distribution plan's minimal-duplication
 //! guidance).
 
+use crate::config::{
+    GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
+    ProtectedMcpRouteTarget,
+};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::dispatch::upstream::types::{
@@ -24,7 +28,7 @@ use crate::mcp::handlers_resources::{
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
     code_mode_trace_output_schema, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta,
+    mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta, strip_resource_backed_ui_meta,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -434,10 +438,14 @@ fn fixture_upstream_entry(upstream: &str, tools: HashMap<String, UpstreamTool>) 
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: ToolExposurePolicy::All,
+        proxy_skills: false,
+        supports_skills: None,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 1,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: vec![format!("ui://{upstream}/app.html")],
         tool_health: UpstreamHealth::Healthy,
@@ -2122,6 +2130,105 @@ async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
         }),
         "server_logs must not advertise MCP App metadata unless the caller can read the admin UI resource"
     );
+}
+
+#[tokio::test]
+async fn resource_disabled_loadout_hides_unreadable_mcp_app_bindings() {
+    let loadout = GatewayLoadoutConfig {
+        name: "text-only-code-mode".to_string(),
+        expose_tools: true,
+        expose_resources: false,
+        expose_prompts: false,
+        expose_skills: false,
+        expose_code_mode: true,
+        ..GatewayLoadoutConfig::default()
+    };
+    let route = ProtectedMcpRouteConfig {
+        name: "text-only".to_string(),
+        enabled: true,
+        public_host: "mcp.example.com".to_string(),
+        public_path: "/text-only".to_string(),
+        upstream: None,
+        backend_url: String::new(),
+        backend_mcp_path: "/mcp".to_string(),
+        scopes: vec![],
+        health_path: None,
+        target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                loadout: Some(loadout.name.clone()),
+                ..Default::default()
+            },
+        )),
+    };
+    let scope = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+        &route,
+        std::slice::from_ref(&loadout),
+    )
+    .expect("loadout scope resolves")
+    .expect("gateway subset scope");
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.code_mode_app_state.set_enabled(true);
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("list tools for resource-disabled loadout");
+
+    assert!(
+        result
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME),
+        "text Code Mode remains available when the Loadout exposes Code Mode"
+    );
+    assert!(
+        result
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != CODE_MODE_UI_TOOL_NAME),
+        "codemode_ui must not be advertised when its backing resource is unreadable"
+    );
+    for tool in &result.tools {
+        if let Some(meta) = tool.meta.as_ref() {
+            assert!(
+                !meta.0.contains_key("ui") && !meta.0.contains_key("openai/outputTemplate"),
+                "{} advertised resource-backed UI metadata on a resource-disabled route",
+                tool.name
+            );
+        }
+    }
+}
+
+#[test]
+fn resource_backed_ui_metadata_sanitizer_preserves_unrelated_meta() {
+    let mut meta = Some(MetaObject(serde_json::Map::from_iter([
+        (
+            "ui".to_string(),
+            serde_json::json!({"resourceUri": "ui://fixture/app.html"}),
+        ),
+        (
+            "openai/outputTemplate".to_string(),
+            serde_json::json!("ui://fixture/app.skybridge.html"),
+        ),
+        ("trace".to_string(), serde_json::json!("keep-me")),
+    ])));
+
+    strip_resource_backed_ui_meta(&mut meta);
+
+    let meta = meta.expect("unrelated metadata remains");
+    assert!(!meta.0.contains_key("ui"));
+    assert!(!meta.0.contains_key("openai/outputTemplate"));
+    assert_eq!(meta.0["trace"], serde_json::json!("keep-me"));
 }
 
 #[tokio::test]

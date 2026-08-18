@@ -444,7 +444,8 @@ pub(super) async fn server_view_from_upstream(
     // exposed counts plus a current error still surface as down.
     let exposing_capabilities = summary.exposed_tool_count > 0
         || summary.exposed_resource_count > 0
-        || summary.exposed_prompt_count > 0;
+        || summary.exposed_prompt_count > 0
+        || summary.exposed_skill_count > 0;
     let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
     let connected = last_error.is_none() && (exposing_capabilities || health_ok);
     let enabled = upstream.enabled;
@@ -470,6 +471,9 @@ pub(super) async fn server_view_from_upstream(
         exposed_resource_count: summary.exposed_resource_count,
         discovered_prompt_count: summary.discovered_prompt_count,
         exposed_prompt_count: summary.exposed_prompt_count,
+        discovered_skill_count: summary.discovered_skill_count,
+        exposed_skill_count: summary.exposed_skill_count,
+        supports_skills: summary.supports_skills,
         surfaces: SurfaceStatesView {
             mcp: SurfaceStateView {
                 enabled,
@@ -588,6 +592,9 @@ pub(super) fn server_view_from_virtual_server(
         exposed_resource_count,
         discovered_prompt_count,
         exposed_prompt_count,
+        discovered_skill_count: 0,
+        exposed_skill_count: 0,
+        supports_skills: None,
         surfaces: SurfaceStatesView {
             cli: SurfaceStateView {
                 enabled: record.surfaces.cli,
@@ -691,9 +698,12 @@ pub(super) async fn runtime_view(
         tool_count: summary.discovered_tool_count,
         resource_count: summary.discovered_resource_count,
         prompt_count,
+        skill_count: summary.discovered_skill_count,
         exposed_tool_count: summary.exposed_tool_count,
         exposed_resource_count: summary.exposed_resource_count,
         exposed_prompt_count: summary.exposed_prompt_count,
+        exposed_skill_count: summary.exposed_skill_count,
+        supports_skills: summary.supports_skills,
         last_error,
         dependency_hint,
     }

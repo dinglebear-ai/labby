@@ -303,7 +303,8 @@ impl GatewayManager {
             };
             let exposing_capabilities = summary.exposed_tool_count > 0
                 || summary.exposed_resource_count > 0
-                || summary.exposed_prompt_count > 0;
+                || summary.exposed_prompt_count > 0
+                || summary.exposed_skill_count > 0;
             let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
             let connected =
                 upstream.enabled && last_error.is_none() && (exposing_capabilities || health_ok);
@@ -317,6 +318,9 @@ impl GatewayManager {
                 exposed_resource_count: summary.exposed_resource_count,
                 discovered_prompt_count: summary.discovered_prompt_count,
                 exposed_prompt_count: summary.exposed_prompt_count,
+                discovered_skill_count: summary.discovered_skill_count,
+                exposed_skill_count: summary.exposed_skill_count,
+                supports_skills: summary.supports_skills,
                 likely_stale_count: stale_count,
                 pid: live_pid.or_else(|| fallback.map(|entry| entry.pid)),
                 pgid: runtime

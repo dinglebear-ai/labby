@@ -420,6 +420,29 @@ impl LabMcpServer {
             "dispatch start"
         );
         let auth = auth_context_from_extensions(&context.extensions);
+        if !self.route_scope.exposes_resources() {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_resources",
+                subject,
+                route_scope = %self.route_scope.label(),
+                elapsed_ms,
+                "resource catalog hidden by loadout"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_resources",
+                elapsed_ms,
+                DispatchLogOutcome::Success,
+            )
+            .await;
+            return Ok(ListResourcesResult::with_all_items(Vec::new())
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private));
+        }
         #[cfg(feature = "gateway")]
         let server_logs_app_enabled = self.mcp_apps_config().await.server_logs;
         #[cfg(not(feature = "gateway"))]
@@ -809,6 +832,21 @@ impl LabMcpServer {
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
         let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
+        if !self.route_scope.exposes_resources() {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_resource_templates",
+                subject,
+                route_scope = %self.route_scope.label(),
+                elapsed_ms,
+                "resource template catalog hidden by loadout"
+            );
+            return Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private));
+        }
         let auth = auth_context_from_extensions(&context.extensions);
         let snapshot_audience = catalog_snapshot_audience(auth);
         let mut page_collector = PageCollector::new(request)?;
@@ -940,12 +978,43 @@ impl LabMcpServer {
             resource_uri = %resource_uri_log,
             "dispatch start"
         );
+        if !self.route_scope.exposes_resources() {
+            let elapsed_ms = start.elapsed().as_millis();
+            let message = "MCP Resources are disabled by this loadout; ask the operator to enable Resources for this loadout (Agent Skills also require Resources)";
+            self.log_route_scope_denial(
+                &context,
+                "resources",
+                "read_resource",
+                message,
+                elapsed_ms,
+            );
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_REQUEST,
+                message.to_string(),
+                None,
+            ));
+        }
 
         // Branch -1: first-party skill files. The `skill://` namespace is
         // exact-match and disjoint from every other prefix here, so it is
         // resolved first and never falls through to a lab:// handler.
         #[cfg(feature = "skills")]
         if crate::mcp::skills::is_skill_uri(&uri) {
+            if !self.route_scope.exposes_skills() {
+                let message = "Agent Skills are disabled by this loadout; ask the operator to enable Skills (and Resources) for this loadout";
+                self.log_route_scope_denial(
+                    &context,
+                    "skills",
+                    "read_resource",
+                    message,
+                    start.elapsed().as_millis(),
+                );
+                return Err(ErrorData::new(
+                    rmcp::model::ErrorCode::INVALID_REQUEST,
+                    message.to_string(),
+                    None,
+                ));
+            }
             // Same scope `skills/list` and `skills/get` require. Gating only
             // the enumerating methods would leave every skill file fetchable by
             // URI, and skill URIs are not secret — they appear in listings,
