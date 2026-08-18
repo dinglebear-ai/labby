@@ -1,14 +1,13 @@
 //! Tests for request-context auth/subject + scope/admin gate helpers.
 //! Distributed from `server.rs` (bead `lab-kvji.24.1.6`).
 
-#[cfg(feature = "gateway")]
-use super::oauth_upstream_subject_for_request;
 use super::{
     AbsentAuth, actor_key_from_extensions, builtin_action_requires_admin,
     code_mode_read_scope_allowed, forwardable_client_capabilities, resolve_caller_authorization,
     subject_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
-    upstream_uses_capability_relay,
 };
+#[cfg(feature = "gateway")]
+use super::{oauth_upstream_subject_for_request, upstream_uses_capability_relay};
 use crate::dispatch::error::ToolError;
 use crate::registry::RegisteredService;
 use labby_runtime::caller_auth::PropagatedCallerAuth;
