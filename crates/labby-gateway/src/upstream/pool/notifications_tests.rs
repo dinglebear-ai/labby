@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
-    ErrorData, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    Resource, ServerCapabilities, ServerInfo, SubscriptionFilter,
+    ErrorCode, ErrorData, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, Resource, ServerCapabilities, ServerInfo, SubscriptionFilter,
 };
-use rmcp::service::{RequestContext, SubscriptionContext};
+use rmcp::service::{RequestContext, ServiceError, SubscriptionContext};
 use rmcp::{
     ClientLifecycleMode, ClientServiceExt, RoleClient, RoleServer, ServerHandler, ServiceExt,
 };
@@ -25,6 +25,7 @@ const NATIVE_RESOURCE_URI: &str = "file:///tmp/subscription-resource";
 struct SubscriptionServer {
     attempts: Arc<AtomicUsize>,
     failures_before_accept: usize,
+    listen_failures_before_stable: usize,
     acceptance_delay: Duration,
     tools: Arc<tokio::sync::RwLock<Vec<rmcp::model::Tool>>>,
     tool_change: Arc<tokio::sync::Notify>,
@@ -35,6 +36,7 @@ impl SubscriptionServer {
         Self {
             attempts: Arc::new(AtomicUsize::new(0)),
             failures_before_accept: 0,
+            listen_failures_before_stable: 0,
             acceptance_delay: Duration::ZERO,
             tools: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             tool_change: Arc::new(tokio::sync::Notify::new()),
@@ -43,7 +45,7 @@ impl SubscriptionServer {
 
     fn fail_then_accept() -> Self {
         Self {
-            failures_before_accept: 1,
+            listen_failures_before_stable: 1,
             ..Self::accepting()
         }
     }
@@ -106,11 +108,19 @@ impl ServerHandler for SubscriptionServer {
         if !self.acceptance_delay.is_zero() {
             std::thread::sleep(self.acceptance_delay);
         }
-        (attempt >= self.failures_before_accept)
-            .then(|| requested.supported_by(&self.get_info().capabilities))
+        if attempt < self.failures_before_accept {
+            return None;
+        }
+        Some(requested.supported_by(&self.get_info().capabilities))
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        if self.attempts.load(Ordering::SeqCst) <= self.listen_failures_before_stable {
+            return Err(ErrorData::internal_error(
+                "temporary subscription stream failure",
+                None,
+            ));
+        }
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
@@ -298,18 +308,74 @@ async fn initial_failure_is_retried_and_eventually_published() {
 
     pool.refresh_upstream_subscription("leaf").await;
 
-    let expected = UpstreamPool::gateway_resource_uri("leaf", NATIVE_RESOURCE_URI);
-    tokio::time::timeout(Duration::from_secs(4), async {
-        while !pool
-            .subscribable_resource_uris_snapshot()
-            .contains(&expected)
-        {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while attempts.load(Ordering::SeqCst) < 2 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("retry publishes the accepted resource before the deadline");
-    assert!(attempts.load(Ordering::SeqCst) >= 2);
+    .expect("temporary stream failure is retried before the deadline");
+    let expected = UpstreamPool::gateway_resource_uri("leaf", NATIVE_RESOURCE_URI);
+    assert!(
+        pool.subscribable_resource_uris_snapshot()
+            .contains(&expected)
+    );
+}
+
+#[test]
+fn subscription_listen_is_only_attempted_for_modern_protocol() {
+    assert!(
+        super::notifications::subscription_listen_supported_protocol(
+            &ProtocolVersion::V_2026_07_28
+        )
+    );
+    assert!(
+        !super::notifications::subscription_listen_supported_protocol(
+            &ProtocolVersion::V_2025_11_25
+        )
+    );
+}
+
+#[test]
+fn terminal_subscription_errors_stop_unchanged_retries() {
+    let method_not_found = ServiceError::McpError(ErrorData::new(
+        ErrorCode::METHOD_NOT_FOUND,
+        "Method not found",
+        None,
+    ));
+    assert!(super::notifications::terminal_subscription_listen_error(
+        &method_not_found,
+        0
+    ));
+
+    let invalid_params = ServiceError::McpError(ErrorData::new(
+        ErrorCode::INVALID_PARAMS,
+        "Invalid request parameters",
+        None,
+    ));
+    assert!(!super::notifications::terminal_subscription_listen_error(
+        &invalid_params,
+        0
+    ));
+    assert!(super::notifications::terminal_subscription_listen_error(
+        &invalid_params,
+        1
+    ));
+
+    let subscription_limit = ServiceError::McpError(ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        "Subscription limit reached",
+        None,
+    ));
+    assert!(super::notifications::terminal_subscription_listen_error(
+        &subscription_limit,
+        0
+    ));
+
+    assert!(!super::notifications::terminal_subscription_listen_error(
+        &ServiceError::TransportClosed,
+        9
+    ));
 }
 
 #[test]
@@ -338,7 +404,7 @@ fn subscription_backoff_resets_only_after_stable_interval() {
 async fn failed_subscription_reconnect_is_cancelled_during_backoff() {
     let pool = UpstreamPool::new();
     let mut server = SubscriptionServer::accepting();
-    server.failures_before_accept = usize::MAX;
+    server.listen_failures_before_stable = usize::MAX;
     let attempts = Arc::clone(&server.attempts);
     add_subscription_server(&pool, "leaf", server).await;
 
@@ -362,7 +428,7 @@ async fn failed_subscription_reconnects_after_its_jittered_deadline() {
     pool.refresh_upstream_subscription("leaf").await;
     tokio::task::yield_now().await;
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    let delay = super::notifications::subscription_retry_delay("leaf", 0);
+    let delay = super::notifications::subscription_retry_delay("leaf", 1);
     tokio::time::advance(delay.saturating_sub(Duration::from_millis(1))).await;
     tokio::task::yield_now().await;
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
