@@ -28,7 +28,7 @@
 //!
 //! `normalize_upstream_result` lives in `upstream.rs`.
 
-use std::time::Instant;
+use std::{future::Future, pin::Pin, time::Instant};
 
 use labby_gateway::upstream::pool::CapabilityCallError;
 use labby_gateway::upstream::tool_error::{mcp_error_data_kind, safety_hints_from_annotations};
@@ -299,6 +299,32 @@ fn upstream_classified_error_envelope(
 }
 
 impl LabMcpServer {
+    /// Construct the large upstream-proxy future in this small synchronous
+    /// frame so the already-large top-level tool dispatcher stores only a
+    /// boxed pointer while awaiting it.
+    pub(crate) fn boxed_call_tool_upstream_impl<'a>(
+        &'a self,
+        service: &'a str,
+        action: &'a str,
+        upstream_request: CallToolRequestParams,
+        resolved_upstream_tool: Option<PreResolvedUpstreamTool>,
+        start: Instant,
+        subject: &'a str,
+        actor_key: Option<&'a str>,
+        context: &'a RequestContext<RoleServer>,
+    ) -> Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>> {
+        Box::pin(self.call_tool_upstream_impl(
+            service,
+            action,
+            upstream_request,
+            resolved_upstream_tool,
+            start,
+            subject,
+            actor_key,
+            context,
+        ))
+    }
+
     /// Upstream-proxy tail. Reached by fall-through from `call_tool_impl`
     /// when `svc.is_none()`. Owns raw + subject-scoped proxy branches and
     /// the no-dispatcher-wired fallback; returns unconditionally.

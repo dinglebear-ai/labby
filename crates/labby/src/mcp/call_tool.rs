@@ -923,7 +923,7 @@ impl LabMcpServer {
         // unresolved service name is simply not found.
         #[cfg(feature = "gateway")]
         {
-            Box::pin(self.call_tool_upstream_impl(
+            self.boxed_call_tool_upstream_impl(
                 &service,
                 &action,
                 upstream_request,
@@ -932,7 +932,7 @@ impl LabMcpServer {
                 &subject,
                 actor_key,
                 &context,
-            ))
+            )
             .await
         }
         #[cfg(not(feature = "gateway"))]
