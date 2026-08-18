@@ -1,6 +1,16 @@
+use Future;
+use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rmcp::RoleClient;
+use rmcp::model::{
+    NumberOrString, ProgressNotification, ProgressNotificationParam, ProgressToken,
+    ServerNotification,
+};
+use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::transport::Transport;
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -10,7 +20,9 @@ use labby_runtime::gateway_config::{
 };
 
 use super::UpstreamPool;
-use super::connect::connect_http_upstream;
+use super::connect::{
+    OrderedProgressTransport, ProgressNotificationInterceptor, connect_http_upstream,
+};
 use super::testsupport::test_upstream_config;
 
 #[derive(Clone, Default)]
@@ -730,4 +742,111 @@ async fn shared_discovery_skips_oauth_http_upstreams() {
 
     assert_eq!(pool.upstream_count().await, 0);
     assert!(pool.upstream_status().await.is_empty());
+}
+
+struct OrderedProgressFixture {
+    messages: VecDeque<RxJsonRpcMessage<RoleClient>>,
+}
+
+impl Transport<RoleClient> for OrderedProgressFixture {
+    type Error = Infallible;
+
+    fn send(
+        &mut self,
+        _item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        std::future::ready(Ok(()))
+    }
+
+    fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleClient>>> + Send {
+        std::future::ready(self.messages.pop_front())
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
+    }
+}
+
+fn progress_message(message: &str, progress: f64) -> RxJsonRpcMessage<RoleClient> {
+    RxJsonRpcMessage::<RoleClient>::notification(ServerNotification::ProgressNotification(
+        ProgressNotification::new(
+            ProgressNotificationParam::new(
+                ProgressToken(NumberOrString::String("ordered-progress".into())),
+                progress,
+            )
+            .with_message(message),
+        ),
+    ))
+}
+
+#[tokio::test]
+async fn ordered_progress_transport_intercepts_progress_in_wire_receive_order() {
+    let observed = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let interceptor_observed = Arc::clone(&observed);
+    let interceptor: ProgressNotificationInterceptor = Arc::new(move |params| {
+        let observed = Arc::clone(&interceptor_observed);
+        Box::pin(async move {
+            observed
+                .lock()
+                .await
+                .push(params.message.unwrap_or_default());
+        })
+    });
+    let fixture = OrderedProgressFixture {
+        messages: VecDeque::from([
+            progress_message("quarter", 0.25),
+            progress_message("three-quarters", 0.75),
+        ]),
+    };
+    let mut transport = OrderedProgressTransport::new(fixture, Some(interceptor));
+
+    assert!(transport.receive().await.is_none());
+    assert_eq!(
+        observed.lock().await.as_slice(),
+        ["quarter", "three-quarters"]
+    );
+}
+
+#[tokio::test]
+async fn ordered_progress_transport_survives_receive_cancellation_after_consumption() {
+    let observed = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let interceptor_observed = Arc::clone(&observed);
+    let interceptor_release = Arc::clone(&release);
+    let interceptor: ProgressNotificationInterceptor = Arc::new(move |params| {
+        let observed = Arc::clone(&interceptor_observed);
+        let release = Arc::clone(&interceptor_release);
+        Box::pin(async move {
+            release
+                .acquire()
+                .await
+                .expect("progress release permit")
+                .forget();
+            observed
+                .lock()
+                .await
+                .push(params.message.unwrap_or_default());
+        })
+    });
+    let fixture = OrderedProgressFixture {
+        messages: VecDeque::from([
+            progress_message("quarter", 0.25),
+            progress_message("three-quarters", 0.75),
+        ]),
+    };
+    let mut transport = OrderedProgressTransport::new(fixture, Some(interceptor));
+
+    let timed_out =
+        tokio::time::timeout(std::time::Duration::from_millis(10), transport.receive()).await;
+    assert!(
+        timed_out.is_err(),
+        "receive should be cancelled while progress forwarding is blocked"
+    );
+
+    release.add_permits(2);
+    assert!(transport.receive().await.is_none());
+    assert_eq!(
+        observed.lock().await.as_slice(),
+        ["quarter", "three-quarters"]
+    );
 }

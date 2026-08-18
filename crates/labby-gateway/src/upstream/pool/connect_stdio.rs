@@ -8,6 +8,7 @@
 use labby_runtime::gateway_config::UpstreamConfig;
 use rmcp::ClientHandler;
 use rmcp::service::ClientServiceExt;
+use rmcp::transport::TransportAdapterIdentity;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -16,7 +17,9 @@ use std::sync::{OnceLock, RwLock};
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 use super::catalog_pagination;
-use super::connect::runtime_origin_label;
+use super::connect::{
+    OrderedProgressTransport, ProgressNotificationInterceptor, runtime_origin_label,
+};
 use super::helpers::STDIO_DISCOVERY_TIMEOUT;
 use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
@@ -75,6 +78,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
     runtime_origin: Option<&str>,
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     handler: H,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let mut env = config
         .env
@@ -97,7 +101,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
         runtime_origin: runtime_origin_label(runtime_origin, runtime_owner),
         runtime_owner: runtime_owner.cloned(),
     };
-    connect_stdio_command(command_spec, handler, true).await
+    connect_stdio_command(command_spec, handler, true, progress_interceptor).await
 }
 
 pub(crate) async fn connect_direct_stdio<H: ClientHandler + Clone>(
@@ -115,7 +119,7 @@ pub(crate) async fn connect_direct_stdio<H: ClientHandler + Clone>(
         runtime_origin: Some("proxy:local-cli".to_string()),
         runtime_owner: None,
     };
-    connect_stdio_command(spec, handler, false).await
+    connect_stdio_command(spec, handler, false, None).await
 }
 
 #[derive(Clone)]
@@ -135,6 +139,7 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     command: StdioCommandSpec,
     handler: H,
     allow_cache_repair: bool,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     // Cross-process spawn lock: stdio servers launched via `npx -y`/`uvx` install
     // into a shared package cache on first cold spawn; two processes installing
@@ -157,7 +162,14 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
         LifecycleAttempt::Modern
     };
 
-    match connect_stdio_upstream_once(&command, handler.clone(), initial_attempt).await {
+    match connect_stdio_upstream_once(
+        &command,
+        handler.clone(),
+        initial_attempt,
+        progress_interceptor.clone(),
+    )
+    .await
+    {
         Ok(ok) => Ok(ok),
         Err(first_error) => {
             let lifecycle_error = anyhow::anyhow!(first_error.diagnostics_with_error());
@@ -166,9 +178,14 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
             {
                 remember_legacy_stdio_lifecycle(lifecycle_key);
                 log_fallback(&command.name, "stdio", attempt, &lifecycle_error);
-                return connect_stdio_upstream_once(&command, handler, attempt)
-                    .await
-                    .map_err(StdioConnectError::into_anyhow);
+                return connect_stdio_upstream_once(
+                    &command,
+                    handler,
+                    attempt,
+                    progress_interceptor.clone(),
+                )
+                .await
+                .map_err(StdioConnectError::into_anyhow);
             }
             let diagnostics = first_error.diagnostics_with_error();
             if !allow_cache_repair {
@@ -202,7 +219,14 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
                 _ => return Err(first_error.into_anyhow()),
             }
 
-            match connect_stdio_upstream_once(&command, handler, initial_attempt).await {
+            match connect_stdio_upstream_once(
+                &command,
+                handler,
+                initial_attempt,
+                progress_interceptor,
+            )
+            .await
+            {
                 Ok(ok) => Ok(ok),
                 Err(retry_error) => Err(anyhow::anyhow!(
                     "stdio upstream failed after package-runner cache repair retry: {}",
@@ -217,6 +241,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     command: &StdioCommandSpec,
     handler: H,
     lifecycle: LifecycleAttempt,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>), StdioConnectError> {
     use process_wrap::tokio::CommandWrap;
     #[cfg(unix)]
@@ -339,10 +364,11 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     #[cfg(windows)]
     let job_guard = pid.map(super::super::process_guard::JobObjectGuard::arm);
 
+    let process = OrderedProgressTransport::new(process, progress_interceptor);
     let service = match lifecycle {
         LifecycleAttempt::Modern => {
             let service = match handler
-                .serve_with_lifecycle(process, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(process, lifecycle.mode())
                 .await
             {
                 Ok(service) => service,
@@ -354,7 +380,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         }
         LifecycleAttempt::LegacyInitialize => {
             let service = match VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle(process, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(process, lifecycle.mode())
                 .await
             {
                 Ok(service) => service,

@@ -9,19 +9,27 @@
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::ffi::OsString;
+use std::future::Future;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt as _;
 #[cfg(unix)]
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Instant;
 
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
-use rmcp::ClientHandler;
-use rmcp::service::ClientServiceExt;
+use rmcp::model::{JsonRpcMessage, ProgressNotificationParam, ServerNotification};
+use rmcp::service::{ClientServiceExt, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
+use rmcp::transport::{Transport, TransportAdapterIdentity, WorkerTransport};
+use rmcp::{ClientHandler, RoleClient};
 
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
@@ -44,6 +52,170 @@ use super::lifecycle_compat::{
 };
 use super::tools::MAX_UPSTREAM_TOOLS;
 use super::{UpstreamClientService, UpstreamConnection};
+
+pub(super) type ProgressNotificationInterceptor = Arc<
+    dyn Fn(ProgressNotificationParam) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
+
+const ORDERED_PROGRESS_BUFFER: usize = 64;
+
+type ProgressWork = (u64, ProgressNotificationParam);
+
+#[derive(Default)]
+struct ProgressDeliveryState {
+    completed: AtomicU64,
+    notify: tokio::sync::Notify,
+}
+
+impl ProgressDeliveryState {
+    fn mark_completed(&self, sequence: u64) {
+        self.completed.store(sequence, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    fn completed(&self) -> u64 {
+        self.completed.load(Ordering::Acquire)
+    }
+
+    async fn wait_through(&self, sequence: u64) {
+        while self.completed() < sequence {
+            let notified = self.notify.notified();
+            if self.completed() >= sequence {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+pub(super) struct OrderedProgressTransport<T> {
+    inner: T,
+    progress_tx: Option<tokio::sync::mpsc::Sender<ProgressWork>>,
+    progress_delivery: Option<Arc<ProgressDeliveryState>>,
+    next_progress_sequence: u64,
+    pending_message: Option<RxJsonRpcMessage<RoleClient>>,
+    pending_progress_sequence: u64,
+}
+
+impl<T> OrderedProgressTransport<T> {
+    pub(super) fn new(
+        inner: T,
+        progress_interceptor: Option<ProgressNotificationInterceptor>,
+    ) -> Self {
+        let (progress_tx, progress_delivery) = if let Some(interceptor) = progress_interceptor {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<ProgressWork>(ORDERED_PROGRESS_BUFFER);
+            let delivery = Arc::new(ProgressDeliveryState::default());
+            let worker_delivery = Arc::clone(&delivery);
+            tokio::spawn(async move {
+                while let Some((sequence, params)) = rx.recv().await {
+                    interceptor(params).await;
+                    worker_delivery.mark_completed(sequence);
+                }
+            });
+            (Some(tx), Some(delivery))
+        } else {
+            (None, None)
+        };
+        Self {
+            inner,
+            progress_tx,
+            progress_delivery,
+            next_progress_sequence: 0,
+            pending_message: None,
+            pending_progress_sequence: 0,
+        }
+    }
+
+    async fn wait_for_progress_through(
+        delivery: Option<Arc<ProgressDeliveryState>>,
+        sequence: u64,
+    ) {
+        if sequence == 0 {
+            return;
+        }
+        if let Some(delivery) = delivery {
+            delivery.wait_through(sequence).await;
+        }
+    }
+
+    fn progress_completed(&self) -> u64 {
+        self.progress_delivery
+            .as_ref()
+            .map_or(self.next_progress_sequence, |delivery| delivery.completed())
+    }
+}
+
+impl<T> Transport<RoleClient> for OrderedProgressTransport<T>
+where
+    T: Transport<RoleClient>,
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
+        loop {
+            if self.pending_message.is_some() {
+                Self::wait_for_progress_through(
+                    self.progress_delivery.clone(),
+                    self.pending_progress_sequence,
+                )
+                .await;
+                self.pending_progress_sequence = 0;
+                return self.pending_message.take();
+            }
+
+            let mut permit = match self.progress_tx.clone() {
+                Some(sender) => match sender.reserve_owned().await {
+                    Ok(permit) => Some(permit),
+                    Err(_) => {
+                        self.progress_tx = None;
+                        self.progress_delivery = None;
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            let Some(message) = self.inner.receive().await else {
+                drop(permit);
+                Self::wait_for_progress_through(
+                    self.progress_delivery.clone(),
+                    self.next_progress_sequence,
+                )
+                .await;
+                return None;
+            };
+
+            if let JsonRpcMessage::Notification(notification) = &message
+                && let ServerNotification::ProgressNotification(progress) =
+                    &notification.notification
+                && let Some(permit) = permit.take()
+            {
+                self.next_progress_sequence = self.next_progress_sequence.saturating_add(1);
+                permit.send((self.next_progress_sequence, progress.params.clone()));
+                continue;
+            }
+
+            drop(permit);
+            if self.progress_completed() < self.next_progress_sequence {
+                self.pending_progress_sequence = self.next_progress_sequence;
+                self.pending_message = Some(message);
+                continue;
+            }
+            return Some(message);
+        }
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
 /// `reqwest::Client` for HTTP connections (P-M10).
@@ -87,6 +259,29 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    connect_upstream_with_handler_and_progress(
+        config,
+        subject,
+        oauth_client_cache,
+        runtime_origin,
+        runtime_owner,
+        shared_client,
+        handler,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn connect_upstream_with_handler_and_progress<H: ClientHandler + Clone>(
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    runtime_origin: Option<&str>,
+    runtime_owner: Option<&UpstreamRuntimeOwner>,
+    shared_client: Option<&reqwest::Client>,
+    handler: H,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let started = Instant::now();
     tracing::debug!(
         surface = "dispatch",
@@ -105,13 +300,14 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} HTTP transport has no url", config.name)
             })?;
-            connect_http_upstream(
+            connect_http_upstream_with_progress(
                 url,
                 config,
                 subject,
                 oauth_client_cache,
                 shared_client,
                 handler,
+                progress_interceptor.clone(),
             )
             .await
         }
@@ -119,7 +315,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} WebSocket transport has no url", config.name)
             })?;
-            connect_websocket_upstream(url, config, handler).await
+            connect_websocket_upstream(url, config, handler, progress_interceptor.clone()).await
         }
         Some(UpstreamTransport::Stdio) => {
             let command = config.command.as_deref().ok_or_else(|| {
@@ -132,6 +328,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
                 runtime_origin,
                 runtime_owner,
                 handler,
+                progress_interceptor.clone(),
             )
             .await
         }
@@ -139,7 +336,15 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} Unix socket transport has no url", config.name)
             })?;
-            connect_unix_socket_upstream(url, config, subject, oauth_client_cache, handler).await
+            connect_unix_socket_upstream(
+                url,
+                config,
+                subject,
+                oauth_client_cache,
+                handler,
+                progress_interceptor.clone(),
+            )
+            .await
         }
         None => Err(anyhow::anyhow!(
             "upstream {} has neither url nor command",
@@ -221,6 +426,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
     handler: H,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let socket_path = config.socket_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -246,13 +452,14 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
             )
         })?;
 
-    connect_http_upstream(
+    connect_http_upstream_with_progress(
         url,
         config,
         subject,
         oauth_client_cache,
         Some(&client),
         handler,
+        progress_interceptor,
     )
     .await
 }
@@ -264,6 +471,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     _subject: Option<&str>,
     _oauth_client_cache: Option<&OauthClientCache>,
     _handler: H,
+    _progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     anyhow::bail!(
         "upstream {} uses unix_socket, which is unsupported on this platform",
@@ -275,9 +483,16 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
     handler: H,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    match connect_websocket_upstream_once(url, config, handler.clone(), LifecycleAttempt::Modern)
-        .await
+    match connect_websocket_upstream_once(
+        url,
+        config,
+        handler.clone(),
+        LifecycleAttempt::Modern,
+        progress_interceptor.clone(),
+    )
+    .await
     {
         Ok(connection) => Ok(connection),
         Err(error) => {
@@ -285,7 +500,8 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
                 return Err(error);
             };
             log_fallback(&config.name, "websocket", attempt, &error);
-            connect_websocket_upstream_once(url, config, handler, attempt).await
+            connect_websocket_upstream_once(url, config, handler, attempt, progress_interceptor)
+                .await
         }
     }
 }
@@ -295,6 +511,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     config: &UpstreamConfig,
     handler: H,
     lifecycle: LifecycleAttempt,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -314,15 +531,16 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     let transport = connect_websocket_transport(
         WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
     );
+    let transport = OrderedProgressTransport::new(transport, progress_interceptor);
     let service = match lifecycle {
         LifecycleAttempt::Modern => UpstreamClientService::Direct(
             handler
-                .serve_with_lifecycle(transport, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(transport, lifecycle.mode())
                 .await?,
         ),
         LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
             VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle(transport, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(transport, lifecycle.mode())
                 .await?,
         ),
     };
@@ -370,6 +588,27 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    connect_http_upstream_with_progress(
+        url,
+        config,
+        subject,
+        oauth_client_cache,
+        shared_client,
+        handler,
+        None,
+    )
+    .await
+}
+
+async fn connect_http_upstream_with_progress<H: ClientHandler + Clone>(
+    url: &str,
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    shared_client: Option<&reqwest::Client>,
+    handler: H,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     match connect_http_upstream_once(
         url,
         config,
@@ -378,6 +617,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
         shared_client,
         handler.clone(),
         LifecycleAttempt::Modern,
+        progress_interceptor.clone(),
     )
     .await
     {
@@ -395,6 +635,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
                 shared_client,
                 handler,
                 attempt,
+                progress_interceptor,
             )
             .await
         }
@@ -439,6 +680,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
     lifecycle: LifecycleAttempt,
+    progress_interceptor: Option<ProgressNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -487,15 +729,23 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             .map_err(|e| anyhow::anyhow!("oauth_required: {e}"))?;
 
         let worker = StreamableHttpClientWorker::new(auth_client, transport_config);
+        let worker = WorkerTransport::spawn(worker);
+        let worker = OrderedProgressTransport::new(worker, progress_interceptor.clone());
         let service = match lifecycle {
             LifecycleAttempt::Modern => UpstreamClientService::Direct(
                 handler
-                    .serve_with_lifecycle(worker, lifecycle.mode())
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    )
                     .await?,
             ),
             LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
                 VersionedClientHandler::new(handler, legacy_protocol_version())
-                    .serve_with_lifecycle(worker, lifecycle.mode())
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    )
                     .await?,
             ),
         };
@@ -529,15 +779,17 @@ async fn connect_http_upstream_once<H: ClientHandler>(
 
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
+    let worker = WorkerTransport::spawn(worker);
+    let worker = OrderedProgressTransport::new(worker, progress_interceptor);
     let service = match lifecycle {
         LifecycleAttempt::Modern => UpstreamClientService::Direct(
             handler
-                .serve_with_lifecycle(worker, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
                 .await?,
         ),
         LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
             VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle(worker, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
                 .await?,
         ),
     };

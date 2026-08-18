@@ -74,7 +74,7 @@ use super::super::types::UpstreamCapability;
 use super::UpstreamConnection;
 use super::UpstreamPool;
 use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
-use super::connect::connect_upstream_with_handler;
+use super::connect::{ProgressNotificationInterceptor, connect_upstream_with_handler_and_progress};
 use super::entries::{
     prompt_exposed, resolve_request_prompt_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
@@ -99,12 +99,7 @@ use super::relay_cancellation::{
 };
 
 const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-const PROGRESS_NOTIFICATION_DELIVERY_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-const PROGRESS_NOTIFICATION_START_GRACE: std::time::Duration =
-    std::time::Duration::from_millis(100);
 const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: std::time::Duration =
-    std::time::Duration::from_millis(500);
-const PROGRESS_NOTIFICATION_QUIET_PERIOD: std::time::Duration =
     std::time::Duration::from_millis(500);
 const MAX_PENDING_PROGRESS_ROUTES: usize = 256;
 const MAX_PENDING_PROGRESS_PER_ROUTE: usize = 16;
@@ -141,23 +136,9 @@ enum RelayProgressRoute {
 }
 
 #[derive(Default)]
-struct RelayProgressActivity {
-    started: u64,
-    in_flight: usize,
-}
-
-struct RelayProgressForward {
-    upstream_progress_token: ProgressToken,
-    params: ProgressNotificationParam,
-    forward_lock: Arc<Mutex<()>>,
-}
-
-#[derive(Default)]
 struct RelayProgressRouteState {
     mappings: HashMap<ProgressToken, RelayProgressRoute>,
     pending: HashMap<ProgressToken, Vec<ProgressNotificationParam>>,
-    activity: HashMap<ProgressToken, RelayProgressActivity>,
-    forward_locks: HashMap<ProgressToken, Arc<Mutex<()>>>,
 }
 
 #[derive(Default)]
@@ -171,7 +152,6 @@ pub(super) struct RelayRouteState {
     requests: Mutex<RelayRequestRouteState>,
     progress: Mutex<RelayProgressRouteState>,
     tasks: Mutex<RelayTaskRouteState>,
-    progress_notification_notify: Notify,
     cancellation_notification_notify: Notify,
     task_notification_sequence: AtomicU64,
     task_notification_notify: Notify,
@@ -191,25 +171,16 @@ impl RelayRouteState {
     ) -> RelayRegistrationPending {
         {
             let mut progress = self.progress.lock().await;
-            let progress_enabled = downstream_progress_token.is_some();
             let route = downstream_progress_token
                 .map_or(RelayProgressRoute::Disabled, RelayProgressRoute::Activating);
             progress
                 .mappings
                 .insert(upstream_progress_token.clone(), route);
-            if progress_enabled {
-                progress
-                    .activity
-                    .entry(upstream_progress_token.clone())
-                    .or_default();
-                progress
-                    .forward_locks
-                    .entry(upstream_progress_token.clone())
-                    .or_insert_with(|| Arc::new(Mutex::new(())));
-            } else {
+            if matches!(
+                progress.mappings.get(&upstream_progress_token),
+                Some(RelayProgressRoute::Disabled)
+            ) {
                 progress.pending.remove(&upstream_progress_token);
-                progress.activity.remove(&upstream_progress_token);
-                progress.forward_locks.remove(&upstream_progress_token);
             }
         }
         let pending_cancellation = {
@@ -249,10 +220,6 @@ impl RelayRouteState {
             let mut progress = self.progress.lock().await;
             progress.mappings.remove(&route.upstream_progress_token);
             progress.pending.remove(&route.upstream_progress_token);
-            progress.activity.remove(&route.upstream_progress_token);
-            progress
-                .forward_locks
-                .remove(&route.upstream_progress_token);
         }
     }
 
@@ -386,30 +353,13 @@ impl RelayRouteState {
     async fn translate_or_queue_progress(
         &self,
         mut params: ProgressNotificationParam,
-    ) -> Option<RelayProgressForward> {
+    ) -> Option<ProgressNotificationParam> {
         let upstream_progress_token = params.progress_token.clone();
         let mut progress = self.progress.lock().await;
         match progress.mappings.get(&upstream_progress_token).cloned() {
             Some(RelayProgressRoute::Active(downstream_progress_token)) => {
                 params.progress_token = downstream_progress_token;
-                let forward_lock = progress
-                    .forward_locks
-                    .entry(upstream_progress_token.clone())
-                    .or_insert_with(|| Arc::new(Mutex::new(())))
-                    .clone();
-                let activity = progress
-                    .activity
-                    .entry(upstream_progress_token.clone())
-                    .or_default();
-                activity.started = activity.started.saturating_add(1);
-                activity.in_flight = activity.in_flight.saturating_add(1);
-                drop(progress);
-                self.progress_notification_notify.notify_waiters();
-                Some(RelayProgressForward {
-                    upstream_progress_token,
-                    params,
-                    forward_lock,
-                })
+                Some(params)
             }
             Some(RelayProgressRoute::Disabled) => None,
             Some(RelayProgressRoute::Activating(_)) | None => {
@@ -450,16 +400,6 @@ impl RelayRouteState {
             );
             return None;
         }
-        let activity = progress
-            .activity
-            .entry(upstream_progress_token.clone())
-            .or_default();
-        activity.started = activity
-            .started
-            .saturating_add(u64::try_from(pending.len()).unwrap_or(u64::MAX));
-        activity.in_flight = activity.in_flight.saturating_add(pending.len());
-        drop(progress);
-        self.progress_notification_notify.notify_waiters();
         Some(
             pending
                 .into_iter()
@@ -469,96 +409,6 @@ impl RelayRouteState {
                 })
                 .collect(),
         )
-    }
-
-    async fn finish_progress_forward(&self, upstream_progress_token: &ProgressToken) {
-        let mut progress = self.progress.lock().await;
-        if let Some(activity) = progress.activity.get_mut(upstream_progress_token) {
-            activity.in_flight = activity.in_flight.saturating_sub(1);
-        }
-        drop(progress);
-        self.progress_notification_notify.notify_waiters();
-    }
-
-    async fn progress_started(&self, upstream_progress_token: &ProgressToken) -> u64 {
-        self.progress
-            .lock()
-            .await
-            .activity
-            .get(upstream_progress_token)
-            .map_or(0, |activity| activity.started)
-    }
-
-    async fn wait_for_progress_handlers_after(
-        &self,
-        upstream_progress_token: &ProgressToken,
-        previous_started: u64,
-        timeout: std::time::Duration,
-    ) -> bool {
-        let started_waiting_at = tokio::time::Instant::now();
-        let deadline = started_waiting_at + timeout;
-        let initial_start_deadline = std::cmp::min(
-            deadline,
-            started_waiting_at + PROGRESS_NOTIFICATION_START_GRACE,
-        );
-        let mut observed_started = previous_started;
-        let mut saw_progress = false;
-        loop {
-            let notified = self.progress_notification_notify.notified();
-            let (started, in_flight) = {
-                let progress = self.progress.lock().await;
-                progress
-                    .activity
-                    .get(upstream_progress_token)
-                    .map_or((0, 0), |activity| (activity.started, activity.in_flight))
-            };
-            if started > previous_started {
-                saw_progress = true;
-            }
-            if started != observed_started {
-                observed_started = started;
-            }
-
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                return saw_progress && in_flight == 0;
-            }
-            if saw_progress && in_flight == 0 {
-                let quiet_deadline =
-                    std::cmp::min(deadline, now + PROGRESS_NOTIFICATION_QUIET_PERIOD);
-                if tokio::time::timeout_at(quiet_deadline, notified)
-                    .await
-                    .is_err()
-                {
-                    let progress = self.progress.lock().await;
-                    let unchanged_and_idle = progress
-                        .activity
-                        .get(upstream_progress_token)
-                        .is_some_and(|activity| {
-                            activity.started == observed_started && activity.in_flight == 0
-                        });
-                    if unchanged_and_idle {
-                        return true;
-                    }
-                }
-            } else {
-                let wait_deadline = if saw_progress {
-                    deadline
-                } else {
-                    initial_start_deadline
-                };
-                if tokio::time::timeout_at(wait_deadline, notified)
-                    .await
-                    .is_err()
-                {
-                    // No handler entered promptly after the response, so avoid
-                    // taxing every non-progress relay with the full safety
-                    // window. Once any progress handler has started, use the
-                    // larger total grace plus the quiescence window above.
-                    return !saw_progress;
-                }
-            }
-        }
     }
 
     pub(super) async fn register_task_id(
@@ -723,6 +573,34 @@ impl RelayClientHandler {
         *self.downstream.write().await = downstream;
     }
 
+    async fn forward_progress(&self, params: ProgressNotificationParam) {
+        let upstream_progress_token = params.progress_token.clone();
+        let Some(params) = self.routes.translate_or_queue_progress(params).await else {
+            tracing::debug!(
+                upstream = %self.upstream_name,
+                ?upstream_progress_token,
+                "queued or dropped progress notification without an active downstream progress route"
+            );
+            return;
+        };
+        let downstream = self.downstream().await;
+        if let Err(error) = downstream.notify_progress(params).await {
+            tracing::warn!(
+                upstream = %self.upstream_name,
+                error = %error,
+                "failed to forward progress notification downstream"
+            );
+        }
+    }
+
+    fn progress_interceptor(&self) -> ProgressNotificationInterceptor {
+        let handler = self.clone();
+        Arc::new(move |params| {
+            let handler = handler.clone();
+            Box::pin(async move { handler.forward_progress(params).await })
+        })
+    }
+
     pub(super) async fn forward_task_status(&self, params: TaskStatusNotificationParams) {
         let task_id = params.task.task.task_id.clone();
         let status = params.task.status();
@@ -800,33 +678,7 @@ impl ClientHandler for RelayClientHandler {
         params: ProgressNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
-        let upstream_progress_token = params.progress_token.clone();
-        let Some(forward) = self.routes.translate_or_queue_progress(params).await else {
-            tracing::debug!(
-                upstream = %self.upstream_name,
-                ?upstream_progress_token,
-                "queued or dropped progress notification without an active downstream progress route"
-            );
-            return;
-        };
-        let RelayProgressForward {
-            upstream_progress_token,
-            params,
-            forward_lock,
-        } = forward;
-        let _forward_guard = forward_lock.lock().await;
-        let downstream = self.downstream().await;
-        if let Err(error) = downstream.notify_progress(params).await {
-            tracing::warn!(
-                upstream = %self.upstream_name,
-                error = %error,
-                "failed to forward progress notification downstream"
-            );
-        }
-        drop(_forward_guard);
-        self.routes
-            .finish_progress_forward(&upstream_progress_token)
-            .await;
+        self.forward_progress(params).await;
     }
 
     #[allow(deprecated)]
@@ -957,7 +809,6 @@ async fn send_relay_request(
     let downstream_progress_token = request_meta
         .as_ref()
         .and_then(RequestMetaObject::get_progress_token);
-    let expects_progress = downstream_progress_token.is_some();
     let options = request_meta
         .map(|meta| PeerRequestOptions::no_options().with_meta(meta))
         .unwrap_or_else(PeerRequestOptions::no_options);
@@ -1044,7 +895,6 @@ async fn send_relay_request(
             downstream_progress_token,
         )
         .await;
-    let progress_started = routes.progress_started(&handle.progress_token).await;
     while let Some(pending_progress) = routes
         .take_pending_progress_batch_or_activate(&handle.progress_token)
         .await
@@ -1057,7 +907,6 @@ async fn send_relay_request(
                     "failed to forward queued progress notification downstream"
                 );
             }
-            routes.finish_progress_forward(&handle.progress_token).await;
         }
     }
     if let Some(params) = pending_notifications.cancellation {
@@ -1084,15 +933,6 @@ async fn send_relay_request(
             // Its bounded grace still preserves the late downstream-cancel race.
             relay_finished.cancel();
             let response = response.map_err(|_| ServiceError::TransportClosed)?;
-            if expects_progress && response.is_ok() {
-                routes
-                    .wait_for_progress_handlers_after(
-                        &handle.progress_token,
-                        progress_started,
-                        PROGRESS_NOTIFICATION_DELIVERY_GRACE,
-                    )
-                    .await;
-            }
             if matches!(&response, Err(ServiceError::Cancelled { .. })) {
                 routes
                     .wait_for_cancellation_handlers_after(
@@ -1170,8 +1010,9 @@ impl UpstreamPool {
     /// mapping unambiguous even though the connection is reused across calls
     /// within the session.
     ///
-    /// Reuses the generic `connect_upstream_with_handler` seam, so every
-    /// transport (HTTP, WebSocket, stdio, OAuth-HTTP) and the stdio
+    /// Reuses the generic relay connection seam, including its sequential
+    /// progress-notification transport interceptor, so every transport (HTTP,
+    /// WebSocket, stdio, OAuth-HTTP) and the stdio
     /// process-reaping guard work unchanged. `subject` is forwarded for
     /// OAuth-scoped upstreams (`None` for the common non-OAuth case).
     ///
@@ -2196,7 +2037,8 @@ impl UpstreamPool {
             self.notification_tx.clone(),
             subject.is_none(),
         );
-        let (conn, _tools) = match connect_upstream_with_handler(
+        let progress_interceptor = handler.progress_interceptor();
+        let (conn, _tools) = match connect_upstream_with_handler_and_progress(
             config,
             subject,
             self.oauth_client_cache.as_ref(),
@@ -2204,6 +2046,7 @@ impl UpstreamPool {
             self.runtime_owner.as_ref(),
             Some(&self.shared_http_client),
             handler,
+            Some(progress_interceptor),
         )
         .await
         {
@@ -2483,7 +2326,6 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].progress_token, downstream_progress);
         assert_eq!(first[0].message.as_deref(), Some("early"));
-        routes.finish_progress_forward(&upstream_progress).await;
 
         let later =
             ProgressNotificationParam::new(upstream_progress.clone(), 0.75).with_message("later");
@@ -2495,7 +2337,6 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].progress_token, downstream_progress);
         assert_eq!(second[0].message.as_deref(), Some("later"));
-        routes.finish_progress_forward(&upstream_progress).await;
         assert!(
             routes
                 .take_pending_progress_batch_or_activate(&upstream_progress)
@@ -2509,11 +2350,8 @@ mod tests {
             .translate_or_queue_progress(live)
             .await
             .expect("active progress route");
-        assert_eq!(translated.params.progress_token, downstream_progress);
-        assert_eq!(translated.params.message.as_deref(), Some("live"));
-        routes
-            .finish_progress_forward(&translated.upstream_progress_token)
-            .await;
+        assert_eq!(translated.progress_token, downstream_progress);
+        assert_eq!(translated.message.as_deref(), Some("live"));
     }
 
     #[tokio::test]
@@ -2635,71 +2473,6 @@ mod tests {
             distinct_routes.progress.lock().await.pending.len(),
             MAX_PENDING_PROGRESS_ROUTES
         );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn progress_handler_wait_tracks_inflight_work_and_latest_start() {
-        let routes = Arc::new(RelayRouteState::default());
-        let upstream_request = RequestId::String("progress-wait-request".into());
-        let downstream_request = RequestId::String("progress-wait-downstream".into());
-        let upstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
-            "progress-wait-upstream".into(),
-        ));
-        let downstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
-            "progress-wait-downstream".into(),
-        ));
-        routes
-            .register_request(
-                upstream_request,
-                downstream_request,
-                upstream_progress.clone(),
-                Some(downstream_progress),
-            )
-            .await;
-        assert!(
-            routes
-                .take_pending_progress_batch_or_activate(&upstream_progress)
-                .await
-                .is_none()
-        );
-        let previous = routes.progress_started(&upstream_progress).await;
-        let first = routes
-            .translate_or_queue_progress(ProgressNotificationParam::new(
-                upstream_progress.clone(),
-                0.25,
-            ))
-            .await
-            .expect("first active progress");
-        let waiting_routes = Arc::clone(&routes);
-        let waiting_token = upstream_progress.clone();
-        let waiter = tokio::spawn(async move {
-            waiting_routes
-                .wait_for_progress_handlers_after(
-                    &waiting_token,
-                    previous,
-                    std::time::Duration::from_millis(500),
-                )
-                .await
-        });
-
-        tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_millis(50)).await;
-        assert!(!waiter.is_finished());
-        routes
-            .finish_progress_forward(&first.upstream_progress_token)
-            .await;
-        let second = routes
-            .translate_or_queue_progress(ProgressNotificationParam::new(upstream_progress, 0.75))
-            .await
-            .expect("second active progress");
-        routes
-            .finish_progress_forward(&second.upstream_progress_token)
-            .await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_millis(499)).await;
-        assert!(!waiter.is_finished());
-        tokio::time::advance(std::time::Duration::from_millis(1)).await;
-        assert!(waiter.await.expect("progress waiter"));
     }
 
     #[tokio::test]
