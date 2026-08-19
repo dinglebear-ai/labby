@@ -434,8 +434,94 @@ async fn gateway_usage_metrics_returns_zeroed_view_with_no_calls() {
     let result = dispatch_with_manager(&manager, "gateway.usage.metrics", json!({}))
         .await
         .expect("dispatch succeeds");
+    assert_eq!(result["window_total_calls"], 0);
     assert_eq!(result["total_calls"], 0);
     assert_eq!(result["error_calls"], 0);
+    assert_eq!(result["p95_elapsed_ms"], 0);
+    assert_eq!(result["distinct_tools"], 0);
+    assert_eq!(result["distinct_actors"], 0);
+    assert_eq!(result["timeseries"], json!([]));
+    assert_eq!(result["facets"]["tools"], json!([]));
+}
+
+#[tokio::test]
+async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+    let usage_store = std::sync::Arc::new(
+        crate::usage::UsageStore::open(tempfile::tempdir().unwrap().path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    for (ts_unix, actor, outcome) in [(1_000, "alice", "ok"), (1_100, "bob", "timeout")] {
+        usage_store
+            .record_call(crate::usage::UpstreamCallRecord {
+                ts_unix,
+                upstream_name: "github".to_string(),
+                tool_name: "search_repos".to_string(),
+                capability: "tools".to_string(),
+                operation: "tool.call".to_string(),
+                subject_scoped: false,
+                actor: actor.to_string(),
+                outcome: outcome.to_string(),
+                elapsed_ms: if outcome == "ok" { 10 } else { 50 },
+                response_bytes: Some(128),
+            })
+            .await
+            .unwrap();
+    }
+    let manager = manager.with_usage_store(usage_store);
+
+    let metrics = dispatch_with_manager(
+        &manager,
+        "gateway.usage.metrics",
+        json!({
+            "since_unix": 0,
+            "until_unix": 1200,
+            "tool": "github::search_repos",
+            "actor": "bob",
+            "outcome": "failed",
+            "search": "timeout",
+            "bucket_count": 2,
+            "timezone_offset_minutes": -240,
+            "include_facets": true
+        }),
+    )
+    .await
+    .expect("filtered metrics dispatch succeeds");
+
+    assert_eq!(metrics["window_total_calls"], 2);
+    assert_eq!(metrics["total_calls"], 1);
+    assert_eq!(metrics["error_calls"], 1);
+    assert_eq!(metrics["p50_elapsed_ms"], 50);
+    assert_eq!(metrics["p95_elapsed_ms"], 50);
+    assert_eq!(metrics["timeseries"].as_array().map(Vec::len), Some(2));
+    assert_eq!(metrics["facets"]["actors"], json!(["alice", "bob"]));
+    assert_eq!(metrics["facets"]["upstreams"], json!(["github"]));
+
+    let calls = dispatch_with_manager(
+        &manager,
+        "gateway.usage.calls",
+        json!({
+            "tool": "github::search_repos",
+            "actor": "bob",
+            "outcome": "failed",
+            "search": "timeout",
+            "limit": 50,
+            "include_total": true
+        }),
+    )
+    .await
+    .expect("filtered calls dispatch succeeds");
+    assert_eq!(calls["total_matching"], 1);
+    assert_eq!(calls["calls"].as_array().map(Vec::len), Some(1));
+    assert_eq!(calls["calls"][0]["outcome"], "timeout");
 }
 
 #[tokio::test]

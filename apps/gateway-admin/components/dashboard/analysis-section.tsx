@@ -26,9 +26,11 @@ function UncollectedPanel({ title, message }: { title: string; message: string }
 export function AnalysisSection({
   metrics,
   onSelectTool,
+  onOpenUsage,
 }: {
   metrics?: DashboardMetrics
   onSelectTool: (tool: string) => void
+  onOpenUsage?: (query: string) => void
 }) {
   if (!metrics) {
     return (
@@ -51,8 +53,15 @@ export function AnalysisSection({
   return (
     <div className="flex flex-col gap-4">
       <div className="grid gap-4 lg:grid-cols-3">
-        <LatencyPanel latency={metrics.latency} />
-        <FailuresPanel errors={metrics.errors} />
+        <LatencyPanel
+          latency={metrics.latency}
+          onSelectMetric={onOpenUsage ? (metric) => onOpenUsage(`focus=latency&percentile=${metric}`) : undefined}
+          onSelectTool={onSelectTool}
+        />
+        <FailuresPanel
+          errors={metrics.errors}
+          onSelect={onOpenUsage ? (kind) => onOpenUsage(`outcome=failed&error=${encodeURIComponent(kind)}`) : undefined}
+        />
         {metrics.collected.surfaces ? (
           <SurfacesPanel surfaces={metrics.surfaces} />
         ) : (
@@ -69,9 +78,14 @@ export function AnalysisSection({
           throughput={metrics.throughput}
           agentsSeen={metrics.agents_seen}
           showAgents={metrics.collected.actor_kinds}
+          onSelect={onOpenUsage ? (metric) => onOpenUsage(`focus=throughput&metric=${metric}`) : undefined}
         />
       </div>
-      <HourlyHeatPanel hourly={metrics.hourly} busiestHour={metrics.throughput.busiest_hour} />
+      <HourlyHeatPanel
+        hourly={metrics.hourly}
+        busiestHour={metrics.throughput.busiest_hour}
+        onSelectHour={onOpenUsage ? (hour) => onOpenUsage(`focus=hour&hour=${hour}`) : undefined}
+      />
     </div>
   )
 }

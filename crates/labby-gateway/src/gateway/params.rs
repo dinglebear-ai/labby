@@ -206,6 +206,21 @@ pub struct GatewayUsageMetricsParams {
     pub until_unix: Option<i64>,
     #[serde(default)]
     pub upstream: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub bucket_count: Option<usize>,
+    /// Minutes east of UTC used for local-hour aggregation.
+    #[serde(default)]
+    pub timezone_offset_minutes: Option<i32>,
+    #[serde(default)]
+    pub include_facets: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -216,6 +231,14 @@ pub struct GatewayUsageCallsParams {
     pub until_unix: Option<i64>,
     #[serde(default)]
     pub upstream: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
     /// Opaque keyset cursor returned by the previous page.
