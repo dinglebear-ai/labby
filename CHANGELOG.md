@@ -45,6 +45,9 @@ identifiers were removed. Commit links remain the authoritative historical recor
 - **code-mode:** preserve completed MCP tool failures as a versioned, model-actionable error contract with tool identity, recovery guidance, side-effect risk, all sanitized content blocks, structured evidence, and original upstream error kinds.
 - **gateway:** classify valid MCP tool failures as non-retryable `tool_error`
   responses instead of retryable upstream 502s.
+- **gateway:** make Gateway Status `refresh` actively reprobe route-visible MCP
+  tool catalogs, so healthy long-lived HTTP upstreams expose newly added tools
+  without requiring a Labby restart or reconnect.
 - **gateway:** bound concurrent calls per upstream, deduplicate identical in-flight
   Code Mode executions, and exponentially quarantine persistently broken peers.
 - **code-mode:** cancel outstanding host work and evict runners that fail to settle

@@ -49,6 +49,18 @@ impl GatewayManager {
             .collect())
     }
 
+    pub async fn refresh_gateway_status_catalog(&self, scope: &GatewayEnrichmentScope) {
+        let (cfg, pool) = self.published_config_and_pool().await;
+        self.refresh_mcp_runtime_catalog_bounded(
+            &cfg,
+            pool.as_deref(),
+            scope.route_visible_upstreams.as_ref(),
+            scope.oauth_subject.as_deref(),
+            "gateway.status.refresh",
+        )
+        .await;
+    }
+
     pub async fn list(&self) -> Result<Vec<ServerView>, ToolError> {
         let (cfg, pool) = self.published_config_and_pool().await;
         // `gateway.list` backs both the CLI and dashboard. Warm lazy, non-OAuth
