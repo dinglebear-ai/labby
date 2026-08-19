@@ -581,19 +581,19 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
     assert_eq!(initial_pool.upstream_count().await, 0);
 
     manager
-        .add(fixture_stdio_upstream("alpha"), None, None, None)
+        .add(fixture_http_upstream("alpha"), None, None, None)
         .await
         .expect("add alpha to the live pool");
     let after_add = runtime.current_pool().await.expect("pool after add");
     assert!(
-        !Arc::ptr_eq(&initial_pool, &after_add),
-        "add-only reconciliation must publish a privately validated candidate pool"
+        Arc::ptr_eq(&initial_pool, &after_add),
+        "transactional add should selectively reconcile the existing live pool"
     );
     assert_eq!(after_add.upstream_count().await, 1);
     assert_eq!(
         initial_pool.upstream_count().await,
-        0,
-        "the previously published pool must not be mutated in place"
+        1,
+        "the existing live pool should contain the selectively reconciled upstream"
     );
 
     manager
@@ -611,8 +611,8 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
         .expect("disable alpha");
     let after_update = runtime.current_pool().await.expect("pool after update");
     assert!(
-        !Arc::ptr_eq(&after_add, &after_update),
-        "updating an existing upstream should reconcile a fresh pool"
+        Arc::ptr_eq(&after_add, &after_update),
+        "transactional update should selectively reconcile the existing live pool"
     );
     assert_eq!(after_update.upstream_count().await, 0);
 
@@ -638,8 +638,8 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
         .expect("remove alpha");
     let after_remove = runtime.current_pool().await.expect("pool after remove");
     assert!(
-        !Arc::ptr_eq(&before_remove, &after_remove),
-        "removing an existing upstream should reconcile a fresh pool"
+        Arc::ptr_eq(&before_remove, &after_remove),
+        "transactional remove should selectively reconcile the existing live pool"
     );
     assert_eq!(after_remove.upstream_count().await, 0);
 }
