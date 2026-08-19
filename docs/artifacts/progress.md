@@ -129,13 +129,9 @@ Compilation findings already fixed:
 - warnings lint for discarded cleanup result;
 - frozen schema constant re-export for conformance tests.
 
-Pending lane bookkeeping only:
+Phase 1 implementation and local verification are complete. PR #462 is open against `main`; only remote CI/merge-state observation remains.
 
-- commit this verification/progress checkpoint;
-- push the verified branch;
-- create the W19 PR now that the first slice has cleared its readiness gate.
-
-No implementation or verification gate remains open for Phase 1.
+No implementation or local verification gate remains open for Phase 1.
 
 ## Adversarial review findings addressed
 
@@ -155,5 +151,5 @@ Residual hardening note: Labby's shared path-safety helpers are path/canonicaliz
 ## Commits and PR
 
 W19 core checkpoint: `036bfb94c` (`feat(artifacts): add local Artifact core and v1 contract`).
-W19 verification/progress checkpoint: pending this documentation commit.
-W19 PR: not created yet; the readiness gate is now satisfied.
+W19 verification/progress checkpoint: `4ba260910` (`docs(artifacts): record W19 slice verification`).
+W19 PR: #462, `feat(artifacts): add open personal Artifact core and v1 interchange`.
