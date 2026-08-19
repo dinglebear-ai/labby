@@ -4,7 +4,7 @@ Labby is a Rust MCP gateway and operator control plane. One product exposes CLI,
 
 Use [docs/README.md](docs/README.md) as the product-documentation index. Generated catalogs under `docs/generated/` are the authoritative snapshots for registered services, actions, environment variables, API routes, MCP help, CLI help, and Cargo feature posture.
 
-`docs/sessions/` and `docs/superpowers/` are tracked historical/work-product trees and are **hands-off during normal documentation audits and cleanup**. Do not edit, retire, relocate, link-audit, or otherwise tidy them unless the user explicitly asks for those trees. `docs/references/` is the intentionally untracked external-reference cache.
+`docs/sessions/` and `docs/superpowers/` are tracked historical/work-product trees and are **hands-off during normal documentation audits and cleanup**. Do not edit, retire, relocate, link-audit, or otherwise tidy them unless the user explicitly asks for those trees. Pull requests that intentionally change either protected tree also require the maintainer-applied `protected-docs-approved` label. `docs/references/` is the intentionally untracked external-reference cache.
 
 ## Current Product Shape
 

@@ -271,7 +271,7 @@ jobs:
           go version
           echo "actionlint=v1.7.7"
       - name: Test CI policy helpers
-        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py
+        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py
 
   frontend-assets:
     name: Frontend assets

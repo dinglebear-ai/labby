@@ -314,6 +314,21 @@ fn scheduled_and_manual_runs_enable_everything() {
 }
 
 #[test]
+fn protected_docs_workflow_is_trusted_and_label_gated() {
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/protected-docs.yml"))
+        .expect("read protected docs workflow")
+        .replace("\r\n", "\n");
+
+    assert!(workflow.contains("pull_request_target:"));
+    assert!(workflow.contains("name: Protected docs guard"));
+    assert!(workflow.contains("ref: ${{ github.event.pull_request.base.sha }}"));
+    assert!(workflow.contains("persist-credentials: false"));
+    assert!(workflow.contains("protected-docs-approved"));
+    assert!(workflow.contains("scripts/ci/protected_doc_guard.py"));
+    assert!(!workflow.contains("github.event.pull_request.head.sha"));
+}
+
+#[test]
 fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
         .expect("read ci.yml")
