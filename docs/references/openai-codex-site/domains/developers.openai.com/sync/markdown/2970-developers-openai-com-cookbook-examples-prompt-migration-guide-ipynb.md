@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/prompt\_migration\_guide [Redirecting from `/cookbook/examples/prompt\_migration\_guide.ipynb/` to `/cookbook/examples/prompt\_migration\_guide`](/cookbook/examples/prompt_migration_guide)

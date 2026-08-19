@@ -15,7 +15,7 @@ use crate::dispatch::lab_admin::catalog::ACTIONS;
 /// limitation: the dispatch layer does not yet carry surface context. All three
 /// adapter surfaces (CLI, MCP, API) call into the same dispatch path. Fixing
 /// this would require threading a surface parameter through the entire dispatch
-/// call chain — tracked as a systemic gap in `crates/lab/CLAUDE.md`.
+/// call chain — tracked as a systemic gap in `crates/labby/CLAUDE.md`.
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     let start = std::time::Instant::now();
     let result = dispatch_inner(action, params).await;

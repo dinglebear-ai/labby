@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/realtime\_eval\_guide [Redirecting from `/cookbook/examples/realtime\_eval\_guide.ipynb/` to `/cookbook/examples/realtime\_eval\_guide`](/cookbook/examples/realtime_eval_guide)

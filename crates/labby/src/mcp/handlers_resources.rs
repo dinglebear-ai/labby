@@ -33,12 +33,15 @@ use crate::mcp::resource_errors::{
 pub(crate) use crate::app_assets::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, GATEWAY_STATUS_APP_SKYBRIDGE_URI,
     GATEWAY_STATUS_APP_URI, MCP_APPS_APP_SKYBRIDGE_URI, MCP_APPS_APP_URI,
+    SETTINGS_APP_SKYBRIDGE_URI, SETTINGS_APP_URI,
 };
 pub(crate) use crate::app_assets::{
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
 };
 #[cfg(feature = "gateway")]
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME};
+use crate::mcp::catalog::{
+    ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
+};
 use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
@@ -166,6 +169,8 @@ const ADD_SERVER_APP_FALLBACK_HTML: &str = crate::app_assets::ADD_SERVER_APP_HTM
 #[cfg(feature = "gateway")]
 const GATEWAY_STATUS_APP_FALLBACK_HTML: &str = crate::app_assets::GATEWAY_STATUS_APP_HTML;
 #[cfg(feature = "gateway")]
+const SETTINGS_APP_FALLBACK_HTML: &str = crate::app_assets::SETTINGS_APP_HTML;
+#[cfg(feature = "gateway")]
 const MCP_APPS_APP_FALLBACK_HTML: &str = crate::app_assets::MCP_APPS_APP_HTML;
 
 pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
@@ -234,6 +239,28 @@ pub(crate) const GATEWAY_STATUS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescripto
 ];
 
 #[cfg(feature = "gateway")]
+pub(crate) const SETTINGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
+    AppResourceDescriptor {
+        uri: SETTINGS_APP_URI,
+        name: "settings/editor",
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: Some(SETTINGS_TOOL_NAME),
+        resource_description: "Admin MCP App for schema-backed Labby runtime settings",
+        skybridge_widget_description: None,
+    },
+    AppResourceDescriptor {
+        uri: SETTINGS_APP_SKYBRIDGE_URI,
+        name: "settings/editor.skybridge",
+        runtime: CodeModeRuntime::Skybridge,
+        tool_name: Some(SETTINGS_TOOL_NAME),
+        resource_description: "Admin MCP App for schema-backed Labby runtime settings",
+        skybridge_widget_description: Some(
+            "Manage Code Mode, proxy, surface, feature, and runtime settings using Labby's schema-backed configuration controls.",
+        ),
+    },
+];
+
+#[cfg(feature = "gateway")]
 pub(crate) const MCP_APPS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
     AppResourceDescriptor {
         uri: MCP_APPS_APP_URI,
@@ -294,6 +321,9 @@ static ADD_SERVER_APP_VERSION: std::sync::LazyLock<String> =
 #[cfg(feature = "gateway")]
 static GATEWAY_STATUS_APP_VERSION: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| bridged_app_content_version(GATEWAY_STATUS_APP_FALLBACK_HTML));
+#[cfg(feature = "gateway")]
+static SETTINGS_APP_VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| bridged_app_content_version(SETTINGS_APP_FALLBACK_HTML));
 #[cfg(feature = "gateway")]
 static MCP_APPS_APP_VERSION: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| bridged_app_content_version(MCP_APPS_APP_FALLBACK_HTML));
@@ -389,6 +419,15 @@ fn gateway_status_app() -> OwnedAppRegistration {
 }
 
 #[cfg(feature = "gateway")]
+fn settings_app() -> OwnedAppRegistration {
+    OwnedAppRegistration {
+        descriptors: SETTINGS_APP_RESOURCE_DESCRIPTORS,
+        html: SETTINGS_APP_FALLBACK_HTML,
+        version: &SETTINGS_APP_VERSION,
+    }
+}
+
+#[cfg(feature = "gateway")]
 /// Return the always-on Labby MCP App manager registration.
 fn mcp_apps_app() -> OwnedAppRegistration {
     OwnedAppRegistration {
@@ -444,7 +483,9 @@ impl LabMcpServer {
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
         #[cfg(feature = "gateway")]
-        let server_logs_app_enabled = self.mcp_apps_config().await.server_logs;
+        let mcp_apps_config = self.mcp_apps_config().await;
+        #[cfg(feature = "gateway")]
+        let server_logs_app_enabled = mcp_apps_config.server_logs;
         #[cfg(not(feature = "gateway"))]
         let server_logs_app_enabled = true;
         let mut page_collector = match PageCollector::new(request) {
@@ -634,6 +675,21 @@ impl LabMcpServer {
             && self.gateway_status_app_available_on_mcp().await
         {
             for resource in gateway_status_app_resources() {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
+        }
+
+        #[cfg(feature = "gateway")]
+        if !resources.finished()
+            && mcp_apps_config.settings
+            && admin_app_resources_visible(auth)
+            && self.route_scope.allows_service("setup")
+            && self.service_visible_on_mcp("setup").await
+        {
+            for resource in settings_app().listed_resources() {
                 resources.accept(resource);
                 if resources.finished() {
                     break;
@@ -1117,6 +1173,13 @@ impl LabMcpServer {
                 .await
                 .map(Into::into);
         }
+        #[cfg(feature = "gateway")]
+        if uri.starts_with(SETTINGS_APP_URI) {
+            return self
+                .read_settings_app_resource_impl(&uri, &resource_uri_log, &subject, start, &context)
+                .await
+                .map(Into::into);
+        }
         // Any other `ui://` is an upstream MCP Apps (mcp-ui) widget resource
         // (referenced by a tool result's `_meta.ui.resourceUri`): reverse-look-up
         // the owning upstream peer via the pool and forward the read under the
@@ -1422,6 +1485,63 @@ impl LabMcpServer {
             mime_type,
             html_bytes = html.len(),
             "MCP App manager resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(html, uri.to_string())
+                .with_mime_type(mime_type)
+                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
+        ]))
+    }
+
+    #[cfg(feature = "gateway")]
+    async fn read_settings_app_resource_impl(
+        &self,
+        uri: &str,
+        resource_uri_log: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.mcp_apps_config().await.settings
+            || !self.route_scope.allows_service("setup")
+            || !self.service_visible_on_mcp("setup").await
+        {
+            return Err(unknown_resource_error(uri, true));
+        }
+        if !admin_app_resources_visible(auth_context_from_extensions(&context.extensions)) {
+            return Err(forbidden_resource_error(
+                uri,
+                "Settings app resources require scope: lab:admin",
+                &["lab:admin"],
+            ));
+        }
+        let app = settings_app();
+        let descriptor = app
+            .descriptor(uri)
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
+        let html = app
+            .inline_html(descriptor)
+            .map_err(|message| resource_render_error(uri, message))?;
+        let mime_type = descriptor.runtime.mime();
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = resource_uri_log,
+            mime_type,
+            html_bytes = html.len(),
+            "settings app resource read ok"
         );
         self.emit_dispatch_notification(
             context,
@@ -1991,6 +2111,16 @@ pub(crate) fn gateway_status_app_resource_uri_for_tool(tool_name: &str) -> Optio
 #[cfg(feature = "gateway")]
 pub(crate) fn gateway_status_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
     gateway_status_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
+}
+
+#[cfg(feature = "gateway")]
+pub(crate) fn settings_app_resource_uri_for_tool(tool_name: &str) -> Option<String> {
+    settings_app().uri_for_tool(CodeModeRuntime::McpApp, tool_name)
+}
+
+#[cfg(feature = "gateway")]
+pub(crate) fn settings_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
+    settings_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
 }
 
 #[cfg(feature = "gateway")]
@@ -3156,6 +3286,36 @@ for (const value of [
             );
         }
         assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
+    }
+
+    #[test]
+    fn settings_app_is_schema_backed_mobile_and_parseable() {
+        let descriptor = SETTINGS_APP_RESOURCE_DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.uri == SETTINGS_APP_URI)
+            .expect("Settings descriptor");
+        let html = settings_app()
+            .inline_html(descriptor)
+            .expect("Settings HTML");
+        for expected in [
+            "LabbySettings",
+            "settings\",\"schema",
+            "settings\",\"state",
+            "config.update",
+            "env.update",
+            "@media(max-width:560px)",
+            "min-height:44px",
+            "prefers-reduced-motion",
+            "window.__LABBY_MCP_RESOURCE=true;",
+        ] {
+            assert!(
+                html.contains(expected),
+                "Settings app must include `{expected}`"
+            );
+        }
+        let script = final_inline_script(&html);
+        let escaped = serde_json::to_string(script).expect("serialize Settings script");
+        run_node(&format!("new Function({escaped});"));
     }
 
     #[test]

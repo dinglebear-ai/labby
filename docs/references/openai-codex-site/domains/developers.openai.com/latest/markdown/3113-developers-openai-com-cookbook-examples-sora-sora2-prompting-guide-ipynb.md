@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/sora/sora2\_prompting\_guide [Redirecting from `/cookbook/examples/sora/sora2\_prompting\_guide.ipynb/` to `/cookbook/examples/sora/sora2\_prompting\_guide`](/cookbook/examples/sora/sora2_prompting_guide)

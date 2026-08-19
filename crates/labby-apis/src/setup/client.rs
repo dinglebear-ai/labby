@@ -1,7 +1,7 @@
 //! Pure setup-side helpers.
 //!
 //! `SetupClient` is a synthetic marker — `setup` has no remote API to wrap
-//! (all fs I/O lives in `crates/lab/src/dispatch/setup/`). This file holds
+//! (all fs I/O lives in `crates/labby/src/dispatch/setup/`). This file holds
 //! validation primitives that other crates can call without pulling in fs
 //! or env machinery.
 
@@ -15,6 +15,7 @@ use super::error::SetupError;
 pub struct SetupClient;
 
 impl SetupClient {
+    /// Construct the stateless setup validation client.
     pub const fn new() -> Self {
         Self
     }

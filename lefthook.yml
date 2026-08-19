@@ -17,8 +17,8 @@ pre-commit:
       glob: "*.toml"
       run: scripts/with_timeout.sh 30 -- taplo check {staged_files}
 
-    # Convention enforcement: bans clap/rmcp/ratatui/anyhow/tabled in
-    # labby-apis/labby-auth (per crates/labby-apis/CLAUDE.md). Just `bans` —
+    # Convention enforcement: dependency-layer bans for clap/rmcp/anyhow/tabled
+    # (per crates/labby-apis/CLAUDE.md). Just `bans` —
     # CI runs the full check (advisories/licenses/sources).
     # Gated on manifests: bans can only change when a manifest does.
     cargo-deny-bans:

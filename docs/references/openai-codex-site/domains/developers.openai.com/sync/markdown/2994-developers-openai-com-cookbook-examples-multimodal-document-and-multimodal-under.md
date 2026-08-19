@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/multimodal/document\_and\_multimodal\_understanding\_tips [Redirecting from `/cookbook/examples/multimodal/document\_and\_multimodal\_understanding\_tips.ipynb/` to `/cookbook/examples/multimodal/document\_and\_multimodal\_understanding\_tips`](/cookbook/examples/multimodal/document_and_multimodal_understanding_tips)

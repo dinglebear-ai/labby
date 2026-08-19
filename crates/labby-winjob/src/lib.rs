@@ -3,7 +3,7 @@
 //! This crate is the **sanctioned unsafe boundary** for `lab`'s Windows Job
 //! Object FFI, mirroring how the Unix path routes its unsafe through the
 //! external `nix` crate. The workspace sets `unsafe_code = "forbid"` (which a
-//! `#[allow]` cannot escape), so `lab` and `lab-apis` stay unsafe-free. The raw
+//! `#[allow]` cannot escape), so `labby` and `labby-apis` stay unsafe-free. The raw
 //! `windows-sys` calls are encapsulated here behind a **safe** public API:
 //! callers never write `unsafe`.
 //!

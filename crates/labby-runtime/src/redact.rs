@@ -52,6 +52,7 @@ fn bounded_window(input: &str, max_len: usize) -> &str {
     &input[..end]
 }
 
+/// Sanitize a single log line, redact secret-shaped text, and cap its length.
 #[must_use]
 pub fn sanitize_log_text(input: &str, max_len: usize) -> String {
     sanitize_log_line(input, max_len).0
@@ -122,7 +123,7 @@ pub fn sanitize_error_text(input: &str, max_len: usize) -> String {
 /// Redact secret-shaped tokens from free-form text.
 ///
 /// First pass: whitespace-split prefix heuristic (fast path for standalone
-/// tokens). Second pass: [`struct@SECRET_REGEX`] catches embedded secrets (e.g.
+/// tokens). Second pass: `SECRET_REGEX` catches embedded secrets (e.g.
 /// header values, `Bearer` tokens, PEM blocks, URL credentials).
 ///
 /// The `tskey-` prefix (Tailscale auth keys) was folded in from the setup
@@ -214,6 +215,7 @@ pub fn is_sensitive_key(key: &str) -> bool {
         || normalized.ends_with("_key")
 }
 
+/// Redact credentials and sensitive query values from a URL for logging.
 pub fn redact_url(url: &str) -> String {
     match Url::parse(url) {
         Ok(parsed) => redact_parsed_url(parsed),
@@ -221,6 +223,7 @@ pub fn redact_url(url: &str) -> String {
     }
 }
 
+/// Redact a single stdio argument or `KEY=value` token when its key is sensitive.
 pub fn redact_stdio_value(value: &str) -> String {
     if let Some((key, _)) = value.split_once('=')
         && is_sensitive_key(key)
@@ -238,6 +241,7 @@ pub fn redact_stdio_value(value: &str) -> String {
     value.to_string()
 }
 
+/// Redact sensitive values from an argv vector while preserving non-secret arguments.
 pub fn redact_stdio_args(args: &[String]) -> Vec<String> {
     let mut redacted = Vec::with_capacity(args.len());
     let mut redact_next = false;
@@ -266,6 +270,7 @@ pub fn redact_stdio_args(args: &[String]) -> Vec<String> {
     redacted
 }
 
+/// Redact the embedded original URI in a `lab://upstream/<name>/...` resource URI.
 pub fn redact_upstream_resource_uri(uri: &str) -> String {
     let Some(rest) = uri.strip_prefix("lab://upstream/") else {
         return redact_url(uri);

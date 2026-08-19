@@ -1,7 +1,7 @@
 //! Claude Code plugin lifecycle helpers for the setup service.
 //!
 //! This module is intentionally lab-local: it shells out to the user's
-//! `claude` CLI and reads local setup/env state. `lab-apis` stays pure.
+//! `claude` CLI and reads local setup/env state. `labby-apis` stays pure.
 
 use std::collections::HashSet;
 use std::process::Stdio;

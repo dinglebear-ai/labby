@@ -6,12 +6,9 @@ updated: "2026-08-11"
 
 # Contract: MCP Tool Output Schema and Structured Content
 
-Status: **active** (implemented on `feat/mcp-output-schema-210`, issue #210 / epic `lab-41e7m`)
+Status: **active** (implemented on current main)
 Surfaces: MCP
-Related: [spec](../plans/complete/210-mcp-output-schema/SPEC.md),
-[research](../plans/complete/210-mcp-output-schema/RESEARCH.md), [ERRORS.md](../dev/ERRORS.md),
-[agent-error-contract.md](./agent-error-contract.md),
-[SERIALIZATION.md](../design/SERIALIZATION.md)
+Related: [ERRORS.md](../dev/ERRORS.md), [agent-error-contract.md](./agent-error-contract.md), [SERIALIZATION.md](../design/SERIALIZATION.md)
 
 Normative contract for `outputSchema` and `structuredContent` on Labby MCP surfaces, and for
 the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
@@ -19,7 +16,6 @@ the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 - **Contract version:** 1
 - **MCP revisions:** 2025-06-18 → 2026-07-28 (three revisions; rmcp 3.1.0 additionally
   negotiates 2024-11-05 and 2025-03-26)
-- Acceptance criteria live in [SPEC.md](../plans/complete/210-mcp-output-schema/SPEC.md) §6 — this document does not restate them.
 
 ---
 
@@ -29,7 +25,7 @@ the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 |---|---|---|---|
 | **Builtin service** | `gateway`, `doctor`, `setup`, `server_logs`, `snippets`, `fs`, `lab_admin` | Labby (`format_dispatch_result`) | Dispatch envelope (C2) |
 | **Code Mode** | `codemode`, `codemode_ui` | Labby (`code_mode_execute_trace`) | Trace schema (C4) |
-| **Synthetic / app** | `mcp_app`, `add_server`, `gateway_status` | Labby, per-tool | Per audit — accurate schema or none |
+| **Synthetic / app** | `mcp_app`, `add_server`, `gateway_status`, `settings` | Labby, per-tool | Per audit — accurate schema or none |
 | **Upstream (proxied)** | any `<upstream>::<tool>` | The upstream server | Relayed (C5) |
 
 > **Visibility caveat.** Under `hide_raw_tools` (whenever Code Mode is enabled), every builtin

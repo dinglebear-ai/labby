@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/semantic\_text\_search\_using\_embeddings [Redirecting from `/cookbook/examples/semantic\_text\_search\_using\_embeddings.ipynb/` to `/cookbook/examples/semantic\_text\_search\_using\_embeddings`](/cookbook/examples/semantic_text_search_using_embeddings)

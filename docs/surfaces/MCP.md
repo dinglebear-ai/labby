@@ -51,7 +51,7 @@ Every builtin service tool returns the dispatch envelope as
 { "ok": true, "service": "gateway", "action": "gateway.list", "data": {} }
 ```
 
-Builtin service tools — plus the `add_server` and `gateway_status` admin app
+Builtin service tools — plus the `add_server`, `gateway_status`, and `settings` admin app
 tools — advertise this envelope as their MCP `outputSchema`. The normative
 contract is [mcp-tool-output.md](../contracts/mcp-tool-output.md) and the
 published schema is
@@ -115,7 +115,7 @@ inspect the current route-scoped tool catalog.
 
 The root gateway also advertises `mcp_app`, an always-on MCP App switchboard
 for Labby's own UI surfaces. It manages `codemode`, `gateway_status`,
-`server_logs`, `add_server`, or `all`. The default target remains `codemode` for
+`server_logs`, `add_server`, `settings`, or `all`. The default target remains `codemode` for
 backward compatibility with the original inspector-only control contract.
 
 Reading status or opening the manager requires `lab` or `lab:admin`; changing
@@ -128,8 +128,9 @@ upstream pool.
 Disabling a surface removes its app tool/metadata and owned `ui://` resources,
 and direct reads of a disabled owned resource fail as unknown. It does not tear
 down the underlying text/service capability where one exists: disabling the
-Code Mode inspector leaves `codemode` available, and disabling the Server Logs
-app leaves the `server_logs` service tool available without app metadata. The
+Code Mode inspector leaves `codemode` available, disabling the Server Logs
+app leaves the `server_logs` service tool available without app metadata, and
+disabling Settings leaves the underlying `setup` service contract intact. The
 Code Mode inspector retains the existing `code_mode.mcp_ui_enabled` setting;
 the other switches live under `[mcp_apps]`.
 
@@ -183,9 +184,8 @@ is treated as destructive unless its annotations explicitly say otherwise. That
 value never reaches the wire.
 
 Annotations on Labby's **own** tools are implemented by the shared
-`PermanentToolRegistry` descriptor builders and specified in
-[../design/tool-annotations/](../design/tool-annotations/). Two properties from
-that spec matter to clients: a Labby tool fronts
+`PermanentToolRegistry` descriptor builders. Two properties of that
+current contract matter to clients: a Labby tool fronts
 a whole service, so a tool-level hint is the least-safe **union** of that
 service's actions and must not be read as a claim about a specific `action`; and
 in a labby → labby chain these hints feed the next hop's own gate, so they are
@@ -194,7 +194,7 @@ advisory to clients but not inert.
 Per-action truth (`destructive`, `requires_admin`) is available for the seven
 registered service tools via `{"action": "help"}` or the `lab://<service>/actions`
 resource. It is **not** available for `codemode`, `codemode_ui`, `mcp_app`,
-`add_server`, or `gateway_status`, which are not registry services.
+`add_server`, `gateway_status`, or `settings`, which are not registry services.
 
 Note that tool visibility and `lab://<service>/actions` are scoped by
 `route_scope`, **not** by the caller's admin scope: action metadata crosses that
@@ -213,6 +213,14 @@ at an unsafe offset. A session's notification baseline advances only after it
 receives the final page of a complete listing. Subscribing before that point
 keeps the baseline unpublished so the next relevant catalog trigger emits
 `notifications/tools/list_changed`.
+
+`resources/list`, `resources/templates/list`, and `prompts/list` can require
+live upstream fan-out. Their first page therefore retains the complete result
+set in route-shared memory and binds the continuation cursor to that snapshot.
+Later pages read the retained, authorization-audience-isolated snapshot rather
+than repeating upstream discovery. Snapshots are bounded and process-local; an
+expired, evicted, or pre-restart cursor fails with `invalid_cursor` and callers
+must restart from the first page.
 
 ## Resource Subscriptions
 
@@ -249,7 +257,7 @@ one.
 
 The MCP server does not expose ACP, Marketplace, Registry-browser, Fleet/node,
 Deploy-product, or Stash tools. Historical contracts are preserved only under
-[../references/retired-labby](../references/retired-labby/).
+[../archive/retired-labby](../archive/retired-labby/).
 
 ## Agent Skills (SEP-2640)
 

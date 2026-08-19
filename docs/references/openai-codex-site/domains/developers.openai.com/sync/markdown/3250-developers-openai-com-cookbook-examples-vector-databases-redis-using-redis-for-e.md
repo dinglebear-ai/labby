@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/vector\_databases/redis/using\_redis\_for\_embeddings\_search [Redirecting from `/cookbook/examples/vector\_databases/redis/using\_redis\_for\_embeddings\_search.ipynb/` to `/cookbook/examples/vector\_databases/redis/using\_redis\_for\_embeddings\_search`](/cookbook/examples/vector_databases/redis/using_redis_for_embeddings_search)

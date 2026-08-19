@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/realtime\_out\_of\_band\_transcription [Redirecting from `/cookbook/examples/realtime\_out\_of\_band\_transcription.ipynb/` to `/cookbook/examples/realtime\_out\_of\_band\_transcription`](/cookbook/examples/realtime_out_of_band_transcription)

@@ -52,7 +52,7 @@ fn spawn_expired_record_cleanup(
             let started = Instant::now();
             match store.cleanup_expired_bounded(batch_limit).await {
                 Ok(0) => debug!(
-                    crate_name = "lab-auth",
+                    crate_name = "labby-auth",
                     phase = "auth.cleanup_expired.finish",
                     deleted_rows = 0_u64,
                     batch_limit,
@@ -60,7 +60,7 @@ fn spawn_expired_record_cleanup(
                     "bounded expired auth record cleanup completed"
                 ),
                 Ok(deleted_rows) => info!(
-                    crate_name = "lab-auth",
+                    crate_name = "labby-auth",
                     phase = "auth.cleanup_expired.finish",
                     deleted_rows,
                     batch_limit,
@@ -68,7 +68,7 @@ fn spawn_expired_record_cleanup(
                     "bounded expired auth record cleanup completed"
                 ),
                 Err(error) => warn!(
-                    crate_name = "lab-auth",
+                    crate_name = "labby-auth",
                     phase = "auth.cleanup_expired.error",
                     kind = error.kind(),
                     batch_limit,
@@ -315,7 +315,7 @@ impl AuthState {
         )?;
         google.scopes.clone_from(&config.google.scopes);
         info!(
-            crate_name = "lab-auth",
+            crate_name = "labby-auth",
             env_prefix = %config.env_prefix,
             auth_mode = "oauth",
             public_url = %public_url,

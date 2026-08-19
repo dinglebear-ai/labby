@@ -1,3 +1,8 @@
+//! Minimal stdio MCP fixture binary used by integration and conformance tests.
+//!
+//! It exposes a deterministic tool/resource surface so transport, lifecycle, and
+//! relay behavior can be tested without depending on an external MCP server.
+
 #![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 use std::sync::Arc;
 

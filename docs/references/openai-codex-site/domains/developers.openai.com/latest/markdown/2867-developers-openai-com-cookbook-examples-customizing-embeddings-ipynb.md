@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/customizing\_embeddings [Redirecting from `/cookbook/examples/customizing\_embeddings.ipynb/` to `/cookbook/examples/customizing\_embeddings`](/cookbook/examples/customizing_embeddings)

@@ -648,19 +648,19 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
     assert_eq!(initial_pool.upstream_count().await, 0);
 
     manager
-        .add(fixture_stdio_upstream("alpha"), None, None, None)
+        .add(fixture_http_upstream("alpha"), None, None, None)
         .await
         .expect("add alpha to the live pool");
     let after_add = runtime.current_pool().await.expect("pool after add");
     assert!(
-        !Arc::ptr_eq(&initial_pool, &after_add),
-        "add-only reconciliation must publish a privately validated candidate pool"
+        Arc::ptr_eq(&initial_pool, &after_add),
+        "transactional add should selectively reconcile the existing live pool"
     );
     assert_eq!(after_add.upstream_count().await, 1);
     assert_eq!(
         initial_pool.upstream_count().await,
-        0,
-        "the previously published pool must not be mutated in place"
+        1,
+        "the existing live pool should contain the selectively reconciled upstream"
     );
 
     manager
@@ -678,8 +678,8 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
         .expect("disable alpha");
     let after_update = runtime.current_pool().await.expect("pool after update");
     assert!(
-        !Arc::ptr_eq(&after_add, &after_update),
-        "updating an existing upstream should reconcile a fresh pool"
+        Arc::ptr_eq(&after_add, &after_update),
+        "transactional update should selectively reconcile the existing live pool"
     );
     assert_eq!(after_update.upstream_count().await, 0);
 
@@ -705,8 +705,8 @@ async fn add_update_and_remove_reconcile_against_the_previous_live_config() {
         .expect("remove alpha");
     let after_remove = runtime.current_pool().await.expect("pool after remove");
     assert!(
-        !Arc::ptr_eq(&before_remove, &after_remove),
-        "removing an existing upstream should reconcile a fresh pool"
+        Arc::ptr_eq(&before_remove, &after_remove),
+        "transactional remove should selectively reconcile the existing live pool"
     );
     assert_eq!(after_remove.upstream_count().await, 0);
 }
@@ -875,6 +875,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     assert!(!updated.mcp_apps.gateway_status);
     assert!(!updated.mcp_apps.server_logs);
     assert!(!updated.mcp_apps.add_server);
+    assert!(!updated.mcp_apps.settings);
     assert!(!manager.code_mode_app_state().is_enabled());
     assert!(
         runtime.current_pool().await.is_none(),
@@ -902,6 +903,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     assert!(!persisted.mcp_apps.gateway_status);
     assert!(!persisted.mcp_apps.server_logs);
     assert!(!persisted.mcp_apps.add_server);
+    assert!(!persisted.mcp_apps.settings);
 
     let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
     restarted.seed_config_unchecked_for_tests(persisted).await;
@@ -910,6 +912,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     assert!(!restarted_apps.gateway_status);
     assert!(!restarted_apps.server_logs);
     assert!(!restarted_apps.add_server);
+    assert!(!restarted_apps.settings);
 }
 
 #[tokio::test]
@@ -952,7 +955,7 @@ async fn code_mode_runtime_change_notifies_from_the_previous_regime() {
 // Store-seam env persistence guard (rewritten in the gateway extraction).
 //
 // The host-owned service-client cache + `refresh_count()` instrumentation moved
-// out of `lab-gateway` into `lab`'s `LabConfigStore`, so the manager no longer
+// out of `labby-gateway` into `lab`'s `LabConfigStore`, so the manager no longer
 // exposes `with_service_clients`. The credential-write half of that contract is
 // now owned by the `GatewayConfigStore` seam: env vars are persisted through
 // `store.persist_*`, exercised here against the default `FsGatewayConfigStore`

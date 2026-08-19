@@ -22,7 +22,7 @@ proxy the whole Streamable HTTP MCP route to a backend. Use
 [GATEWAY.md — Gateway-Managed Protected MCP Routes](./GATEWAY.md#gateway-managed-protected-mcp-routes)
 for that setup instead of `[[upstream]]` tool merging.
 
-The upstream pool lives in `crates/lab/src/dispatch/upstream/` because it is shared infrastructure. The runtime proxy path described in this document is wired into the MCP surface. The HTTP API now exposes `/v1/gateway` for gateway management, but it still does not proxy arbitrary upstream MCP tools.
+The reusable upstream pool lives in `crates/labby-gateway/src/upstream/`; `crates/labby/src/dispatch/upstream.rs` is the Labby product compatibility and adaptation boundary. The runtime proxy path described in this document is wired into the MCP surface. The HTTP API now exposes `/v1/gateway` for gateway management, but it still does not proxy arbitrary upstream MCP tools.
 
 ## What Operators Configure
 
@@ -285,7 +285,7 @@ labby gateway mcp auth clear chrome-devtools
   today Lab allows Google's `https://accounts.google.com` issuer to use the
   `https://oauth2.googleapis.com` token endpoint.
 - **No Google reuse.** Outbound upstream OAuth is distinct from the inbound
-  `lab-auth` Google provider used for user login to `lab`. They do not share
+  `labby-auth` Google provider used for user login to `lab`. They do not share
   code, clients, or tokens.
 
 ### Per-`(upstream, subject)` Client Cache

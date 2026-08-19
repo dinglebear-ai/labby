@@ -1,10 +1,10 @@
 ---
-title: "Lab Plugins"
+title: "Labby Plugins"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
-# Lab Plugins
+# Labby Plugins
 
 The checked-in `plugins/labby` tree ships **no binary**. Hosts install `labby`
 explicitly and the binary owns the setup flow from there:
@@ -14,11 +14,7 @@ curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh
 labby setup
 ```
 
-`scripts/install.sh` downloads the latest GitHub release archive for the
-platform (sha256-verified) into `~/.local/bin/labby`, falling back to
-`cargo install --git` when no release asset exists. Its only job is bootstrap —
-everything after first contact (config, credentials, connectivity, repair) is
-owned by `labby setup`.
+The root `install.sh` is a compatibility entrypoint for the canonical `scripts/install.sh`. The canonical installer downloads the latest Linux x86_64 GitHub release archive, verifies its SHA-256, and installs it into `~/.local/bin/labby`. Source fallback is disabled by default and only occurs when `LABBY_ALLOW_SOURCE_FALLBACK=1` is explicitly set. The installer's only job is bootstrap; everything after first contact (config, credentials, connectivity, repair) is owned by `labby setup`.
 
 ## Checked-in plugin (`plugins/labby`)
 
@@ -32,15 +28,13 @@ auto-repaired at session start.
 
 ## Marketplace distribution
 
-Lab no longer generates or publishes its own plugin marketplace. The marketplace
+Labby no longer generates or publishes an in-product plugin marketplace. The marketplace
 moved to a dedicated repo, [dendrite](https://github.com/dinglebear-ai/dendrite), so it
 is decoupled from this Rust workspace. Dendrite catalogs `plugins/labby` (via a
 `git-subdir` source pointing at this repo) alongside the other Lab/Labby plugins
 and third-party entries.
 
-Install `labby` with `scripts/install.sh` (above); browse and install
-marketplace plugins through the `marketplace` dispatch service or the Labby web
-UI.
+Install `labby` with `scripts/install.sh` (above). Plugin marketplace discovery and distribution now belong to Dendrite; Labby does not expose a `marketplace` dispatch service or marketplace web surface.
 
 Setup plugin lifecycle actions live in the `setup` dispatch service. The
 canonical names follow the dotted `<resource>.<verb>` convention; the legacy
@@ -56,6 +50,6 @@ snake_case names remain as deprecated aliases:
 These four actions are restricted to loopback-only HTTP; both the canonical and
 the alias forms are gated identically.
 
-`plugin.install` and `plugin.uninstall` validate the registered service slug, derive `lab-<service>@lab`, check the org against `LABBY_PLUGIN_ALLOWLIST`, and call the configured Claude Code CLI. Set `LABBY_CLAUDE_BIN` when the binary is not named `claude`.
+`plugin.install` and `plugin.uninstall` validate the registered service slug, derive `lab-<service>@<org>`, require that org to match the compile-time `LABBY_PLUGIN_ORG` value (default `lab`), and call the configured Claude Code CLI. Set runtime `LABBY_CLAUDE_BIN` when the binary is not named `claude`.
 
 `labby help` and `lab://catalog` are env-aware by default: services with missing required env vars are hidden. Use `LABBY_SHOW_ALL=1` or `labby help --all` to show the full compiled catalog.

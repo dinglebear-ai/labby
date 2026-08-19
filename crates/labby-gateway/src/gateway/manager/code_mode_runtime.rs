@@ -115,6 +115,11 @@ impl GatewayManager {
         &self.code_mode_runner_pool
     }
 
+    /// Drain the Code Mode runner pool before the hosting runtime exits.
+    pub async fn shutdown_code_mode_runner_pool(&self) {
+        self.code_mode_runner_pool.shutdown().await;
+    }
+
     pub async fn record_code_mode_history(&self, entry: CodeModeHistoryEntry) {
         self.code_mode_history.lock().await.push(entry);
     }

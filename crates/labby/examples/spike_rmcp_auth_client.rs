@@ -33,7 +33,7 @@
 //!   cargo run --example spike_rmcp_auth_client --all-features
 //! ```
 //!
-//! # Findings (mirror of `crates/lab/src/oauth/upstream/refresh.rs`)
+//! # Findings (mirror of `crates/labby/src/oauth/upstream/refresh.rs`)
 //!
 //! - **rmcp version verified:** `1.4.0`.
 //! - **Integration path:** Plan A. `AuthClient<reqwest::Client>` IS a

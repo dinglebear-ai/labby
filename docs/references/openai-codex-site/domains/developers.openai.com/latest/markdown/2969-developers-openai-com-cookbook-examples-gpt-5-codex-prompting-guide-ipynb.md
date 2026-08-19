@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/gpt-5/codex\_prompting\_guide [Redirecting from `/cookbook/examples/gpt-5/codex\_prompting\_guide.ipynb/` to `/cookbook/examples/gpt-5/codex\_prompting\_guide`](/cookbook/examples/gpt-5/codex_prompting_guide)

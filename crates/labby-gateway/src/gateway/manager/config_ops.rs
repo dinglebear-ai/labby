@@ -534,11 +534,13 @@ impl GatewayManager {
             "gateway_status" => cfg.mcp_apps.gateway_status = enabled,
             "server_logs" => cfg.mcp_apps.server_logs = enabled,
             "add_server" => cfg.mcp_apps.add_server = enabled,
+            "settings" => cfg.mcp_apps.settings = enabled,
             "all" => {
                 cfg.code_mode.mcp_ui_enabled = enabled;
                 cfg.mcp_apps.gateway_status = enabled;
                 cfg.mcp_apps.server_logs = enabled;
                 cfg.mcp_apps.add_server = enabled;
+                cfg.mcp_apps.settings = enabled;
             }
             _ => {
                 return Err(ToolError::InvalidParam {
@@ -579,6 +581,7 @@ impl GatewayManager {
             add_server = current.mcp_apps.add_server,
             server_logs = current.mcp_apps.server_logs,
             gateway_status = current.mcp_apps.gateway_status,
+            settings = current.mcp_apps.settings,
             "Labby MCP App visibility changed"
         );
         Ok(current)

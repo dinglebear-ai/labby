@@ -21,7 +21,7 @@ pub struct UpstreamOauthRuntime {
 /// block.
 ///
 /// Takes the upstream slice directly rather than a whole `LabConfig` so this
-/// runtime stays decoupled from the product binary's config type: `lab-auth`
+/// runtime stays decoupled from the product binary's config type: `labby-auth`
 /// reads only the upstream list, never the rest of `LabConfig`.
 pub async fn build_upstream_oauth_runtime(
     upstreams: &[UpstreamConfig],

@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/prompt\_caching\_201 [Redirecting from `/cookbook/examples/prompt\_caching\_201.ipynb/` to `/cookbook/examples/prompt\_caching\_201`](/cookbook/examples/prompt_caching_201)

@@ -430,6 +430,81 @@ impl GatewayManager {
         }
     }
 
+    pub(super) async fn refresh_mcp_runtime_catalog_bounded(
+        &self,
+        cfg: &GatewayConfig,
+        pool: Option<&UpstreamPool>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+        oauth_subject: Option<&str>,
+        action: &'static str,
+    ) {
+        let timeout = mcp_runtime_warm_timeout(cfg);
+        if tokio::time::timeout(
+            timeout,
+            self.refresh_mcp_runtime_catalog(cfg, pool, allowed_upstreams, oauth_subject),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action,
+                timeout_ms = timeout.as_millis(),
+                "gateway MCP runtime catalog refresh timed out; returning current snapshot"
+            );
+        }
+    }
+
+    async fn refresh_mcp_runtime_catalog(
+        &self,
+        cfg: &GatewayConfig,
+        pool: Option<&UpstreamPool>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+        oauth_subject: Option<&str>,
+    ) {
+        let Some(pool) = pool else {
+            return;
+        };
+
+        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+            cfg.gateway.upstream_discovery_concurrency,
+        );
+        let upstreams: Vec<UpstreamConfig> = cfg
+            .upstream
+            .iter()
+            .filter(|upstream| {
+                upstream.enabled
+                    && allowed_upstreams.is_none_or(|allowed| allowed.contains(&upstream.name))
+                    && (upstream.oauth.is_none() || oauth_subject.is_some())
+            })
+            .cloned()
+            .collect();
+
+        let mut stream = futures::stream::iter(upstreams)
+            .map(|upstream| async move {
+                let name = upstream.name.clone();
+                let result = pool
+                    .reprobe_tools_for_upstream_as(&upstream, oauth_subject, None)
+                    .await;
+                (name, result)
+            })
+            .buffer_unordered(concurrency);
+
+        while let Some((upstream, result)) = stream.next().await {
+            if let Err(error) = result {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.status.refresh",
+                    upstream = upstream.as_str(),
+                    error = %error,
+                    "gateway status tool catalog refresh failed"
+                );
+            }
+        }
+    }
+
     pub async fn cleanup_upstream_processes(
         &self,
         name: &str,

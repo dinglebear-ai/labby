@@ -2,8 +2,8 @@
 //!
 //! Each service module exposes `pub const META: PluginMeta` describing its
 //! display name, category, docs URL, required/optional env vars, and default
-//! port. Drives the TUI plugin manager, `labby install`, `labby doctor`, and the
-//! `.mcp.json` patcher.
+//! port. Drives generated service metadata, setup/doctor presentation, and
+//! other product surfaces that need stable service descriptors.
 
 use super::plugin_ui::UiSchema;
 
@@ -12,11 +12,11 @@ use super::plugin_ui::UiSchema;
 pub struct PluginMeta {
     /// Short module name, e.g. `"gateway"`. Matches feature flag and CLI subcommand.
     pub name: &'static str,
-    /// Human-readable display name shown in TUI/help.
+    /// Human-readable display name shown in setup, doctor, and generated docs.
     pub display_name: &'static str,
     /// One-line description.
     pub description: &'static str,
-    /// Logical grouping (used by the TUI plugin manager).
+    /// Logical grouping used by setup, help, and documentation surfaces.
     pub category: Category,
     /// Upstream documentation URL.
     pub docs_url: &'static str,
@@ -36,18 +36,18 @@ pub struct PluginMeta {
 pub struct EnvVar {
     /// Env var name, e.g. `"APPRISE_TOKEN"`.
     pub name: &'static str,
-    /// Description shown in `labby install` prompts and `labby doctor` output.
+    /// Description shown in setup and doctor surfaces.
     pub description: &'static str,
     /// Example value — never a real credential.
     pub example: &'static str,
-    /// True if this is sensitive: TUI masks input, doctor never echoes it.
+    /// True if this is sensitive: setup UIs mask input and doctor never echoes it.
     pub secret: bool,
     /// UI schema for the Bootstrap wizard / Settings rail. `None` means the
     /// field is rendered with a plain text input.
     pub ui: Option<&'static UiSchema>,
 }
 
-/// Logical category used by the TUI plugin manager and `lab help`.
+/// Logical category used by setup, help, and generated documentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     /// Note-taking and bookmarks (`Memos`, `Linkding`, `ByteStash`).

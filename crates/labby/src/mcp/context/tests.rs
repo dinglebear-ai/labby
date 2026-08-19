@@ -1,13 +1,13 @@
 //! Tests for request-context auth/subject + scope/admin gate helpers.
 //! Distributed from `server.rs` (bead `lab-kvji.24.1.6`).
 
-#[cfg(feature = "gateway")]
-use super::oauth_upstream_subject_for_request;
 use super::{
     AbsentAuth, actor_key_from_extensions, builtin_action_requires_admin,
     code_mode_read_scope_allowed, forwardable_client_capabilities, resolve_caller_authorization,
     subject_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
+#[cfg(feature = "gateway")]
+use super::{oauth_upstream_subject_for_request, upstream_uses_capability_relay};
 use crate::dispatch::error::ToolError;
 use crate::registry::RegisteredService;
 use labby_runtime::caller_auth::PropagatedCallerAuth;
@@ -44,6 +44,31 @@ fn forwardable_capabilities_are_derived_from_current_request_metadata() {
         forwardable_client_capabilities(Some(&empty)),
         Some(rmcp::model::ClientCapabilities::default())
     );
+}
+
+#[cfg(feature = "gateway")]
+#[test]
+fn singleton_upstream_can_opt_out_of_dedicated_capability_connections() {
+    let default: crate::config::UpstreamConfig = toml::from_str(
+        r#"
+name = "ordinary"
+command = "ordinary-server"
+"#,
+    )
+    .expect("ordinary upstream config parses");
+    assert!(upstream_uses_capability_relay(&default));
+
+    let singleton: crate::config::UpstreamConfig = toml::from_str(
+        r#"
+name = "singleton"
+command = "singleton-server"
+
+[env]
+MCP_UPSTREAM_RELAY_MODE = "pooled"
+"#,
+    )
+    .expect("singleton upstream config parses");
+    assert!(!upstream_uses_capability_relay(&singleton));
 }
 
 fn noop_dispatch(

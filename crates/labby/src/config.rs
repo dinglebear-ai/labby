@@ -521,7 +521,7 @@ impl LabConfig {
     /// Distinct from [`Self::upstream_request_timeout`] because the relay path
     /// blocks on a human answering an elicitation forwarded from the upstream;
     /// reusing the 30s request timeout would abort real confirmations. Defaults
-    /// to [`DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS`] (5 minutes) when unset.
+    /// to `DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS` (5 minutes) when unset.
     pub fn upstream_relay_timeout(&self) -> Duration {
         Duration::from_millis(
             self.upstream_relay_timeout_ms
@@ -823,7 +823,7 @@ fn invalid_protected_route(
 // this module and all external callers keep their existing import paths.
 // Serde shape (defaults, renames, skip rules) is preserved exactly there.
 // Some entries are only referenced from tests after the gateway runtime moved to
-// `lab-gateway`; keep them as the public `labby::config` surface and silence the
+// `labby-gateway`; keep them as the public `labby::config` surface and silence the
 // bin-target unused-import lint.
 #[allow(unused_imports)]
 pub use labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX;
@@ -1994,7 +1994,7 @@ impl Serialize for Secret {
 
 /// Value from an instance env var — either plain text or a secret.
 ///
-/// Always constructed programmatically via [`scan_instances_from`]; never
+/// Always constructed programmatically via the private `scan_instances_from` helper; never
 /// deserialized from JSON. `Deserialize` is intentionally omitted — `Secret`
 /// serializes as `"***REDACTED***"` (a plain string), so an `#[serde(untagged)]`
 /// impl would silently pick `Plain` for every value, bypassing redaction.

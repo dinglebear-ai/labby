@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/how\_to\_call\_functions\_for\_knowledge\_retrieval [Redirecting from `/cookbook/examples/how\_to\_call\_functions\_for\_knowledge\_retrieval.ipynb/` to `/cookbook/examples/how\_to\_call\_functions\_for\_knowledge\_retrieval`](/cookbook/examples/how_to_call_functions_for_knowledge_retrieval)

@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/embedding\_long\_inputs [Redirecting from `/cookbook/examples/embedding\_long\_inputs.ipynb/` to `/cookbook/examples/embedding\_long\_inputs`](/cookbook/examples/embedding_long_inputs)

@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/whisper\_prompting\_guide [Redirecting from `/cookbook/examples/whisper\_prompting\_guide.ipynb/` to `/cookbook/examples/whisper\_prompting\_guide`](/cookbook/examples/whisper_prompting_guide)

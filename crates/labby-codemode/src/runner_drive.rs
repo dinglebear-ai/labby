@@ -8,7 +8,10 @@
 //! select loop readable.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -54,6 +57,40 @@ use finalize::{code_mode_timeout_error, finalize_done, sorted_calls};
 use steps::{handle_step_begin_event, handle_step_result_event};
 
 static LOCAL_PROVIDER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static RESULT_ACK_RESERVE_USES: AtomicU64 = AtomicU64::new(0);
+static SETTLEMENT_WATCHDOG_EXPIRIES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CodeModeRuntimeCounters {
+    pub result_ack_reserve_uses: u64,
+    pub settlement_watchdog_expiries: u64,
+}
+
+#[cfg(test)]
+#[must_use]
+pub(crate) fn code_mode_runtime_counters() -> CodeModeRuntimeCounters {
+    CodeModeRuntimeCounters {
+        result_ack_reserve_uses: RESULT_ACK_RESERVE_USES.load(Ordering::Relaxed),
+        settlement_watchdog_expiries: SETTLEMENT_WATCHDOG_EXPIRIES.load(Ordering::Relaxed),
+    }
+}
+
+fn increment_saturating_counter(counter: &AtomicU64) -> u64 {
+    match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    }) {
+        Ok(previous) | Err(previous) => previous.saturating_add(1),
+    }
+}
+
+fn record_result_ack_reserve_use() -> u64 {
+    increment_saturating_counter(&RESULT_ACK_RESERVE_USES)
+}
+
+fn record_settlement_watchdog_expiry() -> u64 {
+    increment_saturating_counter(&SETTLEMENT_WATCHDOG_EXPIRIES)
+}
 
 const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
 /// Once every pending external tool call has settled, the sandbox has no timers
@@ -185,6 +222,10 @@ struct DriveState {
     /// ordinary budget) against `MAX_INTERNAL_CALLS_PER_RUN`.
     internal_calls_enqueued: usize,
     calltool_result_max_bytes: usize,
+    /// Whether this run has already recorded that its external tool deadline
+    /// reserved the result-acknowledgement control-plane slice. The counter is
+    /// per execution, not per tool call, so fan-out does not inflate it.
+    result_ack_reserve_observed: bool,
     /// Monotonic count of `step_begin` events seen so far (the journal ordinate).
     next_step_ordinal: u64,
     /// Maps a step's runner `seq` -> (step_ordinal, name), populated at
@@ -210,6 +251,7 @@ impl DriveState {
             max_calls_per_run: max_calltool_per_run(),
             internal_calls_enqueued: 0,
             calltool_result_max_bytes: calltool_result_max_bytes(),
+            result_ack_reserve_observed: false,
             next_step_ordinal: 0,
             step_ordinals: std::collections::HashMap::new(),
             step_value_bytes: 0,
@@ -287,14 +329,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         &self,
         cfg: RunnerConfig,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
+        // One end-to-end budget covers pool/semaphore admission, runner spawn,
+        // the initial Start write, and the complete protocol execution.
+        let deadline = tokio::time::Instant::now() + cfg.timeout;
         // Acquire a runner. With a host, use the shared warm pool (Perf H1): a
         // pooled runner amortizes the fork/startup cost across executions while
         // still building a fresh `javy::Runtime` per `Start` (runner-side), so JS
         // state isolation holds. Without a host (some tests / standalone paths),
         // spawn a one-shot runner directly.
         match self.host {
-            Some(host) => self.run_via_pool(host.runner_pool(), cfg).await,
-            None => self.run_standalone(cfg).await,
+            Some(host) => self.run_via_pool(host.runner_pool(), cfg, deadline).await,
+            None => self.run_standalone(cfg, deadline).await,
         }
     }
 
@@ -309,25 +354,26 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         &self,
         pool: &RunnerPool,
         cfg: RunnerConfig,
+        deadline: tokio::time::Instant,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
-        let mut lease = pool.checkout().await?;
-        let outcome = self.drive_runner(lease.runner_mut(), &cfg).await;
+        let mut lease = pool.checkout(deadline).await?;
+        let outcome = self.drive_runner(lease.runner_mut(), &cfg, deadline).await;
         match outcome {
             DriveOutcome::Completed(response) => {
-                lease.release().await;
+                drop(tokio::time::timeout_at(deadline, lease.release()).await);
                 Ok(response)
             }
             DriveOutcome::ExecutionError(err) => {
                 // The runner parked after emitting its `Error` line and is
                 // healthy (fresh runtime dropped); reuse it.
-                lease.release().await;
+                drop(tokio::time::timeout_at(deadline, lease.release()).await);
                 Err(err)
             }
             DriveOutcome::RunnerUnavailableBeforeActivity(err) => {
                 // A pooled runner can die while idle. Because it emitted no valid
                 // protocol event for this execution, no host-visible side effect
                 // crossed the sandbox boundary and one replay is safe.
-                lease.evict();
+                drop(tokio::time::timeout_at(deadline, lease.evict()).await);
                 tracing::warn!(
                     surface = "dispatch",
                     service = "code_mode",
@@ -337,28 +383,28 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     "Code Mode runner died before protocol activity; retrying once on a fresh runner"
                 );
 
-                let mut retry = pool.checkout_fresh().await?;
-                let retry_outcome = self.drive_runner(retry.runner_mut(), &cfg).await;
+                let mut retry = pool.checkout_fresh(deadline).await?;
+                let retry_outcome = self.drive_runner(retry.runner_mut(), &cfg, deadline).await;
                 match retry_outcome {
                     DriveOutcome::Completed(response) => {
-                        retry.release().await;
+                        drop(tokio::time::timeout_at(deadline, retry.release()).await);
                         Ok(response)
                     }
                     DriveOutcome::ExecutionError(err) => {
-                        retry.release().await;
+                        drop(tokio::time::timeout_at(deadline, retry.release()).await);
                         Err(err)
                     }
                     DriveOutcome::RunnerUnavailableBeforeActivity(err)
                     | DriveOutcome::RunnerUnhealthy(err) => {
-                        retry.evict();
+                        drop(tokio::time::timeout_at(deadline, retry.evict()).await);
                         Err(err)
                     }
                 }
             }
             DriveOutcome::RunnerUnhealthy(err) => {
                 // Crash / timeout / protocol fault after activity: discard the
-                // runner without replaying the execution.
-                lease.evict();
+                // runner without replaying the execution, bounded by the remaining deadline.
+                drop(tokio::time::timeout_at(deadline, lease.evict()).await);
                 Err(err)
             }
         }
@@ -368,44 +414,54 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     async fn run_standalone(
         &self,
         cfg: RunnerConfig,
+        deadline: tokio::time::Instant,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
-        let spawn = super::pool::RunnerSpawn::try_default()?;
-        let mut runner = PooledRunner::spawn(&spawn)?;
-        let outcome = self.drive_runner(&mut runner, &cfg).await;
-        // The runner handle's Drop kills the process on every path here, so a
-        // standalone runner is never leaked or reused.
-        match outcome {
+        let (spawn, microsandbox) = super::runner_backend::resolve_runner_spawn()?;
+        let mut runner =
+            super::pool::spawn_before_deadline(&spawn, microsandbox.as_ref(), deadline).await?;
+        let outcome = self.drive_runner(&mut runner, &cfg, deadline).await;
+        let result = match outcome {
             DriveOutcome::Completed(response) => Ok(response),
             DriveOutcome::ExecutionError(err)
             | DriveOutcome::RunnerUnavailableBeforeActivity(err)
             | DriveOutcome::RunnerUnhealthy(err) => Err(err),
-        }
+        };
+        drop(tokio::time::timeout_at(deadline, runner.shutdown()).await);
+        result
     }
 
     /// Drive the Start → tool-call/artifact → Done/Error protocol loop against a
     /// single runner. Returns a [`DriveOutcome`] classifying both the result and
     /// whether the runner is safe to reuse.
-    async fn drive_runner(&self, runner: &mut PooledRunner, cfg: &RunnerConfig) -> DriveOutcome {
+    async fn drive_runner(
+        &self,
+        runner: &mut PooledRunner,
+        cfg: &RunnerConfig,
+        deadline: tokio::time::Instant,
+    ) -> DriveOutcome {
         // Record the stderr buffer position before this execution so we capture
         // only the lines this run produces (a pooled runner's buffer carries
         // prior executions' lines).
         let stderr = runner.stderr.clone();
         let stderr_start = stderr.mark().await;
 
-        if let Err(err) = write_runner_input(
-            &mut runner.stdin,
-            &CodeModeRunnerInput::Start {
-                code: cfg.code_to_run.clone(),
-                proxy: cfg.proxy.clone(),
-            },
-        )
-        .await
+        let start = CodeModeRunnerInput::Start {
+            code: cfg.code_to_run.clone(),
+            proxy: cfg.proxy.clone(),
+        };
+        if let Err(err) =
+            tokio::time::timeout_at(deadline, write_runner_input(&mut runner.stdin, &start))
+                .await
+                .map_err(|_| ToolError::Sdk {
+                    sdk_kind: "timeout".to_string(),
+                    message: "Code Mode execution timed out".to_string(),
+                })
+                .and_then(|result| result)
         {
             // Failed to even send Start — the runner is suspect; evict it.
             return DriveOutcome::RunnerUnhealthy(err.into());
         }
 
-        let deadline = tokio::time::Instant::now() + cfg.timeout;
         let cancellation = CancellationToken::new();
         let _cancel_execution_on_drop = CancelExecutionOnDrop(cancellation.clone());
         let mut settlement_watch: Option<SettlementWatch> = None;
@@ -447,13 +503,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 && pending_tool_calls.is_empty();
                             terminate_code_mode_runner(child, child_pid).await;
                             let error = if settlement_grace_timed_out {
+                                let settlement_watchdog_expiry_count =
+                                    record_settlement_watchdog_expiry();
                                 tracing::warn!(
                                     surface = "dispatch",
                                     service = "code_mode",
                                     action = "codemode.settlement",
+                                    event = "watchdog_expired",
                                     kind = "runner_settlement_timeout",
                                     call_count = state.calls.len(),
                                     grace_ms = RUNNER_SETTLEMENT_GRACE.as_millis(),
+                                    settlement_watchdog_expiry_count,
                                     "Code Mode runner failed to settle after all tool calls completed"
                                 );
                                 CodeModeExecutionError::with_trace(
@@ -477,11 +537,24 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     let Some(line_result) = line else {
                         // EOF: the runner process died unexpectedly. Surface a
                         // clean error and evict so a replacement spawns.
-                        drop(child.wait().await);
+                        let status = child.wait().await;
+                        stderr.flush_settle().await;
+                        let diagnostics = stderr.take_since_and_clear(stderr_start).await;
+                        let diagnostics = labby_runtime::redact::sanitize_error_text(
+                            &diagnostics.join("\n"),
+                            512,
+                        );
+                        let message = if diagnostics.is_empty() {
+                            format!("Code Mode runner exited before completion ({status:?})")
+                        } else {
+                            format!(
+                                "Code Mode runner exited before completion ({status:?}): {diagnostics}"
+                            )
+                        };
                         let error = CodeModeExecutionError::with_trace(
                             ToolError::Sdk {
                                 sdk_kind: "server_error".to_string(),
-                                message: "Code Mode runner exited before completion".to_string(),
+                                message,
                             },
                             sorted_calls(&state.calls),
                         );
@@ -601,12 +674,30 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                         );
                                     }
                                     Ok(None) => {
+                                        let now = tokio::time::Instant::now();
+                                        let tool_deadline = external_tool_deadline(now, deadline);
+                                        if tool_deadline < deadline
+                                            && !state.result_ack_reserve_observed
+                                        {
+                                            state.result_ack_reserve_observed = true;
+                                            let result_ack_reserve_use_count =
+                                                record_result_ack_reserve_use();
+                                            tracing::debug!(
+                                                surface = "dispatch",
+                                                service = "code_mode",
+                                                action = "codemode.result_ack.reserve",
+                                                event = "armed",
+                                                reserve_ms = RUNNER_RESULT_ACK_RESERVE.as_millis(),
+                                                result_ack_reserve_use_count,
+                                                "reserved Code Mode result acknowledgement budget"
+                                            );
+                                        }
                                         enqueue_tool_call(
                                             self,
                                             seq,
                                             id,
                                             params,
-                                            deadline,
+                                            tool_deadline,
                                             execution_start,
                                             cfg,
                                             &cancellation,
@@ -859,7 +950,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     seq: u64,
     id: String,
     params: Value,
-    deadline: tokio::time::Instant,
+    tool_deadline: tokio::time::Instant,
     execution_start: std::time::Instant,
     cfg: &RunnerConfig,
     cancellation: &CancellationToken,
@@ -872,7 +963,6 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let surface = cfg.surface;
     let execution_id = cfg.execution_id.clone();
     let cancellation = cancellation.clone();
-    let tool_deadline = external_tool_deadline(tokio::time::Instant::now(), deadline);
     pending_tool_calls.push(Box::pin(async move {
         let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
@@ -1520,6 +1610,7 @@ mod tests {
             delay: Duration::from_secs(2),
         };
         let broker = CodeModeBroker::new(Some(&host));
+        let counters_before = code_mode_runtime_counters();
         let script = r#"
 IFS= read -r _
 printf '%s\n' '{"type":"tool_call","seq":1,"id":"stub::slow","params":{}}'
@@ -1535,7 +1626,11 @@ sleep 3600
             PooledRunner::spawn_stub_script(script).expect("spawn acknowledgement stub");
         let started = std::time::Instant::now();
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_secs(2)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_secs(2)),
+                tokio::time::Instant::now() + Duration::from_secs(2),
+            )
             .await;
 
         assert!(
@@ -1548,6 +1643,11 @@ sleep 3600
                 assert_eq!(response.calls.len(), 1);
                 assert!(!response.calls[0].ok);
                 assert_eq!(response.calls[0].error_kind.as_deref(), Some("timeout"));
+                assert!(
+                    code_mode_runtime_counters().result_ack_reserve_uses
+                        >= counters_before.result_ack_reserve_uses.saturating_add(1),
+                    "execution should record arming the result acknowledgement reserve"
+                );
             }
             DriveOutcome::ExecutionError(error)
             | DriveOutcome::RunnerUnhealthy(error)
@@ -1591,7 +1691,11 @@ sleep 3600
         let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn fanout stub");
         let started = std::time::Instant::now();
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_secs(2)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_secs(2)),
+                tokio::time::Instant::now() + Duration::from_secs(2),
+            )
             .await;
 
         assert!(started.elapsed() < Duration::from_secs(3));
@@ -1673,7 +1777,11 @@ sleep 3600
         let broker = CodeModeBroker::new(Some(&host));
         let mut runner = PooledRunner::spawn_stub_script(&script).expect("spawn script stub");
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_secs(30)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_secs(30)),
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
             .await;
         let response = match outcome {
             DriveOutcome::Completed(response) => response,
@@ -1832,7 +1940,11 @@ sleep 3600
         let broker = CodeModeBroker::new(Some(&host));
         let mut runner = PooledRunner::spawn_stub_script(&script).expect("spawn script stub");
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_secs(30)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_secs(30)),
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
             .await;
         let response = match outcome {
             DriveOutcome::Completed(response) => response,
@@ -1930,7 +2042,11 @@ sleep 3600
         let broker = CodeModeBroker::new(Some(&host));
         let mut runner = PooledRunner::spawn_stub_script(&script).expect("spawn script stub");
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_secs(30)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_secs(30)),
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
             .await;
         match outcome {
             DriveOutcome::Completed(_) => {}
@@ -2094,7 +2210,9 @@ sleep 3600
         let mut cfg = test_config(Duration::from_secs(30));
         cfg.execution_id = Some(Arc::<str>::from("exec_test"));
         let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn script stub");
-        let outcome = broker.drive_runner(&mut runner, &cfg).await;
+        let outcome = broker
+            .drive_runner(&mut runner, &cfg, tokio::time::Instant::now() + cfg.timeout)
+            .await;
         match outcome {
             DriveOutcome::Completed(_) => {}
             DriveOutcome::ExecutionError(err)
@@ -2135,7 +2253,11 @@ sleep 3600
         let script = "IFS= read -r _\nexit 17\n";
         let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn exit stub");
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_secs(5)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_secs(5)),
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            )
             .await;
 
         match outcome {
@@ -2175,7 +2297,11 @@ sleep 3600
         });
         let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
         let response = broker
-            .run_via_pool(&pool, test_config(Duration::from_secs(5)))
+            .run_via_pool(
+                &pool,
+                test_config(Duration::from_secs(5)),
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            )
             .await
             .expect("fresh runner retry must succeed");
 
@@ -2198,10 +2324,15 @@ sleep 3600
 "#;
         let host = NoopHost::default();
         let broker = CodeModeBroker::new(Some(&host));
+        let counters_before = code_mode_runtime_counters();
         let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn script stub");
         let started = std::time::Instant::now();
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_secs(30)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_secs(30)),
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
             .await;
 
         assert!(
@@ -2212,6 +2343,13 @@ sleep 3600
             DriveOutcome::RunnerUnhealthy(err) => {
                 assert_eq!(err.kind(), "timeout");
                 assert!(err.to_string().contains("did not settle"));
+                assert!(
+                    code_mode_runtime_counters().settlement_watchdog_expiries
+                        >= counters_before
+                            .settlement_watchdog_expiries
+                            .saturating_add(1),
+                    "genuine post-tool watchdog expiry should increment its runtime counter"
+                );
             }
             DriveOutcome::Completed(_)
             | DriveOutcome::ExecutionError(_)
@@ -2238,7 +2376,11 @@ sleep 3600
         let broker = CodeModeBroker::new(Some(&host));
         let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn script stub");
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_millis(800)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_millis(800)),
+                tokio::time::Instant::now() + Duration::from_millis(800),
+            )
             .await;
 
         match outcome {
@@ -2265,7 +2407,11 @@ sleep 3600
         let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
         let mut runner = PooledRunner::spawn_stub_silent().expect("spawn silent stub");
         let outcome = broker
-            .drive_runner(&mut runner, &test_config(Duration::from_millis(80)))
+            .drive_runner(
+                &mut runner,
+                &test_config(Duration::from_millis(80)),
+                tokio::time::Instant::now() + Duration::from_millis(80),
+            )
             .await;
         match outcome {
             DriveOutcome::RunnerUnhealthy(err) => {

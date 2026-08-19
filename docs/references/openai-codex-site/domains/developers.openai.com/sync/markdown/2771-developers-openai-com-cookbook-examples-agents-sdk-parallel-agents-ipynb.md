@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/agents\_sdk/parallel\_agents [Redirecting from `/cookbook/examples/agents\_sdk/parallel\_agents.ipynb/` to `/cookbook/examples/agents\_sdk/parallel\_agents`](/cookbook/examples/agents_sdk/parallel_agents)

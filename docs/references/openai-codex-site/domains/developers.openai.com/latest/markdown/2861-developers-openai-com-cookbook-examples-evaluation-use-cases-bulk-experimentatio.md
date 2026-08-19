@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/evaluation/use-cases/bulk-experimentation [Redirecting from `/cookbook/examples/evaluation/use-cases/bulk-experimentation.ipynb/` to `/cookbook/examples/evaluation/use-cases/bulk-experimentation`](/cookbook/examples/evaluation/use-cases/bulk-experimentation)

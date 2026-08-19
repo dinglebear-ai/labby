@@ -1,6 +1,6 @@
 # labby-apis
 
-Pure Rust SDK/data layer for Lab capability modules. This crate is reusable by
+Pure Rust SDK/data layer for Labby capability modules. This crate is reusable by
 other Rust binaries and intentionally has no product-surface dependencies such
 as `clap`, `rmcp`, `axum`, or `anyhow`.
 

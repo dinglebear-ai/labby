@@ -62,7 +62,10 @@ pub enum FieldKind {
     /// File or directory path constrained by `FieldValidation::safe_root`.
     FilePath,
     /// Static enum values. Dynamic enums use `UiSchema::dynamic_source`.
-    Enum { values: &'static [&'static str] },
+    Enum {
+        /// Static values accepted by this field.
+        values: &'static [&'static str],
+    },
 }
 
 /// Client-side validation rules applied before the wizard advances.

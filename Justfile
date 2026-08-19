@@ -1,4 +1,4 @@
-# Lab — Development Commands
+# Labby — Development Commands
 
 local_release_profile := "release-fast"
 
@@ -17,9 +17,37 @@ test:
 docs-generate:
     cargo run --package labby --bin labby --all-features -- docs generate
 
-# Verify generated documentation inventories are fresh
+# Verify generated documentation inventories are fresh and maintained local links resolve
 docs-check:
     cargo run --package labby --bin labby --all-features -- docs check
+    python3 scripts/check-doc-links.py
+
+# Build strict Rustdoc for the complete workspace target surface.
+rustdoc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings --document-private-items"
+    # Default targets cover every workspace library plus binary-only packages.
+    cargo doc --workspace --all-features --no-deps --document-private-items --locked
+    # Cargo omits secondary bins/examples when a package also has a library.
+    # The six-line `labby` launcher shares the library crate name and cannot be
+    # published without Cargo issue #6313 overwriting one of the pages; its real
+    # API is `labby::run()`. Document the non-colliding fixture + examples here.
+    cargo rustdoc -p labby --all-features --bin stdio-mcp-fixture --examples --locked --target-dir target/rustdoc-extra
+
+# Build strict Rustdoc and execute all workspace doctests.
+rustdoc-check: rustdoc
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings"
+    cargo test --doc --workspace --all-features --locked
+
+# Report missing public API prose without making historical coverage debt block CI.
+rustdoc-audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} --force-warn missing_docs"
+    cargo doc --workspace --all-features --no-deps --document-private-items --locked
 
 # Run integration tests (requires running services)
 test-integration:
@@ -446,58 +474,6 @@ validate-plugin:
 # Report the currently installed Labby host-service runtime.
 runtime-current:
     just host-service-status
-
-# Diagnose the sccache build cache. Reports daemon health (systemd-owned),
-# binary-vs-daemon version skew, cache stats, distributed-build config, and the
-# tail of the error log. Run this FIRST when builds behave oddly (stale/wrong
-# artifacts) before reaching for a wipe. See docs/RUST.md §sccache troubleshooting.
-sccache-doctor:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    # MUST match the systemd unit's socket, or sccache spawns an unmanaged
-    # ephemeral server and reports misleading zero stats.
-    export SCCACHE_SERVER_UDS=/home/jmagar/.local/state/sccache/sccache.sock
-    echo "── daemon (systemd --user) ─────────────────────────"
-    systemctl --user is-active sccache.service 2>/dev/null && \
-      systemctl --user show sccache.service -p MainPID -p ActiveEnterTimestamp -p NRestarts 2>/dev/null
-    echo "── version skew (binary vs running daemon) ─────────"
-    bin_ver=$(/home/jmagar/.local/sccache --version 2>/dev/null)
-    echo "binary:  $bin_ver"
-    echo "  (daemon is long-lived; if the mise-pinned binary changed, restart with 'just sccache-restart')"
-    echo "── distributed build config ────────────────────────"
-    if grep -qs '^\[dist\]' ~/.config/sccache/config; then
-      echo "DIST ENABLED — scheduler: $(grep -soE 'https?://[^\"]+' ~/.config/sccache/config | head -1)"
-      echo "  ⚠ remote builds can cache cross-machine artifacts; mismatched toolchains poison the cache."
-    else
-      echo "dist disabled (local-only) ✓"
-    fi
-    echo "── cache stats ─────────────────────────────────────"
-    /home/jmagar/.local/sccache --show-stats 2>/dev/null | grep -iE "compile requests|cache hits|cache misses|errors|cache location|cache size" || true
-    echo "── error log tail (real errors only) ───────────────"
-    log=/home/jmagar/.local/state/sccache/error.log
-    if [ -f "$log" ]; then
-      sz=$(du -h "$log" | cut -f1); echo "log: $log ($sz)"
-      grep -aE "ERROR|WARN|panic|corrupt|CacheReadError|CacheWriteError" "$log" 2>/dev/null | grep -avE "DEBUG|CannotCache" | tail -15 || echo "(no error/warn lines)"
-    else
-      echo "(no error log)"
-    fi
-
-# Cleanly restart the sccache daemon via systemd (NEVER use bare
-# 'sccache --start-server' — Restart=always means systemd owns it and a manual
-# start races the unit). Use after the mise-pinned sccache binary changes, or as
-# the FIRST recovery step for suspected cache poisoning (fixes daemon-state
-# causes without wiping on-disk artifacts). Only wipe the cache if this fails.
-sccache-restart:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export SCCACHE_SERVER_UDS=/home/jmagar/.local/state/sccache/sccache.sock
-    echo "restarting sccache.service (systemd --user)…"
-    systemctl --user restart sccache.service
-    sleep 1
-    systemctl --user is-active sccache.service
-    /home/jmagar/.local/sccache --show-stats 2>/dev/null | grep -iE "compile requests|cache location" || true
-    echo "✓ restarted. If poisoning persists, wipe on-disk cache:"
-    echo "    systemctl --user stop sccache.service && rm -rf ~/.cache/sccache && systemctl --user start sccache.service"
 
 # Compile check for the lean gateway-only slice (base services excluded).
 check-gateway-slice:

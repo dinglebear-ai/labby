@@ -12,8 +12,8 @@
 //! needs (an in-process connector and a service registry) through the traits in
 //! [`registry`].
 //!
-//! The pool is re-exported from `lab`'s `crate::dispatch::upstream` as a
-//! compatibility shim so existing Labby callers keep working unchanged.
+//! The product crate re-exports gateway types from `crates/labby/src/dispatch/upstream.rs`
+//! as a compatibility shim for existing Labby callers.
 
 pub mod codemode_journal;
 pub mod dispatch_helpers;

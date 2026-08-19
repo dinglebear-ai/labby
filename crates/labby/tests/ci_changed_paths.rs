@@ -125,13 +125,7 @@ fn linux_build_preflight_accepts_installed_libxdo_without_pkg_config_metadata() 
 
 #[test]
 fn docs_only_changes_skip_expensive_runtime_categories() {
-    let out = classify(
-        "pull_request",
-        &[
-            "docs/runtime/CICD.md",
-            "docs/sessions/2026-06-27-example.md",
-        ],
-    );
+    let out = classify("pull_request", &["docs/runtime/CICD.md", "docs/README.md"]);
     assert_eq!(out["docs"], "true");
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["rust_test"], "false");
@@ -140,9 +134,24 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
     assert_eq!(out["docker"], "false");
     assert_eq!(out["security"], "false");
     assert_eq!(out["release"], "false");
-    // Prose docs cannot invalidate generated artifacts, so they must not
-    // trigger the docs-check build either.
-    assert_eq!(out["docs_check"], "false");
+    // Canonical prose participates in docs-check because the recipe also
+    // validates repository-local Markdown links.
+    assert_eq!(out["docs_check"], "true");
+}
+
+#[test]
+fn historical_doc_work_products_skip_docs_check() {
+    for path in [
+        "docs/archive/retired-labby/README.md",
+        "docs/sessions/2026-08-18-example.md",
+        "docs/superpowers/plans/example.md",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs"], "true", "{path}");
+        assert_eq!(out["docs_check"], "false", "{path}");
+        assert_eq!(out["rust_compile"], "false", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+    }
 }
 
 #[test]

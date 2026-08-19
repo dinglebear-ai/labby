@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/developing\_hallucination\_guardrails [Redirecting from `/cookbook/examples/developing\_hallucination\_guardrails.ipynb/` to `/cookbook/examples/developing\_hallucination\_guardrails`](/cookbook/examples/developing_hallucination_guardrails)

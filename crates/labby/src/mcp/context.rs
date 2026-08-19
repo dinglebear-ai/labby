@@ -114,6 +114,22 @@ pub(crate) fn forwardable_client_capabilities(
     )
 }
 
+/// Whether an upstream may be opened on a dedicated capability-relay
+/// connection.
+///
+/// Most stdio servers are safe to spawn once per downstream capability set.
+/// Singleton servers that own a fixed listener or other process-global state
+/// can opt into the pooled connection with `MCP_UPSTREAM_RELAY_MODE=pooled`.
+/// The operator is then responsible for ensuring the pooled upstream can serve
+/// clients whose capabilities are not mirrored into its handshake.
+#[cfg(feature = "gateway")]
+pub(crate) fn upstream_uses_capability_relay(config: &crate::config::UpstreamConfig) -> bool {
+    !config
+        .env
+        .get("MCP_UPSTREAM_RELAY_MODE")
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("pooled"))
+}
+
 pub(crate) fn subject_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {
     auth_context_from_extensions(extensions).map(|auth| auth.sub.as_str())
 }
@@ -170,7 +186,7 @@ pub(crate) enum AbsentAuth {
     ///
     /// This is the *fallback* for that transport, not its normal path: the
     /// gateway propagates the real caller's authorization in `_meta`, and
-    /// [`AbsentAuth::Propagated`] carries it. Reaching `Untrusted` means the
+    /// [`CallerAuthorization::Propagated`] carries it. Reaching `Untrusted` means the
     /// propagation was missing, so the request fails closed.
     Untrusted,
 }
@@ -178,7 +194,7 @@ pub(crate) enum AbsentAuth {
 /// How a request's authorization was established, once transport is accounted
 /// for.
 ///
-/// Built by [`LabMcpServer::caller_authorization`] so every gate sees the same
+/// Built by [`resolve_caller_authorization`] so every gate sees the same
 /// resolution rather than each re-deriving it.
 #[derive(Debug, Clone)]
 pub(crate) enum CallerAuthorization<'a> {
