@@ -17,12 +17,12 @@
 use std::process::Stdio;
 use std::sync::Arc;
 
-use tokio::io::AsyncBufReadExt;
-use tokio::io::BufReader as TokioBufReader;
-use tokio::process::{ChildStdin, Command};
-use tokio::sync::{Mutex, Notify};
+use futures::StreamExt as _;
+use tokio::process::ChildStdin;
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit};
 use tokio_util::codec::{FramedRead, LinesCodec};
 
+use super::microsandbox::{MicrosandboxGuard, runner_command};
 use crate::error::ToolError;
 
 /// Per-line safety cap mirrored from the original driver: 64 MiB heap + framing
@@ -46,22 +46,29 @@ pub(crate) type RunnerLines = FramedRead<tokio::process::ChildStdout, LinesCodec
 /// log capture slices `[start_index..]` of this buffer.
 #[derive(Clone)]
 pub(crate) struct StderrBuffer {
-    lines: Arc<Mutex<Vec<String>>>,
+    state: Arc<Mutex<StderrState>>,
     /// Signalled on every push so a waiter can poll for post-`Done` flush.
     notify: Arc<Notify>,
+}
+
+#[derive(Default)]
+struct StderrState {
+    lines: Vec<String>,
+    total_bytes: usize,
+    capped: bool,
 }
 
 impl StderrBuffer {
     fn new() -> Self {
         Self {
-            lines: Arc::new(Mutex::new(Vec::new())),
+            state: Arc::new(Mutex::new(StderrState::default())),
             notify: Arc::new(Notify::new()),
         }
     }
 
     /// Current line count — the start index for the next execution's capture.
     pub(crate) async fn mark(&self) -> usize {
-        self.lines.lock().await.len()
+        self.state.lock().await.lines.len()
     }
 
     /// Return lines appended since `start_index`, then release all retained
@@ -69,19 +76,20 @@ impl StderrBuffer {
     /// completed executions do not need historical stderr retained after the
     /// response has been materialized.
     pub(crate) async fn take_since_and_clear(&self, start_index: usize) -> Vec<String> {
-        let mut guard = self.lines.lock().await;
-        let captured = guard
+        let mut state = self.state.lock().await;
+        let captured = state
+            .lines
             .get(start_index..)
             .map(<[String]>::to_vec)
             .unwrap_or_default();
-        guard.clear();
+        *state = StderrState::default();
         captured
     }
 
     /// Release retained stderr without returning it, used when the runner
     /// reports a reusable per-execution error.
     pub(crate) async fn clear(&self) {
-        self.lines.lock().await.clear();
+        *self.state.lock().await = StderrState::default();
     }
 
     /// Wait (bounded) for the stderr drain to flush lines emitted before `Done`.
@@ -94,12 +102,12 @@ impl StderrBuffer {
     pub(crate) async fn flush_settle(&self) {
         const SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
         let deadline = tokio::time::Instant::now() + SETTLE_BUDGET;
-        let mut last_len = self.lines.lock().await.len();
+        let mut last_len = self.state.lock().await.lines.len();
         loop {
             let notified = self.notify.notified();
             match tokio::time::timeout_at(deadline, notified).await {
                 Ok(()) => {
-                    let len = self.lines.lock().await.len();
+                    let len = self.state.lock().await.lines.len();
                     if len == last_len {
                         // Spurious wake without growth; stop polling.
                         break;
@@ -127,17 +135,44 @@ pub(crate) struct PooledRunner {
     _job_guard: Option<crate::pool::job_guard::JobObjectGuard>,
     /// Background stderr drain task; aborted on drop.
     drain_task: tokio::task::JoinHandle<()>,
-    /// The runner's spawn cwd. Held for the runner's whole life so the
-    /// per-execution jail subdirs the runner creates always have a stable base;
-    /// its `Drop` removes the tree when the runner handle is dropped.
+    /// Direct-process spawn cwd and stable jail base. A Microsandbox runner
+    /// creates its execution jail inside the guest instead.
     _temp_dir: tempfile::TempDir,
+    microsandbox: Option<MicrosandboxGuard>,
+    spawned_at: std::time::Instant,
 }
 
 impl PooledRunner {
+    pub(crate) fn microsandbox_lifetime_elapsed(&self) -> bool {
+        self.microsandbox.is_some()
+            && self.spawned_at.elapsed() >= std::time::Duration::from_hours(23)
+    }
+
+    pub(crate) async fn shutdown(mut self) {
+        if let Some(pid) = self.child_pid {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::Signal;
+                use nix::unistd::Pid;
+                let _ = nix::sys::signal::killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+            }
+            #[cfg(windows)]
+            let _ = self.child.start_kill();
+        }
+        drop(tokio::time::timeout(std::time::Duration::from_secs(1), self.child.wait()).await);
+        if let Some(mut sandbox) = self.microsandbox.take() {
+            sandbox.remove().await;
+        }
+    }
+
     /// Spawn a fresh long-lived runner process using the host-supplied
     /// re-invocation (program + args). Defaults to `current_exe()` +
     /// `["internal", "code-mode-runner"]` via [`crate::pool::RunnerSpawn::try_default`].
-    pub(crate) fn spawn(spawn: &super::super::pool::RunnerSpawn) -> Result<Self, ToolError> {
+    pub(crate) async fn spawn(
+        spawn: &super::super::pool::RunnerSpawn,
+        microsandbox_config: Option<&super::super::pool::MicrosandboxSpawn>,
+        admission_permit: Option<OwnedSemaphorePermit>,
+    ) -> Result<Self, ToolError> {
         // Each runner gets its own isolated cwd. It is a long-lived TempDir; the
         // runner creates a fresh per-execution subdir under it on every `Start`.
         let temp_dir = tempfile::TempDir::new().map_err(|err| ToolError::Sdk {
@@ -145,10 +180,12 @@ impl PooledRunner {
             message: format!("failed to create Code Mode sandbox directory: {err}"),
         })?;
 
-        let mut cmd = Command::new(&spawn.program);
-        cmd.args(&spawn.args)
-            .current_dir(temp_dir.path())
-            .env_clear()
+        let (mut cmd, microsandbox) =
+            runner_command(spawn, microsandbox_config, admission_permit).await?;
+        if microsandbox.is_none() {
+            cmd.current_dir(temp_dir.path());
+        }
+        cmd.env_clear()
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -197,6 +234,8 @@ impl PooledRunner {
             _job_guard: job_guard,
             drain_task,
             _temp_dir: temp_dir,
+            microsandbox,
+            spawned_at: std::time::Instant::now(),
         })
     }
 
@@ -270,7 +309,7 @@ impl PooledRunner {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to create stub sandbox directory: {err}"),
         })?;
-        let mut cmd = Command::new(program);
+        let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
         cmd.current_dir(temp_dir.path())
             .env_clear()
@@ -304,6 +343,8 @@ impl PooledRunner {
             _job_guard: job_guard,
             drain_task,
             _temp_dir: temp_dir,
+            microsandbox: None,
+            spawned_at: std::time::Instant::now(),
         })
     }
 }
@@ -338,47 +379,62 @@ fn spawn_stderr_drain(
         const CAP_BYTES: usize = 8 * 1024 * 1024;
         const TRUNCATION_MARKER: &str =
             "[labby] runner stderr truncated after 100000 lines or 8 MiB";
-        let mut lines = TokioBufReader::new(stderr).lines();
-        let mut total_bytes = 0usize;
-        let mut capped = false;
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    if capped {
+        let mut lines = FramedRead::new(stderr, LinesCodec::new_with_max_length(CAP_BYTES));
+        while let Some(result) = lines.next().await {
+            match result {
+                Ok(line) => {
+                    let mut state = buffer.state.lock().await;
+                    if state.capped {
                         continue;
                     }
-                    total_bytes += line.len() + 1;
-                    {
-                        let mut buf = buffer.lines.lock().await;
-                        if buf.len() >= CAP_ENTRIES || total_bytes > CAP_BYTES {
-                            capped = true;
-                            if buf.last().is_none_or(|last| last != TRUNCATION_MARKER) {
-                                if buf.len() >= CAP_ENTRIES {
-                                    buf.pop();
-                                }
-                                buf.push(TRUNCATION_MARKER.to_string());
+                    state.total_bytes = state.total_bytes.saturating_add(line.len() + 1);
+                    if state.lines.len() >= CAP_ENTRIES || state.total_bytes > CAP_BYTES {
+                        state.capped = true;
+                        if state
+                            .lines
+                            .last()
+                            .is_none_or(|last| last != TRUNCATION_MARKER)
+                        {
+                            if state.lines.len() >= CAP_ENTRIES {
+                                state.lines.pop();
                             }
-                        } else {
-                            buf.push(line);
+                            state.lines.push(TRUNCATION_MARKER.to_string());
                         }
+                    } else {
+                        state.lines.push(line);
                     }
+                    drop(state);
                     buffer.notify.notify_waiters();
                 }
-                Ok(None) => break,
-                Err(error) => {
+                Err(tokio_util::codec::LinesCodecError::MaxLineLengthExceeded) => {
+                    let mut state = buffer.state.lock().await;
+                    state.capped = true;
+                    if state
+                        .lines
+                        .last()
+                        .is_none_or(|last| last != TRUNCATION_MARKER)
+                    {
+                        state.lines.push(TRUNCATION_MARKER.to_string());
+                    }
+                    drop(state);
+                    buffer.notify.notify_waiters();
+                }
+                Err(tokio_util::codec::LinesCodecError::Io(error)) => {
                     tracing::warn!(
                         target: "labby_codemode.runner",
                         error = %error,
                         "runner stderr drain failed"
                     );
                     {
-                        let mut buf = buffer.lines.lock().await;
-                        if buf.len() < CAP_ENTRIES {
-                            buf.push(format!("[labby] runner stderr drain failed: {error}"));
+                        let mut state = buffer.state.lock().await;
+                        if state.lines.len() < CAP_ENTRIES {
+                            state
+                                .lines
+                                .push(format!("[labby] runner stderr drain failed: {error}"));
                         }
                     }
                     buffer.notify.notify_waiters();
-                    break;
+                    return;
                 }
             }
         }
@@ -387,32 +443,104 @@ fn spawn_stderr_drain(
 
 #[cfg(test)]
 mod tests {
-    use super::StderrBuffer;
+    use super::{PooledRunner, StderrBuffer};
 
     #[tokio::test]
     async fn stderr_buffer_take_since_and_clear_releases_retained_lines() {
         let buffer = StderrBuffer::new();
-        buffer.lines.lock().await.push("before".to_string());
+        buffer.state.lock().await.lines.push("before".to_string());
         let mark = buffer.mark().await;
         {
-            let mut lines = buffer.lines.lock().await;
-            lines.push("during-one".to_string());
-            lines.push("during-two".to_string());
+            let mut state = buffer.state.lock().await;
+            state.lines.push("during-one".to_string());
+            state.lines.push("during-two".to_string());
         }
 
         let captured = buffer.take_since_and_clear(mark).await;
 
         assert_eq!(captured, ["during-one", "during-two"]);
-        assert!(buffer.lines.lock().await.is_empty());
+        assert!(buffer.state.lock().await.lines.is_empty());
     }
 
     #[tokio::test]
     async fn stderr_buffer_clear_discards_retained_lines() {
         let buffer = StderrBuffer::new();
-        buffer.lines.lock().await.push("discard me".to_string());
+        buffer
+            .state
+            .lock()
+            .await
+            .lines
+            .push("discard me".to_string());
 
         buffer.clear().await;
 
-        assert!(buffer.lines.lock().await.is_empty());
+        assert!(buffer.state.lock().await.lines.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stderr_buffer_clear_resets_per_execution_caps() {
+        let buffer = StderrBuffer::new();
+        {
+            let mut state = buffer.state.lock().await;
+            state.lines.push("[labby] runner stderr truncated".into());
+            state.total_bytes = 8 * 1024 * 1024;
+            state.capped = true;
+        }
+
+        buffer.clear().await;
+
+        let state = buffer.state.lock().await;
+        assert!(state.lines.is_empty());
+        assert_eq!(state.total_bytes, 0);
+        assert!(!state.capped);
+    }
+
+    /// Real KVM smoke. Example:
+    ///
+    /// ```text
+    /// LABBY_MICROSANDBOX_SMOKE_MSB=/absolute/path/to/msb \
+    /// LABBY_MICROSANDBOX_SMOKE_RUNNER=/absolute/path/to/labby \
+    /// LABBY_MICROSANDBOX_SMOKE_IMAGE=debian \
+    /// cargo test -p labby-codemode microsandbox_runner_round_trip -- --ignored
+    /// ```
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires Linux KVM, Microsandbox, a cached image, and a Labby binary"]
+    async fn microsandbox_runner_round_trip() {
+        use futures::StreamExt as _;
+        use tokio::io::AsyncWriteExt as _;
+
+        let msb =
+            std::env::var_os("LABBY_MICROSANDBOX_SMOKE_MSB").expect("LABBY_MICROSANDBOX_SMOKE_MSB");
+        let runner = std::env::var_os("LABBY_MICROSANDBOX_SMOKE_RUNNER")
+            .expect("LABBY_MICROSANDBOX_SMOKE_RUNNER");
+        let image = std::env::var("LABBY_MICROSANDBOX_SMOKE_IMAGE")
+            .expect("LABBY_MICROSANDBOX_SMOKE_IMAGE");
+        let spawn = crate::pool::RunnerSpawn {
+            program: runner.into(),
+            args: vec!["internal".into(), "code-mode-runner".into()],
+        };
+        let microsandbox = crate::pool::MicrosandboxSpawn {
+            executable: msb.into(),
+            image,
+        };
+
+        let mut runner = PooledRunner::spawn(&spawn, Some(&microsandbox), None)
+            .await
+            .expect("spawn microVM");
+        runner
+            .stdin
+            .write_all(b"{\"type\":\"start\",\"code\":\"async () => 42\",\"proxy\":\"\"}\n")
+            .await
+            .expect("write start");
+        runner.stdin.flush().await.expect("flush start");
+        let line = tokio::time::timeout(std::time::Duration::from_secs(15), runner.lines.next())
+            .await
+            .expect("runner response timeout")
+            .expect("runner stdout closed")
+            .expect("runner protocol line");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid protocol JSON");
+        assert_eq!(value["type"], "done");
+        assert_eq!(value["result"]["value"], 42);
     }
 }

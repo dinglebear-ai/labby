@@ -802,6 +802,8 @@ async fn run_http(
     unix_listener_config: Option<HostedUnixConfig>,
     peer_auth_enabled: bool,
 ) -> Result<ExitCode> {
+    #[cfg(feature = "gateway")]
+    let code_mode_shutdown = state.gateway_manager.clone();
     // ── Single-master lock ────────────────────────────────────────────────────
     // Only one HTTP master instance may run per device at a time. Exits
     // immediately with a clear error if the lock is already held by another
@@ -912,14 +914,19 @@ async fn run_http(
             }
         }
     };
-    if let Some(registry) = resource_registry {
+    let hosted_result = if let Some(registry) = resource_registry {
         tokio::select! {
-            result = hosted_listener => result?,
+            result = hosted_listener => result,
             never = prune_resource_leases(registry) => match never {},
         }
     } else {
-        hosted_listener.await?;
+        hosted_listener.await
+    };
+    #[cfg(feature = "gateway")]
+    if let Some(manager) = code_mode_shutdown {
+        manager.shutdown_code_mode_runner_pool().await;
     }
+    hosted_result?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1664,18 +1671,26 @@ async fn run_stdio(
         #[cfg(test)]
         code_mode_widget_callbacks_enabled_for_test: false,
     };
-    let running = server.serve(rmcp::transport::stdio()).await?;
-    tracing::info!(
-        surface = "mcp",
-        service = "stdio",
-        action = "server.ready",
-        subsystem = "mcp_server",
-        phase = "ready",
-        transport = "stdio",
-        services = service_count,
-        "stdio mcp server ready"
-    );
-    running.waiting().await?;
+    let running = server.serve(rmcp::transport::stdio()).await;
+    let server_result: Result<()> = match running {
+        Ok(running) => {
+            tracing::info!(
+                surface = "mcp",
+                service = "stdio",
+                action = "server.ready",
+                subsystem = "mcp_server",
+                phase = "ready",
+                transport = "stdio",
+                services = service_count,
+                "stdio mcp server ready"
+            );
+            running.waiting().await.map(|_| ()).map_err(Into::into)
+        }
+        Err(error) => Err(error.into()),
+    };
+    #[cfg(feature = "gateway")]
+    gateway_manager.shutdown_code_mode_runner_pool().await;
+    server_result?;
     tracing::info!(
         surface = "mcp",
         service = "stdio",

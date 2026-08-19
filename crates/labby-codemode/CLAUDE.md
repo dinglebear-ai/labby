@@ -160,6 +160,12 @@ while guaranteeing JS-state isolation by construction.
   - `LABBY_CODE_MODE_POOL_RECYCLE_AFTER` — executions before recycle (default 100).
   - `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` — max simultaneous ephemeral runners
     (default 8).
+- **Optional microVM boundary.** `LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox`
+  requires absolute `LABBY_CODE_MODE_MICROSANDBOX_EXE` and an already-cached
+  `LABBY_CODE_MODE_MICROSANDBOX_IMAGE`. Each process is created as a restricted,
+  no-network, 1-CPU/256-MiB microVM and attached with `msb exec --stream`; the
+  validated runner executable is its only read-only host mount. `process`
+  remains the default and rollback backend.
 - **Security invariants persist for the pooled process** because they are set
   once at spawn: `env_clear()`, `process_group(0)`/Job Object, `kill_on_drop`,
   `prctl(PR_SET_DUMPABLE, 0)`. The 64 MiB heap / 30 s wall-clock / stack limits are
@@ -249,10 +255,11 @@ items.
 |-----------|--------------|
 | No ambient network APIs | Enforced by QuickJS — no `fetch`, no `XMLHttpRequest`, no Node builtins |
 | No dynamic import of host modules | Enforced by QuickJS module resolver |
-| Process-group guard | Runner spawned with `process_group(0)` (Unix) / Job Object (Windows); `kill_on_drop(true)`; `killpg` reaches grandchildren |
-| Env isolation | **Implemented.** Runner spawned with `env_clear()` (`pool/runner_handle.rs`, in `PooledRunner::spawn`) — the child inherits NO labby env at all (not even an allowlist), so `LABBY_*` secrets and every other ambient var are excluded. |
+| Process-group guard | Runner transport spawned with `process_group(0)` (Unix) / Job Object (Windows); `kill_on_drop(true)`; `killpg` reaches descendants. A Microsandbox runner also owns a cleanup guard that attempts force-removal of its named microVM on eviction/drop. |
+| Env isolation | **Implemented.** Runner transport spawned with `env_clear()` (`pool/runner_handle.rs`, in `PooledRunner::spawn`) — the transport inherits no Labby host environment. Microsandbox receives configuration as validated argv and no host credentials are forwarded; the guest retains only image/runtime defaults. |
+| Optional microVM | **Implemented, opt in on Linux.** Restricted Microsandbox guest; no network; immutable cached image only (`--pull never`); 1 CPU; 256 MiB; process-wide admission defaults to 4 guests (hard cap 16); lifecycle tied to the pooled runner. Explicit cleanup is bounded and failures fall back to a bounded worker queue; unconfirmed cleanup fails closed. Labeled stale guests are reconciled at startup and graceful shutdown awaits pool drainage. A 24-hour guest backstop covers ungraceful host death, and live pools proactively recycle before it. Only the validated Labby executable is mounted read-only. MCP authority and secrets remain in the host. |
 | `PR_SET_DUMPABLE` | **Implemented.** `runner.rs:22` calls `prctl(PR_SET_DUMPABLE, 0)` as the runner's first act on Linux, blocking `/proc/<pid>/environ` readback. Failure is non-fatal and warns via stderr (drained into the parent's response logs). |
-| Per-run cwd isolation | Each runner has a long-lived spawn `TempDir`; the runner creates a FRESH per-execution jail subdir under it on every `Start` and removes the previous one (`runner.rs::reset_execution_jail`), so a pooled process never accumulates cwd state across runs. The `TempDir` is removed when the runner handle drops. |
+| Per-run cwd isolation | A direct-process runner has a long-lived host `TempDir`; a Microsandbox runner creates its own guest-local `TempDir`. In both cases the runner creates a FRESH per-execution jail subdir on every `Start` and removes the previous one (`runner.rs::reset_execution_jail`), so a pooled process never accumulates cwd state across runs. |
 | Artifact path containment | Enforced: `artifacts.rs` rejects any traversal/absolute component up front (`reject_path_traversal`), normalizes `\`→`/`, joins lexically under the per-run jail root, then walks the destination's ancestors with `symlink_metadata` (`reject_existing_symlink_ancestors`) to reject any existing symlink in the path. (Lexical + lstat-walk containment — it deliberately does **not** call `std::fs::canonicalize`.) |
 | Artifact size cap | Enforced: 8 MiB default (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB`) |
 | Tool call budget | Not enforced. Code Mode is bounded by wall-clock timeout, sandbox memory/stack, output/log/artifact caps, and host-side tool policy. |
@@ -273,6 +280,8 @@ env_clear lands" comment — that state is in the past.
 | `runner_drive.rs` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
 | `pool.rs` | `RunnerPool` + `RunnerLease`: bounded warm pool, free-list slot ownership, recycle-after-K, bounded ephemeral overflow, kill switch. |
 | `pool/runner_handle.rs` | `PooledRunner`: one long-lived runner process + its stdin/lines/stderr-drain, process-group/Job-Object guard, spawn (`env_clear`, `process_group`, `kill_on_drop`). |
+| `pool/microsandbox.rs` | Opt-in microVM create, `exec --stream` attachment, bounded startup, and force-remove lifecycle guard. |
+| `runner_backend.rs` | Fail-closed selection and validation for the direct-process and opt-in Microsandbox runner transports. |
 | `pool/config.rs` | `PoolConfig`: env-driven pool size / recycle / overflow knobs and the kill switch. |
 | `runner_io.rs` | Framed stdio line protocol with the child process. |
 | `execute.rs` | `execute()` entry point: build context, inject preamble, call driver, return result. Also owns mcp-ui widget capture: `extract_ui_link` records an upstream result's `_meta.ui` (last-wins, into the per-run `CodeModeBroker::ui_capture` sink) before the envelope is unwrapped, and `apply_ui_opt_in` surfaces it on the final response while preserving `{ __ui: <result> }` unwrapping compatibility. |
