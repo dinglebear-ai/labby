@@ -8,7 +8,10 @@
 //! select loop readable.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -54,6 +57,40 @@ use finalize::{code_mode_timeout_error, finalize_done, sorted_calls};
 use steps::{handle_step_begin_event, handle_step_result_event};
 
 static LOCAL_PROVIDER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static RESULT_ACK_RESERVE_USES: AtomicU64 = AtomicU64::new(0);
+static SETTLEMENT_WATCHDOG_EXPIRIES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CodeModeRuntimeCounters {
+    pub result_ack_reserve_uses: u64,
+    pub settlement_watchdog_expiries: u64,
+}
+
+#[cfg(test)]
+#[must_use]
+pub(crate) fn code_mode_runtime_counters() -> CodeModeRuntimeCounters {
+    CodeModeRuntimeCounters {
+        result_ack_reserve_uses: RESULT_ACK_RESERVE_USES.load(Ordering::Relaxed),
+        settlement_watchdog_expiries: SETTLEMENT_WATCHDOG_EXPIRIES.load(Ordering::Relaxed),
+    }
+}
+
+fn increment_saturating_counter(counter: &AtomicU64) -> u64 {
+    match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    }) {
+        Ok(previous) | Err(previous) => previous.saturating_add(1),
+    }
+}
+
+fn record_result_ack_reserve_use() -> u64 {
+    increment_saturating_counter(&RESULT_ACK_RESERVE_USES)
+}
+
+fn record_settlement_watchdog_expiry() -> u64 {
+    increment_saturating_counter(&SETTLEMENT_WATCHDOG_EXPIRIES)
+}
 
 const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
 /// Once every pending external tool call has settled, the sandbox has no timers
@@ -185,6 +222,10 @@ struct DriveState {
     /// ordinary budget) against `MAX_INTERNAL_CALLS_PER_RUN`.
     internal_calls_enqueued: usize,
     calltool_result_max_bytes: usize,
+    /// Whether this run has already recorded that its external tool deadline
+    /// reserved the result-acknowledgement control-plane slice. The counter is
+    /// per execution, not per tool call, so fan-out does not inflate it.
+    result_ack_reserve_observed: bool,
     /// Monotonic count of `step_begin` events seen so far (the journal ordinate).
     next_step_ordinal: u64,
     /// Maps a step's runner `seq` -> (step_ordinal, name), populated at
@@ -210,6 +251,7 @@ impl DriveState {
             max_calls_per_run: max_calltool_per_run(),
             internal_calls_enqueued: 0,
             calltool_result_max_bytes: calltool_result_max_bytes(),
+            result_ack_reserve_observed: false,
             next_step_ordinal: 0,
             step_ordinals: std::collections::HashMap::new(),
             step_value_bytes: 0,
@@ -447,13 +489,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 && pending_tool_calls.is_empty();
                             terminate_code_mode_runner(child, child_pid).await;
                             let error = if settlement_grace_timed_out {
+                                let settlement_watchdog_expiry_count =
+                                    record_settlement_watchdog_expiry();
                                 tracing::warn!(
                                     surface = "dispatch",
                                     service = "code_mode",
                                     action = "codemode.settlement",
+                                    event = "watchdog_expired",
                                     kind = "runner_settlement_timeout",
                                     call_count = state.calls.len(),
                                     grace_ms = RUNNER_SETTLEMENT_GRACE.as_millis(),
+                                    settlement_watchdog_expiry_count,
                                     "Code Mode runner failed to settle after all tool calls completed"
                                 );
                                 CodeModeExecutionError::with_trace(
@@ -601,12 +647,30 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                         );
                                     }
                                     Ok(None) => {
+                                        let now = tokio::time::Instant::now();
+                                        let tool_deadline = external_tool_deadline(now, deadline);
+                                        if tool_deadline < deadline
+                                            && !state.result_ack_reserve_observed
+                                        {
+                                            state.result_ack_reserve_observed = true;
+                                            let result_ack_reserve_use_count =
+                                                record_result_ack_reserve_use();
+                                            tracing::debug!(
+                                                surface = "dispatch",
+                                                service = "code_mode",
+                                                action = "codemode.result_ack.reserve",
+                                                event = "armed",
+                                                reserve_ms = RUNNER_RESULT_ACK_RESERVE.as_millis(),
+                                                result_ack_reserve_use_count,
+                                                "reserved Code Mode result acknowledgement budget"
+                                            );
+                                        }
                                         enqueue_tool_call(
                                             self,
                                             seq,
                                             id,
                                             params,
-                                            deadline,
+                                            tool_deadline,
                                             execution_start,
                                             cfg,
                                             &cancellation,
@@ -859,7 +923,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     seq: u64,
     id: String,
     params: Value,
-    deadline: tokio::time::Instant,
+    tool_deadline: tokio::time::Instant,
     execution_start: std::time::Instant,
     cfg: &RunnerConfig,
     cancellation: &CancellationToken,
@@ -872,7 +936,6 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let surface = cfg.surface;
     let execution_id = cfg.execution_id.clone();
     let cancellation = cancellation.clone();
-    let tool_deadline = external_tool_deadline(tokio::time::Instant::now(), deadline);
     pending_tool_calls.push(Box::pin(async move {
         let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
@@ -1520,6 +1583,7 @@ mod tests {
             delay: Duration::from_secs(2),
         };
         let broker = CodeModeBroker::new(Some(&host));
+        let counters_before = code_mode_runtime_counters();
         let script = r#"
 IFS= read -r _
 printf '%s\n' '{"type":"tool_call","seq":1,"id":"stub::slow","params":{}}'
@@ -1548,6 +1612,11 @@ sleep 3600
                 assert_eq!(response.calls.len(), 1);
                 assert!(!response.calls[0].ok);
                 assert_eq!(response.calls[0].error_kind.as_deref(), Some("timeout"));
+                assert!(
+                    code_mode_runtime_counters().result_ack_reserve_uses
+                        >= counters_before.result_ack_reserve_uses.saturating_add(1),
+                    "execution should record arming the result acknowledgement reserve"
+                );
             }
             DriveOutcome::ExecutionError(error)
             | DriveOutcome::RunnerUnhealthy(error)
@@ -2198,6 +2267,7 @@ sleep 3600
 "#;
         let host = NoopHost::default();
         let broker = CodeModeBroker::new(Some(&host));
+        let counters_before = code_mode_runtime_counters();
         let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn script stub");
         let started = std::time::Instant::now();
         let outcome = broker
@@ -2212,6 +2282,13 @@ sleep 3600
             DriveOutcome::RunnerUnhealthy(err) => {
                 assert_eq!(err.kind(), "timeout");
                 assert!(err.to_string().contains("did not settle"));
+                assert!(
+                    code_mode_runtime_counters().settlement_watchdog_expiries
+                        >= counters_before
+                            .settlement_watchdog_expiries
+                            .saturating_add(1),
+                    "genuine post-tool watchdog expiry should increment its runtime counter"
+                );
             }
             DriveOutcome::Completed(_)
             | DriveOutcome::ExecutionError(_)

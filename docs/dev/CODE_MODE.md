@@ -724,7 +724,13 @@ run, so isolation holds by construction.
   overall execution deadline. Only expiry of the full dedicated grace is reported
   as a runner settlement timeout; an earlier outer deadline remains an ordinary
   Code Mode timeout. Very short executions that cannot fit the reserve keep their
-  original tool deadline.
+  original tool deadline. Reserve activation is logged once per execution at
+  `DEBUG` with `action = "codemode.result_ack.reserve"`, `event = "armed"`, and
+  the monotonic `result_ack_reserve_use_count`. A genuine full-grace watchdog
+  expiry is logged at `WARN` with `action = "codemode.settlement"`,
+  `event = "watchdog_expired"`, and `settlement_watchdog_expiry_count`. These
+  process-wide counters remain local observability data and are not returned to
+  Code Mode callers.
 - **Configuration / kill switch** (environment, read at startup):
   - `LABBY_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
     `16`). **`LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::gateway::service_registry::GatewayServiceRegistry;
 use crate::gateway::types::{
-    DependencyHintView, GatewayConfigView, GatewayRuntimeView, ServiceConfigFieldView,
-    ServiceConfigView,
+    DependencyHintView, GatewayConfigView, GatewayHeaderRecoveryMetricsView, GatewayRuntimeView,
+    ServiceConfigFieldView, ServiceConfigView,
 };
 use crate::gateway::view_models::{
     ServerConfigSummaryView, ServerView, SurfaceStateView, SurfaceStatesView,
@@ -686,6 +686,7 @@ pub(super) async fn runtime_view(
 
     let last_error = operator_visible_upstream_error(pool.upstream_last_error(name).await);
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
+    let header_recovery = pool.header_recovery_metrics(name);
     let tool_health = pool.upstream_tool_health(name).await;
     let connected = last_error.is_none()
         && tool_health
@@ -706,12 +707,45 @@ pub(super) async fn runtime_view(
         supports_skills: summary.supports_skills,
         last_error,
         dependency_hint,
+        header_recovery: GatewayHeaderRecoveryMetricsView {
+            mismatch_detected: header_recovery.mismatch_detected,
+            schema_refreshes: header_recovery.schema_refreshes,
+            retry_successes: header_recovery.retry_successes,
+            retry_failures: header_recovery.retry_failures,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn runtime_view_projects_header_recovery_metrics() {
+        let store = crate::upstream::pool::HeaderRecoveryMetricsStore::default();
+        assert_eq!(store.record_mismatch_for_test("fixture"), 1);
+        let pool = UpstreamPool::new().with_header_recovery_metrics_store(store);
+
+        let view = runtime_view(Some(&pool), "fixture", None).await;
+        assert_eq!(view.header_recovery.mismatch_detected, 1);
+        let serialized = serde_json::to_value(&view).expect("runtime view serializes");
+        assert_eq!(
+            serialized["header_recovery"]["mismatch_detected"],
+            serde_json::json!(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_view_omits_zero_header_recovery_metrics() {
+        let pool = UpstreamPool::new();
+        let view = runtime_view(Some(&pool), "fixture", None).await;
+        let serialized = serde_json::to_value(&view).expect("runtime view serializes");
+
+        assert!(
+            serialized.get("header_recovery").is_none(),
+            "zero-valued recovery metrics should not add status noise"
+        );
+    }
 
     // ── Stdio command projection ──────────────────────────────────────────────
 
