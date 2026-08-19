@@ -32,7 +32,7 @@ use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_coalesce::schedule_catalog_notification;
@@ -344,7 +344,12 @@ impl LabMcpServer {
                     .unwrap_or("codemode");
                 if !matches!(
                     target,
-                    "codemode" | "gateway_status" | "server_logs" | "add_server" | "all"
+                    "codemode"
+                        | "gateway_status"
+                        | "server_logs"
+                        | "add_server"
+                        | "settings"
+                        | "all"
                 ) {
                     let envelope = build_error_extra(
                         &service,
@@ -352,7 +357,7 @@ impl LabMcpServer {
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
                         &serde_json::json!({
-                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "all"]
+                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
                         }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
@@ -451,11 +456,13 @@ impl LabMcpServer {
                     "gateway_status" => enabled_apps.gateway_status,
                     "server_logs" => enabled_apps.server_logs,
                     "add_server" => enabled_apps.add_server,
+                    "settings" => enabled_apps.settings,
                     "all" => {
                         enabled_code_mode
                             && enabled_apps.gateway_status
                             && enabled_apps.server_logs
                             && enabled_apps.add_server
+                            && enabled_apps.settings
                     }
                     _ => unreachable!("target validated above"),
                 };
@@ -467,6 +474,7 @@ impl LabMcpServer {
                         }
                         "server_logs" => previous_apps.server_logs != enabled_apps.server_logs,
                         "add_server" => previous_apps.add_server != enabled_apps.add_server,
+                        "settings" => previous_apps.settings != enabled_apps.settings,
                         "all" => {
                             previous_code_mode != enabled_code_mode || previous_apps != enabled_apps
                         }
@@ -511,6 +519,10 @@ impl LabMcpServer {
                         "add_server": {
                             "enabled": enabled_apps.add_server,
                             "tool": ADD_SERVER_TOOL_NAME,
+                        },
+                        "settings": {
+                            "enabled": enabled_apps.settings,
+                            "tool": SETTINGS_TOOL_NAME,
                         },
                     },
                     "notification_scheduled": notification_scheduled,
@@ -760,6 +772,60 @@ impl LabMcpServer {
                         valid: vec!["open".to_string(), "refresh".to_string()],
                         hint: None,
                     }),
+                };
+                let result =
+                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let elapsed_ms = start.elapsed().as_millis();
+                let input_tokens = estimate_tokens_args(&args);
+                let (result, outcome) = format_dispatch_result(
+                    result,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    &self.request_subject_log_tag(&context),
+                    self.request_actor_key(&context),
+                    input_tokens,
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    outcome,
+                )
+                .await;
+                return Ok(result.into());
+            }
+
+            let handles_settings = service == SETTINGS_TOOL_NAME
+                && self.mcp_apps_config().await.settings
+                && admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
+                && self.route_scope.allows_service("setup")
+                && self.service_visible_on_mcp("setup").await;
+            if handles_settings {
+                let synthetic_action = if action.is_empty() {
+                    "open"
+                } else {
+                    action.as_str()
+                };
+                let setup_action = match synthetic_action {
+                    "open" | "schema" => Some("settings.schema"),
+                    "state" => Some("settings.state"),
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                let result = if let Some(setup_action) = setup_action {
+                    crate::dispatch::setup::dispatch(setup_action, params).await
+                } else {
+                    Err(ToolError::UnknownAction {
+                        message: format!("unknown Settings action `{synthetic_action}`"),
+                        valid: vec!["open", "schema", "state", "config.update", "env.update"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                        hint: None,
+                    })
                 };
                 let result =
                     result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
@@ -1215,6 +1281,25 @@ impl LabMcpServer {
                         .is_some_and(|entry| {
                             entry.actions.iter().any(|candidate| {
                                 candidate.name == gateway_action && candidate.destructive
+                            })
+                        })
+                });
+            }
+
+            if service == SETTINGS_TOOL_NAME {
+                let setup_action = match action {
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                return setup_action.is_some_and(|setup_action| {
+                    self.registry
+                        .services()
+                        .iter()
+                        .find(|entry| entry.name == "setup")
+                        .is_some_and(|entry| {
+                            entry.actions.iter().any(|candidate| {
+                                candidate.name == setup_action && candidate.destructive
                             })
                         })
                 });

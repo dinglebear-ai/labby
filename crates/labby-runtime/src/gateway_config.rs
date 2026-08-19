@@ -102,6 +102,9 @@ pub struct McpAppsConfig {
     /// Advertise the synthetic Gateway Status app tool and its UI resources.
     #[serde(default = "default_true")]
     pub gateway_status: bool,
+    /// Advertise the schema-backed Settings app tool and its UI resources.
+    #[serde(default = "default_true")]
+    pub settings: bool,
 }
 
 impl Default for McpAppsConfig {
@@ -110,6 +113,7 @@ impl Default for McpAppsConfig {
             add_server: true,
             server_logs: true,
             gateway_status: true,
+            settings: true,
         }
     }
 }
@@ -2008,16 +2012,19 @@ client_secret_env = "SECRET"
         assert!(cfg.add_server);
         assert!(cfg.server_logs);
         assert!(cfg.gateway_status);
+        assert!(cfg.settings);
     }
 
     #[test]
     fn mcp_apps_config_supports_independent_visibility_switches() {
-        let cfg: McpAppsConfig =
-            toml::from_str("add_server = false\nserver_logs = true\ngateway_status = false\n")
-                .unwrap();
+        let cfg: McpAppsConfig = toml::from_str(
+            "add_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
+        )
+        .unwrap();
         assert!(!cfg.add_server);
         assert!(cfg.server_logs);
         assert!(!cfg.gateway_status);
+        assert!(!cfg.settings);
     }
 
     #[test]

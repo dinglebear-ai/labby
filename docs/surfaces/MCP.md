@@ -51,7 +51,7 @@ Every builtin service tool returns the dispatch envelope as
 { "ok": true, "service": "gateway", "action": "gateway.list", "data": {} }
 ```
 
-Builtin service tools — plus the `add_server` and `gateway_status` admin app
+Builtin service tools — plus the `add_server`, `gateway_status`, and `settings` admin app
 tools — advertise this envelope as their MCP `outputSchema`. The normative
 contract is [mcp-tool-output.md](../contracts/mcp-tool-output.md) and the
 published schema is
@@ -115,7 +115,7 @@ inspect the current route-scoped tool catalog.
 
 The root gateway also advertises `mcp_app`, an always-on MCP App switchboard
 for Labby's own UI surfaces. It manages `codemode`, `gateway_status`,
-`server_logs`, `add_server`, or `all`. The default target remains `codemode` for
+`server_logs`, `add_server`, `settings`, or `all`. The default target remains `codemode` for
 backward compatibility with the original inspector-only control contract.
 
 Reading status or opening the manager requires `lab` or `lab:admin`; changing
@@ -128,8 +128,9 @@ upstream pool.
 Disabling a surface removes its app tool/metadata and owned `ui://` resources,
 and direct reads of a disabled owned resource fail as unknown. It does not tear
 down the underlying text/service capability where one exists: disabling the
-Code Mode inspector leaves `codemode` available, and disabling the Server Logs
-app leaves the `server_logs` service tool available without app metadata. The
+Code Mode inspector leaves `codemode` available, disabling the Server Logs
+app leaves the `server_logs` service tool available without app metadata, and
+disabling Settings leaves the underlying `setup` service contract intact. The
 Code Mode inspector retains the existing `code_mode.mcp_ui_enabled` setting;
 the other switches live under `[mcp_apps]`.
 
@@ -194,7 +195,7 @@ advisory to clients but not inert.
 Per-action truth (`destructive`, `requires_admin`) is available for the seven
 registered service tools via `{"action": "help"}` or the `lab://<service>/actions`
 resource. It is **not** available for `codemode`, `codemode_ui`, `mcp_app`,
-`add_server`, or `gateway_status`, which are not registry services.
+`add_server`, `gateway_status`, or `settings`, which are not registry services.
 
 Note that tool visibility and `lab://<service>/actions` are scoped by
 `route_scope`, **not** by the caller's admin scope: action metadata crosses that

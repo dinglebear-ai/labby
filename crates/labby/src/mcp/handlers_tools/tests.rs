@@ -17,18 +17,20 @@ use crate::dispatch::upstream::types::{
 use crate::mcp::catalog::ToolCatalogSnapshot;
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
     CODE_MODE_APP_URI, CODE_MODE_APP_URI_PREFIX, GATEWAY_STATUS_APP_SKYBRIDGE_URI,
     GATEWAY_STATUS_APP_URI, MCP_APPS_APP_SKYBRIDGE_URI, MCP_APPS_APP_URI,
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
+    SETTINGS_APP_SKYBRIDGE_URI, SETTINGS_APP_URI,
 };
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
     code_mode_trace_output_schema, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta, strip_resource_backed_ui_meta,
+    mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta, settings_tool_meta,
+    settings_tool_schema, strip_resource_backed_ui_meta,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -978,6 +980,7 @@ fn mcp_app_schema_and_meta_cover_managed_apps() {
             "gateway_status",
             "server_logs",
             "add_server",
+            "settings",
             "all"
         ])
     );
@@ -1081,6 +1084,27 @@ fn gateway_status_tool_meta_and_schema_bind_the_status_app() {
         serde_json::json!(["open", "refresh"])
     );
     assert_eq!(schema["additionalProperties"], false);
+}
+
+#[test]
+fn settings_tool_meta_and_schema_bind_the_settings_app() {
+    let meta = settings_tool_meta(SETTINGS_TOOL_NAME);
+    assert!(
+        meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| { uri.starts_with(SETTINGS_APP_URI) && uri.contains("?v=") })
+    );
+    assert!(
+        meta.0["openai/outputTemplate"].as_str().is_some_and(|uri| {
+            uri.starts_with(SETTINGS_APP_SKYBRIDGE_URI) && uri.contains("?v=")
+        })
+    );
+    let schema = settings_tool_schema();
+    let actions = schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("Settings actions");
+    assert!(actions.contains(&serde_json::json!("state")));
+    assert!(actions.contains(&serde_json::json!("config.update")));
 }
 
 #[test]
@@ -1515,6 +1539,7 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
     assert!(cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
     assert!(cfg.mcp_apps.add_server);
+    assert!(cfg.mcp_apps.settings);
     assert!(running.service().code_mode_app_state.is_enabled());
 
     let tools = running
@@ -1559,6 +1584,7 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
         CODE_MODE_APP_URI_PREFIX,
         GATEWAY_STATUS_APP_URI,
         ADD_SERVER_APP_URI,
+        SETTINGS_APP_URI,
     ] {
         assert!(
             resources
@@ -1669,7 +1695,13 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert_eq!(structured["target"], "all");
     assert_eq!(structured["enabled"], false);
     assert_eq!(structured["changed"], true);
-    for target in ["codemode", "gateway_status", "server_logs", "add_server"] {
+    for target in [
+        "codemode",
+        "gateway_status",
+        "server_logs",
+        "add_server",
+        "settings",
+    ] {
         assert_eq!(structured["apps"][target]["enabled"], false, "{target}");
     }
 
@@ -1678,6 +1710,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert!(!cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
     assert!(!cfg.mcp_apps.add_server);
+    assert!(!cfg.mcp_apps.settings);
     assert!(!running.service().code_mode_app_state.is_enabled());
 
     let tools = running
@@ -1695,6 +1728,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
     assert!(!names.contains(&GATEWAY_STATUS_TOOL_NAME));
     assert!(!names.contains(&ADD_SERVER_TOOL_NAME));
+    assert!(!names.contains(&SETTINGS_TOOL_NAME));
     let logs = tools
         .tools
         .iter()
@@ -1722,6 +1756,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         GATEWAY_STATUS_APP_URI,
         SERVER_LOGS_APP_URI,
         ADD_SERVER_APP_URI,
+        SETTINGS_APP_URI,
     ] {
         assert!(
             resources
@@ -1736,6 +1771,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         GATEWAY_STATUS_APP_URI,
         SERVER_LOGS_APP_URI,
         ADD_SERVER_APP_URI,
+        SETTINGS_APP_URI,
     ] {
         let stale = running
             .service()
@@ -1776,6 +1812,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert!(cfg.mcp_apps.gateway_status);
     assert!(cfg.mcp_apps.server_logs);
     assert!(cfg.mcp_apps.add_server);
+    assert!(cfg.mcp_apps.settings);
     assert!(running.service().code_mode_app_state.is_enabled());
 }
 
@@ -3857,9 +3894,10 @@ async fn list_tools_paginates_large_builtin_catalog() {
         )
         .await
         .expect("third page");
-    assert_eq!(third.tools.len(), 51);
+    assert_eq!(third.tools.len(), 52);
     assert_eq!(third.tools[0].name.as_ref(), "service_199");
     assert_eq!(third.tools[50].name.as_ref(), "service_249");
+    assert_eq!(third.tools[51].name.as_ref(), SETTINGS_TOOL_NAME);
     assert!(third.next_cursor.is_none());
     assert!(
         running
@@ -3915,8 +3953,9 @@ async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
     let rebuilt = collect_names(reverse_large_test_registry(250)).await;
 
     assert_eq!(ascending, rebuilt);
-    assert_eq!(ascending.len(), 251);
+    assert_eq!(ascending.len(), 252);
     assert_eq!(ascending[0], MCP_APP_TOOL_NAME);
+    assert_eq!(ascending[251], SETTINGS_TOOL_NAME);
     assert!(ascending.is_sorted());
 }
 
@@ -5544,5 +5583,43 @@ async fn call_tool_add_server_denies_non_admin_scope_at_dispatch() {
     assert_eq!(
         structured["service"],
         Value::String(ADD_SERVER_TOOL_NAME.into())
+    );
+}
+
+#[tokio::test]
+async fn settings_mutations_use_the_setup_destructive_policy() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+
+    for action in ["config.update", "env.update"] {
+        let request = CallToolRequestParams::new(SETTINGS_TOOL_NAME).with_arguments(
+            serde_json::Map::from_iter([("action".to_string(), Value::String(action.to_string()))]),
+        );
+        assert!(
+            running
+                .service()
+                .tool_request_is_destructive(&request, &context)
+                .await,
+            "Settings mutation `{action}` must inherit the destructive setup action policy"
+        );
+    }
+
+    let read = CallToolRequestParams::new(SETTINGS_TOOL_NAME).with_arguments(
+        serde_json::Map::from_iter([("action".to_string(), Value::String("state".to_string()))]),
+    );
+    assert!(
+        !running
+            .service()
+            .tool_request_is_destructive(&read, &context)
+            .await
     );
 }

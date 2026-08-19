@@ -29,7 +29,7 @@ use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 
 // ── FR-2a (issue #210, lab-41e7m.5): single audience-free authorization gates ──
@@ -378,6 +378,17 @@ impl PeerContract {
         if self.audience.admin_apps_visible && self.gateway_status_app_available().await {
             let tool = self.registry.permanent_tools().gateway_status_tool();
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
+            descriptors.push(tool);
+        }
+
+        #[cfg(feature = "gateway")]
+        if self.audience.admin_apps_visible
+            && self.mcp_apps_config().await.settings
+            && self.route_scope.allows_service("setup")
+            && self.service_visible_on_mcp("setup").await
+        {
+            let tool = self.registry.permanent_tools().settings_tool();
+            advertised_names.insert(SETTINGS_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
 

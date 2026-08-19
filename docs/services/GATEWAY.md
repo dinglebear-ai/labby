@@ -252,6 +252,23 @@ missing, compare the running `labby --version` and binary with the build that
 introduced `gateway_status`; updating a source checkout does not replace an
 already-running service binary.
 
+### Settings MCP App
+
+Admin-capable MCP Apps hosts receive a synthetic `settings` tool bound to
+`ui://lab/settings/editor`. The responsive app reads Labby's canonical settings
+schema and presents section-scoped controls for Code Mode, proxying, surfaces,
+features, and other safe scalar settings. Read-only and advanced values remain
+redacted; restart requirements and effective value sources stay visible.
+
+The callbacks delegate to the existing `setup` service's `settings.schema`,
+`settings.state`, `settings.config.update`, and `settings.env.update` actions.
+The tool and resource require `lab:admin` and are omitted when the active route
+does not expose `setup`. Writes retain the setup dispatcher's backup-first,
+atomic-write, validation, and MRTR elicitation behavior. `config.update` and
+`env.update` inherit the destructive policy of their canonical `setup` actions;
+the app does not send a payload-level confirmation flag or bypass the host's
+native confirmation UI.
+
 `code_mode.result_shape_policy` defaults to `"off"`. When set to `"truncate"`,
 Labby shapes only successful completed final `result` values after the `__ui`
 unwrap and before envelope truncation. Sandbox-visible `callTool()` and

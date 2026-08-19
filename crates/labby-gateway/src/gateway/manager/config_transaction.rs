@@ -306,7 +306,7 @@ impl GatewayManager {
         self.backup_config_before_commit(&previous_revision).await?;
         self.write_config_file(&candidate).await?;
         match self
-            .reload_with_origin_unlocked(origin.as_deref(), owner.clone())
+            .reload_with_origin_unlocked_transactional(origin.as_deref(), owner.clone())
             .await
         {
             Ok(diff) => {
@@ -352,7 +352,7 @@ impl GatewayManager {
                     )));
                 }
                 if let Err(rollback_error) = self
-                    .reload_with_origin_unlocked(origin.as_deref(), owner)
+                    .reload_with_origin_unlocked_transactional(origin.as_deref(), owner)
                     .await
                 {
                     tracing::error!(

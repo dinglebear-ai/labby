@@ -176,6 +176,7 @@
 # add_server = true                         # default: true
 # server_logs = true                        # default: true
 # gateway_status = true                     # default: true
+# settings = true                           # default: true
 
 # ── Code Mode `openapi` provider ─────────────────────────────────────────────
 #
