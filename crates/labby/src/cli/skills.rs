@@ -1,4 +1,4 @@
-use Future;
+use std::future::Future;
 use std::process::ExitCode;
 
 use anyhow::Result;

@@ -9,7 +9,7 @@ pub(crate) use crate::skills::is_skill_uri;
 use crate::skills::{
     first_party_skill_entry, list_first_party_skills, read_first_party_skill_file,
 };
-use Future;
+use std::future::Future;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::wire::{
