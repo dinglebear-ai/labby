@@ -74,7 +74,10 @@ use super::super::types::UpstreamCapability;
 use super::UpstreamConnection;
 use super::UpstreamPool;
 use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
-use super::connect::{ProgressNotificationInterceptor, connect_upstream_with_handler_and_progress};
+use super::connect::{
+    OrderedRelayNotification, RelayNotificationInterceptor,
+    connect_upstream_with_handler_and_notifications,
+};
 use super::entries::{
     prompt_exposed, resolve_request_prompt_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
@@ -593,11 +596,20 @@ impl RelayClientHandler {
         }
     }
 
-    fn progress_interceptor(&self) -> ProgressNotificationInterceptor {
+    fn notification_interceptor(&self) -> RelayNotificationInterceptor {
         let handler = self.clone();
-        Arc::new(move |params| {
+        Arc::new(move |notification| {
             let handler = handler.clone();
-            Box::pin(async move { handler.forward_progress(params).await })
+            Box::pin(async move {
+                match notification {
+                    OrderedRelayNotification::Progress(params) => {
+                        handler.forward_progress(params).await;
+                    }
+                    OrderedRelayNotification::TaskStatus(params) => {
+                        handler.handle_task_status(params).await;
+                    }
+                }
+            })
         })
     }
 
@@ -630,6 +642,26 @@ impl RelayClientHandler {
                 );
             }
         }
+    }
+
+    async fn handle_task_status(&self, params: TaskStatusNotificationParams) {
+        let native_task_id = params.task.task.task_id.clone();
+        let status = params.task.status();
+        tracing::debug!(
+            upstream = %self.upstream_name,
+            native_task_id,
+            ?status,
+            "received upstream task notification"
+        );
+        let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
+            tracing::debug!(
+                upstream = %self.upstream_name,
+                native_task_id,
+                "queued task notification until gateway task registration"
+            );
+            return;
+        };
+        self.forward_task_status(params).await;
     }
 }
 
@@ -746,23 +778,7 @@ impl ClientHandler for RelayClientHandler {
         params: TaskStatusNotificationParams,
         _context: NotificationContext<RoleClient>,
     ) {
-        let native_task_id = params.task.task.task_id.clone();
-        let status = params.task.status();
-        tracing::debug!(
-            upstream = %self.upstream_name,
-            native_task_id,
-            ?status,
-            "received upstream task notification"
-        );
-        let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
-            tracing::debug!(
-                upstream = %self.upstream_name,
-                native_task_id,
-                "queued task notification until gateway task registration"
-            );
-            return;
-        };
-        self.forward_task_status(params).await;
+        self.handle_task_status(params).await;
     }
 
     async fn on_custom_notification(
@@ -1076,9 +1092,9 @@ impl UpstreamPool {
     /// mapping unambiguous even though the connection is reused across calls
     /// within the session.
     ///
-    /// Reuses the generic relay connection seam, including its sequential
-    /// progress-notification transport interceptor, so every transport (HTTP,
-    /// WebSocket, stdio, OAuth-HTTP) and the stdio
+    /// Reuses the generic relay connection seam, including its sequential,
+    /// cancellation-safe progress/task-status notification transport, so every
+    /// transport (HTTP, WebSocket, stdio, OAuth-HTTP) and the stdio
     /// process-reaping guard work unchanged. `subject` is forwarded for
     /// OAuth-scoped upstreams (`None` for the common non-OAuth case).
     ///
@@ -2108,8 +2124,8 @@ impl UpstreamPool {
             self.notification_tx.clone(),
             subject.is_none(),
         );
-        let progress_interceptor = handler.progress_interceptor();
-        let (conn, _tools) = match connect_upstream_with_handler_and_progress(
+        let notification_interceptor = handler.notification_interceptor();
+        let (conn, _tools) = match connect_upstream_with_handler_and_notifications(
             config,
             subject,
             self.oauth_client_cache.as_ref(),
@@ -2117,7 +2133,7 @@ impl UpstreamPool {
             self.runtime_owner.as_ref(),
             Some(&self.shared_http_client),
             handler,
-            Some(progress_interceptor),
+            Some(notification_interceptor),
         )
         .await
         {

@@ -28,16 +28,18 @@
 //!
 //! `normalize_upstream_result` lives in `upstream.rs`.
 
-use std::{future::Future, pin::Pin, time::Instant};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
-use labby_gateway::upstream::pool::CapabilityCallError;
+use labby_gateway::upstream::pool::{CapabilityCallError, TaskRouteAuthorization, UpstreamPool};
 use labby_gateway::upstream::tool_error::{mcp_error_data_kind, safety_hints_from_annotations};
 use labby_runtime::agent_error::sanitize_error_text;
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolRequestParams, CallToolResponse, ClientCapabilities};
-use rmcp::service::RequestContext;
+use rmcp::model::{CallToolRequestParams, CallToolResponse, ClientCapabilities, RequestId};
+use rmcp::service::{Peer, RequestContext};
+use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::mcp::context::{
     auth_context_from_extensions, oauth_upstream_subject_for_request, redacted_oauth_subject_label,
@@ -74,9 +76,7 @@ fn relay_capabilities_for_request(request: &CallToolRequestParams) -> Option<Cli
     crate::mcp::context::forwardable_client_capabilities(request.meta.as_ref())
 }
 
-fn relay_cancellation_token(
-    context: &RequestContext<RoleServer>,
-) -> tokio_util::sync::CancellationToken {
+fn relay_cancellation_token(context: &RequestContext<RoleServer>) -> CancellationToken {
     context
         .extensions
         .get::<LabRequestCancellation>()
@@ -190,6 +190,55 @@ fn upstream_transport_error_envelope(
 /// `ErrorData`).
 enum UpstreamCallFailure {
     Classified(Box<CapabilityCallError>),
+}
+
+struct AbortTaskOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn call_tool_relayed_on_fresh_stack(
+    pool: Arc<UpstreamPool>,
+    config: UpstreamConfig,
+    oauth_subject: Option<String>,
+    params: CallToolRequestParams,
+    downstream: Peer<RoleServer>,
+    downstream_request_id: RequestId,
+    downstream_cancel: CancellationToken,
+    relay_session_id: u64,
+    capabilities: ClientCapabilities,
+    caller_subject: Option<String>,
+    task_authorization: TaskRouteAuthorization,
+) -> Option<Result<CallToolResponse, CapabilityCallError>> {
+    let current_span = tracing::Span::current();
+    let task = tokio::spawn(
+        async move {
+            pool.call_tool_relayed(
+                &config,
+                oauth_subject.as_deref(),
+                params,
+                downstream,
+                downstream_request_id,
+                downstream_cancel,
+                relay_session_id,
+                capabilities,
+                caller_subject.as_deref(),
+                task_authorization,
+            )
+            .await
+        }
+        .instrument(current_span),
+    );
+    let _abort_on_drop = AbortTaskOnDrop(task.abort_handle());
+    match task.await {
+        Ok(result) => result,
+        Err(error) => Some(Err(CapabilityCallError::Other {
+            message: format!("relayed upstream task failed: {error}"),
+        })),
+    }
 }
 
 impl UpstreamCallFailure {
@@ -477,8 +526,9 @@ impl LabMcpServer {
                             route = "relayed",
                             "proxying to upstream over relayed dedicated connection"
                         );
-                        pool.call_tool_relayed(
-                            &config,
+                        call_tool_relayed_on_fresh_stack(
+                            Arc::clone(&pool),
+                            config,
                             None,
                             upstream_params,
                             context.peer.clone(),
@@ -486,7 +536,7 @@ impl LabMcpServer {
                             relay_cancellation_token(context),
                             self.relay_session_id,
                             capabilities,
-                            self.request_subject(context),
+                            self.request_subject(context).map(str::to_owned),
                             self.route_scope.task_authorization(),
                         )
                         .await
@@ -737,20 +787,20 @@ impl LabMcpServer {
                             route = "subject_scoped_relayed",
                             "proxying to upstream over relayed dedicated connection"
                         );
-                        match pool
-                            .call_tool_relayed(
-                                &config,
-                                Some(oauth_subject.as_ref()),
-                                upstream_params,
-                                context.peer.clone(),
-                                context.id.clone(),
-                                relay_cancellation_token(context),
-                                self.relay_session_id,
-                                capabilities,
-                                self.request_subject(context),
-                                self.route_scope.task_authorization(),
-                            )
-                            .await
+                        match call_tool_relayed_on_fresh_stack(
+                            Arc::clone(&pool),
+                            config,
+                            Some(oauth_subject.to_string()),
+                            upstream_params,
+                            context.peer.clone(),
+                            context.id.clone(),
+                            relay_cancellation_token(context),
+                            self.relay_session_id,
+                            capabilities,
+                            self.request_subject(context).map(str::to_owned),
+                            self.route_scope.task_authorization(),
+                        )
+                        .await
                         {
                             Some(result) => result.map_err(UpstreamCallFailure::classified),
                             None => Err(UpstreamCallFailure::classified(

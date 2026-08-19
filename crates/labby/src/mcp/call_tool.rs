@@ -13,7 +13,7 @@
 //! codemode and upstream branches live in
 //! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
 
-use std::time::Instant;
+use std::{future::Future, pin::Pin, time::Instant};
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -213,7 +213,24 @@ impl LabMcpServer {
         );
     }
 
+    pub(crate) fn boxed_call_tool_response_impl<'a>(
+        &'a self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>> {
+        Box::pin(self.call_tool_response_impl_inner(request, context))
+    }
+
+    #[cfg(test)]
     pub(crate) async fn call_tool_response_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.boxed_call_tool_response_impl(request, context).await
+    }
+
+    async fn call_tool_response_impl_inner(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,

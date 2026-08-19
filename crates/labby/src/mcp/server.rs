@@ -866,7 +866,7 @@ impl ServerHandler for LabMcpServer {
         // all-features dispatch state on Tokio's bounded worker stack and can
         // overflow it as new in-process services enlarge that state machine.
         Ok(provenance::stamp_call_tool_response(
-            Box::pin(self.call_tool_response_impl(request, context)).await?,
+            self.boxed_call_tool_response_impl(request, context).await?,
         ))
     }
 

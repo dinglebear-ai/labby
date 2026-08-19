@@ -23,7 +23,9 @@ use std::time::Instant;
 
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
-use rmcp::model::{JsonRpcMessage, ProgressNotificationParam, ServerNotification};
+use rmcp::model::{
+    JsonRpcMessage, ProgressNotificationParam, ServerNotification, TaskStatusNotificationParams,
+};
 use rmcp::service::{ClientServiceExt, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
@@ -53,21 +55,26 @@ use super::lifecycle_compat::{
 use super::tools::MAX_UPSTREAM_TOOLS;
 use super::{UpstreamClientService, UpstreamConnection};
 
-pub(super) type ProgressNotificationInterceptor = Arc<
-    dyn Fn(ProgressNotificationParam) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
->;
+#[derive(Clone)]
+pub(super) enum OrderedRelayNotification {
+    Progress(ProgressNotificationParam),
+    TaskStatus(TaskStatusNotificationParams),
+}
 
-const ORDERED_PROGRESS_BUFFER: usize = 64;
+pub(super) type RelayNotificationInterceptor =
+    Arc<dyn Fn(OrderedRelayNotification) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-type ProgressWork = (u64, ProgressNotificationParam);
+const ORDERED_RELAY_NOTIFICATION_BUFFER: usize = 64;
+
+type RelayNotificationWork = (u64, OrderedRelayNotification);
 
 #[derive(Default)]
-struct ProgressDeliveryState {
+struct RelayNotificationDeliveryState {
     completed: AtomicU64,
     notify: tokio::sync::Notify,
 }
 
-impl ProgressDeliveryState {
+impl RelayNotificationDeliveryState {
     fn mark_completed(&self, sequence: u64) {
         self.completed.store(sequence, Ordering::Release);
         self.notify.notify_waiters();
@@ -88,46 +95,66 @@ impl ProgressDeliveryState {
     }
 }
 
-pub(super) struct OrderedProgressTransport<T> {
+pub(super) struct OrderedRelayNotificationTransport<T> {
     inner: T,
-    progress_tx: Option<tokio::sync::mpsc::Sender<ProgressWork>>,
-    progress_delivery: Option<Arc<ProgressDeliveryState>>,
-    next_progress_sequence: u64,
+    notification_tx: Option<tokio::sync::mpsc::Sender<RelayNotificationWork>>,
+    notification_delivery: Option<Arc<RelayNotificationDeliveryState>>,
+    next_notification_sequence: u64,
     pending_message: Option<RxJsonRpcMessage<RoleClient>>,
-    pending_progress_sequence: u64,
+    pending_notification_sequence: u64,
 }
 
-impl<T> OrderedProgressTransport<T> {
+impl<T> OrderedRelayNotificationTransport<T> {
     pub(super) fn new(
         inner: T,
-        progress_interceptor: Option<ProgressNotificationInterceptor>,
+        notification_interceptor: Option<RelayNotificationInterceptor>,
     ) -> Self {
-        let (progress_tx, progress_delivery) = if let Some(interceptor) = progress_interceptor {
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<ProgressWork>(ORDERED_PROGRESS_BUFFER);
-            let delivery = Arc::new(ProgressDeliveryState::default());
-            let worker_delivery = Arc::clone(&delivery);
-            tokio::spawn(async move {
-                while let Some((sequence, params)) = rx.recv().await {
-                    interceptor(params).await;
-                    worker_delivery.mark_completed(sequence);
-                }
-            });
-            (Some(tx), Some(delivery))
-        } else {
-            (None, None)
-        };
+        let (notification_tx, notification_delivery) =
+            if let Some(interceptor) = notification_interceptor {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<RelayNotificationWork>(
+                    ORDERED_RELAY_NOTIFICATION_BUFFER,
+                );
+                let delivery = Arc::new(RelayNotificationDeliveryState::default());
+                let worker_delivery = Arc::clone(&delivery);
+                tokio::spawn(async move {
+                    while let Some((sequence, notification)) = rx.recv().await {
+                        interceptor(notification).await;
+                        worker_delivery.mark_completed(sequence);
+                    }
+                });
+                (Some(tx), Some(delivery))
+            } else {
+                (None, None)
+            };
         Self {
             inner,
-            progress_tx,
-            progress_delivery,
-            next_progress_sequence: 0,
+            notification_tx,
+            notification_delivery,
+            next_notification_sequence: 0,
             pending_message: None,
-            pending_progress_sequence: 0,
+            pending_notification_sequence: 0,
         }
     }
 
-    async fn wait_for_progress_through(
-        delivery: Option<Arc<ProgressDeliveryState>>,
+    fn intercepted_notification(
+        message: &RxJsonRpcMessage<RoleClient>,
+    ) -> Option<OrderedRelayNotification> {
+        let JsonRpcMessage::Notification(notification) = message else {
+            return None;
+        };
+        match &notification.notification {
+            ServerNotification::ProgressNotification(progress) => {
+                Some(OrderedRelayNotification::Progress(progress.params.clone()))
+            }
+            ServerNotification::TaskStatusNotification(task_status) => Some(
+                OrderedRelayNotification::TaskStatus(task_status.params.clone()),
+            ),
+            _ => None,
+        }
+    }
+
+    async fn wait_for_notifications_through(
+        delivery: Option<Arc<RelayNotificationDeliveryState>>,
         sequence: u64,
     ) {
         if sequence == 0 {
@@ -138,14 +165,16 @@ impl<T> OrderedProgressTransport<T> {
         }
     }
 
-    fn progress_completed(&self) -> u64 {
-        self.progress_delivery
+    fn notifications_completed(&self) -> u64 {
+        self.notification_delivery
             .as_ref()
-            .map_or(self.next_progress_sequence, |delivery| delivery.completed())
+            .map_or(self.next_notification_sequence, |delivery| {
+                delivery.completed()
+            })
     }
 }
 
-impl<T> Transport<RoleClient> for OrderedProgressTransport<T>
+impl<T> Transport<RoleClient> for OrderedRelayNotificationTransport<T>
 where
     T: Transport<RoleClient>,
 {
@@ -161,21 +190,21 @@ where
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
         loop {
             if self.pending_message.is_some() {
-                Self::wait_for_progress_through(
-                    self.progress_delivery.clone(),
-                    self.pending_progress_sequence,
+                Self::wait_for_notifications_through(
+                    self.notification_delivery.clone(),
+                    self.pending_notification_sequence,
                 )
                 .await;
-                self.pending_progress_sequence = 0;
+                self.pending_notification_sequence = 0;
                 return self.pending_message.take();
             }
 
-            let mut permit = match self.progress_tx.clone() {
+            let mut permit = match self.notification_tx.clone() {
                 Some(sender) => match sender.reserve_owned().await {
                     Ok(permit) => Some(permit),
                     Err(_) => {
-                        self.progress_tx = None;
-                        self.progress_delivery = None;
+                        self.notification_tx = None;
+                        self.notification_delivery = None;
                         None
                     }
                 },
@@ -184,27 +213,25 @@ where
 
             let Some(message) = self.inner.receive().await else {
                 drop(permit);
-                Self::wait_for_progress_through(
-                    self.progress_delivery.clone(),
-                    self.next_progress_sequence,
+                Self::wait_for_notifications_through(
+                    self.notification_delivery.clone(),
+                    self.next_notification_sequence,
                 )
                 .await;
                 return None;
             };
 
-            if let JsonRpcMessage::Notification(notification) = &message
-                && let ServerNotification::ProgressNotification(progress) =
-                    &notification.notification
+            if let Some(notification) = Self::intercepted_notification(&message)
                 && let Some(permit) = permit.take()
             {
-                self.next_progress_sequence = self.next_progress_sequence.saturating_add(1);
-                permit.send((self.next_progress_sequence, progress.params.clone()));
+                self.next_notification_sequence = self.next_notification_sequence.saturating_add(1);
+                permit.send((self.next_notification_sequence, notification));
                 continue;
             }
 
             drop(permit);
-            if self.progress_completed() < self.next_progress_sequence {
-                self.pending_progress_sequence = self.next_progress_sequence;
+            if self.notifications_completed() < self.next_notification_sequence {
+                self.pending_notification_sequence = self.next_notification_sequence;
                 self.pending_message = Some(message);
                 continue;
             }
@@ -259,7 +286,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    connect_upstream_with_handler_and_progress(
+    connect_upstream_with_handler_and_notifications(
         config,
         subject,
         oauth_client_cache,
@@ -272,7 +299,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     .await
 }
 
-pub(super) async fn connect_upstream_with_handler_and_progress<H: ClientHandler + Clone>(
+pub(super) async fn connect_upstream_with_handler_and_notifications<H: ClientHandler + Clone>(
     config: &UpstreamConfig,
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
@@ -280,7 +307,7 @@ pub(super) async fn connect_upstream_with_handler_and_progress<H: ClientHandler 
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     shared_client: Option<&reqwest::Client>,
     handler: H,
-    progress_interceptor: Option<ProgressNotificationInterceptor>,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let started = Instant::now();
     tracing::debug!(
@@ -300,14 +327,14 @@ pub(super) async fn connect_upstream_with_handler_and_progress<H: ClientHandler 
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} HTTP transport has no url", config.name)
             })?;
-            connect_http_upstream_with_progress(
+            connect_http_upstream_with_notifications(
                 url,
                 config,
                 subject,
                 oauth_client_cache,
                 shared_client,
                 handler,
-                progress_interceptor.clone(),
+                notification_interceptor.clone(),
             )
             .await
         }
@@ -315,7 +342,7 @@ pub(super) async fn connect_upstream_with_handler_and_progress<H: ClientHandler 
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} WebSocket transport has no url", config.name)
             })?;
-            connect_websocket_upstream(url, config, handler, progress_interceptor.clone()).await
+            connect_websocket_upstream(url, config, handler, notification_interceptor.clone()).await
         }
         Some(UpstreamTransport::Stdio) => {
             let command = config.command.as_deref().ok_or_else(|| {
@@ -328,7 +355,7 @@ pub(super) async fn connect_upstream_with_handler_and_progress<H: ClientHandler 
                 runtime_origin,
                 runtime_owner,
                 handler,
-                progress_interceptor.clone(),
+                notification_interceptor.clone(),
             )
             .await
         }
@@ -342,7 +369,7 @@ pub(super) async fn connect_upstream_with_handler_and_progress<H: ClientHandler 
                 subject,
                 oauth_client_cache,
                 handler,
-                progress_interceptor.clone(),
+                notification_interceptor.clone(),
             )
             .await
         }
@@ -426,7 +453,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
     handler: H,
-    progress_interceptor: Option<ProgressNotificationInterceptor>,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let socket_path = config.socket_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -452,14 +479,14 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
             )
         })?;
 
-    connect_http_upstream_with_progress(
+    connect_http_upstream_with_notifications(
         url,
         config,
         subject,
         oauth_client_cache,
         Some(&client),
         handler,
-        progress_interceptor,
+        notification_interceptor,
     )
     .await
 }
@@ -471,7 +498,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     _subject: Option<&str>,
     _oauth_client_cache: Option<&OauthClientCache>,
     _handler: H,
-    _progress_interceptor: Option<ProgressNotificationInterceptor>,
+    _notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     anyhow::bail!(
         "upstream {} uses unix_socket, which is unsupported on this platform",
@@ -483,14 +510,14 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
     handler: H,
-    progress_interceptor: Option<ProgressNotificationInterceptor>,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     match connect_websocket_upstream_once(
         url,
         config,
         handler.clone(),
         LifecycleAttempt::Modern,
-        progress_interceptor.clone(),
+        notification_interceptor.clone(),
     )
     .await
     {
@@ -500,7 +527,7 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
                 return Err(error);
             };
             log_fallback(&config.name, "websocket", attempt, &error);
-            connect_websocket_upstream_once(url, config, handler, attempt, progress_interceptor)
+            connect_websocket_upstream_once(url, config, handler, attempt, notification_interceptor)
                 .await
         }
     }
@@ -511,7 +538,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     config: &UpstreamConfig,
     handler: H,
     lifecycle: LifecycleAttempt,
-    progress_interceptor: Option<ProgressNotificationInterceptor>,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -531,7 +558,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     let transport = connect_websocket_transport(
         WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
     );
-    let transport = OrderedProgressTransport::new(transport, progress_interceptor);
+    let transport = OrderedRelayNotificationTransport::new(transport, notification_interceptor);
     let service = match lifecycle {
         LifecycleAttempt::Modern => UpstreamClientService::Direct(
             handler
@@ -588,7 +615,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    connect_http_upstream_with_progress(
+    connect_http_upstream_with_notifications(
         url,
         config,
         subject,
@@ -600,14 +627,14 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     .await
 }
 
-async fn connect_http_upstream_with_progress<H: ClientHandler + Clone>(
+async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
     shared_client: Option<&reqwest::Client>,
     handler: H,
-    progress_interceptor: Option<ProgressNotificationInterceptor>,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     match connect_http_upstream_once(
         url,
@@ -617,7 +644,7 @@ async fn connect_http_upstream_with_progress<H: ClientHandler + Clone>(
         shared_client,
         handler.clone(),
         LifecycleAttempt::Modern,
-        progress_interceptor.clone(),
+        notification_interceptor.clone(),
     )
     .await
     {
@@ -635,7 +662,7 @@ async fn connect_http_upstream_with_progress<H: ClientHandler + Clone>(
                 shared_client,
                 handler,
                 attempt,
-                progress_interceptor,
+                notification_interceptor,
             )
             .await
         }
@@ -680,7 +707,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
     lifecycle: LifecycleAttempt,
-    progress_interceptor: Option<ProgressNotificationInterceptor>,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -730,7 +757,8 @@ async fn connect_http_upstream_once<H: ClientHandler>(
 
         let worker = StreamableHttpClientWorker::new(auth_client, transport_config);
         let worker = WorkerTransport::spawn(worker);
-        let worker = OrderedProgressTransport::new(worker, progress_interceptor.clone());
+        let worker =
+            OrderedRelayNotificationTransport::new(worker, notification_interceptor.clone());
         let service = match lifecycle {
             LifecycleAttempt::Modern => UpstreamClientService::Direct(
                 handler
@@ -780,7 +808,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
     let worker = WorkerTransport::spawn(worker);
-    let worker = OrderedProgressTransport::new(worker, progress_interceptor);
+    let worker = OrderedRelayNotificationTransport::new(worker, notification_interceptor);
     let service = match lifecycle {
         LifecycleAttempt::Modern => UpstreamClientService::Direct(
             handler

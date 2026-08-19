@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rmcp::RoleClient;
 use rmcp::model::{
-    NumberOrString, ProgressNotification, ProgressNotificationParam, ProgressToken,
-    ServerNotification,
+    DetailedTask, NumberOrString, ProgressNotification, ProgressNotificationParam, ProgressToken,
+    ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
+    TaskStatusNotificationParams,
 };
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
@@ -21,7 +22,8 @@ use labby_runtime::gateway_config::{
 
 use super::UpstreamPool;
 use super::connect::{
-    OrderedProgressTransport, ProgressNotificationInterceptor, connect_http_upstream,
+    OrderedRelayNotification, OrderedRelayNotificationTransport, RelayNotificationInterceptor,
+    connect_http_upstream,
 };
 use super::testsupport::test_upstream_config;
 
@@ -892,11 +894,11 @@ async fn shared_discovery_skips_oauth_http_upstreams() {
     assert!(pool.upstream_status().await.is_empty());
 }
 
-struct OrderedProgressFixture {
+struct OrderedRelayNotificationFixture {
     messages: VecDeque<RxJsonRpcMessage<RoleClient>>,
 }
 
-impl Transport<RoleClient> for OrderedProgressFixture {
+impl Transport<RoleClient> for OrderedRelayNotificationFixture {
     type Error = Infallible;
 
     fn send(
@@ -927,26 +929,46 @@ fn progress_message(message: &str, progress: f64) -> RxJsonRpcMessage<RoleClient
     ))
 }
 
+fn task_status_message() -> RxJsonRpcMessage<RoleClient> {
+    let task = DetailedTask::new(
+        Task::new(
+            "native-task",
+            TaskStatus::Working,
+            "2026-08-01T00:00:00Z",
+            "2026-08-01T00:00:01Z",
+        ),
+        TaskPayload::Working,
+    );
+    RxJsonRpcMessage::<RoleClient>::notification(ServerNotification::TaskStatusNotification(
+        TaskStatusNotification::new(TaskStatusNotificationParams::new(task)),
+    ))
+}
+
 #[tokio::test]
-async fn ordered_progress_transport_intercepts_progress_in_wire_receive_order() {
+async fn ordered_relay_notification_transport_preserves_progress_wire_order() {
     let observed = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
     let interceptor_observed = Arc::clone(&observed);
-    let interceptor: ProgressNotificationInterceptor = Arc::new(move |params| {
+    let interceptor: RelayNotificationInterceptor = Arc::new(move |notification| {
         let observed = Arc::clone(&interceptor_observed);
         Box::pin(async move {
-            observed
-                .lock()
-                .await
-                .push(params.message.unwrap_or_default());
+            match notification {
+                OrderedRelayNotification::Progress(params) => observed
+                    .lock()
+                    .await
+                    .push(params.message.unwrap_or_default()),
+                OrderedRelayNotification::TaskStatus(_) => {
+                    panic!("unexpected task status notification")
+                }
+            }
         })
     });
-    let fixture = OrderedProgressFixture {
+    let fixture = OrderedRelayNotificationFixture {
         messages: VecDeque::from([
             progress_message("quarter", 0.25),
             progress_message("three-quarters", 0.75),
         ]),
     };
-    let mut transport = OrderedProgressTransport::new(fixture, Some(interceptor));
+    let mut transport = OrderedRelayNotificationTransport::new(fixture, Some(interceptor));
 
     assert!(transport.receive().await.is_none());
     assert_eq!(
@@ -956,33 +978,40 @@ async fn ordered_progress_transport_intercepts_progress_in_wire_receive_order() 
 }
 
 #[tokio::test]
-async fn ordered_progress_transport_survives_receive_cancellation_after_consumption() {
+async fn ordered_relay_notification_transport_preserves_progress_after_receive_cancellation() {
     let observed = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let interceptor_observed = Arc::clone(&observed);
     let interceptor_release = Arc::clone(&release);
-    let interceptor: ProgressNotificationInterceptor = Arc::new(move |params| {
+    let interceptor: RelayNotificationInterceptor = Arc::new(move |notification| {
         let observed = Arc::clone(&interceptor_observed);
         let release = Arc::clone(&interceptor_release);
         Box::pin(async move {
-            release
-                .acquire()
-                .await
-                .expect("progress release permit")
-                .forget();
-            observed
-                .lock()
-                .await
-                .push(params.message.unwrap_or_default());
+            match notification {
+                OrderedRelayNotification::Progress(params) => {
+                    release
+                        .acquire()
+                        .await
+                        .expect("progress release permit")
+                        .forget();
+                    observed
+                        .lock()
+                        .await
+                        .push(params.message.unwrap_or_default());
+                }
+                OrderedRelayNotification::TaskStatus(_) => {
+                    panic!("unexpected task status notification")
+                }
+            }
         })
     });
-    let fixture = OrderedProgressFixture {
+    let fixture = OrderedRelayNotificationFixture {
         messages: VecDeque::from([
             progress_message("quarter", 0.25),
             progress_message("three-quarters", 0.75),
         ]),
     };
-    let mut transport = OrderedProgressTransport::new(fixture, Some(interceptor));
+    let mut transport = OrderedRelayNotificationTransport::new(fixture, Some(interceptor));
 
     let timed_out =
         tokio::time::timeout(std::time::Duration::from_millis(10), transport.receive()).await;
@@ -997,4 +1026,46 @@ async fn ordered_progress_transport_survives_receive_cancellation_after_consumpt
         observed.lock().await.as_slice(),
         ["quarter", "three-quarters"]
     );
+}
+
+#[tokio::test]
+async fn ordered_relay_notification_transport_preserves_task_status_after_receive_cancellation() {
+    let observed = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let interceptor_observed = Arc::clone(&observed);
+    let interceptor_release = Arc::clone(&release);
+    let interceptor: RelayNotificationInterceptor = Arc::new(move |notification| {
+        let observed = Arc::clone(&interceptor_observed);
+        let release = Arc::clone(&interceptor_release);
+        Box::pin(async move {
+            match notification {
+                OrderedRelayNotification::TaskStatus(params) => {
+                    release
+                        .acquire()
+                        .await
+                        .expect("task status release permit")
+                        .forget();
+                    observed.lock().await.push(params.task.task.task_id);
+                }
+                OrderedRelayNotification::Progress(_) => {
+                    panic!("unexpected progress notification")
+                }
+            }
+        })
+    });
+    let fixture = OrderedRelayNotificationFixture {
+        messages: VecDeque::from([task_status_message()]),
+    };
+    let mut transport = OrderedRelayNotificationTransport::new(fixture, Some(interceptor));
+
+    let timed_out =
+        tokio::time::timeout(std::time::Duration::from_millis(10), transport.receive()).await;
+    assert!(
+        timed_out.is_err(),
+        "receive should be cancelled while task-status forwarding is blocked"
+    );
+
+    release.add_permits(1);
+    assert!(transport.receive().await.is_none());
+    assert_eq!(observed.lock().await.as_slice(), ["native-task"]);
 }

@@ -841,6 +841,9 @@ async fn run_driver() -> Result<()> {
     let middle_base_url = format!("http://127.0.0.1:{middle_port}");
     let middle_token = "8c1f97449584ebcc6025655d738a8b40a3a488dd407ac89a1c42146864bd0179";
     let mut middle_child = Command::new(&labby_bin)
+        // Labby resolves ./config.toml before HOME-scoped config. Pin the
+        // fixture cwd so an unrelated caller cwd cannot shadow this test config.
+        .current_dir(&middle_home)
         .arg("serve")
         .arg("--host")
         .arg("127.0.0.1")
@@ -871,6 +874,8 @@ async fn run_driver() -> Result<()> {
 
     let transport = TokioChildProcess::new(Command::new(&labby_bin).configure(|command| {
         command
+            // Keep the root fixture hermetic for the same reason as middle.
+            .current_dir(&root_home)
             .arg("serve")
             .arg("mcp")
             .arg("--stdio")
