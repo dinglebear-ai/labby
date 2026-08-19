@@ -33,7 +33,7 @@ use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
 
-use crate::upstream::pool::InProcessConnector;
+use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
@@ -116,6 +116,9 @@ pub struct GatewayManager {
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
     pub(super) resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    /// Process-lifetime SEP-2243 recovery counters shared by every pool
+    /// generation built by this manager.
+    pub(super) header_recovery_metrics_store: HeaderRecoveryMetricsStore,
     /// Durable append-only journal for `codemode.step` boundaries. `None`
     /// disables journaling (pure no-op path). Owned as an `Arc` so every `Clone`
     /// of the manager shares one store.

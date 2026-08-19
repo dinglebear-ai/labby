@@ -332,6 +332,32 @@ async fn new_base_pool_carries_the_manager_usage_store() {
     );
 }
 
+#[test]
+fn new_base_pool_shares_header_recovery_metrics_across_generations() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let first = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+    let second = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+
+    assert_eq!(
+        manager
+            .header_recovery_metrics_store
+            .record_mismatch_for_test("fixture"),
+        1
+    );
+    assert_eq!(
+        first.header_recovery_metrics("fixture").mismatch_detected,
+        1
+    );
+    assert_eq!(
+        second.header_recovery_metrics("fixture").mismatch_detected,
+        1
+    );
+}
+
 async fn dummy_auth_client() -> Arc<AuthClient<reqwest::Client>> {
     // See upstream/pool.rs::UpstreamPool::new for why this call is needed
     // under "rustls-no-provider" -- idempotent, safe to ignore Err.

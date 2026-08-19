@@ -13,7 +13,8 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::{
-    CapabilityCallError, timed_capability_call, timed_capability_call_str,
+    CapabilityCallError, bounded_service_error_text, timed_capability_call,
+    timed_capability_call_str,
 };
 use super::catalog_pagination;
 use super::entries::resolve_request_exposure_policy;
@@ -91,20 +92,80 @@ pub(super) fn is_tool_header_mismatch(error: &ServiceError) -> bool {
     )
 }
 
+pub(super) fn record_header_mismatch(pool: &UpstreamPool, upstream_name: &str) {
+    let mismatch_count = pool.record_header_mismatch_detected(upstream_name);
+    tracing::warn!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        action = "tool.header_mismatch",
+        event = "detected",
+        upstream = upstream_name,
+        mismatch_count,
+        "upstream rejected tools/call because SEP-2243 routing headers were stale or missing"
+    );
+}
+
+pub(super) fn record_header_retry<T>(
+    pool: &UpstreamPool,
+    upstream_name: &str,
+    result: &Result<T, ServiceError>,
+) {
+    match result {
+        Ok(_) => {
+            let retry_success_count = pool.record_header_schema_retry_success(upstream_name);
+            tracing::info!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "tool.header_cache.retry",
+                event = "finish",
+                upstream = upstream_name,
+                retry_success_count,
+                "SEP-2243 schema refresh retry completed successfully"
+            );
+        }
+        Err(error) => {
+            let retry_failure_count = pool.record_header_schema_retry_failure(upstream_name);
+            tracing::warn!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "tool.header_cache.retry",
+                event = "error",
+                upstream = upstream_name,
+                retry_failure_count,
+                error = %bounded_service_error_text(error),
+                "SEP-2243 schema refresh retry failed"
+            );
+        }
+    }
+}
+
 /// Refresh rmcp's per-transport tool-schema cache after HeaderMismatch. A
 /// successful tools/list response is consumed by rmcp itself and repopulates
 /// the x-mcp-header annotations used to build Mcp-Param-* on the retry.
 pub(super) async fn refresh_tool_header_cache(
+    pool: &UpstreamPool,
     peer: &Peer<RoleClient>,
     upstream_name: &str,
 ) -> Result<(), ServiceError> {
+    let schema_refresh_count = pool.record_header_schema_refresh(upstream_name);
+    tracing::info!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        action = "tool.header_cache.refresh",
+        event = "start",
+        upstream = upstream_name,
+        schema_refresh_count,
+        "refreshing upstream tool schemas after SEP-2243 header mismatch"
+    );
     match catalog_pagination::list_tools(peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await {
         Ok(tools) => {
             tracing::info!(
                 surface = "dispatch",
                 service = "upstream.pool",
                 action = "tool.header_cache.refresh",
+                event = "finish",
                 upstream = upstream_name,
+                schema_refresh_count,
                 tool_count = tools.len(),
                 "refreshed upstream tool schemas after SEP-2243 header mismatch"
             );
@@ -115,7 +176,9 @@ pub(super) async fn refresh_tool_header_cache(
                 surface = "dispatch",
                 service = "upstream.pool",
                 action = "tool.header_cache.refresh",
+                event = "error",
                 upstream = upstream_name,
+                schema_refresh_count,
                 kind = error.kind(),
                 error = %error.bounded_text(),
                 "failed to refresh upstream tool schemas after SEP-2243 header mismatch"
@@ -126,28 +189,36 @@ pub(super) async fn refresh_tool_header_cache(
 }
 
 pub(super) async fn call_tool_once_with_header_recovery(
+    pool: &UpstreamPool,
     peer: &Peer<RoleClient>,
     upstream_name: &str,
     params: CallToolRequestParams,
 ) -> Result<CallToolResponse, ServiceError> {
     match peer.call_tool_once(params.clone()).await {
         Err(error) if is_tool_header_mismatch(&error) => {
-            refresh_tool_header_cache(peer, upstream_name).await?;
-            peer.call_tool_once(params).await
+            record_header_mismatch(pool, upstream_name);
+            refresh_tool_header_cache(pool, peer, upstream_name).await?;
+            let result = peer.call_tool_once(params).await;
+            record_header_retry(pool, upstream_name, &result);
+            result
         }
         result => result,
     }
 }
 
 pub(super) async fn call_tool_with_header_recovery(
+    pool: &UpstreamPool,
     peer: &Peer<RoleClient>,
     upstream_name: &str,
     params: CallToolRequestParams,
 ) -> Result<CallToolResult, ServiceError> {
     match peer.call_tool(params.clone()).await {
         Err(error) if is_tool_header_mismatch(&error) => {
-            refresh_tool_header_cache(peer, upstream_name).await?;
-            peer.call_tool(params).await
+            record_header_mismatch(pool, upstream_name);
+            refresh_tool_header_cache(pool, peer, upstream_name).await?;
+            let result = peer.call_tool(params).await;
+            record_header_retry(pool, upstream_name, &result);
+            result
         }
         result => result,
     }
@@ -200,7 +271,7 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             start,
-            call_tool_once_with_header_recovery(&peer, &config.name, params),
+            call_tool_once_with_header_recovery(self, &peer, &config.name, params),
             estimate_call_tool_response_size,
             Some(subject),
             |error| format!("upstream call failed: {error}"),
@@ -239,7 +310,7 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             start,
-            call_tool_with_header_recovery(&peer, &config.name, params),
+            call_tool_with_header_recovery(self, &peer, &config.name, params),
             estimate_response_size,
             Some(subject),
             |error| format!("upstream call failed: {error}"),
@@ -302,7 +373,7 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             start,
-            call_tool_with_header_recovery(&peer, &config.name, params),
+            call_tool_with_header_recovery(self, &peer, &config.name, params),
             estimate_response_size,
             Some(subject),
             |e| format!("upstream call failed: {e}"),
@@ -360,7 +431,7 @@ impl UpstreamPool {
                 UpstreamCapability::Tools,
                 event,
                 start,
-                call_tool_with_header_recovery(&peer, upstream_name, params),
+                call_tool_with_header_recovery(self, &peer, upstream_name, params),
                 estimate_response_size,
                 None,
                 |e| format!("upstream call failed: {e}"),
@@ -409,7 +480,7 @@ impl UpstreamPool {
                 UpstreamCapability::Tools,
                 event,
                 start,
-                call_tool_once_with_header_recovery(&peer, upstream_name, params),
+                call_tool_once_with_header_recovery(self, &peer, upstream_name, params),
                 estimate_call_tool_response_size,
                 None,
                 |error| format!("upstream call failed: {error}"),
@@ -623,6 +694,11 @@ mod tests {
             2,
             "HeaderMismatch must be replayed exactly once"
         );
+        let metrics = pool.header_recovery_metrics(upstream_name);
+        assert_eq!(metrics.mismatch_detected, 1);
+        assert_eq!(metrics.schema_refreshes, 1);
+        assert_eq!(metrics.retry_successes, 1);
+        assert_eq!(metrics.retry_failures, 0);
     }
 
     #[test]

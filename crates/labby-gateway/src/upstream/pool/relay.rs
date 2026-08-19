@@ -50,6 +50,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use futures::future::BoxFuture;
+
 #[allow(deprecated)]
 use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
@@ -100,7 +102,9 @@ use super::relay_cancellation::{
     PendingRelayRequestId, RelayPermitOutcome, RelaySendOutcome, await_relay_permit,
     await_relay_send, dispatch_relay_cancellation, spawn_bounded_handle_cancellation,
 };
-use super::tools_call::{is_tool_header_mismatch, refresh_tool_header_cache};
+use super::tools_call::{
+    is_tool_header_mismatch, record_header_mismatch, record_header_retry, refresh_tool_header_cache,
+};
 
 const RELAY_ROUTE_CLEANUP_GRACE: Duration = Duration::from_secs(2);
 const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
@@ -1002,70 +1006,78 @@ async fn send_relay_request(
     result
 }
 
-async fn send_relay_tool_request_with_header_recovery(
-    peer: &Peer<RoleClient>,
-    routes: &Arc<RelayRouteState>,
-    downstream: &Peer<RoleServer>,
-    upstream_name: &str,
-    cancellation_sender: Option<&HttpCancellationSender>,
+type RelayToolRequestFuture<'a> = BoxFuture<'a, Result<ServerResult, ServiceError>>;
+
+fn send_relay_tool_request_with_header_recovery<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    routes: &'a Arc<RelayRouteState>,
+    downstream: &'a Peer<RoleServer>,
+    upstream_name: &'a str,
+    cancellation_sender: Option<&'a HttpCancellationSender>,
     params: CallToolRequestParams,
     request_meta: Option<RequestMetaObject>,
     downstream_request_id: RequestId,
     downstream_cancel: CancellationToken,
     timeout: Duration,
     deadline: tokio::time::Instant,
-) -> Result<ServerResult, ServiceError> {
-    let retry_params = params.clone();
-    let retry_request_meta = request_meta.clone();
-    let retry_downstream_request_id = downstream_request_id.clone();
-    let retry_downstream_cancel = downstream_cancel.clone();
-    let response = send_relay_request(
-        peer,
-        routes,
-        downstream,
-        upstream_name,
-        cancellation_sender,
-        ClientRequest::CallToolRequest(CallToolRequest::new(params)),
-        request_meta,
-        downstream_request_id,
-        downstream_cancel,
-        timeout,
-        deadline,
-    )
-    .await;
-    if !response
-        .as_ref()
-        .is_err_and(|error| is_tool_header_mismatch(error))
-    {
-        return response;
-    }
-
-    tokio::select! {
-        refreshed = refresh_tool_header_cache(peer, upstream_name) => refreshed?,
-        () = retry_downstream_cancel.cancelled() => {
-            return Err(ServiceError::Cancelled {
-                reason: Some("downstream request cancelled during header-schema refresh".to_string()),
-            });
+) -> RelayToolRequestFuture<'a> {
+    Box::pin(async move {
+        let retry_params = params.clone();
+        let retry_request_meta = request_meta.clone();
+        let retry_downstream_request_id = downstream_request_id.clone();
+        let retry_downstream_cancel = downstream_cancel.clone();
+        let response = send_relay_request(
+            peer,
+            routes,
+            downstream,
+            upstream_name,
+            cancellation_sender,
+            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            request_meta,
+            downstream_request_id,
+            downstream_cancel,
+            timeout,
+            deadline,
+        )
+        .await;
+        if !response
+            .as_ref()
+            .is_err_and(|error| is_tool_header_mismatch(error))
+        {
+            return response;
         }
-        () = tokio::time::sleep_until(deadline) => {
-            return Err(ServiceError::Timeout { timeout });
-        }
-    }
 
-    send_relay_request(
-        peer,
-        routes,
-        downstream,
-        upstream_name,
-        cancellation_sender,
-        ClientRequest::CallToolRequest(CallToolRequest::new(retry_params)),
-        retry_request_meta,
-        retry_downstream_request_id,
-        retry_downstream_cancel,
-        timeout,
-        deadline,
-    )
-    .await
+        record_header_mismatch(pool, upstream_name);
+        tokio::select! {
+            refreshed = refresh_tool_header_cache(pool, peer, upstream_name) => refreshed?,
+            () = retry_downstream_cancel.cancelled() => {
+                return Err(ServiceError::Cancelled {
+                    reason: Some("downstream request cancelled during header-schema refresh".to_string()),
+                });
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                return Err(ServiceError::Timeout { timeout });
+            }
+        }
+
+        let result = send_relay_request(
+            peer,
+            routes,
+            downstream,
+            upstream_name,
+            cancellation_sender,
+            ClientRequest::CallToolRequest(CallToolRequest::new(retry_params)),
+            retry_request_meta,
+            retry_downstream_request_id,
+            retry_downstream_cancel,
+            timeout,
+            deadline,
+        )
+        .await;
+        record_header_retry(pool, upstream_name, &result);
+        result
+    })
 }
 
 fn downstream_cancelled(reason: &str) -> String {
@@ -1285,7 +1297,8 @@ impl UpstreamPool {
         // the retry branch inline pushed Tokio worker stacks over the edge even
         // when HeaderMismatch recovery was never exercised. Boxing the focused
         // request future keeps the normal relay connection path stack-bounded.
-        let response = Box::pin(send_relay_tool_request_with_header_recovery(
+        let response = send_relay_tool_request_with_header_recovery(
+            self,
             &peer,
             &routes,
             &downstream_for_request,
@@ -1297,7 +1310,7 @@ impl UpstreamPool {
             downstream_cancel,
             timeout,
             deadline,
-        ))
+        )
         .await;
         match response {
             Ok(result) => {
@@ -2281,6 +2294,7 @@ impl UpstreamPool {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
+    use std::mem::size_of;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2761,6 +2775,16 @@ mod tests {
         (pool, config, downstream_server)
     }
 
+    #[test]
+    fn relay_header_recovery_future_stays_structurally_boxed() {
+        let bytes = size_of::<RelayToolRequestFuture<'static>>();
+        let max_boxed_future_bytes = 2 * size_of::<usize>();
+        assert!(
+            bytes <= max_boxed_future_bytes,
+            "relay HeaderMismatch recovery future must remain a boxed trait-object pointer; got {bytes} bytes (expected at most {max_boxed_future_bytes})"
+        );
+    }
+
     #[tokio::test]
     async fn relayed_header_mismatch_refreshes_schema_and_retries_once() {
         #[derive(Clone)]
@@ -2836,6 +2860,11 @@ mod tests {
         assert!(matches!(result, CallToolResponse::Complete(_)));
         assert_eq!(list_calls.load(Ordering::SeqCst), 1);
         assert_eq!(tool_calls.load(Ordering::SeqCst), 2);
+        let metrics = pool.header_recovery_metrics(&config.name);
+        assert_eq!(metrics.mismatch_detected, 1);
+        assert_eq!(metrics.schema_refreshes, 1);
+        assert_eq!(metrics.retry_successes, 1);
+        assert_eq!(metrics.retry_failures, 0);
     }
 
     #[tokio::test]
@@ -2915,6 +2944,11 @@ mod tests {
             1,
             "deadline expiry must prevent a second tools/call"
         );
+        let metrics = pool.header_recovery_metrics(&config.name);
+        assert_eq!(metrics.mismatch_detected, 1);
+        assert_eq!(metrics.schema_refreshes, 1);
+        assert_eq!(metrics.retry_successes, 0);
+        assert_eq!(metrics.retry_failures, 0);
     }
 
     async fn wait_for_recorded_count<T>(values: &Mutex<Vec<T>>, expected: usize) {
