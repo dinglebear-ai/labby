@@ -18,7 +18,7 @@ Baseline: `origin/main` at `0e21d0474` when W19 implementation began
 
 ## Phase 0: contract and archaeology
 
-Status: implemented, verification in progress
+Status: complete and verified
 
 - Inspect current Labby worktrees, branches, and PRs before touching code.
 - Confirm W19 isolated worktree and fast-forward it to settled `origin/main`.
@@ -32,7 +32,7 @@ Exit gate: the Depot fixture parses, validates, reserializes byte-for-byte, and 
 
 ## Phase 1: first coherent local vertical slice
 
-Status: implemented, verification in progress
+Status: complete and verified
 
 - Multi-file file/package snapshot model.
 - Stable Artifact identity and deterministic component identity.
