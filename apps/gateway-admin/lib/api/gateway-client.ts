@@ -12,8 +12,13 @@ import type {
   SupportedService,
   CodeModeConfig,
   CodeModeConfigInput,
+  GatewayLoadout,
+  GatewayLoadoutInput,
+  GatewayLoadoutPatch,
+  GatewayLoadoutStageResult,
   ProtectedMcpRoute,
   ProtectedMcpRouteInput,
+  ProtectedMcpRouteStageResult,
   ProtectedMcpRouteTestResult,
   DiscoveredMcpServer,
   GatewayImportResult,
@@ -192,6 +197,8 @@ function applyRuntimeRow(gateway: Gateway, runtime: BackendGatewayMcpRuntimeView
   const exposedResourceCount = runtime.exposed_resource_count ?? gateway.status.exposed_resource_count
   const discoveredPromptCount = runtime.discovered_prompt_count ?? gateway.status.discovered_prompt_count
   const exposedPromptCount = runtime.exposed_prompt_count ?? gateway.status.exposed_prompt_count
+  const discoveredSkillCount = runtime.discovered_skill_count ?? gateway.status.discovered_skill_count ?? 0
+  const exposedSkillCount = runtime.exposed_skill_count ?? gateway.status.exposed_skill_count ?? 0
 
   return {
     ...gateway,
@@ -228,6 +235,9 @@ function applyRuntimeRow(gateway: Gateway, runtime: BackendGatewayMcpRuntimeView
       exposed_resource_count: exposedResourceCount,
       discovered_prompt_count: discoveredPromptCount,
       exposed_prompt_count: exposedPromptCount,
+      discovered_skill_count: discoveredSkillCount,
+      exposed_skill_count: exposedSkillCount,
+      supports_skills: runtime.supports_skills ?? gateway.status.supports_skills,
       likely_stale_count: runtime.likely_stale_count,
       pid: runtime.pid ?? undefined,
       pgid: runtime.pgid ?? undefined,
@@ -617,8 +627,91 @@ export const gatewayApi = {
     )
   },
 
+  async listLoadouts(signal?: AbortSignal): Promise<GatewayLoadout[]> {
+    return gatewayAction<GatewayLoadout[]>('gateway.loadout.list_state', {}, signal)
+  },
+
+  async getLoadout(name: string, signal?: AbortSignal): Promise<GatewayLoadout> {
+    return gatewayAction<GatewayLoadout>('gateway.loadout.get', { name }, signal)
+  },
+
+  async addLoadout(loadout: GatewayLoadoutInput, signal?: AbortSignal): Promise<GatewayLoadout> {
+    return gatewayAction<GatewayLoadout>(
+      'gateway.loadout.add',
+      confirmGatewayParams({ loadout }),
+      signal,
+    )
+  },
+
+  async updateLoadout(
+    name: string,
+    loadout: GatewayLoadoutInput,
+    signal?: AbortSignal,
+  ): Promise<GatewayLoadout> {
+    return gatewayAction<GatewayLoadout>(
+      'gateway.loadout.update',
+      confirmGatewayParams({ name, loadout }),
+      signal,
+    )
+  },
+
+  async patchLoadout(
+    name: string,
+    patch: GatewayLoadoutPatch,
+    signal?: AbortSignal,
+  ): Promise<GatewayLoadout> {
+    return gatewayAction<GatewayLoadout>(
+      'gateway.loadout.patch',
+      confirmGatewayParams({ name, patch }),
+      signal,
+    )
+  },
+
+  async stageLoadoutUpdate(
+    name: string,
+    loadout: GatewayLoadoutInput,
+    signal?: AbortSignal,
+  ): Promise<GatewayLoadoutStageResult> {
+    return gatewayAction<GatewayLoadoutStageResult>(
+      'gateway.loadout.stage_update',
+      confirmGatewayParams({ name, loadout }),
+      signal,
+    )
+  },
+
+  async stageLoadoutPatch(
+    name: string,
+    patch: GatewayLoadoutPatch,
+    signal?: AbortSignal,
+  ): Promise<GatewayLoadoutStageResult> {
+    return gatewayAction<GatewayLoadoutStageResult>(
+      'gateway.loadout.stage_patch',
+      confirmGatewayParams({ name, patch }),
+      signal,
+    )
+  },
+
+  async stageLoadoutRemove(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<GatewayLoadoutStageResult> {
+    return gatewayAction<GatewayLoadoutStageResult>(
+      'gateway.loadout.stage_remove',
+      confirmGatewayParams({ name }),
+      signal,
+    )
+  },
+
+  async removeLoadout(name: string, signal?: AbortSignal): Promise<GatewayLoadout> {
+    return gatewayAction<GatewayLoadout>(
+      'gateway.loadout.remove',
+      confirmGatewayParams({ name }),
+      signal,
+    )
+  },
+
   async listProtectedRoutes(signal?: AbortSignal): Promise<ProtectedMcpRoute[]> {
-    return gatewayAction<ProtectedMcpRoute[]>('gateway.protected_route.list', {}, signal)
+    return gatewayAction<ProtectedMcpRoute[]>('gateway.protected_route.list_state', {}, signal)
   },
 
   async getProtectedRoute(name: string, signal?: AbortSignal): Promise<ProtectedMcpRoute> {
@@ -651,6 +744,40 @@ export const gatewayApi = {
   async removeProtectedRoute(name: string, signal?: AbortSignal): Promise<ProtectedMcpRoute> {
     return gatewayAction<ProtectedMcpRoute>(
       'gateway.protected_route.remove',
+      confirmGatewayParams({ name }),
+      signal,
+    )
+  },
+
+  async stageProtectedRouteAdd(
+    route: ProtectedMcpRouteInput,
+    signal?: AbortSignal,
+  ): Promise<ProtectedMcpRouteStageResult> {
+    return gatewayAction<ProtectedMcpRouteStageResult>(
+      'gateway.protected_route.stage_add',
+      confirmGatewayParams({ route }),
+      signal,
+    )
+  },
+
+  async stageProtectedRouteUpdate(
+    name: string,
+    route: ProtectedMcpRouteInput,
+    signal?: AbortSignal,
+  ): Promise<ProtectedMcpRouteStageResult> {
+    return gatewayAction<ProtectedMcpRouteStageResult>(
+      'gateway.protected_route.stage_update',
+      confirmGatewayParams({ name, route }),
+      signal,
+    )
+  },
+
+  async stageProtectedRouteRemove(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<ProtectedMcpRouteStageResult> {
+    return gatewayAction<ProtectedMcpRouteStageResult>(
+      'gateway.protected_route.stage_remove',
       confirmGatewayParams({ name }),
       signal,
     )

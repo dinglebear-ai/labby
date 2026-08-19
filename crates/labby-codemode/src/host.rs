@@ -38,6 +38,10 @@ pub struct ToolsRender {
     /// caches (e.g. embedding vectors) off this without recomputing it
     /// themselves.
     pub fingerprint: String,
+    /// Identity of the semantic ranking corpus (`id` + `description` only).
+    /// Safety/schema-only render changes can therefore refresh discovery
+    /// without needlessly re-embedding unchanged ranking text.
+    pub embedding_fingerprint: String,
     /// The descriptors (tools + snippets) visible to this execution. A boxed
     /// slice, not a `Vec`: nothing ever mutates this in place (the only way
     /// to do so behind an `Arc` is `Arc::get_mut`/`Arc::make_mut`, and no
@@ -59,6 +63,7 @@ impl ToolsRender {
     pub fn empty() -> Self {
         Self {
             fingerprint: String::new(),
+            embedding_fingerprint: String::new(),
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,
@@ -108,23 +113,20 @@ impl ExecCtx {
     }
 }
 
-/// The durable decision for one `codemode.step(name, fn)` boundary, returned by
+/// The host decision for one `codemode.step(name, fn)` boundary, returned by
 /// [`CodeModeHost::decide_step`] BEFORE the sandbox runs `fn`.
 ///
-/// Port of the step half of Cloudflare's `codemode.step` prelude
-/// (`proxy-tool.ts:231-241`): `decide()` runs first; a non-execute decision is
-/// a replay (return the cached value without running `fn`), an execute decision
-/// runs `fn` then records the result. Labby folds Cloudflare's pause/diverge
-/// reasons into an explicit `Error` variant so the driver can map them onto a
-/// sandbox rejection.
+/// The current Labby host always returns `Execute`; `Replay` and `Error` remain
+/// reserved protocol seams for future caller-initiated replay work. They are
+/// not a public pause, confirmation, or resume mechanism.
 #[derive(Debug, Clone)]
 pub enum StepDecision {
-    /// The step was journaled on a prior pass — return `value`, do NOT run `fn`.
+    /// Reserved for future replay support: return `value`, do NOT run `fn`.
     Replay(Value),
     /// Run `fn` for real, then call [`CodeModeHost::record_step`].
     Execute,
-    /// Divergence / pause / fail — reject the step in the sandbox with this
-    /// `(kind, message)` (mirrors a rejected `callTool`).
+    /// Reject the step in the sandbox with this `(kind, message)` (mirrors a
+    /// rejected `callTool`). Reserved for future replay divergence handling.
     Error { kind: String, message: String },
 }
 
@@ -161,24 +163,23 @@ pub trait CodeModeHost: Send + Sync {
         ctx: ExecCtx,
     ) -> impl Future<Output = Result<ToolCallOutcome, CodeModeCallError>> + Send;
 
-    /// Decide replay-vs-execute for a `codemode.step(name, fn)` boundary at
+    /// Decide whether to execute a `codemode.step(name, fn)` boundary at
     /// `(execution_id, seq)`, BEFORE the sandbox runs `fn`. The step consumes a
-    /// `seq` from the same monotonic spine as `call_tool`, so it participates in
-    /// the durable replay cursor.
+    /// `seq` from the same monotonic spine as `call_tool`.
     ///
     /// The default impl always returns [`StepDecision::Execute`], so `fn` runs
-    /// normally; no host currently overrides this hook.
+    /// normally. The current gateway host does not override this hook.
     fn decide_step(&self, ctx: ExecCtx, name: &str) -> impl Future<Output = StepDecision> + Send {
         let _ = (&ctx, name);
         async { StepDecision::Execute }
     }
 
-    /// Record the value a step's `fn` produced (decision was execute) so a
-    /// later resume replays it without re-running `fn`. `name` + `ctx.step_ordinal`
-    /// + `ctx.execution_id` form the journal key.
+    /// Record the value a step's `fn` produced after it executed. The current
+    /// gateway host buffers a bounded, redacted audit record; it does not read
+    /// that record to resume or replay a run. `name` + `ctx.step_ordinal` +
+    /// `ctx.execution_id` form the journal identity.
     ///
-    /// The default impl is a no-op `Ok(())`; no host currently overrides this
-    /// hook, so `fn` is simply re-run on any re-execution.
+    /// The default impl is a no-op `Ok(())`.
     fn record_step(
         &self,
         ctx: ExecCtx,
@@ -302,6 +303,7 @@ impl CodeModeHost for NoopHost {
     ) -> Result<ToolsRender, ToolError> {
         Ok(ToolsRender {
             fingerprint: "noop".to_string(),
+            embedding_fingerprint: "noop".to_string(),
             entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,

@@ -196,6 +196,15 @@ function parseGatewayEnvObject(value: unknown): Record<string, string> {
   )
 }
 
+function parseSkillPatternsText(value: string): string[] | null {
+  const patterns = [...new Set(value.split(',').map((pattern) => pattern.trim()).filter(Boolean))]
+  return patterns.length > 0 ? patterns : null
+}
+
+function formatSkillPatterns(patterns: string[] | null | undefined): string {
+  return (patterns ?? []).join(', ')
+}
+
 const emptyCustomState = {
   transport: 'http' as TransportType,
   name: '',
@@ -204,8 +213,9 @@ const emptyCustomState = {
   bearerTokenEnv: '',
   proxyResources: true,
   proxyPrompts: true,
-  proxyMcpUi: true,
   proxySkills: false,
+  exposeAllSkills: true,
+  proxyMcpUi: true,
 }
 
 export function GatewayFormDialog({
@@ -243,8 +253,10 @@ export function GatewayFormDialog({
   const [bearerTokenValue, setBearerTokenValue] = useState('')
   const [proxyResources, setProxyResources] = useState(true)
   const [proxyPrompts, setProxyPrompts] = useState(true)
-  const [proxyMcpUi, setProxyMcpUi] = useState(true)
   const [proxySkills, setProxySkills] = useState(false)
+  const [exposeAllSkills, setExposeAllSkills] = useState(true)
+  const [skillPatternsText, setSkillPatternsText] = useState('')
+  const [proxyMcpUi, setProxyMcpUi] = useState(true)
   const [uiState, dispatchUi] = useReducer(gatewayFormUiReducer, initialGatewayFormUiState)
   const setUi = useCallback(<Key extends keyof GatewayFormUiState,>(
     key: Key,
@@ -511,6 +523,9 @@ export function GatewayFormDialog({
         setBearerTokenValue('')
         setProxyResources(gateway.config.proxy_resources ?? true)
         setProxyPrompts(gateway.config.proxy_prompts ?? true)
+        setProxySkills(gateway.config.proxy_skills ?? false)
+        setExposeAllSkills(gateway.config.expose_skills == null)
+        setSkillPatternsText(formatSkillPatterns(gateway.config.expose_skills))
         setProxyMcpUi(gateway.config.proxy_mcp_ui ?? true)
         setProxySkills(gateway.config.proxy_skills ?? false)
       }
@@ -531,6 +546,9 @@ export function GatewayFormDialog({
         setBearerTokenValue('')
         setProxyResources(emptyCustomState.proxyResources)
         setProxyPrompts(emptyCustomState.proxyPrompts)
+        setProxySkills(emptyCustomState.proxySkills)
+        setExposeAllSkills(emptyCustomState.exposeAllSkills)
+        setSkillPatternsText('')
         setProxyMcpUi(emptyCustomState.proxyMcpUi)
         setProxySkills(emptyCustomState.proxySkills)
         setSelectedService('')
@@ -729,6 +747,8 @@ export function GatewayFormDialog({
         oauth: oauthConfig,
         proxy_resources: proxyResources,
         proxy_prompts: proxyPrompts,
+        proxy_skills: proxySkills,
+        expose_skills: exposeAllSkills ? null : (parseSkillPatternsText(skillPatternsText) ?? []),
         proxy_mcp_ui: proxyMcpUi,
         ...(proxySkills || gateway?.config.proxy_skills
           ? { proxy_skills: proxySkills }
@@ -989,6 +1009,8 @@ export function GatewayFormDialog({
     }
     cfg.proxy_resources = proxyResources
     cfg.proxy_prompts = proxyPrompts
+    cfg.proxy_skills = proxySkills
+    cfg.expose_skills = exposeAllSkills ? null : (parseSkillPatternsText(skillPatternsText) ?? [])
     cfg.proxy_mcp_ui = proxyMcpUi
     cfg.proxy_skills = proxySkills
     return { [n]: cfg }
@@ -1017,7 +1039,7 @@ export function GatewayFormDialog({
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { onFormChange() }, [name, url, command, stdioEnv, transport, proxyResources, proxyPrompts, proxyMcpUi, proxySkills, jsonDrawerOpen])
+  useEffect(() => { onFormChange() }, [name, url, command, stdioEnv, transport, proxyResources, proxyPrompts, proxySkills, exposeAllSkills, skillPatternsText, proxyMcpUi, jsonDrawerOpen])
 
   useEffect(() => {
     if (syncingRef.current || !open || mode !== 'custom') return
@@ -1048,6 +1070,12 @@ export function GatewayFormDialog({
       }
       if (typeof cfg.proxy_resources === 'boolean') setProxyResources(cfg.proxy_resources)
       if (typeof cfg.proxy_prompts === 'boolean') setProxyPrompts(cfg.proxy_prompts)
+      if (typeof cfg.proxy_skills === 'boolean') setProxySkills(cfg.proxy_skills)
+      const parsedSkillPatterns = Array.isArray(cfg.expose_skills)
+        ? cfg.expose_skills.filter((pattern): pattern is string => typeof pattern === 'string')
+        : null
+      setExposeAllSkills(cfg.expose_skills == null)
+      setSkillPatternsText(formatSkillPatterns(parsedSkillPatterns))
       if (typeof cfg.proxy_mcp_ui === 'boolean') setProxyMcpUi(cfg.proxy_mcp_ui)
       if (typeof cfg.proxy_skills === 'boolean') setProxySkills(cfg.proxy_skills)
       // Defer reset — same reason as onFormChange: the useEffect fires after React
@@ -1511,6 +1539,60 @@ export function GatewayFormDialog({
                     checked={proxyPrompts}
                     onCheckedChange={setProxyPrompts}
                   />
+                </div>
+
+                <div className="space-y-3 rounded-lg border border-aurora-border-default/70 bg-aurora-control-surface/30 p-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="proxy-skills" className="font-medium">
+                        Trust Agent Skills
+                      </Label>
+                      <p className="text-sm text-aurora-text-muted">
+                        Opt in to aggregating Skills from this server. Skill instructions can direct agent behavior.
+                      </p>
+                    </div>
+                    <Switch
+                      id="proxy-skills"
+                      checked={proxySkills}
+                      onCheckedChange={setProxySkills}
+                    />
+                  </div>
+
+                  {proxySkills ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="space-y-0.5">
+                          <Label htmlFor="expose-all-skills" className="font-medium">
+                            Expose all trusted skills
+                          </Label>
+                          <p className="text-sm text-aurora-text-muted">
+                            Turn this off to use a skill-name allowlist or expose none.
+                          </p>
+                        </div>
+                        <Switch
+                          id="expose-all-skills"
+                          checked={exposeAllSkills}
+                          onCheckedChange={setExposeAllSkills}
+                        />
+                      </div>
+
+                      {!exposeAllSkills ? (
+                        <Field>
+                          <FieldLabel htmlFor="expose-skills">Skill exposure patterns</FieldLabel>
+                          <Input
+                            id="expose-skills"
+                            value={skillPatternsText}
+                            onChange={(event) => setSkillPatternsText(event.target.value)}
+                            placeholder="review-*, deploy"
+                            className="font-mono"
+                          />
+                          <FieldDescription>
+                            Comma-separated exact names or wildcard patterns. Leave this blank while “Expose all” is off to expose no skills.
+                          </FieldDescription>
+                        </Field>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="flex items-center justify-between gap-4">

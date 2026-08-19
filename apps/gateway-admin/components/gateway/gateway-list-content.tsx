@@ -99,6 +99,8 @@ interface GatewaySummary {
   exposedPrompts: number
   discoveredResources: number
   exposedResources: number
+  discoveredSkills: number
+  exposedSkills: number
   totalServers: number
   serverStates: Array<{ id: string; name: string; color: string; state: string }>
 }
@@ -219,6 +221,8 @@ export function GatewayListContent() {
       exposedPrompts: sum((gateway) => gateway.status.exposed_prompt_count),
       discoveredResources: sum((gateway) => gateway.status.discovered_resource_count),
       exposedResources: sum((gateway) => gateway.status.exposed_resource_count),
+      discoveredSkills: sum((gateway) => gateway.status.discovered_skill_count ?? 0),
+      exposedSkills: sum((gateway) => gateway.status.exposed_skill_count ?? 0),
       serverStates,
     }
   }, [items])
@@ -777,6 +781,8 @@ export function GatewayListView({
               exposedPrompts={summary.exposedPrompts}
               discoveredResources={summary.discoveredResources}
               exposedResources={summary.exposedResources}
+              discoveredSkills={summary.discoveredSkills}
+              exposedSkills={summary.exposedSkills}
               serverStates={summary.serverStates}
               activeLens={gatewayFilters.primaryLens}
               toolsViewActive={showToolsView}

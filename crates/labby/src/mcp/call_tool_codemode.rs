@@ -260,9 +260,10 @@ calls, use small bounded batches, preserve stable idempotency keys, and inspect 
 completed results before retrying a timed-out batch; earlier calls may already \
 have committed.
 
-`codemode.step(name, fn)` wraps side-effectful or nondeterministic work (e.g. \
-anything not already a `callTool`/`codemode.<upstream>.<tool>` call) so it runs \
-once and replays its recorded result if the run resumes, instead of re-running it.
+`codemode.step(name, fn)` executes `fn` in the current run, then buffers a bounded, \
+redacted result for Labby's best-effort append-only journal. There is no public \
+resume or replay operation, and a successful Code Mode response does not prove \
+that the detached journal flush has completed.
 
 ```ts
 // codemode.<upstream>.<tool>() helpers are auto-generated from the live catalog.
@@ -892,7 +893,12 @@ impl LabMcpServer {
             captured_ui_resource_uri = captured_resource_uri.unwrap_or("<none>"),
             "gateway codemode ok"
         );
-        Ok(code_mode_result(output, structured, &response))
+        Ok(code_mode_result(
+            output,
+            structured,
+            &response,
+            self.route_scope.exposes_resources(),
+        ))
     }
 }
 
@@ -925,13 +931,17 @@ fn code_mode_result(
     text: String,
     structured: Value,
     response: &CodeModeExecutionResponse,
+    expose_resource_ui: bool,
 ) -> CallToolResult {
-    let ui_meta = response.ui.as_ref().map(|ui| {
-        MetaObject(serde_json::Map::from_iter([(
-            "ui".to_string(),
-            ui.ui_meta.clone(),
-        )]))
-    });
+    let ui_meta = expose_resource_ui
+        .then_some(response.ui.as_ref())
+        .flatten()
+        .map(|ui| {
+            MetaObject(serde_json::Map::from_iter([(
+                "ui".to_string(),
+                ui.ui_meta.clone(),
+            )]))
+        });
     call_result_with_structured(text, structured, ui_meta)
 }
 

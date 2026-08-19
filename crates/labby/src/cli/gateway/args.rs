@@ -24,6 +24,8 @@ pub enum GatewayCommand {
     Quarantine(GatewayQuarantineArgs),
     /// Manage public MCP routes protected by Lab OAuth.
     ProtectedRoute(GatewayProtectedRouteArgs),
+    /// Manage reusable gateway capability loadouts.
+    Loadout(GatewayLoadoutArgs),
     /// Reload gateways from config and reconcile runtime state.
     Reload,
     /// Manage upstream MCP server lifecycle and OAuth.
@@ -42,8 +44,163 @@ pub enum GatewayCommand {
     Code(GatewayCodeArgs),
     /// Generate and approve Code Mode upstream hint proposals.
     Enrich(GatewayEnrichArgs),
+    /// Inspect and manage Agent Skills exposed by gateway upstreams.
+    Skills(GatewaySkillsArgs),
     /// Query gateway upstream call-usage telemetry.
     Usage(GatewayUsageArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayLoadoutArgs {
+    #[command(subcommand)]
+    pub command: GatewayLoadoutCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewayLoadoutCommand {
+    /// List configured Loadouts.
+    List,
+    /// Get one Loadout.
+    Get(GatewayLoadoutNameArgs),
+    /// Add a reusable Loadout.
+    Add(GatewayLoadoutCreateArgs),
+    /// Patch selected Loadout fields without resetting unspecified fields.
+    Update(GatewayLoadoutUpdateArgs),
+    /// Remove an unreferenced Loadout.
+    Remove(GatewayLoadoutRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayLoadoutNameArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayLoadoutRemoveArgs {
+    pub name: String,
+    /// Stage removal for restart after protected-route references have been staged away.
+    #[arg(long)]
+    pub stage_for_restart: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayLoadoutCreateArgs {
+    pub name: String,
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Upstream names selected by this Loadout. Repeat or comma-separate.
+    #[arg(long = "upstream", value_delimiter = ',')]
+    pub upstreams: Vec<String>,
+    /// Built-in Lab services selected by this Loadout. Repeat or comma-separate.
+    #[arg(long = "service", value_delimiter = ',')]
+    pub services: Vec<String>,
+    /// Hide direct MCP Tools on this Loadout.
+    #[arg(long)]
+    pub no_tools: bool,
+    /// Hide MCP Resources on this Loadout. Skills require Resources.
+    #[arg(long)]
+    pub no_resources: bool,
+    /// Hide MCP Prompts on this Loadout.
+    #[arg(long)]
+    pub no_prompts: bool,
+    /// Hide Agent Skills on this Loadout.
+    #[arg(long)]
+    pub no_skills: bool,
+    /// Expose Code Mode on this Loadout.
+    #[arg(long)]
+    pub code_mode: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayLoadoutUpdateArgs {
+    pub name: String,
+    #[arg(long)]
+    pub new_name: Option<String>,
+    #[arg(long, conflicts_with = "clear_description")]
+    pub description: Option<String>,
+    #[arg(long, conflicts_with = "description")]
+    pub clear_description: bool,
+    /// Replace upstream selection. Repeat or comma-separate.
+    #[arg(
+        long = "upstream",
+        value_delimiter = ',',
+        conflicts_with = "clear_upstreams"
+    )]
+    pub upstreams: Vec<String>,
+    /// Clear all selected upstreams.
+    #[arg(long, conflicts_with = "upstreams")]
+    pub clear_upstreams: bool,
+    /// Replace service selection. Repeat or comma-separate.
+    #[arg(
+        long = "service",
+        value_delimiter = ',',
+        conflicts_with = "clear_services"
+    )]
+    pub services: Vec<String>,
+    /// Clear all selected built-in services.
+    #[arg(long, conflicts_with = "services")]
+    pub clear_services: bool,
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub expose_tools: Option<bool>,
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub expose_resources: Option<bool>,
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub expose_prompts: Option<bool>,
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub expose_skills: Option<bool>,
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub expose_code_mode: Option<bool>,
+    /// Stage this Loadout patch for the next Labby restart. Required when the Loadout is mounted by an enabled protected route.
+    #[arg(long)]
+    pub stage_for_restart: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewaySkillsArgs {
+    #[command(subcommand)]
+    pub command: GatewaySkillsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewaySkillsCommand {
+    /// List Skills support, trust state, validation results, and exposure.
+    List(GatewaySkillsListArgs),
+    /// Trust an upstream's Agent Skills and allow Labby to enumerate them.
+    Trust(GatewaySkillsTrustArgs),
+    /// Stop trusting an upstream's Agent Skills.
+    Untrust(GatewaySkillsUpstreamArgs),
+    /// Replace the skill-name exposure allowlist. Repeat --pattern for multiple patterns.
+    Expose(GatewaySkillsExposeArgs),
+    /// Clear the skill exposure allowlist so every validated skill may be exposed.
+    ExposeAll(GatewaySkillsUpstreamArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GatewaySkillsListArgs {
+    /// Limit the operator view to one upstream.
+    #[arg(long)]
+    pub upstream: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewaySkillsUpstreamArgs {
+    pub upstream: String,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewaySkillsTrustArgs {
+    pub upstream: String,
+    /// Skip the trust confirmation prompt.
+    #[arg(short = 'y', long, alias = "no-confirm")]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewaySkillsExposeArgs {
+    pub upstream: String,
+    /// Exact skill name or wildcard pattern. Repeat to build the allowlist.
+    #[arg(long = "pattern", required = true)]
+    pub patterns: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -258,6 +415,9 @@ pub struct GatewayAddArgs {
     /// on from the CLI at all.
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     pub proxy_skills: bool,
+    /// Initial skill-name exposure allowlist. Repeat for multiple patterns.
+    #[arg(long = "expose-skill")]
+    pub expose_skills: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -293,6 +453,12 @@ pub struct GatewayUpdateArgs {
     /// Turn Agent Skills aggregation on or off for this upstream.
     #[arg(long)]
     pub proxy_skills: Option<bool>,
+    /// Replace the skill-name exposure allowlist. Repeat for multiple patterns.
+    #[arg(long = "expose-skill", conflicts_with = "clear_expose_skills")]
+    pub expose_skills: Vec<String>,
+    /// Clear the skill-name allowlist and expose all validated Skills.
+    #[arg(long, conflicts_with = "expose_skills")]
+    pub clear_expose_skills: bool,
 }
 
 #[derive(Debug, Args)]
@@ -336,7 +502,7 @@ pub enum GatewayProtectedRouteCommand {
     /// Replace a Gateway-managed protected MCP route.
     Update(GatewayProtectedRouteUpdateArgs),
     /// Remove a Gateway-managed protected MCP route.
-    Remove(GatewayProtectedRouteNameArgs),
+    Remove(GatewayProtectedRouteRemoveArgs),
     /// Validate a proposed protected MCP route without saving it.
     Test(GatewayProtectedRouteUpsertArgs),
 }
@@ -344,6 +510,14 @@ pub enum GatewayProtectedRouteCommand {
 #[derive(Debug, Args)]
 pub struct GatewayProtectedRouteNameArgs {
     pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayProtectedRouteRemoveArgs {
+    pub name: String,
+    /// Persist a gateway-subset removal for the next Labby restart.
+    #[arg(long)]
+    pub stage_for_restart: bool,
 }
 
 #[derive(Debug, Args)]
@@ -370,6 +544,9 @@ pub struct GatewayProtectedRouteUpdateArgs {
     /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
+    /// Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields.
+    #[arg(long, conflicts_with_all = ["target_upstream", "target_service", "expose_code_mode"])]
+    pub loadout: Option<String>,
     /// Upstream names to expose for --gateway-subset. Repeat or comma-separate.
     #[arg(long, value_delimiter = ',')]
     pub target_upstream: Vec<String>,
@@ -379,6 +556,9 @@ pub struct GatewayProtectedRouteUpdateArgs {
     /// Expose codemode on this gateway subset.
     #[arg(long)]
     pub expose_code_mode: bool,
+    /// Persist this route change for the next Labby restart instead of attempting a hot route mutation.
+    #[arg(long)]
+    pub stage_for_restart: bool,
 }
 
 #[derive(Debug, Args)]
@@ -404,6 +584,9 @@ pub struct GatewayProtectedRouteUpsertArgs {
     /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
+    /// Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields.
+    #[arg(long, conflicts_with_all = ["target_upstream", "target_service", "expose_code_mode"])]
+    pub loadout: Option<String>,
     /// Upstream names to expose for --gateway-subset. Repeat or comma-separate.
     #[arg(long, value_delimiter = ',')]
     pub target_upstream: Vec<String>,
@@ -413,6 +596,9 @@ pub struct GatewayProtectedRouteUpsertArgs {
     /// Expose codemode on this gateway subset.
     #[arg(long)]
     pub expose_code_mode: bool,
+    /// Persist this route for the next Labby restart instead of attempting a hot route mount.
+    #[arg(long)]
+    pub stage_for_restart: bool,
 }
 
 #[derive(Debug, Args)]

@@ -81,6 +81,8 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
           exposedPrompts: 1,
           discoveredResources: 1,
           exposedResources: 1,
+          discoveredSkills: 0,
+          exposedSkills: 0,
           serverStates: [
             { id: 'a', name: 'a', color: 'var(--aurora-success)', state: 'healthy' },
             { id: 'b', name: 'b', color: 'var(--aurora-error)', state: 'disconnected' },

@@ -318,10 +318,11 @@ shared by the gateway and MCP crates:
 |---|---|
 | `gateway.reload.selective` | reconcile that kept the live pool and selectively reconciled added upstreams |
 | `gateway.reload.full` | reconcile that rebuilt the upstream pool |
-| `gateway.code_mode.set` | Code Mode contract update that did not rebuild the upstream pool, such as an MCP App UI toggle |
+| `gateway.code_mode.set` | Code Mode contract update that did not rebuild the upstream pool, including the legacy Code Mode inspector switch |
+| `gateway.mcp_apps.set` | Labby-owned MCP App visibility update that did not rebuild the upstream pool |
 | `gateway.enrich.hint_apply` | `gateway.enrich.hint.apply` writing a `code_mode_hint` |
 | `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
-| `mcp.call.mcp_app` | explicit Code Mode MCP App visibility change made through the `mcp_app` control tool |
+| `mcp.call.mcp_app` | Labby-owned MCP App visibility change made through the always-on `mcp_app` manager |
 | `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
 | `upstream.subscription` | scoped list-change signal from one live upstream subscription |
 | `upstream.notification_lag` | bounded authoritative catalog reconciliation after the subscription receiver skipped events |

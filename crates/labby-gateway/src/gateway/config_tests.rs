@@ -1,5 +1,5 @@
 use labby_runtime::gateway_config::{
-    GatewayConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamTransport,
+    GatewayConfig, GatewayLoadoutConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamTransport,
 };
 
 use super::*;
@@ -80,6 +80,7 @@ fn sample_gateway_subset_route(name: &str, path: &str, host: &str) -> ProtectedM
     route.backend_url = String::new();
     route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
         labby_runtime::gateway_config::ProtectedGatewaySubsetTarget {
+            loadout: None,
             upstreams: vec!["gateway-alpha".to_string()],
             services: Vec::new(),
             expose_code_mode: false,
@@ -531,7 +532,8 @@ fn update_upstream_applies_and_clears_expose_skills() {
         Some(&["core".to_string()][..])
     );
 
-    // An empty array clears the allowlist, matching expose_tools/resources/prompts.
+    // An empty array is an explicit deny-all for Skills. Null is the only
+    // representation that clears the allowlist back to expose-all.
     update_upstream(
         &mut cfg,
         "b",
@@ -548,8 +550,19 @@ fn update_upstream_applies_and_clears_expose_skills() {
             .find(|u| u.name == "b")
             .expect("b upstream")
             .expose_skills,
-        None
+        Some(vec![])
     );
+
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            expose_skills: Some(None),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("clear should succeed");
+    assert_eq!(cfg.upstream[1].expose_skills, None);
 }
 
 #[test]
@@ -1572,6 +1585,101 @@ fn insert_upstream_rejects_dangerous_stdio_spec() {
     let mut cfg = GatewayConfig::default();
     let err = insert_upstream(&mut cfg, stdio_upstream("bash", &["-c", "evil"], &[])).unwrap_err();
     assert_eq!(err.kind(), "invalid_param");
+}
+
+#[test]
+fn loadout_rejects_skills_without_resources() {
+    let mut cfg = sample_config();
+    cfg.loadouts.push(GatewayLoadoutConfig {
+        name: "skills-no-resources".to_string(),
+        upstreams: vec!["a".to_string()],
+        expose_resources: false,
+        expose_skills: true,
+        ..GatewayLoadoutConfig::default()
+    });
+    let error = validate_config(&cfg).expect_err("Skills must require resources");
+    assert!(error.to_string().contains("Skills-over-MCP"));
+    assert!(
+        error
+            .to_string()
+            .contains("enable resources or disable skills")
+    );
+}
+
+#[test]
+fn loadout_rejects_unknown_upstream_with_recovery_hint() {
+    let mut cfg = sample_config();
+    cfg.loadouts.push(GatewayLoadoutConfig {
+        name: "ops".to_string(),
+        upstreams: vec!["missing".to_string()],
+        ..GatewayLoadoutConfig::default()
+    });
+    let error = validate_config(&cfg).expect_err("unknown upstream");
+    assert!(error.to_string().contains("unknown upstream"));
+    assert!(error.to_string().contains("missing"));
+    assert!(error.to_string().contains("add the upstream first"));
+}
+
+#[test]
+fn loadout_rename_cascades_route_reference_and_remove_blocks_while_mounted() {
+    let mut cfg = sample_config();
+    insert_loadout(
+        &mut cfg,
+        GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            upstreams: vec!["a".to_string()],
+            ..GatewayLoadoutConfig::default()
+        },
+    )
+    .expect("insert loadout");
+    let mut route = sample_gateway_subset_route("ops-route", "/ops", "mcp.example.com");
+    route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+        labby_runtime::gateway_config::ProtectedGatewaySubsetTarget {
+            loadout: Some("ops".to_string()),
+            ..Default::default()
+        },
+    ));
+    insert_protected_mcp_route(&mut cfg, route).expect("insert route");
+    update_loadout(
+        &mut cfg,
+        "ops",
+        GatewayLoadoutConfig {
+            name: "operations".to_string(),
+            upstreams: vec!["a".to_string()],
+            ..GatewayLoadoutConfig::default()
+        },
+    )
+    .expect("rename loadout");
+    let target = cfg.protected_mcp_routes[0]
+        .gateway_subset_target()
+        .expect("subset");
+    assert_eq!(target.loadout.as_deref(), Some("operations"));
+    let error = remove_loadout(&mut cfg, "operations").expect_err("mounted loadout");
+    assert!(error.to_string().contains("ops-route"));
+    assert!(
+        error
+            .to_string()
+            .contains("update or remove those routes first")
+    );
+}
+
+#[test]
+fn protected_route_rejects_unknown_loadout() {
+    let mut cfg = sample_config();
+    let mut route = sample_gateway_subset_route("ops-route", "/ops", "mcp.example.com");
+    route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+        labby_runtime::gateway_config::ProtectedGatewaySubsetTarget {
+            loadout: Some("missing".to_string()),
+            ..Default::default()
+        },
+    ));
+    let error = insert_protected_mcp_route(&mut cfg, route).expect_err("unknown loadout");
+    assert!(error.to_string().contains("unknown loadout"));
+    assert!(
+        error
+            .to_string()
+            .contains("create the loadout or update the route")
+    );
 }
 
 // ── T3: config.toml file permission test (O-M4) ──────────────────────────

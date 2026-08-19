@@ -49,8 +49,17 @@ function emit() {
 }
 
 function setState(next: BrowserSessionState) {
+  const previousIdentity = sessionIdentity(currentState)
+  const nextIdentity = sessionIdentity(next)
+  if (previousIdentity !== nextIdentity) sessionGeneration += 1
   currentState = next
   emit()
+}
+
+function sessionIdentity(state: BrowserSessionState) {
+  return state.status === 'authenticated'
+    ? `authenticated:${state.user.sub}:${state.isAdmin ? 'admin' : 'user'}:${state.csrfToken}:${state.expiresAt}`
+    : state.status
 }
 
 function normalizePayload(payload: SessionPayload): BrowserSessionState {
@@ -79,6 +88,11 @@ export function getBrowserSessionState() {
 
 export function getSessionCsrfToken() {
   return currentState.status === 'authenticated' ? currentState.csrfToken : undefined
+}
+
+/** Authority-adjacent cache generation. Never expose the subject in cache keys. */
+export function getBrowserSessionEpoch() {
+  return sessionGeneration
 }
 
 export async function loadBrowserSession() {

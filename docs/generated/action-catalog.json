@@ -1022,6 +1022,306 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.loadout.add",
+    "description": "Add a reusable gateway loadout that narrows upstreams, services, Tools, Resources, Prompts, Skills, and Code Mode",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "loadout",
+        "ty": "json",
+        "required": true,
+        "description": "Loadout config to validate and persist"
+      }
+    ],
+    "returns": "GatewayLoadoutConfig",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.get",
+    "description": "Get one reusable gateway capability loadout",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      }
+    ],
+    "returns": "GatewayLoadoutConfig",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.list",
+    "description": "List reusable gateway capability loadouts, including Skills-over-MCP exposure policy",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [],
+    "returns": "GatewayLoadoutConfig[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.list_state",
+    "description": "List desired Loadouts with pending restart state compared with this process's mounted projections",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [],
+    "returns": "GatewayLoadoutState[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.patch",
+    "description": "Patch selected fields on a reusable gateway loadout without resetting unspecified capability gates or selections",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "patch",
+        "ty": "json",
+        "required": true,
+        "description": "Partial loadout fields to update; null description clears it and empty upstream/service arrays clear those selections"
+      }
+    ],
+    "returns": "GatewayLoadoutConfig",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.remove",
+    "description": "Remove an unreferenced reusable gateway loadout",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      }
+    ],
+    "returns": "GatewayLoadoutConfig",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.stage_patch",
+    "description": "Patch a mounted Loadout in durable config for the next Labby restart",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "patch",
+        "ty": "json",
+        "required": true,
+        "description": "Partial Loadout fields to stage"
+      }
+    ],
+    "returns": "GatewayLoadoutStageResult",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.stage_remove",
+    "description": "Remove a Loadout from desired config after its protected-route references have also been staged away",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      }
+    ],
+    "returns": "GatewayLoadoutStageResult",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.stage_update",
+    "description": "Persist a mounted Loadout replacement for the next Labby restart without changing the running route projection",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "loadout",
+        "ty": "json",
+        "required": true,
+        "description": "Replacement Loadout config to stage"
+      }
+    ],
+    "returns": "GatewayLoadoutStageResult",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.loadout.update",
+    "description": "Replace a reusable gateway loadout; active protected routes may require restart before changes can take effect",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "loadout",
+        "ty": "json",
+        "required": true,
+        "description": "Replacement loadout config"
+      }
+    ],
+    "returns": "GatewayLoadoutConfig",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.mcp.cleanup",
     "description": "Kill or preview running processes associated with one upstream MCP server",
     "destructive": false,
@@ -1532,6 +1832,28 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.protected_route.list_state",
+    "description": "List desired protected-route config with pending restart state compared with the routes mounted by this process",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [],
+    "returns": "ProtectedMcpRouteState[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.protected_route.remove",
     "description": "Remove a Gateway-managed protected MCP route",
     "destructive": false,
@@ -1548,6 +1870,99 @@
       }
     ],
     "returns": "ProtectedMcpRouteConfig",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.protected_route.stage_add",
+    "description": "Persist a gateway_subset protected route for the next Labby restart without pretending it is hot-mounted",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "route",
+        "ty": "json",
+        "required": true,
+        "description": "Gateway-subset protected MCP route config to stage"
+      }
+    ],
+    "returns": "ProtectedMcpRouteStageResult",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.protected_route.stage_remove",
+    "description": "Persist removal of a gateway_subset protected route for the next Labby restart",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      }
+    ],
+    "returns": "ProtectedMcpRouteStageResult",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.protected_route.stage_update",
+    "description": "Persist a protected-route update involving a gateway_subset for the next Labby restart",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "route",
+        "ty": "json",
+        "required": true,
+        "description": "Replacement protected MCP route config to stage"
+      }
+    ],
+    "returns": "ProtectedMcpRouteStageResult",
     "surface_availability": {
       "cli": true,
       "mcp": true,
@@ -1870,7 +2285,7 @@
   {
     "service": "gateway",
     "action": "gateway.skills.list",
-    "description": "List Agent Skills aggregated from skills-proxying upstreams, with per-origin labels and cache state",
+    "description": "Operator view of Agent Skills support, trust, validation, exposure, and cache state across gateway upstreams; optionally limit to one upstream",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [

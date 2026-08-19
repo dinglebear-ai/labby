@@ -255,6 +255,7 @@ mod host_config {
         "upstream",
         "upstream_import_tombstones",
         "upstream_pending",
+        "loadouts",
         "protected_mcp_routes",
         "virtual_servers",
         "quarantined_virtual_servers",

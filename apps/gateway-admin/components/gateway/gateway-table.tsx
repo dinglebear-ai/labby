@@ -20,6 +20,7 @@ import {
   X,
   FileText,
   MessageSquare,
+  BookOpen,
   Wrench,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -67,7 +68,7 @@ const GW_CARD =
   'overflow-hidden rounded-aurora-2 border border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-[var(--aurora-shadow-strong),inset_0_1px_0_rgba(255,255,255,0.05)]'
 
 const GW_GRID =
-  'grid grid-cols-[minmax(0,1fr)_80px_minmax(140px,300px)_170px_130px_18px] items-center'
+  'grid grid-cols-[minmax(0,1fr)_80px_minmax(140px,300px)_210px_130px_18px] items-center'
 
 /**
  * The `--gw*` scrim ramp carries underscores in its token names, which Tailwind
@@ -235,7 +236,8 @@ export function GatewayTable({
           result =
             left.status.exposed_tool_count - right.status.exposed_tool_count ||
             left.status.exposed_resource_count - right.status.exposed_resource_count ||
-            left.status.exposed_prompt_count - right.status.exposed_prompt_count
+            left.status.exposed_prompt_count - right.status.exposed_prompt_count ||
+            (left.status.exposed_skill_count ?? 0) - (right.status.exposed_skill_count ?? 0)
           break
       }
 
@@ -498,6 +500,8 @@ export function GatewayTable({
     const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
     const isSelected = selectedGatewayIds.includes(gateway.id)
     const status = gateway.status
+    const discoveredSkills = status.discovered_skill_count ?? 0
+    const exposedSkills = status.exposed_skill_count ?? 0
     const toggleLabel = gateway.enabled ?? true ? 'Disable server' : 'Enable server'
     const isExpanded = expandedDesktopGatewayId === gateway.id
 
@@ -760,8 +764,8 @@ export function GatewayTable({
 
         <div className="min-w-0 justify-self-center">
           <span
-            className="grid grid-cols-[40px_40px_40px] items-center gap-x-1.5"
-            title={`Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count}`}
+            className="grid grid-cols-[40px_40px_40px_40px] items-center gap-x-1.5"
+            title={`Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count} · skills ${exposedSkills}/${discoveredSkills}`}
           >
             <span
               className={cn(
@@ -792,6 +796,16 @@ export function GatewayTable({
               <MessageSquare className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Prompts:</span>
               {status.discovered_prompt_count === 0 ? EM_DASH : status.exposed_prompt_count}
+            </span>
+            <span
+              className={cn(
+                GW_COUNT,
+                exposureTone(exposedSkills, discoveredSkills),
+              )}
+            >
+              <BookOpen className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
+              <span className="sr-only">Skills:</span>
+              {discoveredSkills === 0 ? EM_DASH : exposedSkills}
             </span>
           </span>
         </div>
@@ -940,6 +954,11 @@ export function GatewayTable({
                         <MessageSquare className="size-3 text-aurora-text-muted" aria-hidden="true" />
                         <span className="sr-only">Prompts:</span>
                         <strong className="text-[10px] font-semibold text-aurora-text-primary">{gateway.status.exposed_prompt_count}</strong>
+                      </span>
+                      <span data-mobile-metric="skills" className="inline-flex items-center gap-1 whitespace-nowrap" title="Skills">
+                        <BookOpen className="size-3 text-aurora-text-muted" aria-hidden="true" />
+                        <span className="sr-only">Skills:</span>
+                        <strong className="text-[10px] font-semibold text-aurora-text-primary">{gateway.status.exposed_skill_count ?? 0}</strong>
                       </span>
                       <span data-mobile-metric="runtime" className="inline-flex items-center gap-1 whitespace-nowrap" title="Runtime age">
                         <RefreshCw className="size-3 text-aurora-text-muted" aria-hidden="true" />

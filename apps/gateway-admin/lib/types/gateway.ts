@@ -11,8 +11,8 @@ export interface GatewayConfig {
   oauth_enabled?: boolean
   proxy_resources?: boolean
   proxy_prompts?: boolean
-  proxy_mcp_ui?: boolean
   proxy_skills?: boolean
+  proxy_mcp_ui?: boolean
   expose_tools?: string[]
   expose_resources?: string[] | null
   expose_prompts?: string[] | null
@@ -42,6 +42,10 @@ export interface GatewayStatus {
   exposed_resource_count: number
   discovered_prompt_count: number
   exposed_prompt_count: number
+  /** Skills counts are optional for compatibility with pre-Skills gateway payloads. */
+  discovered_skill_count?: number
+  exposed_skill_count?: number
+  supports_skills?: boolean
   likely_stale_count?: number
   pid?: number
   pgid?: number
@@ -278,6 +282,51 @@ export interface CodeModeConfigInput {
   max_response_tokens?: number
 }
 
+export interface GatewayLoadout {
+  name: string
+  description?: string | null
+  upstreams: string[]
+  services: string[]
+  expose_code_mode: boolean
+  expose_tools: boolean
+  expose_resources: boolean
+  expose_prompts: boolean
+  expose_skills: boolean
+  restart_required?: boolean
+  pending_operation?: 'add' | 'update' | 'remove' | null
+  runtime_present?: boolean
+  desired_present?: boolean
+}
+
+export type GatewayLoadoutInput = Omit<GatewayLoadout, 'restart_required' | 'pending_operation' | 'runtime_present' | 'desired_present'>
+
+export interface GatewayLoadoutStageResult {
+  loadout: GatewayLoadout
+  restart_required: boolean
+  pending_operation: 'add' | 'update' | 'remove' | null
+  restart_note: string
+}
+
+export interface GatewayLoadoutPatch {
+  name?: string
+  description?: string | null
+  upstreams?: string[]
+  services?: string[]
+  expose_code_mode?: boolean
+  expose_tools?: boolean
+  expose_resources?: boolean
+  expose_prompts?: boolean
+  expose_skills?: boolean
+}
+
+export interface ProtectedGatewaySubsetTarget {
+  kind: 'gateway_subset'
+  loadout?: string
+  upstreams?: string[]
+  services?: string[]
+  expose_code_mode?: boolean
+}
+
 export interface ProtectedMcpRoute {
   name: string
   enabled: boolean
@@ -288,9 +337,22 @@ export interface ProtectedMcpRoute {
   backend_mcp_path?: string
   scopes: string[]
   health_path?: string | null
+  target?: ProtectedGatewaySubsetTarget | null
+  /** Desired config differs from the gateway-subset routes mounted by this process. */
+  restart_required?: boolean
+  pending_operation?: 'add' | 'update' | 'remove' | null
+  runtime_present?: boolean
+  desired_present?: boolean
 }
 
-export type ProtectedMcpRouteInput = ProtectedMcpRoute
+export type ProtectedMcpRouteInput = Omit<ProtectedMcpRoute, 'restart_required' | 'pending_operation' | 'runtime_present' | 'desired_present'>
+
+export interface ProtectedMcpRouteStageResult {
+  route: ProtectedMcpRoute
+  restart_required: boolean
+  pending_operation: 'add' | 'update' | 'remove' | null
+  restart_note: string
+}
 
 export interface ProtectedMcpRouteTestResult {
   ok: boolean

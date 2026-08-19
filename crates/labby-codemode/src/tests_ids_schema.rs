@@ -105,6 +105,14 @@ fn snippet_catalog_entry_projects_to_codemode_run() {
     assert_eq!(entry.namespace, "snippet");
     assert!(entry.signature.contains("codemode.run"));
     assert!(entry.dts.is_empty());
+    assert_eq!(entry.safety, None);
+    assert!(
+        serde_json::to_value(&entry)
+            .expect("serialize snippet descriptor")
+            .get("safety")
+            .is_none(),
+        "composite snippets must not receive static tool safety"
+    );
 
     let discovery = crate::types::CodeModeDiscoveryEntry::from_catalog(&entry);
     assert_eq!(discovery.kind, crate::types::CodeModeCatalogKind::Snippet);

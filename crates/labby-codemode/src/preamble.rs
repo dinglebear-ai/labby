@@ -232,6 +232,7 @@ codemode.search = async function(input) {{
         name: entry.name,
         description: entry.description,
         signature: entry.signature,
+        safety: entry.safety,
         tags: entry.tags || [],
         score: score
       }};
@@ -295,6 +296,7 @@ codemode.search = async function(input) {{
           var record2 = {{
             path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
             name: de.name, description: de.description, signature: de.signature,
+            safety: de.safety,
             tags: de.tags || [], score: 0,
             blendedScore: semanticSimilarity01 * BLEND_WEIGHT
           }};
@@ -323,7 +325,7 @@ codemode.search = async function(input) {{
     return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
   }}
   var results = scored.slice(0, limit).map(function(r) {{
-    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, score: r.score }};
+    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, safety: r.safety, score: r.score }};
   }});
   return {{ results: results, total: total, truncated: total > limit }};
 }};
@@ -406,6 +408,7 @@ codemode.describe = async function(target) {{
     path: entry.path,
     id: entry.id,
     kind: entry.kind,
+    safety: entry.safety,
     markdown: markdown
   }};
 }};
@@ -609,6 +612,7 @@ mod tests {
             name: name.to_string(),
             helper: format!("codemode.{path}"),
             description: description.to_string(),
+            safety: None,
             signature: format!("codemode.{path}(params: unknown): Promise<unknown>"),
             tags: Vec::new(),
             inputs: Vec::new(),
@@ -717,7 +721,7 @@ mod tests {
         assert!(js.contains("raw === entry.id || raw === entry.path || raw === entry.helper"));
         assert!(js.contains("ambiguous_target"));
         assert!(js.contains("unknown_tool"));
-        // codemode.step is now a real two-phase durable primitive that delegates
+        // codemode.step delegates execution and best-effort journal recording
         // to the runner-side __labCodemodeStep bridge (not the old inline stub).
         assert!(js.contains("globalThis.__labCodemodeStep(name, fn)"));
         // codemode.batch is an isolation helper: mixed success/failure jobs
@@ -791,6 +795,38 @@ mod tests {
     }
 
     #[test]
+    fn four_thousand_tool_discovery_payload_stays_bounded_with_safety() {
+        let entries = (0..4_000)
+            .map(|index| {
+                let mut entry = discovery_entry(
+                    "fixture",
+                    &format!("tool_{index}"),
+                    "A deterministic catalog fixture description",
+                );
+                entry.safety = Some(crate::types::CodeModeToolSafety {
+                    read_only: Some(true),
+                    destructive: None,
+                });
+                entry
+            })
+            .collect::<Vec<_>>();
+        let js = generate_discovery_js(&entries, 0.5).expect("4k discovery JS");
+
+        assert!(
+            js.len() < 2_000_000,
+            "4k preamble grew to {} bytes",
+            js.len()
+        );
+        assert!(
+            js.len() / entries.len() < 500,
+            "4k preamble exceeded 500 bytes/tool: {}",
+            js.len() / entries.len()
+        );
+        assert!(!js.contains("\"dts\":"));
+        assert!(!js.contains("\"schema\":"));
+    }
+
+    #[test]
     fn discovery_search_zero_result_returns_actionable_hint() {
         let entries = vec![discovery_entry(
             "github",
@@ -803,6 +839,26 @@ mod tests {
         assert!(js.contains("Broaden the query or try synonyms."));
         assert!(!js.contains("__meta__"));
         assert_eq!(js.matches("hint: __codemodeNoMatchHint").count(), 2);
+    }
+
+    #[test]
+    fn discovery_serializes_intrinsic_safety_and_omits_unknown_facts() {
+        let mut classified = discovery_entry("github", "list_tags", "List tags");
+        classified.safety = Some(crate::types::CodeModeToolSafety {
+            read_only: Some(true),
+            destructive: None,
+        });
+        let classified = serde_json::to_value(classified).expect("serialize classified entry");
+        assert_eq!(classified["safety"]["read_only"], true);
+        assert!(classified["safety"].get("destructive").is_none());
+
+        let unknown = serde_json::to_value(discovery_entry(
+            "github",
+            "mutate_unknown",
+            "Unknown safety",
+        ))
+        .expect("serialize unknown entry");
+        assert!(unknown.get("safety").is_none());
     }
 
     #[test]

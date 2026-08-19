@@ -244,6 +244,11 @@ impl LabMcpServer {
         }
     }
 
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn mcp_apps_config(&self) -> labby_runtime::gateway_config::McpAppsConfig {
+        crate::mcp::peer_contract::mcp_apps_config(self.gateway_manager.as_deref()).await
+    }
+
     pub(crate) async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
         #[cfg(feature = "gateway")]
         {

@@ -16,6 +16,7 @@ const manrope = Manrope({
 export const metadata: Metadata = {
   title: 'Labby',
   description: 'Admin console for managing MCP server connections',
+  referrer: 'no-referrer',
   icons: {
     icon: [
       {

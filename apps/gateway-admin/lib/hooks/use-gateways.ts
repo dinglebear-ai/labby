@@ -26,6 +26,10 @@ import type {
   ReloadGatewayResult,
   GatewayCleanupResult,
   ExposurePolicyPreview,
+  GatewayLoadout,
+  GatewayLoadoutInput,
+  GatewayLoadoutPatch,
+  GatewayLoadoutStageResult,
   ServiceConfig,
   ServiceAction,
   SupportedService,
@@ -33,6 +37,7 @@ import type {
   CodeModeConfigInput,
   ProtectedMcpRoute,
   ProtectedMcpRouteInput,
+  ProtectedMcpRouteStageResult,
   ProtectedMcpRouteTestResult,
   DiscoveredMcpServer,
   GatewayImportResult,
@@ -51,6 +56,19 @@ const DEFAULT_CODE_MODE_CONFIG: CodeModeConfig = {
   max_response_tokens: 6000,
 }
 let mockCodeModeConfig: CodeModeConfig = DEFAULT_CODE_MODE_CONFIG
+let mockLoadouts: GatewayLoadout[] = [
+  {
+    name: 'operations',
+    description: 'Operations-focused gateway projection',
+    upstreams: [],
+    services: [],
+    expose_code_mode: true,
+    expose_tools: false,
+    expose_resources: true,
+    expose_prompts: true,
+    expose_skills: true,
+  },
+]
 let mockProtectedRoutes: ProtectedMcpRoute[] = [
   {
     name: 'tools',
@@ -63,6 +81,161 @@ let mockProtectedRoutes: ProtectedMcpRoute[] = [
     health_path: '/health',
   },
 ]
+
+
+let mockRuntimeLoadouts: GatewayLoadout[] = mockLoadouts.map((loadout) => ({
+  ...loadout,
+  upstreams: [...loadout.upstreams],
+  services: [...loadout.services],
+}))
+function cloneMockProtectedRoutes(routes: ProtectedMcpRoute[]): ProtectedMcpRoute[] {
+  return routes.map((route) => ({
+    ...route,
+    scopes: [...route.scopes],
+    target: route.target ? { ...route.target } : route.target,
+  }))
+}
+
+let mockRuntimeProtectedRoutes: ProtectedMcpRoute[] = cloneMockProtectedRoutes(mockProtectedRoutes)
+
+function sameMockLoadout(left: GatewayLoadout | undefined, right: GatewayLoadout): boolean {
+  if (!left) return false
+  return left.name === right.name
+    && left.description === right.description
+    && JSON.stringify(left.upstreams) === JSON.stringify(right.upstreams)
+    && JSON.stringify(left.services) === JSON.stringify(right.services)
+    && left.expose_tools === right.expose_tools
+    && left.expose_resources === right.expose_resources
+    && left.expose_prompts === right.expose_prompts
+    && left.expose_skills === right.expose_skills
+    && left.expose_code_mode === right.expose_code_mode
+}
+
+function sameMockProtectedRoute(left: ProtectedMcpRoute | undefined, right: ProtectedMcpRoute): boolean {
+  if (!left) return false
+  return left.name === right.name
+    && left.enabled === right.enabled
+    && left.public_host === right.public_host
+    && left.public_path === right.public_path
+    && left.upstream === right.upstream
+    && left.backend_url === right.backend_url
+    && left.backend_mcp_path === right.backend_mcp_path
+    && JSON.stringify(left.scopes) === JSON.stringify(right.scopes)
+    && left.health_path === right.health_path
+    && JSON.stringify(left.target ?? null) === JSON.stringify(right.target ?? null)
+}
+
+
+function mockRouteUsesLoadout(route: ProtectedMcpRoute | undefined, loadout: string): boolean {
+  return Boolean(
+    route?.enabled
+    && route.target?.kind === 'gateway_subset'
+    && route.target.loadout === loadout
+  )
+}
+
+
+function mockLoadoutHasEnabledRoute(name: string): boolean {
+  return mockProtectedRoutes.some((route) => mockRouteUsesLoadout(route, name))
+    || mockRuntimeProtectedRoutes.some((route) => mockRouteUsesLoadout(route, name))
+}
+
+function mockLoadoutBlockingRemoveReference(name: string): ProtectedMcpRoute | undefined {
+  return mockProtectedRoutes.find((route) =>
+    route.target?.kind === 'gateway_subset' && route.target.loadout === name
+  ) ?? mockRuntimeProtectedRoutes.find((route) =>
+    route.enabled
+    && route.target?.kind === 'gateway_subset'
+    && route.target.loadout === name
+  )
+}
+
+function mockRouteIsSubset(route: ProtectedMcpRoute | undefined): boolean {
+  return route?.target?.kind === 'gateway_subset'
+}
+
+function mockProtectedRoutesHaveRestartDebt(): boolean {
+  for (const runtime of mockRuntimeProtectedRoutes) {
+    const desired = mockProtectedRoutes.find((route) => route.name === runtime.name)
+    if (!desired) {
+      if (mockRouteIsSubset(runtime)) return true
+      continue
+    }
+    if (!sameMockProtectedRoute(runtime, desired)
+      && (mockRouteIsSubset(runtime) || mockRouteIsSubset(desired))) {
+      return true
+    }
+  }
+  return mockProtectedRoutes.some((desired) =>
+    mockRouteIsSubset(desired)
+    && !mockRuntimeProtectedRoutes.some((runtime) => runtime.name === desired.name)
+  )
+}
+
+function mockLoadoutStateRows(): GatewayLoadout[] {
+  const names = [...new Set([
+    ...mockLoadouts.map((loadout) => loadout.name),
+    ...mockRuntimeLoadouts.map((loadout) => loadout.name),
+  ])].sort((left, right) => left.localeCompare(right))
+
+  return names.map((name) => {
+    const desired = mockLoadouts.find((loadout) => loadout.name === name)
+    const runtime = mockRuntimeLoadouts.find((loadout) => loadout.name === name)
+    const changed = desired && runtime ? !sameMockLoadout(runtime, desired) : Boolean(desired) !== Boolean(runtime)
+    const routeRelated = mockProtectedRoutes.some((route) => mockRouteUsesLoadout(route, name))
+      || mockRuntimeProtectedRoutes.some((route) => mockRouteUsesLoadout(route, name))
+    const restartRequired = changed && routeRelated
+    const pendingOperation = !restartRequired
+      ? null
+      : runtime == null
+        ? 'add'
+        : desired == null
+          ? 'remove'
+          : 'update'
+    const display = desired ?? runtime
+    if (!display) throw new Error('Mock Loadout state lost both desired and runtime rows')
+    return {
+      ...display,
+      restart_required: restartRequired,
+      pending_operation: pendingOperation,
+      runtime_present: Boolean(runtime),
+      desired_present: Boolean(desired),
+    }
+  })
+}
+
+function mockProtectedRouteStateRows(): ProtectedMcpRoute[] {
+  const names = [...new Set([
+    ...mockProtectedRoutes.map((route) => route.name),
+    ...mockRuntimeProtectedRoutes.map((route) => route.name),
+  ])].sort((left, right) => left.localeCompare(right))
+
+  const globalRestartRequired = mockProtectedRoutesHaveRestartDebt()
+  return names.map((name) => {
+    const desired = mockProtectedRoutes.find((route) => route.name === name)
+    const runtime = mockRuntimeProtectedRoutes.find((route) => route.name === name)
+    const changed = desired && runtime
+      ? !sameMockProtectedRoute(runtime, desired)
+      : Boolean(desired) !== Boolean(runtime)
+    const restartRequired = changed && globalRestartRequired
+    const pendingOperation = !restartRequired
+      ? null
+      : runtime == null
+        ? 'add'
+        : desired == null
+          ? 'remove'
+          : 'update'
+    const display = desired ?? runtime
+    if (!display) throw new Error('Mock protected-route state lost both desired and runtime rows')
+    return {
+      ...display,
+      restart_required: restartRequired,
+      pending_operation: pendingOperation,
+      runtime_present: Boolean(runtime),
+      desired_present: Boolean(desired),
+    }
+  })
+}
 
 // Simulate network delay for mock data
 const mockDelay = (ms: number = 500) => new Promise(resolve => setTimeout(resolve, ms))
@@ -160,10 +333,18 @@ const fetchCodeModeConfig = async (): Promise<CodeModeConfig> => {
   return gatewayApi.getCodeModeConfig()
 }
 
+const fetchLoadouts = async (): Promise<GatewayLoadout[]> => {
+  if (USE_MOCK_DATA) {
+    await mockDelay()
+    return mockLoadoutStateRows()
+  }
+  return gatewayApi.listLoadouts()
+}
+
 const fetchProtectedRoutes = async (): Promise<ProtectedMcpRoute[]> => {
   if (USE_MOCK_DATA) {
     await mockDelay()
-    return mockProtectedRoutes
+    return mockProtectedRouteStateRows()
   }
   return gatewayApi.listProtectedRoutes()
 }
@@ -176,6 +357,7 @@ export const SUPPORTED_SERVICES_KEY = '/gateway-supported-services'
 export const serviceConfigKey = (service: string) => `/gateway-service-config/${service}`
 export const serviceActionsKey = (service: string) => `/gateway-service-actions/${service}`
 export const CODE_MODE_CONFIG_KEY = '/gateway-code-mode-config'
+export const LOADOUTS_KEY = '/gateway-loadouts'
 export const PROTECTED_MCP_ROUTES_KEY = '/gateway-protected-mcp-routes'
 
 async function refreshGatewayCache(id?: string, extraKeys: string[] = []) {
@@ -190,7 +372,7 @@ export function useGateways() {
     fallbackData: USE_MOCK_DATA ? getMockGatewaysFallback() : undefined,
     revalidateOnMount: !USE_MOCK_DATA,
   })
-  const runtimeKey = configured.data
+  const runtimeKey = !USE_MOCK_DATA && configured.data
     ? ['/gateways/runtime', configured.data.map((gateway) => gateway.id).join(',')]
     : null
   const runtime = useSWR<Gateway[]>(
@@ -269,6 +451,14 @@ export function useGatewayCodeModeConfig() {
   return useSWR<CodeModeConfig>(CODE_MODE_CONFIG_KEY, fetchCodeModeConfig, {
     revalidateOnFocus: false,
     fallbackData: USE_MOCK_DATA ? DEFAULT_CODE_MODE_CONFIG : undefined,
+    revalidateOnMount: !USE_MOCK_DATA,
+  })
+}
+
+export function useLoadouts() {
+  return useSWR<GatewayLoadout[]>(LOADOUTS_KEY, fetchLoadouts, {
+    revalidateOnFocus: false,
+    fallbackData: USE_MOCK_DATA ? mockLoadouts : undefined,
     revalidateOnMount: !USE_MOCK_DATA,
   })
 }
@@ -401,8 +591,11 @@ export function useGatewayMutations() {
         },
         // updated_at comes from the backend; omit in mock paths.
       }
-      if (input.config?.proxy_resources !== undefined) {
-        setMockGatewayOverride(id, { proxyResources: input.config.proxy_resources })
+      if (input.config) {
+        setMockGatewayOverride(id, {
+          config: input.config,
+          proxyResources: input.config.proxy_resources,
+        })
       }
       await mutate(gatewayKey(id), updated, false)
       await mutate(GATEWAYS_KEY)
@@ -536,6 +729,302 @@ export function useGatewayMutations() {
     return result
   }, [])
 
+  const addLoadout = useCallback(async (loadout: GatewayLoadoutInput): Promise<GatewayLoadout> => {
+    if (USE_MOCK_DATA) {
+      await mockDelay()
+      if (mockLoadouts.some((item) => item.name === loadout.name)) {
+        throw new Error(`Loadout ${loadout.name} already exists`)
+      }
+      mockLoadouts = [...mockLoadouts, loadout]
+      mockRuntimeLoadouts = [...mockRuntimeLoadouts, loadout]
+      await mutate(LOADOUTS_KEY, mockLoadoutStateRows(), false)
+      return loadout
+    }
+    const result = await gatewayApi.addLoadout(loadout)
+    await mutate(LOADOUTS_KEY)
+    return result
+  }, [])
+
+  const patchLoadout = useCallback(
+    async (name: string, patch: GatewayLoadoutPatch): Promise<GatewayLoadout> => {
+      if (USE_MOCK_DATA) {
+        await mockDelay()
+        const current = mockLoadouts.find((item) => item.name === name)
+        if (!current) throw new Error(`Loadout ${name} not found`)
+        if (mockLoadoutHasEnabledRoute(name)) {
+          throw new Error(`Loadout ${name} is mounted by an enabled protected route; stage the update for restart`)
+        }
+        const updated = { ...current, ...patch, name: patch.name ?? current.name }
+        if (updated.name !== name && mockLoadouts.some((item) => item.name === updated.name)) {
+          throw new Error(`Loadout ${updated.name} already exists`)
+        }
+        mockLoadouts = mockLoadouts.map((item) => (item.name === name ? updated : item))
+        mockRuntimeLoadouts = mockRuntimeLoadouts.map((item) => (item.name === name ? updated : item))
+        if (updated.name !== name) {
+          const renameTarget = (route: ProtectedMcpRoute): ProtectedMcpRoute =>
+            route.target?.kind === 'gateway_subset' && route.target.loadout === name
+              ? { ...route, target: { ...route.target, loadout: updated.name } }
+              : route
+          mockProtectedRoutes = mockProtectedRoutes.map(renameTarget)
+          mockRuntimeProtectedRoutes = mockRuntimeProtectedRoutes.map(renameTarget)
+          await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
+        }
+        await mutate(LOADOUTS_KEY, mockLoadoutStateRows(), false)
+        return updated
+      }
+      const result = await gatewayApi.patchLoadout(name, patch)
+      await mutate(LOADOUTS_KEY)
+      await mutate(PROTECTED_MCP_ROUTES_KEY)
+      return result
+    },
+    [],
+  )
+
+  const stageLoadoutUpdate = useCallback(
+    async (name: string, loadout: GatewayLoadoutInput): Promise<GatewayLoadoutStageResult> => {
+      if (USE_MOCK_DATA) {
+        await mockDelay()
+        const current = mockLoadouts.find((item) => item.name === name)
+        if (!current) throw new Error(`Loadout ${name} not found`)
+        if (loadout.name !== name && mockLoadouts.some((item) => item.name === loadout.name)) {
+          throw new Error(`Loadout ${loadout.name} already exists`)
+        }
+        const runtime = mockRuntimeLoadouts.find((item) => item.name === loadout.name)
+        const restartRequired = !sameMockLoadout(runtime, loadout)
+        const staged: GatewayLoadout = {
+          ...loadout,
+          restart_required: restartRequired,
+          pending_operation: restartRequired ? (runtime ? 'update' : 'add') : null,
+          runtime_present: Boolean(runtime),
+          desired_present: true,
+        }
+        mockLoadouts = mockLoadouts.map((item) => item.name === name ? staged : item)
+        if (loadout.name !== name) {
+          mockProtectedRoutes = mockProtectedRoutes.map((route) => {
+            if (route.desired_present === false || route.target?.kind !== 'gateway_subset' || route.target.loadout !== name) {
+              return route
+            }
+            return {
+              ...route,
+              target: { ...route.target, loadout: loadout.name },
+              restart_required: true,
+              pending_operation: route.runtime_present === false ? 'add' : 'update',
+            }
+          })
+          await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
+        }
+        const view = mockLoadoutStateRows().find((item) => item.name === loadout.name)
+        if (!view) throw new Error(`Loadout ${loadout.name} disappeared from mock desired/runtime state`)
+        await mutate(LOADOUTS_KEY, mockLoadoutStateRows(), false)
+        return {
+          loadout: view,
+          restart_required: view.restart_required ?? false,
+          pending_operation: view.pending_operation ?? null,
+          restart_note: view.restart_required
+            ? 'Saved for the next Labby restart.'
+            : 'Desired Loadout state matches the running projection; no restart is required.',
+        }
+      }
+      const result = await gatewayApi.stageLoadoutUpdate(name, loadout)
+      await mutate(LOADOUTS_KEY)
+      await mutate(PROTECTED_MCP_ROUTES_KEY)
+      return result
+    },
+    [],
+  )
+
+  const stageLoadoutRemove = useCallback(async (name: string): Promise<GatewayLoadoutStageResult> => {
+    if (USE_MOCK_DATA) {
+      await mockDelay()
+      const current = mockLoadouts.find((item) => item.name === name)
+      if (!current) throw new Error('Loadout ' + name + ' not found')
+      const desiredReference = mockProtectedRoutes.find((route) =>
+        route.desired_present !== false
+        && route.target?.kind === 'gateway_subset'
+        && route.target.loadout === name
+      )
+      if (desiredReference) {
+        throw new Error('Loadout ' + name + ' is still referenced by protected route ' + desiredReference.name + '; stage that route away from the Loadout first')
+      }
+      const runtime = mockRuntimeLoadouts.find((item) => item.name === name)
+      if (!runtime) {
+        mockLoadouts = mockLoadouts.filter((item) => item.name !== name)
+        await mutate(LOADOUTS_KEY, mockLoadoutStateRows(), false)
+        return {
+          loadout: current,
+          restart_required: false,
+          pending_operation: null,
+          restart_note: 'Desired Loadout state matches the running projection; no restart is required.',
+        }
+      }
+      mockLoadouts = mockLoadouts.filter((item) => item.name !== name)
+      const view = mockLoadoutStateRows().find((item) => item.name === name)
+      if (!view) {
+        await mutate(LOADOUTS_KEY, mockLoadoutStateRows(), false)
+        return {
+          loadout: current,
+          restart_required: false,
+          pending_operation: null,
+          restart_note: 'Desired Loadout state matches the running projection; no restart is required.',
+        }
+      }
+      await mutate(LOADOUTS_KEY, mockLoadoutStateRows(), false)
+      return {
+        loadout: view,
+        restart_required: view.restart_required ?? false,
+        pending_operation: view.pending_operation ?? null,
+        restart_note: view.restart_required
+          ? 'Saved for the next Labby restart.'
+          : 'Desired Loadout state matches the running projection; no restart is required.',
+      }
+    }
+    const result = await gatewayApi.stageLoadoutRemove(name)
+    await mutate(LOADOUTS_KEY)
+    return result
+  }, [])
+
+  const removeLoadout = useCallback(async (name: string): Promise<GatewayLoadout> => {
+    if (USE_MOCK_DATA) {
+      await mockDelay()
+      const removed = mockLoadouts.find((item) => item.name === name)
+      if (!removed) throw new Error(`Loadout ${name} not found`)
+      const referencedBy = mockLoadoutBlockingRemoveReference(name)
+      if (referencedBy) {
+        throw new Error(`Loadout ${name} is still referenced by protected route ${referencedBy.name}; update or remove that route first`)
+      }
+      mockLoadouts = mockLoadouts.filter((item) => item.name !== name)
+      mockRuntimeLoadouts = mockRuntimeLoadouts.filter((item) => item.name !== name)
+      await mutate(LOADOUTS_KEY, mockLoadoutStateRows(), false)
+      return removed
+    }
+    const result = await gatewayApi.removeLoadout(name)
+    await mutate(LOADOUTS_KEY)
+    return result
+  }, [])
+
+  const stageProtectedRouteAdd = useCallback(
+    async (route: ProtectedMcpRouteInput, signal?: AbortSignal): Promise<ProtectedMcpRouteStageResult> => {
+      if (USE_MOCK_DATA) {
+        await abortableMockDelay(300, signal)
+        const runtime = mockRuntimeProtectedRoutes.find((item) => item.name === route.name)
+        const localChanged = !sameMockProtectedRoute(runtime, route)
+        const staged: ProtectedMcpRoute = {
+          ...route,
+          restart_required: localChanged,
+          pending_operation: localChanged ? (runtime ? 'update' : 'add') : null,
+          runtime_present: Boolean(runtime),
+          desired_present: true,
+        }
+        mockProtectedRoutes = [...mockProtectedRoutes.filter((item) => item.name !== route.name), staged]
+        const view = mockProtectedRouteStateRows().find((item) => item.name === route.name)
+        if (!view) throw new Error(`Protected route ${route.name} disappeared from mock desired/runtime state`)
+        const restartRequired = mockProtectedRoutesHaveRestartDebt()
+        if (!restartRequired) mockRuntimeProtectedRoutes = cloneMockProtectedRoutes(mockProtectedRoutes)
+        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
+        return {
+          route: view,
+          restart_required: restartRequired,
+          pending_operation: view.pending_operation ?? null,
+          restart_note: restartRequired
+            ? 'Saved for the next Labby restart.'
+            : 'Desired route state matches the running route set; no restart is required.',
+        }
+      }
+      const result = await gatewayApi.stageProtectedRouteAdd(route, signal)
+      await mutate(PROTECTED_MCP_ROUTES_KEY)
+      return result
+    },
+    [],
+  )
+
+  const stageProtectedRouteUpdate = useCallback(
+    async (name: string, route: ProtectedMcpRouteInput, signal?: AbortSignal): Promise<ProtectedMcpRouteStageResult> => {
+      if (USE_MOCK_DATA) {
+        await abortableMockDelay(300, signal)
+        const runtime = mockRuntimeProtectedRoutes.find((item) => item.name === route.name)
+        const localChanged = !sameMockProtectedRoute(runtime, route)
+        const staged: ProtectedMcpRoute = {
+          ...route,
+          restart_required: localChanged,
+          pending_operation: localChanged ? (runtime ? 'update' : 'add') : null,
+          runtime_present: Boolean(runtime),
+          desired_present: true,
+        }
+        mockProtectedRoutes = mockProtectedRoutes.map((item) => item.name === name ? staged : item)
+        const view = mockProtectedRouteStateRows().find((item) => item.name === route.name)
+        if (!view) throw new Error(`Protected route ${route.name} disappeared from mock desired/runtime state`)
+        const restartRequired = mockProtectedRoutesHaveRestartDebt()
+        if (!restartRequired) mockRuntimeProtectedRoutes = cloneMockProtectedRoutes(mockProtectedRoutes)
+        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
+        return {
+          route: view,
+          restart_required: restartRequired,
+          pending_operation: view.pending_operation ?? null,
+          restart_note: restartRequired
+            ? 'Saved for the next Labby restart.'
+            : 'Desired route state matches the running route set; no restart is required.',
+        }
+      }
+      const result = await gatewayApi.stageProtectedRouteUpdate(name, route, signal)
+      await mutate(PROTECTED_MCP_ROUTES_KEY)
+      return result
+    },
+    [],
+  )
+
+  const stageProtectedRouteRemove = useCallback(
+    async (name: string, signal?: AbortSignal): Promise<ProtectedMcpRouteStageResult> => {
+      if (USE_MOCK_DATA) {
+        await abortableMockDelay(300, signal)
+        const existing = mockProtectedRoutes.find((item) => item.name === name)
+        if (!existing) throw new Error('Protected route ' + name + ' not found')
+        const runtime = mockRuntimeProtectedRoutes.find((item) => item.name === name)
+        if (!runtime) {
+          mockProtectedRoutes = mockProtectedRoutes.filter((item) => item.name !== name)
+          const restartRequired = mockProtectedRoutesHaveRestartDebt()
+        if (!restartRequired) mockRuntimeProtectedRoutes = cloneMockProtectedRoutes(mockProtectedRoutes)
+          await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
+          return {
+            route: existing,
+            restart_required: restartRequired,
+            pending_operation: null,
+            restart_note: restartRequired
+              ? 'This route change was cancelled, but other protected route changes still require a restart.'
+              : 'Desired route state matches the running route set; no restart is required.',
+          }
+        }
+        mockProtectedRoutes = mockProtectedRoutes.filter((item) => item.name !== name)
+        const view = mockProtectedRouteStateRows().find((item) => item.name === name)
+        const restartRequired = mockProtectedRoutesHaveRestartDebt()
+        if (!restartRequired) mockRuntimeProtectedRoutes = cloneMockProtectedRoutes(mockProtectedRoutes)
+        if (!view) {
+          await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
+          return {
+            route: existing,
+            restart_required: restartRequired,
+            pending_operation: null,
+            restart_note: restartRequired
+              ? 'This route change was cancelled, but other protected route changes still require a restart.'
+              : 'Desired route state matches the running route set; no restart is required.',
+          }
+        }
+        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
+        return {
+          route: view,
+          restart_required: restartRequired,
+          pending_operation: view.pending_operation ?? null,
+          restart_note: restartRequired
+            ? 'Saved for the next Labby restart.'
+            : 'Desired route state matches the running route set; no restart is required.',
+        }
+      }
+      const result = await gatewayApi.stageProtectedRouteRemove(name, signal)
+      await mutate(PROTECTED_MCP_ROUTES_KEY)
+      return result
+    },
+    [],
+  )
+
   const addProtectedRoute = useCallback(
     async (route: ProtectedMcpRouteInput, signal?: AbortSignal): Promise<ProtectedMcpRoute> => {
       if (USE_MOCK_DATA) {
@@ -543,8 +1032,16 @@ export function useGatewayMutations() {
         if (mockProtectedRoutes.some((item) => item.name === route.name)) {
           throw new Error(`Protected route ${route.name} already exists`)
         }
+        if (mockProtectedRoutesHaveRestartDebt()) {
+          throw new Error('Protected route changes are already staged; continue through staged actions or restart Labby first')
+        }
+        const runtimeExisting = mockRuntimeProtectedRoutes.find((item) => item.name === route.name)
+        if (mockRouteIsSubset(route) || mockRouteIsSubset(runtimeExisting)) {
+          throw new Error(`Protected route ${route.name} involves a gateway subset; stage the add for restart`)
+        }
         mockProtectedRoutes = [...mockProtectedRoutes, route]
-        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRoutes, false)
+        mockRuntimeProtectedRoutes = [...mockRuntimeProtectedRoutes, route]
+        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
         return route
       }
       const result = await gatewayApi.addProtectedRoute(route, signal)
@@ -562,8 +1059,17 @@ export function useGatewayMutations() {
     ): Promise<ProtectedMcpRoute> => {
       if (USE_MOCK_DATA) {
         await abortableMockDelay(300, signal)
+        const desiredExisting = mockProtectedRoutes.find((item) => item.name === name)
+        const runtimeExisting = mockRuntimeProtectedRoutes.find((item) => item.name === name)
+        if (mockProtectedRoutesHaveRestartDebt()) {
+          throw new Error('Protected route changes are already staged; continue through staged actions or restart Labby first')
+        }
+        if (mockRouteIsSubset(desiredExisting) || mockRouteIsSubset(runtimeExisting) || mockRouteIsSubset(route)) {
+          throw new Error(`Protected route ${name} involves a gateway subset; stage the update for restart`)
+        }
         mockProtectedRoutes = mockProtectedRoutes.map((item) => (item.name === name ? route : item))
-        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRoutes, false)
+        mockRuntimeProtectedRoutes = mockRuntimeProtectedRoutes.map((item) => (item.name === name ? route : item))
+        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
         return route
       }
       const result = await gatewayApi.updateProtectedRoute(name, route, signal)
@@ -581,8 +1087,16 @@ export function useGatewayMutations() {
         if (!removed) {
           throw new Error(`Protected route ${name} not found`)
         }
+        const runtimeExisting = mockRuntimeProtectedRoutes.find((item) => item.name === name)
+        if (mockProtectedRoutesHaveRestartDebt()) {
+          throw new Error('Protected route changes are already staged; continue through staged actions or restart Labby first')
+        }
+        if (mockRouteIsSubset(removed) || mockRouteIsSubset(runtimeExisting)) {
+          throw new Error(`Protected route ${name} involves a gateway subset; stage the removal for restart`)
+        }
         mockProtectedRoutes = mockProtectedRoutes.filter((item) => item.name !== name)
-        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRoutes, false)
+        mockRuntimeProtectedRoutes = mockRuntimeProtectedRoutes.filter((item) => item.name !== name)
+        await mutate(PROTECTED_MCP_ROUTES_KEY, mockProtectedRouteStateRows(), false)
         return removed
       }
       const result = await gatewayApi.removeProtectedRoute(name, signal)
@@ -739,9 +1253,17 @@ export function useGatewayMutations() {
     previewExposurePolicy,
     saveServiceConfig,
     setCodeModeConfig,
+    addLoadout,
+    patchLoadout,
+    removeLoadout,
+    stageLoadoutUpdate,
+    stageLoadoutRemove,
     addProtectedRoute,
     updateProtectedRoute,
     removeProtectedRoute,
+    stageProtectedRouteAdd,
+    stageProtectedRouteUpdate,
+    stageProtectedRouteRemove,
     testProtectedRoute,
     enableVirtualServer,
     disableVirtualServer,

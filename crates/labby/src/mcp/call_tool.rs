@@ -174,7 +174,7 @@ impl LabMcpServer {
         .await;
     }
 
-    fn log_route_scope_denial(
+    pub(crate) fn log_route_scope_denial(
         &self,
         context: &RequestContext<RoleServer>,
         service: &str,
@@ -221,6 +221,26 @@ impl LabMcpServer {
         Box::pin(self.call_tool_response_impl_inner(request, context))
     }
 
+    #[cfg(feature = "gateway")]
+    fn direct_tool_route_scope_denial(
+        &self,
+        context: &RequestContext<RoleServer>,
+        service: &str,
+    ) -> Option<CallToolResponse> {
+        let is_pre_gate_tool = matches!(
+            self.registry.permanent_tools().resolve(service),
+            Some(PermanentToolId::CodeMode | PermanentToolId::CodeModeRead)
+        ) || service == CODE_MODE_UI_TOOL_NAME
+            || service == MCP_APP_TOOL_NAME;
+        if self.route_scope.exposes_tools() || is_pre_gate_tool {
+            return None;
+        }
+
+        const MESSAGE: &str = "MCP Tools are disabled by this loadout; use Code Mode if it is exposed, or ask the operator to enable Tools for this loadout";
+        self.log_route_scope_denial(context, service, "call_tool", MESSAGE, 0);
+        Some(route_scope_denied_result(service, "call_tool", MESSAGE.to_string()).into())
+    }
+
     #[cfg(test)]
     pub(crate) async fn call_tool_response_impl(
         &self,
@@ -240,6 +260,19 @@ impl LabMcpServer {
         {
             return Ok(response);
         }
+        #[cfg(feature = "gateway")]
+        if let Some(response) = self.direct_tool_route_scope_denial(&context, request.name.as_ref())
+        {
+            return Ok(response);
+        }
+        Box::pin(self.call_tool_response_dispatch_impl(request, context)).await
+    }
+
+    async fn call_tool_response_dispatch_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
         // every early return below. A catalog notification emitted while this
@@ -266,23 +299,23 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // ── Text-only MCP App control surface. This is intentionally separate
-            // from `codemode_ui` so disabling the app never removes the tool needed
-            // to restore it.
+            // ── Always-on MCP App manager. It is root-gateway scoped so a
+            // protected subset cannot mutate gateway-global UI visibility.
             if service == MCP_APP_TOOL_NAME {
-                if !self.route_scope.exposes_code_mode() {
+                if !self.route_scope.is_root() {
                     let elapsed_ms = start.elapsed().as_millis();
                     self.log_route_scope_denial(
                         &context,
                         &service,
                         "call_tool",
-                        "Code Mode is not exposed on this MCP route",
+                        "MCP App management is only available on the root gateway route",
                         elapsed_ms,
                     );
                     return Ok(route_scope_denied_result(
                         &service,
                         "call_tool",
-                        "Code Mode is not exposed on this MCP route".to_string(),
+                        "MCP App management is only available on the root gateway route"
+                            .to_string(),
                     )
                     .into());
                 }
@@ -306,15 +339,21 @@ impl LabMcpServer {
 
                 let target = args
                     .get("target")
+                    .or_else(|| params.get("target"))
                     .and_then(Value::as_str)
                     .unwrap_or("codemode");
-                if target != "codemode" {
+                if !matches!(
+                    target,
+                    "codemode" | "gateway_status" | "server_logs" | "add_server" | "all"
+                ) {
                     let envelope = build_error_extra(
                         &service,
                         synthetic_action,
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
-                        &serde_json::json!({ "valid": ["codemode"] }),
+                        &serde_json::json!({
+                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "all"]
+                        }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
                 }
@@ -346,42 +385,93 @@ impl LabMcpServer {
                     return Ok(error_result_from_envelope(envelope).into());
                 }
 
-                let previous = self.code_mode_app_state.is_enabled();
-                let enabled = if let Some(desired) = desired {
+                let previous_config = match self.gateway_manager.as_ref() {
+                    Some(manager) => Some(manager.current_config().await),
+                    None => None,
+                };
+                let previous_code_mode = previous_config.as_ref().map_or_else(
+                    || self.code_mode_app_state.is_enabled(),
+                    |cfg| cfg.code_mode.mcp_ui_enabled,
+                );
+                let previous_apps = previous_config.as_ref().map_or_else(
+                    labby_runtime::gateway_config::McpAppsConfig::default,
+                    |cfg| cfg.mcp_apps,
+                );
+
+                let current_config = if let Some(desired) = desired {
                     if let Some(manager) = self.gateway_manager.as_ref() {
-                        let mut next = manager.code_mode_config().await;
-                        next.mcp_ui_enabled = desired;
                         match manager
-                            .set_code_mode_config(
-                                next,
+                            .set_mcp_app_visibility(
+                                target,
+                                desired,
                                 Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
-                                None,
                             )
                             .await
                         {
-                            Ok(current) => current.mcp_ui_enabled,
+                            Ok(current) => Some(current),
                             Err(error) => {
                                 let envelope =
                                     tool_error_envelope(&service, synthetic_action, &error);
                                 return Ok(error_result_from_envelope(envelope).into());
                             }
                         }
-                    } else {
+                    } else if target == "codemode" {
                         self.code_mode_app_state.set_enabled(desired);
-                        desired
+                        if previous_code_mode != desired {
+                            schedule_catalog_notification(
+                                &self.peers,
+                                CatalogNotificationChanges::new(true, true, false),
+                                labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
+                            );
+                        }
+                        None
+                    } else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "gateway_unavailable",
+                            "non-Code-Mode MCP App visibility requires a live gateway manager",
+                            &serde_json::json!({ "target": target }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
                     }
                 } else {
-                    previous
+                    previous_config.clone()
                 };
-                let changed = desired.is_some() && previous != enabled;
-                if changed && self.gateway_manager.is_none() {
-                    schedule_catalog_notification(
-                        &self.peers,
-                        CatalogNotificationChanges::new(true, true, false),
-                        labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
-                    );
-                }
 
+                let enabled_code_mode = current_config.as_ref().map_or_else(
+                    || self.code_mode_app_state.is_enabled(),
+                    |cfg| cfg.code_mode.mcp_ui_enabled,
+                );
+                let enabled_apps = current_config
+                    .as_ref()
+                    .map_or(previous_apps, |cfg| cfg.mcp_apps);
+                let enabled = match target {
+                    "codemode" => enabled_code_mode,
+                    "gateway_status" => enabled_apps.gateway_status,
+                    "server_logs" => enabled_apps.server_logs,
+                    "add_server" => enabled_apps.add_server,
+                    "all" => {
+                        enabled_code_mode
+                            && enabled_apps.gateway_status
+                            && enabled_apps.server_logs
+                            && enabled_apps.add_server
+                    }
+                    _ => unreachable!("target validated above"),
+                };
+                let changed = desired.is_some()
+                    && match target {
+                        "codemode" => previous_code_mode != enabled_code_mode,
+                        "gateway_status" => {
+                            previous_apps.gateway_status != enabled_apps.gateway_status
+                        }
+                        "server_logs" => previous_apps.server_logs != enabled_apps.server_logs,
+                        "add_server" => previous_apps.add_server != enabled_apps.add_server,
+                        "all" => {
+                            previous_code_mode != enabled_code_mode || previous_apps != enabled_apps
+                        }
+                        _ => false,
+                    };
                 let notification_scheduled = changed;
                 tracing::info!(
                     surface = "mcp",
@@ -393,16 +483,36 @@ impl LabMcpServer {
                     changed,
                     notification_scheduled,
                     elapsed_ms = start.elapsed().as_millis(),
-                    "Code Mode MCP App state evaluated"
+                    "Labby MCP App state evaluated"
                 );
                 let payload = serde_json::json!({
                     "kind": "mcp_app_control",
-                    "target": "codemode",
+                    "target": target,
                     "enabled": enabled,
                     "changed": changed,
                     "scope": "gateway",
+                    "manager_tool": MCP_APP_TOOL_NAME,
                     "text_tool": CODE_MODE_TOOL_NAME,
                     "ui_tool": CODE_MODE_UI_TOOL_NAME,
+                    "apps": {
+                        "codemode": {
+                            "enabled": enabled_code_mode,
+                            "tool": CODE_MODE_UI_TOOL_NAME,
+                            "text_tool": CODE_MODE_TOOL_NAME,
+                        },
+                        "gateway_status": {
+                            "enabled": enabled_apps.gateway_status,
+                            "tool": GATEWAY_STATUS_TOOL_NAME,
+                        },
+                        "server_logs": {
+                            "enabled": enabled_apps.server_logs,
+                            "tool": SERVER_LOGS_TOOL_NAME,
+                        },
+                        "add_server": {
+                            "enabled": enabled_apps.add_server,
+                            "tool": ADD_SERVER_TOOL_NAME,
+                        },
+                    },
                     "notification_scheduled": notification_scheduled,
                 });
                 let mut result =

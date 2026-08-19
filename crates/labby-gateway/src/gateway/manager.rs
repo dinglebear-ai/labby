@@ -50,6 +50,7 @@ pub(super) struct OauthStatusDiscoverySnapshot {
     pub(super) error: Option<String>,
 }
 
+mod code_mode_discovery;
 mod code_mode_resolve;
 mod code_mode_runtime;
 mod config_ops;
@@ -58,6 +59,7 @@ mod core;
 mod enrichment;
 mod import_matchers;
 mod imports;
+mod loadouts;
 mod oauth_resources;
 mod persist;
 mod pool_lifecycle;
@@ -150,11 +152,22 @@ pub struct GatewayManager {
     /// the upstream catalog has not changed between calls.
     pub(super) code_mode_catalog_render_cache:
         Arc<Mutex<Option<crate::gateway::code_mode::CatalogRenderCache>>>,
-    /// Cached Code Mode catalog embedding vectors, keyed by the same
-    /// fingerprint as `code_mode_catalog_render_cache`. `RwLock` (not
+    /// Weak keyed build flights prevent duplicate cold render construction.
+    /// Weak values disappear after callers finish, bounding retained state.
+    pub(super) code_mode_catalog_render_flights: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                std::sync::Weak<crate::gateway::code_mode::CatalogRenderFlight>,
+            >,
+        >,
+    >,
+    /// Cached Code Mode catalog embedding vectors, keyed separately by the
+    /// visible `(id, description)` ranking corpus. `RwLock` (not
     /// `Mutex`), matching the `config: Arc<RwLock<GatewayConfig>>` precedent
     /// above — this is a read-heavy cache; writes only happen on a
-    /// fingerprint change or the very first embed.
+    /// ranking-corpus change or the very first embed. Safety/schema-only
+    /// render changes therefore do not force an identical TEI batch.
     ///
     /// `ensure_embeddings_for_fingerprint` holds the write lock across the
     /// full check-then-embed-then-store sequence (not just the store) as a
@@ -239,15 +252,19 @@ impl GatewayManager {
     }
 
     pub(super) async fn persist_config(&self, cfg: GatewayConfig) -> Result<(), ToolError> {
+        let runtime_cfg = {
+            let current = self.config.read().await;
+            config_transaction::runtime_config_for_desired(&current, &cfg)
+        };
         self.write_config_file(&cfg).await?;
         let _publication = self.publication_barrier.write().await;
         self.store
-            .set_process_code_mode_enabled(cfg.code_mode.enabled);
+            .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
-            .set_enabled(cfg.code_mode.mcp_ui_enabled);
+            .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
-            ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-        *self.config.write().await = cfg;
+            ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+        *self.config.write().await = runtime_cfg;
         Ok(())
     }
 }

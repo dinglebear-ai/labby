@@ -1456,7 +1456,7 @@ async fn build_gateway_runtime(
     gateway_manager
         .try_seed_config(config.to_gateway_config())
         .await
-        .expect("loaded gateway config must normalize and validate");
+        .context("loaded gateway config failed validation")?;
     install_gateway_manager(Arc::clone(&gateway_manager));
     if !suppress_upstream_runtime {
         match config.gateway_import_mode {
@@ -1857,7 +1857,11 @@ fn build_protected_mcp_router(
 
     let mut router = axum::Router::new();
     for route in routes {
-        let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(&route)
+        let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+            &route,
+            &state.config.loadouts,
+        )
+        .map_err(anyhow::Error::msg)?
         else {
             continue;
         };
@@ -2723,6 +2727,7 @@ mod tests {
                         upstreams: vec!["gateway-alpha".to_string()],
                         services: vec!["gateway".to_string()],
                         expose_code_mode: false,
+                        loadout: None,
                     },
                 )),
             }],

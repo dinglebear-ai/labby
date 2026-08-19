@@ -8,7 +8,7 @@ import {
 
 let browserSessionRefresh: Promise<BrowserSessionState> | undefined
 
-function refreshBrowserSession() {
+export function refreshBrowserSession() {
   if (!browserSessionRefresh) {
     browserSessionRefresh = loadBrowserSession().finally(() => {
       browserSessionRefresh = undefined

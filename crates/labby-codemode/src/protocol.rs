@@ -43,18 +43,19 @@ pub(crate) enum CodeModeRunnerInput {
         #[serde(flatten)]
         error: Box<CodeModeCallError>,
     },
-    /// Reply to a `StepBegin` request with the durable decision for this step.
+    /// Reply to a `StepBegin` request with the host decision for this step.
     ///
-    /// `replay: Some(value)` ⇒ the step was already journaled on a prior pass;
-    /// the sandbox returns `value` WITHOUT re-running `fn`. `replay: None` ⇒
-    /// execute `fn` for real, then emit `StepResult` to journal its value.
+    /// `replay: Some(value)` is reserved for future caller-initiated replay;
+    /// the current host always sends `None`, executes `fn`, and emits
+    /// `StepResult` to journal its value.
     StepDecision {
         seq: u64,
         #[serde(default)]
         replay: Option<Value>,
     },
-    /// Ack a `StepResult`: the step's value was durably recorded. The sandbox
-    /// then returns the value from `codemode.step`.
+    /// Ack a `StepResult`: the host accepted the step value for recording. The
+    /// sandbox then returns the value from `codemode.step`; the ack does not
+    /// prove that detached persistent storage has flushed.
     StepRecorded {
         seq: u64,
     },
@@ -87,10 +88,11 @@ pub(crate) enum CodeModeRunnerOutput {
         #[serde(default)]
         input: Value,
     },
-    /// The sandbox entered `codemode.step(name, fn)`. The host decides replay
-    /// vs execute (via its injected decider) BEFORE `fn` runs, and replies with
-    /// a `StepDecision`. This consumes a `seq` from the same monotonic spine as
-    /// tool calls (so the durable replay cursor stays aligned).
+    /// The sandbox entered `codemode.step(name, fn)`. The host decides whether
+    /// to execute BEFORE `fn` runs and replies with a `StepDecision`. The
+    /// current host always executes; the decision field is reserved for future
+    /// replay work. This consumes a `seq` from the same monotonic spine as tool
+    /// calls.
     StepBegin {
         seq: u64,
         name: String,

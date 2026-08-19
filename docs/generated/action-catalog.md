@@ -38,6 +38,16 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.import_tombstones.list` | false | false | true | lab:admin |  | `ImportTombstoneView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.import_tombstones.restore` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.list` | false | false | true | lab:admin |  | `ServerView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.add` | false | false | true | lab:admin | `loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.get` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.list` | false | false | true | lab:admin |  | `GatewayLoadoutConfig[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.list_state` | false | false | true | lab:admin |  | `GatewayLoadoutState[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.patch` | false | false | true | lab:admin | `name*: string`<br>`patch*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.remove` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_patch` | false | false | true | lab:admin | `name*: string`<br>`patch*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_remove` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
@@ -54,7 +64,11 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.protected_route.add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.get` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.list` | false | false | true | lab:admin |  | `ProtectedMcpRouteConfig[]` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.list_state` | false | false | true | lab:admin |  | `ProtectedMcpRouteState[]` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.remove` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_remove` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_update` | false | false | true | lab:admin | `name*: string`<br>`route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.test` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.update` | false | false | true | lab:admin | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.public_urls.get` | false | false | true | lab:admin |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api, web |

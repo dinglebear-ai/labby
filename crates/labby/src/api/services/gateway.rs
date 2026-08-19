@@ -3,9 +3,11 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{
     Extension, Json, Router,
     extract::{ConnectInfo, State},
-    http::HeaderMap,
+    http::{HeaderMap, HeaderValue, header},
+    response::IntoResponse,
     routing::post,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::api::error::ApiError;
@@ -15,7 +17,186 @@ use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 
 pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", post(handle))
+    Router::new()
+        .route("/", post(handle))
+        .route("/codemode/tools/search", post(search_tools))
+        .route("/codemode/tools/describe", post(describe_tool))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolSearchRequest {
+    query: String,
+    #[serde(default = "default_tool_search_limit")]
+    limit: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolDescribeRequest {
+    target: String,
+}
+
+const fn default_tool_search_limit() -> usize {
+    50
+}
+
+async fn search_tools(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<ToolSearchRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let started = std::time::Instant::now();
+    private_tool_browser_admin(&auth)
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
+    if request.query.len() > labby_codemode::QUERY_MAX_BYTES {
+        return Err(private_tool_error(
+            ToolError::InvalidParam {
+                message: format!(
+                    "query exceeds {} UTF-8 bytes",
+                    labby_codemode::QUERY_MAX_BYTES
+                ),
+                param: "query".into(),
+            },
+            "tools.search",
+            started,
+            &headers,
+        ));
+    }
+    let manager = state
+        .gateway_manager
+        .clone()
+        .ok_or_else(manager_not_wired)
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
+    let subject = auth.as_ref().map(|value| value.0.sub.clone());
+    let response = manager
+        .search_admin_tools(subject, &request.query, request.limit)
+        .await
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
+    tracing::info!(
+        surface = "api",
+        service = "gateway",
+        action = "tools.search",
+        elapsed_ms = started.elapsed().as_millis(),
+        result_count = response.results.len(),
+        response_bytes = serde_json::to_vec(&response).map_or(0, |bytes| bytes.len()),
+        request_id = headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        "dispatch completed"
+    );
+    Ok(no_referrer(Json(response)))
+}
+
+async fn describe_tool(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<ToolDescribeRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let started = std::time::Instant::now();
+    private_tool_browser_admin(&auth)
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
+    if request.target.len() > labby_codemode::TARGET_MAX_BYTES {
+        return Err(private_tool_error(
+            ToolError::InvalidParam {
+                message: format!(
+                    "target exceeds {} UTF-8 bytes",
+                    labby_codemode::TARGET_MAX_BYTES
+                ),
+                param: "target".into(),
+            },
+            "tools.describe",
+            started,
+            &headers,
+        ));
+    }
+    let manager = state
+        .gateway_manager
+        .clone()
+        .ok_or_else(manager_not_wired)
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
+    let subject = auth.as_ref().map(|value| value.0.sub.clone());
+    let response = manager
+        .describe_admin_tool(subject, &request.target)
+        .await
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
+    tracing::info!(
+        surface = "api",
+        service = "gateway",
+        action = "tools.describe",
+        elapsed_ms = started.elapsed().as_millis(),
+        response_bytes = serde_json::to_vec(&response).map_or(0, |bytes| bytes.len()),
+        request_id = headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        "dispatch completed"
+    );
+    Ok(no_referrer(Json(response)))
+}
+
+fn private_tool_browser_admin(auth: &Option<Extension<AuthContext>>) -> Result<(), ToolError> {
+    if has_admin_scope(auth.as_ref()) {
+        return Ok(());
+    }
+    Err(ToolError::Forbidden {
+        message: "tool browser requires `lab:admin` scope".into(),
+        required_scopes: vec!["lab:admin".into()],
+    })
+}
+
+fn manager_not_wired() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: "gateway manager not wired".into(),
+    }
+}
+
+fn private_tool_error(
+    error: ToolError,
+    action: &'static str,
+    started: std::time::Instant,
+    headers: &HeaderMap,
+) -> ApiError {
+    let elapsed_ms = started.elapsed().as_millis();
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok());
+    if error.kind() == "internal_error" {
+        let diagnostic =
+            labby_runtime::agent_error::redact_secret_like_segments(&error.to_string());
+        tracing::error!(
+            surface = "api",
+            service = "gateway",
+            action,
+            elapsed_ms,
+            kind = error.kind(),
+            error = %diagnostic,
+            request_id,
+            "dispatch failed"
+        );
+    } else {
+        tracing::warn!(
+            surface = "api",
+            service = "gateway",
+            action,
+            elapsed_ms,
+            kind = error.kind(),
+            request_id,
+            "dispatch failed"
+        );
+    }
+    ApiError::new(error).with_service_action("gateway", action)
+}
+
+fn no_referrer<T: serde::Serialize>(body: Json<T>) -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    (headers, body)
 }
 
 /// Returns true when the action requires `lab:admin` scope.
@@ -861,5 +1042,96 @@ mod tests {
     async fn gateway_actions_endpoint_is_registered() {
         let response = get_gateway_actions(test_app()).await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn post_tool_browser(
+        app: Router,
+        path: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response")
+    }
+
+    #[tokio::test]
+    async fn api_admin_tool_browser_requires_exact_admin_scope() {
+        let read = gateway_routes_with_auth_context(test_manager(), read_only_auth_context());
+        let response =
+            post_tool_browser(read, "/codemode/tools/search", json!({"query":"issues"})).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let admin = gateway_routes_with_auth_context(test_manager(), admin_auth_context());
+        let response =
+            post_tool_browser(admin, "/codemode/tools/search", json!({"query":"issues"})).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::REFERRER_POLICY).unwrap(),
+            "no-referrer"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_admin_tool_browser_rejects_authority_injection() {
+        let admin = gateway_routes_with_auth_context(test_manager(), admin_auth_context());
+        let response = post_tool_browser(
+            admin,
+            "/codemode/tools/search",
+            json!({"query":"issues", "scope": {}}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn api_admin_tool_describe_enforces_auth_validation_and_neutral_not_found() {
+        let read = gateway_routes_with_auth_context(test_manager(), read_only_auth_context());
+        let forbidden = post_tool_browser(
+            read,
+            "/codemode/tools/describe",
+            json!({"target":"alpha::ping"}),
+        )
+        .await;
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let admin = gateway_routes_with_auth_context(test_manager(), admin_auth_context());
+        let oversized = post_tool_browser(
+            admin.clone(),
+            "/codemode/tools/describe",
+            json!({"target":"x".repeat(labby_codemode::TARGET_MAX_BYTES + 1)}),
+        )
+        .await;
+        assert_eq!(oversized.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let unknown = post_tool_browser(
+            admin,
+            "/codemode/tools/describe",
+            json!({"target":"alpha::missing"}),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(unknown.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["kind"], "unknown_tool");
+    }
+
+    #[test]
+    fn unknown_tool_maps_to_not_found_for_private_describe() {
+        use axum::response::IntoResponse;
+        let response = crate::api::error::ApiError::new(crate::dispatch::error::ToolError::Sdk {
+            sdk_kind: "unknown_tool".into(),
+            message: "hidden".into(),
+        })
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
