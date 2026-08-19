@@ -11,6 +11,9 @@ pub(crate) const POOL_SIZE_ENV: &str = "LABBY_CODE_MODE_POOL_SIZE";
 pub(crate) const RECYCLE_AFTER_ENV: &str = "LABBY_CODE_MODE_POOL_RECYCLE_AFTER";
 /// Max concurrent ephemeral (overflow) runners spawned when the pool is saturated.
 pub(crate) const MAX_OVERFLOW_ENV: &str = "LABBY_CODE_MODE_POOL_MAX_OVERFLOW";
+/// Process-wide cap on live Microsandbox-backed runners. Unlike the ordinary
+/// pool knobs, this is aggregate across every `RunnerPool` in the process.
+pub(crate) const MICROSANDBOX_MAX_RUNNERS_ENV: &str = "LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS";
 
 /// Conservative default pool size. Small enough to keep idle RSS bounded while
 /// still absorbing typical search+execute bursts without serializing.
@@ -27,6 +30,8 @@ const DEFAULT_MAX_OVERFLOW: usize = 8;
 /// Hard ceiling on overflow runners so a typo cannot permit unbounded process
 /// fan-out. The disabled-pool path must still honor lower explicit values.
 pub(crate) const MAX_OVERFLOW: usize = 64;
+const DEFAULT_MICROSANDBOX_MAX_RUNNERS: usize = 4;
+const MAX_MICROSANDBOX_RUNNERS: usize = 16;
 
 /// Resolved, validated pool configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +42,14 @@ pub(crate) struct PoolConfig {
     pub(crate) recycle_after: u64,
     /// Max simultaneous ephemeral runners spawned when the pool is saturated.
     pub(crate) max_overflow: usize,
+}
+
+pub(crate) fn microsandbox_max_runners() -> usize {
+    parse_env(
+        MICROSANDBOX_MAX_RUNNERS_ENV,
+        DEFAULT_MICROSANDBOX_MAX_RUNNERS,
+    )
+    .clamp(1, MAX_MICROSANDBOX_RUNNERS)
 }
 
 impl PoolConfig {

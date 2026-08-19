@@ -740,6 +740,51 @@ run, so isolation holds by construction.
   - `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
     runners (default `8`).
 
+### Microsandbox runner isolation (opt in)
+
+Linux hosts with KVM may place each pooled runner process inside a Microsandbox
+microVM while retaining the same Javy/QuickJS engine and JSON-lines broker
+protocol:
+
+```bash
+LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox
+LABBY_CODE_MODE_MICROSANDBOX_EXE=/absolute/path/to/msb
+LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
+```
+
+All three variables are required to opt in. The image must be an immutable
+`name@sha256:<64 hex>` OCI digest reference and must already be cached; URLs,
+userinfo, queries, and tag-only references are rejected. The runner uses
+`--pull never` and never performs an implicit registry fetch.
+Labby creates one restricted microVM per runner process with one CPU, 256 MiB
+memory and no network. A process-wide admission gate defaults to four concurrent
+guests and is capped at 16, independently of the generic process-pool limits.
+Its lifecycle is tied to the pooled runner rather than a
+short VM idle timer, so a parked warm runner cannot expire between ordinary
+requests. A 24-hour hard lifetime bounds orphaned guests after ungraceful host
+death; a live pool recycles its runner before reaching that backstop.
+The validated Labby runner executable is the only host file mounted,
+read-only at `/opt/labby/labby`. The parent attaches with `msb exec --stream`,
+which preserves the existing byte-faithful stdio protocol. Dropping or evicting
+the runner attempts a bounded force-removal; failure is logged and triggers a
+separately bounded best-effort fallback.
+Each guest carries the `labby.owner=codemode` label. Startup removes stale
+labeled guests before admitting work, and graceful service shutdown awaits pool
+drainage. An unconfirmed cleanup opens a fail-closed creation circuit.
+
+This changes only the execution boundary. Tool discovery, authorization,
+exposure filters, OAuth subjects, secrets, upstream dispatch, result caps, and
+telemetry remain in the Labby host process. No gateway credential is injected
+into the guest. `process` remains the default backend and the immediate rollback
+value for `LABBY_CODE_MODE_RUNNER_BACKEND`.
+
+Before enabling the backend, verify `msb doctor`, read/write `/dev/kvm` access,
+the pinned cached image, and dynamic-library compatibility between the host
+runner binary and the guest image. A hardened Incus deployment must explicitly
+pass `/dev/kvm` into the guest and install `msb`/`libkrunfw`; Labby does not
+weaken the container or install runtime dependencies at request time.
+
   The conservative default (`size = 2`) keeps idle memory bounded while absorbing
   typical `codemode` bursts. The security invariants (`env_clear`,
   process-group/Job-Object reaping, `kill_on_drop`, `PR_SET_DUMPABLE`) are set
@@ -750,7 +795,11 @@ engine**, with no Boa fallback and no `code_mode_wasm` feature. `codemode` runs
 in the Javy/QuickJS child runner over stdio. The Javy toolchain is pulled in by
 the `gateway` feature.
 
-The runner starts with an empty environment in a temporary directory. It does not
+The direct-process runner starts with an empty environment in a temporary
+directory. With the Microsandbox backend, `env_clear()` applies to the host
+`msb` transport; no Labby host environment or gateway credentials are forwarded,
+while the guest may retain image/runtime defaults. The Javy runner additionally
+executes inside the no-network guest. It does not
 provide Node, Deno, Bun, `fetch`, `connect`, `XMLHttpRequest`, `require`, or host
 module `import()` access. `callTool` is the only host bridge exposed to user code.
 
