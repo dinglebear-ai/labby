@@ -3894,9 +3894,10 @@ async fn list_tools_paginates_large_builtin_catalog() {
         )
         .await
         .expect("third page");
-    assert_eq!(third.tools.len(), 51);
+    assert_eq!(third.tools.len(), 52);
     assert_eq!(third.tools[0].name.as_ref(), "service_199");
     assert_eq!(third.tools[50].name.as_ref(), "service_249");
+    assert_eq!(third.tools[51].name.as_ref(), SETTINGS_TOOL_NAME);
     assert!(third.next_cursor.is_none());
     assert!(
         running
@@ -3952,8 +3953,9 @@ async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
     let rebuilt = collect_names(reverse_large_test_registry(250)).await;
 
     assert_eq!(ascending, rebuilt);
-    assert_eq!(ascending.len(), 251);
+    assert_eq!(ascending.len(), 252);
     assert_eq!(ascending[0], MCP_APP_TOOL_NAME);
+    assert_eq!(ascending[251], SETTINGS_TOOL_NAME);
     assert!(ascending.is_sorted());
 }
 
