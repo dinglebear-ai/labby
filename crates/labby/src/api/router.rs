@@ -1569,6 +1569,18 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
             "/oauth/relay",
             services::oauth_relay::admin_routes(state.clone()),
         );
+        #[cfg(feature = "skills")]
+        {
+            v1 = v1.nest("/skills", services::skills::routes(state.clone()));
+        }
+    } else {
+        #[cfg(feature = "skills")]
+        tracing::warn!(
+            subsystem = "startup",
+            phase = "skills.mount.skipped",
+            reason = "no_auth_configured",
+            "skills service routes not mounted: Agent Skills require API auth"
+        );
     }
 
     #[cfg(feature = "gateway")]

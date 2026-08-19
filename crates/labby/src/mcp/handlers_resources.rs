@@ -1051,9 +1051,8 @@ impl LabMcpServer {
             ));
         }
 
-        // Branch -1: first-party skill files. The `skill://` namespace is
-        // exact-match and disjoint from every other prefix here, so it is
-        // resolved first and never falls through to a lab:// handler.
+        // Branch -1: canonical skill files. The skill namespace is exact-match
+        // and disjoint from the lab:// resource handlers below.
         #[cfg(feature = "skills")]
         if crate::mcp::skills::is_skill_uri(&uri) {
             if !self.route_scope.exposes_skills() {
@@ -1084,40 +1083,25 @@ impl LabMcpServer {
                     &["lab:read", "lab", "lab:admin"],
                 ));
             }
-            let body = match crate::mcp::skills::read_first_party_skill_file(&uri) {
-                Some(body) => body.to_string(),
-                // Not one of Labby's own: route it to the upstream that owns
-                // the origin label, with the manifest-bound digest check.
-                None => {
-                    // `subject` above is the *redacted* logging tag. Routing a
-                    // proxied read needs the real OAuth identity: it keys the
-                    // per-subject skills cache and picks the token the upstream
-                    // is connected with. Passing the tag would miss the cache
-                    // `skills/list` populated and resolve a subject no upstream
-                    // has ever heard of.
-                    return self
-                        .read_proxied_skill_file_impl(
-                            &uri,
-                            &resource_uri_log,
-                            self.request_subject(&context),
-                            &subject,
-                            start,
-                        )
-                        .await;
-                }
-            };
+            let registry = self.skill_registry_context(&context).await;
+            let file = crate::skills::facade::read_visible_skill_file(&registry, &uri)
+                .await
+                .map_err(crate::mcp::skills::skill_read_error)?;
             tracing::info!(
                 surface = "mcp",
                 service = "labby",
                 action = "read_resource",
                 subject,
                 resource_uri = %resource_uri_log,
+                skill_origin = %file.origin,
                 elapsed_ms = start.elapsed().as_millis(),
                 "dispatch finish"
             );
-            return Ok(
-                ReadResourceResult::new(vec![ResourceContents::text(body, uri.clone())]).into(),
-            );
+            let mut contents = ResourceContents::text(file.text, uri.clone());
+            if let Some(mime_type) = file.mime_type {
+                contents = contents.with_mime_type(mime_type);
+            }
+            return Ok(ReadResourceResult::new(vec![contents]).into());
         }
 
         // Branch 0: MCP Apps UI resources. This must precede all lab://

@@ -61,19 +61,12 @@ impl ToolAccess {
 /// Build the provenance `_meta` for one origin.
 pub(crate) fn origin_meta(
     origin: &str,
-    server: Option<&rmcp::model::Implementation>,
     access: ToolAccess,
     reachable_tools: &[String],
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut origin_block = serde_json::Map::new();
     origin_block.insert("label".into(), serde_json::json!(origin));
     origin_block.insert("toolAccess".into(), serde_json::json!(access.as_str()));
-    if let Some(server) = server {
-        origin_block.insert(
-            "server".into(),
-            serde_json::json!({ "name": server.name, "version": server.version }),
-        );
-    }
     match access {
         // Only meaningful when the names exist downstream at all.
         ToolAccess::Direct => {
@@ -168,9 +161,18 @@ pub(crate) fn mint_proxied_entries(
         .flatten()
         .copied()
         .collect();
-    let excluded_uris = colliding_owners
+    // Poison every URI owned by an excluded skill, not just its entry URI.
+    // Otherwise an unlisted `skills/get` response could later reuse one of the
+    // excluded skill's supporting-file URIs and make manifest ownership
+    // depend on which path the caller used to resolve it.
+    let excluded_uris = owners
         .iter()
-        .filter_map(|index| minted.get(*index).map(|entry| entry.uri.clone()))
+        .filter(|(_, uri_owners)| {
+            uri_owners
+                .iter()
+                .any(|owner| colliding_owners.contains(owner))
+        })
+        .map(|(uri, _)| uri.clone())
         .collect();
     if !colliding_owners.is_empty() {
         for (uri, owners) in &owners {
@@ -204,6 +206,36 @@ pub(crate) struct MintedEntries {
     pub(crate) excluded_uris: BTreeSet<String>,
 }
 
+impl MintedEntries {
+    pub(crate) fn excludes_uri(&self, uri: &str) -> bool {
+        self.excluded_uris.contains(uri)
+    }
+
+    /// Whether an unlisted candidate would make URI ownership ambiguous with
+    /// the current published set or with a skill already excluded for a
+    /// collision.
+    pub(crate) fn conflicts_with(&self, candidate: &SkillEntry) -> bool {
+        let published_uris: BTreeSet<String> = self
+            .entries
+            .iter()
+            .flat_map(entry_owned_uris)
+            .map(str::to_owned)
+            .collect();
+        entry_owned_uris(candidate)
+            .any(|uri| self.excluded_uris.contains(uri) || published_uris.contains(uri))
+    }
+}
+
+fn entry_owned_uris(entry: &SkillEntry) -> impl Iterator<Item = &str> {
+    std::iter::once(entry.uri.as_str()).chain(
+        entry
+            .resources
+            .iter()
+            .flatten()
+            .map(|resource| resource.uri.as_str()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +244,32 @@ mod tests {
 
     pub(super) fn upstream_skill_for_meta() -> ValidatedSkill {
         upstream_skill("their-label", "refunds")
+    }
+
+    fn minimal_config() -> UpstreamConfig {
+        UpstreamConfig {
+            enabled: true,
+            name: "upstream".to_string(),
+            url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: vec![],
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: true,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }
     }
 
     fn upstream_skill_with_scheme(scheme: &str, origin: &str, name: &str) -> ValidatedSkill {
@@ -310,7 +368,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 name: "acme-corp".to_string(),
-                ..super::super::tests_support::minimal_config()
+                ..minimal_config()
             },
             &[
                 upstream_skill("acme/billing", "refunds"),
@@ -331,7 +389,7 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 name: "gh".to_string(),
-                ..super::super::tests_support::minimal_config()
+                ..minimal_config()
             },
             &[
                 upstream_skill_with_scheme("skill", "acme", "refunds"),
@@ -377,14 +435,52 @@ mod tests {
         let result = mint_proxied_entries(
             &UpstreamConfig {
                 name: "gh".into(),
-                ..super::super::tests_support::minimal_config()
+                ..minimal_config()
             },
             &[parent, child],
             None,
         );
         assert!(result.entries.is_empty());
         assert_eq!(result.excluded_count, 2);
-        assert_eq!(result.excluded_uris.len(), 2);
+        assert_eq!(
+            result.excluded_uris.len(),
+            5,
+            "every entry/resource URI owned by either excluded skill stays poisoned"
+        );
+        assert!(
+            result
+                .excluded_uris
+                .contains("skill://gh/skill/acme/parent/child/shared.md"),
+            "the shared supporting-file URI must remain poisoned too"
+        );
+    }
+
+    #[test]
+    fn unlisted_candidate_cannot_reuse_a_published_resource_uri() {
+        let published = upstream_skill("acme", "published");
+        let result = mint_proxied_entries(
+            &UpstreamConfig {
+                name: "gh".into(),
+                ..minimal_config()
+            },
+            &[published],
+            None,
+        );
+        let published_resource = result.entries[0]
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.get(1))
+            .expect("published notes resource")
+            .uri
+            .clone();
+        let mut candidate = result.entries[0].clone();
+        candidate.uri = "skill://gh/skill/acme/unlisted/SKILL.md".to_string();
+        candidate.resources = Some(vec![SkillResource {
+            uri: published_resource,
+            digest: labby_runtime::skills::ResourceDigest::of_bytes(b"candidate").to_wire(),
+        }]);
+
+        assert!(result.conflicts_with(&candidate));
     }
 
     #[test]
@@ -412,7 +508,7 @@ mod origin_meta_tests {
     #[test]
     fn direct_access_names_the_tools_a_client_can_actually_scope_against() {
         let tools = vec!["create_issue".to_string(), "list_repos".to_string()];
-        let meta = origin_meta("gh", None, ToolAccess::Direct, &tools);
+        let meta = origin_meta("gh", ToolAccess::Direct, &tools);
         let block = meta
             .get(SKILL_ORIGIN_META_KEY)
             .and_then(|value| value.as_object())
@@ -437,7 +533,7 @@ mod origin_meta_tests {
         // The honest answer under Code Mode: raw upstream tools are absent from
         // tools/list, so a reachableTools list would be a lie rather than a
         // mitigation.
-        let meta = origin_meta("gh", None, ToolAccess::CodeModeOnly, &[]);
+        let meta = origin_meta("gh", ToolAccess::CodeModeOnly, &[]);
         let block = meta
             .get(SKILL_ORIGIN_META_KEY)
             .and_then(|value| value.as_object())
@@ -460,7 +556,7 @@ mod origin_meta_tests {
         // host must refuse the skill on any field-by-field discrepancy against
         // the fetched SKILL.md. Provenance therefore has to live outside it.
         let skill = tests::upstream_skill_for_meta();
-        let meta = origin_meta("gh", None, ToolAccess::Direct, &[]);
+        let meta = origin_meta("gh", ToolAccess::Direct, &[]);
         let minted = mint_proxied_entry("gh", &skill, Some(&meta)).expect("mints");
 
         assert_eq!(
@@ -474,7 +570,7 @@ mod origin_meta_tests {
     fn first_party_entries_carry_no_origin_meta() {
         // Labby's own skills need no cross-origin scoping hint, and an absent
         // `_meta` must serialize away entirely rather than as an empty object.
-        let listing = crate::mcp::skills::list_first_party_skills();
+        let listing = crate::skills::list_first_party_skills();
         for entry in &listing.skills {
             assert!(entry.meta.is_none());
         }
