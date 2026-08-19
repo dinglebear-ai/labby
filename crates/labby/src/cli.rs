@@ -154,7 +154,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         #[cfg(feature = "gateway")]
         Command::Snippets(args) => snippets::run(args, format, &config).await,
         #[cfg(feature = "skills")]
-        Command::Skills(args) => skills::run(args, format, &config).await,
+        Command::Skills(args) => Box::pin(skills::run(args, format, &config)).await,
         Command::Oauth(args) => oauth::run(args, format, &config).await,
         Command::Proxy(args) => proxy::run(args, &config, format).await,
         #[cfg(feature = "gateway")]
