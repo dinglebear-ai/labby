@@ -54,7 +54,19 @@ pub struct SkillsUriArgs {
     pub uri: String,
 }
 
-pub async fn run(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -> Result<ExitCode> {
+pub fn run<'a>(
+    args: SkillsArgs,
+    format: OutputFormat,
+    config: &'a LabConfig,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExitCode>> + Send + 'a>> {
+    Box::pin(run_inner(args, format, config))
+}
+
+async fn run_inner(
+    args: SkillsArgs,
+    format: OutputFormat,
+    config: &LabConfig,
+) -> Result<ExitCode> {
     let (action, params) = match args.command {
         SkillsCommand::List(args) => (
             "skills.list".to_string(),
