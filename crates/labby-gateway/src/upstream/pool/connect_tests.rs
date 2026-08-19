@@ -956,9 +956,10 @@ async fn ordered_relay_notification_transport_preserves_progress_wire_order() {
                     .lock()
                     .await
                     .push(params.message.unwrap_or_default()),
-                OrderedRelayNotification::TaskStatus(_) => {
-                    panic!("unexpected task status notification")
-                }
+                OrderedRelayNotification::TaskStatus(_) => observed
+                    .lock()
+                    .await
+                    .push("unexpected-task-status".to_string()),
             }
         })
     });
@@ -999,9 +1000,10 @@ async fn ordered_relay_notification_transport_preserves_progress_after_receive_c
                         .await
                         .push(params.message.unwrap_or_default());
                 }
-                OrderedRelayNotification::TaskStatus(_) => {
-                    panic!("unexpected task status notification")
-                }
+                OrderedRelayNotification::TaskStatus(_) => observed
+                    .lock()
+                    .await
+                    .push("unexpected-task-status".to_string()),
             }
         })
     });
@@ -1047,9 +1049,10 @@ async fn ordered_relay_notification_transport_preserves_task_status_after_receiv
                         .forget();
                     observed.lock().await.push(params.task.task.task_id);
                 }
-                OrderedRelayNotification::Progress(_) => {
-                    panic!("unexpected progress notification")
-                }
+                OrderedRelayNotification::Progress(_) => observed
+                    .lock()
+                    .await
+                    .push("unexpected-progress".to_string()),
             }
         })
     });
