@@ -62,11 +62,7 @@ pub fn run<'a>(
     Box::pin(run_inner(args, format, config))
 }
 
-async fn run_inner(
-    args: SkillsArgs,
-    format: OutputFormat,
-    config: &LabConfig,
-) -> Result<ExitCode> {
+async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -> Result<ExitCode> {
     let (action, params) = match args.command {
         SkillsCommand::List(args) => (
             "skills.list".to_string(),

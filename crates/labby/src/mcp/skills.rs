@@ -121,11 +121,7 @@ impl LabMcpServer {
         action: &'a str,
         params: serde_json::Value,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<serde_json::Value, ToolError>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn std::future::Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>,
     > {
         Box::pin(async move {
             let registry = self.skill_registry_context_for_tool(context, meta).await;
