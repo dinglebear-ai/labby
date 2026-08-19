@@ -2177,6 +2177,7 @@ async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
     );
 }
 
+#[cfg(feature = "skills")]
 #[tokio::test]
 async fn skills_disabled_loadout_hides_and_denies_fixed_compat_tool() {
     let loadout = GatewayLoadoutConfig {
