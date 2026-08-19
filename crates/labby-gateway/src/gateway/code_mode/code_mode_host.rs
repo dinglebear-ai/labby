@@ -166,6 +166,75 @@ impl CodeModeHost for GatewayManager {
         Ok(outcome)
     }
 
+    async fn read_resource(
+        &self,
+        uri: String,
+        caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        let Some(pool) = self.current_pool().await else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "provider_unavailable".to_string(),
+                message: "gateway upstream pool is unavailable".to_string(),
+            });
+        };
+
+        let allowed = scope.allowed_namespaces();
+        let result = if uri.starts_with("lab://upstream/") {
+            let upstream = uri
+                .strip_prefix("lab://upstream/")
+                .and_then(|rest| rest.split('/').next())
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "invalid_param".to_string(),
+                    message: "resource URI must include an upstream name".to_string(),
+                })?;
+            if allowed.is_some_and(|allowed| !allowed.contains(upstream)) {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "forbidden".to_string(),
+                    message: format!(
+                        "resource upstream `{upstream}` is outside this Code Mode scope"
+                    ),
+                });
+            }
+
+            // OAuth upstreams require the caller's subject-scoped connection,
+            // matching the native MCP resource path. Plain upstreams use the
+            // shared pool path.
+            if let Some(config) = self.upstream_config(upstream).await
+                && config.oauth.is_some()
+            {
+                Some(
+                    pool.subject_scoped_read_resource(
+                        &config,
+                        oauth_subject(caller).unwrap_or(""),
+                        &uri,
+                    )
+                    .await,
+                )
+            } else {
+                pool.read_upstream_resource_allowed(&uri, allowed).await
+            }
+        } else if uri.starts_with("ui://") {
+            pool.read_upstream_ui_resource_allowed(&uri, allowed).await
+        } else {
+            None
+        };
+
+        let result = result.ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("resource `{uri}` was not found or is not exposed"),
+        })?;
+        let result = result.map_err(|message| ToolError::Sdk {
+            sdk_kind: "upstream_error".to_string(),
+            message,
+        })?;
+        serde_json::to_value(result).map_err(|err| {
+            ToolError::internal_message(format!("failed to serialize resource: {err}"))
+        })
+    }
+
     /// Buffer one `codemode.step` boundary for the run's `execution_id`.
     ///
     /// FAIL-OPEN + write-free on the runner drive loop: this only pushes a row

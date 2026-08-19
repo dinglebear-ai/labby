@@ -76,6 +76,12 @@ Inside the sandbox:
   inside the same sandbox runtime.
 - `await codemode.github.list_pull_requests(params)` calls the generated helper.
 - `await callTool("github::list_pull_requests", params)` calls the raw bridge.
+- `await codemode.readResource("lab://upstream/<name>/<uri>")` reads an
+  upstream MCP resource and returns its normal `ReadResourceResult` object.
+
+Resource reads use the same route and caller scoping as Code Mode tool calls.
+Native `ui://` widget resources are also supported when the owning upstream is
+visible to the current run.
 
 ### Local State And Git Providers
 
