@@ -38,7 +38,7 @@ pub fn load_gateway_config(path: &Path) -> Result<GatewayConfig, ToolError> {
     }
 }
 
-// Gateway-owned top-level keys. This is the lab-gateway FS-store render path
+// Gateway-owned top-level keys. This is the labby-gateway FS-store render path
 // used by tests and any caller that persists a bare `GatewayConfig`. It strips
 // and rewrites ONLY the gateway-owned sections, preserving every other key
 // (including all non-gateway `LabConfig` sections) byte-for-byte.

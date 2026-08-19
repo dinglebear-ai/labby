@@ -444,7 +444,7 @@ pub(super) fn bare_upstream_resource_uri(uri: &str) -> &str {
 /// non-destructive before the gateway will treat it as safe. Missing
 /// annotations, or a block that sets neither hint, both yield `true`.
 ///
-/// This is deliberately public and separate from [`cached_upstream_tool`] so
+/// This is deliberately public and separate from `cached_upstream_tool` so
 /// that callers which advertise their own annotations — notably Labby's own
 /// `PermanentToolRegistry` descriptors in a labby → labby chain — can pin the
 /// next-hop verdict their hints produce without duplicating this predicate.

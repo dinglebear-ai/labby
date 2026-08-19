@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/custom\_image\_embedding\_search [Redirecting from `/cookbook/examples/custom\_image\_embedding\_search.ipynb/` to `/cookbook/examples/custom\_image\_embedding\_search`](/cookbook/examples/custom_image_embedding_search)

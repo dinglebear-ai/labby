@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/vector\_databases/elasticsearch/elasticsearch-semantic-search [Redirecting from `/cookbook/examples/vector\_databases/elasticsearch/elasticsearch-semantic-search.ipynb/` to `/cookbook/examples/vector\_databases/elasticsearch/elasticsearch-semantic-search`](/cookbook/examples/vector_databases/elasticsearch/elasticsearch-semantic-search)

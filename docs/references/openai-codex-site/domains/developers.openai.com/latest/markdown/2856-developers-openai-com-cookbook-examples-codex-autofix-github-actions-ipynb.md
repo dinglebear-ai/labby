@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/codex/autofix-github-actions [Redirecting from `/cookbook/examples/codex/autofix-github-actions.ipynb/` to `/cookbook/examples/codex/autofix-github-actions`](/cookbook/examples/codex/autofix-github-actions)

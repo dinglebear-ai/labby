@@ -75,8 +75,11 @@ impl ToolsRender {
 /// the merged input the runner should execute it with.
 #[derive(Debug, Clone)]
 pub struct ResolvedSnippet {
+    /// Canonical snippet name.
     pub name: String,
+    /// JavaScript source executed by the runner.
     pub code: String,
+    /// Validated and default-merged snippet input.
     pub input: Value,
 }
 
@@ -84,7 +87,9 @@ pub struct ResolvedSnippet {
 /// optional captured MCP Apps (mcp-ui) widget link (last-wins across the run).
 #[derive(Debug, Clone)]
 pub struct ToolCallOutcome {
+    /// Unwrapped JSON value returned by the host tool.
     pub value: Value,
+    /// Optional MCP App link captured from the tool result.
     pub ui: Option<UiLink>,
 }
 
@@ -96,8 +101,11 @@ pub struct ToolCallOutcome {
 /// from `seq`).
 #[derive(Debug, Clone)]
 pub struct ExecCtx {
+    /// Runner protocol sequence number for this call.
     pub seq: u64,
+    /// Durable execution identifier when journaling is active.
     pub execution_id: Option<Arc<str>>,
+    /// Monotonic durable-step ordinal for a `codemode.step` boundary.
     pub step_ordinal: Option<u64>,
 }
 
@@ -127,7 +135,12 @@ pub enum StepDecision {
     Execute,
     /// Reject the step in the sandbox with this `(kind, message)` (mirrors a
     /// rejected `callTool`). Reserved for future replay divergence handling.
-    Error { kind: String, message: String },
+    Error {
+        /// Stable machine-readable rejection kind.
+        kind: String,
+        /// Human-readable rejection message.
+        message: String,
+    },
 }
 
 /// Injects the tool source into the Code Mode kernel.

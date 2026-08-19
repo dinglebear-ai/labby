@@ -6,7 +6,7 @@
 //! (which could otherwise surface as a null-byte / truncated read after a crash).
 //!
 //! This is the single owner of that policy for the `lab` crate — do NOT
-//! reintroduce per-module copies. (`lab-apis` keeps its own copy since it cannot
+//! reintroduce per-module copies. (`labby-apis` keeps its own copy since it cannot
 //! depend on this crate.)
 
 use std::io::Write;

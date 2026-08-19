@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/vector\_databases/deeplake/deeplake\_langchain\_qa [Redirecting from `/cookbook/examples/vector\_databases/deeplake/deeplake\_langchain\_qa.ipynb/` to `/cookbook/examples/vector\_databases/deeplake/deeplake\_langchain\_qa`](/cookbook/examples/vector_databases/deeplake/deeplake_langchain_qa)

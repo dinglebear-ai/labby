@@ -237,7 +237,7 @@ Prompts and resources must stay aligned with the rest of `lab`'s model.
 
 Rules:
 
-- prompt/resource definitions belong to the `lab` crate, not `lab-apis`
+- prompt/resource definitions belong to the `labby` product crate, not `labby-apis`
 - prompt/resource content may call into shared dispatch and catalog layers, but must not duplicate service behavior definitions by hand
 - prompts must not bypass structured tools for mutating operations
 - resources should be generated from canonical catalog or service-owned read models where possible

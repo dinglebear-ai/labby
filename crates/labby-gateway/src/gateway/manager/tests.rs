@@ -37,7 +37,7 @@ mod views;
 mod virtual_servers;
 
 /// Shared test stub registry knowing a single `deploy` service. The host's real
-/// default-registry builder lives in `lab`, not `lab-gateway`; manager tests that
+/// default-registry builder lives in `lab`, not `labby-gateway`; manager tests that
 /// need `deploy` to be a registered/known service (quarantine retention, surface
 /// gating, MCP action-policy enforcement) inject this so the registry seam
 /// resolves `deploy` instead of the default `EmptyServiceRegistry`.

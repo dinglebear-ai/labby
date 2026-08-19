@@ -262,7 +262,7 @@ pub(crate) fn next_relay_session_id() -> u64 {
 /// policy has one home and does not depend on any feature-gated module.
 /// Adding a transport is an explicit trust decision: an unlisted label
 /// fails closed, and `requires_admin` builtin actions are refused on it.
-/// See [`LabMcpServer::trusts_absent_auth`] and bead lab-m01gl.
+/// See [`LabMcpServer::absent_auth_trust`].
 /// `"test"` is used only by `#[cfg(test)]` server fixtures, so the suite
 /// exercises the stdio branch; verify with `rg 'transport_label: "test"'`
 /// before any production site adopts it.

@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/vector\_databases/redis/getting-started-with-redis-and-openai [Redirecting from `/cookbook/examples/vector\_databases/redis/getting-started-with-redis-and-openai.ipynb/` to `/cookbook/examples/vector\_databases/redis/getting-started-with-redis-and-openai`](/cookbook/examples/vector_databases/redis/getting-started-with-redis-and-openai)

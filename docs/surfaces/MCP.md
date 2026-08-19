@@ -184,9 +184,8 @@ is treated as destructive unless its annotations explicitly say otherwise. That
 value never reaches the wire.
 
 Annotations on Labby's **own** tools are implemented by the shared
-`PermanentToolRegistry` descriptor builders and specified in
-[../design/tool-annotations/](../design/tool-annotations/). Two properties from
-that spec matter to clients: a Labby tool fronts
+`PermanentToolRegistry` descriptor builders. Two properties of that
+current contract matter to clients: a Labby tool fronts
 a whole service, so a tool-level hint is the least-safe **union** of that
 service's actions and must not be read as a claim about a specific `action`; and
 in a labby → labby chain these hints feed the next hop's own gate, so they are
@@ -250,7 +249,7 @@ one.
 
 The MCP server does not expose ACP, Marketplace, Registry-browser, Fleet/node,
 Deploy-product, or Stash tools. Historical contracts are preserved only under
-[../references/retired-labby](../references/retired-labby/).
+[../archive/retired-labby](../archive/retired-labby/).
 
 ## Agent Skills (SEP-2640)
 

@@ -643,7 +643,7 @@ impl UpstreamPool {
     }
 
     /// Set the deadline for relayed upstream tool calls (the elicitation-relay
-    /// path). Defaults to [`DEFAULT_RELAY_TIMEOUT`] (5 minutes) so a human has
+    /// path). Defaults to `DEFAULT_RELAY_TIMEOUT` (5 minutes) so a human has
     /// time to answer an elicitation without the call timing out.
     #[must_use]
     pub fn with_relay_timeout(mut self, timeout: Duration) -> Self {

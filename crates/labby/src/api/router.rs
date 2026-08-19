@@ -1944,15 +1944,10 @@ pub(crate) fn build_router_with_external_auth(
         }
     }
 
-    // Dev routes — registered BEFORE the Next.js static fallback so they win
-    // over the SPA. See docs/design/component-development.md §5 (two-tier
-    // serving model) for the full rationale.
-    //
-    // /dev/mockup, /dev/mockup/*  → Tier 1 mockup file server: serves HTML from
-    //                     ~/.superpowers/brainstorm/content/{name}.html directly.
-    //                     Keep this out of `/dev` so real Next.js dev pages can render.
+    // Development mockups are registered before the Next.js static fallback so
+    // `/dev/mockup*` resolves from ~/.superpowers/brainstorm/content rather than
+    // being swallowed by the SPA. See docs/design/component-development.md.
     let dev_routes = Router::new()
-        // Mockup page routes — MUST stay before the static fallback (docs/design/component-development.md §5)
         .route("/dev/mockup", get(dev_mockup))
         .route("/dev/mockup/", get(dev_mockup))
         .route("/dev/mockup/{name}", get(dev_mockup_named))

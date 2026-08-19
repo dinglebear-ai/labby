@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/o-series/o3o4-mini\_prompting\_guide [Redirecting from `/cookbook/examples/o-series/o3o4-mini\_prompting\_guide.ipynb/` to `/cookbook/examples/o-series/o3o4-mini\_prompting\_guide`](/cookbook/examples/o-series/o3o4-mini_prompting_guide)

@@ -63,6 +63,7 @@ fn execution_timeout(timeout_ms: u64) -> Duration {
 }
 
 impl<H: CodeModeHost> CodeModeBroker<'_, H> {
+    /// Execute Code Mode and return the configured model-facing response.
     pub async fn execute(
         &self,
         code: &str,
@@ -78,6 +79,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .display_response)
     }
 
+    /// Execute Code Mode and retain both raw and model-shaped responses.
     pub async fn execute_with_raw_response(
         &self,
         code: &str,

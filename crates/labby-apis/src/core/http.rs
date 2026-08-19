@@ -133,7 +133,7 @@ impl HttpClient {
         // (this one) is already installed, safe to ignore.
         drop(rustls::crypto::ring::default_provider().install_default());
         let inner = Client::builder()
-            .user_agent(concat!("lab-apis/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("labby-apis/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
             .default_headers(headers)

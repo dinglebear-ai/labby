@@ -1,8 +1,8 @@
 //! Top-level CLI — clap derive definitions and dispatch router.
 //!
 //! Every subcommand is a thin shim that parses args, calls into a
-//! `lab-apis` client (or a lab-local subsystem), and formats output.
-//! See `crates/lab/src/cli/CLAUDE.md` for the rulebook.
+//! `labby-apis` client (or a Labby-local subsystem), and formats output.
+//! See `crates/labby/src/cli/CLAUDE.md` for the rulebook.
 
 pub mod completions;
 pub mod docs;

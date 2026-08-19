@@ -16,9 +16,9 @@
 //! disconnect-driven pruning.
 //!
 //! `push` is a hardened boundary against a hostile/buggy peer: entries are a
-//! drop-oldest ring bounded at [`MAX_CLIENTS`], and every attacker-controlled
+//! drop-oldest ring bounded at `MAX_CLIENTS`, and every attacker-controlled
 //! string field (the peer's self-declared `clientInfo.name`/`version`) is
-//! truncated to [`MAX_FIELD_LEN`] bytes. Without this, a client that
+//! truncated to `MAX_FIELD_LEN` bytes. Without this, a client that
 //! reconnects repeatedly — or one that declares an oversized `clientInfo` —
 //! grows this registry unbounded for the life of the daemon. Same class of
 //! bug the codebase has already been burned by once: bead lab-l9yv.6
@@ -67,6 +67,7 @@ pub struct ConnectedClient {
     /// `"stdio"`, `"http"`, `"in-process"` (built-in service peers), or
     /// `"test"` — set from `LabMcpServer::transport_label` at construction.
     pub transport: String,
+    /// RFC 3339 timestamp recorded when the client connection was registered.
     pub connected_at: String,
 }
 
@@ -78,8 +79,8 @@ pub struct ClientRegistryHandle {
 }
 
 impl ClientRegistryHandle {
-    /// Truncates every attacker-controlled string field to [`MAX_FIELD_LEN`]
-    /// and drops the oldest entry once the registry holds [`MAX_CLIENTS`].
+    /// Truncates every attacker-controlled string field to `MAX_FIELD_LEN`
+    /// and drops the oldest entry once the registry holds `MAX_CLIENTS`.
     pub async fn push(&self, client: ConnectedClient) {
         let client = ConnectedClient {
             subject_tag: client.subject_tag.map(truncate_field),
@@ -95,6 +96,7 @@ impl ClientRegistryHandle {
         guard.push_back(client);
     }
 
+    /// Return a snapshot of currently retained client records in connection order.
     pub async fn list(&self) -> Vec<ConnectedClient> {
         self.clients.read().await.iter().cloned().collect()
     }

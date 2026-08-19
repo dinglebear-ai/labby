@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_googleads\_adzviser [Redirecting from `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_googleads\_adzviser.ipynb/` to `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_googleads\_adzviser`](/cookbook/examples/chatgpt/gpt_actions_library/gpt_action_googleads_adzviser)

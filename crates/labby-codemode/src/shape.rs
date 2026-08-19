@@ -7,13 +7,20 @@ const MIN_SHAPED_RESULT_BYTES: usize = 256;
 const SOFT_WARNING_DIVISOR: usize = 3;
 const MIN_SOFT_WARNING_BYTES: usize = 1024;
 
+/// Metadata describing model-facing shaping of a Code Mode final result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CodeModeResultShapeMetadata {
+    /// Configured result-shaping policy.
     pub policy: CodeModeResultShapePolicy,
+    /// Whether the displayed result differs from the raw result.
     pub changed: bool,
+    /// Whether bytes were removed to satisfy the response budget.
     pub truncated: bool,
+    /// Serialized size of the raw result before shaping.
     pub original_size_bytes: usize,
+    /// Serialized size of the result after shaping.
     pub shaped_size_bytes: usize,
+    /// Optional advisory warning for unusually large results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }

@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/how\_to\_finetune\_chat\_models [Redirecting from `/cookbook/examples/how\_to\_finetune\_chat\_models.ipynb/` to `/cookbook/examples/how\_to\_finetune\_chat\_models`](/cookbook/examples/how_to_finetune_chat_models)

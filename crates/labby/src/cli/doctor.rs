@@ -39,16 +39,16 @@ pub enum DoctorCheck {
 
 #[derive(Debug, Args)]
 pub struct DoctorProxyArgs {
-    /// Public Lab app URL, e.g. https://lab.example.com (default: LABBY_PUBLIC_URL)
+    /// Public Lab app URL, e.g. <https://lab.example.com> (default: LABBY_PUBLIC_URL)
     #[arg(long)]
     pub app_url: Option<String>,
-    /// Public MCP gateway URL, e.g. https://mcp.example.com (default: LABBY_MCP_GATEWAY_URL)
+    /// Public MCP gateway URL, e.g. <https://mcp.example.com> (default: LABBY_MCP_GATEWAY_URL)
     #[arg(long)]
     pub mcp_url: Option<String>,
     /// Protected MCP public route path, e.g. /telemetry
     #[arg(long)]
     pub route: Option<String>,
-    /// Optional private backend origin for backend-leak probe, e.g. http://mcp-backend:3100
+    /// Optional private backend origin for backend-leak probe, e.g. `http://mcp-backend:3100`
     #[arg(long)]
     pub backend_url: Option<String>,
 }

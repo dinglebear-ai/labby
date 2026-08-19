@@ -1,14 +1,12 @@
 ---
 title: "Testing"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
 # Testing
 
-Last updated: 2026-04-10
-
-This document is the canonical testing contract for `lab`.
+This document is the canonical testing contract for Labby.
 
 It defines:
 
@@ -54,7 +52,7 @@ There are four testing layers.
 
 ### 1. SDK Tests
 
-Owned by `lab-apis`.
+Owned by `labby-apis`.
 
 Purpose:
 
@@ -67,11 +65,11 @@ Rules:
 
 - use mock HTTP where practical
 - do not depend on real external services in CI-safe tests
-- test shared HTTP behavior in `lab-apis`
+- test shared HTTP behavior in `labby-apis`
 
 ### 2. Shared Dispatch-Layer Tests
 
-Owned by `crates/lab/src/dispatch`.
+Owned by `crates/labby/src/dispatch`.
 
 Purpose:
 
@@ -88,7 +86,7 @@ Rules:
 
 ### 3. Surface Adapter Tests
 
-Owned by `crates/lab/src/cli`, `crates/lab/src/mcp`, and `crates/lab/src/api`.
+Owned by `crates/labby/src/cli`, `crates/labby/src/mcp`, and `crates/labby/src/api`.
 
 Purpose:
 
@@ -197,12 +195,16 @@ Minimum expectation:
 - `just docs-check` when changing registry entries, action catalogs,
   `PluginMeta`, API route metadata, Cargo features, onboarding audit checks, or
   generated docs artifacts
+- `just rustdoc-check` when changing public Rust APIs, Rustdoc, crate/module
+  structure, examples, binaries, or anything referenced by intra-doc links
+- `just rustdoc-audit` when reviewing public API documentation coverage; this
+  reports historical missing-prose debt without blocking the strict correctness gate
 
 Preferred runner:
 
 - use `cargo nextest run` for crate-level verification
 - use `cargo test` only when nextest is unavailable or you need a narrow one-off command that nextest does not cover cleanly
-- for this repo, `cargo nextest run --manifest-path crates/lab/Cargo.toml --all-features` is the standard full-crate verification command
+- for this repo, `cargo nextest run --manifest-path crates/labby/Cargo.toml --all-features` is the standard full-crate verification command
 
 If tests were not run, say so explicitly.
 
@@ -213,29 +215,31 @@ Common commands:
 ```bash
 just check
 just docs-check
+just rustdoc-check
+just rustdoc-audit
 just test
 just lint
-cargo nextest run --manifest-path crates/lab/Cargo.toml --all-features
-cargo test -p lab-apis
-cargo test --manifest-path crates/lab/Cargo.toml
+cargo nextest run --manifest-path crates/labby/Cargo.toml --all-features
+cargo test -p labby-apis
+cargo test --manifest-path crates/labby/Cargo.toml
 ```
 
 Use narrower commands first when iterating, then broaden before completion.
 
-## Coverage Docs
+## Coverage And Verification
 
-Coverage docs in `docs/coverage/` are part of verification, not a substitute for tests.
+Coverage is established by executable tests, generated contract checks, and explicit live verification where a change crosses a runtime boundary. Historical per-service coverage ledgers are not maintained as a parallel documentation surface because they drifted from the code they were meant to describe.
 
 Rules:
 
-- coverage docs must reflect the real implementation surface
-- coverage docs must not claim live-tested status unless that testing actually happened
+- tests and generated catalogs must reflect the real implementation surface
+- docs must not claim live-tested status unless that testing actually happened
 - implementation counts and file references must stay aligned with code
 
 ## Ownership Summary
 
-- `lab-apis` owns SDK tests
-- `crates/lab/src/dispatch` owns shared dispatch tests
+- `labby-apis` owns SDK tests
+- `crates/labby/src/dispatch` owns shared dispatch tests
 - `cli`, `mcp`, and `api` own adapter tests
 - implementation tasks own live verification
 
@@ -243,7 +247,8 @@ Rules:
 
 - [OBSERVABILITY.md](./OBSERVABILITY.md)
 - [ERRORS.md](./ERRORS.md)
-- [design/SERIALIZATION.md](./design/SERIALIZATION.md)
+- [design/SERIALIZATION.md](../design/SERIALIZATION.md)
 - [DISPATCH.md](./DISPATCH.md)
 - [SERVICE_ONBOARDING.md](./SERVICE_ONBOARDING.md)
-- [OPERATIONS.md](./OPERATIONS.md)
+- [RUSTDOC.md](./RUSTDOC.md)
+- [OPERATIONS.md](../OPERATIONS.md)

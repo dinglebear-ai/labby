@@ -1,43 +1,50 @@
 ---
 title: "Service Onboarding"
-created: "2026-07-30"
-updated: "2026-07-30"
+created: "2026-08-18"
+updated: "2026-08-18"
 ---
 
 # Service Onboarding
 
-This is the end-to-end checklist for bringing a service online in `lab`.
+This is the end-to-end checklist for adding a **built-in Labby product service**.
 
-The current flow is manual wiring plus generated-doc verification. Older docs
-referenced `labby scaffold service` and `labby audit onboarding`; those commands
-are not part of the current CLI surface unless they are restored in code.
+Most external capabilities should not become built-in services at all. HTTP, Unix-socket, and stdio MCP servers belong in the gateway upstream catalog and are exposed through the existing `gateway`/upstream runtime. Add a new built-in service only when Labby itself owns the capability and its lifecycle.
 
-```bash
-cargo check --workspace --all-features
-cargo run -p labby --all-features -- docs generate
-cargo run -p labby --all-features -- docs check
-```
+The generated [service catalog](../generated/service-catalog.md) and [action catalog](../generated/action-catalog.md) are authoritative for the current product surface.
+
+## Before Adding A Built-In Service
+
+Prefer an upstream MCP server when the capability is independently deployable. A built-in service is appropriate when it needs Labby-owned local state, host integration, setup/doctor behavior, or another product-level contract that cannot live behind a normal upstream MCP boundary.
+
+Do not recreate the retired pattern of one built-in SDK module per homelab application.
 
 ## Required Steps
 
-1. Start from the upstream API spec or notes in `docs/upstream-api/`.
-2. Add pure client logic and serde types under `crates/lab-apis/src/<service>/`.
-3. Add the shared dispatch module under `crates/lab/src/dispatch/<service>/`.
-4. Keep CLI, MCP, and HTTP adapters thin; they must call dispatch instead of
-   reimplementing service behavior.
-5. Register the service in metadata, registry construction, and only the
-   CLI/MCP/API/web surfaces it actually exposes.
-6. Add a Cargo feature only when the service is an intended standalone product
-   slice or true `lab-apis` passthrough. Do not add one feature per internal
-   module by default.
-7. Add or update `docs/coverage/<service>.md` when the service has a coverage
-   contract.
-8. Regenerate docs and run the all-features build/test path before handoff.
+1. Define stable request/result vocabulary in the lowest reusable crate that actually owns it. Use `labby-primitives` only for dependency-leaf vocabulary shared across crate boundaries.
+2. Put reusable surface-neutral runtime behavior in the appropriate extracted crate (for example `labby-gateway`, `labby-runtime`, or `labby-codemode`).
+3. Add the product dispatcher under `crates/labby/src/dispatch/<service>/`. The dispatcher owns action routing, validation, destructive classification, and shared semantics.
+4. Keep CLI, MCP, HTTP, and web adapters thin. They must call shared dispatch rather than independently implement the operation.
+5. Register only the surfaces the service actually supports.
+6. Add a Cargo feature only when the service is an intentional optional product slice. Do not add placeholder features for future work.
+7. Add a canonical service page under `docs/services/` when the service is user/operator visible.
+8. Add tests for catalog registration, action schemas, errors, destructive/admin gates, feature slicing, and every exposed surface.
+9. Regenerate code-owned docs and run product-doc validation.
+
+## Verification
+
+```bash
+cargo check --workspace --all-features
+cargo nextest run --workspace --all-features
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+just docs-generate
+just docs-check
+```
 
 ## Source Documents
 
-- [DISPATCH.md](./DISPATCH.md) owns the shared dispatch-layer contract.
-- [ERRORS.md](./ERRORS.md) owns stable error envelopes and status mapping.
-- [OBSERVABILITY.md](./OBSERVABILITY.md) owns logging, correlation, and redaction.
-- [SCAFFOLD_AND_AUDIT.md](./SCAFFOLD_AND_AUDIT.md) records the deferred
-  scaffold/audit contract if those commands are restored.
+- [Service model](./SERVICES.md)
+- [Dispatch](./DISPATCH.md)
+- [Errors](./ERRORS.md)
+- [Observability](./OBSERVABILITY.md)
+- [Testing](./TESTING.md)
+- [Architecture](../ARCH.md)

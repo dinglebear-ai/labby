@@ -15,7 +15,7 @@ pub mod status;
 /// `ActionSpec` / `ParamSpec` — discovery metadata.
 pub mod action;
 
-/// `PluginMeta` — per-service constants for TUI / install / doctor.
+/// `PluginMeta` — per-service metadata for generated docs, setup, and doctor.
 pub mod plugin;
 
 /// `UiSchema` / `FieldKind` / `FieldValidation` / `WizardKind` — Bootstrap wizard + Settings rail.
@@ -24,14 +24,12 @@ pub mod plugin_ui;
 /// `ServiceClient` trait — common surface every service implements.
 pub mod traits;
 
-/// Shared SSH primitives (host config parsing, hardened options) used by
-/// `deploy`.
+/// Shared, pure OpenSSH configuration parsing primitives.
 pub mod ssh;
 
-/// Canonical SSRF preflight guards for externally supplied HTTPS URLs. Lives in
-/// `core` (not under a feature-gated service module) because it is a shared
-/// security primitive used by always-compiled `lab` dispatch code as well as
-/// the feature-gated `acp_registry` installer.
+/// Canonical SSRF preflight guards for externally supplied URLs. Lives in
+/// `core` because it is a shared security primitive used by current product-side
+/// URL validation, including doctor and reverse-proxy checks.
 pub mod ssrf;
 
 // Convenience re-exports so service modules can `use crate::core::{Auth, HttpClient, ApiError, ...}`.

@@ -18,6 +18,7 @@ impl Default for CodeModeAppState {
 }
 
 impl CodeModeAppState {
+    /// Create shared app state with the supplied initial advertisement state.
     #[must_use]
     pub fn new(enabled: bool) -> Self {
         Self {
@@ -25,6 +26,7 @@ impl CodeModeAppState {
         }
     }
 
+    /// Return whether the explicit Code Mode MCP App is currently advertised.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)

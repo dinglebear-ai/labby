@@ -313,7 +313,7 @@ clients where the platform credential store works.
 
 ### Using non-loopback redirect URIs
 
-Loopback redirect URIs are always accepted by `lab-auth`. Native-app private-use
+Loopback redirect URIs are always accepted by `labby-auth`. Native-app private-use
 URI schemes such as `cursor://...`, `warp://...`, `vscode://...`, and
 `com.raycast:/...` are also accepted without per-client allowlist entries.
 
@@ -1009,6 +1009,6 @@ Auth-specific items `labby doctor` covers (or should cover):
 ## Related Docs
 
 - [CONFIG.md](./CONFIG.md) — config loading and env var conventions
-- [TRANSPORT.md](./TRANSPORT.md) — HTTP transport setup and middleware
+- [TRANSPORT.md](../surfaces/TRANSPORT.md) — HTTP transport setup and middleware
 - [ERRORS.md](../dev/ERRORS.md) — `auth_failed` error kind
 - [RMCP.md](../surfaces/RMCP.md) — RMCP auth ownership contract

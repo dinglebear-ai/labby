@@ -49,7 +49,7 @@ impl UpstreamPool {
     ///   and never replace a just-registered live connection (which would
     ///   abort in-flight builtin calls).
     /// - Failure cooldown: an attempt that still leaves peers missing is not
-    ///   retried within [`IN_PROCESS_ENSURE_RETRY_COOLDOWN`], so a wedged
+    ///   retried within `IN_PROCESS_ENSURE_RETRY_COOLDOWN`, so a wedged
     ///   peer costs one bounded attempt per window instead of adding up to
     ///   `IN_PROCESS_DISCOVERY_TIMEOUT` to every catalog build.
     pub async fn ensure_in_process_service_peers(&self, registry: &dyn InProcessServiceRegistry) {

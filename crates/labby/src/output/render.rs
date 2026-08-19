@@ -747,7 +747,7 @@ fn render_catalog(map: &serde_json::Map<String, Value>, theme: CliTheme) -> Stri
             writeln!(
                 out,
                 "{indent}{}",
-                theme.muted(format!("(+{remaining} more — `lab help {name}`)").as_str())
+                theme.muted(format!("(+{remaining} more — `labby help {name}`)").as_str())
             )
             .ok();
         }
@@ -909,7 +909,7 @@ mod tests {
         assert!(plain.contains("status.get"));
         assert!(plain.contains("(+"));
         assert!(plain.contains("more"));
-        assert!(plain.contains("lab help gateway-alpha"));
+        assert!(plain.contains("labby help gateway-alpha"));
         // The old `{5 keys}` artifact must not appear.
         assert!(
             !plain.contains("{5 keys}"),

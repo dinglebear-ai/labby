@@ -111,4 +111,4 @@ CSRF protections. Do not make a route public merely to simplify browser calls.
 The hosted runtime does not expose Fleet/node WebSockets, node enrollment APIs,
 Marketplace preview routes, ACP session endpoints, Stash APIs, or MCP Registry
 compatibility endpoints. Their historical transport contracts are archived under
-[../references/retired-labby](../references/retired-labby/).
+[../archive/retired-labby](../archive/retired-labby/).

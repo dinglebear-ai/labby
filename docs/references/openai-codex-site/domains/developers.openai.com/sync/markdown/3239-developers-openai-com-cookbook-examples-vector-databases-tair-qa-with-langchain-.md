@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/vector\_databases/tair/qa\_with\_langchain\_tair\_and\_openai [Redirecting from `/cookbook/examples/vector\_databases/tair/qa\_with\_langchain\_tair\_and\_openai.ipynb/` to `/cookbook/examples/vector\_databases/tair/qa\_with\_langchain\_tair\_and\_openai`](/cookbook/examples/vector_databases/tair/qa_with_langchain_tair_and_openai)

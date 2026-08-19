@@ -200,4 +200,4 @@ text ends with a ` …[truncated]` marker. See
 Error kinds used only by ACP, Registry installers, Marketplace artifacts,
 Fleet/node transport, Deploy-product, or Stash must be removed with those
 features, including stale status-mapping tests. Their historical definitions are
-available in [../references/retired-labby/current-docs/dev/ERRORS.md](../references/retired-labby/current-docs/dev/ERRORS.md).
+available in [../archive/retired-labby/current-docs/dev/ERRORS.md](../archive/retired-labby/current-docs/dev/ERRORS.md).

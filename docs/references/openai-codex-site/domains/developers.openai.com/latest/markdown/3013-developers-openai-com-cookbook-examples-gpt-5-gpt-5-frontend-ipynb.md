@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/gpt-5/gpt-5\_frontend [Redirecting from `/cookbook/examples/gpt-5/gpt-5\_frontend.ipynb/` to `/cookbook/examples/gpt-5/gpt-5\_frontend`](/cookbook/examples/gpt-5/gpt-5_frontend)

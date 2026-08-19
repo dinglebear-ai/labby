@@ -12,12 +12,11 @@ updated: "2026-07-30"
 
 ## Purpose
 
-This theme ports the Aurora design system palette into Claude Code's custom theme format, so the terminal tool matches the visual language of Labby and the `lab` CLI.
+This theme ports the Aurora design system palette into Claude Code's custom theme format, so the terminal tool matches the visual language of Labby and the `labby` CLI.
 
 Related documents:
 
 - [CLI Design System Contract](./CLI_DESIGN_SYSTEM.md)
-- [CLI Output Theme API](./CLI_OUTPUT_THEME_API.md)
 - [Labby Design System Contract](./design-system-contract.md)
 
 ## Activation

@@ -66,4 +66,4 @@ shared source of truth.
 The current CLI does not include ACP sessions, Registry browsing/installing,
 Marketplace product commands, Fleet/node enrollment, Deploy-product commands, or
 Stash workspaces. Historical command contracts are archived under
-[../references/retired-labby](../references/retired-labby/).
+[../archive/retired-labby](../archive/retired-labby/).
