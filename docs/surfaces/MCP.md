@@ -214,6 +214,14 @@ receives the final page of a complete listing. Subscribing before that point
 keeps the baseline unpublished so the next relevant catalog trigger emits
 `notifications/tools/list_changed`.
 
+`resources/list`, `resources/templates/list`, and `prompts/list` can require
+live upstream fan-out. Their first page therefore retains the complete result
+set in route-shared memory and binds the continuation cursor to that snapshot.
+Later pages read the retained, authorization-audience-isolated snapshot rather
+than repeating upstream discovery. Snapshots are bounded and process-local; an
+expired, evicted, or pre-restart cursor fails with `invalid_cursor` and callers
+must restart from the first page.
+
 ## Resource Subscriptions
 
 Labby serves resource subscriptions through `subscriptions/listen` only. The
