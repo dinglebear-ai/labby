@@ -384,9 +384,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 );
 
                 let mut retry = pool.checkout_fresh(deadline).await?;
-                let retry_outcome = self
-                    .drive_runner(retry.runner_mut(), &cfg, deadline)
-                    .await;
+                let retry_outcome = self.drive_runner(retry.runner_mut(), &cfg, deadline).await;
                 match retry_outcome {
                     DriveOutcome::Completed(response) => {
                         drop(tokio::time::timeout_at(deadline, retry.release()).await);
@@ -2299,7 +2297,11 @@ sleep 3600
         });
         let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
         let response = broker
-            .run_via_pool(&pool, test_config(Duration::from_secs(5)))
+            .run_via_pool(
+                &pool,
+                test_config(Duration::from_secs(5)),
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            )
             .await
             .expect("fresh runner retry must succeed");
 
