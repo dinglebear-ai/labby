@@ -132,6 +132,10 @@ impl LabMcpServer {
         let hide_raw_tools = visibility.hides_raw_tools();
         let visibility_mode = visibility.mode_label();
         #[cfg(feature = "gateway")]
+        if !hide_raw_tools {
+            peer_contract.ensure_protected_subset_tools().await;
+        }
+        #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
         let mcp_apps_config = self.mcp_apps_config().await;

@@ -515,7 +515,10 @@ impl LabMcpServer {
             let relay_capabilities = relay_capabilities_for_request(&upstream_params);
             let relay_config = if relay_capabilities.is_some() {
                 match &self.gateway_manager {
-                    Some(manager) => manager.upstream_config(&upstream_name).await,
+                    Some(manager) => manager
+                        .upstream_config(&upstream_name)
+                        .await
+                        .filter(crate::mcp::context::upstream_uses_capability_relay),
                     None => None,
                 }
             } else {

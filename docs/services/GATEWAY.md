@@ -528,6 +528,20 @@ resolves the target URL and auth mode from the named `[[upstream]]` entry. For
 OAuth upstreams, Lab uses the upstream OAuth credential stored for the shared
 Gateway subject `gateway`.
 
+On the first `tools/list` for a protected route, Labby resolves the route's
+finite allowlist of enabled, non-OAuth upstreams before building the raw tool
+contract. This prevents a cold protected route from advertising an empty
+catalog while keeping the root route cache-only. Discovery is bounded by the
+configured upstream request timeout and discovery concurrency; individual
+upstream failures are logged and do not discard tools from healthy peers.
+
+Stdio upstreams normally use a dedicated connection when downstream client
+capabilities must be relayed. A singleton upstream that cannot safely spawn a
+second process may set `MCP_UPSTREAM_RELAY_MODE=pooled` in its `[[upstream]].env`
+table. That opt-out reuses the ordinary pooled connection, so the operator is
+responsible for ensuring the upstream does not require the downstream
+capabilities in its initial handshake.
+
 Fields:
 
 | Field | Purpose |
