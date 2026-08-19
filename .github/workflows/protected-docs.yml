@@ -1,0 +1,36 @@
+name: Protected documentation
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: protected-docs-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Protected docs guard
+    runs-on: ci-pool-ops
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted base revision
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Enforce protected documentation approval
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PROTECTED_DOCS_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'protected-docs-approved') }}
+        run: |
+          python3 scripts/ci/protected_doc_guard.py \
+            --repo "$PR_REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --approved "$PROTECTED_DOCS_APPROVED"

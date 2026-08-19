@@ -1,14 +1,14 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-08-05"
+updated: "2026-08-19"
 ---
 
 # CI/CD
 
-Last updated: 2026-08-05
+Last updated: 2026-08-19
 
-This document is the authoritative contract for CI, release, and artifact delivery in `lab`. All pipeline implementations must conform to this spec.
+This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
 ## CI Path Routing
 
@@ -98,31 +98,25 @@ fallback classifier used when the base commit predates that script emits no
 keys at all and lets reconciliation force every gated key to `true`, so it is
 not a second copy of the list.
 
-`ci-gate` is the aggregate that branch protection on `main` *should* require.
-As of 2026-08-05 it does not: the only required context is
-`Repository Contract`, so every Rust job — `Format`, `Clippy`, `Test`, `MSRV`,
-the feature slices — is advisory in practice. That is how #347 merged with
-`Format`, `Clippy`, and `ci-gate` all red, landing a rustfmt violation and a
-check script that failed against its own action.
+Branch protection on `main` requires both `Repository Contract` and `ci-gate`.
+The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
+may skip when their category is false, while failed or cancelled dependencies
+fail the aggregate. Native Windows workspace and Palette jobs remain advisory.
 
-Requiring `ci-gate` was attempted on 2026-08-05 and reverted the same day. It
-is correct in principle but only viable when the shared `ci-pool-rust` farm can
-actually finish a run. While that pool is saturated by sibling repos, labby's
-Rust jobs never get a runner and the run is cancelled, so a required `ci-gate`
-can never turn green and *every* pull request becomes unmergeable. Re-enable it
-once pool capacity is reliable:
+Protected historical work products are enforced separately by
+`.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
+out only the trusted base revision, and queries the pull request file list
+through the read-only GitHub token. Any change below `docs/sessions/` or
+`docs/superpowers/` fails `Protected docs guard` unless a maintainer explicitly
+applies the `protected-docs-approved` label. Label and unlabel events rerun the
+guard. The guard is a separate required branch-protection context because it
+must remain anchored to the base workflow rather than the pull request's
+branch-controlled `ci.yml`.
 
-```bash
-gh api -X PATCH repos/dinglebear-ai/labby/branches/main/protection/required_status_checks \
-  -f 'checks[][context]=Repository Contract' -f 'checks[][context]=ci-gate'
-```
-
-If you add a job that must block merges, wire it into `ci-gate` rather than
-adding another required context. The
-heavy jobs below may be skipped when their category is false; `ci-gate` treats
-`success` and intentionally `skipped` jobs as acceptable, and fails on failed or
-cancelled dependencies. Native Windows workspace and Palette jobs are advisory:
-they stay visible on pull requests and main but do not block `ci-gate`.
+If you add another normal CI job that must block merges, wire it into `ci-gate`
+rather than adding another required context. Separate required contexts are
+reserved for controls, like the protected-docs guard and repository contract,
+that intentionally execute from a trusted workflow boundary.
 
 ## CI Checks
 
@@ -132,6 +126,7 @@ jobs when their changed-path category is enabled:
 | Check | Category | Command |
 |-------|----------|---------|
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
+| Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
