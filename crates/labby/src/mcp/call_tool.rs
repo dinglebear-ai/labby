@@ -1088,7 +1088,10 @@ impl LabMcpServer {
                     let registry = self
                         .skill_registry_context_for_tool(&context, request.meta.as_ref())
                         .await;
-                    crate::dispatch::skills::dispatch_with_context(&registry, &action, params).await
+                    Box::pin(crate::dispatch::skills::dispatch_with_context(
+                        &registry, &action, params,
+                    ))
+                    .await
                 }
                 #[cfg(not(feature = "skills"))]
                 {
