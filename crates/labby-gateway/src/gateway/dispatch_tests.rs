@@ -16,9 +16,21 @@ use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct DashboardCatalogResponder {
     discover_requests: std::sync::Arc<AtomicUsize>,
+    list_requests: std::sync::Arc<AtomicUsize>,
+    tool_count: std::sync::Arc<AtomicUsize>,
+}
+
+impl Default for DashboardCatalogResponder {
+    fn default() -> Self {
+        Self {
+            discover_requests: std::sync::Arc::new(AtomicUsize::new(0)),
+            list_requests: std::sync::Arc::new(AtomicUsize::new(0)),
+            tool_count: std::sync::Arc::new(AtomicUsize::new(1)),
+        }
+    }
 }
 
 impl Respond for DashboardCatalogResponder {
@@ -46,17 +58,28 @@ impl Respond for DashboardCatalogResponder {
                     }
                 }))
             }
-            "tools/list" => ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "tools": [{
-                        "name": "dashboard_echo",
-                        "description": "dashboard discovery proof",
-                        "inputSchema": {"type": "object"}
-                    }]
-                }
-            })),
+            "tools/list" => {
+                self.list_requests.fetch_add(1, Ordering::SeqCst);
+                let count = self.tool_count.load(Ordering::SeqCst);
+                let tools: Vec<Value> = (0..count)
+                    .map(|index| {
+                        json!({
+                            "name": if index == 0 {
+                                "dashboard_echo".to_string()
+                            } else {
+                                format!("dashboard_echo_{index}")
+                            },
+                            "description": "dashboard discovery proof",
+                            "inputSchema": {"type": "object"}
+                        })
+                    })
+                    .collect();
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"tools": tools}
+                }))
+            }
             other => ResponseTemplate::new(500)
                 .set_body_string(format!("unexpected MCP method: {other}")),
         }
@@ -1845,6 +1868,104 @@ async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
 
     assert_eq!(row["discovered_tool_count"], 1);
     assert_eq!(row["exposed_tool_count"], 1);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() {
+    let server = MockServer::start().await;
+    let responder = DashboardCatalogResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![UpstreamConfig {
+            enabled: true,
+            name: "dashboard-http".to_string(),
+            url: Some(format!("{}/mcp", server.uri())),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let first = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("first list");
+    let first_row = first
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(first_row["discovered_tool_count"], 1);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    responder.tool_count.store(3, Ordering::SeqCst);
+    let stale = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("cached list");
+    let stale_row = stale
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(stale_row["discovered_tool_count"], 1);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "different-upstream".to_string()
+            ])),
+            oauth_subject: None,
+        })
+        .await;
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .await;
+
+    let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("refreshed list");
+    let refreshed_row = refreshed
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(refreshed_row["discovered_tool_count"], 3);
+    assert_eq!(refreshed_row["exposed_tool_count"], 3);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 2);
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
 }
 

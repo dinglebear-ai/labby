@@ -1083,6 +1083,11 @@ fn gateway_status_tool_meta_and_schema_bind_the_status_app() {
         schema["properties"]["action"]["enum"],
         serde_json::json!(["open", "refresh"])
     );
+    assert!(
+        schema["properties"]["action"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("reprobe"))
+    );
     assert_eq!(schema["additionalProperties"], false);
 }
 

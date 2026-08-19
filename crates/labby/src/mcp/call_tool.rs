@@ -755,6 +755,11 @@ impl LabMcpServer {
                             )
                             .map(|subject| subject.into_owned()),
                         };
+                        if synthetic_action == "refresh" {
+                            manager
+                                .refresh_gateway_status_catalog(&enrichment_scope)
+                                .await;
+                        }
                         crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
                             "gateway.list",

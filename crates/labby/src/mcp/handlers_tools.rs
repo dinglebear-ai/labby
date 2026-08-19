@@ -727,7 +727,7 @@ pub(crate) fn gateway_status_tool_schema() -> Arc<serde_json::Map<String, Value>
                     "type": "string",
                     "enum": ["open", "refresh"],
                     "default": "open",
-                    "description": "Open the status app or refresh its live upstream snapshot."
+                    "description": "Open the status app or reprobe route-visible upstream tool catalogs before returning a refreshed live snapshot."
                 },
                 "params": {
                     "type": "object",
