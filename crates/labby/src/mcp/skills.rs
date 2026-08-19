@@ -9,6 +9,7 @@ pub(crate) use crate::skills::is_skill_uri;
 use crate::skills::{
     first_party_skill_entry, list_first_party_skills, read_first_party_skill_file,
 };
+use Future;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::wire::{
@@ -120,9 +121,8 @@ impl LabMcpServer {
         meta: Option<&'a rmcp::model::RequestMetaObject>,
         action: &'a str,
         params: serde_json::Value,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let registry = self.skill_registry_context_for_tool(context, meta).await;
             crate::dispatch::skills::dispatch_with_context(&registry, action, params).await

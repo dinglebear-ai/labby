@@ -1,3 +1,4 @@
+use Future;
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -58,7 +59,7 @@ pub fn run<'a>(
     args: SkillsArgs,
     format: OutputFormat,
     config: &'a LabConfig,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExitCode>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn Future<Output = Result<ExitCode>> + Send + 'a>> {
     Box::pin(run_inner(args, format, config))
 }
 
