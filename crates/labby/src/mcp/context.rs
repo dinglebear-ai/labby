@@ -11,7 +11,10 @@
 
 use axum::http::request::Parts;
 use labby_auth::auth_context::AuthContext;
-use labby_runtime::caller_auth::{CALLER_AUTH_META_KEY, PropagatedCallerAuth};
+use labby_runtime::caller_auth::{
+    CALLER_AUTH_META_KEY, CALLER_UPSTREAM_SCOPE_META_KEY, PropagatedCallerAuth,
+    PropagatedCallerUpstreamScope,
+};
 use rmcp::RoleServer;
 use rmcp::service::RequestContext;
 use sha2::{Digest, Sha256};
@@ -210,6 +213,26 @@ pub(crate) enum CallerAuthorization<'a> {
 }
 
 impl CallerAuthorization<'_> {
+    /// Whether this caller satisfies a read-scoped action.
+    #[must_use]
+    pub(crate) fn can_read(&self) -> bool {
+        match self {
+            Self::Direct(auth) => auth
+                .scopes
+                .iter()
+                .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin")),
+            Self::TrustedLocal => true,
+            Self::Propagated(auth) => {
+                auth.trusted_local
+                    || auth
+                        .scopes
+                        .iter()
+                        .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin"))
+            }
+            Self::Unknown => false,
+        }
+    }
+
     /// Whether this caller satisfies an admin-gated action.
     #[must_use]
     pub(crate) fn is_admin(&self) -> bool {
@@ -243,6 +266,15 @@ pub(crate) fn propagated_caller_auth(
     meta: Option<&rmcp::model::RequestMetaObject>,
 ) -> Option<PropagatedCallerAuth> {
     let value = meta?.get(CALLER_AUTH_META_KEY)?;
+    serde_json::from_value(value.clone()).ok()
+}
+
+/// Read the caller-visible upstream namespace scope propagated across the
+/// private in-process peer hop. Never honor this metadata on network transports.
+pub(crate) fn propagated_caller_upstream_scope(
+    meta: Option<&rmcp::model::RequestMetaObject>,
+) -> Option<PropagatedCallerUpstreamScope> {
+    let value = meta?.get(CALLER_UPSTREAM_SCOPE_META_KEY)?;
     serde_json::from_value(value.clone()).ok()
 }
 

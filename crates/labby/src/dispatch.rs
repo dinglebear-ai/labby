@@ -14,6 +14,8 @@ pub mod redact;
 pub mod security;
 pub mod server_logs;
 pub mod setup;
+#[cfg(feature = "skills")]
+pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
 #[cfg(feature = "gateway")]

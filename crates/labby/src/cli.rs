@@ -21,6 +21,8 @@ pub mod params;
 pub mod proxy;
 pub mod serve;
 pub mod setup;
+#[cfg(feature = "skills")]
+pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
 pub mod style;
@@ -90,6 +92,9 @@ pub enum Command {
     /// Manage executable Code Mode snippets.
     #[cfg(feature = "gateway")]
     Snippets(snippets::SnippetsArgs),
+    /// Discover and read Agent Skills through the compatibility surface.
+    #[cfg(feature = "skills")]
+    Skills(skills::SkillsArgs),
     /// Run local OAuth callback relay helpers.
     Oauth(oauth::OauthArgs),
     /// Proxy a stdio MCP server to Streamable HTTP.
@@ -120,6 +125,8 @@ impl Command {
             Self::Gateway(_) => "gateway",
             #[cfg(feature = "gateway")]
             Self::Snippets(_) => "snippets",
+            #[cfg(feature = "skills")]
+            Self::Skills(_) => "skills",
             Self::Oauth(_) => "oauth",
             Self::Proxy(_) => "proxy",
             #[cfg(feature = "gateway")]
@@ -146,6 +153,8 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Gateway(args) => gateway::run(args, format, &config).await,
         #[cfg(feature = "gateway")]
         Command::Snippets(args) => snippets::run(args, format, &config).await,
+        #[cfg(feature = "skills")]
+        Command::Skills(args) => skills::run(args, format, &config).await,
         Command::Oauth(args) => oauth::run(args, format, &config).await,
         Command::Proxy(args) => proxy::run(args, &config, format).await,
         #[cfg(feature = "gateway")]

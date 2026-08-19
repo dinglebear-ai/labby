@@ -3875,6 +3875,179 @@
     "builtin": false
   },
   {
+    "service": "skills",
+    "action": "help",
+    "description": "Show this action catalog",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "Catalog",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "skills",
+    "action": "schema",
+    "description": "Return the parameter schema for a named action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "Schema",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "skills",
+    "action": "skills.get",
+    "description": "Resolve one caller-visible skill entry by published URI",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "uri",
+        "ty": "string",
+        "required": true,
+        "description": "Published skill or skill-file URI"
+      }
+    ],
+    "returns": "SkillGetResponse",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "skills",
+    "action": "skills.list",
+    "description": "List compact metadata for caller-visible Agent Skills",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "origin",
+        "ty": "string",
+        "required": false,
+        "description": "Optional visible origin label to restrict results"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Maximum results, default 100 and maximum 500"
+      }
+    ],
+    "returns": "SkillListResponse",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "skills",
+    "action": "skills.read",
+    "description": "Read one manifest-bound verified text file from a caller-visible skill",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "uri",
+        "ty": "string",
+        "required": true,
+        "description": "Published skill or skill-file URI"
+      }
+    ],
+    "returns": "VisibleSkillFile",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "skills",
+    "action": "skills.search",
+    "description": "Search caller-visible Agent Skills by metadata without loading bodies",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "query",
+        "ty": "string",
+        "required": true,
+        "description": "Non-empty metadata search query"
+      },
+      {
+        "name": "origin",
+        "ty": "string",
+        "required": false,
+        "description": "Optional visible origin label to restrict results"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Maximum matches, default 20 and maximum 100"
+      }
+    ],
+    "returns": "SkillSearchResponse",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
     "service": "snippets",
     "action": "help",
     "description": "Show this action catalog",

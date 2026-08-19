@@ -22,6 +22,7 @@ Commands:
   completions  Generate shell completions
   gateway      Manage proxied upstream MCP gateways
   snippets     Manage executable Code Mode snippets
+  skills       Discover and read Agent Skills through the compatibility surface
   oauth        Run local OAuth callback relay helpers
   proxy        Proxy a stdio MCP server to Streamable HTTP
   help         Print this message or the help of the given subcommand(s)
@@ -3936,6 +3937,154 @@ Options:
 ```
 
 ## `labby snippets help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
+## `labby skills`
+
+```text
+Discover and read Agent Skills through the compatibility surface
+
+Usage: skills [OPTIONS] <COMMAND>
+
+Commands:
+  list    List caller-visible Agent Skills without loading their bodies
+  search  Search Agent Skills by name, description, and metadata
+  get     Show one skill entry by published URI
+  read    Read one manifest-bound skill file by published URI
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby skills list`
+
+```text
+List caller-visible Agent Skills without loading their bodies
+
+Usage: list [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --origin <ORIGIN>
+          Restrict results to one visible origin label
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --limit <LIMIT>
+          Maximum number of entries to return
+
+  -h, --help
+          Print help
+```
+
+## `labby skills search`
+
+```text
+Search Agent Skills by name, description, and metadata
+
+Usage: search [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>
+          Metadata search query
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --origin <ORIGIN>
+          Restrict results to one visible origin label
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --limit <LIMIT>
+          Maximum number of matches to return
+
+  -h, --help
+          Print help
+```
+
+## `labby skills get`
+
+```text
+Show one skill entry by published URI
+
+Usage: get [OPTIONS] <URI>
+
+Arguments:
+  <URI>
+          Published skill or skill-file URI
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby skills read`
+
+```text
+Read one manifest-bound skill file by published URI
+
+Usage: read [OPTIONS] <URI>
+
+Arguments:
+  <URI>
+          Published skill or skill-file URI
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby skills help`
 
 ```text
 Print this message or the help of the given subcommand(s)

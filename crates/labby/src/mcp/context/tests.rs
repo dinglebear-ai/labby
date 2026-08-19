@@ -16,6 +16,32 @@ use std::future::Future;
 use std::pin::Pin;
 
 #[test]
+fn caller_authorization_read_gate_handles_every_transport_shape() {
+    let reader = make_auth(&["lab:read"]);
+    let execute = make_auth(&["lab"]);
+    let unrelated = make_auth(&["profile"]);
+
+    assert!(resolve_caller_authorization(Some(&reader), AbsentAuth::Untrusted, None,).can_read());
+    assert!(resolve_caller_authorization(Some(&execute), AbsentAuth::Untrusted, None,).can_read());
+    assert!(
+        !resolve_caller_authorization(Some(&unrelated), AbsentAuth::Untrusted, None,).can_read()
+    );
+    assert!(resolve_caller_authorization(None, AbsentAuth::TrustedLocal, None).can_read());
+    assert!(
+        resolve_caller_authorization(
+            None,
+            AbsentAuth::Untrusted,
+            Some(PropagatedCallerAuth::scoped(
+                vec!["lab:read".to_string()],
+                Some("alice".to_string()),
+            )),
+        )
+        .can_read()
+    );
+    assert!(!resolve_caller_authorization(None, AbsentAuth::Untrusted, None).can_read());
+}
+
+#[test]
 fn forwardable_capabilities_are_derived_from_current_request_metadata() {
     let capabilities = rmcp::model::ClientCapabilities::builder()
         .enable_elicitation()

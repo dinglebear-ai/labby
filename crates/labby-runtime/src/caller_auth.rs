@@ -30,12 +30,35 @@
 //! transport, or if an inbound `_meta` is ever forwarded into an inner request —
 //! this becomes a trivial privilege escalation. Do not relax either one.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 /// Reserved `_meta` key carrying propagated caller authorization.
 ///
 /// Reverse-domain prefixed so it cannot collide with a protocol-defined key.
 pub const CALLER_AUTH_META_KEY: &str = "ai.dinglebear.labby/callerAuth";
+
+/// Reserved `_meta` key carrying the caller-visible upstream namespace scope.
+/// Honored only on Labby's private in-process MCP transport, under the same
+/// mint-never-forward trust boundary as [`CALLER_AUTH_META_KEY`].
+pub const CALLER_UPSTREAM_SCOPE_META_KEY: &str = "ai.dinglebear.labby/callerUpstreamScope";
+
+/// Upstream namespaces the outer caller may observe through an in-process
+/// built-in service. `None` means the root route / unrestricted namespace set;
+/// `Some(empty)` means no upstreams are visible.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PropagatedCallerUpstreamScope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_upstreams: Option<BTreeSet<String>>,
+}
+
+impl PropagatedCallerUpstreamScope {
+    #[must_use]
+    pub fn new(allowed_upstreams: Option<BTreeSet<String>>) -> Self {
+        Self { allowed_upstreams }
+    }
+}
 
 /// A caller's authorization facts, as they cross the in-process hop.
 ///
@@ -107,6 +130,25 @@ mod tests {
         let decoded: PropagatedCallerAuth = serde_json::from_value(encoded).expect("deserializes");
         assert_eq!(original, decoded);
         assert_eq!(decoded.scopes, vec!["lab", "lab:read"]);
+    }
+
+    #[test]
+    fn upstream_scope_round_trips_root_and_restricted() {
+        let root = PropagatedCallerUpstreamScope::new(None);
+        let root_value = serde_json::to_value(&root).expect("serializes");
+        let decoded_root: PropagatedCallerUpstreamScope =
+            serde_json::from_value(root_value).expect("deserializes");
+        assert_eq!(decoded_root, root);
+
+        let restricted = PropagatedCallerUpstreamScope::new(Some(BTreeSet::from([
+            "github".to_string(),
+            "docs".to_string(),
+        ])));
+        let value = serde_json::to_value(&restricted).expect("serializes");
+        let decoded: PropagatedCallerUpstreamScope =
+            serde_json::from_value(value).expect("deserializes");
+        assert_eq!(decoded, restricted);
+        assert_eq!(decoded.allowed_upstreams.expect("restricted").len(), 2);
     }
 
     #[test]

@@ -26,7 +26,10 @@ use crate::gateway::manager::GatewayManager;
 use crate::upstream::pool::CapabilityCallError;
 use crate::upstream::tool_error::mcp_error_data_kind;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
-use labby_runtime::caller_auth::{CALLER_AUTH_META_KEY, PropagatedCallerAuth};
+use labby_runtime::caller_auth::{
+    CALLER_AUTH_META_KEY, CALLER_UPSTREAM_SCOPE_META_KEY, PropagatedCallerAuth,
+    PropagatedCallerUpstreamScope,
+};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
 
@@ -146,6 +149,9 @@ impl CodeModeHost for GatewayManager {
                 oauth_subject,
                 Some((&checked_contract, scope.is_read_only())),
                 Some(propagated_caller_auth(caller)),
+                Some(PropagatedCallerUpstreamScope::new(
+                    scope.allowed_namespaces().cloned(),
+                )),
             )
             .await?;
         if outcome.ui.is_none()
@@ -603,6 +609,7 @@ impl GatewayManager {
             // receiving gate at its fail-closed default rather than inventing
             // an authorization this path cannot vouch for.
             None,
+            None,
         )
         .await
         .map_err(CodeModeCallError::into_tool_error)
@@ -617,6 +624,7 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         checked_contract: Option<(&str, bool)>,
         caller_auth: Option<PropagatedCallerAuth>,
+        caller_scope: Option<PropagatedCallerUpstreamScope>,
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
         let id = format!("{upstream}::{tool}");
         let arguments =
@@ -719,7 +727,7 @@ impl GatewayManager {
         if is_in_process_upstream(upstream)
             && let Some(auth) = caller_auth.as_ref()
         {
-            upstream_params.meta = Some(caller_auth_meta(auth));
+            upstream_params.meta = Some(caller_meta(auth, caller_scope.as_ref()));
         }
         let call_result = if let Some(config) = oauth_config {
             let subject = oauth_subject.ok_or_else(|| {
@@ -1009,10 +1017,18 @@ pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCalle
     }
 }
 
-fn caller_auth_meta(auth: &PropagatedCallerAuth) -> rmcp::model::RequestMetaObject {
+fn caller_meta(
+    auth: &PropagatedCallerAuth,
+    scope: Option<&PropagatedCallerUpstreamScope>,
+) -> rmcp::model::RequestMetaObject {
     let mut meta = rmcp::model::RequestMetaObject::default();
     if let Ok(value) = serde_json::to_value(auth) {
         meta.insert(CALLER_AUTH_META_KEY.to_string(), value);
+    }
+    if let Some(scope) = scope
+        && let Ok(value) = serde_json::to_value(scope)
+    {
+        meta.insert(CALLER_UPSTREAM_SCOPE_META_KEY.to_string(), value);
     }
     meta
 }
@@ -1065,6 +1081,40 @@ mod tests {
         }
         let (manager, cfg_dir) = manager_with_store(store).await;
         (manager, cfg_dir, db_dir)
+    }
+
+    #[test]
+    fn caller_meta_carries_auth_and_upstream_scope_together() {
+        let auth =
+            PropagatedCallerAuth::scoped(vec!["lab:read".to_string()], Some("alice".to_string()));
+        let scope = PropagatedCallerUpstreamScope::new(Some(std::collections::BTreeSet::from([
+            "github".to_string(),
+            "docs".to_string(),
+        ])));
+        let meta = caller_meta(&auth, Some(&scope));
+
+        let decoded_auth: PropagatedCallerAuth = serde_json::from_value(
+            meta.get(CALLER_AUTH_META_KEY)
+                .expect("caller auth metadata")
+                .clone(),
+        )
+        .expect("auth decodes");
+        let decoded_scope: PropagatedCallerUpstreamScope = serde_json::from_value(
+            meta.get(CALLER_UPSTREAM_SCOPE_META_KEY)
+                .expect("caller scope metadata")
+                .clone(),
+        )
+        .expect("scope decodes");
+        assert_eq!(decoded_auth, auth);
+        assert_eq!(decoded_scope, scope);
+    }
+
+    #[test]
+    fn caller_meta_without_scope_never_invents_one() {
+        let auth = PropagatedCallerAuth::trusted_local();
+        let meta = caller_meta(&auth, None);
+        assert!(meta.get(CALLER_AUTH_META_KEY).is_some());
+        assert!(meta.get(CALLER_UPSTREAM_SCOPE_META_KEY).is_none());
     }
 
     #[test]

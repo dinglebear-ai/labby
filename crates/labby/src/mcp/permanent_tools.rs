@@ -146,6 +146,7 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
     let derived_destructive = service.actions.iter().any(|action| action.destructive);
     let (read_only, destructive, idempotent, open_world) = match service.name {
         "fs" | "lab_admin" => (true, derived_destructive, true, false),
+        "skills" => (true, derived_destructive, true, true),
         "doctor" => (false, derived_destructive, true, true),
         "gateway" | "setup" | "snippets" => (false, derived_destructive, false, true),
         // `server_logs` is operationally read-only, but advertising it as such
@@ -469,6 +470,7 @@ mod tests {
         ("lab_admin", true, false, true, false),
         ("server_logs", false, true, false, false),
         ("setup", false, true, false, true),
+        ("skills", true, false, true, true),
         ("snippets", false, true, false, true),
     ];
 
@@ -484,6 +486,17 @@ mod tests {
     const READ_ONLY_SERVICE_ACTIONS: &[(&str, &[&str])] = &[
         ("fs", &["fs.list"]),
         ("lab_admin", &["help", "schema", "onboarding.audit"]),
+        (
+            "skills",
+            &[
+                "help",
+                "schema",
+                "skills.list",
+                "skills.search",
+                "skills.get",
+                "skills.read",
+            ],
+        ),
     ];
 
     fn expected_annotation_row(name: &str) -> Option<(bool, bool, bool, bool)> {
@@ -630,6 +643,7 @@ mod tests {
             "fs",
             "lab_admin",
             "mcp_app",
+            "skills",
             "gateway_status",
             CODE_MODE_READ_TOOL_NAME,
         ];
