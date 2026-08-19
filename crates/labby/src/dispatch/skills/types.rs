@@ -76,7 +76,7 @@ pub(crate) struct SkillGetResponse {
 }
 
 pub(crate) fn sort_entries(entries: &mut [SkillEntry]) {
-    entries.sort_by(|left, right| entry_sort_key(left).cmp(&entry_sort_key(right)));
+    entries.sort_by_key(entry_sort_key);
 }
 
 fn entry_sort_key(entry: &SkillEntry) -> (String, String, String) {
