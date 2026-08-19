@@ -31,6 +31,7 @@ use super::helpers::{
     upstream_transport,
 };
 use super::logging::capability_name;
+use super::skills_list::peer_declares_skills;
 use super::validate::validate_upstream_config;
 
 #[derive(Clone, Copy)]
@@ -268,6 +269,7 @@ impl UpstreamPool {
                                 config.proxy_prompts,
                             )
                             .await;
+                            let supports_skills = peer_declares_skills(&conn.peer);
                             tracing::info!(
                                 upstream = %name,
                                 transport = upstream_transport(&config),
@@ -275,12 +277,15 @@ impl UpstreamPool {
                                 tool_count = tools.len(),
                                 resource_count,
                                 prompt_count,
+                                supports_skills,
                                 "upstream discovery succeeded"
                             );
                             Ok((
                                 name,
                                 resolve_upstream_exposure_policies(&config),
                                 config.proxy_resources,
+                                config.proxy_skills,
+                                supports_skills,
                                 conn,
                                 tools,
                                 resource_count,
@@ -336,6 +341,8 @@ impl UpstreamPool {
                     name,
                     exposure_policies,
                     proxy_resources,
+                    proxy_skills,
+                    supports_skills,
                     conn,
                     tools,
                     resource_count,
@@ -370,10 +377,14 @@ impl UpstreamPool {
                         exposure_policy: exposure_policies.tools,
                         resource_exposure_policy: exposure_policies.resources,
                         prompt_exposure_policy: exposure_policies.prompts,
+                        skill_exposure_policy: exposure_policies.skills,
+                        proxy_skills,
+                        supports_skills: Some(supports_skills),
                         proxy_resources,
                         prompt_count,
                         resource_count,
                         skill_count: 0,
+                        skill_names: Vec::new(),
                         prompt_names: Vec::new(),
                         resource_uris: Vec::new(),
                         tool_health: UpstreamHealth::Healthy,
@@ -402,10 +413,14 @@ impl UpstreamPool {
                         exposure_policy: ToolExposurePolicy::All,
                         resource_exposure_policy: ToolExposurePolicy::All,
                         prompt_exposure_policy: ToolExposurePolicy::All,
+                        skill_exposure_policy: ToolExposurePolicy::All,
+                        proxy_skills: false,
+                        supports_skills: None,
                         proxy_resources: true,
                         prompt_count: 0,
                         resource_count: 0,
                         skill_count: 0,
+                        skill_names: Vec::new(),
                         prompt_names: Vec::new(),
                         resource_uris: Vec::new(),
                         tool_health: UpstreamHealth::Unhealthy {

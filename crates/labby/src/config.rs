@@ -305,6 +305,9 @@ pub struct LabConfig {
     /// Gateway-wide Code Mode exposure and execution settings.
     #[serde(default)]
     pub code_mode: CodeModeConfig,
+    /// Visibility of Labby-owned MCP App surfaces other than Code Mode.
+    #[serde(default)]
+    pub mcp_apps: McpAppsConfig,
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -331,6 +334,9 @@ pub struct LabConfig {
     /// - `"auto"`: auto-import everything not tombstoned (legacy behavior).
     #[serde(default)]
     pub gateway_import_mode: GatewayImportMode,
+    /// Named reusable gateway capability projections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loadouts: Vec<GatewayLoadoutConfig>,
     /// Public HTTP MCP routes protected by Lab OAuth and proxied by Lab.
     ///
     /// These are intentionally separate from `upstream`: upstreams import tools
@@ -432,11 +438,13 @@ impl LabConfig {
     pub fn to_gateway_config(&self) -> GatewayConfig {
         GatewayConfig {
             code_mode: self.code_mode.clone(),
+            mcp_apps: self.mcp_apps,
             upstream_request_timeout_ms: self.upstream_request_timeout_ms,
             upstream_relay_timeout_ms: self.upstream_relay_timeout_ms,
             upstream: self.upstream.clone(),
             upstream_import_tombstones: self.upstream_import_tombstones.clone(),
             upstream_pending: self.upstream_pending.clone(),
+            loadouts: self.loadouts.clone(),
             protected_mcp_routes: self.protected_mcp_routes.clone(),
             virtual_servers: self.virtual_servers.clone(),
             quarantined_virtual_servers: self.quarantined_virtual_servers.clone(),
@@ -449,11 +457,13 @@ impl LabConfig {
     /// the toml_edit render path) untouched.
     pub fn apply_gateway_config(&mut self, gw: &GatewayConfig) {
         self.code_mode = gw.code_mode.clone();
+        self.mcp_apps = gw.mcp_apps;
         self.upstream_request_timeout_ms = gw.upstream_request_timeout_ms;
         self.upstream_relay_timeout_ms = gw.upstream_relay_timeout_ms;
         self.upstream = gw.upstream.clone();
         self.upstream_import_tombstones = gw.upstream_import_tombstones.clone();
         self.upstream_pending = gw.upstream_pending.clone();
+        self.loadouts = gw.loadouts.clone();
         self.protected_mcp_routes = gw.protected_mcp_routes.clone();
         self.virtual_servers = gw.virtual_servers.clone();
         self.quarantined_virtual_servers = gw.quarantined_virtual_servers.clone();
@@ -819,9 +829,10 @@ fn invalid_protected_route(
 pub use labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX;
 pub use labby_runtime::gateway_config::{
     CodeModeConfig, CodeModeResultShapePolicy, ConfigError, GatewayConfig, GatewayImportMode,
-    GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
-    ProtectedMcpRouteEffectiveTarget, ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig,
-    UpstreamImportTombstone, UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
+    GatewayLoadoutConfig, GatewayPreferences, ImportSource, McpAppsConfig,
+    ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig, ProtectedMcpRouteEffectiveTarget,
+    ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig, UpstreamImportTombstone,
+    UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
     UpstreamOauthRegistration, VirtualServerConfig, VirtualServerMcpPolicyConfig,
     VirtualServerSurfacesConfig, WebPreferences, default_mcp_path, default_true,
     normalize_protected_backend_url,
@@ -3739,6 +3750,7 @@ services = ["removed-service"]
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
                 expose_code_mode: false,
+                loadout: None,
             },
         ));
         let mut cfg = LabConfig {

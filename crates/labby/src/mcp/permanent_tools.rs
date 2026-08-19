@@ -34,7 +34,7 @@ use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_app_text_note,
     code_mode_execute_schema, code_mode_tool_meta, code_mode_trace_output_schema,
     code_mode_ui_description, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_description, mcp_app_tool_schema,
+    mcp_app_tool_description, mcp_app_tool_meta, mcp_app_tool_schema,
 };
 use crate::registry::RegisteredService;
 
@@ -255,6 +255,7 @@ impl PermanentToolRegistry {
             mcp_app_tool_schema(),
         )
         .with_annotations(mcp_app_annotations())
+        .with_meta(mcp_app_tool_meta(MCP_APP_TOOL_NAME))
     }
 
     /// Descriptor for the Add Server admin app tool.

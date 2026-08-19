@@ -8,6 +8,7 @@ import {
   Cable,
   Coins,
   FileText,
+  BookOpen,
   Gauge,
   type LucideIcon,
   MessageSquare,
@@ -240,9 +241,13 @@ export function OverviewHero({
     (sum, gateway) => sum + gateway.status.discovered_resource_count,
     0,
   )
+  const discoveredSkills = gateways.reduce(
+    (sum, gateway) => sum + (gateway.status.discovered_skill_count ?? 0),
+    0,
+  )
 
-  // The mock's strip, in order: Connected · Offline · Tools · Prompts ·
-  // Resources · Tool calls · Failed · Tokens · P95 latency. Only Failed
+  // The mock's strip vocabulary, extended with Skills as a first-class MCP primitive.
+  // Only Failed carries a tone; every other value renders in primary text.
   // carries a tone; every other value renders in primary text.
   const stats: HeroStat[] = [
     { label: 'Connected', value: live.connectedServers, icon: Cable },
@@ -250,6 +255,7 @@ export function OverviewHero({
     { label: 'Tools', value: live.discoveredTools, icon: Wrench },
     { label: 'Prompts', value: discoveredPrompts, icon: MessageSquare },
     { label: 'Resources', value: discoveredResources, icon: FileText },
+    { label: 'Skills', value: discoveredSkills, icon: BookOpen },
     {
       label: 'Tool calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',

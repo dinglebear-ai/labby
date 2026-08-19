@@ -58,6 +58,8 @@ export const mockGateways: Gateway[] = [
       url: 'http://localhost:3001/mcp',
       bearer_token_env: 'GITHUB_TOKEN',
       proxy_resources: true,
+      proxy_skills: true,
+      expose_skills: ['review-*'],
     },
     status: {
       healthy: true,
@@ -68,6 +70,9 @@ export const mockGateways: Gateway[] = [
       exposed_resource_count: 3,
       discovered_prompt_count: 2,
       exposed_prompt_count: 2,
+      discovered_skill_count: 2,
+      exposed_skill_count: 1,
+      supports_skills: true,
     },
     discovery: {
       tools: [
@@ -106,6 +111,7 @@ export const mockGateways: Gateway[] = [
       url: 'http://localhost:3002/mcp',
       bearer_token_env: 'SLACK_BOT_TOKEN',
       proxy_resources: false,
+      proxy_skills: false,
       expose_tools: ['send_message', 'list_channels', 'search_*'],
     },
     status: {
@@ -117,6 +123,9 @@ export const mockGateways: Gateway[] = [
       exposed_resource_count: 0,
       discovered_prompt_count: 1,
       exposed_prompt_count: 1,
+      discovered_skill_count: 0,
+      exposed_skill_count: 0,
+      supports_skills: true,
     },
     discovery: {
       tools: [

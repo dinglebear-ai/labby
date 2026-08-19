@@ -3,6 +3,7 @@ import {
   BookOpen,
   Cable,
   FileCode2,
+  Boxes,
   LayoutDashboard,
   SearchCode,
   type LucideIcon,
@@ -21,9 +22,9 @@ import {
  * that exactly. Two deliberate deviations, both forced by what this app
  * actually has:
  *
- *   - Loadouts, Registry, Sessions, Tasks, Files, Logs and Terminal are
- *     omitted. They have no route and no backing API, and shipping them would
- *     mean seven dead nav entries.
+ *   - Registry, Sessions, Tasks, Files, Logs and Terminal are omitted. They
+ *     have no route and no backing API, and shipping them would mean dead nav
+ *     entries. Loadouts is now a real gateway-backed route.
  *   - Skills (`/skills`) and Usage (`/usage`) are real routes with no mock
  *     counterpart, so they sit in the mock section they belong to rather than
  *     in a section the mock never had.
@@ -71,6 +72,14 @@ export const consoleNavSections: ConsoleNavSection[] = [
         icon: Cable,
         kbd: '⌘2',
         tooltip: 'Gateway — ⌘2 · upstream MCP servers',
+      },
+      {
+        id: 'Loadouts',
+        label: 'Loadouts',
+        href: '/loadouts',
+        icon: Boxes,
+        kbd: '⌘3',
+        tooltip: 'Loadouts — ⌘3 · reusable gateway capability projections',
       },
     ],
   },

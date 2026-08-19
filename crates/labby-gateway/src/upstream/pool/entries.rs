@@ -43,10 +43,17 @@ pub(super) fn lazy_upstream_entry(config: &UpstreamConfig, name: Arc<str>) -> Up
             &config.name,
             config.expose_prompts.clone(),
         ),
+        skill_exposure_policy: resolve_skill_exposure_policy(
+            &config.name,
+            config.expose_skills.clone(),
+        ),
+        proxy_skills: config.proxy_skills,
+        supports_skills: None,
         proxy_resources: config.proxy_resources,
         prompt_count: 0,
         resource_count: 0,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,
@@ -74,10 +81,14 @@ pub(super) fn healthy_in_process_entry(
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: ToolExposurePolicy::All,
+        proxy_skills: false,
+        supports_skills: None,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,
@@ -102,10 +113,14 @@ pub(super) fn failed_in_process_entry(name: Arc<str>, error_message: String) -> 
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: ToolExposurePolicy::All,
+        proxy_skills: false,
+        supports_skills: None,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Unhealthy {
@@ -188,15 +203,16 @@ pub fn resolve_request_exposure_policy(
     resolve_request_named_exposure_policy(upstream_name, "expose_tools", "tools", expose_tools)
 }
 
-/// All three compiled allowlists for one upstream.
+/// All four compiled allowlists for one upstream.
 ///
 /// Resolved together from a single `UpstreamConfig` so a catalog entry can
 /// never be built with one capability's policy applied and another's dropped —
-/// the exact drift that left `expose_resources`/`expose_prompts` unenforced.
+/// the exact drift that left primitive exposure settings unenforced.
 pub(super) struct UpstreamExposurePolicies {
     pub(super) tools: ToolExposurePolicy,
     pub(super) resources: ToolExposurePolicy,
     pub(super) prompts: ToolExposurePolicy,
+    pub(super) skills: ToolExposurePolicy,
 }
 
 pub(super) fn resolve_upstream_exposure_policies(
@@ -206,6 +222,7 @@ pub(super) fn resolve_upstream_exposure_policies(
         tools: resolve_exposure_policy(&config.name, config.expose_tools.clone()),
         resources: resolve_resource_exposure_policy(&config.name, config.expose_resources.clone()),
         prompts: resolve_prompt_exposure_policy(&config.name, config.expose_prompts.clone()),
+        skills: resolve_skill_exposure_policy(&config.name, config.expose_skills.clone()),
     }
 }
 

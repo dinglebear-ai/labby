@@ -410,6 +410,108 @@ mod tests {
             ])
             .is_ok()
         );
+        assert!(Cli::try_parse_from(["lab", "gateway", "skills", "list"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["lab", "gateway", "skills", "list", "--upstream", "axon"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["lab", "gateway", "skills", "trust", "axon", "--yes"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "skills",
+                "expose",
+                "axon",
+                "--pattern",
+                "review-*",
+                "--pattern",
+                "deploy"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["lab", "gateway", "loadout", "list"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "loadout",
+                "add",
+                "ops",
+                "--upstream",
+                "axon",
+                "--service",
+                "device",
+                "--code-mode"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "loadout",
+                "update",
+                "ops",
+                "--expose-skills",
+                "false"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["lab", "gateway", "loadout", "remove", "ops"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "loadout",
+                "update",
+                "ops",
+                "--expose-skills",
+                "false",
+                "--stage-for-restart",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "loadout",
+                "remove",
+                "ops",
+                "--stage-for-restart",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "protected-route",
+                "add",
+                "--name",
+                "ops",
+                "--public-host",
+                "mcp.example.com",
+                "--public-path",
+                "/ops",
+                "--loadout",
+                "operations",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "protected-route",
+                "remove",
+                "ops",
+                "--stage-for-restart",
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["lab", "gateway", "usage", "metrics"]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "usage", "calls", "--limit", "10"]).is_ok());
     }

@@ -49,6 +49,31 @@ pub struct ExposedSkills {
     exposed_indices: BTreeSet<usize>,
 }
 
+/// Operator-only view of one validated upstream skill before exposure filtering.
+#[derive(Debug, Clone)]
+pub struct OperatorSkill {
+    pub skill: ValidatedSkill,
+    pub exposed: bool,
+}
+
+/// Operator-only reason a skill entry was rejected during ingest.
+#[derive(Debug, Clone)]
+pub struct OperatorSkillRejection {
+    pub reason: String,
+    pub uri: String,
+}
+
+/// Operator-only skills snapshot. Unlike the downstream view, this retains
+/// validated-but-hidden skills so the admin UI can manage exposure safely.
+#[derive(Debug, Clone, Default)]
+pub struct OperatorSkills {
+    pub supports_skills: Option<bool>,
+    pub skills: Vec<OperatorSkill>,
+    pub rejected: Vec<OperatorSkillRejection>,
+    pub truncated: bool,
+    pub age_secs: u64,
+}
+
 impl UpstreamPool {
     /// Exposed skills for one upstream, fetching or refreshing as needed.
     ///
@@ -87,6 +112,55 @@ impl UpstreamPool {
 
         let snapshot = self.fetch_and_cache_skills(config, subject).await?;
         Ok(self.apply_skill_exposure(config, &snapshot, subject))
+    }
+
+    /// Operator snapshot for the admin UI. This never bypasses the trust gate:
+    /// untrusted upstreams report handshake support but are not asked to list skills.
+    pub async fn upstream_skills_operator(
+        &self,
+        config: &UpstreamConfig,
+    ) -> Result<OperatorSkills, String> {
+        if !config.proxy_skills {
+            return Ok(OperatorSkills {
+                supports_skills: self
+                    .cached_upstream_summary(&config.name)
+                    .await
+                    .and_then(|summary| summary.supports_skills),
+                ..OperatorSkills::default()
+            });
+        }
+
+        let exposed = self.upstream_skills(config, None).await?;
+        let skills = exposed
+            .catalog
+            .skills
+            .iter()
+            .enumerate()
+            .map(|(index, skill)| OperatorSkill {
+                skill: skill.clone(),
+                exposed: exposed.exposed_indices.contains(&index),
+            })
+            .collect();
+        let rejected = exposed
+            .catalog
+            .excluded
+            .iter()
+            .map(|(reason, uri)| OperatorSkillRejection {
+                reason: reason.as_str().to_string(),
+                uri: uri.clone(),
+            })
+            .collect();
+
+        Ok(OperatorSkills {
+            supports_skills: self
+                .cached_upstream_summary(&config.name)
+                .await
+                .and_then(|summary| summary.supports_skills),
+            skills,
+            rejected,
+            truncated: exposed.truncated,
+            age_secs: exposed.age_secs,
+        })
     }
 
     /// Read a cached snapshot, marking it used for idle eviction.
@@ -134,15 +208,34 @@ impl UpstreamPool {
         // An upstream that never declared the extension is not a failure — it
         // simply has no skills, and caching that avoids re-asking every read.
         if !peer_declares_skills(&peer) {
+            {
+                let mut catalog = self.catalog.write().await;
+                if let Some(catalog_entry) = catalog.get_mut(&config.name) {
+                    catalog_entry.supports_skills = Some(false);
+                    catalog_entry.skill_count = 0;
+                    catalog_entry.skill_names.clear();
+                }
+            }
             let empty = CachedSkills::new(UpstreamSkills::default());
             self.store_skills(&config.name, subject, empty.clone())
                 .await;
             return Ok(empty);
         }
+        {
+            let mut catalog = self.catalog.write().await;
+            if let Some(catalog_entry) = catalog.get_mut(&config.name) {
+                catalog_entry.supports_skills = Some(true);
+            }
+        }
 
         match self.fetch_upstream_skills(&config.name, &peer).await {
             Ok(skills) => {
                 let count = skills.skills.len();
+                let skill_names = skills
+                    .skills
+                    .iter()
+                    .map(|skill| skill.name.clone())
+                    .collect::<Vec<_>>();
                 let excluded = skills.excluded.clone();
                 let entry = CachedSkills::new(skills);
                 self.store_skills(&config.name, subject, entry.clone())
@@ -155,7 +248,9 @@ impl UpstreamPool {
                 {
                     let mut catalog = self.catalog.write().await;
                     if let Some(catalog_entry) = catalog.get_mut(&config.name) {
+                        catalog_entry.supports_skills = Some(true);
                         catalog_entry.skill_count = count;
+                        catalog_entry.skill_names = skill_names;
                     }
                 }
                 for (reason, uri) in &excluded {
@@ -315,6 +410,12 @@ impl UpstreamPool {
     pub async fn invalidate_upstream_skills(&self, name: &str) {
         let mut cache = self.skills_cache.write().await;
         cache.retain(|(upstream, _), _| upstream != name);
+        drop(cache);
+        let mut catalog = self.catalog.write().await;
+        if let Some(entry) = catalog.get_mut(name) {
+            entry.skill_count = 0;
+            entry.skill_names.clear();
+        }
     }
 
     /// Drop every cached skill catalog, across all upstreams and subjects.

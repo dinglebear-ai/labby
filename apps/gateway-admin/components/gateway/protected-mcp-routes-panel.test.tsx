@@ -16,6 +16,7 @@ test('protected MCP routes panel renders management controls', () => {
   assert.match(markup, /Protected MCP routes/)
   assert.match(markup, /New route/)
   assert.match(markup, /Public host/)
+  assert.match(markup, /Loadout/)
   assert.match(markup, /Backend URL/)
   assert.match(markup, /Test/)
   assert.match(markup, /Smoke/)

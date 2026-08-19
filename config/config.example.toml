@@ -166,6 +166,17 @@
 # max_log_entries = 1000                    # valid range: 1..=100000
 # max_log_bytes = 65536                     # valid range: 1..=104857600
 
+# ── Labby-owned MCP Apps ───────────────────────────────────────────────────
+
+[mcp_apps]
+# Gateway-wide visibility switches for Labby-owned app surfaces other than the
+# always-on `mcp_app` manager. Disabling a surface removes its app advertisement
+# and UI resources; the underlying text/service capability remains available
+# where one exists. The Code Mode inspector keeps its legacy switch above.
+# add_server = true                         # default: true
+# server_logs = true                        # default: true
+# gateway_status = true                     # default: true
+
 # ── Code Mode `openapi` provider ─────────────────────────────────────────────
 #
 # Turn an operator-configured OpenAPI spec into locally-dispatched Code Mode

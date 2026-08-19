@@ -31,7 +31,7 @@ fn code_mode_result_preserves_captured_upstream_mcp_app_metadata() {
         artifacts: vec![],
     };
 
-    let result = code_mode_result("result text".to_string(), json!({}), &response);
+    let result = code_mode_result("result text".to_string(), json!({}), &response, true);
     let meta = result
         .meta
         .expect("captured MCP App metadata must pass through");
@@ -42,6 +42,12 @@ fn code_mode_result_preserves_captured_upstream_mcp_app_metadata() {
             "resourceUri": "ui://quick-shell/mcp-app.v5.html",
             "visibility": ["model", "app"]
         })
+    );
+
+    let hidden = code_mode_result("result text".to_string(), json!({}), &response, false);
+    assert!(
+        hidden.meta.is_none(),
+        "resource-disabled routes must not return nested MCP App metadata"
     );
 }
 

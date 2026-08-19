@@ -44,6 +44,7 @@ use crate::mcp::context::{
 };
 use crate::mcp::envelope::build_error_extra;
 use crate::mcp::error::canonical_kind;
+use crate::mcp::handlers_tools::strip_resource_backed_ui_meta;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::result_format::{
     error_result_from_envelope, estimate_tokens, estimate_tokens_args, format_dispatch_result,
@@ -314,6 +315,21 @@ impl LabMcpServer {
         actor_key: Option<&str>,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if !self.route_scope.exposes_tools() {
+            tracing::warn!(
+                surface = "mcp",
+                service,
+                action = "call_tool",
+                route_scope = %self.route_scope.label(),
+                kind = "loadout_capability_disabled",
+                "direct upstream tool call denied by loadout"
+            );
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_REQUEST,
+                "direct upstream MCP Tools are disabled by this loadout; use Code Mode if the loadout exposes it, or ask the operator to enable Tools for this loadout".to_string(),
+                None,
+            ));
+        }
         // Upstream tools don't use lab's action/params wrapper — they receive
         // raw arguments. Use "call_tool" as the action label for logging/envelopes.
         let upstream_action = "call_tool";
@@ -493,13 +509,16 @@ impl LabMcpServer {
                         return Ok(result);
                     };
                     let elapsed_ms = start.elapsed().as_millis();
-                    let (result, kind) = normalize_upstream_result(
+                    let (mut result, kind) = normalize_upstream_result(
                         service,
                         upstream_action,
                         &upstream_name,
                         result,
                         &safety,
                     );
+                    if !self.route_scope.exposes_resources() {
+                        strip_resource_backed_ui_meta(&mut result.meta);
+                    }
                     // A completed `isError: true` result is a tool-execution
                     // failure for the model, never a health failure.
                     let outcome = if kind == "ok" {
@@ -750,13 +769,16 @@ impl LabMcpServer {
                             return Ok(result);
                         };
                         let elapsed_ms = start.elapsed().as_millis();
-                        let (result, kind) = normalize_upstream_result(
+                        let (mut result, kind) = normalize_upstream_result(
                             service,
                             upstream_action,
                             &upstream_name,
                             result,
                             &safety,
                         );
+                        if !self.route_scope.exposes_resources() {
+                            strip_resource_backed_ui_meta(&mut result.meta);
+                        }
                         let output_tokens = serde_json::to_string(&result)
                             .map(|output| estimate_tokens(&output))
                             .unwrap_or(0);

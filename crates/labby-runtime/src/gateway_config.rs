@@ -86,6 +86,34 @@ fn default_mcp_scopes() -> Vec<String> {
     vec!["mcp:read".to_string(), "mcp:write".to_string()]
 }
 
+// ─── Lab-owned MCP Apps ──────────────────────────────────────────────────────
+
+/// Visibility switches for Labby-owned MCP App surfaces other than the
+/// always-on `mcp_app` manager. Code Mode keeps its existing
+/// `CodeModeConfig::mcp_ui_enabled` field for backward-compatible config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpAppsConfig {
+    /// Advertise the synthetic Add Server app tool and its UI resources.
+    #[serde(default = "default_true")]
+    pub add_server: bool,
+    /// Attach the Server Logs app metadata and advertise its UI resources.
+    #[serde(default = "default_true")]
+    pub server_logs: bool,
+    /// Advertise the synthetic Gateway Status app tool and its UI resources.
+    #[serde(default = "default_true")]
+    pub gateway_status: bool,
+}
+
+impl Default for McpAppsConfig {
+    fn default() -> Self {
+        Self {
+            add_server: true,
+            server_logs: true,
+            gateway_status: true,
+        }
+    }
+}
+
 // ─── Code Mode ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1001,7 +1029,49 @@ pub fn canonicalize_upstream_url(raw: &str) -> Result<String, url::ParseError> {
     Ok(parsed.to_string())
 }
 
-// ─── Protected MCP routes ────────────────────────────────────────────────────
+// ─── Gateway loadouts + protected MCP routes ────────────────────────────────
+
+/// Named reusable gateway capability projection.
+///
+/// Loadouts select the upstream/service world a protected gateway route can see
+/// and gate whole MCP capability categories. Per-upstream exposure policies are
+/// still enforced underneath this layer, so a loadout can only narrow access.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayLoadoutConfig {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstreams: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    #[serde(default)]
+    pub expose_code_mode: bool,
+    #[serde(default = "default_true")]
+    pub expose_tools: bool,
+    #[serde(default = "default_true")]
+    pub expose_resources: bool,
+    #[serde(default = "default_true")]
+    pub expose_prompts: bool,
+    #[serde(default = "default_true")]
+    pub expose_skills: bool,
+}
+
+impl Default for GatewayLoadoutConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: None,
+            upstreams: Vec::new(),
+            services: Vec::new(),
+            expose_code_mode: false,
+            expose_tools: true,
+            expose_resources: true,
+            expose_prompts: true,
+            expose_skills: true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1011,6 +1081,10 @@ pub enum ProtectedMcpRouteTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProtectedGatewaySubsetTarget {
+    /// Optional named loadout. When set, inline subset fields must stay empty
+    /// so the effective policy has one authoritative source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loadout: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstreams: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1434,6 +1508,9 @@ pub struct GatewayConfig {
     /// Gateway-wide Code Mode exposure and execution settings.
     #[serde(default)]
     pub code_mode: CodeModeConfig,
+    /// Visibility of Labby-owned MCP App surfaces other than Code Mode.
+    #[serde(default)]
+    pub mcp_apps: McpAppsConfig,
     /// Maximum time to wait for one proxied upstream MCP response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -1449,6 +1526,9 @@ pub struct GatewayConfig {
     /// Discovered upstreams waiting for operator approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstream_pending: Vec<UpstreamConfig>,
+    /// Named reusable gateway capability projections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loadouts: Vec<GatewayLoadoutConfig>,
     /// Public HTTP MCP routes protected by Lab OAuth and proxied by Lab.
     #[serde(default)]
     pub protected_mcp_routes: Vec<ProtectedMcpRouteConfig>,
@@ -1922,6 +2002,25 @@ client_secret_env = "SECRET"
     }
 
     #[test]
+    fn mcp_apps_config_defaults_all_managed_apps_enabled() {
+        let cfg: McpAppsConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, McpAppsConfig::default());
+        assert!(cfg.add_server);
+        assert!(cfg.server_logs);
+        assert!(cfg.gateway_status);
+    }
+
+    #[test]
+    fn mcp_apps_config_supports_independent_visibility_switches() {
+        let cfg: McpAppsConfig =
+            toml::from_str("add_server = false\nserver_logs = true\ngateway_status = false\n")
+                .unwrap();
+        assert!(!cfg.add_server);
+        assert!(cfg.server_logs);
+        assert!(!cfg.gateway_status);
+    }
+
+    #[test]
     fn semantic_search_defaults_to_unconfigured() {
         let cfg = CodeModeConfig::default();
         assert!(cfg.semantic_search.tei_url.is_none());
@@ -2036,6 +2135,7 @@ client_secret_env = "SECRET"
         route.backend_url = String::new();
         route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                loadout: None,
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
                 expose_code_mode: false,

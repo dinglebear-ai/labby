@@ -81,6 +81,17 @@ pub(crate) async fn mcp_action_allowed(
     }
 }
 
+/// Current gateway-wide visibility for Labby-owned MCP Apps other than Code Mode.
+#[cfg(feature = "gateway")]
+pub(crate) async fn mcp_apps_config(
+    gateway_manager: Option<&GatewayManager>,
+) -> labby_runtime::gateway_config::McpAppsConfig {
+    match gateway_manager {
+        Some(manager) => manager.mcp_apps_config().await,
+        None => labby_runtime::gateway_config::McpAppsConfig::default(),
+    }
+}
+
 /// Whether the current route can safely advertise and execute Add Server.
 #[cfg(feature = "gateway")]
 pub(crate) async fn add_server_app_available(
@@ -88,6 +99,9 @@ pub(crate) async fn add_server_app_available(
     gateway_manager: Option<&GatewayManager>,
     registry: &ToolRegistry,
 ) -> bool {
+    if !mcp_apps_config(gateway_manager).await.add_server {
+        return false;
+    }
     admin_gateway_app_available(
         route_scope,
         gateway_manager,
@@ -104,6 +118,9 @@ pub(crate) async fn gateway_status_app_available(
     gateway_manager: Option<&GatewayManager>,
     registry: &ToolRegistry,
 ) -> bool {
+    if !mcp_apps_config(gateway_manager).await.gateway_status {
+        return false;
+    }
     admin_gateway_app_available(route_scope, gateway_manager, registry, &["gateway.list"]).await
 }
 
@@ -159,7 +176,8 @@ pub(crate) struct PeerContract {
     pub(crate) gateway_manager: Option<Arc<GatewayManager>>,
     pub(crate) route_scope: McpRouteScope,
     /// Whether the optional `codemode_ui` MCP App surface is advertised. The
-    /// text-only `codemode` and the `mcp_app` control tool never depend on it.
+    /// text-only `codemode` executor and always-on `mcp_app` manager never
+    /// depend on the inspector switch.
     pub(crate) code_mode_app_state: CodeModeAppState,
     pub(crate) audience: PeerCatalogAudience,
 }
@@ -193,6 +211,11 @@ impl PeerContract {
             Some(manager) => manager.current_pool().await,
             None => None,
         }
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn mcp_apps_config(&self) -> labby_runtime::gateway_config::McpAppsConfig {
+        mcp_apps_config(self.gateway_manager.as_deref()).await
     }
 
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
@@ -275,6 +298,16 @@ impl PeerContract {
         let mut descriptors = Vec::new();
         let mut builtin_names = HashSet::new();
         let mut advertised_names = HashSet::new();
+        let server_logs_app_visible = {
+            #[cfg(feature = "gateway")]
+            {
+                self.audience.admin_apps_visible && self.mcp_apps_config().await.server_logs
+            }
+            #[cfg(not(feature = "gateway"))]
+            {
+                self.audience.admin_apps_visible
+            }
+        };
 
         for service in self.registry.services() {
             if self.service_visible_on_mcp(service.name).await {
@@ -286,7 +319,7 @@ impl PeerContract {
                 descriptors.push(
                     self.registry
                         .permanent_tools()
-                        .builtin_service_tool(service, self.audience.admin_apps_visible),
+                        .builtin_service_tool(service, server_logs_app_visible),
                 );
             }
         }
@@ -324,13 +357,14 @@ impl PeerContract {
                     advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
                     descriptors.push(tool);
                 }
-
-                // Always advertised alongside codemode: the control tool is how a
-                // disabled app surface gets restored.
-                let tool = self.registry.permanent_tools().mcp_app_tool();
-                advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
-                descriptors.push(tool);
             }
+        }
+
+        #[cfg(feature = "gateway")]
+        if self.route_scope.is_root() && self.audience.code_mode_execute_allowed {
+            let tool = self.registry.permanent_tools().mcp_app_tool();
+            advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
+            descriptors.push(tool);
         }
 
         #[cfg(feature = "gateway")]

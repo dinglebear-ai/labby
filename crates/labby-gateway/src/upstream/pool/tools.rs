@@ -714,6 +714,16 @@ impl UpstreamPool {
         } else {
             0
         };
+        let discovered_skill_count = entry.skill_count;
+        let exposed_skill_count = if entry.proxy_skills && entry.skill_health.is_routable() {
+            entry
+                .skill_names
+                .iter()
+                .filter(|name| entry.skill_exposure_policy.matches(name))
+                .count()
+        } else {
+            0
+        };
 
         Some(UpstreamCachedSummary {
             discovered_tool_count,
@@ -722,6 +732,9 @@ impl UpstreamPool {
             exposed_resource_count,
             discovered_prompt_count,
             exposed_prompt_count,
+            discovered_skill_count,
+            exposed_skill_count,
+            supports_skills: entry.supports_skills,
         })
     }
 
