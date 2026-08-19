@@ -108,6 +108,31 @@ impl LabMcpServer {
         }
     }
 
+    /// Dispatch the fixed compatibility tool behind a heap boundary.
+    ///
+    /// `call_tool_impl` is already a large async state machine. Returning an
+    /// erased boxed future here prevents the concrete Skills list/get/read
+    /// future from inflating that parent stack frame while preserving the same
+    /// caller-scoped registry and authorization semantics.
+    pub(crate) fn dispatch_compat_tool_boxed<'a>(
+        &'a self,
+        context: &'a RequestContext<RoleServer>,
+        meta: Option<&'a rmcp::model::RequestMetaObject>,
+        action: &'a str,
+        params: serde_json::Value,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<serde_json::Value, ToolError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let registry = self.skill_registry_context_for_tool(context, meta).await;
+            crate::dispatch::skills::dispatch_with_context(&registry, action, params).await
+        })
+    }
+
     /// Answer native Skills extension list/get requests.
     pub(crate) async fn handle_skills_request(
         &self,
