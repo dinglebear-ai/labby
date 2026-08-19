@@ -11,7 +11,9 @@ use crate::skills::{
 };
 
 use labby_runtime::error::ToolError;
-use labby_runtime::skills::wire::{SKILLS_GET_METHOD, SkillsGetParams, SkillsGetResult};
+use labby_runtime::skills::wire::{
+    CACHE_SCOPE_PRIVATE, SKILLS_GET_METHOD, SkillsGetParams, SkillsGetResult, SkillsListResult,
+};
 use rmcp::RoleServer;
 use rmcp::model::{CustomRequest, CustomResult, ErrorData};
 use rmcp::service::RequestContext;

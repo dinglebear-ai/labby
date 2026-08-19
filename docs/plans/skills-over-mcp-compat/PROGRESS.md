@@ -120,12 +120,14 @@ High-churn adjacent areas:
 
 Before each rebase, inspect main for changes to shared Skills types or route/loadout exposure. The remote `feature/skills-ui-config` branch was deleted by the 2026-08-19 fetch; preserve any equivalent work that has landed on main rather than resurrecting the deleted branch. Never resolve conflicts by dropping security/route checks.
 
-Rebase state as of 2026-08-19 07:06 America/New_York:
+Rebase state as of 2026-08-19 America/New_York:
 
-- fresh `origin/main`: `4715a2e05`; feature base `8d0a39bd4` is 8 commits behind and requires rebase;
-- local `main` ref was stale at `63bb92d92` and has been safely fast-forwarded to `4715a2e05`;
-- no worktree currently checks out `main`; the primary `/home/jmagar/workspace/labby` checkout is clean on `fix/persist-plugin-server-url` and must not be disturbed.
+- [x] fresh `origin/main`: `4715a2e05`; the feature was rebased from original base `8d0a39bd4` onto current main;
+- [x] local `main` ref was stale at `63bb92d92` and was safely fast-forwarded to `4715a2e05`;
+- [x] no worktree checks out `main`; the primary `/home/jmagar/workspace/labby` checkout remains clean on `fix/persist-plugin-server-url` and was not disturbed;
+- [x] incoming #448 (`bdf914c15`, first-class Skills over MCP and Loadouts) is now beneath this compatibility commit. The sole textual conflict was `mcp/handlers_resources.rs`; resolution preserved #448 loadout `exposes_skills()` gating plus the shared facade/read-scope path.
+- [x] rebased compatibility commit: `60cee63c6`; branch is one commit ahead of `origin/main`.
 
 ## Next implementation step
 
-Commit the reviewed compatibility slice, rebase `feat/skills-over-mcp` onto current `origin/main`, resolve any overlap without dropping scope/auth checks, regenerate/check docs if the rebase changes inventories, run the complete all-features test/lint gates, build the debug binary, exercise older-client MCP compatibility through the fixed `skills` tool, run safe live E2E smokes, then create/review/fix/merge the PR.
+Run post-rebase compile/generated-doc/full-test/lint gates, build the debug binary, exercise older-client MCP compatibility through the fixed `skills` tool, run safe live E2E smokes, then push/create the PR, run a fresh adversarial PR review, address every finding, rerun affected gates/CI, and merge to main.

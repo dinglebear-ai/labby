@@ -48,6 +48,16 @@ use crate::mcp::catalog::{
 //   `self.peer_contract()` — constructing a `PeerContract` clones a deep
 //   `McpRouteScope` on every builtin dispatch.
 
+/// Route-local capability gate shared by live and stored MCP catalogs.
+///
+/// A loadout can allow the `skills` service name while independently turning
+/// off the Skills capability. Treat that capability flag as part of service
+/// visibility so the fixed compatibility tool cannot bypass native
+/// `skills/list|get` and `resources/read` gating.
+pub(crate) fn route_allows_mcp_service(route_scope: &McpRouteScope, service: &str) -> bool {
+    route_scope.allows_service(service) && (service != "skills" || route_scope.exposes_skills())
+}
+
 /// Whether `service` is exposed on the MCP surface for this route scope.
 #[cfg(feature = "gateway")]
 pub(crate) async fn mcp_service_visible(
@@ -55,7 +65,7 @@ pub(crate) async fn mcp_service_visible(
     gateway_manager: Option<&GatewayManager>,
     service: &str,
 ) -> bool {
-    if !route_scope.allows_service(service) {
+    if !route_allows_mcp_service(route_scope, service) {
         return false;
     }
     match gateway_manager {
@@ -285,7 +295,7 @@ impl PeerContract {
         }
         #[cfg(not(feature = "gateway"))]
         {
-            self.route_scope.allows_service(service)
+            route_allows_mcp_service(&self.route_scope, service)
         }
     }
 

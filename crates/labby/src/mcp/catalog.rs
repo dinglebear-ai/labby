@@ -242,7 +242,7 @@ impl LabMcpServer {
         }
         #[cfg(not(feature = "gateway"))]
         {
-            self.route_scope.allows_service(service)
+            crate::mcp::peer_contract::route_allows_mcp_service(&self.route_scope, service)
         }
     }
 
