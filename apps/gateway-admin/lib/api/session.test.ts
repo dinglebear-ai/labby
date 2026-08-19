@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   __setBrowserSessionStateForTests,
+  getBrowserSessionEpoch,
   getBrowserSessionState,
   loadBrowserSession,
   logoutBrowserSession,
@@ -33,6 +34,27 @@ test('loadBrowserSession stores authenticated payloads', async () => {
   const state = await loadBrowserSession()
   assert.equal(state.status, 'authenticated')
   assert.equal(getBrowserSessionState().status, 'authenticated')
+})
+
+test('same-subject authority changes advance the browser session epoch', async () => {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'browser-user', email: 'browser@example.com' },
+    expiresAt: 123,
+    csrfToken: 'csrf-admin',
+    isAdmin: true,
+  })
+  const before = getBrowserSessionEpoch()
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    authenticated: true,
+    user: { sub: 'browser-user', email: 'browser@example.com' },
+    expires_at: 124,
+    csrf_token: 'csrf-user',
+    is_admin: false,
+  }), { status: 200 })) as FetchMock
+
+  await loadBrowserSession()
+  assert.ok(getBrowserSessionEpoch() > before)
 })
 
 test('loadBrowserSession falls back to unauthenticated when /auth/session fails', async () => {

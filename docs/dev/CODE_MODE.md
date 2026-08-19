@@ -68,7 +68,8 @@ no final Tool description can exceed the host-facing limit.
 Inside the sandbox:
 
 - `await codemode.search("GitHub pull requests")` searches the reduced
-  in-execution catalog.
+  in-execution catalog and includes compact intrinsic safety facts when the
+  live descriptor supplies an unambiguous fact.
 - `await codemode.describe("github.list_pull_requests")` returns compact docs
   for an exact tool or snippet target.
 - `await codemode.run("gateway-summary", input)` resolves and runs a snippet
@@ -318,10 +319,27 @@ Legacy `search` entries include both raw JSON Schemas and generated TypeScript:
 - `dts` — focused TypeScript declarations with JSDoc for that tool.
 
 The `codemode.search` helper uses a reduced in-execution catalog (`kind`, `id`,
-`path`, `upstream`, `name`, `description`, and `signature`) so normal runs do not
-inject full schema, output schema, dts payloads, or snippet source. When a schema
-is missing or too complex for the TypeScript emitter, generated signatures fall
-back to `unknown`.
+`path`, `namespace`, `name`, `helper`, `description`, `signature`, `tags`,
+snippet `inputs`, and optional tool `safety`)
+so normal runs do not inject full schema, output schema, dts payloads, or snippet
+source. `safety.read_only` and `safety.destructive` are optional advisory facts:
+unknown or contradictory facts are omitted, while explicit `false` hints remain `false`,
+and snippets omit `safety` because they are composite programs. These facts do
+not grant access, request approval, or replace the live descriptor and policy
+checks immediately before dispatch. When a schema is missing or too complex for
+the TypeScript emitter, generated signatures fall back to `unknown`.
+
+### Authenticated Web tool browser
+
+The Gateway Admin UI exposes `/tools` for authenticated operators carrying
+`lab:admin`. Its private `POST /v1/gateway/codemode/tools/search` and
+`POST /v1/gateway/codemode/tools/describe` routes project the same live,
+scope-filtered descriptors used by Code Mode without executing JavaScript or
+calling an upstream tool. Search responses are capped at 256 KiB and describe
+responses at 128 KiB; the browser reads response streams incrementally and
+cancels them immediately when either cap is exceeded, including when a server
+omits `Content-Length`. The static page contains no catalog fixture or tool
+definition, and safety metadata remains advisory rather than dispatch authority.
 
 ### Builtin services as in-process peers
 
@@ -632,16 +650,20 @@ additional per-call confirmation or pause step on top of that. Concretely:
 - **CLI:** Code Mode execution is operator-driven and always execute-capable,
   so destructive upstream calls are permitted unconditionally.
 
-Code Mode persists a **durable, read/replay-only step journal** of every
-`codemode.step(name, fn)` boundary (append-only, owner-scoped, redacted at
-rest). It has **no** `resume_token` and **no** `confirm` parameter on the
-`codemode` MCP tool, and **no** pause/resume/reject mechanism: the journal is
-orthogonal to dispatch and never interrupts, gates, or confirms a running
-snippet. This preserves the permanent decision to remove the destructive-call
-pause gate — the journal is a record, not a gate. A caller that can invoke a
-full Code Mode entry point can call destructive tools immediately. The separate
-`codemode_read` boundary is an enforced capability restriction, not a
-pause/confirm gate.
+Code Mode keeps a best-effort **append-only step journal** and read-only notebook
+projection for each `codemode.step(name, fn)` boundary (owner-scoped and
+redacted at rest). The callback executes in the current run; current runtime
+code never reads an older journal row to resume or replay it. Persistence is
+detached after the response, so a successful Code Mode response is not proof
+that the journal flush completed.
+
+The `codemode` MCP tool has **no** `resume_token` or `confirm` parameter and no
+pause/resume/reject mechanism. The journal is orthogonal to dispatch and never
+interrupts, gates, or confirms a running snippet. This preserves the permanent
+decision to remove the destructive-call pause gate — the journal is a record,
+not a gate. A caller that can invoke a full Code Mode entry point can call
+destructive tools immediately. The separate `codemode_read` boundary is an
+enforced capability restriction, not a pause/confirm gate.
 
 ## Scope
 

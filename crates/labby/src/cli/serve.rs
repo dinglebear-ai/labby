@@ -1456,7 +1456,7 @@ async fn build_gateway_runtime(
     gateway_manager
         .try_seed_config(config.to_gateway_config())
         .await
-        .expect("loaded gateway config must normalize and validate");
+        .context("loaded gateway config failed validation")?;
     install_gateway_manager(Arc::clone(&gateway_manager));
     if !suppress_upstream_runtime {
         match config.gateway_import_mode {

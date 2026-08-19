@@ -5,6 +5,7 @@ import {
   FileCode2,
   Boxes,
   LayoutDashboard,
+  SearchCode,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -86,6 +87,14 @@ export const consoleNavSections: ConsoleNavSection[] = [
     id: 'Catalog',
     label: 'Catalog',
     items: [
+      {
+        id: 'Tools',
+        label: 'Tools',
+        href: '/tools',
+        icon: SearchCode,
+        kbd: '⌘3',
+        tooltip: 'Tools — ⌘3 · live Code Mode catalog',
+      },
       {
         id: 'Snippets',
         label: 'Snippets',

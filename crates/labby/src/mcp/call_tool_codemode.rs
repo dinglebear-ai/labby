@@ -260,9 +260,10 @@ calls, use small bounded batches, preserve stable idempotency keys, and inspect 
 completed results before retrying a timed-out batch; earlier calls may already \
 have committed.
 
-`codemode.step(name, fn)` wraps side-effectful or nondeterministic work (e.g. \
-anything not already a `callTool`/`codemode.<upstream>.<tool>` call) so it runs \
-once and replays its recorded result if the run resumes, instead of re-running it.
+`codemode.step(name, fn)` executes `fn` in the current run, then buffers a bounded, \
+redacted result for Labby's best-effort append-only journal. There is no public \
+resume or replay operation, and a successful Code Mode response does not prove \
+that the detached journal flush has completed.
 
 ```ts
 // codemode.<upstream>.<tool>() helpers are auto-generated from the live catalog.

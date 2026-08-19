@@ -50,6 +50,7 @@ pub(super) struct OauthStatusDiscoverySnapshot {
     pub(super) error: Option<String>,
 }
 
+mod code_mode_discovery;
 mod code_mode_resolve;
 mod code_mode_runtime;
 mod config_ops;
@@ -151,11 +152,22 @@ pub struct GatewayManager {
     /// the upstream catalog has not changed between calls.
     pub(super) code_mode_catalog_render_cache:
         Arc<Mutex<Option<crate::gateway::code_mode::CatalogRenderCache>>>,
-    /// Cached Code Mode catalog embedding vectors, keyed by the same
-    /// fingerprint as `code_mode_catalog_render_cache`. `RwLock` (not
+    /// Weak keyed build flights prevent duplicate cold render construction.
+    /// Weak values disappear after callers finish, bounding retained state.
+    pub(super) code_mode_catalog_render_flights: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                std::sync::Weak<crate::gateway::code_mode::CatalogRenderFlight>,
+            >,
+        >,
+    >,
+    /// Cached Code Mode catalog embedding vectors, keyed separately by the
+    /// visible `(id, description)` ranking corpus. `RwLock` (not
     /// `Mutex`), matching the `config: Arc<RwLock<GatewayConfig>>` precedent
     /// above — this is a read-heavy cache; writes only happen on a
-    /// fingerprint change or the very first embed.
+    /// ranking-corpus change or the very first embed. Safety/schema-only
+    /// render changes therefore do not force an identical TEI batch.
     ///
     /// `ensure_embeddings_for_fingerprint` holds the write lock across the
     /// full check-then-embed-then-store sequence (not just the store) as a

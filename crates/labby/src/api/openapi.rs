@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::{OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::SchemaType;
@@ -114,6 +114,67 @@ pub struct AgentErrorResponse {
     pub param: Option<String>,
     pub required_scopes: Option<Vec<String>>,
     pub existing_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CodeModeToolSearchRequest {
+    pub query: String,
+    #[serde(default = "default_code_mode_tool_search_limit")]
+    pub limit: usize,
+}
+
+const fn default_code_mode_tool_search_limit() -> usize {
+    50
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CodeModeToolDescribeRequest {
+    pub target: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CodeModeToolSafetyDoc {
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CodeModeToolSearchHitDoc {
+    pub path: String,
+    pub id: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+    pub description: String,
+    pub signature: String,
+    pub tags: Vec<String>,
+    pub score: u32,
+    pub safety: Option<CodeModeToolSafetyDoc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CodeModeToolSearchResponseDoc {
+    pub results: Vec<CodeModeToolSearchHitDoc>,
+    pub total: usize,
+    pub truncated: bool,
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CodeModeToolDescribeResponseDoc {
+    pub path: String,
+    pub id: String,
+    pub namespace: String,
+    pub name: String,
+    pub description: String,
+    pub helper: String,
+    pub signature: String,
+    pub tags: Vec<String>,
+    pub safety: Option<CodeModeToolSafetyDoc>,
+    pub typescript: Option<String>,
+    pub typescript_omitted: Option<String>,
 }
 
 /// Compatibility schema name for SDK pass-through errors. Runtime responses use
@@ -658,6 +719,58 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
             [],
         ))
         .build();
+    let admin_tool_operation =
+        |summary: &'static str, request_schema: &'static str, response_schema: &'static str| {
+            OperationBuilder::new()
+                .tag("gateway")
+                .summary(Some(summary))
+                .description(Some(
+                    "Private admin browser projection of the live Code Mode catalog.",
+                ))
+                .request_body(Some(
+                    RequestBodyBuilder::new()
+                        .content(
+                            "application/json",
+                            ContentBuilder::new()
+                                .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(request_schema))))
+                                .build(),
+                        )
+                        .required(Some(Required::True))
+                        .build(),
+                ))
+                .responses(
+                    ResponsesBuilder::new()
+                        .response(
+                            "200",
+                            ResponseBuilder::new()
+                                .description("Code Mode tool discovery result")
+                                .content(
+                                    "application/json",
+                                    ContentBuilder::new()
+                                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                                            response_schema,
+                                        ))))
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .response("401", auth_response())
+                        .response("403", agent_error_response("Admin scope required"))
+                        .response("404", agent_error_response("Tool not found"))
+                        .response(
+                            "413",
+                            agent_error_response("Response exceeds the bounded payload limit"),
+                        )
+                        .response("422", agent_error_response("Invalid request"))
+                        .response("500", agent_error_response("Catalog discovery failed"))
+                        .build(),
+                )
+                .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
+                    "bearer_auth",
+                    [],
+                ))
+                .build()
+        };
 
     vec![
         (
@@ -670,6 +783,32 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
             SERVER_LOGS_QUERY_API_ROUTE.to_string(),
             PathItemBuilder::new()
                 .operation(utoipa::openapi::HttpMethod::Get, server_logs_query)
+                .build(),
+        ),
+        (
+            "/v1/gateway/codemode/tools/search".to_string(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    admin_tool_operation(
+                        "Search live Code Mode tools",
+                        "#/components/schemas/CodeModeToolSearchRequest",
+                        "#/components/schemas/CodeModeToolSearchResponseDoc",
+                    ),
+                )
+                .build(),
+        ),
+        (
+            "/v1/gateway/codemode/tools/describe".to_string(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    admin_tool_operation(
+                        "Describe a live Code Mode tool",
+                        "#/components/schemas/CodeModeToolDescribeRequest",
+                        "#/components/schemas/CodeModeToolDescribeResponseDoc",
+                    ),
+                )
                 .build(),
         ),
     ]
@@ -728,6 +867,12 @@ fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
         ErrorConfirmationRequired,
         AgentErrorRecovery,
         AgentErrorResponse,
+        CodeModeToolSearchRequest,
+        CodeModeToolDescribeRequest,
+        CodeModeToolSafetyDoc,
+        CodeModeToolSearchHitDoc,
+        CodeModeToolSearchResponseDoc,
+        CodeModeToolDescribeResponseDoc,
     )),
     modifiers(&SecurityAddon),
 )]

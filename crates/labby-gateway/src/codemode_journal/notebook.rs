@@ -2,7 +2,7 @@
 //! one cell per `codemode.step` boundary (plus an optional prologue cell for
 //! calls that ran before the first step), with tool calls attributed to the
 //! step-cell whose runner `seq` span contains the call. No DB access — operates
-//! on already-loaded slices. Read/replay-only: never gates a run.
+//! on already-loaded slices. This projection never gates or replays a run.
 
 use labby_codemode::CodeModeExecutedCall;
 use serde::Serialize;

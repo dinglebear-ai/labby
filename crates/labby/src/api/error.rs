@@ -112,7 +112,7 @@ impl IntoResponse for ApiError {
             | "oauth_client_mismatch"
             | "oauth_shared_credential_protected" => StatusCode::CONFLICT,
             "unknown_action" | "unknown_subaction" | "unknown_instance" => StatusCode::BAD_REQUEST,
-            "unknown_upstream" => StatusCode::NOT_FOUND,
+            "unknown_upstream" | "unknown_tool" => StatusCode::NOT_FOUND,
             "network_error"
             | "bad_gateway"
             | "server_error"

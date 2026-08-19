@@ -70,6 +70,18 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
         ),
         auth("POST", "/v1/gateway", "gateway", "gateway action dispatch"),
         auth(
+            "POST",
+            "/v1/gateway/codemode/tools/search",
+            "gateway",
+            "admin Code Mode tool search",
+        ),
+        auth(
+            "POST",
+            "/v1/gateway/codemode/tools/describe",
+            "gateway",
+            "admin Code Mode tool description",
+        ),
+        auth(
             "GET",
             "/v1/auth/allowed-emails",
             "auth",
