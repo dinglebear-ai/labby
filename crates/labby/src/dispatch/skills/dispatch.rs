@@ -177,7 +177,7 @@ mod tests {
             .map(|skill| skill["uri"].as_str().unwrap())
             .collect::<Vec<_>>();
         let mut sorted = uris.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(uris, sorted);
     }
 
