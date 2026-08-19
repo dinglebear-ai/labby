@@ -15,10 +15,14 @@
 export const METRICS_WINDOWS = ['1h', '24h', '7d'] as const
 export type MetricsWindow = (typeof METRICS_WINDOWS)[number]
 
-/** A tool ranked by call volume within the window. */
+/** An upstream target ranked by call volume within the window. */
 export interface ToolUsageEntry {
-  /** Service / tool name as dispatched (e.g. `gateway_alpha`, `code_execute`). */
+  /** Stable upstream / target identity used for drill-downs. */
   name: string
+  /** Optional unique row identity when one target is split across dimensions. */
+  id?: string
+  /** Optional display label carrying capability / scope qualifiers. */
+  label?: string
   /** Total dispatched calls in the window. */
   calls: number
   /** Calls that returned a non-`ok` outcome. */
@@ -73,7 +77,7 @@ export interface DashboardMetrics {
   since_ms: number
   until_ms: number
 
-  /** Whether a metric dimension is persisted by the current gateway usage store. */
+  /** Whether a metric dimension is available from durable usage or retained observability. */
   collected: {
     tokens: boolean
     surfaces: boolean
@@ -102,7 +106,7 @@ export interface DashboardMetrics {
     input: number
     output: number
     total: number
-    /** `total / tool_calls.total`, rounded. */
+    /** Average over token-bearing dispatch events, rounded. */
     avg_per_call: number
   }
 
@@ -228,6 +232,10 @@ export interface ToolCallRecord {
   input_tokens: number
   output_tokens: number
   elapsed_ms: number
+  /** Serialized upstream response size when the gateway received a response. */
+  response_bytes?: number | null
+  /** Whether the upstream connection was scoped to an OAuth subject. */
+  subject_scoped?: boolean
 }
 
 /** Single-tool drill-down (drawer). */
@@ -279,6 +287,12 @@ export interface ToolCallPage {
   total: number
   filtered: number
   facets: ToolCallFacets
+  collected: {
+    actors: boolean
+    ips: boolean
+    surfaces: boolean
+    tokens: boolean
+  }
 }
 
 export interface ToolCallFacets {

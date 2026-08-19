@@ -76,6 +76,8 @@ struct AppliedFilters {
     kind: Option<String>,
     query: Option<String>,
     file: Option<String>,
+    stop_after_limit: bool,
+    correlated_only: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,7 +119,7 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
     let mut scanned_bytes = 0u64;
     let mut truncated = false;
 
-    for file in files.iter().rev() {
+    'files: for file in files.iter().rev() {
         if remaining_bytes == 0 {
             truncated = true;
             break;
@@ -154,12 +156,19 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
                 malformed_lines += 1;
                 continue;
             };
+            if filters.correlated_only && !entry_has_correlation(&entry) {
+                continue;
+            }
             if !entry_matches(&entry, &filters) {
                 continue;
             }
             matched_total += 1;
             if entries.len() < params.limit {
                 entries.push(entry);
+                if params.stop_after_limit && entries.len() >= params.limit {
+                    truncated = true;
+                    break 'files;
+                }
             } else {
                 truncated = true;
             }
@@ -178,6 +187,8 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
             kind: params.kind,
             query: params.query,
             file: params.file,
+            stop_after_limit: params.stop_after_limit,
+            correlated_only: params.correlated_only,
         },
         files: summaries,
         entries,
@@ -220,12 +231,13 @@ fn read_tail(path: &Path, file_bytes: u64, bytes_to_read: u64) -> Result<String,
 
 fn normalize_entry(value: &Value, file: &str) -> Option<LogEntry> {
     let object = value.as_object()?;
-    let fields = object
+    let mut fields = object
         .get("fields")
-        .filter(|fields| fields.is_object())
+        .and_then(Value::as_object)
         .cloned()
-        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-    let redacted_fields = redact_fields(fields);
+        .unwrap_or_default();
+    promote_correlation_fields(object, &mut fields);
+    let redacted_fields = redact_fields(Value::Object(fields));
     Some(LogEntry {
         timestamp: string_field(value, "timestamp"),
         level: string_field(value, "level").map(|level| level.to_ascii_uppercase()),
@@ -236,6 +248,51 @@ fn normalize_entry(value: &Value, file: &str) -> Option<LogEntry> {
         kind: string_field(&redacted_fields, "kind"),
         file: file.to_string(),
         fields: redacted_fields,
+    })
+}
+
+const CORRELATION_KEYS: [&str; 3] = ["trace_id", "request_id", "execution_id"];
+
+fn promote_correlation_fields(
+    object: &serde_json::Map<String, Value>,
+    fields: &mut serde_json::Map<String, Value>,
+) {
+    promote_correlation_from_map(object, fields);
+    if let Some(span) = object.get("span").and_then(Value::as_object) {
+        promote_correlation_from_map(span, fields);
+    }
+    if let Some(spans) = object.get("spans").and_then(Value::as_array) {
+        for span in spans.iter().rev().filter_map(Value::as_object) {
+            promote_correlation_from_map(span, fields);
+        }
+    }
+}
+
+fn promote_correlation_from_map(
+    source: &serde_json::Map<String, Value>,
+    fields: &mut serde_json::Map<String, Value>,
+) {
+    for key in CORRELATION_KEYS {
+        if fields.get(key).and_then(Value::as_str).is_some() {
+            continue;
+        }
+        if let Some(value) = source
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            fields.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+}
+
+fn entry_has_correlation(entry: &LogEntry) -> bool {
+    CORRELATION_KEYS.iter().any(|key| {
+        entry
+            .fields
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
     })
 }
 
@@ -273,6 +330,7 @@ struct NormalizedFilters {
     kind: Option<String>,
     query: Option<String>,
     file: Option<String>,
+    correlated_only: bool,
 }
 
 impl From<&QueryParams> for NormalizedFilters {
@@ -285,6 +343,7 @@ impl From<&QueryParams> for NormalizedFilters {
             kind: params.kind.as_deref().map(str::to_ascii_lowercase),
             query: params.query.as_deref().map(str::to_ascii_lowercase),
             file: params.file.as_deref().map(str::to_ascii_lowercase),
+            correlated_only: params.correlated_only,
         }
     }
 }
@@ -395,6 +454,8 @@ mod tests {
             query: Some("started".to_string()),
             file: None,
             max_scan_bytes: 1024 * 1024,
+            stop_after_limit: false,
+            correlated_only: false,
         };
 
         let result = query_from_dir(dir.path(), params).expect("query");
@@ -441,6 +502,8 @@ mod tests {
             query: Some("message".to_string()),
             file: None,
             max_scan_bytes: 1024 * 1024,
+            stop_after_limit: false,
+            correlated_only: false,
         };
 
         let result = query_from_dir(dir.path(), params).expect("query");
@@ -449,6 +512,46 @@ mod tests {
         assert_eq!(result.matched, 3);
         assert!(result.truncated);
         assert_eq!(result.scanned_lines, 3);
+    }
+
+    #[test]
+    fn query_promotes_span_correlation_and_can_stop_after_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("lab.active.log");
+        std::fs::write(
+            &log_path,
+            [
+                r#"{"timestamp":"2026-07-12T00:00:01Z","level":"INFO","fields":{"message":"unrelated","service":"gateway"}}"#,
+                r#"{"timestamp":"2026-07-12T00:00:02Z","level":"INFO","fields":{"message":"upstream.request.finish","service":"upstream.pool","event":"finish","upstream":"github"},"span":{"name":"dispatch","request_id":"req-span-123"}}"#,
+                r#"{"timestamp":"2026-07-12T00:00:03Z","level":"INFO","fields":{"message":"dispatch ok","service":"gateway","request_id":"req-newest"}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write log");
+
+        let params = QueryParams {
+            limit: 2,
+            level: None,
+            target: None,
+            service: None,
+            action: None,
+            kind: None,
+            query: None,
+            file: None,
+            max_scan_bytes: 1024 * 1024,
+            stop_after_limit: true,
+            correlated_only: true,
+        };
+
+        let result = query_from_dir(dir.path(), params).expect("query");
+
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.scanned_lines, 2);
+        assert_eq!(
+            result.entries[1].fields["request_id"],
+            json!("req-span-123")
+        );
+        assert!(result.truncated);
     }
 
     #[test]
@@ -469,6 +572,8 @@ mod tests {
             query: Some("visible".to_string()),
             file: None,
             max_scan_bytes: u64::try_from(new_line.len() + 2).expect("line length fits"),
+            stop_after_limit: false,
+            correlated_only: false,
         };
 
         let result = query_from_dir(dir.path(), params).expect("query");

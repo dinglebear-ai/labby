@@ -311,6 +311,9 @@ pub struct GatewayHintApplyView {
 pub struct GatewayUsageToolCount {
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub calls: i64,
 }
 
@@ -334,9 +337,14 @@ pub struct GatewayUsageCallView {
     pub ts_unix: i64,
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub actor: String,
     pub outcome: String,
     pub elapsed_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

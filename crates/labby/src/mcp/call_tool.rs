@@ -13,7 +13,7 @@
 //! codemode and upstream branches live in
 //! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
 
-use std::time::Instant;
+use std::{future::Future, pin::Pin, time::Instant};
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -213,6 +213,14 @@ impl LabMcpServer {
         );
     }
 
+    pub(crate) fn boxed_call_tool_response_impl<'a>(
+        &'a self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>> {
+        Box::pin(self.call_tool_response_impl_inner(request, context))
+    }
+
     #[cfg(feature = "gateway")]
     fn direct_tool_route_scope_denial(
         &self,
@@ -233,7 +241,16 @@ impl LabMcpServer {
         Some(route_scope_denied_result(service, "call_tool", MESSAGE.to_string()).into())
     }
 
+    #[cfg(test)]
     pub(crate) async fn call_tool_response_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.boxed_call_tool_response_impl(request, context).await
+    }
+
+    async fn call_tool_response_impl_inner(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
@@ -1033,7 +1050,7 @@ impl LabMcpServer {
         // unresolved service name is simply not found.
         #[cfg(feature = "gateway")]
         {
-            Box::pin(self.call_tool_upstream_impl(
+            self.boxed_call_tool_upstream_impl(
                 &service,
                 &action,
                 upstream_request,
@@ -1042,7 +1059,7 @@ impl LabMcpServer {
                 &subject,
                 actor_key,
                 &context,
-            ))
+            )
             .await
         }
         #[cfg(not(feature = "gateway"))]

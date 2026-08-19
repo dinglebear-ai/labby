@@ -218,7 +218,7 @@ fn test_server(
     LabMcpServer {
         registry: Arc::new(registry),
         gateway_manager,
-        peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        peers: Default::default(),
         code_mode_app_state: Default::default(),
         last_listed_tool_contract: Default::default(),
         route_runtime: Default::default(),

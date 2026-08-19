@@ -159,6 +159,11 @@ When a local export exists, sync copies it into `/home/labby/.labby/web-assets`.
 When no local export exists, sync moves the remote filesystem export aside so
 the embedded assets in the updated binary are used instead.
 
+When an export is synced, deployment is not considered successful until the
+restarted container serves an `index.html` whose SHA-256 matches the freshly
+built local export. This catches stale filesystem overrides, incomplete asset
+copies, and wrong-source routing before the deploy reports success.
+
 For a checkout-local UI or Rust change:
 
 ```bash

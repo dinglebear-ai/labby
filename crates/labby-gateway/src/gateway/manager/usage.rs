@@ -57,6 +57,9 @@ impl GatewayManager {
                 .map(|t| GatewayUsageToolCount {
                     upstream: t.upstream,
                     tool: t.tool,
+                    capability: t.capability,
+                    operation: t.operation,
+                    subject_scoped: t.subject_scoped,
                     calls: t.calls,
                 })
                 .collect(),
@@ -125,9 +128,13 @@ impl GatewayManager {
                     ts_unix: r.ts_unix,
                     upstream: r.upstream,
                     tool: r.tool,
+                    capability: r.capability,
+                    operation: r.operation,
+                    subject_scoped: r.subject_scoped,
                     actor: r.actor,
                     outcome: r.outcome,
                     elapsed_ms: r.elapsed_ms,
+                    response_bytes: r.response_bytes,
                 })
                 .collect(),
             total_matching,

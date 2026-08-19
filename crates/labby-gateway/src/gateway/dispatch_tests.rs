@@ -550,9 +550,13 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
             ts_unix: 1_000,
             upstream_name: "github".to_string(),
             tool_name: "search_repos".to_string(),
+            capability: "tools".to_string(),
+            operation: "tool.call".to_string(),
+            subject_scoped: false,
             actor: "unattributed".to_string(),
             outcome: "ok".to_string(),
             elapsed_ms: 10,
+            response_bytes: Some(128),
         })
         .await
         .unwrap();
@@ -561,9 +565,13 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
             ts_unix: 1_001,
             upstream_name: "gateway-alpha".to_string(),
             tool_name: "status_get".to_string(),
+            capability: "tools".to_string(),
+            operation: "tool.call".to_string(),
+            subject_scoped: false,
             actor: "unattributed".to_string(),
             outcome: "ok".to_string(),
             elapsed_ms: 10,
+            response_bytes: Some(64),
         })
         .await
         .unwrap();

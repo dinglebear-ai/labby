@@ -8,6 +8,7 @@ import {
   FlaskConical,
   Loader2,
   Package,
+  Plus,
   Play,
   RefreshCw,
   Search,
@@ -17,6 +18,17 @@ import {
 import { AppHeader } from '@/components/app-header'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { SafeMarkdown } from '@/components/markdown/safe-markdown'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { snippetsApi } from '@/lib/api/snippets-client'
@@ -217,6 +229,12 @@ export function SnippetsPageContent() {
   const [activeTag, setActiveTag] = React.useState<string | null>(null)
   const [sortDirection, setSortDirection] = React.useState<SnippetSortDirection>('asc')
   const [inputValues, setInputValues] = React.useState<Record<string, Record<string, string>>>({})
+  const [createOpen, setCreateOpen] = React.useState(false)
+  const [createName, setCreateName] = React.useState('')
+  const [createDescription, setCreateDescription] = React.useState('')
+  const [createBody, setCreateBody] = React.useState('async () => {\n  return { ok: true }\n}')
+  const [createError, setCreateError] = React.useState<string | null>(null)
+  const [creating, setCreating] = React.useState(false)
 
   const reload = React.useCallback(async () => {
     setLoading(true)
@@ -332,9 +350,50 @@ export function SnippetsPageContent() {
 
   const running = actionState.kind === 'loading' ? actionState.label : null
 
+  const createSnippet = async () => {
+    const name = createName.trim()
+    if (!name) {
+      setCreateError('Name is required.')
+      return
+    }
+    if (!createBody.trim()) {
+      setCreateError('Snippet body is required.')
+      return
+    }
+
+    setCreating(true)
+    setCreateError(null)
+    try {
+      const created = await snippetsApi.create({
+        name,
+        body: createBody,
+        ...(createDescription.trim() ? { description: createDescription.trim() } : {}),
+      })
+      await reload()
+      setSelectedKey(snippetKey(created))
+      setCreateOpen(false)
+      setCreateName('')
+      setCreateDescription('')
+      setCreateBody('async () => {\n  return { ok: true }\n}')
+      setActionState({ kind: 'success', label: 'Create', detail: `Created ${created.name}` })
+    } catch (err) {
+      setCreateError(errorMessage(err))
+    } finally {
+      setCreating(false)
+    }
+  }
+
   return (
     <>
-      <AppHeader breadcrumbs={[{ label: 'Snippets' }]} />
+      <AppHeader
+        breadcrumbs={[{ label: 'Snippets' }]}
+        actions={
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
+            New snippet
+          </Button>
+        }
+      />
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
         <div className={AURORA_PAGE_FRAME}>
           {/* Hero — the mock's eyebrow + title + action cluster with the stat
@@ -344,6 +403,10 @@ export function SnippetsPageContent() {
             title="Snippets"
             actions={
               <>
+                <Button size="sm" onClick={() => setCreateOpen(true)}>
+                  <Plus className="size-4" />
+                  New snippet
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => void reload()}>
                   <RefreshCw className="size-4" />
                   Refresh
@@ -906,6 +969,57 @@ export function SnippetsPageContent() {
           </section>
         </div>
       </div>
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Create snippet</DialogTitle>
+            <DialogDescription>
+              Save an executable Code Mode snippet under your Labby home.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <div className="grid gap-2">
+              <Label htmlFor="snippet-name">Name</Label>
+              <Input
+                id="snippet-name"
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+                placeholder="fleet-health"
+                autoComplete="off"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="snippet-description">Description</Label>
+              <Input
+                id="snippet-description"
+                value={createDescription}
+                onChange={(event) => setCreateDescription(event.target.value)}
+                placeholder="What this workflow does"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="snippet-body">Code</Label>
+              <Textarea
+                id="snippet-body"
+                value={createBody}
+                onChange={(event) => setCreateBody(event.target.value)}
+                className="min-h-64 font-mono text-[13px] leading-5"
+                spellCheck={false}
+              />
+            </div>
+            {createError ? <p className="text-sm text-destructive">{createError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
+              Cancel
+            </Button>
+            <Button onClick={() => void createSnippet()} disabled={creating}>
+              {creating ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+              Create snippet
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

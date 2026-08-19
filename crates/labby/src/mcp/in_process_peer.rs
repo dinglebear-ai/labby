@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicU8;
 use crate::mcp::logging::LoggingLevel;
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 use rmcp::{RoleClient, ServiceExt};
-use tokio::sync::RwLock;
 
 use labby_gateway::registry::InProcessService;
 
@@ -67,7 +66,7 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
         // `ensure_in_process_service_peers` from inside a registration, which
         // is a runtime-only hang rather than a compile error.
         gateway_manager: None,
-        peers: Arc::new(RwLock::new(Vec::new())),
+        peers: Default::default(),
         code_mode_app_state: Default::default(),
         last_listed_tool_contract: Default::default(),
         route_runtime: Default::default(),

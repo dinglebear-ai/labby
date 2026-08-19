@@ -1,3 +1,7 @@
+use std::collections::{BTreeSet, VecDeque};
+use std::ops::Deref;
+use std::time::Duration;
+
 #[cfg(test)]
 use rmcp::RoleServer;
 #[cfg(test)]
@@ -7,9 +11,10 @@ use rmcp::service::SubscriptionSink;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::RwLock;
 #[cfg(feature = "gateway")]
 use tokio::sync::mpsc;
+use tokio::sync::{Mutex, RwLock};
+use tokio::time::Instant;
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::{CatalogChangeEvent, GatewayCatalogDiff};
@@ -25,7 +30,7 @@ fn lag_reconciliation_diff() -> GatewayCatalogDiff {
 
 #[cfg(feature = "gateway")]
 async fn bounded_lag_reconciliation<F, T>(
-    timeout: std::time::Duration,
+    timeout: Duration,
     reconcile: F,
 ) -> Result<T, tokio::time::error::Elapsed>
 where
@@ -164,8 +169,93 @@ impl RegisteredPeer {
     }
 }
 
+const RESOURCE_UPDATE_REPLAY_WINDOW: Duration = Duration::from_secs(2);
+const MAX_RECENT_RESOURCE_UPDATES: usize = 256;
+
+#[derive(Clone)]
+struct RecentResourceUpdate {
+    observed_at: Instant,
+    upstream: String,
+    uri: String,
+}
+
+/// Registry of live sessions, plus the tiny edge-event journal needed to
+/// bridge rmcp's subscription-ack -> handler-registration scheduling gap.
+///
+/// `subscriptions/acknowledged` is emitted before `ServerHandler::listen`
+/// runs. Resource updates are edge-triggered rather than derivable catalog
+/// state, so the notifier records them before fanout and a newly registered
+/// peer replays matching updates from this short bounded window.
+#[derive(Default)]
+pub struct PeerRegistryState {
+    peers: RwLock<Vec<RegisteredPeer>>,
+    recent_resource_updates: Mutex<VecDeque<RecentResourceUpdate>>,
+}
+
+impl Deref for PeerRegistryState {
+    type Target = RwLock<Vec<RegisteredPeer>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.peers
+    }
+}
+
+impl PeerRegistryState {
+    pub(crate) async fn record_resource_update(&self, upstream: &str, uri: &str) {
+        let now = Instant::now();
+        let mut updates = self.recent_resource_updates.lock().await;
+        prune_recent_resource_updates(&mut updates, now);
+        updates.push_back(RecentResourceUpdate {
+            observed_at: now,
+            upstream: upstream.to_string(),
+            uri: uri.to_string(),
+        });
+        while updates.len() > MAX_RECENT_RESOURCE_UPDATES {
+            updates.pop_front();
+        }
+    }
+
+    pub(crate) async fn recent_resource_updates_for(
+        &self,
+        registered: &RegisteredPeer,
+    ) -> Vec<(String, String)> {
+        let now = Instant::now();
+        let mut updates = self.recent_resource_updates.lock().await;
+        prune_recent_resource_updates(&mut updates, now);
+        let mut seen = BTreeSet::new();
+        let mut matched = updates
+            .iter()
+            .rev()
+            .filter(|update| {
+                registered
+                    .contract
+                    .route_scope
+                    .allows_upstream(&update.upstream)
+                    && registered.target.wants_resource_update(&update.uri)
+                    && seen.insert((update.upstream.clone(), update.uri.clone()))
+            })
+            .map(|update| (update.upstream.clone(), update.uri.clone()))
+            .collect::<Vec<_>>();
+        matched.reverse();
+        matched
+    }
+
+    #[cfg(test)]
+    async fn recent_resource_update_count(&self) -> usize {
+        self.recent_resource_updates.lock().await.len()
+    }
+}
+
+fn prune_recent_resource_updates(updates: &mut VecDeque<RecentResourceUpdate>, now: Instant) {
+    while updates.front().is_some_and(|update| {
+        now.saturating_duration_since(update.observed_at) > RESOURCE_UPDATE_REPLAY_WINDOW
+    }) {
+        updates.pop_front();
+    }
+}
+
 /// Registry of live sessions, shared by every `LabMcpServer` and the notifier.
-pub type PeerRegistry = Arc<RwLock<Vec<RegisteredPeer>>>;
+pub type PeerRegistry = Arc<PeerRegistryState>;
 
 /// Drop peers whose transport has definitively closed, returning how many went.
 ///
@@ -234,9 +324,46 @@ impl RegisteredPeer {
     pub(crate) fn current_for_test(peer: Peer<RoleServer>) -> Self {
         Self::with_last_contract_for_test(
             peer,
-            crate::mcp::catalog::ToolCatalogSnapshot::from_names(std::collections::BTreeSet::new()),
+            crate::mcp::catalog::ToolCatalogSnapshot::from_names(BTreeSet::new()),
         )
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn resource_update_journal_is_bounded() {
+    let peers: PeerRegistry = Default::default();
+    for index in 0..(MAX_RECENT_RESOURCE_UPDATES + 2) {
+        peers
+            .record_resource_update("leaf", &format!("fixture://resource/{index}"))
+            .await;
+    }
+    assert_eq!(
+        peers.recent_resource_update_count().await,
+        MAX_RECENT_RESOURCE_UPDATES
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn resource_update_journal_prunes_expired_entries() {
+    let now = Instant::now();
+    let mut updates = VecDeque::from([
+        RecentResourceUpdate {
+            observed_at: now - RESOURCE_UPDATE_REPLAY_WINDOW - Duration::from_millis(1),
+            upstream: "leaf".to_string(),
+            uri: "fixture://expired".to_string(),
+        },
+        RecentResourceUpdate {
+            observed_at: now,
+            upstream: "leaf".to_string(),
+            uri: "fixture://fresh".to_string(),
+        },
+    ]);
+
+    prune_recent_resource_updates(&mut updates, now);
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].uri, "fixture://fresh");
 }
 
 #[cfg(test)]
@@ -329,6 +456,11 @@ impl PeerNotifier {
                                 );
                             }
                             Ok(UpstreamNotificationEvent::ResourceUpdated { upstream, uri }) => {
+                                // Journal first. rmcp sends subscriptions/acknowledged before
+                                // invoking LabMcpServer::listen, so a newly acknowledged peer
+                                // may not be in the registry yet. listen replays this bounded
+                                // edge-event journal after registration.
+                                self.peers.record_resource_update(&upstream, &uri).await;
                                 crate::mcp::catalog_notifications::notify_resource_update_peers(
                                     &self.peers,
                                     &upstream,
@@ -411,7 +543,7 @@ impl PeerNotifier {
     ) {
         use futures::StreamExt;
 
-        const RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        const RECONCILE_TIMEOUT: Duration = Duration::from_secs(30);
         let started = std::time::Instant::now();
         tracing::warn!(
             surface = "mcp",

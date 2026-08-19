@@ -23,7 +23,7 @@ use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::helpers::max_response_bytes;
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish};
-use super::usage_record::record_usage_call;
+use super::usage_record::{record_usage_call, record_usage_call_with_response};
 
 /// Structured failure from an upstream capability call.
 ///
@@ -421,12 +421,13 @@ where
                     Some(response_size),
                     Some(max_bytes),
                 );
-                record_usage_call(
+                record_usage_call_with_response(
                     pool,
                     event,
                     subject,
                     "response_too_large",
                     start.elapsed().as_millis(),
+                    Some(response_size),
                 );
                 return Err(CapabilityCallError::ResponseTooLarge {
                     message: format!(
@@ -436,7 +437,14 @@ where
             }
             pool.record_success_for(upstream_name, capability).await;
             log_upstream_request_finish(event, start.elapsed().as_millis(), Some(response_size));
-            record_usage_call(pool, event, subject, "ok", start.elapsed().as_millis());
+            record_usage_call_with_response(
+                pool,
+                event,
+                subject,
+                "ok",
+                start.elapsed().as_millis(),
+                Some(response_size),
+            );
             Ok(result)
         }
         RawCallOutcome::UpstreamError(error) => {

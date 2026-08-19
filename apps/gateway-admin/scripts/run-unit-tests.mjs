@@ -11,6 +11,7 @@ const testSpecs = [
   { dir: "lib/api", recursive: true, suffix: ".test.ts" },
   { dir: "lib/dashboard", recursive: true, suffix: ".test.ts" },
   { dir: "lib/fs", recursive: true, suffix: ".test.ts" },
+  { dir: "lib/observability", recursive: true, suffix: ".test.ts" },
   { dir: "lib/dev", recursive: true, suffix: ".test.ts" },
   { dir: "lib/setup", recursive: false, suffix: ".test.ts" },
   { dir: "components", recursive: true, suffix: ".test.tsx" },

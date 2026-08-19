@@ -246,9 +246,10 @@ export function OverviewHero({
     0,
   )
 
-  // The mock's strip vocabulary, extended with Skills as a first-class MCP primitive.
-  // Only Failed carries a tone; every other value renders in primary text.
-  // carries a tone; every other value renders in primary text.
+  // The mock's strip vocabulary, extended with Skills as a first-class MCP
+  // primitive: Connected · Offline · Tools · Prompts · Resources · Skills ·
+  // Upstream calls · Failed · Tokens · P95 latency. Only Failed carries a tone;
+  // every other value renders in primary text.
   const stats: HeroStat[] = [
     { label: 'Connected', value: live.connectedServers, icon: Cable },
     { label: 'Offline', value: live.offlineServers, icon: PlugZap },
@@ -257,7 +258,7 @@ export function OverviewHero({
     { label: 'Resources', value: discoveredResources, icon: FileText },
     { label: 'Skills', value: discoveredSkills, icon: BookOpen },
     {
-      label: 'Tool calls',
+      label: 'Upstream calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',
       icon: Activity,
     },

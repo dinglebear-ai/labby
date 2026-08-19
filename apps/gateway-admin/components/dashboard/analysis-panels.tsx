@@ -101,7 +101,7 @@ export function SurfacesPanel({ surfaces }: { surfaces: SurfaceCount[] }) {
     display: formatCompactNumber(s.calls),
   }))
   return (
-    <DashboardPanel title="By surface" icon={<Layers className="size-4" />}>
+    <DashboardPanel title="By surface" icon={<Layers className="size-4" />} meta="retained sample">
       <MetricBarList items={items} />
     </DashboardPanel>
   )
@@ -124,7 +124,7 @@ export function TokensByToolPanel({
     onSelect: onSelect ? () => onSelect(t.name) : undefined,
   }))
   return (
-    <DashboardPanel title="Tokens by tool" icon={<Zap className="size-4" />}>
+    <DashboardPanel title="Tokens by tool" icon={<Zap className="size-4" />} meta="estimated · retained sample">
       <MetricBarList items={items} tone="strong" mono />
     </DashboardPanel>
   )

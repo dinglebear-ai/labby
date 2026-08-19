@@ -47,6 +47,51 @@ test('adapts persisted gateway usage into truthful dashboard metrics', () => {
   })
 })
 
+test('keeps dimensional top-tool rows distinct and attributes failures to the matching dimension', () => {
+  const metrics = aggregateGatewayUsage(
+    '24h',
+    1_800_000_000_000,
+    {
+      total_calls: 3,
+      error_calls: 1,
+      avg_elapsed_ms: 10,
+      top_tools: [
+        { upstream: 'github', tool: 'search', capability: 'tools', operation: 'tool.call', subject_scoped: false, calls: 2 },
+        { upstream: 'github', tool: 'search', capability: 'tools', operation: 'tool.call', subject_scoped: true, calls: 1 },
+      ],
+      top_actors: [],
+    },
+    {
+      calls: [
+        { ts_unix: 1_800_000_000, upstream: 'github', tool: 'search', capability: 'tools', operation: 'tool.call', subject_scoped: false, actor: 'codex', outcome: 'timeout', elapsed_ms: 10 },
+        { ts_unix: 1_799_999_990, upstream: 'github', tool: 'search', capability: 'tools', operation: 'tool.call', subject_scoped: false, actor: 'codex', outcome: 'ok', elapsed_ms: 10 },
+        { ts_unix: 1_799_999_980, upstream: 'github', tool: 'search', capability: 'tools', operation: 'tool.call', subject_scoped: true, actor: 'codex', outcome: 'ok', elapsed_ms: 10 },
+      ],
+      total_matching: 3,
+      next_cursor: null,
+    },
+  )
+
+  assert.deepEqual(metrics.tools.top, [
+    {
+      name: 'github::search',
+      id: 'github\u0000search\u0000tools\u0000tool.call\u0000shared',
+      label: 'github::search',
+      calls: 2,
+      failed: 1,
+    },
+    {
+      name: 'github::search',
+      id: 'github\u0000search\u0000tools\u0000tool.call\u0000subject',
+      label: 'github::search · OAuth',
+      calls: 1,
+      failed: 0,
+    },
+  ])
+  assert.equal(new Set(metrics.tools.top.map((tool) => tool.id)).size, 2)
+  assert.deepEqual(new Set(metrics.tools.top.map((tool) => tool.name)), new Set(['github::search']))
+})
+
 test('marks row-derived panels sampled when the call page has more rows', () => {
   const metrics = aggregateGatewayUsage(
     '7d',

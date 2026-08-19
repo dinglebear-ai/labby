@@ -205,6 +205,7 @@ export function GatewayHero({
   activeLens,
   toolsViewActive,
   onLensChange,
+  actions,
 }: {
   totalServers: number
   healthy: number
@@ -224,6 +225,7 @@ export function GatewayHero({
   activeLens: GatewayLens
   toolsViewActive: boolean
   onLensChange: (lens: GatewayLens) => void
+  actions?: React.ReactNode
 }) {
   const attention = disconnected
   const pulseColor =
@@ -318,7 +320,9 @@ export function GatewayHero({
           </h1>
         </div>
 
-        {endpointLabel ? (
+        {actions ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>{actions}</div>
+        ) : endpointLabel ? (
           <span
             style={{
               fontSize: 11.5,
