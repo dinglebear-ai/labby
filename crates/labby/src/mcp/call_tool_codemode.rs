@@ -210,7 +210,8 @@ Execute JavaScript in a sandbox with access to the Labby gateway catalog.
 
 1. Discover: `const hits = await codemode.search({ query: \"short intent phrase\", limit: 5 });`
 2. Inspect: `const docs = await codemode.describe(hits.results[0].path);`
-3. Call: `await codemode.<upstream>.<tool>(params)` or `await callTool(\"upstream::tool\", params);`
+3. Read a resource: `await codemode.readResource(\"lab://upstream/<name>/<uri>\");`
+4. Call: `await codemode.<upstream>.<tool>(params)` or `await callTool(\"upstream::tool\", params);`
 
 Never guess helper or method names. If you have not already confirmed the exact \
 tool, run `codemode.search(...)` first. `codemode.search` returns compact \
@@ -254,6 +255,10 @@ it resolves to `{ ok: [{ i, value }], failed: [{ i, error }], all_ok }` once \
 every job has settled. Prefer it over `Promise.all([...])` for fan-out — \
 `Promise.all` rejects on the first failure and discards every other in-flight \
 result; `codemode.batch` never does.
+
+`codemode.readResource(uri)` reads an upstream MCP resource through the same \
+route and caller scope as the current Code Mode run. It returns the MCP \
+`ReadResourceResult` object with a `contents` array.
 
 Code Mode has a bounded wall-clock budget. For workflows with many mutating \
 calls, use small bounded batches, preserve stable idempotency keys, and inspect \

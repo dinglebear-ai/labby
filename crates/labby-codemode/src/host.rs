@@ -176,6 +176,26 @@ pub trait CodeModeHost: Send + Sync {
         ctx: ExecCtx,
     ) -> impl Future<Output = Result<ToolCallOutcome, CodeModeCallError>> + Send;
 
+    /// Read a resource through the host's resource source. The URI is passed
+    /// unchanged so the host can apply its own routing and authorization
+    /// rules. The returned value is the serialized MCP `ReadResourceResult`.
+    ///
+    /// Hosts that do not expose resources reject the call by default.
+    fn read_resource(
+        &self,
+        _uri: String,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> impl Future<Output = Result<Value, ToolError>> + Send {
+        async {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Code Mode resource reads are not available".to_string(),
+            })
+        }
+    }
+
     /// Decide whether to execute a `codemode.step(name, fn)` boundary at
     /// `(execution_id, seq)`, BEFORE the sandbox runs `fn`. The step consumes a
     /// `seq` from the same monotonic spine as `call_tool`.
