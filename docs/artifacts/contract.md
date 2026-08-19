@@ -1,3 +1,9 @@
+---
+title: ArtifactInterchange v1 Contract
+created: 2026-08-19
+updated: 2026-08-19
+---
+
 # ArtifactInterchange v1 Contract
 
 Status: frozen cross-repo contract for W19

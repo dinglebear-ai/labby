@@ -1,3 +1,9 @@
+---
+title: W19 Artifact Gateway Implementation Plan
+created: 2026-08-19
+updated: 2026-08-19
+---
+
 # W19 Artifact Gateway Implementation Plan
 
 Status: active

@@ -1,3 +1,9 @@
+---
+title: W19 Artifact Gateway Progress
+created: 2026-08-19
+updated: 2026-08-19
+---
+
 # W19 Artifact Gateway Progress
 
 Last updated: 2026-08-19
@@ -117,6 +123,7 @@ Final green evidence on rebased `origin/main` `fc4d3a1c2`:
 - `cargo test -p labby-runtime --all-features -- --nocapture`: 160 unit tests + 1 agent-error schema + 2 ArtifactInterchange conformance + 11 SEP-2640 URI conformance + 8 Skills contract conformance = 182 passed, 0 failed.
 - `cargo clippy -p labby-runtime --all-features --all-targets -- -D warnings`: passed.
 - `RUSTFLAGS='-D warnings' cargo check -p labby-runtime --all-features --all-targets`: passed.
+- pinned fleet repository contract `218eba19f15cc13554d26fa131309cfa8141fd67`, profile `rust`: passed locally after adding required durable-doc frontmatter.
 - focused Artifact unit coverage within the full run: 20 passed, 0 failed after adversarial hardening.
 - exact Depot fixture conformance: 2 passed, 0 failed; byte-canonical round-trip and frozen revision digest match.
 
@@ -129,7 +136,7 @@ Compilation findings already fixed:
 - warnings lint for discarded cleanup result;
 - frozen schema constant re-export for conformance tests.
 
-Phase 1 implementation and local verification are complete. PR #462 is open against `main`; only remote CI/merge-state observation remains.
+Phase 1 implementation and local verification are complete. PR #462 is open against `main`. The first remote repository-contract run exposed missing required frontmatter on the four new durable Artifact docs; that failure was reproduced with the exact pinned validator, fixed, and the local contract now passes. Remote CI/merge-state observation remains.
 
 No implementation or local verification gate remains open for Phase 1.
 

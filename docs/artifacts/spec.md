@@ -1,3 +1,9 @@
+---
+title: Labby Personal Artifacts Specification
+created: 2026-08-19
+updated: 2026-08-19
+---
+
 # Labby Personal Artifacts Specification
 
 Status: W19 implementation specification
