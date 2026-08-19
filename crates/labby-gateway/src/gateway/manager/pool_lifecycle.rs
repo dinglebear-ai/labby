@@ -298,6 +298,10 @@ impl GatewayManager {
             );
             self.persist_config(cfg.clone()).await?;
         }
+        let runtime_cfg = {
+            let current = self.config.read().await;
+            super::config_transaction::runtime_config_for_desired(&current, &cfg)
+        };
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -326,15 +330,16 @@ impl GatewayManager {
                 current.code_mode.enabled,
                 current.code_mode.mcp_ui_enabled,
                 code_mode_namespace_tokens(&current),
-                current.code_mode.enabled != cfg.code_mode.enabled
-                    || current.code_mode.mcp_ui_enabled != cfg.code_mode.mcp_ui_enabled
-                    || current.virtual_servers != cfg.virtual_servers
-                    || current.protected_mcp_routes != cfg.protected_mcp_routes,
+                current.code_mode.enabled != runtime_cfg.code_mode.enabled
+                    || current.code_mode.mcp_ui_enabled != runtime_cfg.code_mode.mcp_ui_enabled
+                    || current.mcp_apps != runtime_cfg.mcp_apps
+                    || current.virtual_servers != runtime_cfg.virtual_servers
+                    || current.protected_mcp_routes != runtime_cfg.protected_mcp_routes,
             )
         };
-        let new_code_mode_enabled = cfg.code_mode.enabled;
-        let new_mcp_ui_enabled = cfg.code_mode.mcp_ui_enabled;
-        let new_ns_tokens = code_mode_namespace_tokens(&cfg);
+        let new_code_mode_enabled = runtime_cfg.code_mode.enabled;
+        let new_mcp_ui_enabled = runtime_cfg.code_mode.mcp_ui_enabled;
+        let new_ns_tokens = code_mode_namespace_tokens(&runtime_cfg);
 
         let (previous_cfg, pool_settings_unchanged, changed_upstreams) = {
             let current = self.config.read().await;
@@ -351,14 +356,15 @@ impl GatewayManager {
                 .await?;
             let _publication = self.publication_barrier.write().await;
             self.store
-                .set_process_code_mode_enabled(cfg.code_mode.enabled);
+                .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
             self.code_mode_app_state
-                .set_enabled(cfg.code_mode.mcp_ui_enabled);
+                .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
             *self.protected_route_index.write().await =
-                ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-            *self.config.write().await = cfg;
+                ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+            *self.config.write().await = runtime_cfg;
             let diff = GatewayCatalogDiff {
                 tools_changed: lab_owned_surface_changed,
+                resources_changed: lab_owned_surface_changed,
                 ..GatewayCatalogDiff::default()
             };
             self.notify_catalog_changes(&diff, SOURCE_GATEWAY_RELOAD_SELECTIVE);
@@ -614,9 +620,9 @@ impl GatewayManager {
         };
         let _publication = self.publication_barrier.write().await;
         self.store
-            .set_process_code_mode_enabled(cfg.code_mode.enabled);
+            .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
-            .set_enabled(cfg.code_mode.mcp_ui_enabled);
+            .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
         self.runtime.swap(fresh_pool).await;
         // Keep the old pool serving throughout build/probe and publish the
         // replacement before draining. A dropped/timeout-cancelled reload can
@@ -644,8 +650,8 @@ impl GatewayManager {
             });
         }
         *self.protected_route_index.write().await =
-            ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-        *self.config.write().await = cfg;
+            ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+        *self.config.write().await = runtime_cfg;
         let observed = ReconcileCatalogObservation::observe(
             &before,
             &after,

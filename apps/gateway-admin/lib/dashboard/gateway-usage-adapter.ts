@@ -14,7 +14,14 @@ export interface GatewayUsageMetrics {
   total_calls: number
   error_calls: number
   avg_elapsed_ms: number
-  top_tools: Array<{ upstream: string; tool: string; calls: number }>
+  top_tools: Array<{
+    upstream: string
+    tool: string
+    capability?: string
+    operation?: string
+    subject_scoped?: boolean
+    calls: number
+  }>
   top_actors: Array<{ actor: string; calls: number }>
 }
 
@@ -22,9 +29,13 @@ export interface GatewayUsageCall {
   ts_unix: number
   upstream: string
   tool: string
+  capability?: string
+  operation?: string
+  subject_scoped?: boolean
   actor: string
   outcome: string
   elapsed_ms: number
+  response_bytes?: number | null
 }
 
 export interface GatewayUsageCalls {
@@ -40,8 +51,31 @@ const WINDOW_MS: Record<MetricsWindow, number> = {
 }
 const WINDOW_BUCKETS: Record<MetricsWindow, number> = { '1h': 12, '24h': 24, '7d': 14 }
 
+type UsageDimension = Pick<GatewayUsageCall, 'upstream' | 'tool' | 'capability' | 'operation' | 'subject_scoped'>
+
 function toolName(call: Pick<GatewayUsageCall, 'upstream' | 'tool'>) {
   return `${call.upstream}::${call.tool}`
+}
+
+function usageDimensionKey(call: UsageDimension) {
+  return [
+    call.upstream,
+    call.tool,
+    call.capability ?? 'tools',
+    call.operation ?? 'tool.call',
+    call.subject_scoped ? 'subject' : 'shared',
+  ].join('\u0000')
+}
+
+function usageDimensionName(call: UsageDimension) {
+  const capability = call.capability ?? 'tools'
+  const operation = call.operation ?? 'tool.call'
+  const base = call.tool ? `${call.upstream}::${call.tool}` : `${call.upstream}::${capability}`
+  const qualifiers = [
+    ...(operation !== 'tool.call' ? [operation] : []),
+    ...(call.subject_scoped ? ['OAuth'] : []),
+  ]
+  return qualifiers.length > 0 ? `${base} · ${qualifiers.join(' · ')}` : base
 }
 
 function percentile(values: number[], percent: number) {
@@ -81,10 +115,17 @@ export function aggregateGatewayUsage(
   rows: GatewayUsageCalls,
 ): DashboardMetrics {
   const failedByTool = rankedCounts(rows.calls.filter((call) => call.outcome !== 'ok'), toolName)
-  const tools: ToolUsageEntry[] = summary.top_tools.map((tool) => {
-    const name = `${tool.upstream}::${tool.tool}`
-    return { name, calls: tool.calls, failed: failedByTool.get(name) ?? 0 }
-  })
+  const failedByDimension = rankedCounts(
+    rows.calls.filter((call) => call.outcome !== 'ok'),
+    usageDimensionKey,
+  )
+  const tools: ToolUsageEntry[] = summary.top_tools.map((tool) => ({
+    name: toolName(tool),
+    id: usageDimensionKey(tool),
+    label: usageDimensionName(tool),
+    calls: tool.calls,
+    failed: failedByDimension.get(usageDimensionKey(tool)) ?? 0,
+  }))
   const actors: ActorUsageEntry[] = summary.top_actors.map((actor) => ({
     id: actor.actor,
     label: actor.actor,

@@ -8,6 +8,9 @@ pub struct UpstreamCallRecord {
     pub ts_unix: i64,
     pub upstream_name: String,
     pub tool_name: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     /// OAuth subject for subject-scoped calls; `"unattributed"` for the
     /// non-OAuth pool path (bearer-auth callers are not yet individually
     /// attributed).
@@ -15,4 +18,5 @@ pub struct UpstreamCallRecord {
     /// `"ok"` | `"upstream_error"` | `"timeout"` | `"response_too_large"` | `"upstream_connect_error"`.
     pub outcome: String,
     pub elapsed_ms: i64,
+    pub response_bytes: Option<i64>,
 }

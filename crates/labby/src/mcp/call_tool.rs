@@ -13,7 +13,7 @@
 //! codemode and upstream branches live in
 //! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
 
-use std::time::Instant;
+use std::{future::Future, pin::Pin, time::Instant};
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -174,7 +174,7 @@ impl LabMcpServer {
         .await;
     }
 
-    fn log_route_scope_denial(
+    pub(crate) fn log_route_scope_denial(
         &self,
         context: &RequestContext<RoleServer>,
         service: &str,
@@ -213,151 +213,44 @@ impl LabMcpServer {
         );
     }
 
-    #[cfg(feature = "gateway")]
-    async fn mcp_app_control_response(
-        &self,
-        args: &serde_json::Map<String, Value>,
-        action: &str,
-        context: &RequestContext<RoleServer>,
-        start: Instant,
-    ) -> Result<CallToolResponse, ErrorData> {
-        let service = MCP_APP_TOOL_NAME;
-        if !self.route_scope.exposes_code_mode() {
-            let elapsed_ms = start.elapsed().as_millis();
-            self.log_route_scope_denial(
-                context,
-                service,
-                "call_tool",
-                "Code Mode is not exposed on this MCP route",
-                elapsed_ms,
-            );
-            return Ok(route_scope_denied_result(
-                service,
-                "call_tool",
-                "Code Mode is not exposed on this MCP route".to_string(),
-            )
-            .into());
-        }
-
-        let auth = auth_context_from_extensions(&context.extensions);
-        let synthetic_action = if action.is_empty() { "status" } else { action };
-        if !tool_execute_scope_allowed(auth) {
-            let envelope = build_error_extra(
-                service,
-                synthetic_action,
-                "forbidden",
-                "mcp_app requires one of scopes: lab, lab:admin",
-                &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
-            );
-            return Ok(error_result_from_envelope(envelope).into());
-        }
-
-        let target = args
-            .get("target")
-            .and_then(Value::as_str)
-            .unwrap_or("codemode");
-        if target != "codemode" {
-            let envelope = build_error_extra(
-                service,
-                synthetic_action,
-                "invalid_param",
-                &format!("unsupported MCP App target `{target}`"),
-                &serde_json::json!({ "valid": ["codemode"] }),
-            );
-            return Ok(error_result_from_envelope(envelope).into());
-        }
-
-        let desired = match synthetic_action {
-            "status" => None,
-            "enable" => Some(true),
-            "disable" => Some(false),
-            _ => {
-                let envelope = build_error_extra(
-                    service,
-                    synthetic_action,
-                    "unknown_action",
-                    &format!("unknown MCP App action `{synthetic_action}`"),
-                    &serde_json::json!({ "valid": ["status", "enable", "disable"] }),
-                );
-                return Ok(error_result_from_envelope(envelope).into());
-            }
-        };
-
-        if desired.is_some() && !admin_app_resources_visible(auth) {
-            let envelope = build_error_extra(
-                service,
-                synthetic_action,
-                "forbidden",
-                "changing MCP App state requires lab:admin scope",
-                &serde_json::json!({ "required_scopes": ["lab:admin"] }),
-            );
-            return Ok(error_result_from_envelope(envelope).into());
-        }
-
-        let previous = self.code_mode_app_state.is_enabled();
-        let enabled = if let Some(desired) = desired {
-            if let Some(manager) = self.gateway_manager.as_ref() {
-                let mut next = manager.code_mode_config().await;
-                next.mcp_ui_enabled = desired;
-                match manager
-                    .set_code_mode_config(
-                        next,
-                        Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
-                        None,
-                    )
-                    .await
-                {
-                    Ok(current) => current.mcp_ui_enabled,
-                    Err(error) => {
-                        let envelope = tool_error_envelope(service, synthetic_action, &error);
-                        return Ok(error_result_from_envelope(envelope).into());
-                    }
-                }
-            } else {
-                self.code_mode_app_state.set_enabled(desired);
-                desired
-            }
-        } else {
-            previous
-        };
-        let changed = desired.is_some() && previous != enabled;
-        if changed && self.gateway_manager.is_none() {
-            schedule_catalog_notification(
-                &self.peers,
-                CatalogNotificationChanges::new(true, true, false),
-                labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
-            );
-        }
-
-        let notification_scheduled = changed;
-        tracing::info!(
-            surface = "mcp",
-            service = MCP_APP_TOOL_NAME,
-            action = synthetic_action,
-            subject = self.request_subject_log_tag(context),
-            target,
-            enabled,
-            changed,
-            notification_scheduled,
-            elapsed_ms = start.elapsed().as_millis(),
-            "Code Mode MCP App state evaluated"
-        );
-        let payload = serde_json::json!({
-            "kind": "mcp_app_control",
-            "target": "codemode",
-            "enabled": enabled,
-            "changed": changed,
-            "scope": "gateway",
-            "text_tool": CODE_MODE_TOOL_NAME,
-            "ui_tool": CODE_MODE_UI_TOOL_NAME,
-            "notification_scheduled": notification_scheduled,
-        });
-        let mut result = CallToolResult::success(vec![ContentBlock::text(payload.to_string())]);
-        result.structured_content = Some(payload);
-        Ok(result.into())
+    pub(crate) fn boxed_call_tool_response_impl<'a>(
+        &'a self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>> {
+        Box::pin(self.call_tool_response_impl_inner(request, context))
     }
 
+    #[cfg(feature = "gateway")]
+    fn direct_tool_route_scope_denial(
+        &self,
+        context: &RequestContext<RoleServer>,
+        service: &str,
+    ) -> Option<CallToolResponse> {
+        let is_pre_gate_tool = matches!(
+            self.registry.permanent_tools().resolve(service),
+            Some(PermanentToolId::CodeMode | PermanentToolId::CodeModeRead)
+        ) || service == CODE_MODE_UI_TOOL_NAME
+            || service == MCP_APP_TOOL_NAME;
+        if self.route_scope.exposes_tools() || is_pre_gate_tool {
+            return None;
+        }
+
+        const MESSAGE: &str = "MCP Tools are disabled by this loadout; use Code Mode if it is exposed, or ask the operator to enable Tools for this loadout";
+        self.log_route_scope_denial(context, service, "call_tool", MESSAGE, 0);
+        Some(route_scope_denied_result(service, "call_tool", MESSAGE.to_string()).into())
+    }
+
+    #[cfg(test)]
     pub(crate) async fn call_tool_response_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.boxed_call_tool_response_impl(request, context).await
+    }
+
+    async fn call_tool_response_impl_inner(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
@@ -367,6 +260,19 @@ impl LabMcpServer {
         {
             return Ok(response);
         }
+        #[cfg(feature = "gateway")]
+        if let Some(response) = self.direct_tool_route_scope_denial(&context, request.name.as_ref())
+        {
+            return Ok(response);
+        }
+        Box::pin(self.call_tool_response_dispatch_impl(request, context)).await
+    }
+
+    async fn call_tool_response_dispatch_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
         // every early return below. A catalog notification emitted while this
@@ -393,16 +299,238 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // Keep the MCP App control future boxed so this already-large
-            // async dispatcher does not absorb its state into the stack frame.
+            // ── Always-on MCP App manager. It is root-gateway scoped so a
+            // protected subset cannot mutate gateway-global UI visibility.
             if service == MCP_APP_TOOL_NAME {
-                return Box::pin(self.mcp_app_control_response(
-                    &args,
-                    action.as_str(),
-                    &context,
-                    start,
-                ))
-                .await;
+                if !self.route_scope.is_root() {
+                    let elapsed_ms = start.elapsed().as_millis();
+                    self.log_route_scope_denial(
+                        &context,
+                        &service,
+                        "call_tool",
+                        "MCP App management is only available on the root gateway route",
+                        elapsed_ms,
+                    );
+                    return Ok(route_scope_denied_result(
+                        &service,
+                        "call_tool",
+                        "MCP App management is only available on the root gateway route"
+                            .to_string(),
+                    )
+                    .into());
+                }
+
+                let auth = auth_context_from_extensions(&context.extensions);
+                let synthetic_action = if action.is_empty() {
+                    "status"
+                } else {
+                    action.as_str()
+                };
+                if !tool_execute_scope_allowed(auth) {
+                    let envelope = build_error_extra(
+                        &service,
+                        synthetic_action,
+                        "forbidden",
+                        "mcp_app requires one of scopes: lab, lab:admin",
+                        &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
+                    );
+                    return Ok(error_result_from_envelope(envelope).into());
+                }
+
+                let target = args
+                    .get("target")
+                    .or_else(|| params.get("target"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("codemode");
+                if !matches!(
+                    target,
+                    "codemode"
+                        | "gateway_status"
+                        | "server_logs"
+                        | "add_server"
+                        | "settings"
+                        | "all"
+                ) {
+                    let envelope = build_error_extra(
+                        &service,
+                        synthetic_action,
+                        "invalid_param",
+                        &format!("unsupported MCP App target `{target}`"),
+                        &serde_json::json!({
+                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
+                        }),
+                    );
+                    return Ok(error_result_from_envelope(envelope).into());
+                }
+
+                let desired = match synthetic_action {
+                    "status" => None,
+                    "enable" => Some(true),
+                    "disable" => Some(false),
+                    _ => {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "unknown_action",
+                            &format!("unknown MCP App action `{synthetic_action}`"),
+                            &serde_json::json!({ "valid": ["status", "enable", "disable"] }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                };
+
+                if desired.is_some() && !admin_app_resources_visible(auth) {
+                    let envelope = build_error_extra(
+                        &service,
+                        synthetic_action,
+                        "forbidden",
+                        "changing MCP App state requires lab:admin scope",
+                        &serde_json::json!({ "required_scopes": ["lab:admin"] }),
+                    );
+                    return Ok(error_result_from_envelope(envelope).into());
+                }
+
+                let previous_config = match self.gateway_manager.as_ref() {
+                    Some(manager) => Some(manager.current_config().await),
+                    None => None,
+                };
+                let previous_code_mode = previous_config.as_ref().map_or_else(
+                    || self.code_mode_app_state.is_enabled(),
+                    |cfg| cfg.code_mode.mcp_ui_enabled,
+                );
+                let previous_apps = previous_config.as_ref().map_or_else(
+                    labby_runtime::gateway_config::McpAppsConfig::default,
+                    |cfg| cfg.mcp_apps,
+                );
+
+                let current_config = if let Some(desired) = desired {
+                    if let Some(manager) = self.gateway_manager.as_ref() {
+                        match manager
+                            .set_mcp_app_visibility(
+                                target,
+                                desired,
+                                Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
+                            )
+                            .await
+                        {
+                            Ok(current) => Some(current),
+                            Err(error) => {
+                                let envelope =
+                                    tool_error_envelope(&service, synthetic_action, &error);
+                                return Ok(error_result_from_envelope(envelope).into());
+                            }
+                        }
+                    } else if target == "codemode" {
+                        self.code_mode_app_state.set_enabled(desired);
+                        if previous_code_mode != desired {
+                            schedule_catalog_notification(
+                                &self.peers,
+                                CatalogNotificationChanges::new(true, true, false),
+                                labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
+                            );
+                        }
+                        None
+                    } else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "gateway_unavailable",
+                            "non-Code-Mode MCP App visibility requires a live gateway manager",
+                            &serde_json::json!({ "target": target }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                } else {
+                    previous_config.clone()
+                };
+
+                let enabled_code_mode = current_config.as_ref().map_or_else(
+                    || self.code_mode_app_state.is_enabled(),
+                    |cfg| cfg.code_mode.mcp_ui_enabled,
+                );
+                let enabled_apps = current_config
+                    .as_ref()
+                    .map_or(previous_apps, |cfg| cfg.mcp_apps);
+                let enabled = match target {
+                    "codemode" => enabled_code_mode,
+                    "gateway_status" => enabled_apps.gateway_status,
+                    "server_logs" => enabled_apps.server_logs,
+                    "add_server" => enabled_apps.add_server,
+                    "settings" => enabled_apps.settings,
+                    "all" => {
+                        enabled_code_mode
+                            && enabled_apps.gateway_status
+                            && enabled_apps.server_logs
+                            && enabled_apps.add_server
+                            && enabled_apps.settings
+                    }
+                    _ => unreachable!("target validated above"),
+                };
+                let changed = desired.is_some()
+                    && match target {
+                        "codemode" => previous_code_mode != enabled_code_mode,
+                        "gateway_status" => {
+                            previous_apps.gateway_status != enabled_apps.gateway_status
+                        }
+                        "server_logs" => previous_apps.server_logs != enabled_apps.server_logs,
+                        "add_server" => previous_apps.add_server != enabled_apps.add_server,
+                        "settings" => previous_apps.settings != enabled_apps.settings,
+                        "all" => {
+                            previous_code_mode != enabled_code_mode || previous_apps != enabled_apps
+                        }
+                        _ => false,
+                    };
+                let notification_scheduled = changed;
+                tracing::info!(
+                    surface = "mcp",
+                    service = MCP_APP_TOOL_NAME,
+                    action = synthetic_action,
+                    subject = self.request_subject_log_tag(&context),
+                    target,
+                    enabled,
+                    changed,
+                    notification_scheduled,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Labby MCP App state evaluated"
+                );
+                let payload = serde_json::json!({
+                    "kind": "mcp_app_control",
+                    "target": target,
+                    "enabled": enabled,
+                    "changed": changed,
+                    "scope": "gateway",
+                    "manager_tool": MCP_APP_TOOL_NAME,
+                    "text_tool": CODE_MODE_TOOL_NAME,
+                    "ui_tool": CODE_MODE_UI_TOOL_NAME,
+                    "apps": {
+                        "codemode": {
+                            "enabled": enabled_code_mode,
+                            "tool": CODE_MODE_UI_TOOL_NAME,
+                            "text_tool": CODE_MODE_TOOL_NAME,
+                        },
+                        "gateway_status": {
+                            "enabled": enabled_apps.gateway_status,
+                            "tool": GATEWAY_STATUS_TOOL_NAME,
+                        },
+                        "server_logs": {
+                            "enabled": enabled_apps.server_logs,
+                            "tool": SERVER_LOGS_TOOL_NAME,
+                        },
+                        "add_server": {
+                            "enabled": enabled_apps.add_server,
+                            "tool": ADD_SERVER_TOOL_NAME,
+                        },
+                        "settings": {
+                            "enabled": enabled_apps.settings,
+                            "tool": SETTINGS_TOOL_NAME,
+                        },
+                    },
+                    "notification_scheduled": notification_scheduled,
+                });
+                let mut result =
+                    CallToolResult::success(vec![ContentBlock::text(payload.to_string())]);
+                result.structured_content = Some(payload);
+                return Ok(result.into());
             }
 
             // ── Gateway Code Mode execution. Both public names share one backend;
@@ -670,6 +798,7 @@ impl LabMcpServer {
             }
 
             let handles_settings = service == SETTINGS_TOOL_NAME
+                && self.mcp_apps_config().await.settings
                 && admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
                 && self.route_scope.allows_service("setup")
                 && self.service_visible_on_mcp("setup").await;
@@ -987,7 +1116,7 @@ impl LabMcpServer {
         // unresolved service name is simply not found.
         #[cfg(feature = "gateway")]
         {
-            Box::pin(self.call_tool_upstream_impl(
+            self.boxed_call_tool_upstream_impl(
                 &service,
                 &action,
                 upstream_request,
@@ -996,7 +1125,7 @@ impl LabMcpServer {
                 &subject,
                 actor_key,
                 &context,
-            ))
+            )
             .await
         }
         #[cfg(not(feature = "gateway"))]

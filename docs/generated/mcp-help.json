@@ -45,7 +45,7 @@
         },
         {
           "name": "gateway.skills.list",
-          "description": "List Agent Skills aggregated from skills-proxying upstreams, with per-origin labels and cache state",
+          "description": "Operator view of Agent Skills support, trust, validation, exposure, and cache state across gateway upstreams; optionally limit to one upstream",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
@@ -330,6 +330,196 @@
           "returns": "SupportedServiceView[]"
         },
         {
+          "name": "gateway.loadout.list",
+          "description": "List reusable gateway capability loadouts, including Skills-over-MCP exposure policy",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "GatewayLoadoutConfig[]"
+        },
+        {
+          "name": "gateway.loadout.list_state",
+          "description": "List desired Loadouts with pending restart state compared with this process's mounted projections",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "GatewayLoadoutState[]"
+        },
+        {
+          "name": "gateway.loadout.get",
+          "description": "Get one reusable gateway capability loadout",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            }
+          ],
+          "returns": "GatewayLoadoutConfig"
+        },
+        {
+          "name": "gateway.loadout.add",
+          "description": "Add a reusable gateway loadout that narrows upstreams, services, Tools, Resources, Prompts, Skills, and Code Mode",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "loadout",
+              "ty": "json",
+              "required": true,
+              "description": "Loadout config to validate and persist"
+            }
+          ],
+          "returns": "GatewayLoadoutConfig"
+        },
+        {
+          "name": "gateway.loadout.update",
+          "description": "Replace a reusable gateway loadout; active protected routes may require restart before changes can take effect",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            },
+            {
+              "name": "loadout",
+              "ty": "json",
+              "required": true,
+              "description": "Replacement loadout config"
+            }
+          ],
+          "returns": "GatewayLoadoutConfig"
+        },
+        {
+          "name": "gateway.loadout.patch",
+          "description": "Patch selected fields on a reusable gateway loadout without resetting unspecified capability gates or selections",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            },
+            {
+              "name": "patch",
+              "ty": "json",
+              "required": true,
+              "description": "Partial loadout fields to update; null description clears it and empty upstream/service arrays clear those selections"
+            }
+          ],
+          "returns": "GatewayLoadoutConfig"
+        },
+        {
+          "name": "gateway.loadout.stage_update",
+          "description": "Persist a mounted Loadout replacement for the next Labby restart without changing the running route projection",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            },
+            {
+              "name": "loadout",
+              "ty": "json",
+              "required": true,
+              "description": "Replacement Loadout config to stage"
+            }
+          ],
+          "returns": "GatewayLoadoutStageResult"
+        },
+        {
+          "name": "gateway.loadout.stage_patch",
+          "description": "Patch a mounted Loadout in durable config for the next Labby restart",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            },
+            {
+              "name": "patch",
+              "ty": "json",
+              "required": true,
+              "description": "Partial Loadout fields to stage"
+            }
+          ],
+          "returns": "GatewayLoadoutStageResult"
+        },
+        {
+          "name": "gateway.loadout.stage_remove",
+          "description": "Remove a Loadout from desired config after its protected-route references have also been staged away",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            }
+          ],
+          "returns": "GatewayLoadoutStageResult"
+        },
+        {
+          "name": "gateway.loadout.remove",
+          "description": "Remove an unreferenced reusable gateway loadout",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            }
+          ],
+          "returns": "GatewayLoadoutConfig"
+        },
+        {
           "name": "gateway.protected_route.list",
           "description": "List Gateway-managed public MCP routes protected by Lab OAuth",
           "destructive": false,
@@ -339,6 +529,17 @@
           ],
           "params": [],
           "returns": "ProtectedMcpRouteConfig[]"
+        },
+        {
+          "name": "gateway.protected_route.list_state",
+          "description": "List desired protected-route config with pending restart state compared with the routes mounted by this process",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "ProtectedMcpRouteState[]"
         },
         {
           "name": "gateway.protected_route.get",
@@ -417,6 +618,66 @@
             }
           ],
           "returns": "ProtectedMcpRouteConfig"
+        },
+        {
+          "name": "gateway.protected_route.stage_add",
+          "description": "Persist a gateway_subset protected route for the next Labby restart without pretending it is hot-mounted",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "route",
+              "ty": "json",
+              "required": true,
+              "description": "Gateway-subset protected MCP route config to stage"
+            }
+          ],
+          "returns": "ProtectedMcpRouteStageResult"
+        },
+        {
+          "name": "gateway.protected_route.stage_update",
+          "description": "Persist a protected-route update involving a gateway_subset for the next Labby restart",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            },
+            {
+              "name": "route",
+              "ty": "json",
+              "required": true,
+              "description": "Replacement protected MCP route config to stage"
+            }
+          ],
+          "returns": "ProtectedMcpRouteStageResult"
+        },
+        {
+          "name": "gateway.protected_route.stage_remove",
+          "description": "Persist removal of a gateway_subset protected route for the next Labby restart",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            }
+          ],
+          "returns": "ProtectedMcpRouteStageResult"
         },
         {
           "name": "gateway.protected_route.test",
@@ -2344,6 +2605,18 @@
               "ty": "integer",
               "required": false,
               "description": "Bounded byte budget scanned across newest retained log files"
+            },
+            {
+              "name": "stop_after_limit",
+              "ty": "boolean",
+              "required": false,
+              "description": "Stop scanning once the returned entry limit is full instead of counting every match"
+            },
+            {
+              "name": "correlated_only",
+              "ty": "boolean",
+              "required": false,
+              "description": "Return only entries carrying a request, trace, or execution correlation identifier"
             }
           ],
           "returns": "ServerLogsQueryResult"

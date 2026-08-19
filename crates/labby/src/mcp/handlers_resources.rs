@@ -32,17 +32,22 @@ use crate::mcp::resource_errors::{
 #[cfg(feature = "gateway")]
 pub(crate) use crate::app_assets::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, GATEWAY_STATUS_APP_SKYBRIDGE_URI,
-    GATEWAY_STATUS_APP_URI, SETTINGS_APP_SKYBRIDGE_URI, SETTINGS_APP_URI,
+    GATEWAY_STATUS_APP_URI, MCP_APPS_APP_SKYBRIDGE_URI, MCP_APPS_APP_URI,
+    SETTINGS_APP_SKYBRIDGE_URI, SETTINGS_APP_URI,
 };
 pub(crate) use crate::app_assets::{
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
 };
 #[cfg(feature = "gateway")]
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, SETTINGS_TOOL_NAME};
+use crate::mcp::catalog::{
+    ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
+};
 use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
-use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
+use crate::mcp::context::{
+    auth_context_from_extensions, code_mode_read_scope_allowed, tool_execute_scope_allowed,
+};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{
     CatalogSnapshotCollector, PageCollector, error_kind as pagination_error_kind, invalid_cursor,
@@ -165,6 +170,8 @@ const ADD_SERVER_APP_FALLBACK_HTML: &str = crate::app_assets::ADD_SERVER_APP_HTM
 const GATEWAY_STATUS_APP_FALLBACK_HTML: &str = crate::app_assets::GATEWAY_STATUS_APP_HTML;
 #[cfg(feature = "gateway")]
 const SETTINGS_APP_FALLBACK_HTML: &str = crate::app_assets::SETTINGS_APP_HTML;
+#[cfg(feature = "gateway")]
+const MCP_APPS_APP_FALLBACK_HTML: &str = crate::app_assets::MCP_APPS_APP_HTML;
 
 pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
     AppResourceDescriptor {
@@ -253,6 +260,28 @@ pub(crate) const SETTINGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &
     },
 ];
 
+#[cfg(feature = "gateway")]
+pub(crate) const MCP_APPS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
+    AppResourceDescriptor {
+        uri: MCP_APPS_APP_URI,
+        name: "apps/manage",
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: Some(MCP_APP_TOOL_NAME),
+        resource_description: "MCP App for managing Labby-owned app visibility",
+        skybridge_widget_description: None,
+    },
+    AppResourceDescriptor {
+        uri: MCP_APPS_APP_SKYBRIDGE_URI,
+        name: "apps/manage.skybridge",
+        runtime: CodeModeRuntime::Skybridge,
+        tool_name: Some(MCP_APP_TOOL_NAME),
+        resource_description: "MCP App for managing Labby-owned app visibility",
+        skybridge_widget_description: Some(
+            "Enable or disable Labby-owned MCP Apps and their UI resources without disabling the manager itself.",
+        ),
+    },
+];
+
 /// FNV-1a over the bundled widget HTML, evaluated at compile time. Changes iff
 /// the HTML bytes change, so it is a stable per-build cache-bust key.
 const fn fnv1a_64(bytes: &[u8]) -> u64 {
@@ -295,6 +324,9 @@ static GATEWAY_STATUS_APP_VERSION: std::sync::LazyLock<String> =
 #[cfg(feature = "gateway")]
 static SETTINGS_APP_VERSION: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| bridged_app_content_version(SETTINGS_APP_FALLBACK_HTML));
+#[cfg(feature = "gateway")]
+static MCP_APPS_APP_VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| bridged_app_content_version(MCP_APPS_APP_FALLBACK_HTML));
 
 #[derive(Clone, Copy)]
 struct OwnedAppRegistration {
@@ -395,6 +427,16 @@ fn settings_app() -> OwnedAppRegistration {
     }
 }
 
+#[cfg(feature = "gateway")]
+/// Return the always-on Labby MCP App manager registration.
+fn mcp_apps_app() -> OwnedAppRegistration {
+    OwnedAppRegistration {
+        descriptors: MCP_APPS_APP_RESOURCE_DESCRIPTORS,
+        html: MCP_APPS_APP_FALLBACK_HTML,
+        version: &MCP_APPS_APP_VERSION,
+    }
+}
+
 /// Strip the `?v=<hash>` cache-bust suffix so a versioned URI matches its base
 /// descriptor. A base URI (no query) is returned unchanged.
 fn strip_app_version(uri: &str) -> &str {
@@ -417,6 +459,35 @@ impl LabMcpServer {
             "dispatch start"
         );
         let auth = auth_context_from_extensions(&context.extensions);
+        if !self.route_scope.exposes_resources() {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_resources",
+                subject,
+                route_scope = %self.route_scope.label(),
+                elapsed_ms,
+                "resource catalog hidden by loadout"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "list_resources",
+                elapsed_ms,
+                DispatchLogOutcome::Success,
+            )
+            .await;
+            return Ok(ListResourcesResult::with_all_items(Vec::new())
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private));
+        }
+        #[cfg(feature = "gateway")]
+        let mcp_apps_config = self.mcp_apps_config().await;
+        #[cfg(feature = "gateway")]
+        let server_logs_app_enabled = mcp_apps_config.server_logs;
+        #[cfg(not(feature = "gateway"))]
+        let server_logs_app_enabled = true;
         let mut page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
@@ -573,6 +644,16 @@ impl LabMcpServer {
             );
         }
 
+        #[cfg(feature = "gateway")]
+        if !resources.finished() && self.route_scope.is_root() && tool_execute_scope_allowed(auth) {
+            for resource in mcp_apps_app_resources() {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
+        }
+
         if !resources.finished()
             && self.code_mode_app_state.is_enabled()
             && code_mode_app_resources_visible(
@@ -603,6 +684,7 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         if !resources.finished()
+            && mcp_apps_config.settings
             && admin_app_resources_visible(auth)
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await
@@ -616,6 +698,7 @@ impl LabMcpServer {
         }
 
         if !resources.finished()
+            && server_logs_app_enabled
             && admin_app_resources_visible(auth)
             && self.route_scope.allows_service(SERVER_LOGS_TOOL_NAME)
             && self.service_visible_on_mcp(SERVER_LOGS_TOOL_NAME).await
@@ -805,6 +888,21 @@ impl LabMcpServer {
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
         let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
+        if !self.route_scope.exposes_resources() {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_resource_templates",
+                subject,
+                route_scope = %self.route_scope.label(),
+                elapsed_ms,
+                "resource template catalog hidden by loadout"
+            );
+            return Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private));
+        }
         let auth = auth_context_from_extensions(&context.extensions);
         let snapshot_audience = catalog_snapshot_audience(auth);
         let mut page_collector = PageCollector::new(request)?;
@@ -936,12 +1034,43 @@ impl LabMcpServer {
             resource_uri = %resource_uri_log,
             "dispatch start"
         );
+        if !self.route_scope.exposes_resources() {
+            let elapsed_ms = start.elapsed().as_millis();
+            let message = "MCP Resources are disabled by this loadout; ask the operator to enable Resources for this loadout (Agent Skills also require Resources)";
+            self.log_route_scope_denial(
+                &context,
+                "resources",
+                "read_resource",
+                message,
+                elapsed_ms,
+            );
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_REQUEST,
+                message.to_string(),
+                None,
+            ));
+        }
 
         // Branch -1: first-party skill files. The `skill://` namespace is
         // exact-match and disjoint from every other prefix here, so it is
         // resolved first and never falls through to a lab:// handler.
         #[cfg(feature = "skills")]
         if crate::mcp::skills::is_skill_uri(&uri) {
+            if !self.route_scope.exposes_skills() {
+                let message = "Agent Skills are disabled by this loadout; ask the operator to enable Skills (and Resources) for this loadout";
+                self.log_route_scope_denial(
+                    &context,
+                    "skills",
+                    "read_resource",
+                    message,
+                    start.elapsed().as_millis(),
+                );
+                return Err(ErrorData::new(
+                    rmcp::model::ErrorCode::INVALID_REQUEST,
+                    message.to_string(),
+                    None,
+                ));
+            }
             // Same scope `skills/list` and `skills/get` require. Gating only
             // the enumerating methods would leave every skill file fetchable by
             // URI, and skill URIs are not secret — they appear in listings,
@@ -994,6 +1123,16 @@ impl LabMcpServer {
         // Branch 0: MCP Apps UI resources. This must precede all lab://
         // fallbacks so ui:// has its own exact lookup semantics.
         //
+        // The MCP App manager is always locally owned and must remain readable
+        // even when every managed app surface is disabled.
+        #[cfg(feature = "gateway")]
+        if uri.starts_with(MCP_APPS_APP_URI) {
+            return self
+                .read_mcp_apps_app_resource_impl(&uri, &subject, start, &context)
+                .await
+                .map(Into::into);
+        }
+
         // Local Code Mode app resources own the `ui://lab/code-mode/*` namespace
         // and are served from the bundled HTML.
         if uri.starts_with(CODE_MODE_APP_URI_PREFIX) {
@@ -1308,6 +1447,117 @@ impl LabMcpServer {
         }
     }
 
+    #[cfg(feature = "gateway")]
+    async fn read_mcp_apps_app_resource_impl(
+        &self,
+        uri: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.route_scope.is_root() {
+            return Err(unknown_resource_error(uri, true));
+        }
+        let auth = auth_context_from_extensions(&context.extensions);
+        if !tool_execute_scope_allowed(auth) {
+            return Err(forbidden_resource_error(
+                uri,
+                "MCP App manager resources require one of scopes: lab, lab:admin",
+                &["lab", "lab:admin"],
+            ));
+        }
+        let app = mcp_apps_app();
+        let descriptor = app
+            .descriptor(uri)
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
+        let html = app
+            .inline_html(descriptor)
+            .map_err(|message| resource_render_error(uri, message))?;
+        let mime_type = descriptor.runtime.mime();
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = uri,
+            mime_type,
+            html_bytes = html.len(),
+            "MCP App manager resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(html, uri.to_string())
+                .with_mime_type(mime_type)
+                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
+        ]))
+    }
+
+    #[cfg(feature = "gateway")]
+    async fn read_settings_app_resource_impl(
+        &self,
+        uri: &str,
+        resource_uri_log: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.mcp_apps_config().await.settings
+            || !self.route_scope.allows_service("setup")
+            || !self.service_visible_on_mcp("setup").await
+        {
+            return Err(unknown_resource_error(uri, true));
+        }
+        if !admin_app_resources_visible(auth_context_from_extensions(&context.extensions)) {
+            return Err(forbidden_resource_error(
+                uri,
+                "Settings app resources require scope: lab:admin",
+                &["lab:admin"],
+            ));
+        }
+        let app = settings_app();
+        let descriptor = app
+            .descriptor(uri)
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
+        let html = app
+            .inline_html(descriptor)
+            .map_err(|message| resource_render_error(uri, message))?;
+        let mime_type = descriptor.runtime.mime();
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = resource_uri_log,
+            mime_type,
+            html_bytes = html.len(),
+            "settings app resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(html, uri.to_string())
+                .with_mime_type(mime_type)
+                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
+        ]))
+    }
+
     async fn read_code_mode_app_resource_impl(
         &self,
         uri: &str,
@@ -1414,6 +1664,10 @@ impl LabMcpServer {
         start: Instant,
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        if !self.mcp_apps_config().await.server_logs {
+            return Err(unknown_resource_error(uri, true));
+        }
         if !self.route_scope.allows_service(SERVER_LOGS_TOOL_NAME)
             || !self.service_visible_on_mcp(SERVER_LOGS_TOOL_NAME).await
         {
@@ -1684,61 +1938,6 @@ impl LabMcpServer {
                 .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
         ]))
     }
-
-    #[cfg(feature = "gateway")]
-    async fn read_settings_app_resource_impl(
-        &self,
-        uri: &str,
-        resource_uri_log: &str,
-        subject: &str,
-        start: Instant,
-        context: &RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
-        if !self.route_scope.allows_service("setup") || !self.service_visible_on_mcp("setup").await
-        {
-            return Err(unknown_resource_error(uri, true));
-        }
-        if !admin_app_resources_visible(auth_context_from_extensions(&context.extensions)) {
-            return Err(forbidden_resource_error(
-                uri,
-                "Settings app resources require scope: lab:admin",
-                &["lab:admin"],
-            ));
-        }
-        let app = settings_app();
-        let descriptor = app
-            .descriptor(uri)
-            .ok_or_else(|| unknown_resource_error(uri, true))?;
-        let html = app
-            .inline_html(descriptor)
-            .map_err(|message| resource_render_error(uri, message))?;
-        let mime_type = descriptor.runtime.mime();
-        let elapsed_ms = start.elapsed().as_millis();
-        tracing::info!(
-            surface = "mcp",
-            service = "labby",
-            action = "read_resource",
-            subject,
-            elapsed_ms,
-            resource_uri = resource_uri_log,
-            mime_type,
-            html_bytes = html.len(),
-            "settings app resource read ok"
-        );
-        self.emit_dispatch_notification(
-            context,
-            "lab",
-            "read_resource",
-            elapsed_ms,
-            DispatchLogOutcome::Success,
-        )
-        .await;
-        Ok(ReadResourceResult::new(vec![
-            ResourceContents::text(html, uri.to_string())
-                .with_mime_type(mime_type)
-                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
-        ]))
-    }
 }
 
 #[cfg(test)]
@@ -1863,6 +2062,12 @@ fn gateway_status_app_resources() -> Vec<Resource> {
     gateway_status_app().listed_resources()
 }
 
+#[cfg(feature = "gateway")]
+/// Build the discoverable always-on MCP App manager resource.
+fn mcp_apps_app_resources() -> Vec<Resource> {
+    mcp_apps_app().listed_resources()
+}
+
 /// MCP Apps (Claude) widget URI for a tool — backs `_meta.ui.resourceUri`.
 ///
 /// Carries the `?v=<hash>` cache-bust suffix so a rebuilt widget forces the host
@@ -1916,6 +2121,16 @@ pub(crate) fn settings_app_resource_uri_for_tool(tool_name: &str) -> Option<Stri
 #[cfg(feature = "gateway")]
 pub(crate) fn settings_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
     settings_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
+}
+
+#[cfg(feature = "gateway")]
+pub(crate) fn mcp_apps_app_resource_uri_for_tool(tool_name: &str) -> Option<String> {
+    mcp_apps_app().uri_for_tool(CodeModeRuntime::McpApp, tool_name)
+}
+
+#[cfg(feature = "gateway")]
+pub(crate) fn mcp_apps_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
+    mcp_apps_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
 }
 
 #[cfg(test)]
@@ -2194,7 +2409,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         LabMcpServer {
             registry: Arc::new(crate::registry::ToolRegistry::new()),
             gateway_manager: Some(manager),
-            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Default::default(),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),
@@ -2313,7 +2528,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         LabMcpServer {
             registry: Arc::new(registry),
             gateway_manager: Some(manager),
-            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Default::default(),
             code_mode_app_state: Default::default(),
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),
@@ -2387,7 +2602,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         LabMcpServer {
             registry: Arc::new(registry),
             gateway_manager: None,
-            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Default::default(),
             code_mode_app_state,
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),
@@ -2963,6 +3178,68 @@ function nonEssentialCapabilityError() {{ return false; }}
 const probe = probeStatus({{connected:true,tool_count:0,resource_count:0,prompt_count:0,last_error:null}});
 if (!probe.connected || !probe.healthy || !probe.empty) {{
   throw new Error(`zero-capability handshake was rejected: ${{JSON.stringify(probe)}}`);
+}}
+"#
+        ));
+    }
+
+    #[test]
+    fn mcp_apps_manager_is_interactive_and_mobile_responsive() {
+        let descriptor = MCP_APPS_APP_RESOURCE_DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.uri == MCP_APPS_APP_URI)
+            .expect("MCP Apps manager descriptor");
+        let html = mcp_apps_app()
+            .inline_html(descriptor)
+            .expect("MCP Apps manager HTML");
+
+        for expected in [
+            "MCP Apps",
+            "Enable all",
+            "Disable all",
+            "role='switch'",
+            "aria-live=\"polite\"",
+            "host.callAction(\"mcp_app\",\"status\"",
+            "host.callAction(\"mcp_app\",enabled?\"enable\":\"disable\"",
+            "target===\"all\"",
+            "ResizeObserver",
+            "observer.disconnect()",
+            "document.documentElement.scrollHeight",
+            "env(safe-area-inset-bottom)",
+            "@media(max-width:600px)",
+        ] {
+            assert!(
+                html.contains(expected),
+                "MCP Apps manager must include marker {expected:?}"
+            );
+        }
+        for forbidden in ["height+20", "width:Math.ceil", "min-height:100dvh"] {
+            assert!(
+                !html.contains(forbidden),
+                "MCP Apps manager must not include {forbidden:?}"
+            );
+        }
+        assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
+    }
+
+    #[test]
+    fn mcp_apps_manager_preserves_structured_errors() {
+        let source = function_source(
+            MCP_APPS_APP_FALLBACK_HTML,
+            "function normalize(value)",
+            "function apply(raw)",
+        );
+        run_node(&format!(
+            r#"
+{source}
+for (const value of [
+  {{ok:false,error:{{message:'backend exploded'}}}},
+  {{structuredContent:{{ok:false,error:{{message:'nested exploded'}}}}}},
+  {{isError:true,content:[{{type:'text',text:'text exploded'}}]}}
+]) {{
+  let message = '';
+  try {{ normalize(value); }} catch (error) {{ message = error.message; }}
+  if (!message.includes('exploded')) throw new Error('structured error was masked: ' + message);
 }}
 "#
         ));

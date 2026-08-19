@@ -213,11 +213,17 @@ pub struct GatewayRuntimeView {
     #[serde(default)]
     pub prompt_count: usize,
     #[serde(default)]
+    pub skill_count: usize,
+    #[serde(default)]
     pub exposed_tool_count: usize,
     #[serde(default)]
     pub exposed_resource_count: usize,
     #[serde(default)]
     pub exposed_prompt_count: usize,
+    #[serde(default)]
+    pub exposed_skill_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_skills: Option<bool>,
     #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,6 +311,9 @@ pub struct GatewayHintApplyView {
 pub struct GatewayUsageToolCount {
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub calls: i64,
 }
 
@@ -328,9 +337,14 @@ pub struct GatewayUsageCallView {
     pub ts_unix: i64,
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub actor: String,
     pub outcome: String,
     pub elapsed_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -506,6 +520,12 @@ pub struct GatewayMcpRuntimeView {
     pub discovered_prompt_count: usize,
     #[serde(default)]
     pub exposed_prompt_count: usize,
+    #[serde(default)]
+    pub discovered_skill_count: usize,
+    #[serde(default)]
+    pub exposed_skill_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_skills: Option<bool>,
     #[serde(default)]
     pub likely_stale_count: usize,
     #[serde(default)]

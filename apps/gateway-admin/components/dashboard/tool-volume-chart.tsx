@@ -1,6 +1,6 @@
 'use client'
 
-import { Area, AreaChart, CartesianGrid, Line, XAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts'
 import {
   ChartContainer,
   ChartTooltip,
@@ -10,7 +10,7 @@ import {
 import type { MetricsBucket, MetricsWindow } from '@/lib/types/metrics'
 
 const CONFIG: ChartConfig = {
-  calls: { label: 'Tool calls', color: 'var(--aurora-accent-primary)' },
+  succeeded: { label: 'Succeeded', color: 'var(--aurora-accent-primary)' },
   failed: { label: 'Failed', color: 'var(--aurora-error)' },
 }
 
@@ -31,19 +31,13 @@ export function ToolVolumeChart({
 }) {
   const rows = data.map((bucket) => ({
     label: bucketLabel(bucket.ts, window),
-    calls: bucket.calls,
+    succeeded: Math.max(0, bucket.calls - bucket.failed),
     failed: bucket.failed,
   }))
 
   return (
     <ChartContainer config={CONFIG} className="aspect-auto h-[200px] w-full">
-      <AreaChart data={rows} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
-        <defs>
-          <linearGradient id="fill-calls" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--color-calls)" stopOpacity={0.35} />
-            <stop offset="100%" stopColor="var(--color-calls)" stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
+      <BarChart data={rows} margin={{ left: 4, right: 4, top: 8, bottom: 0 }} barCategoryGap="8%">
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
         <XAxis
           dataKey="label"
@@ -53,23 +47,21 @@ export function ToolVolumeChart({
           minTickGap={24}
         />
         <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-        <Area
-          dataKey="calls"
-          type="natural"
-          stroke="var(--color-calls)"
-          strokeWidth={2}
-          fill="url(#fill-calls)"
+        <Bar
+          dataKey="succeeded"
+          stackId="calls"
+          fill="var(--color-succeeded)"
+          radius={[2, 2, 0, 0]}
           isAnimationActive={false}
         />
-        <Line
+        <Bar
           dataKey="failed"
-          type="natural"
-          stroke="var(--color-failed)"
-          strokeWidth={1.5}
-          dot={false}
+          stackId="calls"
+          fill="var(--color-failed)"
+          radius={[2, 2, 0, 0]}
           isAnimationActive={false}
         />
-      </AreaChart>
+      </BarChart>
     </ChartContainer>
   )
 }

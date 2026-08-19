@@ -454,6 +454,73 @@ async fn abort_direct_persist_keeps_durable_and_live_config_coherent() {
 }
 
 #[tokio::test]
+async fn abort_staged_persist_finishes_durable_write_without_publishing_live_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
+        .expect("seed disk");
+    let persisted = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let manager = GatewayManager::with_store(
+        path.clone(),
+        GatewayRuntimeHandle::default(),
+        Arc::new(PauseAfterPersistStore {
+            path: path.clone(),
+            persisted: Arc::clone(&persisted),
+            release: Arc::clone(&release),
+        }),
+    );
+    let live_before = manager.current_config().await.code_mode.mcp_ui_enabled;
+    let desired_value = !live_before;
+    let worker = manager.clone();
+    let request = tokio::spawn(async move {
+        let guard = worker.acquire_config_mutation().await?;
+        let mut candidate = worker.load_config_for_mutation().await?;
+        candidate.code_mode.mcp_ui_enabled = desired_value;
+        worker.persist_desired_config_owned(guard, candidate).await
+    });
+    tokio::task::spawn_blocking({
+        let persisted = Arc::clone(&persisted);
+        move || {
+            let (lock, cv) = &*persisted;
+            let mut ready = lock.lock().expect("persist lock");
+            while !*ready {
+                ready = cv.wait(ready).expect("persist wait");
+            }
+        }
+    })
+    .await
+    .expect("persist waiter");
+    request.abort();
+    let (release_lock, release_cv) = &*release;
+    *release_lock.lock().expect("release lock") = true;
+    release_cv.notify_all();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if load_gateway_config(&path)
+                .expect("durable config")
+                .code_mode
+                .mcp_ui_enabled
+                == desired_value
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("owned staged persist completes");
+    assert_eq!(
+        load_gateway_config(&path).unwrap().code_mode.mcp_ui_enabled,
+        desired_value
+    );
+    assert_eq!(
+        manager.current_config().await.code_mode.mcp_ui_enabled,
+        live_before
+    );
+}
+
+#[tokio::test]
 async fn reload_rollback_covers_batch_update_remove_and_code_mode_mutations() {
     // batch-add
     let batch_dir = tempfile::tempdir().expect("batch tempdir");
@@ -780,6 +847,72 @@ async fn code_mode_mcp_ui_setting_persists_notifies_and_skips_pool_rebuild() {
     let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
     restarted.seed_config_unchecked_for_tests(persisted).await;
     assert!(!restarted.code_mode_app_state().is_enabled());
+}
+
+#[tokio::test]
+async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let runtime = GatewayRuntimeHandle::default();
+    let mut manager = GatewayManager::new(path.clone(), runtime.clone());
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+    manager.set_notifier(crate::gateway::types::CatalogChangeNotifier::new(notify_tx));
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig::default())
+        .await;
+    assert!(runtime.current_pool().await.is_none());
+
+    let updated = manager
+        .set_mcp_app_visibility(
+            "all",
+            false,
+            Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
+        )
+        .await
+        .expect("persist MCP App visibility");
+
+    assert!(!updated.code_mode.mcp_ui_enabled);
+    assert!(!updated.mcp_apps.gateway_status);
+    assert!(!updated.mcp_apps.server_logs);
+    assert!(!updated.mcp_apps.add_server);
+    assert!(!updated.mcp_apps.settings);
+    assert!(!manager.code_mode_app_state().is_enabled());
+    assert!(
+        runtime.current_pool().await.is_none(),
+        "app-only settings must not create or rebuild the upstream pool"
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(1), notify_rx.recv())
+        .await
+        .expect("MCP App catalog notification timed out")
+        .expect("MCP App catalog notification channel closed");
+    assert!(event.diff.tools_changed);
+    assert!(event.diff.resources_changed);
+    assert!(!event.diff.prompts_changed);
+    assert_eq!(
+        event.source,
+        labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP
+    );
+    assert!(
+        notify_rx.try_recv().is_err(),
+        "a bulk visibility change should emit exactly one catalog event"
+    );
+
+    let persisted = load_gateway_config(&path).expect("load persisted config");
+    assert!(!persisted.code_mode.mcp_ui_enabled);
+    assert!(!persisted.mcp_apps.gateway_status);
+    assert!(!persisted.mcp_apps.server_logs);
+    assert!(!persisted.mcp_apps.add_server);
+    assert!(!persisted.mcp_apps.settings);
+
+    let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    restarted.seed_config_unchecked_for_tests(persisted).await;
+    assert!(!restarted.code_mode_app_state().is_enabled());
+    let restarted_apps = restarted.mcp_apps_config().await;
+    assert!(!restarted_apps.gateway_status);
+    assert!(!restarted_apps.server_logs);
+    assert!(!restarted_apps.add_server);
+    assert!(!restarted_apps.settings);
 }
 
 #[tokio::test]

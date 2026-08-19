@@ -67,6 +67,13 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced
 }
 
+function formatBytes(value: number | null | undefined) {
+  if (value === null || value === undefined) return '—'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
 function UsageExplorer() {
   const params = useSearchParams()
   const initialWindow = isWindow(params.get('window')) ? (params.get('window') as MetricsWindow) : '24h'
@@ -96,6 +103,11 @@ function UsageExplorer() {
     [data],
   )
   const ipOptions = data?.facets.ips ?? []
+  const collected = data?.collected
+  const showIps = collected?.ips ?? false
+  const showSurfaces = collected?.surfaces ?? false
+  const showTokens = collected?.tokens ?? false
+  const tableColumns = 6 + Number(showSurfaces) + Number(showTokens)
 
   const resetPaging = () => setOffset(0)
   const filtered = data?.filtered ?? 0
@@ -118,7 +130,7 @@ function UsageExplorer() {
       icon: <Clock size={12} strokeWidth={1.8} />,
     },
     {
-      label: 'Tools',
+      label: 'Targets',
       value: data ? data.facets.tools.length : '—',
       icon: <Wrench size={12} strokeWidth={1.8} />,
     },
@@ -129,7 +141,7 @@ function UsageExplorer() {
     },
     {
       label: 'Source IPs',
-      value: data ? data.facets.ips.length : '—',
+      value: data ? (showIps ? data.facets.ips.length : 'Private') : '—',
       icon: <Network size={12} strokeWidth={1.8} />,
     },
   ]
@@ -142,7 +154,7 @@ function UsageExplorer() {
 
   return (
     <>
-      <AppHeader breadcrumbs={[{ label: 'Overview', href: '/' }, { label: 'Usage explorer' }]} />
+      <AppHeader breadcrumbs={[{ label: 'Usage' }]} />
 
       <div className={cn(AURORA_PAGE_FRAME, AURORA_PAGE_SHELL)}>
         {/* Hero — the mock's eyebrow + title + action cluster with the stat
@@ -162,7 +174,7 @@ function UsageExplorer() {
           meta={WINDOW_LABELS[window]}
         >
           <p className="text-[11px] leading-[1.35] text-aurora-text-muted">
-            Every dispatched tool call in the window — filter by tool, agent, outcome, or text.
+            Every retained upstream call in the window — filter by target, agent, outcome, or text.
           </p>
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
             <div className="relative flex-1 sm:min-w-[220px]">
@@ -170,14 +182,14 @@ function UsageExplorer() {
               <Input
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); resetPaging() }}
-                placeholder="Search tool, action, agent, error…"
+                placeholder="Search target, operation, agent, error…"
                 className="pl-9"
               />
             </div>
             <Select value={tool} onValueChange={(v) => { setTool(v); resetPaging() }}>
-              <SelectTrigger className="sm:w-40"><SelectValue placeholder="Tool" /></SelectTrigger>
+              <SelectTrigger className="sm:w-40"><SelectValue placeholder="Target" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>All tools</SelectItem>
+                <SelectItem value={ALL}>All targets</SelectItem>
                 {toolOptions.map((name) => (
                   <SelectItem key={name} value={name}>{name}</SelectItem>
                 ))}
@@ -192,15 +204,17 @@ function UsageExplorer() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={ip} onValueChange={(v) => { setIp(v); resetPaging() }}>
-              <SelectTrigger className="sm:w-40"><SelectValue placeholder="IP" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All IPs</SelectItem>
-                {ipOptions.map((addr) => (
-                  <SelectItem key={addr} value={addr}>{addr}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {showIps ? (
+              <Select value={ip} onValueChange={(v) => { setIp(v); resetPaging() }}>
+                <SelectTrigger className="sm:w-40"><SelectValue placeholder="IP" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All IPs</SelectItem>
+                  {ipOptions.map((addr) => (
+                    <SelectItem key={addr} value={addr}>{addr}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
             <Select value={outcome} onValueChange={(v) => { setOutcome(v); resetPaging() }}>
               <SelectTrigger className="sm:w-36"><SelectValue placeholder="Outcome" /></SelectTrigger>
               <SelectContent>
@@ -212,7 +226,7 @@ function UsageExplorer() {
           </div>
         </DashboardPanel>
 
-        <DashboardPanel title="Tool calls" icon={<Activity className="size-4" />} meta={tableMeta}>
+        <DashboardPanel title="Upstream calls" icon={<Activity className="size-4" />} meta={tableMeta}>
           {/* The panel body carries the mock's 12/14 padding; a dense table
               wants the card's full width, so it is pulled back flush. */}
           <div style={{ margin: '-12px -14px' }}>
@@ -220,18 +234,19 @@ function UsageExplorer() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[120px]">Time</TableHead>
-                  <TableHead>Tool · action</TableHead>
+                  <TableHead>Target · operation</TableHead>
                   <TableHead>Agent</TableHead>
-                  <TableHead className="w-[80px]">Surface</TableHead>
+                  {showSurfaces ? <TableHead className="w-[80px]">Surface</TableHead> : null}
                   <TableHead className="w-[110px]">Outcome</TableHead>
-                  <TableHead className="w-[90px] text-right">Tokens</TableHead>
+                  {showTokens ? <TableHead className="w-[90px] text-right">Tokens</TableHead> : null}
+                  <TableHead className="w-[90px] text-right">Response</TableHead>
                   <TableHead className="w-[90px] text-right">Latency</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {error && !data ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center">
+                      <TableCell colSpan={tableColumns} className="py-8 text-center">
                       <span className="text-sm text-aurora-error">Couldn&apos;t load calls. </span>
                       <button
                         type="button"
@@ -245,12 +260,12 @@ function UsageExplorer() {
                 ) : isLoading && !data ? (
                   Array.from({ length: 8 }, (_, i) => (
                     <TableRow key={i}>
-                      <TableCell colSpan={7}><Skeleton className="h-5 w-full" /></TableCell>
+                      <TableCell colSpan={tableColumns}><Skeleton className="h-5 w-full" /></TableCell>
                     </TableRow>
                   ))
                 ) : !data || data.calls.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-sm text-aurora-text-muted">
+                    <TableCell colSpan={tableColumns} className="py-10 text-center text-sm text-aurora-text-muted">
                       No calls match these filters.
                     </TableCell>
                   </TableRow>
@@ -265,12 +280,14 @@ function UsageExplorer() {
                         ) : null}
                       </TableCell>
                       <TableCell>
-                        <div className="text-aurora-text-primary">{call.agent_label}</div>
-                        <div className="font-mono text-[11px] text-aurora-text-muted">
-                          {call.ip || 'unknown IP'}
+                        <div className="text-aurora-text-primary">
+                          {call.agent_label === 'unattributed' ? 'Not attributed' : call.agent_label}
                         </div>
+                        {showIps ? (
+                          <div className="font-mono text-[11px] text-aurora-text-muted">{call.ip}</div>
+                        ) : null}
                       </TableCell>
-                      <TableCell><SurfaceTag surface={call.surface} /></TableCell>
+                      {showSurfaces ? <TableCell><SurfaceTag surface={call.surface} /></TableCell> : null}
                       <TableCell>
                         <span className="inline-flex items-center gap-2">
                           <OutcomeDot outcome={call.outcome} />
@@ -279,8 +296,13 @@ function UsageExplorer() {
                           </span>
                         </span>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-aurora-text-muted">
-                        {formatCompactNumber(call.input_tokens + call.output_tokens)}
+                      {showTokens ? (
+                        <TableCell className="text-right tabular-nums text-aurora-text-muted">
+                          {formatCompactNumber(call.input_tokens + call.output_tokens)}
+                        </TableCell>
+                      ) : null}
+                      <TableCell className="text-right font-mono text-[11px] tabular-nums text-aurora-text-muted">
+                        {formatBytes(call.response_bytes)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-aurora-text-muted">
                         {formatDuration(call.elapsed_ms)}

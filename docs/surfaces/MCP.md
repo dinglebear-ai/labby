@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-08-08"
+updated: "2026-08-17"
 ---
 
 # MCP Surface
@@ -110,6 +110,29 @@ names and normalized operator hints. They change when those configuration
 determinants change, but remain stable across runtime health and discovered-tool
 churn. Call `codemode.search(...)` and `codemode.describe(...)` inside a run to
 inspect the current route-scoped tool catalog.
+
+### Labby MCP App manager
+
+The root gateway also advertises `mcp_app`, an always-on MCP App switchboard
+for Labby's own UI surfaces. It manages `codemode`, `gateway_status`,
+`server_logs`, `add_server`, `settings`, or `all`. The default target remains `codemode` for
+backward compatibility with the original inspector-only control contract.
+
+Reading status or opening the manager requires `lab` or `lab:admin`; changing
+visibility requires `lab:admin`. The manager is intentionally unavailable on
+protected subset routes because these switches mutate gateway-global state, and
+the manager itself cannot be disabled. Changes are persisted and publish both
+`tools/list_changed` and `resources/list_changed` without rebuilding the
+upstream pool.
+
+Disabling a surface removes its app tool/metadata and owned `ui://` resources,
+and direct reads of a disabled owned resource fail as unknown. It does not tear
+down the underlying text/service capability where one exists: disabling the
+Code Mode inspector leaves `codemode` available, disabling the Server Logs
+app leaves the `server_logs` service tool available without app metadata, and
+disabling Settings leaves the underlying `setup` service contract intact. The
+Code Mode inspector retains the existing `code_mode.mcp_ui_enabled` setting;
+the other switches live under `[mcp_apps]`.
 
 Synthetic Code Mode advertises only the fixed Lab-owned UI action surface. It
 does not add or remove raw upstream MCP App tools as upstream health changes.

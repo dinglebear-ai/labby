@@ -18,6 +18,8 @@ pub(super) struct QueryParams {
     pub query: Option<String>,
     pub file: Option<String>,
     pub max_scan_bytes: u64,
+    pub stop_after_limit: bool,
+    pub correlated_only: bool,
 }
 
 pub(super) fn parse(params: &Value) -> Result<QueryParams, ToolError> {
@@ -35,6 +37,8 @@ pub(super) fn parse(params: &Value) -> Result<QueryParams, ToolError> {
         max_scan_bytes: optional_u64(params, "max_scan_bytes")?
             .unwrap_or(DEFAULT_SCAN_BYTES)
             .clamp(1, MAX_SCAN_BYTES),
+        stop_after_limit: optional_bool(params, "stop_after_limit")?.unwrap_or(false),
+        correlated_only: optional_bool(params, "correlated_only")?.unwrap_or(false),
     })
 }
 
@@ -52,6 +56,17 @@ fn optional_non_empty<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str
 
 fn optional_usize(params: &Value, key: &str) -> Result<Option<usize>, ToolError> {
     optional_u64(params, key).map(|value| value.map(|n| n as usize))
+}
+
+fn optional_bool(params: &Value, key: &str) -> Result<Option<bool>, ToolError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(ToolError::InvalidParam {
+            message: format!("parameter `{key}` must be a boolean"),
+            param: key.to_string(),
+        }),
+    }
 }
 
 fn optional_u64(params: &Value, key: &str) -> Result<Option<u64>, ToolError> {

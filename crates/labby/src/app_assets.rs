@@ -31,6 +31,14 @@ pub(crate) const SETTINGS_APP_URI: &str = "ui://lab/settings/editor";
 pub(crate) const SETTINGS_APP_SKYBRIDGE_URI: &str = "ui://lab/settings/editor.skybridge";
 pub(crate) const SETTINGS_APP_HTML: &str = include_str!("mcp/assets/settings_app.html");
 
+/// Always-on MCP App manager used to control the other Labby-owned app surfaces.
+#[cfg(feature = "gateway")]
+pub(crate) const MCP_APPS_APP_URI: &str = "ui://lab/apps/manage";
+#[cfg(feature = "gateway")]
+pub(crate) const MCP_APPS_APP_SKYBRIDGE_URI: &str = "ui://lab/apps/manage.skybridge";
+#[cfg(feature = "gateway")]
+pub(crate) const MCP_APPS_APP_HTML: &str = include_str!("mcp/assets/mcp_apps_app.html");
+
 pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   "use strict";
   if (window.LabbyAppHost) return;

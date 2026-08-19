@@ -1,7 +1,7 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-08-02"
+updated: "2026-08-18"
 ---
 
 # MCP 2026-07-28 Conformance
@@ -56,9 +56,12 @@ MCP client -> root Labby (stdio) -> middle Labby (authenticated HTTP) -> leaf MC
 ```
 
 Middle and root are warmed through Labby's real `gateway.reload` lifecycle,
-not by test-only pool mutation. The leaf publishes more than one page of every
-catalog family so the chain proves ownership and pagination beyond the first
-page.
+not by test-only pool mutation. Each child process also pins its working
+directory to its isolated temporary home because Labby intentionally resolves
+`./config.toml` before HOME-scoped configuration; a caller's unrelated working
+directory must never shadow the fixture. The leaf publishes more than one page
+of every catalog family so the chain proves ownership and pagination beyond the
+first page.
 
 | Scenario | Multi-hop assertion |
 |---|---|
@@ -66,8 +69,8 @@ page.
 | Tools | 75 late-page tools plus an MRTR tool survive both gateways |
 | Tool calls | A late-page tool executes through root and middle with its arguments intact |
 | MRTR | `input_required` remains first-class through both gateways |
-| Tasks | Create, get, update, and cancel route through both gateways; gateway IDs remain stable and task-status notifications are translated |
-| Progress | Progress tokens and messages survive both gateway hops |
+| Tasks | Create, get, update, and cancel route through both gateways; gateway IDs remain stable and task-status notifications are translated and delivered before an overtaking response can tear the request down |
+| Progress | Progress tokens and messages survive both gateway hops in upstream wire order; the driver observes order at the raw client transport rather than concurrent callback completion order |
 | Cancellation | A downstream cancellation traverses root -> middle -> leaf, where the leaf observes it |
 | Prompts | 70 prompts aggregate; a late-page prompt can be fetched |
 | Resources | 70 resources aggregate; nested gateway URIs remain routable on read |
@@ -96,7 +99,7 @@ unroutable.
 | Tasks | Gateway-owned handles route get/update/cancel and translate task-status IDs | task routing tests and relay task-status regression |
 | Subscriptions | Labby consumes upstream listen streams and forwards subscribed list/resource notifications | upstream subscription and peer fanout tests |
 | Resource subscriptions | Labby acknowledges only exact URIs an upstream accepted | subscription filter tests |
-| Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | complete relay module, 15 passing tests |
+| Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | relay connector/route tests plus the multi-hop driver |
 | Provenance | Ordinary results identify Labby and preserve distinct upstream server identity under `ai.dinglebear.labby/upstreamServerInfo` | provenance unit test and multi-hop driver |
 | Error fidelity | Tool error classification is observational; original content, structured content, and metadata pass through | upstream normalization tests |
 | Auth and scope step-up | Labby owns inbound OAuth 2.1 policy, CIMD, RFC 9207 issuer binding, revocation, client credentials, ID-JAG exchange, and RFC 9728 challenges | dated client suite plus Labby auth contract tests |
@@ -119,6 +122,15 @@ subject-bound gateway handle. Subsequent `tasks/get`, `tasks/update`, and
 `tasks/cancel` calls route over the connection that created it. Incoming
 `notifications/tasks` messages translate the native task ID back to the
 gateway handle before reaching the downstream client.
+
+Request-scoped relay connections intercept progress and task-status
+notifications at the upstream transport's sequential receive boundary and
+commit them to one bounded FIFO before any later response can be returned to
+rmcp. This is intentionally below `ClientHandler` callbacks: rmcp may cancel and
+re-poll `Transport::receive()` and may run notification callbacks concurrently.
+Queuing immediately after wire consumption makes delivery cancellation-safe,
+preserves progress wire order, and prevents a task response from closing the
+downstream request while an earlier `Working` notification is still in flight.
 
 ### Cache and subscriptions
 

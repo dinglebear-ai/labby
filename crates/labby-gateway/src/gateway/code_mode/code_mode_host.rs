@@ -310,7 +310,7 @@ impl CodeModeHost for GatewayManager {
         // ids, so it is structurally impossible to return an id the sandbox
         // cannot see.
         let vectors = self
-            .ensure_embeddings_for_fingerprint(&render.fingerprint, &render.entries)
+            .ensure_embeddings_for_fingerprint(&render.embedding_fingerprint, &render.entries)
             .await;
         if vectors.is_empty() {
             return Ok(Vec::new());

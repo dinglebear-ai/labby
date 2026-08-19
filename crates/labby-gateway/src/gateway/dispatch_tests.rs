@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use labby_runtime::gateway_config::{
-    ProtectedMcpRouteConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
-    UpstreamOauthRegistration,
+    ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig, ProtectedMcpRouteTarget, UpstreamConfig,
+    UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
 };
 
 use super::super::discovery::DiscoveredServer;
@@ -550,9 +550,13 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
             ts_unix: 1_000,
             upstream_name: "github".to_string(),
             tool_name: "search_repos".to_string(),
+            capability: "tools".to_string(),
+            operation: "tool.call".to_string(),
+            subject_scoped: false,
             actor: "unattributed".to_string(),
             outcome: "ok".to_string(),
             elapsed_ms: 10,
+            response_bytes: Some(128),
         })
         .await
         .unwrap();
@@ -561,9 +565,13 @@ async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams()
             ts_unix: 1_001,
             upstream_name: "gateway-alpha".to_string(),
             tool_name: "status_get".to_string(),
+            capability: "tools".to_string(),
+            operation: "tool.call".to_string(),
+            subject_scoped: false,
             actor: "unattributed".to_string(),
             outcome: "ok".to_string(),
             elapsed_ms: 10,
+            response_bytes: Some(64),
         })
         .await
         .unwrap();
@@ -966,10 +974,14 @@ async fn gateway_servers_marks_oauth_catalog_rows_as_request_scoped_not_healthy_
             exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             resource_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             prompt_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            skill_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            proxy_skills: false,
+            supports_skills: None,
             proxy_resources: false,
             prompt_count: 0,
             resource_count: 0,
             skill_count: 0,
+            skill_names: Vec::new(),
             prompt_names: Vec::new(),
             resource_uris: Vec::new(),
             tool_health: crate::upstream::types::UpstreamHealth::Healthy,
@@ -1158,15 +1170,14 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
         backend_mcp_path: "/mcp".to_string(),
         scopes: Vec::new(),
         health_path: None,
-        target: Some(
-            labby_runtime::gateway_config::ProtectedMcpRouteTarget::GatewaySubset(
-                labby_runtime::gateway_config::ProtectedGatewaySubsetTarget {
-                    upstreams: vec!["gateway-alpha".to_string()],
-                    services: Vec::new(),
-                    expose_code_mode: false,
-                },
-            ),
-        ),
+        target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                upstreams: vec!["gateway-alpha".to_string()],
+                services: Vec::new(),
+                expose_code_mode: false,
+                loadout: None,
+            },
+        )),
     }
 }
 
@@ -1247,6 +1258,498 @@ async fn protected_gateway_subset_hot_crud_requires_restart() {
     .await
     .expect_err("gateway_subset remove must not leave stale scoped service mounted");
     assert_eq!(err.kind(), "restart_required");
+}
+
+#[tokio::test]
+async fn protected_gateway_subset_stage_actions_persist_without_hot_mounting() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+
+    let staged = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_add",
+        json!({ "route": protected_gateway_subset_route_fixture("ops") }),
+    )
+    .await
+    .expect("stage add");
+    assert_eq!(staged["restart_required"], true);
+    assert_eq!(staged["pending_operation"], "add");
+
+    let runtime = dispatch_with_manager(&manager, "gateway.protected_route.list", json!({}))
+        .await
+        .expect("runtime routes");
+    assert_eq!(runtime.as_array().expect("runtime array").len(), 0);
+
+    let desired = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
+        .await
+        .expect("desired route state");
+    assert_eq!(desired.as_array().expect("state array").len(), 1);
+    assert_eq!(desired[0]["name"], "ops");
+    assert_eq!(desired[0]["restart_required"], true);
+    assert_eq!(desired[0]["pending_operation"], "add");
+    assert_eq!(desired[0]["runtime_present"], false);
+    assert_eq!(desired[0]["desired_present"], true);
+
+    let removed = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_remove",
+        json!({ "name": "ops" }),
+    )
+    .await
+    .expect("remove staged add before restart");
+    assert_eq!(removed["restart_required"], false);
+    assert!(removed["pending_operation"].is_null());
+    assert!(
+        removed["restart_note"]
+            .as_str()
+            .is_some_and(|note| note.contains("no restart is required"))
+    );
+
+    let desired = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
+        .await
+        .expect("route state after staged removal");
+    assert!(desired.as_array().expect("state array").is_empty());
+}
+
+#[tokio::test]
+async fn mounted_loadout_update_can_be_staged_without_changing_runtime_projection() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+
+    let original = json!({
+        "name": "ops",
+        "description": "runtime projection",
+        "upstreams": [],
+        "services": [],
+        "expose_tools": true,
+        "expose_resources": true,
+        "expose_prompts": true,
+        "expose_skills": true,
+        "expose_code_mode": false
+    });
+    dispatch_with_manager(
+        &manager,
+        "gateway.loadout.add",
+        json!({ "loadout": original }),
+    )
+    .await
+    .expect("add loadout");
+
+    let mut route = protected_gateway_subset_route_fixture("ops-route");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = route.target.as_mut() else {
+        panic!("gateway subset fixture");
+    };
+    target.loadout = Some("ops".to_string());
+    target.upstreams.clear();
+    dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_add",
+        json!({ "route": route }),
+    )
+    .await
+    .expect("stage loadout route");
+
+    let staged = dispatch_with_manager(
+        &manager,
+        "gateway.loadout.stage_patch",
+        json!({ "name": "ops", "patch": { "expose_tools": false } }),
+    )
+    .await
+    .expect("stage loadout patch");
+    assert_eq!(staged["restart_required"], true);
+    assert_eq!(staged["loadout"]["expose_tools"], false);
+
+    let runtime = dispatch_with_manager(&manager, "gateway.loadout.list", json!({}))
+        .await
+        .expect("runtime loadouts");
+    assert_eq!(runtime[0]["expose_tools"], true);
+
+    let desired = dispatch_with_manager(&manager, "gateway.loadout.list_state", json!({}))
+        .await
+        .expect("desired loadouts");
+    assert_eq!(desired[0]["expose_tools"], false);
+    assert_eq!(desired[0]["restart_required"], true);
+    assert_eq!(desired[0]["pending_operation"], "update");
+}
+
+#[tokio::test]
+async fn staged_subset_is_not_promoted_by_unrelated_hot_persist_or_reload() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let runtime_route = protected_gateway_subset_route_fixture("ops");
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![runtime_route.clone()],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+
+    let desired_direct = protected_route_fixture("ops");
+    let staged = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({ "name": "ops", "route": desired_direct }),
+    )
+    .await
+    .expect("stage subset to direct conversion");
+    assert_eq!(staged["restart_required"], true);
+
+    // An unrelated hot-safe mutation persists the durable desired config. It
+    // must not smuggle the staged route into the running snapshot/index.
+    dispatch_with_manager(
+        &manager,
+        "gateway.loadout.add",
+        json!({
+            "loadout": {
+                "name": "unrelated",
+                "upstreams": [],
+                "services": [],
+                "expose_code_mode": true,
+                "expose_tools": true,
+                "expose_resources": true,
+                "expose_prompts": true,
+                "expose_skills": true
+            }
+        }),
+    )
+    .await
+    .expect("unrelated hot loadout add");
+
+    let runtime = dispatch_with_manager(&manager, "gateway.protected_route.list", json!({}))
+        .await
+        .expect("runtime route list after unrelated persist");
+    assert_eq!(runtime[0]["target"]["kind"], "gateway_subset");
+
+    // An explicit gateway reload also reconciles hot-safe upstream/runtime
+    // inputs only. Host-mounted subset routes still require a process restart.
+    manager
+        .reload_with_origin(None, None)
+        .await
+        .expect("gateway reload with staged route");
+    let runtime = dispatch_with_manager(&manager, "gateway.protected_route.list", json!({}))
+        .await
+        .expect("runtime route list after reload");
+    assert_eq!(runtime[0]["target"]["kind"], "gateway_subset");
+
+    let desired = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
+        .await
+        .expect("desired route state after reload");
+    assert_eq!(desired[0]["target"], Value::Null);
+    assert_eq!(desired[0]["restart_required"], true);
+    assert_eq!(desired[0]["pending_operation"], "update");
+}
+
+#[tokio::test]
+async fn hot_route_crud_rejects_still_mounted_subset_after_desired_conversion() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![protected_gateway_subset_route_fixture("ops")],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+
+    dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({ "name": "ops", "route": protected_route_fixture("ops") }),
+    )
+    .await
+    .expect("stage subset to direct conversion");
+
+    for (action, params) in [
+        (
+            "gateway.protected_route.update",
+            json!({ "name": "ops", "route": protected_route_fixture("ops") }),
+        ),
+        ("gateway.protected_route.remove", json!({ "name": "ops" })),
+    ] {
+        let error = dispatch_with_manager(&manager, action, params)
+            .await
+            .expect_err("still-mounted subset must reject hot mutation");
+        assert_eq!(error.kind(), "restart_required", "action={action}");
+    }
+
+    dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_remove",
+        json!({ "name": "ops" }),
+    )
+    .await
+    .expect("stage desired removal while runtime subset remains");
+    let error = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.add",
+        json!({ "route": protected_route_fixture("ops") }),
+    )
+    .await
+    .expect_err("same-name direct add must not replace mounted subset hot");
+    assert_eq!(error.kind(), "restart_required");
+
+    let replacement = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_add",
+        json!({ "route": protected_route_fixture("ops") }),
+    )
+    .await
+    .expect("stage direct replacement for mounted subset");
+    assert_eq!(replacement["restart_required"], true);
+    assert_eq!(replacement["pending_operation"], "update");
+}
+
+#[tokio::test]
+async fn staged_subset_rename_freezes_route_collection_and_keeps_followup_edits_staged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![protected_gateway_subset_route_fixture("ops-old")],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+
+    let renamed = protected_route_fixture("ops-direct");
+    let staged = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({ "name": "ops-old", "route": renamed }),
+    )
+    .await
+    .expect("stage subset rename to direct route");
+    assert_eq!(staged["restart_required"], true);
+    assert_eq!(staged["pending_operation"], "add");
+
+    let runtime = dispatch_with_manager(&manager, "gateway.protected_route.list", json!({}))
+        .await
+        .expect("runtime route list");
+    assert_eq!(runtime.as_array().expect("runtime routes").len(), 1);
+    assert_eq!(runtime[0]["name"], "ops-old");
+    assert_eq!(runtime[0]["target"]["kind"], "gateway_subset");
+
+    let state = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
+        .await
+        .expect("route state after rename");
+    let rows = state.as_array().expect("route state array");
+    let desired_new = rows
+        .iter()
+        .find(|row| row["name"] == "ops-direct")
+        .expect("desired renamed route");
+    assert_eq!(desired_new["restart_required"], true);
+    assert_eq!(desired_new["pending_operation"], "add");
+    let runtime_old = rows
+        .iter()
+        .find(|row| row["name"] == "ops-old")
+        .expect("runtime old route");
+    assert_eq!(runtime_old["restart_required"], true);
+    assert_eq!(runtime_old["pending_operation"], "remove");
+
+    let mut extra = protected_route_fixture("extra-direct");
+    extra.public_path = "/extra".to_string();
+    let error = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.add",
+        json!({ "route": extra.clone() }),
+    )
+    .await
+    .expect_err("hot direct add must not bypass a pending route restart transaction");
+    assert_eq!(error.kind(), "restart_required");
+
+    let staged_extra = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_add",
+        json!({ "route": extra.clone() }),
+    )
+    .await
+    .expect("stage direct route into pending restart transaction");
+    assert_eq!(staged_extra["restart_required"], true);
+    assert_eq!(staged_extra["pending_operation"], "add");
+
+    extra.backend_url = "http://100.64.0.11:3100".to_string();
+    let edited_extra = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({ "name": "extra-direct", "route": extra }),
+    )
+    .await
+    .expect("edit staged direct route while subset restart debt remains");
+    assert_eq!(edited_extra["restart_required"], true);
+    assert_eq!(edited_extra["pending_operation"], "add");
+
+    let cancelled_extra = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_remove",
+        json!({ "name": "extra-direct" }),
+    )
+    .await
+    .expect("cancel staged direct route while rename debt remains");
+    assert_eq!(cancelled_extra["restart_required"], true);
+    assert!(cancelled_extra["pending_operation"].is_null());
+    assert!(
+        cancelled_extra["restart_note"]
+            .as_str()
+            .is_some_and(|note| note.contains("other protected route changes"))
+    );
+
+    let runtime = dispatch_with_manager(&manager, "gateway.protected_route.list", json!({}))
+        .await
+        .expect("runtime routes remain frozen");
+    assert_eq!(runtime.as_array().expect("runtime routes").len(), 1);
+    assert_eq!(runtime[0]["name"], "ops-old");
+}
+
+#[tokio::test]
+async fn clearing_last_subset_restart_debt_publishes_accumulated_direct_route_changes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut tools = protected_route_fixture("tools");
+    tools.public_path = "/tools".to_string();
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![tools.clone()],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+
+    let staged_subset = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_add",
+        json!({ "route": protected_gateway_subset_route_fixture("ops") }),
+    )
+    .await
+    .expect("stage subset add");
+    assert_eq!(staged_subset["restart_required"], true);
+
+    tools.public_path = "/tools-v2".to_string();
+    let staged_direct = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({ "name": "tools", "route": tools.clone() }),
+    )
+    .await
+    .expect("stage direct update behind subset restart debt");
+    assert_eq!(staged_direct["restart_required"], true);
+
+    let cancelled = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_remove",
+        json!({ "name": "ops" }),
+    )
+    .await
+    .expect("cancel final subset change");
+    assert_eq!(cancelled["restart_required"], false);
+    assert!(cancelled["pending_operation"].is_null());
+
+    let runtime = dispatch_with_manager(&manager, "gateway.protected_route.list", json!({}))
+        .await
+        .expect("runtime routes after debt clears");
+    let rows = runtime.as_array().expect("runtime route array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "tools");
+    assert_eq!(rows[0]["public_path"], "/tools-v2");
+
+    let state = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
+        .await
+        .expect("state after debt clears");
+    assert_eq!(state[0]["restart_required"], false);
+    assert!(state[0]["pending_operation"].is_null());
+    assert_eq!(state[0]["public_path"], "/tools-v2");
+}
+
+#[tokio::test]
+async fn staged_loadout_revert_to_runtime_clears_loadout_restart_debt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let original = json!({
+        "name": "ops",
+        "description": "runtime projection",
+        "upstreams": [],
+        "services": [],
+        "expose_tools": true,
+        "expose_resources": true,
+        "expose_prompts": true,
+        "expose_skills": true,
+        "expose_code_mode": false
+    });
+    dispatch_with_manager(
+        &manager,
+        "gateway.loadout.add",
+        json!({ "loadout": original }),
+    )
+    .await
+    .expect("add runtime loadout");
+
+    let mut route = protected_gateway_subset_route_fixture("ops-route");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = route.target.as_mut() else {
+        panic!("gateway subset fixture");
+    };
+    target.loadout = Some("ops".to_string());
+    target.upstreams.clear();
+    dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_add",
+        json!({ "route": route }),
+    )
+    .await
+    .expect("stage route that will mount loadout");
+
+    let changed = dispatch_with_manager(
+        &manager,
+        "gateway.loadout.stage_patch",
+        json!({ "name": "ops", "patch": { "expose_tools": false } }),
+    )
+    .await
+    .expect("stage changed loadout");
+    assert_eq!(changed["restart_required"], true);
+
+    let reverted = dispatch_with_manager(
+        &manager,
+        "gateway.loadout.stage_patch",
+        json!({ "name": "ops", "patch": { "expose_tools": true } }),
+    )
+    .await
+    .expect("revert loadout to runtime projection");
+    assert_eq!(reverted["restart_required"], false);
+    assert!(reverted["pending_operation"].is_null());
+    assert!(
+        reverted["restart_note"]
+            .as_str()
+            .is_some_and(|note| note.contains("no restart is required"))
+    );
+
+    let loadouts = dispatch_with_manager(&manager, "gateway.loadout.list_state", json!({}))
+        .await
+        .expect("loadout state");
+    assert_eq!(loadouts[0]["restart_required"], false);
+    assert!(loadouts[0]["pending_operation"].is_null());
+
+    // The route itself is still a staged add, so its independent restart debt
+    // remains visible.
+    let routes = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
+        .await
+        .expect("route state");
+    assert_eq!(routes[0]["restart_required"], true);
 }
 
 #[tokio::test]
@@ -1406,10 +1909,14 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
             .expect("policy"),
             resource_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             prompt_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            skill_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            proxy_skills: false,
+            supports_skills: None,
             proxy_resources: true,
             prompt_count: 3,
             resource_count: 4,
             skill_count: 0,
+            skill_names: Vec::new(),
             prompt_names: Vec::new(),
             resource_uris: Vec::new(),
             tool_health: crate::upstream::types::UpstreamHealth::Healthy,

@@ -8,14 +8,14 @@ import { shouldRetryMetrics } from '@/lib/dashboard/dashboard-load-state'
 export const dashboardMetricsKey = (window: MetricsWindow) =>
   `/dashboard-metrics/${window}`
 
-/** Windowed gateway activity metrics. Polls every 15s; pauses off-focus. */
+/** Windowed gateway activity metrics. Polls every 60s; pauses off-focus. */
 export function useDashboardMetrics(window: MetricsWindow) {
   return useSWR<DashboardMetrics>(
     dashboardMetricsKey(window),
     () => fetchDashboardMetrics(window),
     {
       revalidateOnFocus: false,
-      refreshInterval: (data) => data ? 15_000 : 0,
+      refreshInterval: (data) => data ? 60_000 : 0,
       keepPreviousData: true,
       shouldRetryOnError: shouldRetryMetrics,
       onErrorRetry: (error, _key, _config, revalidate, context) => {

@@ -3,7 +3,10 @@ import {
   BookOpen,
   Cable,
   FileCode2,
+  Boxes,
+  GitBranch,
   LayoutDashboard,
+  SearchCode,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -20,9 +23,9 @@ import {
  * that exactly. Two deliberate deviations, both forced by what this app
  * actually has:
  *
- *   - Loadouts, Registry, Sessions, Tasks, Files, Logs and Terminal are
- *     omitted. They have no route and no backing API, and shipping them would
- *     mean seven dead nav entries.
+ *   - Registry, Sessions, Tasks, Files, Logs and Terminal are omitted. They
+ *     have no route and no backing API, and shipping them would mean dead nav
+ *     entries. Loadouts is now a real gateway-backed route.
  *   - Skills (`/skills`) and Usage (`/usage`) are real routes with no mock
  *     counterpart, so they sit in the mock section they belong to rather than
  *     in a section the mock never had.
@@ -71,6 +74,14 @@ export const consoleNavSections: ConsoleNavSection[] = [
         kbd: '⌘2',
         tooltip: 'Gateway — ⌘2 · upstream MCP servers',
       },
+      {
+        id: 'Loadouts',
+        label: 'Loadouts',
+        href: '/loadouts',
+        icon: Boxes,
+        kbd: '⌘3',
+        tooltip: 'Loadouts — ⌘3 · reusable gateway capability projections',
+      },
     ],
   },
   {
@@ -78,20 +89,28 @@ export const consoleNavSections: ConsoleNavSection[] = [
     label: 'Catalog',
     items: [
       {
+        id: 'Tools',
+        label: 'Tools',
+        href: '/tools',
+        icon: SearchCode,
+        kbd: '⌘3',
+        tooltip: 'Tools — ⌘3 · live Code Mode catalog',
+      },
+      {
         id: 'Snippets',
         label: 'Snippets',
         href: '/snippets',
         icon: FileCode2,
-        kbd: '⌘3',
-        tooltip: 'Snippets — ⌘3 · Code Mode snippets',
+        kbd: '⌘4',
+        tooltip: 'Snippets — ⌘4 · Code Mode snippets',
       },
       {
         id: 'Skills',
         label: 'Skills',
         href: '/skills',
         icon: BookOpen,
-        kbd: '⌘4',
-        tooltip: 'Skills — ⌘4 · generated SKILL.md catalog',
+        kbd: '⌘5',
+        tooltip: 'Skills — ⌘5 · generated SKILL.md catalog',
       },
     ],
   },
@@ -104,8 +123,16 @@ export const consoleNavSections: ConsoleNavSection[] = [
         label: 'Usage',
         href: '/usage',
         icon: Activity,
-        kbd: '⌘5',
-        tooltip: 'Usage — ⌘5 · tool call volume and latency',
+        kbd: '⌘6',
+        tooltip: 'Usage — ⌘6 · tool call volume and latency',
+      },
+      {
+        id: 'Traces',
+        label: 'Traces',
+        href: '/traces',
+        icon: GitBranch,
+        kbd: '⌘6',
+        tooltip: 'Traces — ⌘6 · correlated request flows',
       },
     ],
   },

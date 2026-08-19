@@ -20,7 +20,12 @@ export function TopToolsChart({
   tools: ToolUsageEntry[]
   onSelect?: (tool: string) => void
 }) {
-  const rows = tools.map((tool) => ({ name: tool.name, calls: tool.calls }))
+  const rows = tools.map((tool) => ({
+    id: tool.id ?? tool.name,
+    name: tool.label ?? tool.name,
+    tool: tool.name,
+    calls: tool.calls,
+  }))
 
   return (
     <ChartContainer config={CONFIG} className="aspect-auto h-[200px] w-full">
@@ -48,7 +53,7 @@ export function TopToolsChart({
           barSize={18}
           isAnimationActive={false}
           className={onSelect ? 'cursor-pointer' : undefined}
-          onClick={onSelect ? (entry: { name?: string }) => entry?.name && onSelect(entry.name) : undefined}
+          onClick={onSelect ? (entry: { tool?: string }) => entry?.tool && onSelect(entry.tool) : undefined}
         />
       </BarChart>
     </ChartContainer>

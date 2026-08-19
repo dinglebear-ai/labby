@@ -1,36 +1,22 @@
 export function LabbyIcon({ size = 32, className }: { size?: number; className?: string }) {
+  const height = size
+  const width = size * (48 / 51)
+
   return (
     <svg
-      width={size}
-      height={size}
-      viewBox="0 0 512 512"
+      width={width}
+      height={height}
+      viewBox="0 0 48 51"
       fill="none"
-      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label="Labby"
       className={className}
     >
-      <defs>
-        <radialGradient id="labby-bg" cx="30%" cy="25%" r="80%">
-          <stop offset="0%" stopColor="#0d2233" />
-          <stop offset="100%" stopColor="#07131c" />
-        </radialGradient>
-      </defs>
-      <rect width="512" height="512" rx="112" fill="url(#labby-bg)" />
-      <line x1="256" y1="208" x2="256" y2="102" stroke="#24536c" strokeWidth="10" strokeLinecap="round" />
-      <line x1="297" y1="225" x2="367" y2="142" stroke="#24536c" strokeWidth="10" strokeLinecap="round" />
-      <line x1="297" y1="287" x2="367" y2="370" stroke="#24536c" strokeWidth="10" strokeLinecap="round" />
-      <line x1="256" y1="304" x2="256" y2="410" stroke="#24536c" strokeWidth="10" strokeLinecap="round" />
-      <line x1="215" y1="287" x2="145" y2="370" stroke="#24536c" strokeWidth="10" strokeLinecap="round" />
-      <line x1="215" y1="225" x2="145" y2="142" stroke="#24536c" strokeWidth="10" strokeLinecap="round" />
-      <circle cx="256" cy="92" r="22" fill="#1c7fac" /><circle cx="256" cy="92" r="12" fill="#29b6f6" />
-      <circle cx="378" cy="130" r="18" fill="#1c7fac" /><circle cx="378" cy="130" r="10" fill="#67cbfa" />
-      <circle cx="378" cy="382" r="22" fill="#1c7fac" /><circle cx="378" cy="382" r="12" fill="#29b6f6" />
-      <circle cx="256" cy="420" r="18" fill="#1c7fac" /><circle cx="256" cy="420" r="10" fill="#67cbfa" />
-      <circle cx="134" cy="382" r="22" fill="#1c7fac" /><circle cx="134" cy="382" r="12" fill="#29b6f6" />
-      <circle cx="134" cy="130" r="18" fill="#1c7fac" /><circle cx="134" cy="130" r="10" fill="#67cbfa" />
-      <circle cx="256" cy="256" r="52" fill="#0c1a24" stroke="#29b6f6" strokeWidth="3" />
-      <circle cx="256" cy="256" r="38" fill="#1c7fac" />
-      <circle cx="256" cy="256" r="28" fill="#29b6f6" />
-      <circle cx="256" cy="256" r="16" fill="#67cbfa" />
+      <title>Labby</title>
+      <path d="M8 13L24 7L40 13L24 19Z" fill="var(--aurora-border-strong)" opacity="0.96" />
+      <path d="M8 21L24 15L40 21L24 27Z" fill="var(--aurora-accent-deep)" opacity="0.92" />
+      <path d="M8 29L24 23L40 29L24 35Z" fill="var(--aurora-accent-primary)" opacity="0.88" />
+      <path d="M8 37L24 31L40 37L24 43Z" fill="var(--aurora-accent-strong)" opacity="0.9" />
     </svg>
   )
 }

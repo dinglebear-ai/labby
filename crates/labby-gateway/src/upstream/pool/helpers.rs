@@ -29,6 +29,9 @@ pub struct UpstreamCachedSummary {
     pub exposed_resource_count: usize,
     pub discovered_prompt_count: usize,
     pub exposed_prompt_count: usize,
+    pub discovered_skill_count: usize,
+    pub exposed_skill_count: usize,
+    pub supports_skills: Option<bool>,
 }
 
 /// Per-upstream timeout for initial discovery (`list_tools`).

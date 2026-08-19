@@ -53,7 +53,7 @@ export function AgentDetailDrawer({
         <>
           <DrawerStatGrid
             items={[
-              { label: 'Tool calls', value: formatCompactNumber(detail.calls) },
+              { label: 'Calls', value: formatCompactNumber(detail.calls) },
               {
                 label: 'Failed',
                 value: formatCompactNumber(detail.failed),
@@ -71,9 +71,9 @@ export function AgentDetailDrawer({
             <ToolVolumeChart data={detail.timeseries} window={window} />
           </DrawerSection>
 
-          <DrawerSection title="Tools used">
+          <DrawerSection title="Targets used">
             {detail.tools_used.length === 0 ? (
-              <p className="text-sm text-aurora-text-muted">No tools used in this window.</p>
+              <p className="text-sm text-aurora-text-muted">No upstream targets in this window.</p>
             ) : (
               <div className="flex flex-col">
                 {detail.tools_used.slice(0, 8).map((tool) => (

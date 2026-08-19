@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Labby MCP Apps</title>
+<style>
+:root{color-scheme:dark;--bg:#0b202d;--panel:#173245;--border:#1d3d4e;--text:#e6f4fb;--muted:#a7bcc9;--accent:#29b6f6;--ok:#7dd3c7;--error:#c78490;font-family:Inter,Manrope,"Segoe UI",system-ui,sans-serif;color:var(--text)}
+*{box-sizing:border-box}html,body{margin:0;min-width:0;background:transparent}body{padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}button{font:inherit}.shell{width:100%;max-width:860px;margin:auto;border:1px solid var(--border);border-radius:28px;overflow:hidden;background:linear-gradient(155deg,#18364a,var(--panel));box-shadow:0 22px 54px rgba(0,0,0,.3)}
+header{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;padding:28px 28px 20px}h1{margin:0;font-size:28px;letter-spacing:-.025em}.lede{margin:7px 0 0;color:var(--muted);font-size:15px;line-height:1.45}.bulk{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.bulk button{min-height:40px;padding:0 13px;border:1px solid #28556b;border-radius:13px;background:var(--bg);color:var(--text);font-weight:750;cursor:pointer}.bulk button:hover{border-color:var(--accent)}.bulk button:focus-visible,.switch:focus-visible{outline:3px solid rgba(41,182,246,.3);outline-offset:2px}.bulk button:disabled,.switch:disabled{opacity:.55;cursor:wait}
+.status{min-height:20px;margin:0 28px 14px;color:var(--muted);font-size:13px}.status.error{color:var(--error)}.apps{display:grid;gap:10px;padding:0 28px 28px}.app{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;padding:16px 17px;border:1px solid var(--border);border-radius:18px;background:rgba(7,19,28,.42)}.title{display:flex;align-items:center;gap:9px;font-weight:800}.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);box-shadow:0 0 0 4px rgba(167,188,201,.08)}.app[data-enabled="true"] .dot{background:var(--ok);box-shadow:0 0 0 4px rgba(125,211,199,.08)}.desc{margin-top:5px;color:var(--muted);font-size:13px;line-height:1.4}.tool{margin-top:7px;color:var(--muted);font-size:11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.switch{position:relative;width:52px;height:30px;border:1px solid var(--border);border-radius:999px;background:#0c1d28;cursor:pointer;padding:0;transition:border-color .16s,background .16s}.switch::after{content:"";position:absolute;top:4px;left:4px;width:20px;height:20px;border-radius:50%;background:var(--muted);transition:transform .16s,background .16s}.switch[aria-checked="true"]{border-color:#39756f;background:rgba(125,211,199,.11)}.switch[aria-checked="true"]::after{transform:translateX(22px);background:var(--ok)}
+.note{padding:0 28px 26px;color:var(--muted);font-size:12px;line-height:1.45}.note strong{color:var(--text)}
+@media(max-width:600px){body{padding:0}.shell{border-radius:0;border-left:0;border-right:0}header{display:grid;padding:22px 18px 18px}h1{font-size:24px}.bulk{justify-content:flex-start}.status{margin:0 18px 12px}.apps{padding:0 18px 20px}.app{gap:12px;padding:14px}.note{padding:0 18px 22px}}
+</style>
+<script>window.__LABBY_APP_INFO={name:"LabbyMcpApps",version:"0.1.0"};</script>
+<script src="/apps/assets/labby-app-host.js"></script>
+</head>
+<body>
+<main class="shell" id="shell">
+<header><div><h1>MCP Apps</h1><p class="lede">Choose which Labby-owned app tools and UI resources are advertised by the gateway.</p></div><div class="bulk"><button id="enableAll" type="button">Enable all</button><button id="disableAll" type="button">Disable all</button></div></header>
+<p class="status" id="status" role="status" aria-live="polite">Loading app state…</p>
+<section class="apps" id="apps" aria-label="Labby MCP App visibility"></section>
+<p class="note"><strong>This manager stays available.</strong> Disabling an app removes its UI advertisement and resources without disabling the underlying text/service capability where one exists.</p>
+</main>
+<script>
+(function(){
+"use strict";
+var host=window.LabbyAppHost,shell=document.getElementById("shell"),appsEl=document.getElementById("apps"),statusEl=document.getElementById("status"),enableAll=document.getElementById("enableAll"),disableAll=document.getElementById("disableAll");
+var catalog=[{id:"codemode",title:"Code Mode Inspector",description:"Visual Code Mode trace inspector. The text-only codemode executor remains available.",tool:"codemode_ui"},{id:"gateway_status",title:"Gateway Status",description:"Live upstream connection status, capabilities, and warnings.",tool:"gateway_status"},{id:"server_logs",title:"Server Logs",description:"Admin viewer for Labby's rolling server process logs.",tool:"server_logs"},{id:"add_server",title:"Add Server",description:"Interactive form for testing and adding gateway MCP servers.",tool:"add_server"},{id:"settings",title:"Settings",description:"Schema-backed Labby runtime settings for Code Mode, proxy, surfaces, and features.",tool:"settings"}];
+var state={},disposed=false,frame=null,pending=new Set();
+function normalize(value){if(value==null)return value;if(value.structuredContent!=null)return normalize(value.structuredContent);if(value.ok===false)throw new Error(value.error&&value.error.message||"The MCP App request failed.");if(value.ok===true)return normalize(value.data);if(value.isError===true&&Array.isArray(value.content)){var message=value.content.map(function(item){return item&&item.text}).filter(Boolean).join("\n");throw new Error(message||"The MCP App request failed.")}if(Array.isArray(value.content)&&value.content[0]&&value.content[0].text){try{return normalize(JSON.parse(value.content[0].text))}catch(_){}}return value}
+function apply(raw){var value=normalize(raw)||{};if(value.apps&&typeof value.apps==="object")state=value.apps;else if(value.target&&value.target!=="all"&&typeof value.enabled==="boolean"){var next=Object.assign({},state);next[value.target]=Object.assign({},state[value.target]||{},{enabled:value.enabled});state=next}render()}
+function enabledFor(id){var item=state[id];return typeof item==="boolean"?item:!!(item&&item.enabled)}
+function render(){var html="";catalog.forEach(function(item){var on=enabledFor(item.id),busy=pending.has(item.id)||pending.has("all");html+="<article class='app' data-enabled='"+on+"'><div><div class='title'><span class='dot'></span>"+item.title+"</div><div class='desc'>"+item.description+"</div><div class='tool'>"+item.tool+"</div></div><button class='switch' type='button' role='switch' aria-label='"+(on?"Disable ":"Enable ")+item.title+"' aria-checked='"+on+"' data-target='"+item.id+"' "+(busy?"disabled":"")+"></button></article>"});appsEl.innerHTML=html;appsEl.querySelectorAll(".switch").forEach(function(button){button.addEventListener("click",onToggle)});var bulkBusy=pending.size>0;enableAll.disabled=bulkBusy;disableAll.disabled=bulkBusy;scheduleResize()}
+function setStatus(message,error){statusEl.className=error?"status error":"status";statusEl.textContent=message}
+async function refresh(){try{setStatus("Loading app state…",false);apply(await host.callAction("mcp_app","status",{target:"all"}));setStatus("App visibility is up to date.",false)}catch(error){setStatus(error&&error.message||"Could not load app state.",true)}}
+async function mutate(target,enabled){pending.add(target);render();setStatus((enabled?"Enabling ":"Disabling ")+(target==="all"?"apps":"app")+"…",false);try{apply(await host.callAction("mcp_app",enabled?"enable":"disable",{target:target}));var item=catalog.find(function(entry){return entry.id===target});setStatus(target==="all"?(enabled?"Enabled all managed apps.":"Disabled all managed apps."):(enabled?"Enabled ":"Disabled ")+(item?item.title:target)+".",false)}catch(error){setStatus(error&&error.message||"Could not change app state.",true)}finally{pending.delete(target);render()}}
+function onToggle(event){var target=event.currentTarget.dataset.target;void mutate(target,!enabledFor(target))}
+function scheduleResize(){if(disposed||frame!==null)return;frame=requestAnimationFrame(function(){frame=null;if(!disposed)host.requestResize({height:Math.ceil(document.documentElement.scrollHeight)})})}
+var observer=new ResizeObserver(scheduleResize);function dispose(){if(disposed)return;disposed=true;observer.disconnect();enableAll.removeEventListener("click",onEnableAll);disableAll.removeEventListener("click",onDisableAll);window.removeEventListener("pagehide",dispose);if(frame!==null){cancelAnimationFrame(frame);frame=null}}function onEnableAll(){void mutate("all",true)}function onDisableAll(){void mutate("all",false)}
+enableAll.addEventListener("click",onEnableAll);disableAll.addEventListener("click",onDisableAll);observer.observe(shell);window.addEventListener("pagehide",dispose,{once:true});render();void refresh();
+})();
+</script>
+</body>
+</html>

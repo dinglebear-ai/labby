@@ -22,6 +22,17 @@ pub(super) fn record_usage_call(
     outcome: &'static str,
     elapsed_ms: u128,
 ) {
+    record_usage_call_with_response(pool, event, subject, outcome, elapsed_ms, None);
+}
+
+pub(super) fn record_usage_call_with_response(
+    pool: &UpstreamPool,
+    event: UpstreamRequestLog<'_>,
+    subject: Option<&str>,
+    outcome: &'static str,
+    elapsed_ms: u128,
+    response_bytes: Option<usize>,
+) {
     let Some(store) = pool.usage_store.clone() else {
         return;
     };
@@ -32,9 +43,13 @@ pub(super) fn record_usage_call(
             .unwrap_or(0),
         upstream_name: event.upstream.to_string(),
         tool_name: event.item.unwrap_or_default().to_string(),
+        capability: event.capability.to_string(),
+        operation: event.operation.to_string(),
+        subject_scoped: event.subject_scoped,
         actor: subject.map_or_else(|| "unattributed".to_string(), str::to_string),
         outcome: outcome.to_string(),
         elapsed_ms: i64::try_from(elapsed_ms).unwrap_or(i64::MAX),
+        response_bytes: response_bytes.and_then(|value| i64::try_from(value).ok()),
     };
     // Acquire an owned permit *before* spawning so a saturated semaphore
     // actually bounds the number of spawned tasks, not just the number of

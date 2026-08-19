@@ -24,6 +24,7 @@ use super::helpers::{
     cached_upstream_tool, upstream_discovery_timeout, upstream_name_is_uri_safe,
     upstream_target_redacted, upstream_transport,
 };
+use super::skills_list::peer_declares_skills;
 use super::tools::tool_has_mcp_app_ui_resource;
 use super::validate::validate_upstream_config;
 
@@ -202,6 +203,7 @@ impl UpstreamPool {
             }
         };
         let tool_count = tools.len();
+        let supports_skills = peer_declares_skills(&conn.peer);
         self.connections
             .write()
             .await
@@ -217,7 +219,8 @@ impl UpstreamPool {
                 .await
                 .remove(&config.name);
         }
-        self.replace_catalog_tools(config, tools).await;
+        self.replace_catalog_tools(config, tools, Some(supports_skills))
+            .await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         if config.proxy_resources {
@@ -277,6 +280,9 @@ impl UpstreamPool {
         }
 
         let (connection, tools) = connector(config.clone()).await?;
+        let supports_skills = connection
+            .as_ref()
+            .map(|connection| peer_declares_skills(&connection.peer));
         if let Some(connection) = connection {
             self.connections
                 .write()
@@ -294,7 +300,8 @@ impl UpstreamPool {
                     .remove(&config.name);
             }
         }
-        self.replace_catalog_tools(config, tools).await;
+        self.replace_catalog_tools(config, tools, supports_skills)
+            .await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         if config.proxy_resources {
@@ -316,7 +323,7 @@ impl UpstreamPool {
             return Ok(false);
         }
         self.ensure_lazy_upstream_entry(config).await;
-        self.replace_catalog_tools(config, tools).await;
+        self.replace_catalog_tools(config, tools, None).await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         Ok(true)
@@ -414,6 +421,7 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         tools: Vec<rmcp::model::Tool>,
+        supports_skills: Option<bool>,
     ) {
         let exposure_policies = resolve_upstream_exposure_policies(config);
         let upstream_name: Arc<str> = Arc::from(config.name.as_str());
@@ -428,6 +436,11 @@ impl UpstreamPool {
             entry.exposure_policy = exposure_policies.tools;
             entry.resource_exposure_policy = exposure_policies.resources;
             entry.prompt_exposure_policy = exposure_policies.prompts;
+            entry.skill_exposure_policy = exposure_policies.skills;
+            entry.proxy_skills = config.proxy_skills;
+            if supports_skills.is_some() {
+                entry.supports_skills = supports_skills;
+            }
         }
     }
 

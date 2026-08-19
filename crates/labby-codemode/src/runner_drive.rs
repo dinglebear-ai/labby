@@ -901,11 +901,9 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
 /// Enqueue a runner-reserved LOCAL provider call (`state::*` / `git::*`).
 ///
 /// The call is routed through `host.decide_local` / `host.record_local` so a
-/// future durable-journaling host implementation could journal it as an
-/// **ephemeral** entry (participating in the `seq` spine, divergence-checked
-/// on resume, RE-EXECUTING rather than replaying-as-cached). No host currently
-/// overrides these hooks, so the default impls make this a no-op and the call
-/// dispatches directly.
+/// future replay implementation could journal it as an **ephemeral** entry.
+/// The current host does not override these hooks, so the default impls make
+/// this a no-op and the call dispatches directly.
 ///
 /// Free function taking `broker` (not `&self`) so the future captures the
 /// broker with the enclosing loop's lifetime rather than being forced to
@@ -950,9 +948,8 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             execution_id,
             step_ordinal: None,
         };
-        // Journal (ephemeral) BEFORE dispatch so a resume divergence at this seq
-        // is caught before the local side effect runs. The default `decide_local`
-        // returns Execute (no host currently overrides this hook).
+        // Reserved decision hook runs BEFORE dispatch. The default
+        // `decide_local` returns Execute; the current host does not override it.
         if let Some(host) = broker.host {
             match host.decide_local(ctx.clone(), &id, &params).await {
                 StepDecision::Replay(value) => {
@@ -984,8 +981,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
         let dispatched = if matches!(local.provider, LocalProviderName::Openapi) {
             // NO LOCAL_PROVIDER_LOCK — openapi has no shared mutable local state,
             // and must not serialize behind slow state/git ops. It still
-            // participates in the durable local-provider decision/record spine
-            // above so resume divergence is caught consistently.
+            // participates in the reserved local-provider decision/record spine.
             dispatch_openapi_provider(&openapi_registry, &openapi_http_client, local, params).await
         } else {
             let _guard = LOCAL_PROVIDER_LOCK
@@ -1741,6 +1737,7 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "counting".to_string(),
+                    embedding_fingerprint: "counting".to_string(),
                     entries: Arc::from([]),
                     catalog_json: Arc::from("[]"),
                     serialized_size: 2,
@@ -1998,6 +1995,7 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "recording".to_string(),
+                    embedding_fingerprint: "recording".to_string(),
                     entries: Arc::from([]),
                     catalog_json: Arc::from("[]"),
                     serialized_size: 2,

@@ -151,7 +151,7 @@ export default function OverviewPage() {
           >
             <DashboardPanel
               className="[grid-column:1/-1]"
-              title="Tool-call volume"
+              title="Upstream call volume"
               meta={WINDOW_LABELS[activeWindow]}
             >
               {metrics ? (
@@ -159,11 +159,11 @@ export default function OverviewPage() {
               ) : metricsLoading ? (
                 <Skeleton className="h-[200px] w-full" />
               ) : (
-                <MetricsUnavailable message="Tool-call history is unavailable." />
+                <MetricsUnavailable message="Upstream-call history is unavailable." />
               )}
             </DashboardPanel>
 
-            <DashboardPanel className="[grid-column:1/-1]" title="Top tools">
+            <DashboardPanel className="[grid-column:1/-1]" title="Top targets">
               {metrics ? (
                 <TopToolsChart
                   tools={metrics.tools.top}
@@ -172,7 +172,7 @@ export default function OverviewPage() {
               ) : metricsLoading ? (
                 <Skeleton className="h-[200px] w-full" />
               ) : (
-                <MetricsUnavailable message="Tool rankings are unavailable." />
+                <MetricsUnavailable message="Target rankings are unavailable." />
               )}
             </DashboardPanel>
 

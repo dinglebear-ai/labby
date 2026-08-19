@@ -20,6 +20,7 @@ import {
   X,
   FileText,
   MessageSquare,
+  BookOpen,
   Wrench,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -58,7 +59,8 @@ const GATEWAY_TABLE_BADGE =
   'inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.12em]'
 
 /**
- * Gateway Console mock — measured off `Gateway Console.dc.html`.
+ * Gateway Console mock — measured off the repository-root
+ * `Labby Gateway Console.html` reference.
  * Card, grid track list, header, group headers, and row chrome all mirror the
  * mock's computed styles.
  */
@@ -66,7 +68,7 @@ const GW_CARD =
   'overflow-hidden rounded-aurora-2 border border-[color-mix(in_srgb,var(--aurora-border-default)_45%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-[var(--aurora-shadow-strong),inset_0_1px_0_rgba(255,255,255,0.05)]'
 
 const GW_GRID =
-  'grid grid-cols-[minmax(0,1fr)_80px_minmax(140px,300px)_170px_130px_18px] items-center'
+  'grid grid-cols-[minmax(0,1fr)_80px_minmax(140px,300px)_210px_130px_18px] items-center'
 
 /**
  * The `--gw*` scrim ramp carries underscores in its token names, which Tailwind
@@ -138,6 +140,17 @@ interface GatewayTableProps {
   onDelete: (gateway: Gateway) => void
 }
 
+function GatewayFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-aurora-text-muted">{label}</p>
+      <p className={cn('mt-1 truncate text-aurora-text-primary', mono && 'font-mono')} title={value}>
+        {value}
+      </p>
+    </div>
+  )
+}
+
 export function GatewayTable({
   gateways,
   density,
@@ -155,6 +168,7 @@ export function GatewayTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const [copiedGatewayId, setCopiedGatewayId] = useState<string | null>(null)
   const [expandedMobileGatewayId, setExpandedMobileGatewayId] = useState<string | null>(null)
+  const [expandedDesktopGatewayId, setExpandedDesktopGatewayId] = useState<string | null>(null)
   const [disableConfirmationGatewayId, setDisableConfirmationGatewayId] = useState<string | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<StatusGroupId[]>([])
   const [attentionBannerDismissed, setAttentionBannerDismissed] = useState(false)
@@ -222,7 +236,8 @@ export function GatewayTable({
           result =
             left.status.exposed_tool_count - right.status.exposed_tool_count ||
             left.status.exposed_resource_count - right.status.exposed_resource_count ||
-            left.status.exposed_prompt_count - right.status.exposed_prompt_count
+            left.status.exposed_prompt_count - right.status.exposed_prompt_count ||
+            (left.status.exposed_skill_count ?? 0) - (right.status.exposed_skill_count ?? 0)
           break
       }
 
@@ -453,8 +468,8 @@ export function GatewayTable({
     return (
       <span
         className={cn(
-          'min-w-0 max-w-full font-mono text-aurora-text-muted transition-colors group-hover:text-aurora-text-primary/82',
-          compact ? 'text-[9px] leading-3' : 'text-[11px] leading-5',
+          'min-w-0 max-w-full font-mono text-[color-mix(in_srgb,var(--aurora-text-primary)_78%,var(--aurora-text-muted))] transition-colors group-hover:text-aurora-text-primary',
+          compact ? 'text-[10.5px] leading-4' : 'text-[12px] leading-5',
           isCommand ? 'whitespace-normal break-all' : 'truncate',
         )}
         title={preview}
@@ -462,7 +477,7 @@ export function GatewayTable({
         {isCommand && parts.args ? (
           <>
             <span className="font-semibold text-aurora-text-primary/86">{parts.command}</span>
-            <span className="text-aurora-text-muted"> {parts.args}</span>
+            <span className="text-[color-mix(in_srgb,var(--aurora-text-primary)_72%,var(--aurora-text-muted))]"> {parts.args}</span>
           </>
         ) : (
           preview
@@ -485,20 +500,23 @@ export function GatewayTable({
     const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
     const isSelected = selectedGatewayIds.includes(gateway.id)
     const status = gateway.status
+    const discoveredSkills = status.discovered_skill_count ?? 0
+    const exposedSkills = status.exposed_skill_count ?? 0
     const toggleLabel = gateway.enabled ?? true ? 'Disable server' : 'Enable server'
+    const isExpanded = expandedDesktopGatewayId === gateway.id
 
     return (
-      <div
-        key={gateway.id}
-        data-gwrow="1"
-        data-hoverrow="1"
-        className={cn(
-          GW_GRID,
-          'group relative border-t border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] bg-[var(--gw-row)] transition-[background-color,box-shadow] duration-150 hover:bg-[color-mix(in_srgb,var(--aurora-accent-primary)_7%,var(--gw-row-hover))]',
-          density === 'condensed' ? 'py-[7px]' : 'py-[11px]',
-          isDisabled && 'text-aurora-text-muted',
-        )}
-      >
+      <Fragment key={gateway.id}>
+        <div
+          data-gwrow="1"
+          data-hoverrow="1"
+          className={cn(
+            GW_GRID,
+            'group relative border-t border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] bg-[var(--gw-row)] transition-[background-color,box-shadow] duration-150 hover:bg-[color-mix(in_srgb,var(--aurora-accent-primary)_7%,var(--gw-row-hover))]',
+            density === 'condensed' ? 'py-[7px]' : 'py-[11px]',
+            isDisabled && 'text-aurora-text-muted',
+          )}
+        >
         <span
           className={cn('absolute inset-y-0 left-0 w-[3px]', statusRailClass(gateway))}
           aria-hidden="true"
@@ -506,6 +524,15 @@ export function GatewayTable({
 
         <div className="min-w-0 pl-5">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className={cn(GW_ROW_ACTION, 'size-[18px]')}
+              onClick={() => setExpandedDesktopGatewayId((current) => current === gateway.id ? null : gateway.id)}
+              aria-expanded={isExpanded}
+              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${gateway.name} details`}
+            >
+              <ChevronRight className={cn('size-3 transition-transform', isExpanded && 'rotate-90')} aria-hidden="true" />
+            </button>
             <button
               type="button"
               role="checkbox"
@@ -737,8 +764,8 @@ export function GatewayTable({
 
         <div className="min-w-0 justify-self-center">
           <span
-            className="grid grid-cols-[40px_40px_40px] items-center gap-x-1.5"
-            title={`Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count}`}
+            className="grid grid-cols-[40px_40px_40px_40px] items-center gap-x-1.5"
+            title={`Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count} · skills ${exposedSkills}/${discoveredSkills}`}
           >
             <span
               className={cn(
@@ -770,6 +797,16 @@ export function GatewayTable({
               <span className="sr-only">Prompts:</span>
               {status.discovered_prompt_count === 0 ? EM_DASH : status.exposed_prompt_count}
             </span>
+            <span
+              className={cn(
+                GW_COUNT,
+                exposureTone(exposedSkills, discoveredSkills),
+              )}
+            >
+              <BookOpen className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
+              <span className="sr-only">Skills:</span>
+              {discoveredSkills === 0 ? EM_DASH : exposedSkills}
+            </span>
           </span>
         </div>
 
@@ -783,7 +820,30 @@ export function GatewayTable({
             {EM_DASH}
           </span>
         </div>
-      </div>
+        </div>
+        {isExpanded ? (
+          <div className="border-t border-aurora-border-strong bg-[color-mix(in_srgb,var(--aurora-accent-primary)_4%,var(--gw-head))] px-10 py-4">
+            <div className="grid gap-4 text-[11px] sm:grid-cols-2 xl:grid-cols-4">
+              <GatewayFact label="Transport" value={gateway.transport} />
+              <GatewayFact label="Endpoint" value={endpointPreview} mono />
+              <GatewayFact label="Runtime" value={runtimeAgeLabel(gateway) ?? 'Not reported'} />
+              <GatewayFact label="Process" value={status.pid ? `PID ${status.pid}${status.pgid ? ` · PGID ${status.pgid}` : ''}` : 'Not reported'} />
+              <GatewayFact label="Origin" value={status.origin ?? gateway.source ?? 'Not reported'} />
+              <GatewayFact label="Owner" value={status.owner?.client_name ?? status.owner?.subject ?? status.owner?.surface ?? 'Not reported'} />
+              <GatewayFact label="Resources" value={`${status.exposed_resource_count}/${status.discovered_resource_count} exposed`} />
+              <GatewayFact label="Prompts" value={`${status.exposed_prompt_count}/${status.discovered_prompt_count} exposed`} />
+            </div>
+            <div className="mt-4 flex items-center justify-between gap-3 border-t border-aurora-border-subtle pt-3">
+              <p className="text-[10px] text-aurora-text-muted">
+                CPU, memory, client history, and uptime are not reported by the gateway API.
+              </p>
+              <Button asChild variant="outline" size="sm" className="h-8 shrink-0">
+                <Link href={gatewayDetailHref(gateway.id)}>Open server page</Link>
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Fragment>
     )
   }
   return (
@@ -894,6 +954,11 @@ export function GatewayTable({
                         <MessageSquare className="size-3 text-aurora-text-muted" aria-hidden="true" />
                         <span className="sr-only">Prompts:</span>
                         <strong className="text-[10px] font-semibold text-aurora-text-primary">{gateway.status.exposed_prompt_count}</strong>
+                      </span>
+                      <span data-mobile-metric="skills" className="inline-flex items-center gap-1 whitespace-nowrap" title="Skills">
+                        <BookOpen className="size-3 text-aurora-text-muted" aria-hidden="true" />
+                        <span className="sr-only">Skills:</span>
+                        <strong className="text-[10px] font-semibold text-aurora-text-primary">{gateway.status.exposed_skill_count ?? 0}</strong>
                       </span>
                       <span data-mobile-metric="runtime" className="inline-flex items-center gap-1 whitespace-nowrap" title="Runtime age">
                         <RefreshCw className="size-3 text-aurora-text-muted" aria-hidden="true" />

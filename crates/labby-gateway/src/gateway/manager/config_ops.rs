@@ -16,9 +16,11 @@ use crate::gateway::types::{
     GatewayCatalogDiff, GatewayRuntimeView, GatewayView, ServiceConfigView,
 };
 use crate::upstream::types::UpstreamRuntimeOwner;
-use labby_runtime::catalog_notify::{SOURCE_GATEWAY_CODE_MODE_SET, SOURCE_MCP_CALL_MCP_APP};
+use labby_runtime::catalog_notify::{
+    SOURCE_GATEWAY_CODE_MODE_SET, SOURCE_GATEWAY_MCP_APPS_SET, SOURCE_MCP_CALL_MCP_APP,
+};
 use labby_runtime::error::ToolError;
-use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
+use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, McpAppsConfig, UpstreamConfig};
 
 use super::GatewayManager;
 
@@ -94,6 +96,11 @@ impl GatewayManager {
     /// Return a snapshot of the current gateway config (read-only).
     pub async fn current_config(&self) -> GatewayConfig {
         self.config.read().await.clone()
+    }
+
+    /// Return the current visibility switches for Labby-owned MCP Apps.
+    pub async fn mcp_apps_config(&self) -> McpAppsConfig {
+        self.config.read().await.mcp_apps
     }
 
     pub async fn upstream_config(&self, name: &str) -> Option<UpstreamConfig> {
@@ -507,6 +514,77 @@ impl GatewayManager {
             "gateway mode changed"
         );
         Ok(self.code_mode_config().await)
+    }
+
+    /// Persist one or all Labby-owned MCP App visibility switches without
+    /// touching the upstream pool. Code Mode's legacy `mcp_ui_enabled` field
+    /// participates in the same transaction so a bulk toggle emits one catalog
+    /// notification rather than a burst of per-app changes.
+    pub async fn set_mcp_app_visibility(
+        &self,
+        target: &str,
+        enabled: bool,
+        origin: Option<&str>,
+    ) -> Result<GatewayConfig, ToolError> {
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        let durable_previous = self.load_config_for_mutation().await?;
+        let mut cfg = durable_previous.clone();
+        match target {
+            "codemode" => cfg.code_mode.mcp_ui_enabled = enabled,
+            "gateway_status" => cfg.mcp_apps.gateway_status = enabled,
+            "server_logs" => cfg.mcp_apps.server_logs = enabled,
+            "add_server" => cfg.mcp_apps.add_server = enabled,
+            "settings" => cfg.mcp_apps.settings = enabled,
+            "all" => {
+                cfg.code_mode.mcp_ui_enabled = enabled;
+                cfg.mcp_apps.gateway_status = enabled;
+                cfg.mcp_apps.server_logs = enabled;
+                cfg.mcp_apps.add_server = enabled;
+                cfg.mcp_apps.settings = enabled;
+            }
+            _ => {
+                return Err(ToolError::InvalidParam {
+                    message: format!("unsupported MCP App target `{target}`"),
+                    param: "target".to_string(),
+                });
+            }
+        }
+        let changed = cfg.code_mode.mcp_ui_enabled != durable_previous.code_mode.mcp_ui_enabled
+            || cfg.mcp_apps != durable_previous.mcp_apps;
+        if !changed {
+            return Ok(durable_previous);
+        }
+        self.persist_config_owned(_mutation_guard, cfg).await?;
+        let current = self.current_config().await;
+        self.code_mode_app_state
+            .set_enabled(current.code_mode.mcp_ui_enabled);
+        let notification_source = if origin == Some(SOURCE_MCP_CALL_MCP_APP) {
+            SOURCE_MCP_CALL_MCP_APP
+        } else {
+            SOURCE_GATEWAY_MCP_APPS_SET
+        };
+        self.notify_catalog_changes(
+            &GatewayCatalogDiff {
+                tools_changed: true,
+                resources_changed: true,
+                prompts_changed: false,
+            },
+            notification_source,
+        );
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.mcp_apps.set",
+            target,
+            enabled,
+            code_mode = current.code_mode.mcp_ui_enabled,
+            add_server = current.mcp_apps.add_server,
+            server_logs = current.mcp_apps.server_logs,
+            gateway_status = current.mcp_apps.gateway_status,
+            settings = current.mcp_apps.settings,
+            "Labby MCP App visibility changed"
+        );
+        Ok(current)
     }
 }
 

@@ -51,6 +51,9 @@ export interface BackendServerView {
   exposed_resource_count?: number
   discovered_prompt_count?: number
   exposed_prompt_count?: number
+  discovered_skill_count?: number
+  exposed_skill_count?: number
+  supports_skills?: boolean
   surfaces?: BackendSurfaceStatesView
   warnings?: BackendServerWarningView[]
   config_summary?: BackendServerConfigSummaryView
@@ -72,10 +75,12 @@ export interface BackendGatewayConfigView {
   oauth_enabled?: boolean
   proxy_resources?: boolean
   proxy_prompts?: boolean
+  proxy_skills?: boolean
   proxy_mcp_ui?: boolean
   expose_tools?: string[] | null
   expose_resources?: string[] | null
   expose_prompts?: string[] | null
+  expose_skills?: string[] | null
   imported_from?: GatewayImportSource | null
 }
 
@@ -84,9 +89,12 @@ export interface BackendGatewayRuntimeView {
   tool_count: number
   resource_count: number
   prompt_count: number
+  skill_count?: number
   exposed_tool_count?: number
   exposed_resource_count?: number
   exposed_prompt_count?: number
+  exposed_skill_count?: number
+  supports_skills?: boolean
   last_error?: string | null
 }
 
@@ -100,6 +108,9 @@ export interface BackendGatewayMcpRuntimeView {
   exposed_resource_count?: number
   discovered_prompt_count?: number
   exposed_prompt_count?: number
+  discovered_skill_count?: number
+  exposed_skill_count?: number
+  supports_skills?: boolean
   likely_stale_count?: number
   pid?: number | null
   pgid?: number | null
@@ -424,6 +435,7 @@ export function normalizeServerView(
       proxy_resources: config.proxy_resources,
       proxy_prompts: config.proxy_prompts,
       proxy_mcp_ui: config.proxy_mcp_ui,
+      proxy_skills: config.proxy_skills,
     },
     status: {
       healthy: (view.connected ?? false) && warnings.length === 0,
@@ -435,6 +447,9 @@ export function normalizeServerView(
       exposed_resource_count: view.exposed_resource_count ?? 0,
       discovered_prompt_count: view.discovered_prompt_count ?? 0,
       exposed_prompt_count: view.exposed_prompt_count ?? 0,
+      discovered_skill_count: view.discovered_skill_count ?? 0,
+      exposed_skill_count: view.exposed_skill_count ?? 0,
+      supports_skills: view.supports_skills,
       likely_stale_count: runtime?.likely_stale_count,
       pid: runtime?.pid ?? undefined,
       pgid: runtime?.pgid ?? undefined,
@@ -516,10 +531,12 @@ export function normalizeGateway(
       oauth_enabled: config.oauth_enabled ?? false,
       proxy_resources: config.proxy_resources ?? true,
       proxy_prompts: config.proxy_prompts ?? true,
+      ...(config.proxy_skills !== undefined ? { proxy_skills: config.proxy_skills } : {}),
       proxy_mcp_ui: config.proxy_mcp_ui ?? true,
       expose_tools: exposePatterns ?? undefined,
       expose_resources: config.expose_resources ?? undefined,
       expose_prompts: config.expose_prompts ?? undefined,
+      ...(config.expose_skills !== undefined ? { expose_skills: config.expose_skills } : {}),
       imported_from: config.imported_from ?? undefined,
     },
     status: {
@@ -532,6 +549,9 @@ export function normalizeGateway(
       exposed_resource_count: view.runtime.exposed_resource_count ?? view.runtime.resource_count,
       discovered_prompt_count: view.runtime.prompt_count,
       exposed_prompt_count: view.runtime.exposed_prompt_count ?? view.runtime.prompt_count,
+      discovered_skill_count: view.runtime.skill_count ?? 0,
+      exposed_skill_count: view.runtime.exposed_skill_count ?? 0,
+      supports_skills: view.runtime.supports_skills,
       likely_stale_count: runtime?.likely_stale_count,
       pid: runtime?.pid ?? undefined,
       pgid: runtime?.pgid ?? undefined,
@@ -586,7 +606,8 @@ export function normalizeGateway(
 }
 
 export function probeStatusFromRuntime(runtime: BackendGatewayRuntimeView): GatewayProbeStatus {
-  const connectedCount = runtime.tool_count + runtime.resource_count + runtime.prompt_count
+  const connectedCount =
+    runtime.tool_count + runtime.resource_count + runtime.prompt_count + (runtime.skill_count ?? 0)
   const rawLastError = runtime.last_error?.trim() || undefined
   const lastError = rawLastError && !isNonEssentialCapabilityError(rawLastError)
     ? rawLastError
@@ -603,7 +624,7 @@ export function probeStatusFromRuntime(runtime: BackendGatewayRuntimeView): Gate
   return {
     connected: false,
     healthy: false,
-    last_error: lastError ?? 'No capabilities (tools, resources, or prompts) were discovered from this gateway.',
+    last_error: lastError ?? 'No capabilities (tools, resources, prompts, or skills) were discovered from this gateway.',
   }
 }
 
@@ -618,10 +639,12 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
     bearer_token_env: input.config.bearer_token_env ?? null,
     proxy_resources: input.config.proxy_resources ?? true,
     proxy_prompts: input.config.proxy_prompts ?? true,
+    ...(input.config.proxy_skills !== undefined ? { proxy_skills: input.config.proxy_skills } : {}),
     proxy_mcp_ui: input.config.proxy_mcp_ui ?? true,
     expose_tools: input.config.expose_tools ?? null,
     expose_resources: input.config.expose_resources ?? null,
     expose_prompts: input.config.expose_prompts ?? null,
+    ...(input.config.expose_skills !== undefined ? { expose_skills: input.config.expose_skills } : {})
   }
   if (input.config.oauth) {
     spec.oauth = {
@@ -691,8 +714,16 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
     patch.proxy_prompts = config.proxy_prompts
   }
 
+  if (config.proxy_skills !== undefined) {
+    patch.proxy_skills = config.proxy_skills
+  }
+
   if (config.proxy_mcp_ui !== undefined) {
     patch.proxy_mcp_ui = config.proxy_mcp_ui
+  }
+
+  if (config.proxy_skills !== undefined) {
+    patch.proxy_skills = config.proxy_skills
   }
 
   if (config.expose_tools !== undefined) {
@@ -703,8 +734,16 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
     patch.expose_resources = config.expose_resources
   }
 
+  if (config.expose_skills !== undefined) {
+    patch.expose_skills = config.expose_skills
+  }
+
   if (config.expose_prompts !== undefined) {
     patch.expose_prompts = config.expose_prompts
+  }
+
+  if (config.expose_skills !== undefined) {
+    patch.expose_skills = config.expose_skills
   }
 
   if (config.oauth !== undefined) {

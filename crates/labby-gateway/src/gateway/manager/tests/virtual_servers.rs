@@ -285,6 +285,9 @@ fn enabled_virtual_server_reports_compiled_tool_counts() {
             exposed_resource_count: 0,
             discovered_prompt_count: 0,
             exposed_prompt_count: 0,
+            discovered_skill_count: 0,
+            exposed_skill_count: 0,
+            supports_skills: None,
         },
         None,
         Some(&ServiceHealth {
@@ -326,6 +329,9 @@ fn virtual_server_mcp_policy_reduces_exposed_tool_count() {
             exposed_resource_count: 0,
             discovered_prompt_count: 0,
             exposed_prompt_count: 0,
+            discovered_skill_count: 0,
+            exposed_skill_count: 0,
+            supports_skills: None,
         },
         None,
         Some(&ServiceHealth {

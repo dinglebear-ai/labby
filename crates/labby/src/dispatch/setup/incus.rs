@@ -116,6 +116,8 @@ pub(crate) struct IncusSyncOutcome {
     pub remote_sha256: Option<String>,
     pub local_version: Option<String>,
     pub remote_version: Option<String>,
+    pub local_web_index_sha256: Option<String>,
+    pub served_web_index_sha256: Option<String>,
     pub ready: bool,
     pub check_url: Option<String>,
     pub check_url_ok: Option<bool>,
@@ -680,6 +682,14 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     } else {
         Some(file_sha256(&binary)?)
     };
+    let local_web_index_sha256 = if options.dry_run {
+        None
+    } else {
+        web_assets_dir
+            .as_ref()
+            .map(|dir| file_sha256(&dir.join("index.html")))
+            .transpose()?
+    };
     let local_version = command_stdout(
         Command::new(&binary).arg("--version").output(),
         "incus_sync_local_version_failed",
@@ -727,6 +737,8 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
             remote_sha256: None,
             local_version,
             remote_version: None,
+            local_web_index_sha256,
+            served_web_index_sha256: None,
             ready: false,
             check_url: options.check_url,
             check_url_ok: None,
@@ -832,6 +844,15 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     wait_ready(&container, Duration::from_secs(30))?;
     steps.push(format!("verified {READY_URL}"));
 
+    let served_web_index_sha256 = if let Some(expected) = local_web_index_sha256.as_deref() {
+        let actual = remote_web_index_sha256(&container)?;
+        verify_web_index_hash(expected, &actual)?;
+        steps.push("verified served web index hash".to_string());
+        Some(actual)
+    } else {
+        None
+    };
+
     let remote_sha256 = Some(remote_sha256(&container)?);
     if local_sha256 != remote_sha256 {
         return Err(ToolError::Sdk {
@@ -878,6 +899,8 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
         remote_sha256,
         local_version,
         remote_version,
+        local_web_index_sha256,
+        served_web_index_sha256,
         ready: true,
         check_url: options.check_url,
         check_url_ok,
@@ -1119,6 +1142,35 @@ fn clear_remote_web_assets(container: &str) -> Result<(), ToolError> {
         remote = shell_quote(REMOTE_WEB_ASSETS_DIR),
     );
     incus_exec(container, &["sh", "-lc", &script])
+}
+
+fn remote_web_index_sha256(container: &str) -> Result<String, ToolError> {
+    incus_exec_stdout(
+        container,
+        &[
+            "sh",
+            "-lc",
+            "curl -fsS http://127.0.0.1:8765/ | sha256sum | awk '{print $1}'",
+        ],
+    )
+    .map(|value| value.trim().to_string())
+    .map_err(|error| ToolError::Sdk {
+        message: format!("failed to hash the web index served by the Incus runtime: {error}"),
+        sdk_kind: "incus_sync_web_assets_hash_failed".into(),
+    })
+}
+
+fn verify_web_index_hash(expected: &str, actual: &str) -> Result<(), ToolError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(ToolError::Sdk {
+            message: format!(
+                "served web index hash {actual} does not match built export hash {expected}"
+            ),
+            sdk_kind: "incus_sync_web_assets_hash_mismatch".into(),
+        })
+    }
 }
 
 fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
@@ -1746,6 +1798,18 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn rejects_a_served_web_index_that_differs_from_the_built_export() {
+        let err = verify_web_index_hash("built-index-sha", "served-index-sha").unwrap_err();
+
+        assert_eq!(err.kind(), "incus_sync_web_assets_hash_mismatch");
+    }
+
+    #[test]
+    fn accepts_a_served_web_index_that_matches_the_built_export() {
+        verify_web_index_hash("same-index-sha", "same-index-sha").unwrap();
+    }
 
     #[test]
     fn parses_supported_snapshot_keys() {

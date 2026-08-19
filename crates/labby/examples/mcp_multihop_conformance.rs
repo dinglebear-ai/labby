@@ -9,6 +9,7 @@
 // and deliberately exercises the raw rmcp helpers end to end.
 #![allow(clippy::disallowed_methods)]
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -22,19 +23,22 @@ use rmcp::model::{
     CompleteResult, CompletionInfo, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
     ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams, GetPromptResponse,
     GetPromptResult, GetTaskParams, GetTaskResult, Implementation, InputRequest, InputRequests,
-    InputRequiredResult, InputResponses, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, MetaObject, PaginatedRequestParams,
-    PrimitiveSchemaDefinition, ProgressNotificationParam, Prompt, PromptMessage, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Reference, Resource,
-    ResourceContents, ResourceTemplate, Role, ServerCapabilities, ServerInfo, ServerNotification,
-    ServerResult, SubscriptionFilter, Task, TaskPayload, TaskStatus, TaskStatusNotification,
-    TaskStatusNotificationParams, Tool, UpdateTaskParams,
+    InputRequiredResult, InputResponses, JsonRpcMessage, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, MetaObject,
+    PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam, Prompt,
+    PromptMessage, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Reference, Resource, ResourceContents, ResourceTemplate, Role,
+    ServerCapabilities, ServerInfo, ServerNotification, ServerResult, SubscriptionFilter, Task,
+    TaskPayload, TaskStatus, TaskStatusNotification, TaskStatusNotificationParams, Tool,
+    UpdateTaskParams,
 };
 use rmcp::service::{
     ClientLifecycleMode, ClientServiceExt, NotificationContext, Peer, PeerRequestOptions,
-    RequestContext, SubscriptionContext,
+    RequestContext, RxJsonRpcMessage, SubscriptionContext, TxJsonRpcMessage,
 };
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::transport::{
+    ConfigureCommandExt, TokioChildProcess, Transport, TransportAdapterIdentity,
+};
 use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -469,6 +473,45 @@ impl ServerHandler for LeafServer {
     }
 }
 
+struct DriverProgressObserver<T> {
+    inner: T,
+    progress: Arc<Mutex<Vec<ProgressNotificationParam>>>,
+}
+
+impl<T> DriverProgressObserver<T> {
+    fn new(inner: T, progress: Arc<Mutex<Vec<ProgressNotificationParam>>>) -> Self {
+        Self { inner, progress }
+    }
+}
+
+impl<T> Transport<RoleClient> for DriverProgressObserver<T>
+where
+    T: Transport<RoleClient>,
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
+        let message = self.inner.receive().await?;
+        if let JsonRpcMessage::Notification(notification) = &message
+            && let ServerNotification::ProgressNotification(progress) = &notification.notification
+        {
+            self.progress.lock().await.push(progress.params.clone());
+        }
+        Some(message)
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
+
 #[derive(Default)]
 struct DriverEvents {
     progress: Mutex<Vec<ProgressNotificationParam>>,
@@ -671,7 +714,7 @@ async fn wait_for_progress(
     events: &DriverEvents,
     count: usize,
 ) -> Result<Vec<ProgressNotificationParam>> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let values = events.progress.lock().await.clone();
             if values.len() >= count {
@@ -681,7 +724,28 @@ async fn wait_for_progress(
         }
     })
     .await
-    .context("timed out waiting for progress notifications")
+    {
+        Ok(values) => Ok(values),
+        Err(_) => {
+            let values = events.progress.lock().await.clone();
+            let received = values
+                .iter()
+                .map(|value| {
+                    format!(
+                        "{:?}:{}",
+                        value.progress_token,
+                        value.message.as_deref().unwrap_or("<no-message>")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "timed out waiting for {count} progress notifications; received {} [{}]",
+                values.len(),
+                received
+            )
+        }
+    }
 }
 
 async fn wait_for_task_status(
@@ -777,6 +841,9 @@ async fn run_driver() -> Result<()> {
     let middle_base_url = format!("http://127.0.0.1:{middle_port}");
     let middle_token = "8c1f97449584ebcc6025655d738a8b40a3a488dd407ac89a1c42146864bd0179";
     let mut middle_child = Command::new(&labby_bin)
+        // Labby resolves ./config.toml before HOME-scoped config. Pin the
+        // fixture cwd so an unrelated caller cwd cannot shadow this test config.
+        .current_dir(&middle_home)
         .arg("serve")
         .arg("--host")
         .arg("127.0.0.1")
@@ -807,6 +874,8 @@ async fn run_driver() -> Result<()> {
 
     let transport = TokioChildProcess::new(Command::new(&labby_bin).configure(|command| {
         command
+            // Keep the root fixture hermetic for the same reason as middle.
+            .current_dir(&root_home)
             .arg("serve")
             .arg("mcp")
             .arg("--stdio")
@@ -816,10 +885,12 @@ async fn run_driver() -> Result<()> {
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
             .env("LABBY_LOG", "labby=debug,labby_gateway=debug");
     }))?;
+    let wire_progress = Arc::new(Mutex::new(Vec::new()));
+    let transport = DriverProgressObserver::new(transport, Arc::clone(&wire_progress));
     let driver = DriverClient::default();
     let events = Arc::clone(&driver.events);
     let service = driver
-        .serve_with_lifecycle(
+        .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
             transport,
             ClientLifecycleMode::Discover {
                 preferred_versions: vec![ProtocolVersion::V_2026_07_28],
@@ -929,6 +1000,7 @@ async fn run_driver() -> Result<()> {
             .iter()
             .all(|value| value.progress_token == progress_token)
     );
+    ensure!(progress.len() == 2);
     ensure!(
         progress
             .iter()
@@ -939,6 +1011,16 @@ async fn run_driver() -> Result<()> {
             .iter()
             .any(|value| value.message.as_deref() == Some("three-quarters"))
     );
+    let wire_progress = wire_progress
+        .lock()
+        .await
+        .iter()
+        .filter(|value| value.progress_token == progress_token)
+        .cloned()
+        .collect::<Vec<_>>();
+    ensure!(wire_progress.len() == 2);
+    ensure!(wire_progress[0].message.as_deref() == Some("quarter"));
+    ensure!(wire_progress[1].message.as_deref() == Some("three-quarters"));
 
     let CallToolResponse::Task(created) = peer
         .call_tool_once(CallToolRequestParams::new(task_name.clone()))

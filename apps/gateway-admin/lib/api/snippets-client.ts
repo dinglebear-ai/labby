@@ -2,6 +2,7 @@ import { snippetsActionUrl } from './gateway-config'
 import { performServiceAction, type ServiceActionError } from './service-action-client'
 import type {
   CodeModeExecutionResponse,
+  CreateSnippetInput,
   ResolvedSnippet,
   SnippetInfo,
   SnippetListResponse,
@@ -42,6 +43,10 @@ export const snippetsApi = {
 
   get(name: string, signal?: AbortSignal): Promise<ResolvedSnippet> {
     return snippetsAction<ResolvedSnippet>('snippets.get', { name }, signal)
+  },
+
+  create(input: CreateSnippetInput, signal?: AbortSignal): Promise<SnippetInfo> {
+    return snippetsAction<SnippetInfo>('snippets.create', input, signal)
   },
 
   validate(name: string, body?: string, signal?: AbortSignal): Promise<SnippetValidation> {

@@ -37,7 +37,7 @@ export function GatewayEnabledSetting({
         <div className="min-w-0">
           <p className="text-sm font-semibold text-aurora-text-primary">Server enabled</p>
           <p className="mt-1 text-sm text-aurora-text-muted">
-            Controls whether this server participates in the active catalog and serves tools, resources, and prompts.
+            Controls whether this server participates in the active catalog and serves tools, resources, prompts, and skills.
           </p>
         </div>
         <Switch

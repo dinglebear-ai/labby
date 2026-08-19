@@ -43,3 +43,37 @@ test('snippets client sends validate body params', async () => {
     },
   })
 })
+
+test('snippets client sends create body and metadata', async () => {
+  let requestBody: unknown
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body ?? '{}'))
+    return new Response(JSON.stringify({
+      name: 'fleet-health',
+      description: 'Check the fleet',
+      tags: [],
+      source: 'user',
+      path: '/tmp/fleet-health.md',
+      shadowed: false,
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const result = await snippetsApi.create({
+    name: 'fleet-health',
+    description: 'Check the fleet',
+    body: 'async () => ({ ok: true })',
+  })
+
+  assert.equal(result.name, 'fleet-health')
+  assert.deepEqual(requestBody, {
+    action: 'snippets.create',
+    params: {
+      name: 'fleet-health',
+      description: 'Check the fleet',
+      body: 'async () => ({ ok: true })',
+    },
+  })
+})

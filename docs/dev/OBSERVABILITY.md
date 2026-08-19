@@ -239,7 +239,15 @@ Set `LABBY_GATEWAY_USAGE_DISABLED=1` to disable capture entirely (no store is op
 
 In-flight fire-and-forget writes are capped by a semaphore (`WRITE_SEMAPHORE_PERMITS`, 64 permits) — a saturated burst drops the write and logs a warning rather than queuing unboundedly or spawning an unbounded number of tasks. `~/.labby/usage.db` is created with owner-only (`0600`) permissions since `actor` is a stable per-user identifier, even though nothing in the store is a credential.
 
-This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. The recorded schema is intentionally minimal: `ts_unix`, `upstream_name`, `tool_name`, `actor`, `outcome`, `elapsed_ms` (see `crates/labby-gateway/src/usage/types.rs`). See `docs/superpowers/plans/2026-07-09-gateway-usage-telemetry.md` for the original design rationale — note the shipped schema diverges from that plan (the `capability`/`operation`/`subject_scoped`/`error_kind`/`response_bytes` fields proposed there were dropped during review as unused).
+This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. Schema version 2 records `ts_unix`, `upstream_name`, `tool_name`, `capability`, `operation`, `subject_scoped`, `actor`, `outcome`, `elapsed_ms`, and nullable `response_bytes` (see `crates/labby-gateway/src/usage/types.rs`). Existing version-1 databases migrate in place. `response_bytes` is present only when an upstream returned a complete response; queue, connection, upstream-error, and timeout outcomes keep it null.
+
+The operator UI deliberately separates these two retention shapes:
+
+- **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
+- **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes only those correlation identifiers from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
+- **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `chars / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
+
+Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
 
 ### Health Probes
 
@@ -310,10 +318,11 @@ shared by the gateway and MCP crates:
 |---|---|
 | `gateway.reload.selective` | reconcile that kept the live pool and selectively reconciled added upstreams |
 | `gateway.reload.full` | reconcile that rebuilt the upstream pool |
-| `gateway.code_mode.set` | Code Mode contract update that did not rebuild the upstream pool, such as an MCP App UI toggle |
+| `gateway.code_mode.set` | Code Mode contract update that did not rebuild the upstream pool, including the legacy Code Mode inspector switch |
+| `gateway.mcp_apps.set` | Labby-owned MCP App visibility update that did not rebuild the upstream pool |
 | `gateway.enrich.hint_apply` | `gateway.enrich.hint.apply` writing a `code_mode_hint` |
 | `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
-| `mcp.call.mcp_app` | explicit Code Mode MCP App visibility change made through the `mcp_app` control tool |
+| `mcp.call.mcp_app` | Labby-owned MCP App visibility change made through the always-on `mcp_app` manager |
 | `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
 | `upstream.subscription` | scoped list-change signal from one live upstream subscription |
 | `upstream.notification_lag` | bounded authoritative catalog reconciliation after the subscription receiver skipped events |

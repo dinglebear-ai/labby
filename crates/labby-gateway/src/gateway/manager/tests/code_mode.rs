@@ -131,6 +131,28 @@ async fn resolve_code_mode_upstream_tool_resolves_requested_upstream() {
     assert_eq!(tool.tool.name.as_ref(), "ping");
 }
 
+#[tokio::test]
+async fn admin_tool_browser_search_and_describe_use_the_live_manager_catalog() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("alpha")).await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+
+    let searched = manager
+        .search_admin_tools(Some("admin".to_string()), "alpha ping", 50)
+        .await
+        .expect("search live manager catalog");
+    assert_eq!(searched.results.len(), 1);
+    assert_eq!(searched.results[0].id, "alpha::ping");
+
+    let described = manager
+        .describe_admin_tool(Some("admin".to_string()), "alpha::ping")
+        .await
+        .expect("describe live manager catalog");
+    assert_eq!(described.id, "alpha::ping");
+    assert!(described.typescript.is_some());
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
 // Regression: the Cloudflare-parity surface exposes search+execute under
 // `code_mode.enabled` (RootSynthetic). `execute`'s callTool must resolve
 // upstream tools when `code_mode.enabled` is the active flag — the single
@@ -913,7 +935,7 @@ async fn catalog_embeddings_stay_cold_when_semantic_search_unconfigured() {
     // returns immediately for an unconfigured host.
     assert!(
         manager
-            .cached_embeddings(&render.fingerprint)
+            .cached_embeddings(&render.embedding_fingerprint)
             .await
             .is_none()
     );

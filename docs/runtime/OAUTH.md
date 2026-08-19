@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-08-08"
+updated: "2026-08-17"
 ---
 
 # HTTP Auth Modes
@@ -839,7 +839,10 @@ instead of one action per upstream tool. `codemode_read` accepts `lab:read`,
 `lab`, or `lab:admin` and can invoke only tools whose live descriptor explicitly
 sets `readOnlyHint: true` without a contradictory `destructiveHint: true`.
 `codemode` and the optional `codemode_ui` require `lab` or `lab:admin` and retain
-full execution authority.
+full execution authority. On the root gateway, the always-on `mcp_app` manager
+uses the same read/open scopes, while changing Labby-owned app visibility
+requires `lab:admin`. The manager is omitted from protected subset routes so a
+subset-scoped token cannot mutate gateway-global UI visibility.
 
 Those approval-facing descriptors do not embed current upstream names, health,
 hints, or counts. Raw upstream MCP App callback descriptors are not advertised

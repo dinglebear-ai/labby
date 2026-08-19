@@ -34,6 +34,13 @@ export interface SnippetListResponse {
   snippets: SnippetInfo[]
 }
 
+export interface CreateSnippetInput {
+  name: string
+  body: string
+  description?: string
+  force?: boolean
+}
+
 export interface SnippetValidation {
   valid: boolean
   name: string
