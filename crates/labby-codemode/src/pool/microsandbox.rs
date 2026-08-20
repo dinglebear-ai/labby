@@ -72,41 +72,83 @@ impl MicrosandboxGuard {
                 );
             }
             Ok(output) => {
-                cleanup_failed(&identity);
-                let error = sanitize_stderr(&output.stderr);
-                tracing::warn!(
-                    surface = "dispatch",
-                    service = "code_mode",
-                    action = "microsandbox.remove",
-                    kind = "cleanup_failed",
-                    sandbox = %self.name,
-                    status = %output.status,
-                    error,
-                    "Microsandbox cleanup failed"
-                );
-                log_lifecycle(
-                    "microsandbox.remove",
-                    &identity.name,
-                    started,
-                    "failed",
-                    Some("cleanup_failed"),
-                );
+                let error = helper_diagnostic(&output);
+                if sandbox_absent(&identity).await {
+                    self.removed = true;
+                    cleanup_succeeded(&identity, self.counted);
+                    self.counted = false;
+                    tracing::info!(
+                        surface = "dispatch",
+                        service = "code_mode",
+                        action = "microsandbox.remove",
+                        kind = "already_absent",
+                        sandbox = %self.name,
+                        status = %output.status,
+                        error,
+                        "Microsandbox cleanup target is already absent"
+                    );
+                    log_lifecycle(
+                        "microsandbox.remove",
+                        &identity.name,
+                        started,
+                        "success",
+                        Some("already_absent"),
+                    );
+                } else {
+                    cleanup_failed(&identity);
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "code_mode",
+                        action = "microsandbox.remove",
+                        kind = "cleanup_failed",
+                        sandbox = %self.name,
+                        status = %output.status,
+                        error,
+                        "Microsandbox cleanup failed"
+                    );
+                    log_lifecycle(
+                        "microsandbox.remove",
+                        &identity.name,
+                        started,
+                        "failed",
+                        Some("cleanup_failed"),
+                    );
+                }
             }
             Err(error) => {
-                cleanup_failed(&identity);
-                tracing::warn!(
-                    surface = "dispatch", service = "code_mode",
-                    action = "microsandbox.remove", kind = error.kind,
-                    sandbox = %self.name, executable = %self.executable.display(),
-                    error = %error.message, "Microsandbox cleanup failed"
-                );
-                log_lifecycle(
-                    "microsandbox.remove",
-                    &identity.name,
-                    started,
-                    "failed",
-                    Some(error.kind),
-                );
+                if sandbox_absent(&identity).await {
+                    self.removed = true;
+                    cleanup_succeeded(&identity, self.counted);
+                    self.counted = false;
+                    tracing::info!(
+                        surface = "dispatch", service = "code_mode",
+                        action = "microsandbox.remove", kind = "already_absent",
+                        sandbox = %self.name, executable = %self.executable.display(),
+                        error = %error.message, "Microsandbox cleanup target is already absent"
+                    );
+                    log_lifecycle(
+                        "microsandbox.remove",
+                        &identity.name,
+                        started,
+                        "success",
+                        Some("already_absent"),
+                    );
+                } else {
+                    cleanup_failed(&identity);
+                    tracing::warn!(
+                        surface = "dispatch", service = "code_mode",
+                        action = "microsandbox.remove", kind = error.kind,
+                        sandbox = %self.name, executable = %self.executable.display(),
+                        error = %error.message, "Microsandbox cleanup failed"
+                    );
+                    log_lifecycle(
+                        "microsandbox.remove",
+                        &identity.name,
+                        started,
+                        "failed",
+                        Some(error.kind),
+                    );
+                }
             }
         }
     }
@@ -170,6 +212,7 @@ pub(super) async fn runner_command(
         "{}:/opt/labby/labby:ro,nodev,nosuid",
         spawn.program.display()
     );
+    ensure_cleanup_circuit_closed(&config.executable)?;
     let mut guard = MicrosandboxGuard {
         executable: config.executable.clone(),
         name: name.clone(),
@@ -177,7 +220,6 @@ pub(super) async fn runner_command(
         counted: false,
         admission_permit,
     };
-    ensure_cleanup_circuit_closed(&config.executable)?;
     if let Err(error) = create(config, &name, &mount).await {
         guard.remove().await;
         return Err(error);
@@ -273,7 +315,7 @@ async fn create(
         sdk_kind: "internal_error".into(),
         message: format!(
             "failed to create Microsandbox Code Mode runner: {}",
-            sanitize_stderr(&output.stderr)
+            helper_diagnostic(&output)
         ),
     })
 }
@@ -577,6 +619,36 @@ fn sanitize_stderr(stderr: &[u8]) -> String {
     labby_runtime::redact::sanitize_error_text(&String::from_utf8_lossy(stderr), 512)
 }
 
+fn helper_diagnostic(output: &HelperOutput) -> String {
+    let stderr = sanitize_stderr(&output.stderr);
+    let stdout =
+        labby_runtime::redact::sanitize_error_text(&String::from_utf8_lossy(&output.stdout), 512);
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (false, false) => format!("stderr: {stderr}; stdout: {stdout}"),
+        (false, true) => stderr,
+        (true, false) => stdout,
+        (true, true) => "helper returned no diagnostic output".to_string(),
+    }
+}
+
+async fn sandbox_absent(identity: &CleanupIdentity) -> bool {
+    let mut list = Command::new(&identity.executable);
+    list.args(["list", "--quiet", "--label", "labby.owner=codemode"])
+        .env_clear()
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    matches!(
+        run_helper(list, Duration::from_secs(2)).await,
+        Ok(output)
+            if output.status.success()
+                && !String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|name| name.trim() == identity.name)
+    )
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
@@ -678,6 +750,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_circuit_rejection_does_not_cleanup_never_created_sandbox() {
+        let (_dir, executable, calls) = fake_msb(0);
+        let config = config(executable.clone());
+        let unresolved = CleanupIdentity {
+            executable,
+            name: "labby-codemode-existing-leak".to_string(),
+        };
+        cleanup_failed(&unresolved);
+
+        let error = runner_command(&spawn(), Some(&config), None)
+            .await
+            .err()
+            .expect("creation must fail closed");
+        assert_eq!(error.kind(), "cleanup_failed");
+
+        let recorded = std::fs::read_to_string(&calls).expect("recorded calls");
+        assert!(
+            !recorded.lines().any(|line| line.starts_with("create ")),
+            "circuit rejection must happen before create: {recorded}"
+        );
+        assert!(
+            !recorded.lines().any(|line| line.starts_with("remove ")),
+            "circuit rejection must not clean up a never-created sandbox: {recorded}"
+        );
+        cleanup_succeeded(&unresolved, false);
+    }
+
+    #[tokio::test]
+    async fn failed_create_with_absent_sandbox_does_not_poison_cleanup_circuit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let executable = dir.path().join("msb");
+        let calls = dir.path().join("calls");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = create ]; then exit 23; fi\nif [ \"$1\" = remove ]; then exit 9; fi\nexit 0\n",
+            calls.display()
+        );
+        std::fs::write(&executable, script).expect("write fake msb");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+        let config = config(executable);
+
+        for _ in 0..2 {
+            let error = runner_command(&spawn(), Some(&config), None)
+                .await
+                .err()
+                .expect("create must fail");
+            assert_eq!(
+                error.kind(),
+                "internal_error",
+                "confirmed absence must not leave cleanup circuit debt"
+            );
+        }
+
+        let recorded = std::fs::read_to_string(calls).expect("recorded calls");
+        assert_eq!(
+            recorded
+                .lines()
+                .filter(|line| line.starts_with("create "))
+                .count(),
+            2,
+            "second create should not be blocked by phantom cleanup debt: {recorded}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_create_preserves_stdout_and_stderr_diagnostics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let executable = dir.path().join("msb");
+        let script = "#!/bin/sh\nif [ \"$1\" = create ]; then printf 'backend-detail'; printf 'stderr-detail' >&2; exit 23; fi\nexit 0\n";
+        std::fs::write(&executable, script).expect("write fake msb");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+
+        let error = runner_command(&spawn(), Some(&config(executable)), None)
+            .await
+            .err()
+            .expect("create must fail");
+        let message = error.to_string();
+        assert!(message.contains("stderr: stderr-detail"), "{message}");
+        assert!(message.contains("stdout: backend-detail"), "{message}");
+    }
+
+    #[tokio::test]
     async fn oversized_helper_output_is_drained_but_diagnostic_is_bounded() {
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
@@ -735,11 +890,16 @@ mod tests {
         let executable = dir.path().join("msb");
         let calls = dir.path().join("calls");
         let first_remove = dir.path().join("first-remove");
+        let sandbox = dir.path().join("sandbox");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = remove ] && [ \"$4\" != --label ] && [ ! -e '{}' ]; then touch '{}'; exit 9; fi\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = create ]; then printf '%s\\n' \"$4\" > '{}'; exit 0; fi\nif [ \"$1\" = list ]; then if [ -s '{}' ]; then IFS= read -r name < '{}'; printf '%s\\n' \"$name\"; fi; exit 0; fi\nif [ \"$1\" = remove ] && [ ! -e '{}' ]; then touch '{}'; exit 9; fi\nif [ \"$1\" = remove ]; then rm -f '{}'; exit 0; fi\nexit 0\n",
             calls.display(),
+            sandbox.display(),
+            sandbox.display(),
+            sandbox.display(),
             first_remove.display(),
-            first_remove.display()
+            first_remove.display(),
+            sandbox.display()
         );
         std::fs::write(&executable, script).expect("write fake msb");
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
@@ -776,9 +936,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
         let calls = dir.path().join("calls");
+        let sandbox = dir.path().join("sandbox");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = remove ] && [ \"$4\" != --label ]; then exit 9; fi\nexit 0\n",
-            calls.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = create ]; then printf '%s\\n' \"$4\" > '{}'; exit 0; fi\nif [ \"$1\" = list ]; then if [ -s '{}' ]; then IFS= read -r name < '{}'; printf '%s\\n' \"$name\"; fi; exit 0; fi\nif [ \"$1\" = remove ]; then exit 9; fi\nexit 0\n",
+            calls.display(),
+            sandbox.display(),
+            sandbox.display(),
+            sandbox.display()
         );
         std::fs::write(&executable, script).expect("write fake msb");
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
