@@ -76,4 +76,7 @@ reason = "Binary-only: table formatting happens in `crates/labby/src/output/`, n
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# Temporary, exact-source exception for the pinned rmcp decoder fix. The
+# dependency itself is rev-pinned in Cargo.toml/Cargo.lock; remove this entry
+# with the patch as soon as upstream rmcp publishes the equivalent fix.
+allow-git = ["https://github.com/dinglebear-ai/rust-sdk"]
