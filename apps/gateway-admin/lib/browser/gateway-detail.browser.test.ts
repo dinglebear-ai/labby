@@ -231,6 +231,38 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   assert.equal(hasHorizontalOverflow, false)
 })
 
+test('overview metrics and volume bars drill into exact Usage slices', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+
+  const bars = page.locator('.recharts-bar-rectangle .recharts-rectangle')
+  let clicked = false
+  for (let index = 0; index < await bars.count(); index += 1) {
+    const bar = bars.nth(index)
+    const box = await bar.boundingBox()
+    if (box && box.width > 1 && box.height > 1) {
+      await bar.click()
+      clicked = true
+      break
+    }
+  }
+  assert.equal(clicked, true, 'expected at least one clickable volume bar')
+  await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.has('from') && url.searchParams.has('to'))
+  const sliceUrl = new URL(page.url())
+  const from = Number(sliceUrl.searchParams.get('from'))
+  const to = Number(sliceUrl.searchParams.get('to'))
+  assert.equal(to - from, 3_599_000, '24h buckets should stop one stored second before the next inclusive bucket')
+
+  await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  await page.getByTitle('Upstream calls — open details').click()
+  await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.get('window') === '24h')
+})
+
 test('clicking a server name from the gateway list loads its detail page', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
@@ -300,6 +332,8 @@ test('overview, gateways, detail, and usage stay overflow-free on phone and tabl
       }))
       assert.ok(overflow.document <= 1 && overflow.body <= 1, `${viewport.label} ${route} overflowed horizontally: ${JSON.stringify(overflow)}`)
     }
+    await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    await assert.doesNotReject(() => page.getByRole('link', { name: 'Open', exact: true }).first().waitFor())
     await page.goto(`${baseUrl}/usage/?focus=latency&percentile=p95&outcome=failed`, { waitUntil: 'networkidle' })
     await assert.doesNotReject(() => page.getByText(/Metric drill-down:/).waitFor())
     assert.equal(new URL(page.url()).searchParams.get('focus'), 'latency')

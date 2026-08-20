@@ -242,7 +242,7 @@
         },
         {
           "name": "gateway.usage.metrics",
-          "description": "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
+          "description": "Aggregate complete-window gateway usage analytics: totals, latency, errors, targets, actors, throughput, and time buckets",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
@@ -266,6 +266,54 @@
               "ty": "string",
               "required": false,
               "description": "Restrict to one upstream name"
+            },
+            {
+              "name": "tool",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one qualified upstream::tool target"
+            },
+            {
+              "name": "actor",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one actor subject"
+            },
+            {
+              "name": "outcome",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one outcome; failed matches every non-ok outcome"
+            },
+            {
+              "name": "search",
+              "ty": "string",
+              "required": false,
+              "description": "Case-insensitive search across target, capability, operation, actor, and outcome"
+            },
+            {
+              "name": "bucket_count",
+              "ty": "integer",
+              "required": false,
+              "description": "Return this many complete-window time buckets, capped at 168"
+            },
+            {
+              "name": "timezone",
+              "ty": "string",
+              "required": false,
+              "description": "IANA zone name for DST-correct local-hour aggregation"
+            },
+            {
+              "name": "timezone_offset_minutes",
+              "ty": "integer",
+              "required": false,
+              "description": "Minutes east of UTC fallback when timezone is omitted"
+            },
+            {
+              "name": "include_facets",
+              "ty": "boolean",
+              "required": false,
+              "description": "Include stable window-wide target, actor, upstream, and outcome filter facets"
             }
           ],
           "returns": "GatewayUsageMetricsView"
@@ -296,6 +344,30 @@
               "ty": "string",
               "required": false,
               "description": "Restrict to one upstream name"
+            },
+            {
+              "name": "tool",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one qualified upstream::tool target"
+            },
+            {
+              "name": "actor",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one actor subject"
+            },
+            {
+              "name": "outcome",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one outcome; failed matches every non-ok outcome"
+            },
+            {
+              "name": "search",
+              "ty": "string",
+              "required": false,
+              "description": "Case-insensitive search across target, capability, operation, actor, and outcome"
             },
             {
               "name": "limit",

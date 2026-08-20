@@ -58,6 +58,7 @@ test('fetchDashboardMetrics uses complete-window aggregate analytics without raw
     const result = await fetchDashboardMetrics('24h')
     assert.deepEqual(actions.sort(), ['gateway.usage.metrics', 'server_logs.query'])
     assert.equal(metricsParams?.bucket_count, 24)
+    assert.equal(typeof metricsParams?.timezone, 'string')
     assert.equal(metricsParams?.include_facets, false)
     assert.deepEqual(serverLogParams, { limit: 500, max_scan_bytes: 2 * 1024 * 1024, stop_after_limit: true })
     assert.equal(result.tool_calls.total, 48_649)

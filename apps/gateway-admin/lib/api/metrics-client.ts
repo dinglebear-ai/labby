@@ -506,6 +506,7 @@ function usageMetricsParams(
   return {
     ...usageFilterParams(window, now, query),
     bucket_count: options?.buckets ? WINDOW_BUCKETS[window] : 0,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || undefined,
     timezone_offset_minutes: -new Date(now).getTimezoneOffset(),
     include_facets: options?.facets ?? false,
   }
@@ -516,8 +517,8 @@ async function fetchPersistedCalls(
   options?: MetricsRequestOptions,
   query?: ToolCallQuery,
   limit = 50,
+  now = Date.now(),
 ): Promise<GatewayUsageCalls> {
-  const now = Date.now()
   return postGatewayUsageAction<GatewayUsageCalls>(
     'gateway.usage.calls',
     {
@@ -634,7 +635,7 @@ export async function fetchToolDetail(
       usageMetricsParams(window, now, query, { buckets: true }),
       options,
     ),
-    fetchPersistedCalls(window, options, query, 25),
+    fetchPersistedCalls(window, options, query, 25, now),
   ])
   return {
     name,
@@ -689,7 +690,7 @@ export async function fetchAgentDetail(
       usageMetricsParams(window, now, query, { buckets: true }),
       options,
     ),
-    fetchPersistedCalls(window, options, query, 25),
+    fetchPersistedCalls(window, options, query, 25, now),
   ])
   return {
     id,
@@ -785,7 +786,7 @@ export async function fetchToolCalls(
       usageMetricsParams(query.window, now, query, { facets: true }),
       options,
     ),
-    fetchPersistedCalls(query.window, options, query, query.limit ?? 50),
+    fetchPersistedCalls(query.window, options, query, query.limit ?? 50, now),
   ])
   const bounds = usageTimeBounds(query.window, now, query)
   const durationMinutes = Math.max(1, (bounds.until_unix - bounds.since_unix) / 60)

@@ -22,6 +22,9 @@ pub struct UsageMetricsQuery {
     pub outcome: Option<String>,
     pub search: Option<String>,
     pub bucket_count: usize,
+    /// Optional IANA zone name used for DST-correct local-hour aggregation.
+    pub timezone: Option<String>,
+    /// Fixed minutes east of UTC, used when no IANA zone is supplied.
     pub timezone_offset_minutes: i32,
     pub include_facets: bool,
     /// Route-scope enforcement: when `Some`, results are restricted to these

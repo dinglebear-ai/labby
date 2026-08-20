@@ -240,7 +240,10 @@ pub struct GatewayUsageMetricsArgs {
     /// Return this many complete-window time buckets (max 168).
     #[arg(long)]
     pub bucket_count: Option<usize>,
-    /// Minutes east of UTC for local-hour aggregation.
+    /// IANA zone name for DST-correct local-hour aggregation.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Minutes east of UTC fallback when --timezone is omitted.
     #[arg(long, allow_hyphen_values = true)]
     pub timezone_offset_minutes: Option<i32>,
     /// Include stable window-wide filter facets.

@@ -216,7 +216,10 @@ pub struct GatewayUsageMetricsParams {
     pub search: Option<String>,
     #[serde(default)]
     pub bucket_count: Option<usize>,
-    /// Minutes east of UTC used for local-hour aggregation.
+    /// IANA zone name used for DST-correct local-hour aggregation.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Minutes east of UTC used as a compatibility fallback when timezone is absent.
     #[serde(default)]
     pub timezone_offset_minutes: Option<i32>,
     #[serde(default)]

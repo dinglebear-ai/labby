@@ -612,6 +612,8 @@ mod tests {
             "timeout",
             "--bucket-count",
             "24",
+            "--timezone",
+            "America/New_York",
             "--timezone-offset-minutes",
             "-240",
             "--include-facets",
@@ -634,6 +636,7 @@ mod tests {
         assert_eq!(metrics.outcome.as_deref(), Some("failed"));
         assert_eq!(metrics.search.as_deref(), Some("timeout"));
         assert_eq!(metrics.bucket_count, Some(24));
+        assert_eq!(metrics.timezone.as_deref(), Some("America/New_York"));
         assert_eq!(metrics.timezone_offset_minutes, Some(-240));
         assert!(metrics.include_facets);
     }

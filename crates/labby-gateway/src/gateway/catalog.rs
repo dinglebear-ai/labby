@@ -318,10 +318,16 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Return this many complete-window time buckets, capped at 168",
             },
             ParamSpec {
+                name: "timezone",
+                ty: "string",
+                required: false,
+                description: "IANA zone name for DST-correct local-hour aggregation",
+            },
+            ParamSpec {
                 name: "timezone_offset_minutes",
                 ty: "integer",
                 required: false,
-                description: "Minutes east of UTC for local-hour aggregation",
+                description: "Minutes east of UTC fallback when timezone is omitted",
             },
             ParamSpec {
                 name: "include_facets",

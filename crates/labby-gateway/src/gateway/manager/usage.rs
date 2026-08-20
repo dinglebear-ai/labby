@@ -52,6 +52,7 @@ impl GatewayManager {
                 outcome: params.outcome,
                 search: params.search,
                 bucket_count: params.bucket_count.unwrap_or(0).min(MAX_METRICS_BUCKETS),
+                timezone: params.timezone,
                 timezone_offset_minutes: params
                     .timezone_offset_minutes
                     .unwrap_or(0)

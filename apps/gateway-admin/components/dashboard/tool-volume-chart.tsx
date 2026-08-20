@@ -45,11 +45,16 @@ export function ToolVolumeChart({
   }))
   const selectRow = (entry: unknown) => {
     if (!onSelectBucket) return
-    const ts = (entry as { ts?: unknown }).ts
+    const event = entry as { ts?: unknown; payload?: { ts?: unknown } }
+    const ts = typeof event.ts === 'number' ? event.ts : event.payload?.ts
     if (typeof ts !== 'number') return
     const index = rows.findIndex((row) => row.ts === ts)
+    if (index < 0) return
     const width = rows.length > 0 ? WINDOW_MS[window] / rows.length : WINDOW_MS[window]
-    onSelectBucket(ts, rows[index + 1]?.ts ?? ts + width)
+    const nextTs = rows[index + 1]?.ts ?? ts + width
+    // Backend until bounds are inclusive. Stop one persisted second before the
+    // next bucket so a boundary call belongs to exactly one drill-down slice.
+    onSelectBucket(ts, Math.max(ts, nextTs - 1000))
   }
 
   return (

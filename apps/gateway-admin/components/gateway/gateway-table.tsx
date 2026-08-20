@@ -39,11 +39,7 @@ import type { Gateway } from '@/lib/types/gateway'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import {
-  AURORA_MUTED_LABEL,
-} from '@/components/aurora/tokens'
-import {
   AURORA_GATEWAY_DISABLED_ROW,
-  AURORA_GATEWAY_ROW,
   gatewayActionTone,
   gatewayStatusTone,
 } from './gateway-theme'
@@ -51,9 +47,6 @@ import {
 type SortKey = 'name' | 'endpoint' | 'exposed'
 type SortDirection = 'asc' | 'desc'
 type StatusGroupId = 'attention' | 'healthy'
-
-const AURORA_GATEWAY_TABLE_SHELL =
-  'border border-aurora-border-strong bg-aurora-panel-strong shadow-[var(--aurora-shadow-strong),var(--aurora-highlight-strong)] rounded-aurora-1'
 
 const GATEWAY_TABLE_BADGE =
   'inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.12em]'
@@ -443,49 +436,6 @@ export function GatewayTable({
     return 'bg-aurora-warn'
   }
 
-  const commandParts = (gateway: Gateway, preview: string) => {
-    if (gateway.transport !== 'stdio') {
-      return { command: preview, args: '' }
-    }
-    const command = gateway.config.command?.trim()
-    if (!command) return { command: preview, args: '' }
-    const args = (gateway.config.args ?? []).join(' ')
-    return { command, args }
-  }
-
-  const CommandPreview = ({
-    gateway,
-    preview,
-    compact = false,
-  }: {
-    gateway: Gateway
-    preview: string
-    compact?: boolean
-  }) => {
-    const isCommand = gateway.transport === 'stdio'
-    const parts = commandParts(gateway, preview)
-
-    return (
-      <span
-        className={cn(
-          'min-w-0 max-w-full font-mono text-[color-mix(in_srgb,var(--aurora-text-primary)_78%,var(--aurora-text-muted))] transition-colors group-hover:text-aurora-text-primary',
-          compact ? 'text-[10.5px] leading-4' : 'text-[12px] leading-5',
-          isCommand ? 'whitespace-normal break-all' : 'truncate',
-        )}
-        title={preview}
-      >
-        {isCommand && parts.args ? (
-          <>
-            <span className="font-semibold text-aurora-text-primary/86">{parts.command}</span>
-            <span className="text-[color-mix(in_srgb,var(--aurora-text-primary)_72%,var(--aurora-text-muted))]"> {parts.args}</span>
-          </>
-        ) : (
-          preview
-        )}
-      </span>
-    )
-  }
-
   /** One desktop row, laid out on the mock's six-track grid. */
   const renderDesktopRow = (gateway: Gateway) => {
     const supportsProbeControls = gateway.source !== 'in_process'
@@ -848,7 +798,7 @@ export function GatewayTable({
   }
   return (
     <>
-      <section aria-label="Server inventory" className="space-y-2 md:hidden">
+      <section aria-label="Server inventory" className="space-y-2 min-[1101px]:hidden">
         {sortedGateways.map((gateway) => {
           const supportsProbeControls = gateway.source !== 'in_process'
           const canRemoveGatewayRow = canRemoveGateway(gateway)
@@ -985,7 +935,7 @@ export function GatewayTable({
       <section
         aria-label="Server inventory"
         data-hovercard="1"
-        className={cn(GW_CARD, 'hidden md:block')}
+        className={cn(GW_CARD, 'hidden min-[1101px]:block')}
         style={GW_SCRIM_ALIASES}
       >
         <div
