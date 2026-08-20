@@ -232,7 +232,14 @@ async fn skills_list_with_result_type_and_meta_stays_a_custom_result() {
         .expect("skills/list custom result remains intact");
 
     assert_eq!(skills.skills.len(), 1);
-    assert_eq!(skills.skills[0].entry.frontmatter.name, "alpha");
+    assert_eq!(
+        skills.skills[0]
+            .entry
+            .frontmatter
+            .get("name")
+            .and_then(Value::as_str),
+        Some("alpha")
+    );
 }
 
 #[tokio::test]
