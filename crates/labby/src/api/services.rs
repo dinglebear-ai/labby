@@ -23,6 +23,8 @@ pub mod oauth_relay;
 pub mod palette;
 pub mod server_logs;
 pub mod setup;
+#[cfg(feature = "skills")]
+pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
 

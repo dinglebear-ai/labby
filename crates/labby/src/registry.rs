@@ -444,6 +444,15 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         });
     }
 
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::bootstrap_operator(
+        "skills",
+        crate::dispatch::skills::META.description,
+        "bootstrap",
+        crate::dispatch::skills::ACTIONS,
+        dispatch_fn!(crate::dispatch::skills::dispatch),
+    ));
+
     #[cfg(feature = "gateway")]
     reg.register(RegisteredService::bootstrap_operator(
         "snippets",
@@ -710,6 +719,8 @@ mod tests {
             s.insert("gateway");
             #[cfg(feature = "gateway")]
             s.insert("snippets");
+            #[cfg(feature = "skills")]
+            s.insert("skills");
             s.insert(crate::dispatch::doctor::META.name); // always-on
             s.insert(crate::dispatch::server_logs::META.name); // always-on
             s.insert(crate::dispatch::setup::META.name); // always-on

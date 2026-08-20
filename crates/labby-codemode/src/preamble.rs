@@ -95,7 +95,8 @@ const JS_RESERVED: &[&str] = &[
 /// Namespaces that sanitize to one of these names are suffixed so a
 /// real namespace named `search`, `describe`, `step`, or `batch` cannot overwrite the
 /// local discovery/control helpers.
-const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &["search", "describe", "run", "step", "batch"];
+const CODEMODE_TOP_LEVEL_RESERVED: &[&str] =
+    &["search", "describe", "readResource", "run", "step", "batch"];
 
 /// Convert a dotted/hyphenated/slashed/coloned tool name to snake_case.
 ///
@@ -412,6 +413,12 @@ codemode.describe = async function(target) {{
     markdown: markdown
   }};
 }};
+codemode.readResource = async function(uri) {{
+  if (typeof uri !== "string" || !uri.trim()) {{
+    throw new TypeError("codemode.readResource requires a non-empty URI string");
+  }}
+  return callTool("__lab_internal::read_resource", {{ uri: uri }});
+}};
 codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
 }};
@@ -708,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_preamble_advertises_search_describe_step_and_batch_semantics() {
+    fn discovery_preamble_advertises_search_describe_read_resource_step_and_batch_semantics() {
         let entries = vec![
             discovery_entry("github", "search_issues", "Search GitHub issues"),
             discovery_entry("github", "list_pull_requests", "List GitHub pull requests"),
@@ -727,6 +734,8 @@ mod tests {
         // codemode.batch is an isolation helper: mixed success/failure jobs
         // settle independently and return partitioned results.
         assert!(js.contains("codemode.batch = async function(jobs)"));
+        assert!(js.contains("codemode.readResource = async function(uri)"));
+        assert!(js.contains("__lab_internal::read_resource"));
         assert!(js.contains("Promise.allSettled"));
         assert!(js.contains("Promise.resolve().then(job)"));
         assert!(js.contains("ok.push({ i: index, value: result.value })"));
@@ -959,7 +968,7 @@ mod tests {
 
     #[test]
     fn generate_js_proxy_does_not_overwrite_local_discovery_helpers() {
-        for raw in ["search", "describe", "step", "batch"] {
+        for raw in ["search", "describe", "readResource", "step", "batch"] {
             let namespace = namespace_segment(raw);
             let tool = descriptor(raw, "lookup");
             let js = proxy(&[tool]).expect("proxy");

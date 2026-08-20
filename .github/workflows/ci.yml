@@ -271,7 +271,7 @@ jobs:
           go version
           echo "actionlint=v1.7.7"
       - name: Test CI policy helpers
-        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py
+        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py
 
   frontend-assets:
     name: Frontend assets
@@ -584,7 +584,20 @@ jobs:
           node-version: "22"
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
-      - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
+      # Warm the large product crate and its native dependencies first, then
+      # complete the all-target pass at normal Cargo concurrency. Compiling the
+      # normal library and lib-test harness cold in one invocation crossed the
+      # ci-pool-rust memory ceiling (SIGKILL) after recent code growth. Keeping
+      # the same Cargo job count across both phases preserves aws-lc-sys build
+      # parallelism and lets the second phase reuse the already-built library.
+      - name: Warm slice compile
+        run: >-
+          cargo check -p labby --no-default-features
+          --features ${{ matrix.slice }} --lib --bins --locked
+      - name: Complete all-target slice compile
+        run: >-
+          cargo check -p labby --no-default-features
+          --features ${{ matrix.slice }} --all-targets --locked
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         if: matrix.slice == 'gateway'
         with:
@@ -697,10 +710,22 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
         with:
           components: clippy
-      # --all-targets so tests/examples/benches are linted too. Without it the
-      # `disallowed_methods` bans (Tool::new, Peer::list_all_*) do not cover
-      # test code, which is exactly where fixtures reach for them.
-      - run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
+      # Keep all-target coverage while avoiding cold normal-library and
+      # lib-test harnesses competing for the runner memory ceiling. Warm the
+      # ordinary `labby` targets first; that also warms normal `labby-gateway`
+      # dependencies. The following all-target passes can then compile test,
+      # example, and bench harnesses without a second large normal target in
+      # flight, while Cargo/native build concurrency remains unchanged.
+      - name: Warm Labby Clippy targets
+        run: cargo clippy -p labby --all-features --lib --bins --locked -- -D warnings
+      - name: Lint extracted workspace targets
+        run: >-
+          cargo clippy --workspace --exclude labby --all-features
+          --all-targets --locked -- -D warnings
+      - name: Lint all Labby targets
+        run: >-
+          cargo clippy -p labby --all-features --all-targets --locked
+          -- -D warnings
 
   mcp-regressions:
     name: MCP focused regressions
@@ -723,6 +748,8 @@ jobs:
           node-version: "22"
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
+      - name: Warm MCP regression targets
+        run: cargo build -p labby --all-features --lib --bins --locked
       - name: MCP route-scope resources/tools and list pagination
         run: |
           cargo test -p labby --all-features --locked mcp::handlers_resources::tests
@@ -791,13 +818,11 @@ jobs:
       # here: Cargo also passes it to every build script as NUM_JOBS, and
       # aws-lc-sys compiles 414 C and 902 assembly sources through the cc
       # crate. kache cannot cache any of that -- it wraps rustc, not cc -- so
-      # the throttle serialized ~1300 uncached source files on every run,
-      # turning ~8-minute builds into 30+ and letting the autoscaling runners
-      # reclaim them mid-link. Measured in a 7 GiB/no-swap cgroup matching the
-      # runner container: a full workspace build linking all 15 test harnesses
-      # peaks at 5.03 GiB, and `nextest run --workspace --all-features` peaks
-      # at 2.44 GiB. The limit was never the binding constraint; the
-      # serialization was.
+      # a job-wide throttle serializes ~1300 uncached native sources. The
+      # current memory failure is different: a cold normal library and its
+      # lib-test harness can overlap with other Rust targets and cross the
+      # runner ceiling. Warm normal Labby/Gateway targets below, then let
+      # nextest compile the remaining harnesses at normal Cargo concurrency.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -822,6 +847,8 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: cargo:cargo-nextest
+      - name: Warm normal Linux test targets
+        run: cargo build -p labby --all-features --lib --bins --locked
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
@@ -860,6 +887,8 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: cargo:cargo-nextest
+      - name: Warm normal Linux test targets
+        run: cargo build -p labby --all-features --lib --bins --locked
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()

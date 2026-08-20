@@ -135,6 +135,12 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `setup` | `settings.update` | false | true | true | lab:admin | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | cli, mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin |  | `SetupSnapshot` | cli, mcp, api, web |
 | `setup` | `uninstall_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
+| `skills` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
+| `skills` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
+| `skills` | `skills.get` | false | false | false |  | `uri*: string` | `SkillGetResponse` | cli, mcp, api |
+| `skills` | `skills.list` | false | false | false |  | `origin: string`<br>`limit: integer` | `SkillListResponse` | cli, mcp, api |
+| `skills` | `skills.read` | false | false | false |  | `uri*: string` | `VisibleSkillFile` | cli, mcp, api |
+| `skills` | `skills.search` | false | false | false |  | `query*: string`<br>`origin: string`<br>`limit: integer` | `SkillSearchResponse` | cli, mcp, api |
 | `snippets` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
 | `snippets` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |

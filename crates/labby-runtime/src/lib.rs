@@ -14,6 +14,8 @@
 //! `labby-auth` and `labby-codemode`, which never touch them.
 
 pub mod agent_error;
+/// Surface-neutral Artifact domain and local runtime implementation.
+pub mod artifacts;
 /// Shared retry backoff and deterministic jitter helpers.
 pub mod backoff;
 pub mod caller_auth;

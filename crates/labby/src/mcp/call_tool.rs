@@ -986,6 +986,27 @@ impl LabMcpServer {
             }
         }
 
+        if service == "skills"
+            && !matches!(action.as_str(), "help" | "schema")
+            && !resolve_caller_authorization(
+                auth_context_from_extensions(&context.extensions),
+                self.absent_auth_trust(),
+                propagated_caller_auth(request.meta.as_ref()),
+            )
+            .can_read()
+        {
+            let envelope = build_error_extra(
+                &service,
+                &action,
+                "forbidden",
+                "skills require one of scopes: lab:read, lab, lab:admin",
+                &serde_json::json!({
+                    "required_scopes": ["lab:read", "lab", "lab:admin"]
+                }),
+            );
+            return Ok(error_result_from_envelope(envelope).into());
+        }
+
         if let Some(entry) = svc
             && !tool_execute_builtin_action_allowed(
                 entry,
@@ -1061,7 +1082,22 @@ impl LabMcpServer {
                     .await
                     .map(Into::into);
             }
-            let result = if service == "gateway" {
+            let result = if service == "skills" {
+                #[cfg(feature = "skills")]
+                {
+                    self.dispatch_compat_tool_boxed(
+                        &context,
+                        request.meta.as_ref(),
+                        &action,
+                        params,
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "skills"))]
+                {
+                    (entry.dispatch)(action.clone(), params).await
+                }
+            } else if service == "gateway" {
                 #[cfg(feature = "gateway")]
                 {
                     let Some(manager) = &self.gateway_manager else {

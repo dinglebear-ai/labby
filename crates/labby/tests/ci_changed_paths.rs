@@ -314,6 +314,21 @@ fn scheduled_and_manual_runs_enable_everything() {
 }
 
 #[test]
+fn protected_docs_workflow_is_trusted_and_label_gated() {
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/protected-docs.yml"))
+        .expect("read protected docs workflow")
+        .replace("\r\n", "\n");
+
+    assert!(workflow.contains("pull_request_target:"));
+    assert!(workflow.contains("name: Protected docs guard"));
+    assert!(workflow.contains("ref: ${{ github.event.pull_request.base.sha }}"));
+    assert!(workflow.contains("persist-credentials: false"));
+    assert!(workflow.contains("protected-docs-approved"));
+    assert!(workflow.contains("scripts/ci/protected_doc_guard.py"));
+    assert!(!workflow.contains("github.event.pull_request.head.sha"));
+}
+
+#[test]
 fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
         .expect("read ci.yml")
@@ -443,6 +458,73 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         ),
         "the fs slice must run the proxy preflight integration binary without gateway"
     );
+    assert!(
+        feature_slices.contains("--features ${{ matrix.slice }} --lib --bins --locked"),
+        "feature slices must warm the product/native dependency graph at normal concurrency"
+    );
+    assert!(
+        feature_slices.contains("--features ${{ matrix.slice }} --all-targets --locked"),
+        "feature slices must retain the all-target completion pass after warm-up"
+    );
+    assert!(
+        !feature_slices.contains("-j 1"),
+        "feature slices must not change Cargo job count because that changes native build-script NUM_JOBS"
+    );
+
+    let clippy_job = workflow
+        .split("  clippy:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  mcp-regressions:").next())
+        .expect("clippy job");
+    assert!(
+        clippy_job.contains("cargo clippy --workspace --exclude labby --all-features"),
+        "Clippy must lint extracted workspace targets separately from the monolithic product crate"
+    );
+    let clippy_warm = clippy_job
+        .find("cargo clippy -p labby --all-features --lib --bins --locked")
+        .expect("Clippy warm-up command");
+    let extracted_lint = clippy_job
+        .find("cargo clippy --workspace --exclude labby --all-features")
+        .expect("extracted workspace Clippy command");
+    assert!(
+        clippy_warm < extracted_lint,
+        "Clippy must warm Labby and Labby Gateway normal targets before any extracted all-target lint fan-out"
+    );
+    assert!(
+        clippy_job.contains("cargo clippy -p labby --all-features --all-targets --locked"),
+        "Clippy must preserve all-target coverage after warming ordinary Labby targets"
+    );
+    assert!(
+        !clippy_job.contains("-j 1"),
+        "Clippy must not change Cargo job count because that changes native build-script NUM_JOBS"
+    );
+
+    let mcp_regressions = workflow
+        .split("  mcp-regressions:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  mcp-conformance:").next())
+        .expect("mcp-regressions job");
+    assert!(
+        mcp_regressions.contains("cargo build -p labby --all-features --lib --bins --locked"),
+        "MCP regressions must warm normal Labby/Gateway targets before test harness compilation"
+    );
+
+    let test_job = workflow
+        .split("  test:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  test-fork:").next())
+        .expect("test job");
+    let test_fork_job = workflow
+        .split("  test-fork:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  test-windows:").next())
+        .expect("test-fork job");
+    for (name, job) in [("test", test_job), ("test-fork", test_fork_job)] {
+        assert!(
+            job.contains("cargo build -p labby --all-features --lib --bins --locked"),
+            "{name} must warm normal Labby/Gateway targets before nextest fan-out"
+        );
+    }
 
     // Read the job env structurally: the rationale comments below mention
     // CARGO_BUILD_JOBS by name, so a substring check would match the very
@@ -461,12 +543,12 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         // assembly sources through the cc crate — work kache cannot cache,
         // because it wraps rustc, not cc. Pinning it to 1 serialized ~1300
         // uncached sources, turning ~8-minute builds into 30+ and letting the
-        // autoscaling runners reclaim them mid-link. The memory limit it was
-        // meant to respect is never approached: measured in a cgroup matching
-        // the runner container, a full workspace build linking all 15 test
-        // harnesses peaks at 5.03 GiB of 7 GiB and the nextest run peaks at
-        // 2.44 GiB. If a future OOM ever forces a cap, use a bounded value,
-        // never 1.
+        // autoscaling runners reclaim them mid-link. Keep that job-wide knob
+        // unset even when Rust target concurrency needs shaping. Recent product
+        // growth can put the normal library and lib-test harness over the
+        // runner memory ceiling when rustc launches them cold together. The
+        // safe pattern is to phase-separate a normal-concurrency warm-up and
+        // the all-target pass without ever changing Cargo's job count.
         assert!(
             env["CARGO_BUILD_JOBS"].is_null(),
             "{job} must not throttle Cargo build jobs; that also serializes the aws-lc-sys C build, which no cache can absorb"
@@ -477,6 +559,10 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
             "{job} must use the lower-memory lld linker"
         );
     }
+    assert!(
+        parsed["jobs"]["clippy"]["env"]["CARGO_BUILD_JOBS"].is_null(),
+        "Clippy must phase-separate product targets, never set job-wide CARGO_BUILD_JOBS"
+    );
 }
 
 /// Routing keys that `ci.yml` gates on but the classifier never emits, because

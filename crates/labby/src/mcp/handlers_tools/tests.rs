@@ -2177,6 +2177,93 @@ async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
     );
 }
 
+#[cfg(feature = "skills")]
+#[tokio::test]
+async fn skills_disabled_loadout_hides_and_denies_fixed_compat_tool() {
+    let loadout = GatewayLoadoutConfig {
+        name: "no-skills".to_string(),
+        services: vec!["skills".to_string()],
+        expose_tools: true,
+        expose_resources: true,
+        expose_prompts: true,
+        expose_skills: false,
+        expose_code_mode: false,
+        ..GatewayLoadoutConfig::default()
+    };
+    let route = ProtectedMcpRouteConfig {
+        name: "no-skills".to_string(),
+        enabled: true,
+        public_host: "mcp.example.com".to_string(),
+        public_path: "/no-skills".to_string(),
+        upstream: None,
+        backend_url: String::new(),
+        backend_mcp_path: "/mcp".to_string(),
+        scopes: vec![],
+        health_path: None,
+        target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                loadout: Some(loadout.name.clone()),
+                ..Default::default()
+            },
+        )),
+    };
+    let scope = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+        &route,
+        std::slice::from_ref(&loadout),
+    )
+    .expect("loadout scope resolves")
+    .expect("gateway subset scope");
+    assert!(
+        scope.allows_service("skills"),
+        "service allowlist includes skills"
+    );
+    assert!(!scope.exposes_skills(), "capability gate disables Skills");
+
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:read"]);
+
+    let listed = running
+        .service()
+        .list_tools_impl(None, context.clone())
+        .await
+        .expect("list tools for Skills-disabled loadout");
+    assert!(
+        listed
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "skills"),
+        "the fixed Skills compatibility tool must honor expose_skills=false"
+    );
+
+    let denied = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("skills").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("skills.list".to_string()),
+            ),
+            ("params".to_string(), serde_json::json!({})),
+        ])),
+        context,
+    ))
+    .await
+    .expect("forged Skills call result");
+    assert!(denied.is_error.unwrap_or(false));
+    let text = denied.content[0].as_text().expect("text").text.as_str();
+    assert!(
+        text.contains("not_found") && text.contains("not enabled on the mcp surface"),
+        "forged call must fail through the same visibility gate: {text}"
+    );
+}
+
 #[tokio::test]
 async fn resource_disabled_loadout_hides_unreadable_mcp_app_bindings() {
     let loadout = GatewayLoadoutConfig {
