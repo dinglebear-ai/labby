@@ -840,9 +840,11 @@ mod tests {
     #[test]
     fn healthy_catalog_race_prefers_materialized_second_summary() {
         let first = UpstreamCachedSummary::default();
-        let mut refreshed = UpstreamCachedSummary::default();
-        refreshed.discovered_tool_count = 30;
-        refreshed.exposed_tool_count = 30;
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            exposed_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
 
         let settled =
             settle_summary_after_health(first, Some(UpstreamHealth::Healthy), Some(refreshed));
@@ -864,8 +866,10 @@ mod tests {
 
     #[test]
     fn unhealthy_catalog_does_not_adopt_concurrent_summary() {
-        let mut refreshed = UpstreamCachedSummary::default();
-        refreshed.discovered_tool_count = 30;
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
         let settled = settle_summary_after_health(
             UpstreamCachedSummary::default(),
             Some(UpstreamHealth::Unhealthy {
@@ -899,8 +903,10 @@ mod tests {
 
     #[test]
     fn materialized_catalog_is_never_reported_as_warming() {
-        let mut summary = UpstreamCachedSummary::default();
-        summary.discovered_tool_count = 1;
+        let summary = UpstreamCachedSummary {
+            discovered_tool_count: 1,
+            ..UpstreamCachedSummary::default()
+        };
 
         assert!(!catalog_is_warming(
             &summary,
