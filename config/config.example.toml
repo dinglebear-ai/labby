@@ -160,6 +160,7 @@
 # `callTool(id, params)`, and typed `codemode.<upstream>.<tool>(params)`
 # helpers generated from connected servers' inputSchemas.
 # timeout_ms = 30000                        # valid range: 1..=60000  (wall-clock budget)
+# max_source_bytes = 131072                 # valid range: 1024..=1048576  (JavaScript source)
 # max_response_bytes = 24576                # valid range: 1024..=1048576
 # max_response_tokens = 6000                # valid range: 256..=256000
 # token_estimate_divisor = 4                # valid range: 1..=64  (lower is more conservative)

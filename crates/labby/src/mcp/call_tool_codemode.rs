@@ -473,7 +473,10 @@ pub(crate) fn string_array_arg(
         .collect()
 }
 
-pub(crate) fn code_arg(args: &JsonObject) -> Result<&str, DispatchToolError> {
+pub(crate) fn code_arg(
+    args: &JsonObject,
+    max_source_bytes: usize,
+) -> Result<&str, DispatchToolError> {
     let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
     if code.trim().is_empty() {
         return Err(DispatchToolError::Sdk {
@@ -481,10 +484,11 @@ pub(crate) fn code_arg(args: &JsonObject) -> Result<&str, DispatchToolError> {
             message: "code must not be empty".to_string(),
         });
     }
-    if code.len() > MAX_SOURCE_BYTES {
+    let max_source_bytes = max_source_bytes.min(MAX_SOURCE_BYTES);
+    if code.len() > max_source_bytes {
         return Err(DispatchToolError::Sdk {
             sdk_kind: "invalid_param".to_string(),
-            message: format!("code exceeds max length {MAX_SOURCE_BYTES} bytes"),
+            message: format!("code exceeds max length {max_source_bytes} bytes"),
         });
     }
     Ok(code)
@@ -581,7 +585,8 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope));
         };
         let config = manager.code_mode_config().await;
-        let code = match code_arg(args) {
+        let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
+        let code = match code_arg(args, max_source_bytes) {
             Ok(code) => code,
             Err(err) => {
                 let env = build_error_extra(
@@ -799,7 +804,7 @@ impl LabMcpServer {
         let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
         let output_tokens = estimate_tokens(&output);
         let is_admin = auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
-        let source = if is_admin && code.len() <= MAX_SOURCE_BYTES {
+        let source = if is_admin && code.len() <= max_source_bytes {
             Some(CodeModeExecutionSource {
                 execution_id: execution_id.clone(),
                 created_at_ms: std::time::SystemTime::now()
