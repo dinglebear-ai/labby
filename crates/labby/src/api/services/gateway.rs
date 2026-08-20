@@ -297,7 +297,7 @@ async fn handle(
             let subject = subject.clone();
             let auth = auth_for_dispatch.clone();
             async move {
-                let params = inject_gateway_owner(params, subject.as_deref(), request_id);
+                let params = inject_gateway_owner(&action, params, subject.as_deref(), request_id);
                 // Unlike trusted stdio MCP, an unauthenticated HTTP request
                 // must never inherit the shared gateway OAuth credential.
                 let oauth_subject =
@@ -318,7 +318,15 @@ async fn handle(
     .await
 }
 
-fn inject_gateway_owner(params: Value, subject: Option<&str>, request_id: Option<&str>) -> Value {
+fn inject_gateway_owner(
+    action: &str,
+    params: Value,
+    subject: Option<&str>,
+    request_id: Option<&str>,
+) -> Value {
+    if !crate::dispatch::gateway::shared::action_accepts_runtime_owner(action) {
+        return params;
+    }
     let Some(mut object) = params.as_object().cloned() else {
         return params;
     };
@@ -355,7 +363,7 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use super::http_oauth_subject;
+    use super::{http_oauth_subject, inject_gateway_owner};
 
     use crate::api::oauth::AuthContext;
     use crate::api::{
@@ -463,6 +471,52 @@ mod tests {
             via_session: false,
             csrf_token: None,
             email: Some("reader@example.com".to_string()),
+        }
+    }
+
+    #[test]
+    fn gateway_owner_injection_skips_strict_read_only_actions() {
+        let params = json!({"upstream": "fixture"});
+        let enriched = inject_gateway_owner(
+            "gateway.skills.list",
+            params.clone(),
+            Some("admin-user"),
+            Some("request-1"),
+        );
+        assert_eq!(enriched, params);
+    }
+
+    #[test]
+    fn gateway_owner_injection_preserves_mutation_provenance() {
+        let enriched = inject_gateway_owner(
+            "gateway.add",
+            json!({"spec": {"name": "fixture"}}),
+            Some("admin-user"),
+            Some("request-1"),
+        );
+        assert_eq!(enriched["owner"]["surface"], "api");
+        assert_eq!(enriched["owner"]["subject"], "admin-user");
+        assert_eq!(enriched["owner"]["request_id"], "request-1");
+        assert_eq!(enriched["origin"], "api:admin-user:request-1");
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn gateway_skills_list_api_keeps_strict_action_params_clean() {
+        let response = post_gateway_as_admin(
+            test_manager(),
+            json!({"action": "gateway.skills.list", "params": {}}),
+        )
+        .await;
+
+        assert_ne!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        if !response.status().is_success() {
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            assert_ne!(payload["kind"], "invalid_param");
+            assert!(!payload.to_string().contains("unknown field `owner`"));
         }
     }
 

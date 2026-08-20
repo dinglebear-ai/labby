@@ -102,7 +102,11 @@ fn retain_route_visible_gateway_status_rows(
 }
 
 /// Attach the authenticated MCP subject to gateway mutations without replacing caller values.
-fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
+#[cfg(feature = "gateway")]
+fn inject_gateway_origin_param(action: &str, params: Value, subject: Option<&str>) -> Value {
+    if !crate::dispatch::gateway::shared::action_accepts_runtime_owner(action) {
+        return params;
+    }
     let raw = subject
         .map(|value| format!("mcp:{value}"))
         .unwrap_or_else(|| "mcp:anonymous".to_string());
@@ -120,6 +124,31 @@ fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
         .entry("origin".to_string())
         .or_insert_with(|| Value::String(raw));
     Value::Object(object)
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod gateway_origin_tests {
+    use serde_json::json;
+
+    use super::inject_gateway_origin_param;
+
+    #[test]
+    fn strict_read_only_gateway_actions_do_not_receive_runtime_owner_params() {
+        let params = json!({"upstream": "fixture"});
+        assert_eq!(
+            inject_gateway_origin_param("gateway.skills.list", params.clone(), Some("alice")),
+            params
+        );
+    }
+
+    #[test]
+    fn gateway_mutations_keep_mcp_runtime_owner_provenance() {
+        let enriched =
+            inject_gateway_origin_param("gateway.add", json!({"spec": {}}), Some("alice"));
+        assert_eq!(enriched["owner"]["surface"], "mcp");
+        assert_eq!(enriched["owner"]["subject"], "alice");
+        assert_eq!(enriched["origin"], "mcp:alice");
+    }
 }
 
 impl LabMcpServer {
@@ -684,8 +713,11 @@ impl LabMcpServer {
                             );
                             return Ok(error_result_from_envelope(envelope).into());
                         }
-                        let params =
-                            inject_gateway_origin_param(params, self.request_subject(&context));
+                        let params = inject_gateway_origin_param(
+                            gateway_action,
+                            params,
+                            self.request_subject(&context),
+                        );
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                             oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
@@ -1109,8 +1141,11 @@ impl LabMcpServer {
                         );
                         return Ok(error_result_from_envelope(envelope).into());
                     };
-                    let params =
-                        inject_gateway_origin_param(params, self.request_subject(&context));
+                    let params = inject_gateway_origin_param(
+                        &action,
+                        params,
+                        self.request_subject(&context),
+                    );
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                         oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
