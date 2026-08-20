@@ -6,18 +6,28 @@
 //! Product transports remain adapters over this layer.
 
 pub mod canonical_json;
+pub mod lifecycle;
 mod local_io;
 pub mod model;
+pub mod provider;
 pub mod skill;
 pub mod store;
 mod store_ops;
 pub mod validation;
 
+pub use lifecycle::{
+    ArtifactChangeKind, ArtifactComponentChange, ArtifactRevisionDiff, ArtifactUpdatePlan,
+    ArtifactWorkspaceSnapshot, ArtifactWorkspaceSnapshotRequest,
+};
 pub use model::{
     ARTIFACT_INTERCHANGE_SCHEMA, ArtifactComponent, ArtifactDescriptor, ArtifactInterchange,
     ArtifactLicenseState, ArtifactLineage, ArtifactProvenance, ArtifactPublication, ArtifactRecord,
     ArtifactRevision, Distribution, ExecutionRisk, JsonMap, PublicationState, Redistribution,
     ReviewState, TakedownState, Visibility,
+};
+pub use provider::{
+    ArtifactAcquisition, ArtifactPayloadFile, ArtifactProvider, ArtifactProviderFuture,
+    ArtifactProviderRequest, LocalArtifactProvider,
 };
 pub use store::{ArtifactExportOptions, ArtifactForkRequest, ArtifactImportRequest, ArtifactStore};
 

@@ -237,6 +237,22 @@ impl ArtifactStore {
         write_json_atomic(&artifact_dir.join("artifact.json"), record)
     }
 
+    pub(crate) fn persist_record_transition(
+        &self,
+        expected_current_revision_id: &str,
+        record: &ArtifactRecord,
+    ) -> Result<(), ArtifactError> {
+        validate_reference_id(expected_current_revision_id, "expected_current_revision_id")?;
+        record.validate()?;
+        let current = self
+            .read_record_optional(&record.descriptor.id)?
+            .ok_or(ArtifactError::NotFound("record"))?;
+        if current.current_revision_id != expected_current_revision_id {
+            return Err(ArtifactError::Conflict("head_changed"));
+        }
+        self.persist_record(record)
+    }
+
     pub(crate) fn read_record_optional(
         &self,
         artifact_id: &str,
@@ -353,6 +369,34 @@ mod tests {
             std::fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn stale_head_transition_is_rejected() {
+        let data = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        std::fs::write(source.path().join("a.txt"), b"alpha").unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let first = store
+            .import_local(
+                ArtifactImportRequest::new("resource", "labby", "cas-demo"),
+                source.path(),
+            )
+            .unwrap();
+
+        std::fs::write(source.path().join("a.txt"), b"beta").unwrap();
+        let second = store
+            .import_local(
+                ArtifactImportRequest::new("resource", "labby", "cas-demo"),
+                source.path(),
+            )
+            .unwrap();
+        assert_ne!(first.current_revision_id, second.current_revision_id);
+
+        let error = store
+            .persist_record_transition(&first.current_revision_id, &second)
+            .unwrap_err();
+        assert!(matches!(error, ArtifactError::Conflict("head_changed")));
     }
 
     #[cfg(unix)]

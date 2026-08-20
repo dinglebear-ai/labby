@@ -2,6 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use super::lifecycle::{
+    ArtifactRevisionDiff, ArtifactUpdatePlan, ArtifactWorkspaceSnapshot,
+    ArtifactWorkspaceSnapshotRequest,
+};
 use super::local_io::{
     blocks_safe_export, ensure_export_destination, load_revision_files, materialize_tree,
     revision_dir, snapshot_local_path,
@@ -10,6 +14,7 @@ use super::model::{
     ArtifactComponent, ArtifactDescriptor, ArtifactLineage, ArtifactPublication, ArtifactRecord,
     ArtifactRevision, JsonMap,
 };
+use super::provider::ArtifactAcquisition;
 use super::store::{
     ArtifactExportOptions, ArtifactForkRequest, ArtifactImportRequest, ArtifactStore,
 };
@@ -199,6 +204,135 @@ impl ArtifactStore {
         Ok(record)
     }
 
+    /// Snapshot the editable workspace as an immutable revision and move the local head explicitly.
+    pub fn snapshot_workspace(
+        &self,
+        artifact_id: &str,
+        request: ArtifactWorkspaceSnapshotRequest,
+    ) -> Result<ArtifactWorkspaceSnapshot, ArtifactError> {
+        validate_id(artifact_id, "artifact_id")?;
+        let _lock = self.lock(artifact_id)?;
+        let mut record = self.get(artifact_id)?;
+        let base_revision_id = record.current_revision_id.clone();
+        let workspace = self.workspace_path(artifact_id)?;
+        let snapshot = snapshot_local_path(&workspace)?;
+        if snapshot.len() > MAX_COMPONENTS {
+            return Err(ArtifactError::LimitExceeded {
+                what: "component_count",
+                limit: MAX_COMPONENTS as u64,
+            });
+        }
+        let components = snapshot
+            .iter()
+            .map(|file| ArtifactComponent::from_bytes(&file.path, &file.bytes, file.unix_mode))
+            .collect::<Result<Vec<_>, _>>()?;
+        let content_candidate = ArtifactRevision::from_components(
+            components,
+            None,
+            request.authored_at.clone(),
+            request.message.clone(),
+            request.metadata.clone(),
+        )?;
+
+        if content_candidate.id == base_revision_id {
+            let revision = self.read_revision(artifact_id, &base_revision_id)?;
+            return Ok(ArtifactWorkspaceSnapshot {
+                record,
+                revision,
+                created_revision: false,
+                moved_head: false,
+            });
+        }
+
+        let (revision, created_revision) = if record.revision_ids.contains(&content_candidate.id) {
+            let stored = self.read_revision(artifact_id, &content_candidate.id)?;
+            if stored.components != content_candidate.components {
+                return Err(ArtifactError::Conflict("revision_content_mismatch"));
+            }
+            (stored, false)
+        } else {
+            if record.revision_ids.len() >= MAX_REVISIONS_PER_ARTIFACT {
+                return Err(ArtifactError::LimitExceeded {
+                    what: "revision_count",
+                    limit: MAX_REVISIONS_PER_ARTIFACT as u64,
+                });
+            }
+            let revision = ArtifactRevision::from_components(
+                content_candidate.components,
+                Some(base_revision_id.clone()),
+                request.authored_at,
+                request.message,
+                request.metadata,
+            )?;
+            self.persist_revision(artifact_id, &revision, &snapshot)?;
+            record.revision_ids.push(revision.id.clone());
+            (revision, true)
+        };
+
+        record.current_revision_id = revision.id.clone();
+        record.validate()?;
+        self.persist_record_transition(&base_revision_id, &record)?;
+        Ok(ArtifactWorkspaceSnapshot {
+            record,
+            revision,
+            created_revision,
+            moved_head: true,
+        })
+    }
+
+    /// Diff two exact local immutable revisions without mutating the Artifact.
+    pub fn diff_local_revisions(
+        &self,
+        artifact_id: &str,
+        from_revision_id: &str,
+        to_revision_id: &str,
+    ) -> Result<ArtifactRevisionDiff, ArtifactError> {
+        validate_id(artifact_id, "artifact_id")?;
+        validate_reference_id(from_revision_id, "from_revision_id")?;
+        validate_reference_id(to_revision_id, "to_revision_id")?;
+        let from = self.read_revision(artifact_id, from_revision_id)?;
+        let to = self.read_revision(artifact_id, to_revision_id)?;
+        ArtifactRevisionDiff::between(&from, &to)
+    }
+
+    /// Build a read-only update plan from an exact provider acquisition.
+    ///
+    /// Planning never changes the local head, workspace, lineage, or stored bytes.
+    pub fn plan_update_from_acquisition(
+        &self,
+        target_artifact_id: &str,
+        acquisition: &ArtifactAcquisition,
+    ) -> Result<ArtifactUpdatePlan, ArtifactError> {
+        validate_id(target_artifact_id, "target_artifact_id")?;
+        acquisition.validate()?;
+        let record = self.get(target_artifact_id)?;
+        if acquisition.interchange.descriptor.kind != record.descriptor.kind {
+            return Err(ArtifactError::Conflict("source_kind_mismatch"));
+        }
+        let expected_source_artifact_id = record
+            .lineage
+            .upstream_artifact_id
+            .as_deref()
+            .unwrap_or(record.descriptor.id.as_str());
+        if acquisition.interchange.descriptor.id != expected_source_artifact_id {
+            return Err(ArtifactError::Conflict("upstream_identity_mismatch"));
+        }
+
+        let base = self.read_revision(target_artifact_id, &record.current_revision_id)?;
+        let diff = ArtifactRevisionDiff::between(&base, &acquisition.interchange.revision)?;
+        let plan = ArtifactUpdatePlan {
+            schema_version: 1,
+            target_artifact_id: record.descriptor.id,
+            base_revision_id: base.id,
+            source_artifact_id: acquisition.interchange.descriptor.id.clone(),
+            source_revision_id: acquisition.interchange.revision.id.clone(),
+            source_provenance: acquisition.interchange.provenance.clone(),
+            diff,
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+
     /// Record a newly observed upstream revision without changing local bytes.
     pub fn observe_upstream(
         &self,
@@ -261,6 +395,7 @@ fn descriptor_from_import(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifacts::{ArtifactProvider, ArtifactProviderRequest, LocalArtifactProvider};
     use tempfile::tempdir;
 
     fn write_package(root: &Path) {
@@ -349,6 +484,149 @@ mod tests {
             error,
             ArtifactError::UnsafePath("export_store_overlap")
         ));
+    }
+
+    #[test]
+    fn workspace_snapshot_reuses_content_revisions_and_diff_is_deterministic() {
+        let data = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        std::fs::write(source.path().join("a.txt"), b"alpha").unwrap();
+        let store = ArtifactStore::new(data.path().join("artifacts-store")).unwrap();
+        let imported = store
+            .import_local(
+                ArtifactImportRequest::new("resource", "labby", "snapshot-demo"),
+                source.path(),
+            )
+            .unwrap();
+        let initial_revision_id = imported.current_revision_id.clone();
+        let workspace = store.workspace_path(&imported.descriptor.id).unwrap();
+        std::fs::write(workspace.join("a.txt"), b"beta").unwrap();
+        std::fs::write(workspace.join("b.txt"), b"bravo").unwrap();
+
+        let changed = store
+            .snapshot_workspace(
+                &imported.descriptor.id,
+                ArtifactWorkspaceSnapshotRequest {
+                    message: Some("edit workspace".to_string()),
+                    ..ArtifactWorkspaceSnapshotRequest::default()
+                },
+            )
+            .unwrap();
+        assert!(changed.created_revision);
+        assert!(changed.moved_head);
+        assert_eq!(
+            changed.revision.parent_revision_id.as_deref(),
+            Some(initial_revision_id.as_str())
+        );
+        assert_eq!(changed.record.revision_ids.len(), 2);
+
+        let diff = store
+            .diff_local_revisions(
+                &imported.descriptor.id,
+                &initial_revision_id,
+                &changed.revision.id,
+            )
+            .unwrap();
+        assert_eq!(
+            diff.changes
+                .iter()
+                .map(|change| (change.path.as_str(), change.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "a.txt",
+                    super::super::lifecycle::ArtifactChangeKind::Modified
+                ),
+                ("b.txt", super::super::lifecycle::ArtifactChangeKind::Added),
+            ]
+        );
+
+        let unchanged = store
+            .snapshot_workspace(
+                &imported.descriptor.id,
+                ArtifactWorkspaceSnapshotRequest::default(),
+            )
+            .unwrap();
+        assert!(!unchanged.created_revision);
+        assert!(!unchanged.moved_head);
+        assert_eq!(unchanged.record.revision_ids.len(), 2);
+
+        std::fs::write(workspace.join("a.txt"), b"alpha").unwrap();
+        std::fs::remove_file(workspace.join("b.txt")).unwrap();
+        let reverted = store
+            .snapshot_workspace(
+                &imported.descriptor.id,
+                ArtifactWorkspaceSnapshotRequest::default(),
+            )
+            .unwrap();
+        assert!(!reverted.created_revision);
+        assert!(reverted.moved_head);
+        assert_eq!(reverted.revision.id, initial_revision_id);
+        assert_eq!(reverted.record.revision_ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn provider_update_plan_never_applies_source_revision() {
+        let data = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        std::fs::write(source.path().join("a.txt"), b"alpha").unwrap();
+        let store = ArtifactStore::new(data.path().join("artifacts-store")).unwrap();
+        let upstream = store
+            .import_local(
+                ArtifactImportRequest::new("resource", "labby", "provider-upstream"),
+                source.path(),
+            )
+            .unwrap();
+        let fork = store
+            .fork(ArtifactForkRequest {
+                source_artifact_id: upstream.descriptor.id.clone(),
+                namespace: "personal".to_string(),
+                name: "provider-fork".to_string(),
+                title: None,
+                following: true,
+                forked_at: None,
+            })
+            .unwrap();
+        let fork_head = fork.current_revision_id.clone();
+
+        std::fs::write(source.path().join("a.txt"), b"beta").unwrap();
+        let advanced_upstream = store
+            .import_local(
+                ArtifactImportRequest::new("resource", "labby", "provider-upstream"),
+                source.path(),
+            )
+            .unwrap();
+        assert_ne!(advanced_upstream.current_revision_id, fork_head);
+
+        let provider = LocalArtifactProvider::new(store.clone());
+        let acquisition = provider
+            .acquire(
+                &ArtifactProviderRequest::new(
+                    advanced_upstream.descriptor.id.clone(),
+                    Some(advanced_upstream.current_revision_id.clone()),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let plan = store
+            .plan_update_from_acquisition(&fork.descriptor.id, &acquisition)
+            .unwrap();
+        assert_eq!(plan.base_revision_id, fork_head);
+        assert_eq!(plan.source_artifact_id, upstream.descriptor.id);
+        assert_eq!(
+            plan.source_revision_id,
+            advanced_upstream.current_revision_id
+        );
+        assert_eq!(plan.diff.changes.len(), 1);
+        assert_eq!(
+            plan.diff.changes[0].kind,
+            super::super::lifecycle::ArtifactChangeKind::Modified
+        );
+
+        let unchanged_fork = store.get(&fork.descriptor.id).unwrap();
+        assert_eq!(unchanged_fork.current_revision_id, fork.current_revision_id);
+        assert_eq!(unchanged_fork.revision_ids, fork.revision_ids);
     }
 
     #[test]
