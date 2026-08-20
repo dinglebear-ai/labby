@@ -132,24 +132,24 @@ jobs when their changed-path category is enabled:
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
-| Feature slices | `rust_compile` | `cargo check -p labby --no-default-features --features <slice>` |
+| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` at the same concurrency so the heavy normal library is reused; gateway and fs retain their focused runtime tests |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
-| Lint | `rust_compile` | `cargo clippy --workspace --all-features -- -D warnings` |
+| Lint | `rust_compile` | warm `labby` lib/bins first (which warms normal gateway dependencies), lint extracted workspace all-targets, then run `cargo clippy -p labby --all-features --all-targets --locked -- -D warnings` at unchanged Cargo concurrency |
 | Deny | `security` | `cargo deny check` |
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
 | Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | LCOV trend artifact with project and critical auth/gateway/dispatch/config floors |
-| Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
-| Tests (Linux fork PR fallback) | `rust_test` | same nextest run on the Rust runner-farm pool without repository secrets |
+| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
+| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on the Rust runner-farm pool without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke plus the pinned rmcp `3.1.0` fixture's dated `2026-07-28` server/client suites, with separate strict dated and extension baselines |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
 | Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
 
-Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer.
+Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 
 The frontend build is required because the Rust binary embeds the exported
 Labby assets. It is a production build gate, not a TypeScript strictness gate:

@@ -7,14 +7,14 @@ updated: 2026-08-19
 # W19 Artifact Gateway Progress
 
 Last updated: 2026-08-19
-Status: first coherent vertical slice implemented, adversarially reviewed, and verified; ready for PR creation
+Status: Phase 1 Artifact slice implemented and verified; PR #462 open; CI runner-memory stabilization under final verification
 
 ## Lane identity
 
 - Worktree: `/home/jmagar/workspace/labby-w19-artifact-gateway`
 - Branch: `codex/w19-artifact-gateway-20260819`
 - Initial implementation baseline: `origin/main` `0e21d0474`
-- Final rebased baseline: `origin/main` `fc4d3a1c2`
+- Current rebased baseline: `origin/main` `ea07f3609` (shared Skills compatibility facade #456 included)
 - Product: Labby AGPLv3 open personal Artifact + MCP/runtime Gateway
 - Hosted registry/publication authority: Depot/Bazaar
 - Crawl/enrichment authority: Axon
@@ -116,7 +116,7 @@ No migration was added because this is a new local Artifact store and no publish
 
 ## Test evidence
 
-Final green evidence on rebased `origin/main` `fc4d3a1c2`:
+Phase 1 Artifact evidence from the settled implementation baseline, preserved after rebase through current `origin/main` `ea07f3609`:
 
 - `cargo fmt --all -- --check`: passed.
 - `git diff --check origin/main...HEAD`: passed.
@@ -136,9 +136,7 @@ Compilation findings already fixed:
 - warnings lint for discarded cleanup result;
 - frozen schema constant re-export for conformance tests.
 
-Phase 1 implementation and local verification are complete. PR #462 is open against `main`. The first remote repository-contract run exposed missing required frontmatter on the four new durable Artifact docs; that failure was reproduced with the exact pinned validator, fixed, and the local contract now passes. Remote CI/merge-state observation remains.
-
-No implementation or local verification gate remains open for Phase 1.
+Phase 1 implementation is complete and PR #462 is open against `main`. The first remote repository-contract run exposed missing required frontmatter on the four new durable Artifact docs; that failure was reproduced with the exact pinned validator and fixed. After the branch rebased across the shared Skills compatibility facade (#456), remote CI exposed runner-memory SIGKILLs in Clippy, feature slices, Linux Test, and focused MCP regressions. Current `main` reproduces the same Test/MCP/gateway SIGKILL class. W19 now phase-separates ordinary `labby` target warm-up from all-target/test-harness fan-out without setting `CARGO_BUILD_JOBS` or command-local `-j 1`. The pinned fleet policy/contract, forbidden-architecture scan, Actionlint, workflow-contract assertions, format, and diff hygiene pass locally. The exact staged Clippy workflow passed status 0 with phases completing in 32.56s, 16.37s, and 1m30s. The gateway feature slice passed warm compile (1m05s), all-target compile (1m00s), and 1,272/1,272 tests with 3 skipped; the fs slice completed its warm/all-target phases and the focused proxy preflight passed 6/6 tests. No SIGKILL occurred in the staged verification.
 
 ## Adversarial review findings addressed
 
@@ -157,6 +155,11 @@ Residual hardening note: Labby's shared path-safety helpers are path/canonicaliz
 
 ## Commits and PR
 
-W19 core checkpoint: `036bfb94c` (`feat(artifacts): add local Artifact core and v1 contract`).
-W19 verification/progress checkpoint: `4ba260910` (`docs(artifacts): record W19 slice verification`).
+Current rebased W19 checkpoints:
+
+- `21e24832b` — `feat(artifacts): add local Artifact core and v1 contract`;
+- `7394d6489` — `docs(artifacts): record W19 slice verification`;
+- `7dce403cc` — `docs(artifacts): record W19 pull request`;
+- `2e4068479` — `docs(artifacts): satisfy fleet frontmatter contract`.
+
 W19 PR: #462, `feat(artifacts): add open personal Artifact core and v1 interchange`.
