@@ -168,7 +168,16 @@ impl ServerHandler for SkillsServer {
             "skills/get" => {
                 self.get_calls.fetch_add(1, Ordering::SeqCst);
                 match self.get_entry.as_ref() {
-                    Some(entry) => Ok(CustomResult::new(json!({ "skill": entry }))),
+                    Some(entry) => Ok(CustomResult::new(json!({
+                        "resultType": "complete",
+                        "skill": entry,
+                        "_meta": {
+                            "io.modelcontextprotocol/serverInfo": {
+                                "name": "depot-shaped-skills-server",
+                                "version": "1.0.0"
+                            }
+                        }
+                    }))),
                     None => Err(ErrorData::new(
                         ErrorCode::INVALID_PARAMS,
                         "unknown skill".to_string(),
