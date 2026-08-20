@@ -57,3 +57,52 @@ pub fn make_mcp_runtime_owner(subject: Option<&str>) -> UpstreamRuntimeOwner {
         raw,
     }
 }
+
+/// Whether transport-owned runtime provenance belongs in this action's params.
+///
+/// Runtime owner/origin are internal transport metadata, not universal gateway
+/// parameters. Only actions that actually consume them should receive them.
+/// Keeping this list shared prevents strict read-only parameter schemas (such as
+/// `gateway.skills.list`) from rejecting otherwise valid API or MCP requests.
+pub fn action_accepts_runtime_owner(action: &str) -> bool {
+    matches!(
+        action,
+        "gateway.add"
+            | "gateway.update"
+            | "gateway.remove"
+            | "gateway.reload"
+            | "gateway.import_tombstones.restore"
+            | "gateway.mcp.enable"
+            | "gateway.mcp.disable"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::action_accepts_runtime_owner;
+
+    #[test]
+    fn runtime_owner_metadata_is_limited_to_actions_that_consume_it() {
+        for action in [
+            "gateway.add",
+            "gateway.update",
+            "gateway.remove",
+            "gateway.reload",
+            "gateway.import_tombstones.restore",
+            "gateway.mcp.enable",
+            "gateway.mcp.disable",
+        ] {
+            assert!(action_accepts_runtime_owner(action), "{action}");
+        }
+
+        for action in [
+            "gateway.skills.list",
+            "gateway.list",
+            "gateway.status",
+            "gateway.code_mode.get",
+            "gateway.oauth.resource_lease.create",
+        ] {
+            assert!(!action_accepts_runtime_owner(action), "{action}");
+        }
+    }
+}

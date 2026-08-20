@@ -230,7 +230,7 @@ impl UpstreamPool {
 
         match self.fetch_upstream_skills(&config.name, &peer).await {
             Ok(skills) => {
-                let count = skills.skills.len();
+                let discovered_count = skills.discovered_count;
                 let skill_names = skills
                     .skills
                     .iter()
@@ -249,7 +249,7 @@ impl UpstreamPool {
                     let mut catalog = self.catalog.write().await;
                     if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                         catalog_entry.supports_skills = Some(true);
-                        catalog_entry.skill_count = count;
+                        catalog_entry.skill_count = discovered_count;
                         catalog_entry.skill_names = skill_names;
                     }
                 }
