@@ -728,6 +728,13 @@ mod tests {
 
     use super::*;
 
+    async fn stateful_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
     #[test]
     fn sandbox_names_carry_parseable_process_ownership() {
         assert_eq!(sandbox_owner_pid("labby-codemode-123-9"), Some(123));
@@ -737,6 +744,7 @@ mod tests {
 
     #[tokio::test]
     async fn reconciliation_removes_dead_owner_and_preserves_live_owner() {
+        let _state = stateful_test_guard().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
         let calls = dir.path().join("calls");
@@ -769,7 +777,8 @@ mod tests {
                 .any(|line| line.contains(&format!("force {live}"))),
             "live-owner sandbox was removed: {calls}"
         );
-        drop(guard);
+        let mut guard = guard.expect("created guard");
+        guard.remove().await;
     }
 
     fn fake_msb(create_status: i32) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -805,6 +814,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_create_attempts_bounded_cleanup() {
+        let _state = stateful_test_guard().await;
         let (_dir, executable, calls) = fake_msb(23);
         let config = config(executable);
         let error = runner_command(&spawn(), Some(&config), None)
@@ -824,6 +834,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_helper_output_is_drained_but_diagnostic_is_bounded() {
+        let _state = stateful_test_guard().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
         let script = "#!/bin/sh\nif [ \"$1\" = create ]; then head -c 1048576 /dev/zero | tr '\\0' x >&2; exit 23; fi\nexit 0\n";
@@ -842,6 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_create_returns_stream_command_and_async_guard() {
+        let _state = stateful_test_guard().await;
         let (_dir, executable, calls) = fake_msb(0);
         let config = config(executable);
         let (command, guard) = runner_command(&spawn(), Some(&config), None)
@@ -876,6 +888,8 @@ mod tests {
 
     #[tokio::test]
     async fn failed_explicit_remove_gets_bounded_drop_fallback() {
+        let _state = stateful_test_guard().await;
+        let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
         let calls = dir.path().join("calls");
@@ -905,6 +919,7 @@ mod tests {
                 .filter(|line| line.starts_with("remove "))
                 .count()
                 >= 2
+                && ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed) == before
             {
                 break;
             }
@@ -918,6 +933,7 @@ mod tests {
 
     #[tokio::test]
     async fn absent_failed_cleanup_is_reconciled_and_active_count_recovers() {
+        let _state = stateful_test_guard().await;
         let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
@@ -1001,6 +1017,7 @@ exit 0
 
     #[tokio::test]
     async fn live_failed_cleanup_remains_fail_closed_until_removal_is_proven() {
+        let _state = stateful_test_guard().await;
         let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
@@ -1077,8 +1094,9 @@ exit 0
         );
     }
 
-    #[test]
-    fn failed_cleanup_ledger_transfers_counted_ownership_once() {
+    #[tokio::test]
+    async fn failed_cleanup_ledger_transfers_counted_ownership_once() {
+        let _state = stateful_test_guard().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let identity = CleanupIdentity {
             executable: dir.path().join("msb"),
@@ -1093,8 +1111,9 @@ exit 0
         );
     }
 
-    #[test]
-    fn failed_cleanup_circuit_is_scoped_to_executable() {
+    #[tokio::test]
+    async fn failed_cleanup_circuit_is_scoped_to_executable() {
+        let _state = stateful_test_guard().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let executable_a = dir.path().join("msb-a");
         let executable_b = dir.path().join("msb-b");
