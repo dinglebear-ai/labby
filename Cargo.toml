@@ -271,6 +271,11 @@ private_intra_doc_links = "warn"
 redundant_explicit_links = "warn"
 unescaped_backticks = "warn"
 
+# Temporary rmcp decoder fix for custom extension results carrying protocol-generic
+# `resultType` / `_meta`. Remove once the fix ships in an upstream rmcp release.
+[patch.crates-io]
+rmcp = { git = "https://github.com/dinglebear-ai/rust-sdk", rev = "c9c3e518ce94b8d715519657c88195515978bda4" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

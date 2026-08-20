@@ -211,6 +211,31 @@ async fn capability_detection_reads_the_declared_extension() {
 }
 
 #[tokio::test]
+async fn skills_list_with_result_type_and_meta_stays_a_custom_result() {
+    let server = SkillsServer::new(vec![json!({
+        "resultType": "complete",
+        "skills": [entry("up", "alpha")],
+        "ttlMs": 60000,
+        "cacheScope": "private",
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+                "name": "depot-shaped-skills-server",
+                "version": "1.0.0"
+            }
+        }
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let skills = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect("skills/list custom result remains intact");
+
+    assert_eq!(skills.skills.len(), 1);
+    assert_eq!(skills.skills[0].entry.frontmatter.name, "alpha");
+}
+
+#[tokio::test]
 async fn walks_every_page_and_stops_when_the_cursor_clears() {
     let server = SkillsServer::new(vec![
         json!({ "skills": [entry("up", "alpha")], "nextCursor": "p2", "ttlMs": 60000, "cacheScope": "private" }),
