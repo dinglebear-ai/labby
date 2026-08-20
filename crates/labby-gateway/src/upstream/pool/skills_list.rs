@@ -57,6 +57,9 @@ use super::logging::{UpstreamRequestLog, log_upstream_request_start};
 /// One upstream's validated skills plus what was dropped getting there.
 #[derive(Debug, Clone, Default)]
 pub(super) struct UpstreamSkills {
+    /// Skill candidates observed across the upstream pages fetched for this snapshot,
+    /// before host validation or exposure policy is applied.
+    pub(super) discovered_count: usize,
     /// Skills that passed ingest validation.
     pub(super) skills: Vec<ValidatedSkill>,
     /// Skills dropped for integrity or budget reasons, by cause. Operators see
@@ -132,6 +135,10 @@ fn custom_result_value(result: ServerResult) -> Result<serde_json::Value, String
 /// Returns `true` when the cap stopped accumulation, so the caller can stop
 /// walking rather than fetching pages whose contents would be discarded.
 fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> bool {
+    // Discovery is what the upstream advertised, not what the host later accepts.
+    // Count the fetched page before validation so operator status can distinguish
+    // discovered candidates from the validated/exposed subset.
+    out.discovered_count = out.discovered_count.saturating_add(entries.len());
     for entry in entries {
         if out.skills.len() >= limits::MAX_SKILLS_PER_UPSTREAM {
             return true;

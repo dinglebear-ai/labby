@@ -343,6 +343,11 @@ async fn the_skill_cap_stops_the_walk_before_the_next_request() {
         .expect("walk terminates");
 
     assert!(skills.truncated);
+    assert_eq!(
+        skills.discovered_count,
+        limits::MAX_SKILLS_PER_UPSTREAM + 5,
+        "every candidate on the fetched page was discovered before the host cap engaged"
+    );
     assert_eq!(skills.skills.len(), limits::MAX_SKILLS_PER_UPSTREAM);
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -375,6 +380,7 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
         .await
         .expect("the upstream survives its own bad skills");
 
+    assert_eq!(skills.discovered_count, 3);
     assert_eq!(skills.skills.len(), 1);
     assert_eq!(skills.skills[0].name, "alpha");
     assert_eq!(skills.excluded_count(), 2);
