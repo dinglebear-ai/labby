@@ -5,6 +5,7 @@
 //! per-user OAuth subject identifier, which is privacy-sensitive even though
 //! it is not a secret.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -299,17 +300,26 @@ impl UsageStore {
     ) -> Result<super::query::UsageMetrics, ToolError> {
         self.with_conn(move |conn| {
             let (where_clause, bind) = usage_where_clause(
-                &query.since_unix,
-                &query.until_unix,
-                &query.upstream,
-                &query.allowed_upstreams,
+                &query.since_unix, &query.until_unix, &query.upstream, &query.tool,
+                &query.actor, &query.outcome, &query.search, &query.allowed_upstreams,
             );
+            let (window_where_clause, window_bind) = usage_where_clause(
+                &query.since_unix, &query.until_unix, &None, &None,
+                &None, &None, &None, &query.allowed_upstreams,
+            );
+            let has_detail_filters = query.upstream.is_some()
+                || query.tool.is_some()
+                || query.actor.is_some()
+                || query.outcome.is_some()
+                || query
+                    .search
+                    .as_deref()
+                    .is_some_and(|search| !search.trim().is_empty());
 
             let (total_calls, error_calls, avg_elapsed_ms): (i64, i64, f64) = conn
                 .query_row(
                     &format!(
-                        "SELECT COUNT(*), SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END), \
-                         COALESCE(AVG(elapsed_ms), 0.0) FROM upstream_calls {where_clause}"
+                        "SELECT COUNT(*), SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END), COALESCE(AVG(elapsed_ms), 0.0) FROM upstream_calls {where_clause}"
                     ),
                     rusqlite::params_from_iter(bind.iter()),
                     |row| {
@@ -322,38 +332,195 @@ impl UsageStore {
                 )
                 .map_err(sqlite_error)?;
 
-            let mut top_tools_stmt = conn
+            let window_total_calls = if has_detail_filters {
+                conn.query_row(
+                    &format!("SELECT COUNT(*) FROM upstream_calls {window_where_clause}"),
+                    rusqlite::params_from_iter(window_bind.iter()),
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?
+            } else {
+                total_calls
+            };
+
+            let time_zone = query
+                .timezone
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| {
+                    if name.len() > 128 {
+                        return Err(ToolError::InvalidParam {
+                            message: "timezone must be a valid IANA zone name".to_string(),
+                            param: "timezone".to_string(),
+                        });
+                    }
+                    jiff::tz::TimeZone::get(name).map_err(|error| ToolError::InvalidParam {
+                        message: format!("invalid IANA timezone {name:?}: {error}"),
+                        param: "timezone".to_string(),
+                    })
+                })
+                .transpose()?;
+            let offset_seconds = i64::from(query.timezone_offset_minutes) * 60;
+
+            // SQLite's ROW_NUMBER()/COUNT() window formulation is exact, but
+            // it is disproportionately expensive on longer windows. Sorting the
+            // scalar latency column once and selecting nearest-rank values in
+            // Rust stays exact while avoiding the extra window-function state.
+            // The timestamp rides along so local-hour aggregation costs no
+            // extra store scan and honors DST when an IANA zone is supplied.
+            let mut latency_stmt = conn
                 .prepare(&format!(
-                    "SELECT upstream_name, tool_name, capability, operation, subject_scoped, \
-                     COUNT(*) as calls FROM upstream_calls {where_clause} \
-                     GROUP BY upstream_name, tool_name, capability, operation, subject_scoped \
-                     ORDER BY calls DESC LIMIT {}",
-                    super::query::TOP_N
+                    "SELECT elapsed_ms, ts_unix FROM upstream_calls {where_clause} ORDER BY elapsed_ms ASC"
                 ))
                 .map_err(sqlite_error)?;
-            let top_tools = top_tools_stmt
+            let latency_rows = latency_stmt
                 .query_map(rusqlite::params_from_iter(bind.iter()), |row| {
-                    Ok(super::query::UsageToolCount {
-                        upstream: row.get(0)?,
-                        tool: row.get(1)?,
-                        capability: row.get(2)?,
-                        operation: row.get(3)?,
-                        subject_scoped: row.get(4)?,
-                        calls: row.get(5)?,
-                    })
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(sqlite_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sqlite_error)?;
+            let mut elapsed_values = Vec::with_capacity(latency_rows.len());
+            let mut hourly_counts = [0_i64; 24];
+            for (elapsed_ms, ts_unix) in latency_rows {
+                elapsed_values.push(elapsed_ms);
+                let hour = if let Some(time_zone) = &time_zone {
+                    let timestamp = jiff::Timestamp::from_second(ts_unix).map_err(|error| {
+                        ToolError::internal_message(format!(
+                            "invalid persisted usage timestamp {ts_unix}: {error}"
+                        ))
+                    })?;
+                    timestamp.to_zoned(time_zone.clone()).hour()
+                } else {
+                    i8::try_from(
+                        ts_unix
+                            .saturating_add(offset_seconds)
+                            .div_euclid(3600)
+                            .rem_euclid(24),
+                    )
+                    .unwrap_or_default()
+                };
+                let hour_index = usize::from(u8::try_from(hour).unwrap_or_default());
+                hourly_counts[hour_index] += 1;
+            }
+            let hourly = hourly_counts
+                .into_iter()
+                .enumerate()
+                .map(|(hour, calls)| super::query::UsageHourCount {
+                    hour: u8::try_from(hour).unwrap_or_default(),
+                    calls,
+                })
+                .collect::<Vec<_>>();
+            let p50_elapsed_ms = nearest_rank(&elapsed_values, 50);
+            let p95_elapsed_ms = nearest_rank(&elapsed_values, 95);
+            let p99_elapsed_ms = nearest_rank(&elapsed_values, 99);
+
+            let peak_per_min = conn
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(MAX(calls), 0) FROM (SELECT COUNT(*) AS calls FROM upstream_calls {where_clause} GROUP BY (ts_unix / 60))"
+                    ),
+                    rusqlite::params_from_iter(bind.iter()),
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+
+            // One dimensional target rollup powers top, least-used, distinct,
+            // and stable-target latency rankings. The previous implementation
+            // repeated the same grouped scan three times.
+            let mut target_stmt = conn
+                .prepare(&format!(
+                    "SELECT upstream_name, tool_name, capability, operation, subject_scoped, COUNT(*) AS calls, SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed, CAST(COUNT(*) AS REAL) AS calls_real, TOTAL(elapsed_ms) AS elapsed_total FROM upstream_calls {where_clause} GROUP BY upstream_name, tool_name, capability, operation, subject_scoped"
+                ))
+                .map_err(sqlite_error)?;
+            let target_rollups = target_stmt
+                .query_map(rusqlite::params_from_iter(bind.iter()), |row| {
+                    Ok((
+                        super::query::UsageToolCount {
+                            upstream: row.get(0)?,
+                            tool: row.get(1)?,
+                            capability: row.get(2)?,
+                            operation: row.get(3)?,
+                            subject_scoped: row.get(4)?,
+                            calls: row.get(5)?,
+                            failed: row.get(6)?,
+                        },
+                        row.get::<_, f64>(7)?,
+                        row.get::<_, f64>(8)?,
+                    ))
                 })
                 .map_err(sqlite_error)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(sqlite_error)?;
 
-            let mut top_actors_stmt = conn
+            let mut top_tools = target_rollups
+                .iter()
+                .map(|(tool, _, _)| tool.clone())
+                .collect::<Vec<_>>();
+            top_tools.sort_by(|left, right| {
+                right
+                    .calls
+                    .cmp(&left.calls)
+                    .then_with(|| left.upstream.cmp(&right.upstream))
+                    .then_with(|| left.tool.cmp(&right.tool))
+                    .then_with(|| left.capability.cmp(&right.capability))
+                    .then_with(|| left.operation.cmp(&right.operation))
+                    .then_with(|| left.subject_scoped.cmp(&right.subject_scoped))
+            });
+            top_tools.truncate(super::query::TOP_N);
+
+            let mut least_tools = target_rollups
+                .iter()
+                .map(|(tool, _, _)| tool.clone())
+                .collect::<Vec<_>>();
+            least_tools.sort_by(|left, right| {
+                left.calls
+                    .cmp(&right.calls)
+                    .then_with(|| left.upstream.cmp(&right.upstream))
+                    .then_with(|| left.tool.cmp(&right.tool))
+                    .then_with(|| left.capability.cmp(&right.capability))
+                    .then_with(|| left.operation.cmp(&right.operation))
+                    .then_with(|| left.subject_scoped.cmp(&right.subject_scoped))
+            });
+            least_tools.truncate(super::query::TOP_N);
+
+            let mut stable_targets: BTreeMap<(String, String), (f64, f64)> = BTreeMap::new();
+            for (tool, calls_real, elapsed_total) in &target_rollups {
+                let entry = stable_targets
+                    .entry((tool.upstream.clone(), tool.tool.clone()))
+                    .or_default();
+                entry.0 += *calls_real;
+                entry.1 += *elapsed_total;
+            }
+            let distinct_tools = i64::try_from(stable_targets.len()).unwrap_or(i64::MAX);
+            let mut slowest_tools = stable_targets
+                .iter()
+                .map(|((upstream, tool), (calls, elapsed_total))| {
+                    super::query::UsageLatencyStat {
+                        upstream: upstream.clone(),
+                        tool: tool.clone(),
+                        avg_elapsed_ms: elapsed_total / calls,
+                    }
+                })
+                .collect::<Vec<_>>();
+            slowest_tools.sort_by(|left, right| {
+                right
+                    .avg_elapsed_ms
+                    .total_cmp(&left.avg_elapsed_ms)
+                    .then_with(|| left.upstream.cmp(&right.upstream))
+                    .then_with(|| left.tool.cmp(&right.tool))
+            });
+            slowest_tools.truncate(super::query::TOP_N);
+
+            // One actor grouping supplies both the exact distinct count and the
+            // top-actor ranking.
+            let mut actor_stmt = conn
                 .prepare(&format!(
-                    "SELECT actor, COUNT(*) as calls FROM upstream_calls {where_clause} \
-                     GROUP BY actor ORDER BY calls DESC LIMIT {}",
-                    super::query::TOP_N
+                    "SELECT actor, COUNT(*) AS calls FROM upstream_calls {where_clause} GROUP BY actor ORDER BY calls DESC, actor ASC"
                 ))
                 .map_err(sqlite_error)?;
-            let top_actors = top_actors_stmt
+            let actor_counts = actor_stmt
                 .query_map(rusqlite::params_from_iter(bind.iter()), |row| {
                     Ok(super::query::UsageActorCount {
                         actor: row.get(0)?,
@@ -363,16 +530,52 @@ impl UsageStore {
                 .map_err(sqlite_error)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(sqlite_error)?;
+            let distinct_actors = i64::try_from(actor_counts.len()).unwrap_or(i64::MAX);
+            let top_actors = actor_counts
+                .into_iter()
+                .take(super::query::TOP_N)
+                .collect::<Vec<_>>();
 
-            Ok(super::query::UsageMetrics {
-                total_calls,
-                error_calls,
-                avg_elapsed_ms,
-                top_tools,
-                top_actors,
-            })
-        })
-        .await
+            let error_where = append_usage_predicate(&where_clause, "outcome != 'ok'");
+            let mut errors_stmt = conn.prepare(&format!("SELECT outcome, COUNT(*) AS calls FROM upstream_calls {error_where} GROUP BY outcome ORDER BY calls DESC, outcome ASC")).map_err(sqlite_error)?;
+            let errors = errors_stmt.query_map(rusqlite::params_from_iter(bind.iter()), |row| Ok(super::query::UsageErrorCount { kind: row.get(0)?, calls: row.get(1)? })).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
+
+            let mut upstreams_stmt = conn.prepare(&format!("SELECT upstream_name, COUNT(*) AS calls, SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed FROM upstream_calls {where_clause} GROUP BY upstream_name ORDER BY calls DESC, upstream_name ASC")).map_err(sqlite_error)?;
+            let upstreams = upstreams_stmt.query_map(rusqlite::params_from_iter(bind.iter()), |row| Ok(super::query::UsageUpstreamCount { upstream: row.get(0)?, calls: row.get(1)?, failed: row.get(2)? })).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
+
+            let timeseries = if query.bucket_count > 0 {
+                if let (Some(since), Some(until)) = (query.since_unix, query.until_unix) {
+                    let count = query.bucket_count.clamp(1, super::query::MAX_METRICS_BUCKETS);
+                    let span = until.saturating_sub(since);
+                    if span > 0 {
+                        let width = (span + count as i64 - 1) / count as i64;
+                        let mut buckets = (0..count).map(|index| super::query::UsageTimeBucket { ts_unix: since + index as i64 * width, calls: 0, failed: 0 }).collect::<Vec<_>>();
+                        let mut bucket_bind = bind.clone();
+                        bucket_bind.push(rusqlite::types::Value::Integer((count - 1) as i64)); let max_index_param = bucket_bind.len();
+                        bucket_bind.push(rusqlite::types::Value::Integer(since)); let since_param = bucket_bind.len();
+                        bucket_bind.push(rusqlite::types::Value::Integer(width)); let width_param = bucket_bind.len();
+                        let mut bucket_stmt = conn.prepare(&format!("SELECT MIN(?{max_index_param}, ((ts_unix - ?{since_param}) / ?{width_param})) AS bucket_index, COUNT(*) AS calls, SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed FROM upstream_calls {where_clause} GROUP BY bucket_index ORDER BY bucket_index ASC")).map_err(sqlite_error)?;
+                        let rows = bucket_stmt.query_map(rusqlite::params_from_iter(bucket_bind.iter()), |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
+                        for (index, calls, failed) in rows { if let Ok(index) = usize::try_from(index) && let Some(bucket) = buckets.get_mut(index) { bucket.calls = calls; bucket.failed = failed; } }
+                        buckets
+                    } else { Vec::new() }
+                } else { Vec::new() }
+            } else { Vec::new() };
+
+            let facets = if query.include_facets {
+                let mut tools_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name, tool_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC, tool_name ASC")).map_err(sqlite_error)?;
+                let tools = tools_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| Ok(super::query::UsageToolFacet { upstream: row.get(0)?, tool: row.get(1)? })).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
+                let mut actors_stmt = conn.prepare(&format!("SELECT DISTINCT actor FROM upstream_calls {window_where_clause} ORDER BY actor ASC")).map_err(sqlite_error)?;
+                let actors = actors_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
+                let mut upstreams_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC")).map_err(sqlite_error)?;
+                let upstreams = upstreams_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
+                let mut outcomes_stmt = conn.prepare(&format!("SELECT DISTINCT outcome FROM upstream_calls {window_where_clause} ORDER BY outcome ASC")).map_err(sqlite_error)?;
+                let outcomes = outcomes_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
+                super::query::UsageFacets { tools, actors, upstreams, outcomes }
+            } else { super::query::UsageFacets::default() };
+
+            Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, facets })
+        }).await
     }
 
     /// Returns a keyset-paginated page, an optional total, and the next cursor.
@@ -392,6 +595,10 @@ impl UsageStore {
                 &query.since_unix,
                 &query.until_unix,
                 &query.upstream,
+                &query.tool,
+                &query.actor,
+                &query.outcome,
+                &query.search,
                 &query.allowed_upstreams,
             );
 
@@ -482,10 +689,43 @@ impl UsageStore {
 /// values for the optional since/until/upstream filters shared by `metrics`
 /// and `list_calls`, plus an optional `allowed_upstreams` allowlist (used to
 /// enforce route scope for scoped callers — see `gateway/manager/usage.rs`).
+fn append_usage_predicate(where_clause: &str, predicate: &str) -> String {
+    if where_clause.is_empty() {
+        format!("WHERE {predicate}")
+    } else {
+        format!("{where_clause} AND {predicate}")
+    }
+}
+
+fn nearest_rank(sorted: &[i64], percentile: usize) -> i64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = sorted.len().saturating_mul(percentile).div_ceil(100);
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '%' => escaped.push_str("\\%"),
+            '_' => escaped.push_str("\\_"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 fn usage_where_clause(
     since_unix: &Option<i64>,
     until_unix: &Option<i64>,
     upstream: &Option<String>,
+    tool: &Option<String>,
+    actor: &Option<String>,
+    outcome: &Option<String>,
+    search: &Option<String>,
     allowed_upstreams: &Option<Vec<String>>,
 ) -> (String, Vec<rusqlite::types::Value>) {
     let mut clauses = Vec::new();
@@ -502,9 +742,41 @@ fn usage_where_clause(
         clauses.push(format!("upstream_name = ?{}", bind.len() + 1));
         bind.push(rusqlite::types::Value::Text(upstream.clone()));
     }
+    if let Some(tool) = tool {
+        clauses.push(format!(
+            "(upstream_name || '::' || tool_name) = ?{}",
+            bind.len() + 1
+        ));
+        bind.push(rusqlite::types::Value::Text(tool.clone()));
+    }
+    if let Some(actor) = actor {
+        clauses.push(format!("actor = ?{}", bind.len() + 1));
+        bind.push(rusqlite::types::Value::Text(actor.clone()));
+    }
+    if let Some(outcome) = outcome {
+        if outcome == "failed" {
+            clauses.push("outcome != 'ok'".to_string());
+        } else {
+            clauses.push(format!("outcome = ?{}", bind.len() + 1));
+            bind.push(rusqlite::types::Value::Text(outcome.clone()));
+        }
+    }
+    if let Some(search) = search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        clauses.push(format!(
+            "LOWER(upstream_name || ' ' || tool_name || ' ' || capability || ' ' || operation || ' ' || actor || ' ' || outcome) LIKE ?{} ESCAPE char(92)",
+            bind.len() + 1
+        ));
+        bind.push(rusqlite::types::Value::Text(format!(
+            "%{}%",
+            escape_like_pattern(&search.to_lowercase())
+        )));
+    }
     if let Some(allowed) = allowed_upstreams {
         if allowed.is_empty() {
-            // No visible upstreams at all: match nothing.
             clauses.push("1 = 0".to_string());
         } else {
             let placeholders: Vec<String> = allowed
@@ -523,7 +795,6 @@ fn usage_where_clause(
         (format!("WHERE {}", clauses.join(" AND ")), bind)
     }
 }
-
 pub(crate) fn sqlite_error(error: rusqlite::Error) -> ToolError {
     storage_error(format!("sqlite error: {error}"))
 }
@@ -684,6 +955,7 @@ mod tests {
                 until_unix: None,
                 upstream: None,
                 allowed_upstreams: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -716,6 +988,7 @@ mod tests {
                 until_unix: None,
                 upstream: None,
                 allowed_upstreams: Some(vec!["github".to_string()]),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -723,6 +996,268 @@ mod tests {
         assert_eq!(metrics.total_calls, 1);
         assert_eq!(metrics.top_tools.len(), 1);
         assert_eq!(metrics.top_tools[0].upstream, "github");
+    }
+
+    #[tokio::test]
+    async fn metrics_timeseries_covers_full_window_when_raw_page_is_capped() {
+        use super::super::query::{UsageCallsQuery, UsageMetricsQuery};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch("BEGIN IMMEDIATE").map_err(super::sqlite_error)?;
+                for index in 0..500 {
+                    conn.execute(
+                        "INSERT INTO upstream_calls (ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms) VALUES (1800, 'github', 'search', 'agent', ?1, 100)",
+                        [if index < 100 { "timeout" } else { "ok" }],
+                    )
+                    .map_err(super::sqlite_error)?;
+                }
+                for _ in 0..1_200 {
+                    conn.execute(
+                        "INSERT INTO upstream_calls (ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms) VALUES (84600, 'github', 'search', 'agent', 'ok', 10)",
+                        [],
+                    )
+                    .map_err(super::sqlite_error)?;
+                }
+                conn.execute_batch("COMMIT").map_err(super::sqlite_error)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                since_unix: Some(0),
+                until_unix: Some(86_400),
+                bucket_count: 24,
+                include_facets: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let (page, total, cursor) = store
+            .list_calls(UsageCallsQuery {
+                since_unix: Some(0),
+                until_unix: Some(86_400),
+                limit: 1_000,
+                include_total: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.len(), 1_000);
+        assert_eq!(total, Some(1_700));
+        assert!(cursor.is_some());
+        assert_eq!(metrics.window_total_calls, 1_700);
+        assert_eq!(metrics.total_calls, 1_700);
+        assert_eq!(metrics.error_calls, 100);
+        assert_eq!(metrics.timeseries.len(), 24);
+        assert_eq!(metrics.timeseries[0].calls, 500);
+        assert_eq!(metrics.timeseries[0].failed, 100);
+        assert_eq!(metrics.timeseries[23].calls, 1_200);
+        assert_eq!(metrics.p50_elapsed_ms, 10);
+        assert_eq!(metrics.p95_elapsed_ms, 100);
+        assert_eq!(metrics.peak_per_min, 1_200);
+        assert_eq!(metrics.errors[0].kind, "timeout");
+        assert_eq!(metrics.errors[0].calls, 100);
+        assert_eq!(metrics.facets.tools.len(), 1);
+        assert_eq!(metrics.facets.actors, vec!["agent"]);
+    }
+
+    #[tokio::test]
+    async fn metrics_window_total_and_facets_ignore_operator_filters() {
+        use super::super::query::UsageMetricsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+
+        let mut github_one = sample_record(1_000);
+        github_one.actor = "alice".to_string();
+        store.record_call(github_one).await.unwrap();
+
+        let mut github_two = sample_record(1_001);
+        github_two.actor = "bob".to_string();
+        store.record_call(github_two).await.unwrap();
+
+        let mut gitlab = sample_record(1_002);
+        gitlab.upstream_name = "gitlab".to_string();
+        gitlab.tool_name = "issues".to_string();
+        gitlab.actor = "carol".to_string();
+        store.record_call(gitlab).await.unwrap();
+
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                upstream: Some("github".to_string()),
+                include_facets: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.total_calls, 2);
+        assert_eq!(metrics.window_total_calls, 3);
+        assert_eq!(metrics.facets.upstreams, vec!["github", "gitlab"]);
+        assert_eq!(metrics.facets.actors, vec!["alice", "bob", "carol"]);
+    }
+
+    #[tokio::test]
+    async fn metrics_and_calls_apply_exact_server_side_filters() {
+        use super::super::query::{UsageCallsQuery, UsageMetricsQuery};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+
+        let mut first = sample_record(1_000);
+        first.actor = "alice".to_string();
+        store.record_call(first).await.unwrap();
+
+        let mut second = sample_record(1_001);
+        second.actor = "bob".to_string();
+        second.outcome = "timeout".to_string();
+        store.record_call(second).await.unwrap();
+
+        let mut third = sample_record(1_002);
+        third.upstream_name = "gitlab".to_string();
+        third.tool_name = "issues".to_string();
+        third.actor = "bob".to_string();
+        store.record_call(third).await.unwrap();
+
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                tool: Some("github::search_repos".to_string()),
+                actor: Some("bob".to_string()),
+                outcome: Some("failed".to_string()),
+                search: Some("timeout".to_string()),
+                include_facets: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let (rows, total, _) = store
+            .list_calls(UsageCallsQuery {
+                tool: Some("github::search_repos".to_string()),
+                actor: Some("bob".to_string()),
+                outcome: Some("failed".to_string()),
+                search: Some("timeout".to_string()),
+                limit: 50,
+                include_total: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.window_total_calls, 3);
+        assert_eq!(metrics.total_calls, 1);
+        assert_eq!(metrics.error_calls, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(total, Some(1));
+        assert_eq!(rows[0].actor, "bob");
+        assert_eq!(rows[0].outcome, "timeout");
+        assert_eq!(metrics.facets.tools.len(), 2);
+        assert_eq!(metrics.facets.actors, vec!["alice", "bob"]);
+    }
+
+    #[tokio::test]
+    async fn usage_search_treats_sql_wildcards_as_literals() {
+        use super::super::query::UsageMetricsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        for (ts, tool) in [
+            (1_000, "literal%target"),
+            (1_001, "literalXtarget"),
+            (1_002, "literal_target"),
+            (1_003, "literalYtarget"),
+        ] {
+            let mut record = sample_record(ts);
+            record.tool_name = tool.to_string();
+            store.record_call(record).await.unwrap();
+        }
+
+        let percent = store
+            .metrics(UsageMetricsQuery {
+                search: Some("%".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let underscore = store
+            .metrics(UsageMetricsQuery {
+                search: Some("_".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(percent.total_calls, 1);
+        assert_eq!(percent.top_tools[0].tool, "literal%target");
+        assert_eq!(underscore.total_calls, 1);
+        assert_eq!(underscore.top_tools[0].tool, "literal_target");
+    }
+
+    #[test]
+    fn nearest_rank_matches_sql_ceiling_rank_semantics() {
+        assert_eq!(super::nearest_rank(&[], 95), 0);
+        assert_eq!(super::nearest_rank(&[10], 50), 10);
+        assert_eq!(super::nearest_rank(&[10, 20, 30, 40], 50), 20);
+        assert_eq!(super::nearest_rank(&[10, 20, 30, 40], 95), 40);
+        assert_eq!(super::nearest_rank(&[10, 20, 30, 40], 99), 40);
+    }
+
+    #[tokio::test]
+    async fn metrics_iana_timezone_handles_dst_fall_back_exactly() {
+        use super::super::query::UsageMetricsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        for ts in [1_793_511_000, 1_793_514_600, 1_793_518_200] {
+            store.record_call(sample_record(ts)).await.unwrap();
+        }
+
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                since_unix: Some(1_793_510_000),
+                until_unix: Some(1_793_519_000),
+                timezone: Some("America/New_York".to_string()),
+                // A fixed -04:00 offset would incorrectly put the second call
+                // in hour 2 after the DST fold; the IANA zone must override it.
+                timezone_offset_minutes: -240,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.hourly[1].calls, 2);
+        assert_eq!(metrics.hourly[2].calls, 1);
+        assert_eq!(
+            metrics
+                .hourly
+                .iter()
+                .map(|bucket| bucket.calls)
+                .sum::<i64>(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_rejects_invalid_iana_timezone() {
+        use super::super::query::UsageMetricsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        store.record_call(sample_record(1_000)).await.unwrap();
+
+        let error = store
+            .metrics(UsageMetricsQuery {
+                timezone: Some("Mars/Olympus_Mons".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect_err("unknown IANA timezone must fail closed");
+        assert_eq!(error.kind(), "invalid_param");
     }
 
     #[tokio::test]
@@ -745,6 +1280,7 @@ mod tests {
                 limit: 2,
                 cursor: None,
                 include_total: true,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -764,6 +1300,7 @@ mod tests {
                 limit: 2,
                 cursor: Some(cursor),
                 include_total: false,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -796,6 +1333,7 @@ mod tests {
                 limit: 0,
                 cursor: None,
                 include_total: false,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -841,6 +1379,7 @@ mod tests {
                     id: 1_001,
                 }),
                 include_total: false,
+                ..Default::default()
             }),
         )
         .await

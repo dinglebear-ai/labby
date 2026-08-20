@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { ArrowRight, Cable, Clock3 } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
@@ -67,6 +68,7 @@ function MetricsUnavailable({ message }: { message: string }) {
 }
 
 export default function OverviewPage() {
+  const router = useRouter()
   const { data: gateways, isLoading: gatewaysLoading } = useGateways()
   const [activeWindow, setActiveWindow] = useState<MetricsWindow>('24h')
   const [drill, setDrill] = useState<DrillTarget | null>(null)
@@ -120,12 +122,6 @@ export default function OverviewPage() {
           />
         ) : null}
 
-        {metrics && !metrics.collected.complete_call_rows ? (
-          <div className="rounded-aurora-3 border border-aurora-warn/30 bg-aurora-warn/8 p-4 text-sm text-aurora-text-primary">
-            Detailed charts use the newest 1,000 calls in this window; aggregate totals remain complete.
-          </div>
-        ) : null}
-
         {/* Telemetry split — the mock's 2fr content column beside a rail.
             Left column auto-fits at 250px so the wide panels span it. */}
         <div
@@ -155,7 +151,11 @@ export default function OverviewPage() {
               meta={WINDOW_LABELS[activeWindow]}
             >
               {metrics ? (
-                <ToolVolumeChart data={metrics.timeseries} window={activeWindow} />
+                <ToolVolumeChart
+                  data={metrics.timeseries}
+                  window={activeWindow}
+                  onSelectBucket={(from, to) => router.push(`/usage/?window=${activeWindow}&from=${Math.round(from)}&to=${Math.round(to)}`)}
+                />
               ) : metricsLoading ? (
                 <Skeleton className="h-[200px] w-full" />
               ) : (
@@ -203,11 +203,16 @@ export default function OverviewPage() {
                   actorKindsCollected={metrics.collected.actor_kinds}
                   onSelectActor={(entry) => setDrill({ type: 'agent', id: entry.id })}
                 />
-                <UpstreamsPanel upstreams={metrics.upstreams} />
+                <UpstreamsPanel
+                  upstreams={metrics.upstreams}
+                  onSelect={(name) => router.push(`/usage/?window=${activeWindow}&upstream=${encodeURIComponent(name)}`)}
+                />
                 <CallOutcomesPanel
                   toolCalls={metrics.tool_calls}
                   errors={metrics.errors}
                   window={activeWindow}
+                  onSelectOutcome={(outcome) => router.push(`/usage/?window=${activeWindow}&outcome=${outcome}`)}
+                  onSelectError={(kind) => router.push(`/usage/?window=${activeWindow}&outcome=failed&error=${encodeURIComponent(kind)}`)}
                 />
               </>
             ) : metricsLoading ? (
@@ -225,6 +230,7 @@ export default function OverviewPage() {
           <AnalysisSection
             metrics={metrics}
             onSelectTool={(name) => setDrill({ type: 'tool', name })}
+            onOpenUsage={(query) => router.push(`/usage/?window=${activeWindow}&${query}`)}
           />
         ) : null}
 

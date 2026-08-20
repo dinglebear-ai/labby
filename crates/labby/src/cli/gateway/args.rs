@@ -225,6 +225,30 @@ pub struct GatewayUsageMetricsArgs {
     pub until_unix: Option<i64>,
     #[arg(long)]
     pub upstream: Option<String>,
+    /// Restrict to one qualified upstream::tool target.
+    #[arg(long)]
+    pub tool: Option<String>,
+    /// Restrict to one actor subject.
+    #[arg(long)]
+    pub actor: Option<String>,
+    /// Restrict to one outcome; failed matches every non-ok outcome.
+    #[arg(long)]
+    pub outcome: Option<String>,
+    /// Case-insensitive search across target, operation, actor, and outcome.
+    #[arg(long)]
+    pub search: Option<String>,
+    /// Return this many complete-window time buckets (max 168).
+    #[arg(long)]
+    pub bucket_count: Option<usize>,
+    /// IANA zone name for DST-correct local-hour aggregation.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Minutes east of UTC fallback when --timezone is omitted.
+    #[arg(long, allow_hyphen_values = true)]
+    pub timezone_offset_minutes: Option<i32>,
+    /// Include stable window-wide filter facets.
+    #[arg(long)]
+    pub include_facets: bool,
 }
 
 #[derive(Debug, Args)]
@@ -235,6 +259,18 @@ pub struct GatewayUsageCallsArgs {
     pub until_unix: Option<i64>,
     #[arg(long)]
     pub upstream: Option<String>,
+    /// Restrict to one qualified upstream::tool target.
+    #[arg(long)]
+    pub tool: Option<String>,
+    /// Restrict to one actor subject.
+    #[arg(long)]
+    pub actor: Option<String>,
+    /// Restrict to one outcome; failed matches every non-ok outcome.
+    #[arg(long)]
+    pub outcome: Option<String>,
+    /// Case-insensitive search across target, operation, actor, and outcome.
+    #[arg(long)]
+    pub search: Option<String>,
     #[arg(long)]
     pub limit: Option<usize>,
     /// Continue from the opaque cursor returned by the previous page.

@@ -48,6 +48,7 @@ type HeroStat = {
   value: string | number
   icon: LucideIcon
   tone?: Tone
+  href?: string
 }
 
 /**
@@ -150,49 +151,28 @@ function gatewayTone(gateway: Gateway): { color: string; state: string } {
 
 function StatCell({ stat, isLast }: { stat: HeroStat; isLast: boolean }) {
   const Icon = stat.icon
-  return (
-    <div
-      title={stat.label}
-      style={{
-        minWidth: 0,
-        padding: '2px 12px',
-        borderRight: isLast
-          ? undefined
-          : '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
-      }}
-    >
+  const style: React.CSSProperties = {
+    minWidth: 0,
+    padding: '4px 12px',
+    borderRadius: 8,
+    textDecoration: 'none',
+    borderRight: isLast
+      ? undefined
+      : '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
+  }
+  const content = (
+    <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ flexShrink: 0, color: 'var(--aurora-text-muted)', display: 'grid' }}>
-          <Icon size={12} strokeWidth={1.8} />
-        </span>
-        <span
-          style={{
-            fontSize: 9.5,
-            fontWeight: 700,
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            color: 'var(--aurora-text-muted)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {stat.label}
-        </span>
+        <span style={{ flexShrink: 0, color: 'var(--aurora-text-muted)', display: 'grid' }}><Icon size={12} strokeWidth={1.8} /></span>
+        <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--aurora-text-muted)', whiteSpace: 'nowrap' }}>{stat.label}</span>
       </div>
-      <div
-        style={{
-          marginTop: 6,
-          fontFamily: 'var(--font-display)',
-          fontSize: 21,
-          lineHeight: 1,
-          fontWeight: 800,
-          fontVariantNumeric: 'tabular-nums',
-          color: TONE_COLOR[stat.tone ?? 'default'],
-        }}
-      >
-        {stat.value}
-      </div>
-    </div>
+      <div style={{ marginTop: 6, fontFamily: 'var(--font-display)', fontSize: 21, lineHeight: 1, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: TONE_COLOR[stat.tone ?? 'default'] }}>{stat.value}</div>
+    </>
   )
+  if (stat.href) {
+    return <Link href={stat.href} title={`${stat.label} — open details`} style={style} className="transition-colors hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/40">{content}</Link>
+  }
+  return <div title={stat.label} style={style}>{content}</div>
 }
 
 export function OverviewHero({
@@ -250,33 +230,38 @@ export function OverviewHero({
   // primitive: Connected · Offline · Tools · Prompts · Resources · Skills ·
   // Upstream calls · Failed · Tokens · P95 latency. Only Failed carries a tone;
   // every other value renders in primary text.
+  const usageHref = `/usage/?window=${activeWindow}`
   const stats: HeroStat[] = [
-    { label: 'Connected', value: live.connectedServers, icon: Cable },
-    { label: 'Offline', value: live.offlineServers, icon: PlugZap },
-    { label: 'Tools', value: live.discoveredTools, icon: Wrench },
-    { label: 'Prompts', value: discoveredPrompts, icon: MessageSquare },
-    { label: 'Resources', value: discoveredResources, icon: FileText },
-    { label: 'Skills', value: discoveredSkills, icon: BookOpen },
+    { label: 'Connected', value: live.connectedServers, icon: Cable, href: '/gateways/' },
+    { label: 'Offline', value: live.offlineServers, icon: PlugZap, href: '/gateways/' },
+    { label: 'Tools', value: live.discoveredTools, icon: Wrench, href: '/tools/' },
+    { label: 'Prompts', value: discoveredPrompts, icon: MessageSquare, href: '/gateways/' },
+    { label: 'Resources', value: discoveredResources, icon: FileText, href: '/gateways/' },
+    { label: 'Skills', value: discoveredSkills, icon: BookOpen, href: '/skills/' },
     {
       label: 'Upstream calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',
       icon: Activity,
+      href: usageHref,
     },
     {
       label: 'Failed',
       value: metrics ? formatCompactNumber(metrics.tool_calls.failed) : '—',
       icon: AlertTriangle,
       tone: metrics && metrics.tool_calls.failed > 0 ? 'error' : 'default',
+      href: `${usageHref}&outcome=failed`,
     },
     {
       label: 'Tokens',
       value: metrics ? formatCompactNumber(metrics.tokens.total) : '—',
       icon: Coins,
+      href: `${usageHref}&focus=tokens`,
     },
     {
       label: 'P95 latency',
       value: metrics ? `${Math.round(metrics.latency.p95)}ms` : '—',
       icon: Gauge,
+      href: `${usageHref}&focus=latency`,
     },
   ]
 

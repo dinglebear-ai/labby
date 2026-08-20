@@ -3628,6 +3628,30 @@ Options:
       --upstream <UPSTREAM>
 
 
+      --tool <TOOL>
+          Restrict to one qualified upstream::tool target
+
+      --actor <ACTOR>
+          Restrict to one actor subject
+
+      --outcome <OUTCOME>
+          Restrict to one outcome; failed matches every non-ok outcome
+
+      --search <SEARCH>
+          Case-insensitive search across target, operation, actor, and outcome
+
+      --bucket-count <BUCKET_COUNT>
+          Return this many complete-window time buckets (max 168)
+
+      --timezone <TIMEZONE>
+          IANA zone name for DST-correct local-hour aggregation
+
+      --timezone-offset-minutes <TIMEZONE_OFFSET_MINUTES>
+          Minutes east of UTC fallback when --timezone is omitted
+
+      --include-facets
+          Include stable window-wide filter facets
+
   -h, --help
           Print help
 ```
@@ -3657,6 +3681,18 @@ Options:
 
       --upstream <UPSTREAM>
 
+
+      --tool <TOOL>
+          Restrict to one qualified upstream::tool target
+
+      --actor <ACTOR>
+          Restrict to one actor subject
+
+      --outcome <OUTCOME>
+          Restrict to one outcome; failed matches every non-ok outcome
+
+      --search <SEARCH>
+          Case-insensitive search across target, operation, actor, and outcome
 
       --limit <LIMIT>
 

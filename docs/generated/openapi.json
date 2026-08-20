@@ -3055,6 +3055,9 @@
       "GatewayGatewayUsageCallsParams": {
         "type": "object",
         "properties": {
+          "actor": {
+            "type": "string"
+          },
           "cursor": {
             "type": "string"
           },
@@ -3064,8 +3067,17 @@
           "limit": {
             "type": "integer"
           },
+          "outcome": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          },
           "since_unix": {
             "type": "integer"
+          },
+          "tool": {
+            "type": "string"
           },
           "until_unix": {
             "type": "integer"
@@ -3078,8 +3090,32 @@
       "GatewayGatewayUsageMetricsParams": {
         "type": "object",
         "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "bucket_count": {
+            "type": "integer"
+          },
+          "include_facets": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          },
           "since_unix": {
             "type": "integer"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "timezone_offset_minutes": {
+            "type": "integer"
+          },
+          "tool": {
+            "type": "string"
           },
           "until_unix": {
             "type": "integer"

@@ -1,18 +1,22 @@
 'use client'
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   Activity,
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   Clock,
+  Gauge,
   Network,
   Search,
   SlidersHorizontal,
   Users,
   Wrench,
+  X,
+  Zap,
 } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
 import { Button } from '@/components/ui/button'
@@ -37,6 +41,7 @@ import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { WindowSelector } from '@/components/dashboard/window-selector'
 import { OutcomeDot, SurfaceTag } from '@/components/dashboard/recent-calls'
+import { UsageCallCards } from '@/components/dashboard/usage-call-cards'
 import { useToolCalls } from '@/lib/hooks/use-usage-drilldown'
 import {
   WINDOW_LABELS,
@@ -54,6 +59,12 @@ const SEARCH_DEBOUNCE_MS = 300
 
 function isWindow(value: string | null): value is MetricsWindow {
   return value !== null && (METRICS_WINDOWS as readonly string[]).includes(value)
+}
+
+function parseEpochMs(value: string | null): number | undefined {
+  if (!value) return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -74,32 +85,82 @@ function formatBytes(value: number | null | undefined) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function formatSliceTime(value: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(value)
+}
+
 function UsageExplorer() {
   const params = useSearchParams()
+  const router = useRouter()
   const initialWindow = isWindow(params.get('window')) ? (params.get('window') as MetricsWindow) : '24h'
 
+  const focus = params.get('focus')
+  const focusPercentile = params.get('percentile')
+  const focusMetric = params.get('metric')
+  const focusHour = params.get('hour')
   const [window, setWindow] = useState<MetricsWindow>(initialWindow)
+  const [upstream, setUpstream] = useState<string>(params.get('upstream') ?? ALL)
   const [tool, setTool] = useState<string>(params.get('tool') ?? ALL)
   const [agent, setAgent] = useState<string>(params.get('agent') ?? ALL)
   const [ip, setIp] = useState<string>(params.get('ip') ?? ALL)
-  const [outcome, setOutcome] = useState<string>(ALL)
-  const [search, setSearch] = useState('')
-  const [offset, setOffset] = useState(0)
+  const [outcome, setOutcome] = useState<string>(params.get('outcome') ?? ALL)
+  const [errorKind, setErrorKind] = useState<string>(params.get('error') ?? ALL)
+  const [search, setSearch] = useState(params.get('search') ?? '')
+  const [sinceMs, setSinceMs] = useState<number | undefined>(() => parseEpochMs(params.get('from')))
+  const [untilMs, setUntilMs] = useState<number | undefined>(() => parseEpochMs(params.get('to')))
+  const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
   const debouncedSearch = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS)
+  const cursor = cursorStack[cursorStack.length - 1] ?? undefined
+  const pageIndex = cursorStack.length - 1
+  const resetPaging = () => setCursorStack([null])
+
+  useEffect(() => {
+    const next = new URLSearchParams()
+    if (window !== '24h') next.set('window', window)
+    if (upstream !== ALL) next.set('upstream', upstream)
+    if (tool !== ALL) next.set('tool', tool)
+    if (agent !== ALL) next.set('agent', agent)
+    if (ip !== ALL) next.set('ip', ip)
+    if (outcome !== ALL) next.set('outcome', outcome)
+    if (errorKind !== ALL) next.set('error', errorKind)
+    if (debouncedSearch) next.set('search', debouncedSearch)
+    if (sinceMs !== undefined) next.set('from', String(sinceMs))
+    if (untilMs !== undefined) next.set('to', String(untilMs))
+    if (focus) next.set('focus', focus)
+    if (focusPercentile) next.set('percentile', focusPercentile)
+    if (focusMetric) next.set('metric', focusMetric)
+    if (focusHour) next.set('hour', focusHour)
+    const query = next.toString()
+    router.replace(query ? `/usage/?${query}` : '/usage/', { scroll: false })
+  }, [agent, debouncedSearch, errorKind, focus, focusHour, focusMetric, focusPercentile, ip, outcome, router, sinceMs, tool, untilMs, upstream, window])
 
   const { data, isLoading, error, mutate } = useToolCalls({
     window,
+    since_ms: sinceMs,
+    until_ms: untilMs,
+    upstream: upstream === ALL ? undefined : upstream,
     tool: tool === ALL ? undefined : tool,
     agent: agent === ALL ? undefined : agent,
     ip: ip === ALL ? undefined : ip,
     outcome: outcome === ALL ? undefined : (outcome as CallOutcome),
+    error_kind: errorKind === ALL ? undefined : errorKind,
     search: debouncedSearch || undefined,
     limit: PAGE_SIZE,
-    offset,
+    cursor,
   })
+  const upstreamOptions = data?.facets.upstreams ?? []
   const toolOptions = data?.facets.tools ?? []
   const agentOptions = useMemo(
     () => (data?.facets.agents ?? []).map((entry) => [entry.id, entry.label] as const),
+    [data],
+  )
+  const errorOptions = useMemo(
+    () => (data?.facets.outcomes ?? []).filter((entry) => entry !== 'ok'),
     [data],
   )
   const ipOptions = data?.facets.ips ?? []
@@ -109,15 +170,11 @@ function UsageExplorer() {
   const showTokens = collected?.tokens ?? false
   const tableColumns = 6 + Number(showSurfaces) + Number(showTokens)
 
-  const resetPaging = () => setOffset(0)
   const filtered = data?.filtered ?? 0
-  const showingFrom = filtered === 0 ? 0 : offset + 1
-  const showingTo = Math.min(offset + PAGE_SIZE, filtered)
+  const showingFrom = filtered === 0 ? 0 : pageIndex * PAGE_SIZE + 1
+  const showingTo = Math.min(pageIndex * PAGE_SIZE + (data?.calls.length ?? 0), filtered)
+  const hasTimeSlice = sinceMs !== undefined || untilMs !== undefined
 
-  // Only counts the explorer response actually carries. Outcome/latency
-  // aggregates are page-local here, so they are deliberately not promoted into
-  // the strip — a "failed" number computed from 50 visible rows would read as
-  // a window total and be wrong.
   const heroStats = [
     {
       label: 'Matched',
@@ -130,6 +187,21 @@ function UsageExplorer() {
       icon: <Clock size={12} strokeWidth={1.8} />,
     },
     {
+      label: 'Failed',
+      value: data ? formatCompactNumber(data.analytics.failed) : '—',
+      icon: <AlertTriangle size={12} strokeWidth={1.8} />,
+    },
+    {
+      label: 'P95 latency',
+      value: data ? formatDuration(data.analytics.p95_elapsed_ms) : '—',
+      icon: <Gauge size={12} strokeWidth={1.8} />,
+    },
+    {
+      label: 'Peak / min',
+      value: data ? formatCompactNumber(data.analytics.peak_per_min) : '—',
+      icon: <Zap size={12} strokeWidth={1.8} />,
+    },
+    {
       label: 'Targets',
       value: data ? data.facets.tools.length : '—',
       icon: <Wrench size={12} strokeWidth={1.8} />,
@@ -139,11 +211,11 @@ function UsageExplorer() {
       value: data ? data.facets.agents.length : '—',
       icon: <Users size={12} strokeWidth={1.8} />,
     },
-    {
+    ...(showIps ? [{
       label: 'Source IPs',
-      value: data ? (showIps ? data.facets.ips.length : 'Private') : '—',
+      value: data ? data.facets.ips.length : '—',
       icon: <Network size={12} strokeWidth={1.8} />,
-    },
+    }] : []),
   ]
 
   const tableMeta = isLoading && !data
@@ -151,6 +223,35 @@ function UsageExplorer() {
     : `${formatCompactNumber(filtered)} matching call${filtered === 1 ? '' : 's'}${
         data ? ` of ${formatCompactNumber(data.total)}` : ''
       }${filtered > 0 ? ` · ${showingFrom}–${showingTo}` : ''}`
+
+  const focusMessage = data && focus ? (() => {
+    if (focus === 'latency') {
+      const percentile = focusPercentile === 'p50' || focusPercentile === 'p99' ? focusPercentile : 'p95'
+      const value = percentile === 'p50'
+        ? data.analytics.p50_elapsed_ms
+        : percentile === 'p99'
+          ? data.analytics.p99_elapsed_ms
+          : data.analytics.p95_elapsed_ms
+      return `${percentile.toUpperCase()} latency is ${formatDuration(value)} across ${formatCompactNumber(data.filtered)} matching calls.`
+    }
+    if (focus === 'throughput') {
+      if (focusMetric === 'peak') return `Peak throughput is ${formatCompactNumber(data.analytics.peak_per_min)} calls/minute.`
+      if (focusMetric === 'average') return `Average throughput is ${data.analytics.avg_per_min.toFixed(2)} calls/minute.`
+      const hour = data.analytics.busiest_hour
+      return `Busiest local hour is ${String(hour).padStart(2, '0')}:00.`
+    }
+    if (focus === 'hour') {
+      const hour = Number.parseInt(focusHour ?? '', 10)
+      const count = data.analytics.hourly.find((entry) => entry.hour === hour)?.calls ?? 0
+      return Number.isInteger(hour) && hour >= 0 && hour < 24
+        ? `${String(hour).padStart(2, '0')}:00 local hour contains ${formatCompactNumber(count)} calls in this window.`
+        : 'Hourly activity for the selected window.'
+    }
+    if (focus === 'tokens') {
+      return 'Token attribution is not currently collected by durable gateway usage telemetry. Call volume, failures, latency, actors, and targets remain exact.'
+    }
+    return null
+  })() : null
 
   return (
     <>
@@ -163,73 +264,90 @@ function UsageExplorer() {
           eyebrow="Observe"
           title="Usage Explorer"
           actions={
-            <WindowSelector value={window} onChange={(w) => { setWindow(w); resetPaging() }} />
+            <WindowSelector
+              value={window}
+              onChange={(nextWindow) => {
+                setWindow(nextWindow)
+                setSinceMs(undefined)
+                setUntilMs(undefined)
+                resetPaging()
+              }}
+            />
           }
           stats={heroStats}
         />
+
+        {focusMessage ? (
+          <div className="rounded-aurora-2 border border-aurora-accent-primary/25 bg-aurora-accent-primary/5 px-4 py-3 text-sm text-aurora-text-primary">
+            <span className="font-semibold text-aurora-accent-strong">Metric drill-down:</span> {focusMessage}
+          </div>
+        ) : null}
 
         <DashboardPanel
           title="Filters"
           icon={<SlidersHorizontal className="size-4" />}
           meta={WINDOW_LABELS[window]}
         >
-          <p className="text-[11px] leading-[1.35] text-aurora-text-muted">
-            Every retained upstream call in the window — filter by target, agent, outcome, or text.
-          </p>
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-            <div className="relative flex-1 sm:min-w-[220px]">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
-              <Input
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); resetPaging() }}
-                placeholder="Search target, operation, agent, error…"
-                className="pl-9"
-              />
-            </div>
-            <Select value={tool} onValueChange={(v) => { setTool(v); resetPaging() }}>
-              <SelectTrigger className="sm:w-40"><SelectValue placeholder="Target" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All targets</SelectItem>
-                {toolOptions.map((name) => (
-                  <SelectItem key={name} value={name}>{name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={agent} onValueChange={(v) => { setAgent(v); resetPaging() }}>
-              <SelectTrigger className="sm:w-44"><SelectValue placeholder="Agent" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All agents</SelectItem>
-                {agentOptions.map(([id, label]) => (
-                  <SelectItem key={id} value={id}>{label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {showIps ? (
-              <Select value={ip} onValueChange={(v) => { setIp(v); resetPaging() }}>
-                <SelectTrigger className="sm:w-40"><SelectValue placeholder="IP" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL}>All IPs</SelectItem>
-                  {ipOptions.map((addr) => (
-                    <SelectItem key={addr} value={addr}>{addr}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="space-y-3">
+            <p className="text-[11px] leading-[1.35] text-aurora-text-muted">
+              Every retained upstream call in the selected slice. Filters and chart drill-downs stay in the URL so this view can be shared or reloaded.
+            </p>
+            {hasTimeSlice ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-aurora-accent-primary/25 bg-aurora-accent-primary/5 px-3 py-2 text-xs">
+                <Clock className="size-3.5 text-aurora-accent-strong" />
+                <span className="text-aurora-text-primary">
+                  Time slice: {sinceMs ? formatSliceTime(sinceMs) : 'window start'} → {untilMs ? formatSliceTime(untilMs) : 'now'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setSinceMs(undefined); setUntilMs(undefined); resetPaging() }}
+                  className="ml-auto inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"
+                >
+                  <X className="size-3.5" /> Clear slice
+                </button>
+              </div>
             ) : null}
-            <Select value={outcome} onValueChange={(v) => { setOutcome(v); resetPaging() }}>
-              <SelectTrigger className="sm:w-36"><SelectValue placeholder="Outcome" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All outcomes</SelectItem>
-                <SelectItem value="ok">Succeeded</SelectItem>
-                <SelectItem value="failed">Failed</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_repeat(5,minmax(130px,auto))]">
+              <div className="relative min-w-0">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
+                <Input value={search} onChange={(event) => { setSearch(event.target.value); resetPaging() }} placeholder="Search target, operation, agent, error…" className="h-10 pl-9" />
+              </div>
+              <Select value={upstream} onValueChange={(value) => { setUpstream(value); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Server" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All servers</SelectItem>{upstreamOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={agent} onValueChange={(value) => { setAgent(value); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Agent" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agentOptions.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={outcome} onValueChange={(value) => { setOutcome(value); if (value !== 'failed') setErrorKind(ALL); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Outcome" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All outcomes</SelectItem><SelectItem value="ok">Succeeded</SelectItem><SelectItem value="failed">Failed</SelectItem></SelectContent>
+              </Select>
+              <Select value={errorKind} onValueChange={(value) => { setErrorKind(value); if (value !== ALL) setOutcome('failed'); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Failure kind" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All failure kinds</SelectItem>{errorOptions.map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}</SelectContent>
+              </Select>
+              {showIps ? (
+                <Select value={ip} onValueChange={(value) => { setIp(value); resetPaging() }}>
+                  <SelectTrigger className="h-10 w-full"><SelectValue placeholder="IP" /></SelectTrigger>
+                  <SelectContent><SelectItem value={ALL}>All IPs</SelectItem>{ipOptions.map((addr) => <SelectItem key={addr} value={addr}>{addr}</SelectItem>)}</SelectContent>
+                </Select>
+              ) : null}
+            </div>
           </div>
         </DashboardPanel>
 
         <DashboardPanel title="Upstream calls" icon={<Activity className="size-4" />} meta={tableMeta}>
-          {/* The panel body carries the mock's 12/14 padding; a dense table
-              wants the card's full width, so it is pulled back flush. */}
-          <div style={{ margin: '-12px -14px' }}>
+          <div className="md:hidden">
+            <UsageCallCards calls={data?.calls} isLoading={isLoading} error={error} onRetry={() => { void mutate() }} />
+          </div>
+          {/* Dense desktop table. Phones get purpose-built cards above instead of horizontal scrolling. */}
+          <div className="hidden overflow-x-auto md:block" style={{ margin: '-12px -14px' }}>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -315,22 +433,25 @@ function UsageExplorer() {
           </div>
         </DashboardPanel>
 
-        {/* Pagination */}
-        {filtered > PAGE_SIZE ? (
-          <div className="flex items-center justify-end gap-2">
+        {/* Cursor pagination keeps deep pages O(page size), even over large retained windows. */}
+        {pageIndex > 0 || data?.next_cursor ? (
+          <div className="flex items-center justify-between gap-2 sm:justify-end">
             <Button
               variant="outline"
               size="sm"
-              disabled={offset === 0}
-              onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+              className="min-h-10 flex-1 sm:flex-none"
+              disabled={pageIndex === 0}
+              onClick={() => setCursorStack((stack) => stack.length > 1 ? stack.slice(0, -1) : stack)}
             >
               <ChevronLeft className="size-4" /> Prev
             </Button>
+            <span className="hidden text-xs text-aurora-text-muted sm:inline">Page {pageIndex + 1}</span>
             <Button
               variant="outline"
               size="sm"
-              disabled={showingTo >= filtered}
-              onClick={() => setOffset((o) => o + PAGE_SIZE)}
+              className="min-h-10 flex-1 sm:flex-none"
+              disabled={!data?.next_cursor}
+              onClick={() => data?.next_cursor && setCursorStack((stack) => [...stack, data.next_cursor ?? null])}
             >
               Next <ChevronRight className="size-4" />
             </Button>
