@@ -214,10 +214,11 @@ mod tests {
     /// `InProcessPeer` visibility from the global flag, suppressed its own
     /// service, and registered zero tools.
     ///
-    /// Safe to toggle the process-global flag here: nextest runs each test in
-    /// its own process (see the same reasoning at pool helpers tests).
+    /// Process-global Code Mode state is serialized by the test guard so this
+    /// remains hermetic under both nextest and plain parallel `cargo test`.
     #[tokio::test]
     async fn in_process_peer_lists_its_service_under_process_code_mode() {
+        let _guard = crate::config::process_code_mode_test_guard();
         crate::config::set_process_code_mode_enabled(true);
 
         let service = RegisteredService {

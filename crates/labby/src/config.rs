@@ -47,6 +47,33 @@ use std::{
 // server is operating in Code Mode.
 static PROCESS_CODE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(test)]
+static PROCESS_CODE_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct ProcessCodeModeTestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: bool,
+}
+
+#[cfg(test)]
+impl Drop for ProcessCodeModeTestGuard {
+    fn drop(&mut self) {
+        set_process_code_mode_enabled(self.previous);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn process_code_mode_test_guard() -> ProcessCodeModeTestGuard {
+    let lock = PROCESS_CODE_MODE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ProcessCodeModeTestGuard {
+        _lock: lock,
+        previous: process_code_mode_enabled(),
+    }
+}
+
 pub(crate) fn set_process_code_mode_enabled(enabled: bool) {
     let previous = PROCESS_CODE_MODE_ENABLED.swap(enabled, Ordering::AcqRel);
     if previous != enabled {
@@ -3589,7 +3616,7 @@ services = ["removed-service"]
 
     #[test]
     fn process_code_mode_flag_round_trips() {
-        let prev_ts = process_code_mode_enabled();
+        let _guard = process_code_mode_test_guard();
 
         set_process_code_mode_enabled(true);
         assert!(
@@ -3602,9 +3629,6 @@ services = ["removed-service"]
             !process_code_mode_enabled(),
             "code_mode must be false after set_process_code_mode_enabled(false)"
         );
-
-        // Restore
-        set_process_code_mode_enabled(prev_ts);
     }
 
     // ── T3: secret file permission tests (S2) ────────────────────────────────
