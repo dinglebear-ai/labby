@@ -369,7 +369,7 @@ fn env_assignment_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
             let (name, value) = line.split_once('=')?;
             (name.trim() == key).then(|| value.trim().trim_matches('"').trim_matches('\''))
         })
-        .last()
+        .next_back()
 }
 
 fn systemd_environment_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
@@ -380,7 +380,7 @@ fn systemd_environment_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
             let (name, value) = raw.split_once('=')?;
             (name == key).then(|| value.trim_matches('"').trim_matches('\''))
         })
-        .last()
+        .next_back()
 }
 
 fn atomic_rewrite_preserving_metadata(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
