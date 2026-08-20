@@ -241,6 +241,12 @@ test('overview metrics and volume bars drill into exact Usage slices', { concurr
   await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
 
   const bars = page.locator('.recharts-bar-rectangle .recharts-rectangle')
+  await page.waitForFunction(() =>
+    Array.from(document.querySelectorAll('.recharts-bar-rectangle .recharts-rectangle')).some((node) => {
+      const box = node.getBoundingClientRect()
+      return box.width > 1 && box.height > 1
+    }),
+  )
   let clicked = false
   for (let index = 0; index < await bars.count(); index += 1) {
     const bar = bars.nth(index)
