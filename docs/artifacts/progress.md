@@ -1,13 +1,13 @@
 ---
 title: W19 Artifact Gateway Progress
 created: 2026-08-19
-updated: 2026-08-19
+updated: 2026-08-20
 ---
 
 # W19 Artifact Gateway Progress
 
-Last updated: 2026-08-19
-Status: Phase 2 lifecycle/provider slice complete and verified; ready for checkpoint/PR
+Last updated: 2026-08-20
+Status: Phase 2 lifecycle/provider slice complete and verified; PR #464 open, CI verification in progress
 
 ## Lane identity
 
@@ -183,3 +183,5 @@ Implemented in the Phase 2 slice:
 Adversarial review caught and fixed a content-reversion parent-cycle bug before checkpointing. A snapshot now derives content identity before adding parent linkage, so returning to old content selects the exact prior immutable revision. Provider payloads were also hardened to the same local file/package budgets as imports, and mutable-head replacement no longer has a Windows visibility gap.
 
 Final verification: focused hardened Artifact tests passed 27/27; the full `labby-runtime` all-features suite passed; Clippy passed with `-D warnings`; `RUSTFLAGS=-D warnings` all-target check passed; `cargo deny check` passed advisories, bans, licenses, and sources; the stale-head compare-and-swap regression passed; `labby docs check` reported 17 generated docs fresh; the documentation link checker verified 347 local links; rustfmt and `git diff --check` passed. The detached post-doc verifier exited `0` with `FINAL_OK`.
+
+Phase 2 PR: #464, `feat(artifacts): add lifecycle planning and provider seam`, head `e99feb403d442cfd0127493f19669d7fa9e1a27d`.
