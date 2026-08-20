@@ -178,7 +178,14 @@ LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 - `LABBY_CODE_MODE_MICROSANDBOX_IMAGE` is required for `microsandbox`, must be
   an immutable OCI digest reference (`name@sha256:<64 hex>`), and must already
   be cached. URLs, userinfo, queries, and tag-only references are rejected.
-  Runtime pulls are disabled with `--pull never`.
+  Runtime pulls are disabled with `--pull never`. Before `labby setup
+  host-service install` or `restart` stops the healthy service, Labby preflights
+  this setting. A legacy mutable alias or short pinned reference is migrated only
+  when its exact digest can be proven from the `labby` service user's existing
+  Microsandbox cache: Labby registers the canonical registry+digest reference,
+  atomically rewrites the persistent `.env` or systemd drop-in, reloads systemd
+  when needed, and verifies the effective value. Missing cache state, an unsafe
+  alias, or an untraceable persistent source fails the preflight before restart.
 - `LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS` optionally bounds concurrent
   microVMs process-wide (default `4`, hard maximum `16`) independently of the
   generic runner-pool size and overflow settings.

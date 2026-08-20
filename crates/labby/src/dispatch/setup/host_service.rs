@@ -11,6 +11,8 @@ use tokio::process::Command;
 
 use crate::dispatch::error::ToolError;
 
+mod microsandbox_image;
+
 const SERVICE_NAME: &str = "labby.service";
 const LABBY_HOME: &str = "/home/labby";
 const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
@@ -76,6 +78,7 @@ pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
     stdout.push_str(&enable.stdout);
     stderr.push_str(&enable.stderr);
     provision_oauth_encryption_key_before_restart().await?;
+    microsandbox_image::prepare_before_restart().await?;
     let restart = run_systemctl(&["restart", SERVICE_NAME]).await?;
     stdout.push_str(&restart.stdout);
     stderr.push_str(&restart.stderr);
@@ -214,6 +217,7 @@ pub(crate) async fn restart() -> Result<HostServiceOutcome, ToolError> {
     let port = preflight_port_available("restart").await?;
     let path = unit_path();
     provision_oauth_encryption_key_before_restart().await?;
+    microsandbox_image::prepare_before_restart().await?;
     let restart = run_systemctl(&["restart", SERVICE_NAME]).await?;
     let mut stderr = restart.stderr;
     if let Err(err) = poll_ready(port).await {

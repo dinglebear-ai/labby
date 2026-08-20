@@ -47,7 +47,19 @@ identifiers were removed. Commit links remain the authoritative historical recor
   responses instead of retryable upstream 502s.
 - **gateway:** make Gateway Status `refresh` actively reprobe route-visible MCP
   tool catalogs, so healthy long-lived HTTP upstreams expose newly added tools
-  without requiring a Labby restart or reconnect.
+  without requiring a Labby restart or reconnect. Status projection now also
+  rereads an initially empty catalog after a concurrent healthy connect and marks
+  still-unmaterialized lazy catalogs with `catalog_warming`, so a provisional
+  `connected: true` / zero-capability snapshot is never presented as authoritative.
+- **code-mode:** reconcile failed Microsandbox cleanup records against the live
+  labeled guest inventory before opening the creation circuit permanently, and
+  repair active-runner accounting when a previously failed cleanup is proven
+  absent. Live unresolved guests remain fail closed.
+- **setup:** preflight Microsandbox image compatibility before host-service
+  install/restart. Legacy mutable aliases and short pinned references are
+  migrated from the service user's cached digest to a canonical immutable OCI
+  reference before the healthy service is stopped; unprovable migrations fail
+  before restart.
 - **gateway:** bound concurrent calls per upstream, deduplicate identical in-flight
   Code Mode executions, and exponentially quarantine persistently broken peers.
 - **code-mode:** cancel outstanding host work and evict runners that fail to settle
