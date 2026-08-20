@@ -334,18 +334,17 @@ fn inject_gateway_owner(
     let origin = owner.raw.clone();
     // Serialize the owner struct into its JSON shape for the params object.
     // The fields match the GatewayRuntimeOwnerParams shape consumed by dispatch.
-    object.entry("owner".to_string()).or_insert_with(|| {
+    object.insert(
+        "owner".to_string(),
         serde_json::json!({
             "surface": owner.surface,
             "subject": owner.subject,
             "request_id": owner.request_id,
             "raw": owner.raw,
-        })
-    });
+        }),
+    );
     if let Some(origin) = origin {
-        object
-            .entry("origin".to_string())
-            .or_insert_with(|| Value::String(origin));
+        object.insert("origin".to_string(), Value::String(origin));
     }
     Value::Object(object)
 }
@@ -498,6 +497,25 @@ mod tests {
         assert_eq!(enriched["owner"]["subject"], "admin-user");
         assert_eq!(enriched["owner"]["request_id"], "request-1");
         assert_eq!(enriched["origin"], "api:admin-user:request-1");
+    }
+
+    #[test]
+    fn gateway_owner_injection_overwrites_forged_transport_provenance() {
+        let enriched = inject_gateway_owner(
+            "gateway.update",
+            json!({
+                "name": "fixture",
+                "patch": {},
+                "owner": {"surface": "forged", "subject": "mallory"},
+                "origin": "forged-origin"
+            }),
+            Some("admin-user"),
+            Some("request-2"),
+        );
+        assert_eq!(enriched["owner"]["surface"], "api");
+        assert_eq!(enriched["owner"]["subject"], "admin-user");
+        assert_eq!(enriched["owner"]["request_id"], "request-2");
+        assert_eq!(enriched["origin"], "api:admin-user:request-2");
     }
 
     #[cfg(feature = "skills")]

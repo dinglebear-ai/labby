@@ -101,7 +101,7 @@ fn retain_route_visible_gateway_status_rows(
     });
 }
 
-/// Attach the authenticated MCP subject to gateway mutations without replacing caller values.
+/// Attach authoritative authenticated MCP provenance to gateway mutations.
 #[cfg(feature = "gateway")]
 fn inject_gateway_origin_param(action: &str, params: Value, subject: Option<&str>) -> Value {
     if !crate::dispatch::gateway::shared::action_accepts_runtime_owner(action) {
@@ -113,16 +113,15 @@ fn inject_gateway_origin_param(action: &str, params: Value, subject: Option<&str
     let Some(mut object) = params.as_object().cloned() else {
         return params;
     };
-    object.entry("owner".to_string()).or_insert_with(|| {
+    object.insert(
+        "owner".to_string(),
         serde_json::json!({
             "surface": "mcp",
             "subject": subject,
             "raw": raw,
-        })
-    });
-    object
-        .entry("origin".to_string())
-        .or_insert_with(|| Value::String(raw));
+        }),
+    );
+    object.insert("origin".to_string(), Value::String(raw));
     Value::Object(object)
 }
 
@@ -145,6 +144,23 @@ mod gateway_origin_tests {
     fn gateway_mutations_keep_mcp_runtime_owner_provenance() {
         let enriched =
             inject_gateway_origin_param("gateway.add", json!({"spec": {}}), Some("alice"));
+        assert_eq!(enriched["owner"]["surface"], "mcp");
+        assert_eq!(enriched["owner"]["subject"], "alice");
+        assert_eq!(enriched["origin"], "mcp:alice");
+    }
+
+    #[test]
+    fn gateway_mutations_overwrite_forged_mcp_runtime_provenance() {
+        let enriched = inject_gateway_origin_param(
+            "gateway.update",
+            json!({
+                "name": "fixture",
+                "patch": {},
+                "owner": {"surface": "forged", "subject": "mallory"},
+                "origin": "forged-origin"
+            }),
+            Some("alice"),
+        );
         assert_eq!(enriched["owner"]["surface"], "mcp");
         assert_eq!(enriched["owner"]["subject"], "alice");
         assert_eq!(enriched["origin"], "mcp:alice");

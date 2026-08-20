@@ -357,6 +357,45 @@ async fn the_skill_cap_stops_the_walk_before_the_next_request() {
 }
 
 #[tokio::test]
+async fn the_candidate_cap_bounds_invalid_skill_floods() {
+    let big: Vec<Value> = (0..limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM + 5)
+        .map(|i| {
+            let name = format!("invalid-{i}");
+            json!({
+                "uri": format!("skill://up/{name}/SKILL.md"),
+                "frontmatter": { "name": name, "description": "d" }
+            })
+        })
+        .collect();
+    let server = SkillsServer::new(vec![json!({ "skills": big, "nextCursor": "more" })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let skills = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect("walk terminates");
+
+    assert!(skills.truncated);
+    assert_eq!(
+        skills.discovered_count,
+        limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM + 5,
+        "the fetched page remains visible to operator discovery accounting"
+    );
+    assert!(skills.skills.is_empty());
+    assert_eq!(
+        skills.excluded_count(),
+        limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
+        "invalid entries stop consuming rejection memory at the candidate cap"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the next page is never fetched"
+    );
+}
+
+#[tokio::test]
 async fn one_malformed_skill_does_not_sink_the_upstream() {
     let good = entry("up", "alpha");
     // Manifest omits its own SKILL.md, which the SEP requires it to list.

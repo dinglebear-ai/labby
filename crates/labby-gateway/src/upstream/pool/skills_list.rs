@@ -130,18 +130,28 @@ fn custom_result_value(result: ServerResult) -> Result<serde_json::Value, String
     }
 }
 
-/// Validate and accumulate one page of entries, honoring the per-upstream cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillIngestCap {
+    ValidatedSkills,
+    Candidates,
+}
+
+/// Validate and accumulate one page of entries, honoring the per-upstream caps.
 ///
-/// Returns `true` when the cap stopped accumulation, so the caller can stop
-/// walking rather than fetching pages whose contents would be discarded.
-fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> bool {
+/// Returns the cap that stopped accumulation, so the caller can stop walking
+/// rather than fetching pages whose contents would be discarded.
+fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> Option<SkillIngestCap> {
     // Discovery is what the upstream advertised, not what the host later accepts.
     // Count the fetched page before validation so operator status can distinguish
     // discovered candidates from the validated/exposed subset.
     out.discovered_count = out.discovered_count.saturating_add(entries.len());
     for entry in entries {
+        let processed_candidates = out.skills.len().saturating_add(out.excluded.len());
+        if processed_candidates >= limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM {
+            return Some(SkillIngestCap::Candidates);
+        }
         if out.skills.len() >= limits::MAX_SKILLS_PER_UPSTREAM {
-            return true;
+            return Some(SkillIngestCap::ValidatedSkills);
         }
         let uri = entry.uri.clone();
         match validate_skill_entry(&entry) {
@@ -164,7 +174,7 @@ fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> bool {
             Err(reason) => out.excluded.push((reason, uri)),
         }
     }
-    false
+    None
 }
 
 impl UpstreamPool {
@@ -225,14 +235,20 @@ impl UpstreamPool {
                 (current, next) => current.or(next),
             };
 
-            let capped = ingest_page(result.skills, &mut out);
-            if capped {
+            if let Some(cap) = ingest_page(result.skills, &mut out) {
                 out.truncated = true;
-                tracing::warn!(
-                    upstream = %upstream_name,
-                    cap = limits::MAX_SKILLS_PER_UPSTREAM,
-                    "upstream published more skills than the per-upstream cap — snapshot truncated"
-                );
+                match cap {
+                    SkillIngestCap::ValidatedSkills => tracing::warn!(
+                        upstream = %upstream_name,
+                        cap = limits::MAX_SKILLS_PER_UPSTREAM,
+                        "upstream published more validated skills than the per-upstream cap — snapshot truncated"
+                    ),
+                    SkillIngestCap::Candidates => tracing::warn!(
+                        upstream = %upstream_name,
+                        cap = limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
+                        "upstream published more skill candidates than the validation cap — snapshot truncated"
+                    ),
+                }
                 break;
             }
 
