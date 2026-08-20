@@ -7,14 +7,14 @@ updated: 2026-08-20
 # W19 Artifact Gateway Progress
 
 Last updated: 2026-08-20
-Status: Phase 2 lifecycle/provider slice complete and verified; PR #464 open, CI verification in progress
+Status: Phase 2 lifecycle/provider slice complete and locally reverified on current main; PR #464 CI revalidation pending
 
 ## Lane identity
 
 - Worktree: `/home/jmagar/workspace/labby-w19-artifact-gateway`
 - Branch: `codex/w19-artifact-lifecycle-20260819`
 - Initial implementation baseline: `origin/main` `0e21d0474`
-- Phase 2 baseline: `origin/main` `87239104c` (Phase 1 merged as PR #462)
+- Phase 2 baseline: `origin/main` `52061b650` (Phase 1 #462, Code Mode cleanup recovery #463, and usage analytics #459; #459 has no Phase 2 file overlap)
 - Product: Labby AGPLv3 open personal Artifact + MCP/runtime Gateway
 - Hosted registry/publication authority: Depot/Bazaar
 - Crawl/enrichment authority: Axon
@@ -182,6 +182,6 @@ Implemented in the Phase 2 slice:
 
 Adversarial review caught and fixed a content-reversion parent-cycle bug before checkpointing. A snapshot now derives content identity before adding parent linkage, so returning to old content selects the exact prior immutable revision. Provider payloads were also hardened to the same local file/package budgets as imports, and mutable-head replacement no longer has a Windows visibility gap.
 
-Final verification: focused hardened Artifact tests passed 27/27; the full `labby-runtime` all-features suite passed; Clippy passed with `-D warnings`; `RUSTFLAGS=-D warnings` all-target check passed; `cargo deny check` passed advisories, bans, licenses, and sources; the stale-head compare-and-swap regression passed; `labby docs check` reported 17 generated docs fresh; the documentation link checker verified 347 local links; rustfmt and `git diff --check` passed. The detached post-doc verifier exited `0` with `FINAL_OK`.
+Final verification: focused hardened Artifact tests passed 27/27; the full `labby-runtime` all-features suite passed; Clippy passed with `-D warnings`; `RUSTFLAGS=-D warnings` all-target check passed; `cargo deny check` passed advisories, bans, licenses, and sources; the stale-head compare-and-swap regression passed; `labby docs check` reported 17 generated docs fresh; the documentation link checker verified 347 local links; rustfmt and `git diff --check` passed. The detached post-doc verifier exited `0` with `FINAL_OK`. After #463 advanced `main` to `bb30616f4`, Phase 2 rebased cleanly with zero file overlap. The post-rebase verifier then passed full `labby-runtime` tests (169 unit + 1 schema + 2 ArtifactInterchange + 11 SEP-2640 + 8 Skills contract), Clippy `-D warnings`, `RUSTFLAGS=-D warnings` all-target check, `cargo deny check`, 17 fresh generated docs, 347 local links, rustfmt, and `git diff --check`, ending with `POSTREBASE_OK`. After #459 advanced `main` again to `52061b650`, Phase 2 performed a second clean zero-overlap rebase. The second-rebase code verifier passed the same full `labby-runtime` suite, Clippy `-D warnings`, `RUSTFLAGS=-D warnings` all-target check, rustfmt, `git diff --check`, and `cargo deny check`, ending with `SECOND_REBASE_CODE_OK`.
 
-Phase 2 PR: #464, `feat(artifacts): add lifecycle planning and provider seam`, head `e99feb403d442cfd0127493f19669d7fa9e1a27d`.
+Phase 2 PR: #464, `feat(artifacts): add lifecycle planning and provider seam`; rebased onto current `main` `52061b650` after #459 merged.
