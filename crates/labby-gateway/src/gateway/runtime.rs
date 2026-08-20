@@ -13,7 +13,7 @@ use tempfile::NamedTempFile;
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{
-    operator_visible_upstream_error, redacted_gateway_target, upstream_summary,
+    operator_visible_upstream_error, redacted_gateway_target, upstream_summary_with_health,
 };
 #[cfg(all(unix, target_os = "linux"))]
 use crate::process::unix::terminate_process_group_sigkill;
@@ -255,7 +255,8 @@ impl GatewayManager {
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
         for upstream in &cfg.upstream {
-            let summary = upstream_summary(pool.as_deref(), &upstream.name).await;
+            let (summary, health) =
+                upstream_summary_with_health(pool.as_deref(), &upstream.name).await;
             let runtime = match pool.as_deref() {
                 Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
                 None => None,
@@ -297,10 +298,6 @@ impl GatewayManager {
                 Some(pool) => pool.upstream_last_error(&upstream.name).await,
                 None => None,
             });
-            let health = match pool.as_deref() {
-                Some(pool) => pool.upstream_tool_health(&upstream.name).await,
-                None => None,
-            };
             let exposing_capabilities = summary.exposed_tool_count > 0
                 || summary.exposed_resource_count > 0
                 || summary.exposed_prompt_count > 0

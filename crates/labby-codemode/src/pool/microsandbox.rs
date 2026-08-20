@@ -1,6 +1,6 @@
 //! Microsandbox lifecycle and byte-faithful stdio attachment for a runner.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock, atomic::AtomicUsize, mpsc};
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use crate::pool::RunnerSpawn;
 
 static NEXT_SANDBOX_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static ACTIVE_SANDBOXES: AtomicUsize = AtomicUsize::new(0);
-static FAILED_CLEANUPS: OnceLock<Mutex<HashSet<CleanupIdentity>>> = OnceLock::new();
+static FAILED_CLEANUPS: OnceLock<Mutex<HashMap<CleanupIdentity, bool>>> = OnceLock::new();
 static CLEANUP_EXECUTOR: OnceLock<mpsc::SyncSender<CleanupJob>> = OnceLock::new();
 static RECONCILED_EXECUTABLES: OnceLock<tokio::sync::Mutex<HashSet<std::path::PathBuf>>> =
     OnceLock::new();
@@ -32,6 +32,7 @@ struct CleanupIdentity {
 struct CleanupJob {
     identity: CleanupIdentity,
     counted: bool,
+    failed_cleanup_recorded: bool,
     _admission_permit: Option<OwnedSemaphorePermit>,
 }
 
@@ -40,6 +41,7 @@ pub(super) struct MicrosandboxGuard {
     name: String,
     removed: bool,
     counted: bool,
+    failed_cleanup_recorded: bool,
     admission_permit: Option<OwnedSemaphorePermit>,
 }
 
@@ -61,8 +63,9 @@ impl MicrosandboxGuard {
         match run_helper(remove, Duration::from_secs(2)).await {
             Ok(output) if output.status.success() => {
                 self.removed = true;
-                cleanup_succeeded(&identity, self.counted);
+                complete_cleanup(&identity, self.counted, self.failed_cleanup_recorded);
                 self.counted = false;
+                self.failed_cleanup_recorded = false;
                 log_lifecycle(
                     "microsandbox.remove",
                     &identity.name,
@@ -72,7 +75,8 @@ impl MicrosandboxGuard {
                 );
             }
             Ok(output) => {
-                cleanup_failed(&identity);
+                cleanup_failed(&identity, self.counted);
+                self.failed_cleanup_recorded = true;
                 let error = sanitize_stderr(&output.stderr);
                 tracing::warn!(
                     surface = "dispatch",
@@ -93,7 +97,8 @@ impl MicrosandboxGuard {
                 );
             }
             Err(error) => {
-                cleanup_failed(&identity);
+                cleanup_failed(&identity, self.counted);
+                self.failed_cleanup_recorded = true;
                 tracing::warn!(
                     surface = "dispatch", service = "code_mode",
                     action = "microsandbox.remove", kind = error.kind,
@@ -119,6 +124,7 @@ impl MicrosandboxGuard {
         let job = CleanupJob {
             identity: self.identity(),
             counted: self.counted,
+            failed_cleanup_recorded: self.failed_cleanup_recorded,
             _admission_permit: self.admission_permit.take(),
         };
         self.counted = false;
@@ -126,7 +132,7 @@ impl MicrosandboxGuard {
             let job = match error {
                 mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job,
             };
-            cleanup_failed(&job.identity);
+            cleanup_failed(&job.identity, job.counted);
             tracing::warn!(
                 surface = "dispatch",
                 service = "code_mode",
@@ -163,6 +169,7 @@ pub(super) async fn runner_command(
     };
 
     reconcile_stale_sandboxes(config).await?;
+    reconcile_failed_cleanups(&config.executable).await?;
 
     let ordinal = NEXT_SANDBOX_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = format!("labby-codemode-{}-{ordinal}", std::process::id());
@@ -175,6 +182,7 @@ pub(super) async fn runner_command(
         name: name.clone(),
         removed: false,
         counted: false,
+        failed_cleanup_recorded: false,
         admission_permit,
     };
     ensure_cleanup_circuit_closed(&config.executable)?;
@@ -435,25 +443,162 @@ where
     retained
 }
 
-fn failed_cleanups() -> &'static Mutex<HashSet<CleanupIdentity>> {
-    FAILED_CLEANUPS.get_or_init(|| Mutex::new(HashSet::new()))
+fn failed_cleanups() -> &'static Mutex<HashMap<CleanupIdentity, bool>> {
+    FAILED_CLEANUPS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn cleanup_failed(identity: &CleanupIdentity) {
+fn cleanup_failed(identity: &CleanupIdentity, counted: bool) {
     failed_cleanups()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(identity.clone());
+        .entry(identity.clone())
+        .and_modify(|was_counted| *was_counted |= counted)
+        .or_insert(counted);
 }
 
-fn cleanup_succeeded(identity: &CleanupIdentity, counted: bool) {
+fn decrement_active_sandbox() {
+    let _ = ACTIVE_SANDBOXES.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |active| Some(active.saturating_sub(1)),
+    );
+}
+
+fn take_failed_cleanup_counted(identity: &CleanupIdentity) -> bool {
     failed_cleanups()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(identity);
-    if counted {
-        ACTIVE_SANDBOXES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        .remove(identity)
+        .unwrap_or(false)
+}
+
+fn resolve_failed_cleanup(identity: &CleanupIdentity) {
+    if take_failed_cleanup_counted(identity) {
+        decrement_active_sandbox();
     }
+}
+
+fn complete_cleanup(identity: &CleanupIdentity, counted: bool, failed_cleanup_recorded: bool) {
+    if failed_cleanup_recorded {
+        resolve_failed_cleanup(identity);
+    } else if counted {
+        decrement_active_sandbox();
+    }
+}
+
+async fn reconcile_failed_cleanups(executable: &std::path::Path) -> Result<(), ToolError> {
+    let pending = {
+        let failed = failed_cleanups()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        failed
+            .keys()
+            .filter(|identity| identity.executable == executable)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let started = Instant::now();
+    let live = list_owned_sandbox_names(executable).await?;
+    for identity in pending {
+        if !live.contains(&identity.name) {
+            resolve_failed_cleanup(&identity);
+            log_lifecycle(
+                "microsandbox.cleanup_reconcile",
+                &identity.name,
+                started,
+                "absent",
+                None,
+            );
+            continue;
+        }
+
+        let mut remove = Command::new(executable);
+        remove
+            .args(["remove", "--quiet", "--force", &identity.name])
+            .env_clear()
+            .kill_on_drop(true)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        match run_helper(remove, Duration::from_secs(5)).await {
+            Ok(output) if output.status.success() => {
+                resolve_failed_cleanup(&identity);
+                log_lifecycle(
+                    "microsandbox.cleanup_reconcile",
+                    &identity.name,
+                    started,
+                    "success",
+                    None,
+                );
+            }
+            Ok(output) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "microsandbox.cleanup_reconcile",
+                    kind = "cleanup_failed",
+                    sandbox = %identity.name,
+                    status = %output.status,
+                    error = sanitize_stderr(&output.stderr),
+                    "Microsandbox cleanup reconciliation could not remove a live guest"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "microsandbox.cleanup_reconcile",
+                    kind = error.kind,
+                    sandbox = %identity.name,
+                    executable = %executable.display(),
+                    error = %error.message,
+                    "Microsandbox cleanup reconciliation could not verify removal"
+                );
+            }
+        }
+    }
+
+    ensure_cleanup_circuit_closed(executable)
+}
+
+async fn list_owned_sandbox_names(
+    executable: &std::path::Path,
+) -> Result<HashSet<String>, ToolError> {
+    let mut list = Command::new(executable);
+    list.args(["list", "--quiet", "--label", "labby.owner=codemode"])
+        .env_clear()
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = run_helper(list, Duration::from_secs(5))
+        .await
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "cleanup_failed".into(),
+            message: format!(
+                "failed to verify unresolved Microsandbox cleanups: {}",
+                error.message
+            ),
+        })?;
+    if !output.status.success() {
+        return Err(ToolError::Sdk {
+            sdk_kind: "cleanup_failed".into(),
+            message: format!(
+                "failed to verify unresolved Microsandbox cleanups: {}",
+                sanitize_stderr(&output.stderr)
+            ),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
 }
 
 fn ensure_cleanup_circuit_closed(executable: &std::path::Path) -> Result<(), ToolError> {
@@ -461,7 +606,7 @@ fn ensure_cleanup_circuit_closed(executable: &std::path::Path) -> Result<(), Too
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let identities = failed
-        .iter()
+        .keys()
         .filter(|identity| identity.executable == executable)
         .count();
     if identities == 0 {
@@ -539,7 +684,7 @@ fn run_fallback_cleanup(job: CleanupJob) {
         Err(_) => false,
     };
     if success {
-        cleanup_succeeded(&job.identity, job.counted);
+        complete_cleanup(&job.identity, job.counted, job.failed_cleanup_recorded);
         log_lifecycle(
             "microsandbox.remove_fallback",
             &job.identity.name,
@@ -548,7 +693,7 @@ fn run_fallback_cleanup(job: CleanupJob) {
             None,
         );
     } else {
-        cleanup_failed(&job.identity);
+        cleanup_failed(&job.identity, job.counted);
         log_lifecycle(
             "microsandbox.remove_fallback",
             &job.identity.name,
@@ -772,13 +917,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repeated_cleanup_failure_opens_creation_circuit() {
+    async fn absent_failed_cleanup_is_reconciled_and_active_count_recovers() {
+        let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
         let dir = tempfile::tempdir().expect("tempdir");
         let executable = dir.path().join("msb");
         let calls = dir.path().join("calls");
+        let name_file = dir.path().join("name");
+        let remove_count = dir.path().join("remove-count");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = remove ] && [ \"$4\" != --label ]; then exit 9; fi\nexit 0\n",
-            calls.display()
+            r#"#!/bin/sh
+printf '%s
+' "$*" >> '{calls}'
+if [ "$1" = create ]; then
+  prev=
+  for arg in "$@"; do
+    if [ "$prev" = --name ]; then printf '%s
+' "$arg" > '{name}'; break; fi
+    prev="$arg"
+  done
+  exit 0
+fi
+if [ "$1" = list ]; then
+  [ -f '{name}' ] && cat '{name}' || true
+  exit 0
+fi
+if [ "$1" = remove ]; then
+  count=0
+  [ -f '{count}' ] && count=$(cat '{count}')
+  count=$((count + 1))
+  printf '%s
+' "$count" > '{count}'
+  if [ "$count" -le 2 ]; then rm -f '{name}'; exit 9; fi
+  rm -f '{name}'
+fi
+exit 0
+"#,
+            calls = calls.display(),
+            name = name_file.display(),
+            count = remove_count.display(),
         );
         std::fs::write(&executable, script).expect("write fake msb");
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
@@ -793,12 +969,90 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
-            let remove_count = std::fs::read_to_string(&calls)
+            let removes = std::fs::read_to_string(&calls)
                 .expect("recorded calls")
                 .lines()
                 .filter(|line| line.starts_with("remove "))
                 .count();
-            if remove_count >= 2 {
+            if removes >= 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                break;
+            }
+            assert!(Instant::now() < deadline, "fallback remove did not run");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed),
+            before + 1,
+            "failed counted cleanup must remain accounted until absence is proven"
+        );
+
+        let (_command, guard) = runner_command(&spawn(), Some(&config), None)
+            .await
+            .expect("proven-absent failed cleanup should reopen creation");
+        let mut guard = guard.expect("replacement guard");
+        guard.remove().await;
+        assert_eq!(
+            ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed),
+            before,
+            "reconciliation plus replacement cleanup must restore active accounting"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_failed_cleanup_remains_fail_closed_until_removal_is_proven() {
+        let before = ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let executable = dir.path().join("msb");
+        let calls = dir.path().join("calls");
+        let name_file = dir.path().join("name");
+        let allow_remove = dir.path().join("allow-remove");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s
+' "$*" >> '{calls}'
+if [ "$1" = create ]; then
+  prev=
+  for arg in "$@"; do
+    if [ "$prev" = --name ]; then printf '%s
+' "$arg" > '{name}'; break; fi
+    prev="$arg"
+  done
+  exit 0
+fi
+if [ "$1" = list ]; then
+  [ -f '{name}' ] && cat '{name}' || true
+  exit 0
+fi
+if [ "$1" = remove ]; then
+  if [ -f '{allow}' ]; then rm -f '{name}'; exit 0; fi
+  exit 9
+fi
+exit 0
+"#,
+            calls = calls.display(),
+            name = name_file.display(),
+            allow = allow_remove.display(),
+        );
+        std::fs::write(&executable, script).expect("write fake msb");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+        let config = config(executable);
+        let (_command, guard) = runner_command(&spawn(), Some(&config), None)
+            .await
+            .expect("initial create succeeds");
+        let mut guard = guard.expect("guard");
+        guard.remove().await;
+        drop(guard);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let removes = std::fs::read_to_string(&calls)
+                .expect("recorded calls")
+                .lines()
+                .filter(|line| line.starts_with("remove "))
+                .count();
+            if removes >= 2 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 break;
             }
@@ -809,8 +1063,55 @@ mod tests {
         let error = runner_command(&spawn(), Some(&config), None)
             .await
             .err()
-            .expect("creation must fail closed");
+            .expect("live unresolved guest must keep creation closed");
         assert_eq!(error.kind(), "cleanup_failed");
         assert!(error.to_string().contains("cleanup(s) remain unresolved"));
+
+        std::fs::write(&allow_remove, "ok").expect("allow cleanup");
+        reconcile_failed_cleanups(&config.executable)
+            .await
+            .expect("later proven removal should clear the circuit");
+        assert_eq!(
+            ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed),
+            before
+        );
+    }
+
+    #[test]
+    fn failed_cleanup_ledger_transfers_counted_ownership_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity = CleanupIdentity {
+            executable: dir.path().join("msb"),
+            name: "labby-codemode-ledger-once".to_string(),
+        };
+        cleanup_failed(&identity, true);
+
+        assert!(take_failed_cleanup_counted(&identity));
+        assert!(
+            !take_failed_cleanup_counted(&identity),
+            "a concurrent resolver must not acquire counted ownership twice"
+        );
+    }
+
+    #[test]
+    fn failed_cleanup_circuit_is_scoped_to_executable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let executable_a = dir.path().join("msb-a");
+        let executable_b = dir.path().join("msb-b");
+        let identity = CleanupIdentity {
+            executable: executable_b.clone(),
+            name: "labby-codemode-1-1".to_string(),
+        };
+        cleanup_failed(&identity, false);
+
+        ensure_cleanup_circuit_closed(&executable_a)
+            .expect("another executable must not inherit the failed cleanup");
+        assert_eq!(
+            ensure_cleanup_circuit_closed(&executable_b)
+                .expect_err("matching executable must remain blocked")
+                .kind(),
+            "cleanup_failed"
+        );
+        resolve_failed_cleanup(&identity);
     }
 }
