@@ -48,6 +48,10 @@ fn default_code_mode_timeout_ms() -> u64 {
     30_000
 }
 
+fn default_code_mode_max_source_bytes() -> usize {
+    128 * 1024
+}
+
 fn default_code_mode_max_response_bytes() -> usize {
     24 * 1024
 }
@@ -203,6 +207,9 @@ pub struct CodeModeConfig {
     /// Maximum wall-clock time for one Code Mode execution.
     #[serde(default = "default_code_mode_timeout_ms")]
     pub timeout_ms: u64,
+    /// Maximum accepted Code Mode source size in bytes.
+    #[serde(default = "default_code_mode_max_source_bytes")]
+    pub max_source_bytes: usize,
     /// Maximum serialized response envelope size returned by codemode.
     #[serde(default = "default_code_mode_max_response_bytes")]
     pub max_response_bytes: usize,
@@ -262,6 +269,7 @@ impl Default for CodeModeConfig {
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
+            max_source_bytes: default_code_mode_max_source_bytes(),
             max_response_bytes: default_code_mode_max_response_bytes(),
             max_response_tokens: default_code_mode_max_response_tokens(),
             token_estimate_divisor: default_token_estimate_divisor(),
@@ -297,6 +305,11 @@ impl CodeModeConfig {
         if !(1..=60_000).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
+            });
+        }
+        if !(1024..=1024 * 1024).contains(&self.max_source_bytes) {
+            return Err(ConfigError::InvalidCodeModeMaxSourceBytes {
+                value: self.max_source_bytes,
             });
         }
         if !(1024..=1024 * 1024).contains(&self.max_response_bytes) {
@@ -1305,6 +1318,12 @@ pub enum ConfigError {
         /// Rejected timeout in milliseconds.
         value: u64,
     },
+    #[error("gateway code_mode.max_source_bytes={value} is invalid — expected 1024..=1048576")]
+    /// Code Mode source byte cap falls outside the supported range.
+    InvalidCodeModeMaxSourceBytes {
+        /// Rejected byte limit.
+        value: usize,
+    },
     #[error("gateway code_mode.max_response_bytes={value} is invalid — expected 1024..=1048576")]
     /// Code Mode response byte cap falls outside the supported range.
     InvalidCodeModeMaxResponseBytes {
@@ -1860,6 +1879,30 @@ fn validate_gateway_subset_paths_are_unique(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_mode_max_source_bytes_validation_is_bounded() {
+        let mut config = CodeModeConfig {
+            max_source_bytes: 1023,
+            ..CodeModeConfig::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidCodeModeMaxSourceBytes { value: 1023 })
+        ));
+
+        config.max_source_bytes = 1024;
+        config.validate().expect("minimum source budget validates");
+
+        config.max_source_bytes = 1024 * 1024;
+        config.validate().expect("hard source ceiling validates");
+
+        config.max_source_bytes = 1024 * 1024 + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidCodeModeMaxSourceBytes { value }) if value == 1024 * 1024 + 1
+        ));
+    }
+
     use super::*;
 
     #[test]

@@ -88,31 +88,43 @@ fn code_mode_filter_arg_accepts_absent_and_string_arrays() {
 #[test]
 fn code_arg_rejects_missing_or_blank_code() {
     let args = serde_json::Map::new();
-    let err = code_arg(&args).expect_err("missing code must be invalid");
+    let err = code_arg(&args, 128 * 1024).expect_err("missing code must be invalid");
     assert_eq!(err.kind(), "invalid_param");
 
     let mut args = serde_json::Map::new();
     args.insert("code".to_string(), Value::String("  \n\t ".to_string()));
-    let err = code_arg(&args).expect_err("blank code must be invalid");
+    let err = code_arg(&args, 128 * 1024).expect_err("blank code must be invalid");
     assert_eq!(err.kind(), "invalid_param");
 }
 
 #[test]
-fn code_arg_source_limit_is_shared_const_boundary() {
+fn code_arg_respects_configured_source_limit_and_hard_ceiling() {
+    let configured_limit = crate::config::CodeModeConfig::default().max_source_bytes;
+    assert!(configured_limit > 20_000);
+
     let mut args = serde_json::Map::new();
     args.insert(
         "code".to_string(),
-        Value::String("a".repeat(MAX_SOURCE_BYTES)),
+        Value::String("a".repeat(configured_limit)),
     );
-    assert!(code_arg(&args).is_ok());
+    assert!(code_arg(&args, configured_limit).is_ok());
+
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "code".to_string(),
+        Value::String("a".repeat(configured_limit + 1)),
+    );
+    let err =
+        code_arg(&args, configured_limit).expect_err("configured over-limit code must be invalid");
+    assert_eq!(err.kind(), "invalid_param");
+    assert!(err.to_string().contains(&configured_limit.to_string()));
 
     let mut args = serde_json::Map::new();
     args.insert(
         "code".to_string(),
         Value::String("a".repeat(MAX_SOURCE_BYTES + 1)),
     );
-    let err = code_arg(&args).expect_err("over-limit code must be invalid");
-    assert_eq!(err.kind(), "invalid_param");
+    assert!(code_arg(&args, MAX_SOURCE_BYTES * 2).is_err());
 }
 
 #[test]

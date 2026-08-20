@@ -1779,6 +1779,7 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "admin.enabled" => serde_json::json!(cfg.admin.enabled),
         "code_mode.trace_params" => serde_json::json!(cfg.code_mode.trace_params),
         "code_mode.timeout_ms" => serde_json::json!(cfg.code_mode.timeout_ms),
+        "code_mode.max_source_bytes" => serde_json::json!(cfg.code_mode.max_source_bytes),
         "code_mode.max_response_bytes" => serde_json::json!(cfg.code_mode.max_response_bytes),
         "code_mode.max_response_tokens" => serde_json::json!(cfg.code_mode.max_response_tokens),
         "code_mode.token_estimate_divisor" => {
@@ -3124,6 +3125,7 @@ url = "https://acme.example.com/mcp"
     fn code_mode_is_root_level_config_with_default_limits() {
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
+        assert_eq!(default_cfg.code_mode.max_source_bytes, 128 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
 
@@ -3131,6 +3133,7 @@ url = "https://acme.example.com/mcp"
             r"
 [code_mode]
 timeout_ms = 2500
+max_source_bytes = 65536
 max_response_bytes = 12000
 max_response_tokens = 3000
 ",
@@ -3138,6 +3141,7 @@ max_response_tokens = 3000
         .expect("root code_mode parses");
 
         assert_eq!(cfg.code_mode.timeout_ms, 2500);
+        assert_eq!(cfg.code_mode.max_source_bytes, 65_536);
         assert_eq!(cfg.code_mode.max_response_bytes, 12000);
         assert_eq!(cfg.code_mode.max_response_tokens, 3000);
     }

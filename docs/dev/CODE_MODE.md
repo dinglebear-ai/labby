@@ -489,6 +489,7 @@ their JSON MCP representation.
 
 Defaults:
 
+- `max_source_bytes = 131072`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
 
