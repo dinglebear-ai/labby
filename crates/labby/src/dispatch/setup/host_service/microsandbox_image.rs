@@ -106,8 +106,13 @@ fn merge_environment_sources(
     env_file: Option<&str>,
     systemd_environment: &str,
 ) -> std::collections::BTreeMap<String, String> {
-    let mut merged = env_file.map(parse_env_file).unwrap_or_default();
-    merged.extend(parse_environment_property(systemd_environment));
+    // systemd.exec(5): EnvironmentFile= assignments override Environment=.
+    // Mirror the service manager rather than treating `systemctl show Environment`
+    // as the final effective environment (it omits EnvironmentFile contents).
+    let mut merged = parse_environment_property(systemd_environment);
+    if let Some(env_file) = env_file {
+        merged.extend(parse_env_file(env_file));
+    }
     merged
 }
 
@@ -256,10 +261,17 @@ async fn run_as_service_user(args: &[&str]) -> Result<super::CommandCapture, Too
 
 fn locate_persistent_source(key: &str) -> Result<PersistentSource, ToolError> {
     let env_path = PathBuf::from(SERVICE_ENV_PATH);
-    let mut selected = std::fs::read_to_string(&env_path).ok().and_then(|text| {
-        env_assignment_value(&text, key).map(|_| PersistentSource::EnvFile(env_path.clone()))
-    });
+    // EnvironmentFile= overrides Environment= in systemd. If the service env
+    // file defines the key, it is the winning persistent source even when a
+    // drop-in also contains an Environment= assignment.
+    if std::fs::read_to_string(&env_path)
+        .ok()
+        .is_some_and(|text| env_assignment_value(&text, key).is_some())
+    {
+        return Ok(PersistentSource::EnvFile(env_path));
+    }
 
+    let mut selected = None;
     let mut dropins = std::fs::read_dir(SYSTEM_DROPIN_DIR)
         .ok()
         .into_iter()
@@ -485,12 +497,15 @@ mod tests {
     }
 
     #[test]
-    fn environment_file_values_are_loaded_and_systemd_overrides_them() {
+    fn environment_file_values_override_systemd_environment_assignments() {
         let env_file = format!("{BACKEND_ENV}=microsandbox\n{MSB_IMAGE_ENV}=debian\n");
         let systemd = format!("{BACKEND_ENV}=process");
         let merged = merge_environment_sources(Some(&env_file), &systemd);
 
-        assert_eq!(merged.get(BACKEND_ENV).map(String::as_str), Some("process"));
+        assert_eq!(
+            merged.get(BACKEND_ENV).map(String::as_str),
+            Some("microsandbox")
+        );
         assert_eq!(
             merged.get(MSB_IMAGE_ENV).map(String::as_str),
             Some("debian")
