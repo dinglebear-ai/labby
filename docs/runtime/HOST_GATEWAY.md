@@ -52,9 +52,9 @@ after the join. Leave `TS_AUTHKEY` unset to skip Tailscale.
 
 The plan is explicit about privilege. Root actions are limited to the apt
 package floor (`git`, `openssh-client`, `gh`, `ca-certificates`, `curl`,
-`xz-utils`, `zsh`), `lab` user creation, writing
+`xz-utils`, `zsh`), `labby` user creation, writing
 `/etc/systemd/system/labby.service`, and enabling/restarting the service.
-User-space actions run as `lab` and install Node v24.x, `uv` plus Python,
+User-space actions run as `labby` and install Node v24.x, `uv` plus Python,
 `claude`, `codex`, and `gemini`.
 
 Provisioning does not install or initialize Incus, silently install leaf
@@ -95,7 +95,7 @@ WantedBy=multi-user.target
 
 It also applies the hardening baseline from the implementation plan, including
 `ProtectSystem=strict`, `NoNewPrivileges=true`, `PrivateTmp=true`, restricted
-address families, and explicit `ReadWritePaths` for the `lab` user's runtime
+address families, and explicit `ReadWritePaths` for the `labby` user's runtime
 state.
 
 Readiness verification requires both an active `labby.service` unit and a
@@ -112,7 +112,7 @@ incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 incus exec labby -- su - lab
 ```
 
-Then run the interactive agent logins inside that `lab` shell:
+Then run the interactive agent logins inside that `labby` shell:
 
 ```bash
 claude login

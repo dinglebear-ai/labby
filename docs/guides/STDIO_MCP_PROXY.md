@@ -210,7 +210,7 @@ labby doctor proxy \
   --route /telemetry
 ```
 
-Supplying route arguments selects that public Lab/protected-route check; it
+Supplying route arguments selects that public Labby/protected-route check; it
 does not run the local stdio-proxy preflight.
 
 ## OAuth resource lifecycle

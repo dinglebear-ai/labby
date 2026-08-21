@@ -1,6 +1,6 @@
 # First-class usage metrics
 
-Status: core shipped; follow-up milestone planned
+Status: dimensional follow-up implemented; long-window policy decision deferred
 
 ## Purpose
 
@@ -14,5 +14,6 @@ kept separate from claims about what is available today.
 - [Specification](SPEC.md): target product and analytics contract.
 - [Implementation plan](IMPLEMENTATION.md): ordered follow-up work.
 - [Progress](PROGRESS.md): shipped boundary and explicit remaining items.
+- [Benchmarks](BENCHMARKS.md): reproducible production-shaped query evidence.
 
 No production deployment is part of this planning milestone.

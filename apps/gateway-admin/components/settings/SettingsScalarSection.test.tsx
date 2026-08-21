@@ -9,7 +9,7 @@ import { SettingsScalarSection } from './SettingsScalarSection'
 import { setupApi, type SettingsFieldSpec, type SettingsState, type SettingsUpdateEntry } from '@/lib/api/setup-client'
 
 const fields: SettingsFieldSpec[] = [
-  { key: 'LAB_LOG', label: 'Log filter', description: '', section: 'core', backend: 'env', control: 'text', risk: 'restart', write_policy: 'editable', apply_mode: 'restart', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: null },
+  { key: 'LABBY_LOG', label: 'Log filter', description: '', section: 'core', backend: 'env', control: 'text', risk: 'restart', write_policy: 'editable', apply_mode: 'restart', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: null },
 ]
 
 function installDom() {
@@ -106,8 +106,8 @@ const state: SettingsState = {
   config_path: '/tmp/config.toml',
   env_path: '/tmp/.env',
   section: 'core',
-  values: { LAB_LOG: 'lab=info' },
-  sources: { LAB_LOG: { source: 'env', overridden_by_env: null } },
+  values: { LABBY_LOG: 'labby=info' },
+  sources: { LABBY_LOG: { source: 'env', overridden_by_env: null } },
 }
 
 test('SettingsScalarSection renders reset and save controls', () => {
@@ -128,7 +128,7 @@ test('SettingsScalarSection sends previous values on confirmed env save', async 
   setupApi.settingsEnvUpdate = async (_section, entries, confirm) => {
     receivedEntries = entries
     receivedConfirm = confirm
-    return { ...state, values: { LAB_LOG: 'lab=debug' } }
+    return { ...state, values: { LABBY_LOG: 'labby=debug' } }
   }
   setupApi.settingsConfigUpdate = async () => {
     throw new Error('config update should not be called')
@@ -140,12 +140,12 @@ test('SettingsScalarSection sends previous values on confirmed env save', async 
     )
     const input = view.container.querySelector('input')
     assert.ok(input)
-    await setInputValue(input, 'lab=debug')
+    await setInputValue(input, 'labby=debug')
     await click(view.container.querySelector('[data-slot="checkbox"]'))
     await click([...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Save changes')) ?? null)
 
     await waitFor(() => assert.deepEqual(receivedEntries, [
-      { key: 'LAB_LOG', value: 'lab=debug', previous: 'lab=info' },
+      { key: 'LABBY_LOG', value: 'labby=debug', previous: 'labby=info' },
     ]))
     assert.equal(receivedConfirm, true)
     await view.unmount()
@@ -166,9 +166,9 @@ test('SettingsScalarSection blocks mixed env and config saves', async () => {
   }
   const mixedState: SettingsState = {
     ...state,
-    values: { LAB_LOG: 'lab=info', 'output.format': 'table' },
+    values: { LABBY_LOG: 'labby=info', 'output.format': 'table' },
     sources: {
-      LAB_LOG: { source: 'env', overridden_by_env: null },
+      LABBY_LOG: { source: 'env', overridden_by_env: null },
       'output.format': { source: 'config_toml', overridden_by_env: null },
     },
   }
@@ -190,7 +190,7 @@ test('SettingsScalarSection blocks mixed env and config saves', async () => {
     )
     const inputs = [...view.container.querySelectorAll('input')]
     assert.equal(inputs.length, 2)
-    await setInputValue(inputs[0], 'lab=debug')
+    await setInputValue(inputs[0], 'labby=debug')
     await setInputValue(inputs[1], 'json')
     await click(view.container.querySelector('[data-slot="checkbox"]'))
     await click([...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Save changes')) ?? null)

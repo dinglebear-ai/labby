@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Surface-neutral contracts, DTOs, and helpers shared across the Lab gateway
+//! Surface-neutral contracts, DTOs, and helpers shared across the Labby gateway
 //! extraction crates (`labby-codemode`, `labby-gateway`, `labby`).
 //!
 //! It owns serialization-stable gateway configuration DTOs plus generic helper

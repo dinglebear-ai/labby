@@ -81,6 +81,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "GEMINI.md",
             "crates/labby/tests/ci_changed_paths.rs",
             "scripts/check-doc-links.py",
+            "scripts/check-product-docs.py",
             "scripts/ci/changed_paths.py",
             "Justfile",
         },
