@@ -22,4 +22,4 @@
   fixed, become configurable, or be replaced by a different bounded strategy.
   This remains an explicit policy decision: the current milestone preserves the
   fixed fail-closed ceiling and adds no configuration surface.
-- [ ] Run an adversarial review of the remaining milestone when implemented.
+- [x] Run an adversarial review of the remaining milestone when implemented.
