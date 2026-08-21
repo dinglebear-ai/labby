@@ -4,6 +4,8 @@ Labby is a Rust MCP gateway and operator control plane. One product exposes CLI,
 
 Use [docs/README.md](docs/README.md) as the product-documentation index. Generated catalogs under `docs/generated/` are the authoritative snapshots for registered services, actions, environment variables, API routes, MCP help, CLI help, and Cargo feature posture.
 
+`docs/sessions/` and `docs/superpowers/` are tracked historical/work-product trees and are **hands-off during normal documentation audits and cleanup**. Do not edit, retire, relocate, link-audit, or otherwise tidy them unless the user explicitly asks for those trees. Pull requests that intentionally change either protected tree also require the maintainer-applied `protected-docs-approved` label. `docs/references/` is the intentionally untracked external-reference cache.
+
 ## Current Product Shape
 
 The current registered services are `doctor`, `fs`, `gateway`, `lab_admin`, `server_logs`, `setup`, and `snippets`. The direct stdio MCP proxy is a CLI product surface backed by the gateway runtime.
@@ -114,6 +116,8 @@ See [docs/dev/SERVICE_ONBOARDING.md](docs/dev/SERVICE_ONBOARDING.md).
 
 ## Development Commands
 
+The pinned `msrv` (1.97.1) is shared by Cargo, `rust-toolchain.toml`, CI, and container contracts. Keep those declarations synchronized.
+
 Use the Justfile as the command source of truth:
 
 ```bash
@@ -122,6 +126,7 @@ just test
 just lint
 just docs-generate
 just docs-check
+just rustdoc-check
 just web-build
 ```
 
@@ -150,4 +155,4 @@ Do not declare success from compilation alone. Run focused tests for the behavio
 
 `CLAUDE.md` is the instruction source of truth. Every directory that has a `CLAUDE.md` must expose sibling `AGENTS.md` and `GEMINI.md` symlinks pointing to `CLAUDE.md`.
 
-Product documentation must describe current code, not old plans or session state. Use [docs/README.md](docs/README.md) for the canonical product-doc map. Regenerate `docs/generated/` instead of editing generated artifacts by hand, and run `scripts/check-product-docs.py` after product-doc or instruction-topology changes.
+Product documentation must describe current code, not old plans or session state. Use [docs/README.md](docs/README.md) for the canonical product-doc map. Regenerate `docs/generated/` instead of editing generated artifacts by hand.

@@ -1,11 +1,13 @@
 import { normalizeGatewayApiBase } from './gateway-config.ts'
 import { gatewayRequestInit } from './gateway-request.ts'
 import { withRequestTiming } from './request-timing.ts'
+import { queryServerLogs } from './server-logs-client.ts'
 import {
   aggregateGatewayUsage,
   type GatewayUsageCalls,
   type GatewayUsageMetrics,
 } from '../dashboard/gateway-usage-adapter.ts'
+import { enrichDashboardWithObservability } from '../observability/dashboard-observability.ts'
 import type {
   ActorFacet,
   ActorKind,
@@ -384,7 +386,7 @@ function aggregateDashboard(
       surfaces: true,
       fan_out: true,
       actor_kinds: true,
-      complete_call_rows: true,
+      complete_window_analytics: true,
     },
     tool_calls: { total, failed, succeeded: total - failed },
     tools: { top: tools.slice(0, 5), least: tools.slice(-3).reverse(), distinct: tools.length },
@@ -477,20 +479,57 @@ async function postGatewayUsageAction<T>(
   })
 }
 
-function usageWindowParams(window: MetricsWindow, now = Date.now()) {
+function usageTimeBounds(window: MetricsWindow, now: number, query?: ToolCallQuery) {
   return {
-    since_unix: Math.floor((now - WINDOW_MS[window]) / 1000),
-    until_unix: Math.floor(now / 1000),
+    since_unix: Math.floor((query?.since_ms ?? (now - WINDOW_MS[window])) / 1000),
+    until_unix: Math.floor((query?.until_ms ?? now) / 1000),
+  }
+}
+
+function usageFilterParams(window: MetricsWindow, now: number, query?: ToolCallQuery) {
+  return {
+    ...usageTimeBounds(window, now, query),
+    upstream: query?.upstream,
+    tool: query?.tool,
+    capability: query?.capability,
+    operation: query?.operation,
+    subject_scoped: query?.subject_scoped,
+    actor: query?.agent,
+    outcome: query?.error_kind ?? query?.outcome,
+    search: query?.search?.trim() || undefined,
+  }
+}
+
+function usageMetricsParams(
+  window: MetricsWindow,
+  now: number,
+  query?: ToolCallQuery,
+  options?: { buckets?: boolean; facets?: boolean },
+) {
+  return {
+    ...usageFilterParams(window, now, query),
+    bucket_count: options?.buckets ? WINDOW_BUCKETS[window] : 0,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || undefined,
+    timezone_offset_minutes: -new Date(now).getTimezoneOffset(),
+    include_facets: options?.facets ?? false,
   }
 }
 
 async function fetchPersistedCalls(
   window: MetricsWindow,
   options?: MetricsRequestOptions,
+  query?: ToolCallQuery,
+  limit = 50,
+  now = Date.now(),
 ): Promise<GatewayUsageCalls> {
   return postGatewayUsageAction<GatewayUsageCalls>(
     'gateway.usage.calls',
-    { ...usageWindowParams(window), limit: 1000, include_total: true },
+    {
+      ...usageFilterParams(window, now, query),
+      limit,
+      cursor: query?.cursor,
+      include_total: true,
+    },
     options,
   )
 }
@@ -500,7 +539,8 @@ function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
     id: `${call.ts_unix}:${index}:${call.upstream}:${call.tool}`,
     ts: call.ts_unix * 1000,
     tool: `${call.upstream}::${call.tool}`,
-    action: null,
+    action: call.operation ?? null,
+    capability: call.capability,
     agent_id: call.actor,
     agent_label: call.actor,
     agent_kind: 'agent',
@@ -511,6 +551,24 @@ function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
     input_tokens: 0,
     output_tokens: 0,
     elapsed_ms: call.elapsed_ms,
+    response_bytes: call.response_bytes ?? null,
+    subject_scoped: call.subject_scoped ?? false,
+  }))
+}
+
+function summaryTimeseries(summary: GatewayUsageMetrics): MetricsBucket[] {
+  return summary.timeseries.map((bucket) => ({
+    ts: bucket.ts_unix * 1000,
+    calls: bucket.calls,
+    failed: bucket.failed,
+  }))
+}
+
+function summaryTools(summary: GatewayUsageMetrics): ToolUsageEntry[] {
+  return summary.top_tools.map((tool) => ({
+    name: `${tool.upstream}::${tool.tool}`,
+    calls: tool.calls,
+    failed: tool.failed,
   }))
 }
 
@@ -526,16 +584,24 @@ export async function fetchDashboardMetrics(
     return aggregateDashboard(buildCallStream(window, now), window, now)
   }
   const now = Date.now()
-  const params = usageWindowParams(window, now)
-  const [summary, rows] = await Promise.all([
-    postGatewayUsageAction<GatewayUsageMetrics>('gateway.usage.metrics', params, options),
-    postGatewayUsageAction<GatewayUsageCalls>(
-      'gateway.usage.calls',
-      { ...params, limit: 1000, include_total: true },
+  const [summary, logResult] = await Promise.all([
+    postGatewayUsageAction<GatewayUsageMetrics>(
+      'gateway.usage.metrics',
+      usageMetricsParams(window, now, undefined, { buckets: true }),
       options,
     ),
+    queryServerLogs(
+      { limit: 500, max_scan_bytes: 2 * 1024 * 1024, stop_after_limit: true },
+      { baseUrl: options?.baseUrl, signal: options?.signal },
+    ).catch((error: unknown) => {
+      if (options?.signal?.aborted) throw error
+      return null
+    }),
   ])
-  return aggregateGatewayUsage(window, now, summary, rows)
+  const metrics = aggregateGatewayUsage(window, now, summary)
+  return logResult
+    ? enrichDashboardWithObservability(metrics, logResult.entries, window, now)
+    : metrics
 }
 
 export async function fetchToolDetail(
@@ -565,23 +631,33 @@ export async function fetchToolDetail(
       recent: recentCalls(records),
     }
   }
-  const records = persistedCallRecords(await fetchPersistedCalls(window, options))
-    .filter((record) => record.tool === name)
-  const calls = records.length
+  const now = Date.now()
+  const query: ToolCallQuery = { window, tool: name }
+  const [summary, rows] = await Promise.all([
+    postGatewayUsageAction<GatewayUsageMetrics>(
+      'gateway.usage.metrics',
+      usageMetricsParams(window, now, query, { buckets: true }),
+      options,
+    ),
+    fetchPersistedCalls(window, options, query, 25, now),
+  ])
   return {
     name,
     window,
-    calls,
-    failed: records.filter((record) => record.outcome === 'failed').length,
+    calls: summary.total_calls,
+    failed: summary.error_calls,
     total_tokens: 0,
     avg_tokens: 0,
-    avg_elapsed_ms: calls > 0
-      ? Math.round(records.reduce((sum, record) => sum + record.elapsed_ms, 0) / calls)
-      : 0,
+    avg_elapsed_ms: Math.round(summary.avg_elapsed_ms),
     tokens_collected: false,
-    timeseries: bucketize(records, window, Date.now()),
-    top_callers: rankAgents(records).slice(0, 5),
-    recent: recentCalls(records),
+    timeseries: summaryTimeseries(summary),
+    top_callers: summary.top_actors.slice(0, 5).map((actor) => ({
+      id: actor.actor,
+      label: actor.actor,
+      kind: 'agent',
+      calls: actor.calls,
+    })),
+    recent: recentCalls(persistedCallRecords(rows)),
   }
 }
 
@@ -610,20 +686,28 @@ export async function fetchAgentDetail(
       recent: recentCalls(records),
     }
   }
-  const records = persistedCallRecords(await fetchPersistedCalls(window, options))
-    .filter((record) => record.agent_id === id)
+  const now = Date.now()
+  const query: ToolCallQuery = { window, agent: id }
+  const [summary, rows] = await Promise.all([
+    postGatewayUsageAction<GatewayUsageMetrics>(
+      'gateway.usage.metrics',
+      usageMetricsParams(window, now, query, { buckets: true }),
+      options,
+    ),
+    fetchPersistedCalls(window, options, query, 25, now),
+  ])
   return {
     id,
     label: id,
     kind: 'agent',
     window,
-    calls: records.length,
-    failed: records.filter((record) => record.outcome === 'failed').length,
+    calls: summary.total_calls,
+    failed: summary.error_calls,
     total_tokens: 0,
     tokens_collected: false,
-    tools_used: rankTools(records),
-    timeseries: bucketize(records, window, Date.now()),
-    recent: recentCalls(records),
+    tools_used: summaryTools(summary),
+    timeseries: summaryTimeseries(summary),
+    recent: recentCalls(persistedCallRecords(rows)),
   }
 }
 
@@ -634,73 +718,115 @@ export async function fetchToolCalls(
   if (USE_MOCK_DATA) {
     options?.signal?.throwIfAborted?.()
     const now = Date.now()
-    const stream = buildCallStream(query.window, now)
+    const since = query.since_ms ?? now - WINDOW_MS[query.window]
+    const until = query.until_ms ?? now
+    const stream = buildCallStream(query.window, now).filter((record) => record.ts >= since && record.ts <= until)
     const search = query.search?.trim().toLowerCase()
-    const filtered = stream.filter((r) => {
-      if (query.tool && r.tool !== query.tool) return false
-      if (query.agent && r.agent_id !== query.agent) return false
-      if (query.ip && r.ip !== query.ip) return false
-      if (query.outcome && r.outcome !== query.outcome) return false
-      if (query.surface && r.surface !== query.surface) return false
+    const filtered = stream.filter((record) => {
+      if (query.upstream && !record.tool.startsWith(`${query.upstream}::`)) return false
+      if (query.tool && record.tool !== query.tool) return false
+      if (query.capability && query.capability !== 'tools') return false
+      if (query.operation && record.action !== query.operation) return false
+      if (query.subject_scoped !== undefined && (record.subject_scoped ?? false) !== query.subject_scoped) return false
+      if (query.agent && record.agent_id !== query.agent) return false
+      if (query.ip && record.ip !== query.ip) return false
+      if (query.error_kind && record.error_kind !== query.error_kind) return false
+      if (query.outcome && record.outcome !== query.outcome) return false
+      if (query.surface && record.surface !== query.surface) return false
       if (search) {
-        const hay = `${r.tool} ${r.action ?? ''} ${r.agent_label} ${r.ip} ${r.error_kind ?? ''}`.toLowerCase()
+        const hay = `${record.tool} ${record.action ?? ''} ${record.agent_label} ${record.ip} ${record.error_kind ?? ''}`.toLowerCase()
         if (!hay.includes(search)) return false
       }
       return true
-    })
-    const sorted = filtered.sort((a, b) => b.ts - a.ts)
-    const offset = query.offset ?? 0
+    }).sort((a, b) => b.ts - a.ts)
+    const cursorOffset = query.cursor?.startsWith('mock:')
+      ? Number.parseInt(query.cursor.slice(5), 10) || 0
+      : query.offset ?? 0
     const limit = query.limit ?? 50
     const agentMap = new Map<string, string>()
     for (const record of stream) agentMap.set(record.agent_id, record.agent_label)
+    const page = filtered.slice(cursorOffset, cursorOffset + limit)
+    const elapsed = filtered.map((record) => record.elapsed_ms).sort((a, b) => a - b)
+    const minuteCounts = new Map<number, number>()
+    const hourCounts = new Map<number, number>()
+    for (const record of filtered) {
+      const minute = Math.floor(record.ts / 60_000)
+      minuteCounts.set(minute, (minuteCounts.get(minute) ?? 0) + 1)
+      const hour = new Date(record.ts).getHours()
+      hourCounts.set(hour, (hourCounts.get(hour) ?? 0) + 1)
+    }
+    const busiestHour = [...hourCounts].reduce((best, entry) => entry[1] > best[1] ? entry : best, [0, 0])[0]
     return {
-      calls: sorted.slice(offset, offset + limit),
+      calls: page,
       total: stream.length,
-      filtered: sorted.length,
+      filtered: filtered.length,
+      next_cursor: cursorOffset + limit < filtered.length ? `mock:${cursorOffset + limit}` : null,
+      analytics: {
+        failed: filtered.filter((record) => record.outcome === 'failed').length,
+        avg_elapsed_ms: filtered.length > 0 ? Math.round(elapsed.reduce((sum, value) => sum + value, 0) / filtered.length) : 0,
+        p50_elapsed_ms: percentile(elapsed, 50),
+        p95_elapsed_ms: percentile(elapsed, 95),
+        p99_elapsed_ms: percentile(elapsed, 99),
+        peak_per_min: Math.max(0, ...minuteCounts.values()),
+        avg_per_min: filtered.length / Math.max(1, (until - since) / 60_000),
+        busiest_hour: busiestHour,
+        hourly: Array.from({ length: 24 }, (_, hour) => ({ hour, calls: hourCounts.get(hour) ?? 0 })),
+      },
       facets: {
+        upstreams: [...new Set(stream.map((record) => record.tool.split('::', 1)[0]))].sort(),
         tools: [...new Set(stream.map((record) => record.tool))].sort(),
+        capabilities: ['tools'],
+        operations: [...new Set(stream.map((record) => record.action).filter((value): value is string => Boolean(value)))].sort(),
+        subject_scopes: [...new Set(stream.map((record) => record.subject_scoped ?? false))].sort(),
         agents: [...agentMap.entries()]
-          .map(([id, label]) => ({ id, label }))
+          .map(([actorId, label]) => ({ id: actorId, label }))
           .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
+        outcomes: [...new Set(stream.map((record) => record.error_kind ?? record.outcome))].sort(),
         ips: [...new Set(stream.map((record) => record.ip).filter(Boolean))].sort(),
         surfaces: [...new Set(stream.map((record) => record.surface))].sort(),
       },
+      collected: { actors: true, ips: true, surfaces: true, tokens: true },
     }
   }
+
   const now = Date.now()
-  const params = usageWindowParams(query.window, now)
   const [summary, rows] = await Promise.all([
-    postGatewayUsageAction<GatewayUsageMetrics>('gateway.usage.metrics', params, options),
-    fetchPersistedCalls(query.window, options),
+    postGatewayUsageAction<GatewayUsageMetrics>(
+      'gateway.usage.metrics',
+      usageMetricsParams(query.window, now, query, { facets: true }),
+      options,
+    ),
+    fetchPersistedCalls(query.window, options, query, query.limit ?? 50, now),
   ])
-  const stream = persistedCallRecords(rows)
-  const search = query.search?.trim().toLowerCase()
-  const filtered = stream.filter((record) => {
-    if (query.tool && record.tool !== query.tool) return false
-    if (query.agent && record.agent_id !== query.agent) return false
-    if (query.ip && record.ip !== query.ip) return false
-    if (query.outcome && record.outcome !== query.outcome) return false
-    if (query.surface && record.surface !== query.surface) return false
-    if (search) {
-      const haystack = `${record.tool} ${record.agent_label} ${record.error_kind ?? ''}`.toLowerCase()
-      if (!haystack.includes(search)) return false
-    }
-    return true
-  })
-  const sorted = filtered.sort((left, right) => right.ts - left.ts)
-  const offset = query.offset ?? 0
-  const limit = query.limit ?? 50
-  const agentMap = new Map<string, string>()
-  for (const record of stream) agentMap.set(record.agent_id, record.agent_label)
+  const bounds = usageTimeBounds(query.window, now, query)
+  const durationMinutes = Math.max(1, (bounds.until_unix - bounds.since_unix) / 60)
   return {
-    calls: sorted.slice(offset, offset + limit),
-    total: summary.total_calls,
-    filtered: sorted.length,
+    calls: persistedCallRecords(rows),
+    total: summary.window_total_calls,
+    filtered: summary.total_calls,
+    next_cursor: rows.next_cursor ?? null,
+    analytics: {
+      failed: summary.error_calls,
+      avg_elapsed_ms: summary.avg_elapsed_ms,
+      p50_elapsed_ms: summary.p50_elapsed_ms,
+      p95_elapsed_ms: summary.p95_elapsed_ms,
+      p99_elapsed_ms: summary.p99_elapsed_ms,
+      peak_per_min: summary.peak_per_min,
+      avg_per_min: summary.total_calls / durationMinutes,
+      busiest_hour: summary.hourly.reduce((best, entry) => entry.calls > best.calls ? entry : best, { hour: 0, calls: 0 }).hour,
+      hourly: summary.hourly.map((entry) => ({ hour: entry.hour, calls: entry.calls })),
+    },
     facets: {
-      tools: [...new Set(stream.map((record) => record.tool))].sort(),
-      agents: [...agentMap.entries()].map(([id, label]) => ({ id, label })),
+      upstreams: summary.facets.upstreams,
+      tools: summary.facets.tools.map((target) => `${target.upstream}::${target.tool}`),
+      capabilities: summary.facets.capabilities ?? [],
+      operations: summary.facets.operations ?? [],
+      subject_scopes: summary.facets.subject_scopes ?? [],
+      agents: summary.facets.actors.map((actor) => ({ id: actor, label: actor })),
+      outcomes: summary.facets.outcomes,
       ips: [],
       surfaces: [],
     },
+    collected: { actors: true, ips: false, surfaces: false, tokens: false },
   }
 }

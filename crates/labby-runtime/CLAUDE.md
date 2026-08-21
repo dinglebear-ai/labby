@@ -1,11 +1,21 @@
-# labby-runtime — Surface-Neutral Runtime Contracts
+# labby-runtime Instructions
 
-This crate owns reusable runtime DTOs and helpers shared across extracted Labby crates without depending on product transports.
+`labby-runtime` contains reusable, surface-neutral runtime contracts and helpers shared by the Labby product and extracted crates.
 
-## Boundaries
+## Rules
 
-Allowed concerns include stable agent-error vocabulary, caller auth context, gateway configuration DTOs, catalog notifications, path/redaction helpers, and Agent Skills parsing/wire contracts.
+- Keep this crate independent of CLI, product MCP handlers, Axum route composition, and frontend code.
+- Put stable DTOs/config/runtime contracts here only when more than one product boundary needs them.
+- Preserve Serde field names and optionality unless the consuming surface migration is coordinated in the same change.
+- Do not read ambient environment variables or files from shared data types; pass resolved configuration in explicitly.
+- Prefer typed errors and structured state over strings that force downstream reparsing.
+- Agent Skills support here is runtime vocabulary/behavior, not product presentation.
+- Artifact domain, validation, local persistence, and lifecycle semantics live here as the shared implementation. CLI/API/MCP surfaces must remain thin projections over this layer. Skills are an Artifact family and must keep using the existing Skills validation/compatibility path rather than growing a parallel implementation.
+- Keep the frozen `dinglebear.artifact-interchange/v1` wire contract byte-compatible with the canonical Depot fixture; Labby-only storage/provider/deployment state stays outside that shared envelope.
 
-Do not depend on `axum`, `clap`, `rmcp`, Javy/Wasmtime, or Labby's product service registry. Gateway-only process/SSRF/dispatch behavior belongs in `labby-gateway`; Code Mode execution belongs in `labby-codemode`.
+## Verification
 
-Keep config structures serialization-stable and avoid ambient product configuration reads unless the helper is explicitly defined as a generic environment/path primitive.
+```bash
+cargo test -p labby-runtime
+cargo clippy -p labby-runtime --all-features --all-targets -- -D warnings
+```

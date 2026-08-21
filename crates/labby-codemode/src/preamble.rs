@@ -95,7 +95,8 @@ const JS_RESERVED: &[&str] = &[
 /// Namespaces that sanitize to one of these names are suffixed so a
 /// real namespace named `search`, `describe`, `step`, or `batch` cannot overwrite the
 /// local discovery/control helpers.
-const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &["search", "describe", "run", "step", "batch"];
+const CODEMODE_TOP_LEVEL_RESERVED: &[&str] =
+    &["search", "describe", "readResource", "run", "step", "batch"];
 
 /// Convert a dotted/hyphenated/slashed/coloned tool name to snake_case.
 ///
@@ -232,6 +233,7 @@ codemode.search = async function(input) {{
         name: entry.name,
         description: entry.description,
         signature: entry.signature,
+        safety: entry.safety,
         tags: entry.tags || [],
         score: score
       }};
@@ -295,6 +297,7 @@ codemode.search = async function(input) {{
           var record2 = {{
             path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
             name: de.name, description: de.description, signature: de.signature,
+            safety: de.safety,
             tags: de.tags || [], score: 0,
             blendedScore: semanticSimilarity01 * BLEND_WEIGHT
           }};
@@ -323,7 +326,7 @@ codemode.search = async function(input) {{
     return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
   }}
   var results = scored.slice(0, limit).map(function(r) {{
-    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, score: r.score }};
+    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, safety: r.safety, score: r.score }};
   }});
   return {{ results: results, total: total, truncated: total > limit }};
 }};
@@ -406,8 +409,15 @@ codemode.describe = async function(target) {{
     path: entry.path,
     id: entry.id,
     kind: entry.kind,
+    safety: entry.safety,
     markdown: markdown
   }};
+}};
+codemode.readResource = async function(uri) {{
+  if (typeof uri !== "string" || !uri.trim()) {{
+    throw new TypeError("codemode.readResource requires a non-empty URI string");
+  }}
+  return callTool("__lab_internal::read_resource", {{ uri: uri }});
 }};
 codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
@@ -609,6 +619,7 @@ mod tests {
             name: name.to_string(),
             helper: format!("codemode.{path}"),
             description: description.to_string(),
+            safety: None,
             signature: format!("codemode.{path}(params: unknown): Promise<unknown>"),
             tags: Vec::new(),
             inputs: Vec::new(),
@@ -704,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_preamble_advertises_search_describe_step_and_batch_semantics() {
+    fn discovery_preamble_advertises_search_describe_read_resource_step_and_batch_semantics() {
         let entries = vec![
             discovery_entry("github", "search_issues", "Search GitHub issues"),
             discovery_entry("github", "list_pull_requests", "List GitHub pull requests"),
@@ -717,12 +728,14 @@ mod tests {
         assert!(js.contains("raw === entry.id || raw === entry.path || raw === entry.helper"));
         assert!(js.contains("ambiguous_target"));
         assert!(js.contains("unknown_tool"));
-        // codemode.step is now a real two-phase durable primitive that delegates
+        // codemode.step delegates execution and best-effort journal recording
         // to the runner-side __labCodemodeStep bridge (not the old inline stub).
         assert!(js.contains("globalThis.__labCodemodeStep(name, fn)"));
         // codemode.batch is an isolation helper: mixed success/failure jobs
         // settle independently and return partitioned results.
         assert!(js.contains("codemode.batch = async function(jobs)"));
+        assert!(js.contains("codemode.readResource = async function(uri)"));
+        assert!(js.contains("__lab_internal::read_resource"));
         assert!(js.contains("Promise.allSettled"));
         assert!(js.contains("Promise.resolve().then(job)"));
         assert!(js.contains("ok.push({ i: index, value: result.value })"));
@@ -791,6 +804,38 @@ mod tests {
     }
 
     #[test]
+    fn four_thousand_tool_discovery_payload_stays_bounded_with_safety() {
+        let entries = (0..4_000)
+            .map(|index| {
+                let mut entry = discovery_entry(
+                    "fixture",
+                    &format!("tool_{index}"),
+                    "A deterministic catalog fixture description",
+                );
+                entry.safety = Some(crate::types::CodeModeToolSafety {
+                    read_only: Some(true),
+                    destructive: None,
+                });
+                entry
+            })
+            .collect::<Vec<_>>();
+        let js = generate_discovery_js(&entries, 0.5).expect("4k discovery JS");
+
+        assert!(
+            js.len() < 2_000_000,
+            "4k preamble grew to {} bytes",
+            js.len()
+        );
+        assert!(
+            js.len() / entries.len() < 500,
+            "4k preamble exceeded 500 bytes/tool: {}",
+            js.len() / entries.len()
+        );
+        assert!(!js.contains("\"dts\":"));
+        assert!(!js.contains("\"schema\":"));
+    }
+
+    #[test]
     fn discovery_search_zero_result_returns_actionable_hint() {
         let entries = vec![discovery_entry(
             "github",
@@ -803,6 +848,26 @@ mod tests {
         assert!(js.contains("Broaden the query or try synonyms."));
         assert!(!js.contains("__meta__"));
         assert_eq!(js.matches("hint: __codemodeNoMatchHint").count(), 2);
+    }
+
+    #[test]
+    fn discovery_serializes_intrinsic_safety_and_omits_unknown_facts() {
+        let mut classified = discovery_entry("github", "list_tags", "List tags");
+        classified.safety = Some(crate::types::CodeModeToolSafety {
+            read_only: Some(true),
+            destructive: None,
+        });
+        let classified = serde_json::to_value(classified).expect("serialize classified entry");
+        assert_eq!(classified["safety"]["read_only"], true);
+        assert!(classified["safety"].get("destructive").is_none());
+
+        let unknown = serde_json::to_value(discovery_entry(
+            "github",
+            "mutate_unknown",
+            "Unknown safety",
+        ))
+        .expect("serialize unknown entry");
+        assert!(unknown.get("safety").is_none());
     }
 
     #[test]
@@ -903,7 +968,7 @@ mod tests {
 
     #[test]
     fn generate_js_proxy_does_not_overwrite_local_discovery_helpers() {
-        for raw in ["search", "describe", "step", "batch"] {
+        for raw in ["search", "describe", "readResource", "step", "batch"] {
             let namespace = namespace_segment(raw);
             let tool = descriptor(raw, "lookup");
             let js = proxy(&[tool]).expect("proxy");

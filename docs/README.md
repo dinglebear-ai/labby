@@ -4,15 +4,17 @@ This directory is the canonical documentation entrypoint for the current Labby p
 
 The live Rust/TypeScript implementation and the generated catalogs under [generated/](./generated/README.md) are the ground truth for what is compiled, registered, and exposed. Product prose should explain that implementation rather than preserve old product shapes.
 
-Historical research, session logs, and implementation plans are intentionally outside the canonical product-doc surface. In particular, `docs/references/`, `docs/sessions/`, and `docs/plans/` are not used to determine current product behavior.
+Historical material that still has durable value lives under `docs/archive/` and is explicitly non-canonical. Transient research caches, session logs, generated smoke output, and completed implementation plans are not committed as product documentation; Git history retains them when historical archaeology is needed.
 
 ## Start Here
 
 - [Architecture](./ARCH.md) — workspace boundaries, runtime flow, and product surfaces.
-- [Technology](./TECH.md) — toolchain, dependencies, build posture, and release model.
+- [Technology](./TECH.md) — toolchain, dependencies, build posture, Rustdoc, and release model.
 - [Conventions](./CONVENTIONS.md) — engineering rules that current code is expected to follow.
 - [Service model](./dev/SERVICES.md) — the current registered service inventory and onboarding rules.
-- [CLI](./surfaces/CLI.md), [MCP](./surfaces/MCP.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior.
+- [CLI](./surfaces/CLI.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
+- [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
+- [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — active specification, contract, implementation plan, and progress tracker for universal Skills access.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
 
@@ -22,6 +24,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 
 | Service | Product doc | Notes |
 | --- | --- | --- |
+| `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |
 | `gateway` | [services/GATEWAY.md](./services/GATEWAY.md) | Upstream catalog, protected routes, virtual servers, OAuth, Code Mode host |
 | upstream proxy runtime | [services/UPSTREAM.md](./services/UPSTREAM.md) | HTTP/Unix/stdio upstream MCP connections, discovery, filtering, health, OAuth, skills |
 | `setup` | [services/SETUP.md](./services/SETUP.md) | Bootstrap, settings, repair, plugin lifecycle, proxy setup, host provisioning |
@@ -40,7 +43,6 @@ Do not hand-maintain a duplicate action inventory in prose. Use the generated [a
 - [MCP conformance](./surfaces/MCP_CONFORMANCE.md) — current protocol-version and conformance contract.
 - [RMCP](./surfaces/RMCP.md) — how Labby integrates the Rust MCP SDK.
 - [Transport](./surfaces/TRANSPORT.md) — stdio, Streamable HTTP, Unix socket, middleware, CORS, DNS-rebinding protection, and subscriptions.
-- [TUI](./surfaces/TUI.md) — explicit status of the deferred TUI surface.
 
 ## Runtime And Operations
 
@@ -55,7 +57,7 @@ Do not hand-maintain a duplicate action inventory in prose. Use the generated [a
 - [GitHub Actions runner](./runtime/ACTIONS_RUNNER.md)
 - [CI/CD](./runtime/CICD.md)
 - [Operations](./OPERATIONS.md)
-- [Rust build setup](./RUST.md)
+- [Technology and Rust build](./TECH.md)
 
 ## Developer Contracts
 
@@ -66,6 +68,7 @@ Do not hand-maintain a duplicate action inventory in prose. Use the generated [a
 - [Errors](./dev/ERRORS.md) — stable error taxonomy and surface mapping.
 - [Observability](./dev/OBSERVABILITY.md) — required fields, correlation, redaction, and verification.
 - [Testing](./dev/TESTING.md) — local and CI verification expectations.
+- [Rustdoc](./dev/RUSTDOC.md) — comprehensive Rust API documentation, doctest, and CI artifact contract.
 - [Serialization](./design/SERIALIZATION.md) — output and wire-shape ownership.
 
 Normative cross-surface contracts live under [contracts/](./contracts/):
@@ -86,7 +89,6 @@ Normative cross-surface contracts live under [contracts/](./contracts/):
 - [Claude Code Aurora theme](./design/CLAUDE_CODE_AURORA_THEME.md)
 - [Google credential broker](./design/GOOGLE_CREDENTIAL_BROKER.md)
 - [Remote gateway target](./design/REMOTE_GATEWAY_TARGET.md)
-- [Tool annotations](./design/tool-annotations/README.md)
 - [Brand assets](./assets/brand/README.md)
 
 ## Plugins And Snippets
@@ -101,7 +103,6 @@ Run:
 ```bash
 just docs-generate
 just docs-check
-scripts/check-product-docs.py
 ```
 
 Generated artifacts include:

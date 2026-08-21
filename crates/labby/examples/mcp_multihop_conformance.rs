@@ -9,6 +9,7 @@
 // and deliberately exercises the raw rmcp helpers end to end.
 #![allow(clippy::disallowed_methods)]
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -22,19 +23,22 @@ use rmcp::model::{
     CompleteResult, CompletionInfo, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
     ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams, GetPromptResponse,
     GetPromptResult, GetTaskParams, GetTaskResult, Implementation, InputRequest, InputRequests,
-    InputRequiredResult, InputResponses, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, MetaObject, PaginatedRequestParams,
-    PrimitiveSchemaDefinition, ProgressNotificationParam, Prompt, PromptMessage, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Reference, Resource,
-    ResourceContents, ResourceTemplate, Role, ServerCapabilities, ServerInfo, ServerNotification,
-    ServerResult, SubscriptionFilter, Task, TaskPayload, TaskStatus, TaskStatusNotification,
-    TaskStatusNotificationParams, Tool, UpdateTaskParams,
+    InputRequiredResult, InputResponses, JsonRpcMessage, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, MetaObject,
+    PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam, Prompt,
+    PromptMessage, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Reference, Resource, ResourceContents, ResourceTemplate, Role,
+    ServerCapabilities, ServerInfo, ServerNotification, ServerResult, SubscriptionFilter, Task,
+    TaskPayload, TaskStatus, TaskStatusNotification, TaskStatusNotificationParams, Tool,
+    UpdateTaskParams,
 };
 use rmcp::service::{
     ClientLifecycleMode, ClientServiceExt, NotificationContext, Peer, PeerRequestOptions,
-    RequestContext, SubscriptionContext,
+    RequestContext, RxJsonRpcMessage, SubscriptionContext, TxJsonRpcMessage,
 };
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::transport::{
+    ConfigureCommandExt, TokioChildProcess, Transport, TransportAdapterIdentity,
+};
 use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -469,6 +473,45 @@ impl ServerHandler for LeafServer {
     }
 }
 
+struct DriverProgressObserver<T> {
+    inner: T,
+    progress: Arc<Mutex<Vec<ProgressNotificationParam>>>,
+}
+
+impl<T> DriverProgressObserver<T> {
+    fn new(inner: T, progress: Arc<Mutex<Vec<ProgressNotificationParam>>>) -> Self {
+        Self { inner, progress }
+    }
+}
+
+impl<T> Transport<RoleClient> for DriverProgressObserver<T>
+where
+    T: Transport<RoleClient>,
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
+        let message = self.inner.receive().await?;
+        if let JsonRpcMessage::Notification(notification) = &message
+            && let ServerNotification::ProgressNotification(progress) = &notification.notification
+        {
+            self.progress.lock().await.push(progress.params.clone());
+        }
+        Some(message)
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
+
 #[derive(Default)]
 struct DriverEvents {
     progress: Mutex<Vec<ProgressNotificationParam>>,
@@ -626,18 +669,56 @@ async fn call_service_action(
 
 async fn wait_for_http_ready(base_url: &str) -> Result<()> {
     let client = reqwest::Client::new();
-    for _ in 0..80 {
-        if client
-            .get(format!("{base_url}/ready"))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success())
-        {
-            return Ok(());
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if client
+                .get(format!("{base_url}/ready"))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    })
+    .await
+    .with_context(|| format!("middle Labby HTTP daemon did not become ready at {base_url}"))?;
+    Ok(())
+}
+
+async fn wait_for_nested_tool_catalog(peer: &Peer<RoleClient>) -> Result<Vec<Tool>> {
+    let mut last_leaf_tools = 0;
+    let mut last_observed = Vec::<String>::new();
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let tools = peer.list_all_tools().await?;
+            last_leaf_tools = tools
+                .iter()
+                .filter(|tool| tool.name.ends_with("needs_input") || tool.name.contains("echo_"))
+                .count();
+            last_observed = tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .take(30)
+                .collect();
+            if last_leaf_tools > TOOL_COUNT {
+                return Ok::<_, rmcp::service::ServiceError>(tools);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    match ready {
+        Ok(Ok(tools)) => Ok(tools),
+        Ok(Err(error)) => Err(error.into()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "timed out waiting for nested leaf tool catalog; got {last_leaf_tools} leaf tools; observed {last_observed:?}"
+            )
+        }),
     }
-    anyhow::bail!("middle Labby HTTP daemon did not become ready at {base_url}")
 }
 
 async fn reload_http_gateway(base_url: &str, token: &str) -> Result<()> {
@@ -671,7 +752,7 @@ async fn wait_for_progress(
     events: &DriverEvents,
     count: usize,
 ) -> Result<Vec<ProgressNotificationParam>> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let values = events.progress.lock().await.clone();
             if values.len() >= count {
@@ -681,7 +762,28 @@ async fn wait_for_progress(
         }
     })
     .await
-    .context("timed out waiting for progress notifications")
+    {
+        Ok(values) => Ok(values),
+        Err(_) => {
+            let values = events.progress.lock().await.clone();
+            let received = values
+                .iter()
+                .map(|value| {
+                    format!(
+                        "{:?}:{}",
+                        value.progress_token,
+                        value.message.as_deref().unwrap_or("<no-message>")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "timed out waiting for {count} progress notifications; received {} [{}]",
+                values.len(),
+                received
+            )
+        }
+    }
 }
 
 async fn wait_for_task_status(
@@ -742,9 +844,11 @@ async fn run_driver() -> Result<()> {
     let root_home = temp.path().join("root-home");
     let middle_home = temp.path().join("middle-home");
     let marker_dir = temp.path().join("markers");
+    let child_cwd = temp.path().join("cwd");
     std::fs::create_dir_all(&root_home)?;
     std::fs::create_dir_all(&middle_home)?;
     std::fs::create_dir_all(&marker_dir)?;
+    std::fs::create_dir_all(&child_cwd)?;
 
     let example = std::env::current_exe()?;
     let debug_dir = example
@@ -777,6 +881,9 @@ async fn run_driver() -> Result<()> {
     let middle_base_url = format!("http://127.0.0.1:{middle_port}");
     let middle_token = "8c1f97449584ebcc6025655d738a8b40a3a488dd407ac89a1c42146864bd0179";
     let mut middle_child = Command::new(&labby_bin)
+        // Labby resolves ./config.toml before HOME-scoped config. Pin the
+        // fixture cwd so an unrelated caller cwd cannot shadow this test config.
+        .current_dir(&middle_home)
         .arg("serve")
         .arg("--host")
         .arg("127.0.0.1")
@@ -788,6 +895,10 @@ async fn run_driver() -> Result<()> {
         .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
         .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
         .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
+        // Labby intentionally resolves ./config.toml before HOME-scoped config.
+        // Use an empty controlled cwd so an ambient developer/CI config cannot
+        // shadow the fixture configs written under middle_home.
+        .current_dir(&child_cwd)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
@@ -807,6 +918,8 @@ async fn run_driver() -> Result<()> {
 
     let transport = TokioChildProcess::new(Command::new(&labby_bin).configure(|command| {
         command
+            // Keep the root fixture hermetic for the same reason as middle.
+            .current_dir(&root_home)
             .arg("serve")
             .arg("mcp")
             .arg("--stdio")
@@ -814,12 +927,17 @@ async fn run_driver() -> Result<()> {
             .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
             .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
-            .env("LABBY_LOG", "labby=debug,labby_gateway=debug");
+            .env("LABBY_LOG", "labby=debug,labby_gateway=debug")
+            // Same isolation as the middle daemon: never let a caller's cwd
+            // config.toml override the generated root fixture config.
+            .current_dir(&child_cwd);
     }))?;
+    let wire_progress = Arc::new(Mutex::new(Vec::new()));
+    let transport = DriverProgressObserver::new(transport, Arc::clone(&wire_progress));
     let driver = DriverClient::default();
     let events = Arc::clone(&driver.events);
     let service = driver
-        .serve_with_lifecycle(
+        .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
             transport,
             ClientLifecycleMode::Discover {
                 preferred_versions: vec![ProtocolVersion::V_2026_07_28],
@@ -855,28 +973,7 @@ async fn run_driver() -> Result<()> {
     force_full_reload_on_next_request(&root_home, 30_003)?;
     call_service_action(&peer, "gateway", "gateway.reload").await?;
 
-    let mut tools = Vec::new();
-    let mut leaf_tools = 0;
-    for _ in 0..30 {
-        tools = peer.list_all_tools().await?;
-        leaf_tools = tools
-            .iter()
-            .filter(|tool| tool.name.ends_with("needs_input") || tool.name.contains("echo_"))
-            .count();
-        if leaf_tools > TOOL_COUNT {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    let observed = tools
-        .iter()
-        .map(|tool| tool.name.as_ref())
-        .take(30)
-        .collect::<Vec<_>>();
-    ensure!(
-        leaf_tools > TOOL_COUNT,
-        "expected all nested leaf tools, got {leaf_tools}; observed {observed:?}"
-    );
+    let tools = wait_for_nested_tool_catalog(&peer).await?;
     let echo_name = nested_name(&tools, |tool| tool.name.as_ref(), "echo_074")?.to_string();
     let needs_input_name =
         nested_name(&tools, |tool| tool.name.as_ref(), "needs_input")?.to_string();
@@ -929,6 +1026,7 @@ async fn run_driver() -> Result<()> {
             .iter()
             .all(|value| value.progress_token == progress_token)
     );
+    ensure!(progress.len() == 2);
     ensure!(
         progress
             .iter()
@@ -939,6 +1037,16 @@ async fn run_driver() -> Result<()> {
             .iter()
             .any(|value| value.message.as_deref() == Some("three-quarters"))
     );
+    let wire_progress = wire_progress
+        .lock()
+        .await
+        .iter()
+        .filter(|value| value.progress_token == progress_token)
+        .cloned()
+        .collect::<Vec<_>>();
+    ensure!(wire_progress.len() == 2);
+    ensure!(wire_progress[0].message.as_deref() == Some("quarter"));
+    ensure!(wire_progress[1].message.as_deref() == Some("three-quarters"));
 
     let CallToolResponse::Task(created) = peer
         .call_tool_once(CallToolRequestParams::new(task_name.clone()))

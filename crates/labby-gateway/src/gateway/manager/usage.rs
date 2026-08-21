@@ -6,7 +6,8 @@
 use labby_runtime::error::ToolError;
 
 use crate::usage::query::{
-    DEFAULT_CALLS_LIMIT, MAX_CALLS_LIMIT, UsageCallsQuery, UsageCursor, UsageMetricsQuery,
+    DEFAULT_CALLS_LIMIT, MAX_CALLS_LIMIT, MAX_METRICS_BUCKETS, UsageCallsQuery, UsageCursor,
+    UsageMetricsQuery,
 };
 
 use super::GatewayManager;
@@ -14,8 +15,10 @@ use crate::gateway::params::{
     GatewayEnrichmentScope, GatewayUsageCallsParams, GatewayUsageMetricsParams,
 };
 use crate::gateway::types::{
-    GatewayUsageActorCount, GatewayUsageCallView, GatewayUsageCallsView, GatewayUsageMetricsView,
-    GatewayUsageToolCount,
+    GatewayUsageActorCount, GatewayUsageCallView, GatewayUsageCallsView, GatewayUsageErrorCount,
+    GatewayUsageFacets, GatewayUsageHourCount, GatewayUsageLatencyStat, GatewayUsageMetricsView,
+    GatewayUsageTimeBucket, GatewayUsageToolCount, GatewayUsageToolFacet,
+    GatewayUsageUpstreamCount,
 };
 
 impl GatewayManager {
@@ -39,27 +42,49 @@ impl GatewayManager {
             });
         };
         let allowed_upstreams = scoped_allowed_upstreams(&scope, params.upstream.as_deref())?;
+        let timezone_offset_minutes =
+            validate_timezone_offset(params.timezone_offset_minutes.unwrap_or(0))?;
         let metrics = store
             .metrics(UsageMetricsQuery {
                 since_unix: params.since_unix,
                 until_unix: params.until_unix,
                 upstream: params.upstream,
+                tool: params.tool,
+                capability: params.capability,
+                operation: params.operation,
+                subject_scoped: params.subject_scoped,
+                actor: params.actor,
+                outcome: params.outcome,
+                search: params.search,
+                bucket_count: params.bucket_count.unwrap_or(0).min(MAX_METRICS_BUCKETS),
+                timezone: params.timezone,
+                timezone_offset_minutes,
+                include_facets: params.include_facets.unwrap_or(false),
                 allowed_upstreams,
             })
             .await?;
+        let map_tool = |t: crate::usage::query::UsageToolCount| GatewayUsageToolCount {
+            upstream: t.upstream,
+            tool: t.tool,
+            capability: t.capability,
+            operation: t.operation,
+            subject_scoped: t.subject_scoped,
+            calls: t.calls,
+            failed: t.failed,
+        };
         Ok(GatewayUsageMetricsView {
+            window_total_calls: metrics.window_total_calls,
             total_calls: metrics.total_calls,
             error_calls: metrics.error_calls,
             avg_elapsed_ms: metrics.avg_elapsed_ms,
-            top_tools: metrics
-                .top_tools
-                .into_iter()
-                .map(|t| GatewayUsageToolCount {
-                    upstream: t.upstream,
-                    tool: t.tool,
-                    calls: t.calls,
-                })
-                .collect(),
+            p50_elapsed_ms: metrics.p50_elapsed_ms,
+            p95_elapsed_ms: metrics.p95_elapsed_ms,
+            p99_elapsed_ms: metrics.p99_elapsed_ms,
+            distinct_tools: metrics.distinct_tools,
+            distinct_actors: metrics.distinct_actors,
+            peak_per_min: metrics.peak_per_min,
+            top_tools: metrics.top_tools.into_iter().map(map_tool).collect(),
+            least_tools: metrics.least_tools.into_iter().map(map_tool).collect(),
             top_actors: metrics
                 .top_actors
                 .into_iter()
@@ -68,6 +93,69 @@ impl GatewayManager {
                     calls: a.calls,
                 })
                 .collect(),
+            slowest_tools: metrics
+                .slowest_tools
+                .into_iter()
+                .map(|t| GatewayUsageLatencyStat {
+                    upstream: t.upstream,
+                    tool: t.tool,
+                    capability: t.capability,
+                    operation: t.operation,
+                    subject_scoped: t.subject_scoped,
+                    avg_elapsed_ms: t.avg_elapsed_ms,
+                })
+                .collect(),
+            errors: metrics
+                .errors
+                .into_iter()
+                .map(|e| GatewayUsageErrorCount {
+                    kind: e.kind,
+                    calls: e.calls,
+                })
+                .collect(),
+            upstreams: metrics
+                .upstreams
+                .into_iter()
+                .map(|u| GatewayUsageUpstreamCount {
+                    upstream: u.upstream,
+                    calls: u.calls,
+                    failed: u.failed,
+                })
+                .collect(),
+            hourly: metrics
+                .hourly
+                .into_iter()
+                .map(|h| GatewayUsageHourCount {
+                    hour: h.hour,
+                    calls: h.calls,
+                })
+                .collect(),
+            timeseries: metrics
+                .timeseries
+                .into_iter()
+                .map(|b| GatewayUsageTimeBucket {
+                    ts_unix: b.ts_unix,
+                    calls: b.calls,
+                    failed: b.failed,
+                })
+                .collect(),
+            facets: GatewayUsageFacets {
+                tools: metrics
+                    .facets
+                    .tools
+                    .into_iter()
+                    .map(|t| GatewayUsageToolFacet {
+                        upstream: t.upstream,
+                        tool: t.tool,
+                    })
+                    .collect(),
+                capabilities: metrics.facets.capabilities,
+                operations: metrics.facets.operations,
+                subject_scopes: metrics.facets.subject_scopes,
+                actors: metrics.facets.actors,
+                upstreams: metrics.facets.upstreams,
+                outcomes: metrics.facets.outcomes,
+            },
         })
     }
 
@@ -112,6 +200,13 @@ impl GatewayManager {
                 since_unix: params.since_unix,
                 until_unix: params.until_unix,
                 upstream: params.upstream,
+                tool: params.tool,
+                capability: params.capability,
+                operation: params.operation,
+                subject_scoped: params.subject_scoped,
+                actor: params.actor,
+                outcome: params.outcome,
+                search: params.search,
                 allowed_upstreams,
                 limit,
                 cursor,
@@ -125,13 +220,28 @@ impl GatewayManager {
                     ts_unix: r.ts_unix,
                     upstream: r.upstream,
                     tool: r.tool,
+                    capability: r.capability,
+                    operation: r.operation,
+                    subject_scoped: r.subject_scoped,
                     actor: r.actor,
                     outcome: r.outcome,
                     elapsed_ms: r.elapsed_ms,
+                    response_bytes: r.response_bytes,
                 })
                 .collect(),
             total_matching,
             next_cursor: next_cursor.map(format_usage_cursor),
+        })
+    }
+}
+
+fn validate_timezone_offset(value: i32) -> Result<i32, ToolError> {
+    if (-1440..=1440).contains(&value) {
+        Ok(value)
+    } else {
+        Err(ToolError::InvalidParam {
+            message: "timezone_offset_minutes must be between -1440 and 1440".to_string(),
+            param: "timezone_offset_minutes".to_string(),
         })
     }
 }
@@ -176,4 +286,17 @@ fn scoped_allowed_upstreams(
         scope.ensure_visible(upstream)?;
     }
     Ok(scope.allowlist())
+}
+
+#[cfg(test)]
+mod timezone_tests {
+    use super::validate_timezone_offset;
+
+    #[test]
+    fn timezone_offset_rejects_values_instead_of_clamping_them() {
+        assert_eq!(validate_timezone_offset(-1440).unwrap(), -1440);
+        assert_eq!(validate_timezone_offset(1440).unwrap(), 1440);
+        assert!(validate_timezone_offset(-1441).is_err());
+        assert!(validate_timezone_offset(1441).is_err());
+    }
 }

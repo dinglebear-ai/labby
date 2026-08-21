@@ -1,6 +1,6 @@
 //! Local system probes for `system.checks`.
 //!
-//! All file and env I/O lives here, never in `lab-apis`.
+//! All file and env I/O lives here, never in `labby-apis`.
 
 use super::types::{Finding, Severity, service_env_checks};
 

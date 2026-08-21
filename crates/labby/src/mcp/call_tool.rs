@@ -13,7 +13,7 @@
 //! codemode and upstream branches live in
 //! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
 
-use std::time::Instant;
+use std::{future::Future, pin::Pin, time::Instant};
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -32,7 +32,7 @@ use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_coalesce::schedule_catalog_notification;
@@ -101,25 +101,70 @@ fn retain_route_visible_gateway_status_rows(
     });
 }
 
-/// Attach the authenticated MCP subject to gateway mutations without replacing caller values.
-fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
+/// Attach authoritative authenticated MCP provenance to gateway mutations.
+#[cfg(feature = "gateway")]
+fn inject_gateway_origin_param(action: &str, params: Value, subject: Option<&str>) -> Value {
+    if !crate::dispatch::gateway::shared::action_accepts_runtime_owner(action) {
+        return params;
+    }
     let raw = subject
         .map(|value| format!("mcp:{value}"))
         .unwrap_or_else(|| "mcp:anonymous".to_string());
     let Some(mut object) = params.as_object().cloned() else {
         return params;
     };
-    object.entry("owner".to_string()).or_insert_with(|| {
+    object.insert(
+        "owner".to_string(),
         serde_json::json!({
             "surface": "mcp",
             "subject": subject,
             "raw": raw,
-        })
-    });
-    object
-        .entry("origin".to_string())
-        .or_insert_with(|| Value::String(raw));
+        }),
+    );
+    object.insert("origin".to_string(), Value::String(raw));
     Value::Object(object)
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod gateway_origin_tests {
+    use serde_json::json;
+
+    use super::inject_gateway_origin_param;
+
+    #[test]
+    fn strict_read_only_gateway_actions_do_not_receive_runtime_owner_params() {
+        let params = json!({"upstream": "fixture"});
+        assert_eq!(
+            inject_gateway_origin_param("gateway.skills.list", params.clone(), Some("alice")),
+            params
+        );
+    }
+
+    #[test]
+    fn gateway_mutations_keep_mcp_runtime_owner_provenance() {
+        let enriched =
+            inject_gateway_origin_param("gateway.add", json!({"spec": {}}), Some("alice"));
+        assert_eq!(enriched["owner"]["surface"], "mcp");
+        assert_eq!(enriched["owner"]["subject"], "alice");
+        assert_eq!(enriched["origin"], "mcp:alice");
+    }
+
+    #[test]
+    fn gateway_mutations_overwrite_forged_mcp_runtime_provenance() {
+        let enriched = inject_gateway_origin_param(
+            "gateway.update",
+            json!({
+                "name": "fixture",
+                "patch": {},
+                "owner": {"surface": "forged", "subject": "mallory"},
+                "origin": "forged-origin"
+            }),
+            Some("alice"),
+        );
+        assert_eq!(enriched["owner"]["surface"], "mcp");
+        assert_eq!(enriched["owner"]["subject"], "alice");
+        assert_eq!(enriched["origin"], "mcp:alice");
+    }
 }
 
 impl LabMcpServer {
@@ -174,7 +219,7 @@ impl LabMcpServer {
         .await;
     }
 
-    fn log_route_scope_denial(
+    pub(crate) fn log_route_scope_denial(
         &self,
         context: &RequestContext<RoleServer>,
         service: &str,
@@ -213,7 +258,44 @@ impl LabMcpServer {
         );
     }
 
+    pub(crate) fn boxed_call_tool_response_impl<'a>(
+        &'a self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>> {
+        Box::pin(self.call_tool_response_impl_inner(request, context))
+    }
+
+    #[cfg(feature = "gateway")]
+    fn direct_tool_route_scope_denial(
+        &self,
+        context: &RequestContext<RoleServer>,
+        service: &str,
+    ) -> Option<CallToolResponse> {
+        let is_pre_gate_tool = matches!(
+            self.registry.permanent_tools().resolve(service),
+            Some(PermanentToolId::CodeMode | PermanentToolId::CodeModeRead)
+        ) || service == CODE_MODE_UI_TOOL_NAME
+            || service == MCP_APP_TOOL_NAME;
+        if self.route_scope.exposes_tools() || is_pre_gate_tool {
+            return None;
+        }
+
+        const MESSAGE: &str = "MCP Tools are disabled by this loadout; use Code Mode if it is exposed, or ask the operator to enable Tools for this loadout";
+        self.log_route_scope_denial(context, service, "call_tool", MESSAGE, 0);
+        Some(route_scope_denied_result(service, "call_tool", MESSAGE.to_string()).into())
+    }
+
+    #[cfg(test)]
     pub(crate) async fn call_tool_response_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.boxed_call_tool_response_impl(request, context).await
+    }
+
+    async fn call_tool_response_impl_inner(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
@@ -223,6 +305,19 @@ impl LabMcpServer {
         {
             return Ok(response);
         }
+        #[cfg(feature = "gateway")]
+        if let Some(response) = self.direct_tool_route_scope_denial(&context, request.name.as_ref())
+        {
+            return Ok(response);
+        }
+        Box::pin(self.call_tool_response_dispatch_impl(request, context)).await
+    }
+
+    async fn call_tool_response_dispatch_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
         // every early return below. A catalog notification emitted while this
@@ -249,23 +344,23 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // ── Text-only MCP App control surface. This is intentionally separate
-            // from `codemode_ui` so disabling the app never removes the tool needed
-            // to restore it.
+            // ── Always-on MCP App manager. It is root-gateway scoped so a
+            // protected subset cannot mutate gateway-global UI visibility.
             if service == MCP_APP_TOOL_NAME {
-                if !self.route_scope.exposes_code_mode() {
+                if !self.route_scope.is_root() {
                     let elapsed_ms = start.elapsed().as_millis();
                     self.log_route_scope_denial(
                         &context,
                         &service,
                         "call_tool",
-                        "Code Mode is not exposed on this MCP route",
+                        "MCP App management is only available on the root gateway route",
                         elapsed_ms,
                     );
                     return Ok(route_scope_denied_result(
                         &service,
                         "call_tool",
-                        "Code Mode is not exposed on this MCP route".to_string(),
+                        "MCP App management is only available on the root gateway route"
+                            .to_string(),
                     )
                     .into());
                 }
@@ -289,15 +384,26 @@ impl LabMcpServer {
 
                 let target = args
                     .get("target")
+                    .or_else(|| params.get("target"))
                     .and_then(Value::as_str)
                     .unwrap_or("codemode");
-                if target != "codemode" {
+                if !matches!(
+                    target,
+                    "codemode"
+                        | "gateway_status"
+                        | "server_logs"
+                        | "add_server"
+                        | "settings"
+                        | "all"
+                ) {
                     let envelope = build_error_extra(
                         &service,
                         synthetic_action,
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
-                        &serde_json::json!({ "valid": ["codemode"] }),
+                        &serde_json::json!({
+                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
+                        }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
                 }
@@ -329,42 +435,96 @@ impl LabMcpServer {
                     return Ok(error_result_from_envelope(envelope).into());
                 }
 
-                let previous = self.code_mode_app_state.is_enabled();
-                let enabled = if let Some(desired) = desired {
+                let previous_config = match self.gateway_manager.as_ref() {
+                    Some(manager) => Some(manager.current_config().await),
+                    None => None,
+                };
+                let previous_code_mode = previous_config.as_ref().map_or_else(
+                    || self.code_mode_app_state.is_enabled(),
+                    |cfg| cfg.code_mode.mcp_ui_enabled,
+                );
+                let previous_apps = previous_config.as_ref().map_or_else(
+                    labby_runtime::gateway_config::McpAppsConfig::default,
+                    |cfg| cfg.mcp_apps,
+                );
+
+                let current_config = if let Some(desired) = desired {
                     if let Some(manager) = self.gateway_manager.as_ref() {
-                        let mut next = manager.code_mode_config().await;
-                        next.mcp_ui_enabled = desired;
                         match manager
-                            .set_code_mode_config(
-                                next,
+                            .set_mcp_app_visibility(
+                                target,
+                                desired,
                                 Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
-                                None,
                             )
                             .await
                         {
-                            Ok(current) => current.mcp_ui_enabled,
+                            Ok(current) => Some(current),
                             Err(error) => {
                                 let envelope =
                                     tool_error_envelope(&service, synthetic_action, &error);
                                 return Ok(error_result_from_envelope(envelope).into());
                             }
                         }
-                    } else {
+                    } else if target == "codemode" {
                         self.code_mode_app_state.set_enabled(desired);
-                        desired
+                        if previous_code_mode != desired {
+                            schedule_catalog_notification(
+                                &self.peers,
+                                CatalogNotificationChanges::new(true, true, false),
+                                labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
+                            );
+                        }
+                        None
+                    } else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "gateway_unavailable",
+                            "non-Code-Mode MCP App visibility requires a live gateway manager",
+                            &serde_json::json!({ "target": target }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
                     }
                 } else {
-                    previous
+                    previous_config.clone()
                 };
-                let changed = desired.is_some() && previous != enabled;
-                if changed && self.gateway_manager.is_none() {
-                    schedule_catalog_notification(
-                        &self.peers,
-                        CatalogNotificationChanges::new(true, true, false),
-                        labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP,
-                    );
-                }
 
+                let enabled_code_mode = current_config.as_ref().map_or_else(
+                    || self.code_mode_app_state.is_enabled(),
+                    |cfg| cfg.code_mode.mcp_ui_enabled,
+                );
+                let enabled_apps = current_config
+                    .as_ref()
+                    .map_or(previous_apps, |cfg| cfg.mcp_apps);
+                let enabled = match target {
+                    "codemode" => enabled_code_mode,
+                    "gateway_status" => enabled_apps.gateway_status,
+                    "server_logs" => enabled_apps.server_logs,
+                    "add_server" => enabled_apps.add_server,
+                    "settings" => enabled_apps.settings,
+                    "all" => {
+                        enabled_code_mode
+                            && enabled_apps.gateway_status
+                            && enabled_apps.server_logs
+                            && enabled_apps.add_server
+                            && enabled_apps.settings
+                    }
+                    _ => unreachable!("target validated above"),
+                };
+                let changed = desired.is_some()
+                    && match target {
+                        "codemode" => previous_code_mode != enabled_code_mode,
+                        "gateway_status" => {
+                            previous_apps.gateway_status != enabled_apps.gateway_status
+                        }
+                        "server_logs" => previous_apps.server_logs != enabled_apps.server_logs,
+                        "add_server" => previous_apps.add_server != enabled_apps.add_server,
+                        "settings" => previous_apps.settings != enabled_apps.settings,
+                        "all" => {
+                            previous_code_mode != enabled_code_mode || previous_apps != enabled_apps
+                        }
+                        _ => false,
+                    };
                 let notification_scheduled = changed;
                 tracing::info!(
                     surface = "mcp",
@@ -376,16 +536,40 @@ impl LabMcpServer {
                     changed,
                     notification_scheduled,
                     elapsed_ms = start.elapsed().as_millis(),
-                    "Code Mode MCP App state evaluated"
+                    "Labby MCP App state evaluated"
                 );
                 let payload = serde_json::json!({
                     "kind": "mcp_app_control",
-                    "target": "codemode",
+                    "target": target,
                     "enabled": enabled,
                     "changed": changed,
                     "scope": "gateway",
+                    "manager_tool": MCP_APP_TOOL_NAME,
                     "text_tool": CODE_MODE_TOOL_NAME,
                     "ui_tool": CODE_MODE_UI_TOOL_NAME,
+                    "apps": {
+                        "codemode": {
+                            "enabled": enabled_code_mode,
+                            "tool": CODE_MODE_UI_TOOL_NAME,
+                            "text_tool": CODE_MODE_TOOL_NAME,
+                        },
+                        "gateway_status": {
+                            "enabled": enabled_apps.gateway_status,
+                            "tool": GATEWAY_STATUS_TOOL_NAME,
+                        },
+                        "server_logs": {
+                            "enabled": enabled_apps.server_logs,
+                            "tool": SERVER_LOGS_TOOL_NAME,
+                        },
+                        "add_server": {
+                            "enabled": enabled_apps.add_server,
+                            "tool": ADD_SERVER_TOOL_NAME,
+                        },
+                        "settings": {
+                            "enabled": enabled_apps.settings,
+                            "tool": SETTINGS_TOOL_NAME,
+                        },
+                    },
                     "notification_scheduled": notification_scheduled,
                 });
                 let mut result =
@@ -545,8 +729,11 @@ impl LabMcpServer {
                             );
                             return Ok(error_result_from_envelope(envelope).into());
                         }
-                        let params =
-                            inject_gateway_origin_param(params, self.request_subject(&context));
+                        let params = inject_gateway_origin_param(
+                            gateway_action,
+                            params,
+                            self.request_subject(&context),
+                        );
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                             oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
@@ -616,6 +803,11 @@ impl LabMcpServer {
                             )
                             .map(|subject| subject.into_owned()),
                         };
+                        if synthetic_action == "refresh" {
+                            manager
+                                .refresh_gateway_status_catalog(&enrichment_scope)
+                                .await;
+                        }
                         crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
                             "gateway.list",
@@ -633,6 +825,60 @@ impl LabMcpServer {
                         valid: vec!["open".to_string(), "refresh".to_string()],
                         hint: None,
                     }),
+                };
+                let result =
+                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let elapsed_ms = start.elapsed().as_millis();
+                let input_tokens = estimate_tokens_args(&args);
+                let (result, outcome) = format_dispatch_result(
+                    result,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    &self.request_subject_log_tag(&context),
+                    self.request_actor_key(&context),
+                    input_tokens,
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    outcome,
+                )
+                .await;
+                return Ok(result.into());
+            }
+
+            let handles_settings = service == SETTINGS_TOOL_NAME
+                && self.mcp_apps_config().await.settings
+                && admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
+                && self.route_scope.allows_service("setup")
+                && self.service_visible_on_mcp("setup").await;
+            if handles_settings {
+                let synthetic_action = if action.is_empty() {
+                    "open"
+                } else {
+                    action.as_str()
+                };
+                let setup_action = match synthetic_action {
+                    "open" | "schema" => Some("settings.schema"),
+                    "state" => Some("settings.state"),
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                let result = if let Some(setup_action) = setup_action {
+                    crate::dispatch::setup::dispatch(setup_action, params).await
+                } else {
+                    Err(ToolError::UnknownAction {
+                        message: format!("unknown Settings action `{synthetic_action}`"),
+                        valid: vec!["open", "schema", "state", "config.update", "env.update"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                        hint: None,
+                    })
                 };
                 let result =
                     result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
@@ -788,6 +1034,27 @@ impl LabMcpServer {
             }
         }
 
+        if service == "skills"
+            && !matches!(action.as_str(), "help" | "schema")
+            && !resolve_caller_authorization(
+                auth_context_from_extensions(&context.extensions),
+                self.absent_auth_trust(),
+                propagated_caller_auth(request.meta.as_ref()),
+            )
+            .can_read()
+        {
+            let envelope = build_error_extra(
+                &service,
+                &action,
+                "forbidden",
+                "skills require one of scopes: lab:read, lab, lab:admin",
+                &serde_json::json!({
+                    "required_scopes": ["lab:read", "lab", "lab:admin"]
+                }),
+            );
+            return Ok(error_result_from_envelope(envelope).into());
+        }
+
         if let Some(entry) = svc
             && !tool_execute_builtin_action_allowed(
                 entry,
@@ -863,7 +1130,22 @@ impl LabMcpServer {
                     .await
                     .map(Into::into);
             }
-            let result = if service == "gateway" {
+            let result = if service == "skills" {
+                #[cfg(feature = "skills")]
+                {
+                    self.dispatch_compat_tool_boxed(
+                        &context,
+                        request.meta.as_ref(),
+                        &action,
+                        params,
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "skills"))]
+                {
+                    (entry.dispatch)(action.clone(), params).await
+                }
+            } else if service == "gateway" {
                 #[cfg(feature = "gateway")]
                 {
                     let Some(manager) = &self.gateway_manager else {
@@ -875,8 +1157,11 @@ impl LabMcpServer {
                         );
                         return Ok(error_result_from_envelope(envelope).into());
                     };
-                    let params =
-                        inject_gateway_origin_param(params, self.request_subject(&context));
+                    let params = inject_gateway_origin_param(
+                        &action,
+                        params,
+                        self.request_subject(&context),
+                    );
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                         oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
@@ -923,7 +1208,7 @@ impl LabMcpServer {
         // unresolved service name is simply not found.
         #[cfg(feature = "gateway")]
         {
-            Box::pin(self.call_tool_upstream_impl(
+            self.boxed_call_tool_upstream_impl(
                 &service,
                 &action,
                 upstream_request,
@@ -932,7 +1217,7 @@ impl LabMcpServer {
                 &subject,
                 actor_key,
                 &context,
-            ))
+            )
             .await
         }
         #[cfg(not(feature = "gateway"))]
@@ -1088,6 +1373,25 @@ impl LabMcpServer {
                         .is_some_and(|entry| {
                             entry.actions.iter().any(|candidate| {
                                 candidate.name == gateway_action && candidate.destructive
+                            })
+                        })
+                });
+            }
+
+            if service == SETTINGS_TOOL_NAME {
+                let setup_action = match action {
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                return setup_action.is_some_and(|setup_action| {
+                    self.registry
+                        .services()
+                        .iter()
+                        .find(|entry| entry.name == "setup")
+                        .is_some_and(|entry| {
+                            entry.actions.iter().any(|candidate| {
+                                candidate.name == setup_action && candidate.destructive
                             })
                         })
                 });

@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/multimodal/image\_evals [Redirecting from `/cookbook/examples/multimodal/image\_evals.ipynb/` to `/cookbook/examples/multimodal/image\_evals`](/cookbook/examples/multimodal/image_evals)

@@ -262,7 +262,7 @@ pub(crate) fn next_relay_session_id() -> u64 {
 /// policy has one home and does not depend on any feature-gated module.
 /// Adding a transport is an explicit trust decision: an unlisted label
 /// fails closed, and `requires_admin` builtin actions are refused on it.
-/// See [`LabMcpServer::trusts_absent_auth`] and bead lab-m01gl.
+/// See [`LabMcpServer::absent_auth_trust`].
 /// `"test"` is used only by `#[cfg(test)]` server fixtures, so the suite
 /// exercises the stdio branch; verify with `rg 'transport_label: "test"'`
 /// before any production site adopts it.
@@ -731,7 +731,7 @@ impl ServerHandler for LabMcpServer {
             last_contract,
         );
         let registration_id = registered.registration_id;
-        peers.push(registered);
+        peers.push(registered.clone());
         tracing::info!(
             surface = "mcp",
             service = "peers",
@@ -745,6 +745,11 @@ impl ServerHandler for LabMcpServer {
         );
         drop(peers);
 
+        // rmcp acknowledges subscriptions before invoking this handler. Replay
+        // any matching resource-update edge events journaled during that gap,
+        // now that the peer is visible to normal live fanout.
+        crate::mcp::catalog_notifications::catch_up_resource_updates(&self.peers, &registered)
+            .await;
         crate::mcp::catalog_notifications::catch_up_tool_contract(&self.peers, registration_id)
             .await;
 
@@ -861,7 +866,7 @@ impl ServerHandler for LabMcpServer {
         // all-features dispatch state on Tokio's bounded worker stack and can
         // overflow it as new in-process services enlarge that state machine.
         Ok(provenance::stamp_call_tool_response(
-            Box::pin(self.call_tool_response_impl(request, context)).await?,
+            self.boxed_call_tool_response_impl(request, context).await?,
         ))
     }
 
@@ -1073,8 +1078,7 @@ mod tests {
 
     #[tokio::test]
     async fn relay_cancellation_custom_request_cancels_tracked_token() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
@@ -1118,8 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn tracked_cancellation_inherits_native_request_cancellation() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
@@ -1142,8 +1145,7 @@ mod tests {
 
     #[tokio::test]
     async fn numeric_and_string_request_ids_have_distinct_cancellation_keys() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
@@ -1164,8 +1166,7 @@ mod tests {
 
     #[tokio::test]
     async fn relay_cancellation_custom_request_reports_untracked_token() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
@@ -1198,8 +1199,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_cancellation_guard_cannot_remove_other_same_key_request() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
@@ -1232,8 +1232,7 @@ mod tests {
 
     #[tokio::test]
     async fn same_key_live_requests_are_all_cancelled() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
@@ -1323,8 +1322,7 @@ mod tests {
     /// upstream negotiation.
     #[test]
     fn get_info_does_not_withhold_capabilities_from_modern_sessions() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let info = server.get_info();
 
         // This fixture has no gateway manager, so `subscribe` is not advertised
@@ -1343,8 +1341,7 @@ mod tests {
 
     #[test]
     fn server_capabilities_advertise_list_changed_support() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
 
         let info = server.get_info();
         assert_eq!(info.server_info.name, "labby");
@@ -1408,8 +1405,7 @@ mod tests {
 
     #[tokio::test]
     async fn resource_templates_include_required_rc_cache_metadata() {
-        let server =
-            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let server = stateless_test_server(Default::default());
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
@@ -1551,7 +1547,7 @@ mod tests {
 
     #[tokio::test]
     async fn stateless_subscription_receives_catalog_notifications() {
-        let peers = std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let peers = Default::default();
         let server = stateless_test_server(std::sync::Arc::clone(&peers));
         let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
         let server_handle = tokio::spawn(async move {
@@ -1662,7 +1658,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_catches_up_when_change_flushed_before_registration() {
-        let peers = std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let peers = Default::default();
         let server = stateless_test_server(std::sync::Arc::clone(&peers));
         server.last_listed_tool_contract.write().await.publish(
             None,

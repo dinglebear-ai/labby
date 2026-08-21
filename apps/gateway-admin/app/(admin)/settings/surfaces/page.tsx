@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
+import { ProtectedMcpRoutesPanel } from '@/components/gateway/protected-mcp-routes-panel'
 import { SettingsScalarSection } from '@/components/settings/SettingsScalarSection'
 import { setupApi, type SettingsSchemaResponse, type SettingsState } from '@/lib/api/setup-client'
 import { fieldsForSection } from '@/lib/settings/schema'
@@ -44,16 +45,19 @@ export default function SurfacesPage(): React.ReactElement {
         </div>
       ) : null}
       {error ? <p className="text-[11.5px] text-destructive">{error}</p> : null}
-      {settings ? (
-        <SettingsScalarSection
-          title="Surfaces"
-          description="Safe scalar HTTP, MCP, URL, and CORS settings. Dangerous auth-bypass settings are read-only."
-          section="surfaces"
-          state={settings}
-          fields={fields}
-          onSaved={setSettings}
-        />
-      ) : null}
+      <div className="flex flex-col gap-4">
+        {settings ? (
+          <SettingsScalarSection
+            title="Surfaces"
+            description="Safe scalar HTTP, MCP, URL, and CORS settings. Dangerous auth-bypass settings are read-only."
+            section="surfaces"
+            state={settings}
+            fields={fields}
+            onSaved={setSettings}
+          />
+        ) : null}
+        <ProtectedMcpRoutesPanel />
+      </div>
     </>
   )
 }

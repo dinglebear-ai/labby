@@ -1,7 +1,7 @@
 ---
 title: "Labby Plugins"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
 # Labby Plugins
@@ -14,11 +14,7 @@ curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh
 labby setup
 ```
 
-`scripts/install.sh` downloads the latest GitHub release archive for the
-platform (sha256-verified) into `~/.local/bin/labby`, falling back to
-`cargo install --git` when no release asset exists. Its only job is bootstrap —
-everything after first contact (config, credentials, connectivity, repair) is
-owned by `labby setup`.
+The root `install.sh` is a compatibility entrypoint for the canonical `scripts/install.sh`. The canonical installer downloads the latest Linux x86_64 GitHub release archive, verifies its SHA-256, and installs it into `~/.local/bin/labby`. Source fallback is disabled by default and only occurs when `LABBY_ALLOW_SOURCE_FALLBACK=1` is explicitly set. The installer's only job is bootstrap; everything after first contact (config, credentials, connectivity, repair) is owned by `labby setup`.
 
 ## Checked-in plugin (`plugins/labby`)
 
@@ -54,6 +50,6 @@ snake_case names remain as deprecated aliases:
 These four actions are restricted to loopback-only HTTP; both the canonical and
 the alias forms are gated identically.
 
-`plugin.install` and `plugin.uninstall` validate the registered service slug, derive `lab-<service>@lab`, check the org against `LABBY_PLUGIN_ALLOWLIST`, and call the configured Claude Code CLI. Set `LABBY_CLAUDE_BIN` when the binary is not named `claude`.
+`plugin.install` and `plugin.uninstall` validate the registered service slug, derive `lab-<service>@<org>`, require that org to match the compile-time `LABBY_PLUGIN_ORG` value (default `lab`), and call the configured Claude Code CLI. Set runtime `LABBY_CLAUDE_BIN` when the binary is not named `claude`.
 
 `labby help` and `lab://catalog` are env-aware by default: services with missing required env vars are hidden. Use `LABBY_SHOW_ALL=1` or `labby help --all` to show the full compiled catalog.

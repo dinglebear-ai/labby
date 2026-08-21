@@ -11,10 +11,17 @@ import {
 } from './skills-model.ts'
 
 function row(partial: Partial<UpstreamSkillsRow> & Pick<UpstreamSkillsRow, 'upstream'>): UpstreamSkillsRow {
+  const skills = partial.skills ?? []
   return {
     upstream: partial.upstream,
     enabled: partial.enabled ?? true,
-    skills: partial.skills ?? [],
+    trusted: partial.trusted ?? true,
+    supports_skills: partial.supports_skills ?? true,
+    exposure_patterns: partial.exposure_patterns ?? null,
+    skills,
+    discovered_count: partial.discovered_count ?? skills.length,
+    exposed_count: partial.exposed_count ?? skills.filter((skill) => skill.exposed).length,
+    rejected: partial.rejected ?? [],
     excluded_count: partial.excluded_count ?? 0,
     truncated: partial.truncated ?? false,
     cache_age_secs: partial.cache_age_secs ?? 0,
@@ -22,7 +29,7 @@ function row(partial: Partial<UpstreamSkillsRow> & Pick<UpstreamSkillsRow, 'upst
   }
 }
 
-const skill = { name: 'refunds', uri: 'skill://gh/refunds/SKILL.md', description: 'd', resource_count: 2 }
+const skill = { name: 'refunds', uri: 'skill://gh/refunds/SKILL.md', description: 'd', resource_count: 2, exposed: true }
 
 test('an errored row reports the error rather than its stale counts', () => {
   // The counts come from a previous successful fetch; rendering them as current
@@ -43,7 +50,7 @@ test('truncation outranks exclusions', () => {
 test('exclusions are surfaced when the catalog is otherwise complete', () => {
   const excluded = row({ upstream: 'gh', skills: [skill], excluded_count: 2 })
   assert.equal(skillsRowStatus(excluded), 'excluded')
-  assert.match(skillsRowSummary(excluded), /2 excluded/)
+  assert.match(skillsRowSummary(excluded), /2 rejected as unverifiable/)
 })
 
 test('an empty listing is not reported as proof of no skills', () => {
@@ -54,9 +61,9 @@ test('an empty listing is not reported as proof of no skills', () => {
   assert.match(skillsRowSummary(empty), /may still serve skills by URI/)
 })
 
-test('a healthy row pluralises honestly', () => {
-  assert.equal(skillsRowSummary(row({ upstream: 'gh', skills: [skill] })), '1 skill')
-  assert.equal(skillsRowSummary(row({ upstream: 'gh', skills: [skill, skill] })), '2 skills')
+test('a healthy row reports exposed versus discovered counts', () => {
+  assert.equal(skillsRowSummary(row({ upstream: 'gh', skills: [skill] })), '1/1 exposed')
+  assert.equal(skillsRowSummary(row({ upstream: 'gh', skills: [skill, skill] })), '2/2 exposed')
 })
 
 test('rows needing attention sort first, then alphabetically', () => {

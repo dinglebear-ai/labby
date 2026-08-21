@@ -84,6 +84,21 @@ test('applyMockGatewayOverride treats the expose none sentinel as hiding every t
   )
 })
 
+test('applyMockGatewayOverride persists generic gateway config patches', () => {
+  const overridden = applyMockGatewayOverride(gateway, {
+    config: {
+      proxy_skills: true,
+      expose_skills: ['review-*'],
+      proxy_prompts: false,
+    },
+  })
+
+  assert.equal(overridden.config.proxy_skills, true)
+  assert.deepEqual(overridden.config.expose_skills, ['review-*'])
+  assert.equal(overridden.config.proxy_prompts, false)
+  assert.equal(overridden.config.proxy_resources, true)
+})
+
 test('applyMockGatewayOverride honors wildcard allowlist patterns', () => {
   const overridden = applyMockGatewayOverride(gateway, {
     exposurePolicy: {

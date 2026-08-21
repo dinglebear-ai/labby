@@ -2,9 +2,9 @@
 // /settings/services/[service]/. Required by Next.js `output: 'export'`
 // — `generateStaticParams()` must enumerate every slug at build time.
 //
-// Adding a new service = (a) implement it in lab-apis under feature flag
-// + (b) add the slug below + (c) `pnpm build`. Keep in alphabetical
-// order so diffs read cleanly.
+// Keep this static export list aligned with the service configuration UI, then
+// run `pnpm build` after changing it. Keep entries alphabetical so diffs read
+// cleanly.
 
 export const SERVICE_SLUGS = [
   'adguard',

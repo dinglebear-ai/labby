@@ -27,6 +27,7 @@ pub struct CodeModeBroker<'a, H: CodeModeHost> {
 }
 
 impl<'a, H: CodeModeHost> CodeModeBroker<'a, H> {
+    /// Construct a broker for one execution, optionally backed by a host.
     #[must_use]
     pub fn new(host: Option<&'a H>) -> Self {
         Self {

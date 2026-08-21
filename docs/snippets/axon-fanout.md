@@ -270,7 +270,7 @@ async (overrides = {}) => {
     // Avoid spending follow-up calls on personal mirrors, generated reference
     // blobs, and line-fragment text dumps when public docs/examples exist.
     if (/github\.com\/jmagar\//.test(url)) score -= 80;
-    if (url.includes("/docs/references/")) score -= 60;
+    if (url.includes("/docs/archive/")) score -= 60;
     if (url.includes(".txt#l")) score -= 50;
     if (url.includes("llms.txt")) score -= 50;
 
@@ -417,7 +417,7 @@ async (overrides = {}) => {
     if (/github\\.com\\/[^/]+\\/[^/]+\\/?$/.test(url)) score -= 25;
     if (url.includes("/latest/") && ![...queryTerms].some((term) => url.includes(term))) score -= 10;
     if (/github\\.com\\/jmagar\\//.test(url)) score -= 80;
-    if (url.includes("/docs/references/")) score -= 60;
+    if (url.includes("/docs/archive/")) score -= 60;
     if (url.includes(".txt#l")) score -= 50;
     if (url.includes("llms.txt")) score -= 50;
     if (url.includes("blog") || url.includes("medium.com")) score -= 20;

@@ -1,4 +1,4 @@
-# Lab — Development Commands
+# Labby — Development Commands
 
 local_release_profile := "release-fast"
 
@@ -17,9 +17,37 @@ test:
 docs-generate:
     cargo run --package labby --bin labby --all-features -- docs generate
 
-# Verify generated documentation inventories are fresh
+# Verify generated documentation inventories are fresh and maintained local links resolve
 docs-check:
     cargo run --package labby --bin labby --all-features -- docs check
+    python3 scripts/check-doc-links.py
+
+# Build strict Rustdoc for the complete workspace target surface.
+rustdoc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings --document-private-items"
+    # Default targets cover every workspace library plus binary-only packages.
+    cargo doc --workspace --all-features --no-deps --document-private-items --locked
+    # Cargo omits secondary bins/examples when a package also has a library.
+    # The six-line `labby` launcher shares the library crate name and cannot be
+    # published without Cargo issue #6313 overwriting one of the pages; its real
+    # API is `labby::run()`. Document the non-colliding fixture + examples here.
+    cargo rustdoc -p labby --all-features --bin stdio-mcp-fixture --examples --locked --target-dir target/rustdoc-extra
+
+# Build strict Rustdoc and execute all workspace doctests.
+rustdoc-check: rustdoc
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings"
+    cargo test --doc --workspace --all-features --locked
+
+# Report missing public API prose without making historical coverage debt block CI.
+rustdoc-audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} --force-warn missing_docs"
+    cargo doc --workspace --all-features --no-deps --document-private-items --locked
 
 # Run integration tests (requires running services)
 test-integration:

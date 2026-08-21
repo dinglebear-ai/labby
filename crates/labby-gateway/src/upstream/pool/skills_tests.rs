@@ -168,7 +168,16 @@ impl ServerHandler for SkillsServer {
             "skills/get" => {
                 self.get_calls.fetch_add(1, Ordering::SeqCst);
                 match self.get_entry.as_ref() {
-                    Some(entry) => Ok(CustomResult::new(json!({ "skill": entry }))),
+                    Some(entry) => Ok(CustomResult::new(json!({
+                        "resultType": "complete",
+                        "skill": entry,
+                        "_meta": {
+                            "io.modelcontextprotocol/serverInfo": {
+                                "name": "depot-shaped-skills-server",
+                                "version": "1.0.0"
+                            }
+                        }
+                    }))),
                     None => Err(ErrorData::new(
                         ErrorCode::INVALID_PARAMS,
                         "unknown skill".to_string(),
@@ -208,6 +217,38 @@ async fn capability_detection_reads_the_declared_extension() {
     assert!(!super::skills_list::peer_declares_skills(
         &peer_for(&pool, "silent").await
     ));
+}
+
+#[tokio::test]
+async fn skills_list_with_result_type_and_meta_stays_a_custom_result() {
+    let server = SkillsServer::new(vec![json!({
+        "resultType": "complete",
+        "skills": [entry("up", "alpha")],
+        "ttlMs": 60000,
+        "cacheScope": "private",
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+                "name": "depot-shaped-skills-server",
+                "version": "1.0.0"
+            }
+        }
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let skills = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect("skills/list custom result remains intact");
+
+    assert_eq!(skills.skills.len(), 1);
+    assert_eq!(
+        skills.skills[0]
+            .entry
+            .frontmatter
+            .get("name")
+            .and_then(Value::as_str),
+        Some("alpha")
+    );
 }
 
 #[tokio::test]
@@ -302,11 +343,55 @@ async fn the_skill_cap_stops_the_walk_before_the_next_request() {
         .expect("walk terminates");
 
     assert!(skills.truncated);
+    assert_eq!(
+        skills.discovered_count,
+        limits::MAX_SKILLS_PER_UPSTREAM + 5,
+        "every candidate on the fetched page was discovered before the host cap engaged"
+    );
     assert_eq!(skills.skills.len(), limits::MAX_SKILLS_PER_UPSTREAM);
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
         "no page fetched past the cap"
+    );
+}
+
+#[tokio::test]
+async fn the_candidate_cap_bounds_invalid_skill_floods() {
+    let big: Vec<Value> = (0..limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM + 5)
+        .map(|i| {
+            let name = format!("invalid-{i}");
+            json!({
+                "uri": format!("skill://up/{name}/SKILL.md"),
+                "frontmatter": { "name": name, "description": "d" }
+            })
+        })
+        .collect();
+    let server = SkillsServer::new(vec![json!({ "skills": big, "nextCursor": "more" })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let skills = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect("walk terminates");
+
+    assert!(skills.truncated);
+    assert_eq!(
+        skills.discovered_count,
+        limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM + 5,
+        "the fetched page remains visible to operator discovery accounting"
+    );
+    assert!(skills.skills.is_empty());
+    assert_eq!(
+        skills.excluded_count(),
+        limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
+        "invalid entries stop consuming rejection memory at the candidate cap"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the next page is never fetched"
     );
 }
 
@@ -334,6 +419,7 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
         .await
         .expect("the upstream survives its own bad skills");
 
+    assert_eq!(skills.discovered_count, 3);
     assert_eq!(skills.skills.len(), 1);
     assert_eq!(skills.skills[0].name, "alpha");
     assert_eq!(skills.excluded_count(), 2);

@@ -11,6 +11,5 @@ These documents describe design contracts that are implemented by, or intentiona
 - [SERIALIZATION.md](./SERIALIZATION.md) — serialization and output-boundary contract across product surfaces.
 - [GOOGLE_CREDENTIAL_BROKER.md](./GOOGLE_CREDENTIAL_BROKER.md) — current Google credential ownership and broker design.
 - [REMOTE_GATEWAY_TARGET.md](./REMOTE_GATEWAY_TARGET.md) — explicit versus opportunistic remote gateway target behavior.
-- [tool-annotations/README.md](./tool-annotations/README.md) — MCP tool annotation and safety-hint contract.
 
 Historical proposals and superseded implementation sketches are not indexed here as product documentation.

@@ -38,6 +38,16 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.import_tombstones.list` | false | false | true | lab:admin |  | `ImportTombstoneView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.import_tombstones.restore` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.list` | false | false | true | lab:admin |  | `ServerView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.add` | false | false | true | lab:admin | `loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.get` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.list` | false | false | true | lab:admin |  | `GatewayLoadoutConfig[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.list_state` | false | false | true | lab:admin |  | `GatewayLoadoutState[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.patch` | false | false | true | lab:admin | `name*: string`<br>`patch*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.remove` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_patch` | false | false | true | lab:admin | `name*: string`<br>`patch*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_remove` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
@@ -54,7 +64,11 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.protected_route.add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.get` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.list` | false | false | true | lab:admin |  | `ProtectedMcpRouteConfig[]` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.list_state` | false | false | true | lab:admin |  | `ProtectedMcpRouteState[]` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.remove` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_remove` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.stage_update` | false | false | true | lab:admin | `name*: string`<br>`route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.test` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.update` | false | false | true | lab:admin | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.public_urls.get` | false | false | true | lab:admin |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api, web |
@@ -71,8 +85,8 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin |  | `SupportedServiceView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.update` | false | false | true | lab:admin | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string` | `GatewayUsageMetricsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `id*: string` | `VirtualServerMcpPolicyView` | cli, mcp, api, web |
@@ -88,7 +102,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `lab_admin` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp |
 | `server_logs` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
 | `server_logs` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
-| `server_logs` | `server_logs.query` | false | false | true | lab:admin | `limit: integer`<br>`level: string`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer` | `ServerLogsQueryResult` | cli, mcp, api |
+| `server_logs` | `server_logs.query` | false | false | true | lab:admin | `limit: integer`<br>`level: string`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer`<br>`stop_after_limit: boolean`<br>`correlated_only: boolean` | `ServerLogsQueryResult` | cli, mcp, api |
 | `setup` | `bootstrap` | false | true | true | lab:admin |  | `BootstrapOutcome` | cli, mcp, api, web |
 | `setup` | `check` | false | false | false |  |  | `SetupReport` | cli, mcp, api, web |
 | `setup` | `draft.commit` | false | true | true | lab:admin | `force: boolean` | `CommitOutcome` | cli, mcp, api, web |
@@ -121,6 +135,12 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `setup` | `settings.update` | false | true | true | lab:admin | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | cli, mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin |  | `SetupSnapshot` | cli, mcp, api, web |
 | `setup` | `uninstall_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
+| `skills` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
+| `skills` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
+| `skills` | `skills.get` | false | false | false |  | `uri*: string` | `SkillGetResponse` | cli, mcp, api |
+| `skills` | `skills.list` | false | false | false |  | `origin: string`<br>`limit: integer` | `SkillListResponse` | cli, mcp, api |
+| `skills` | `skills.read` | false | false | false |  | `uri*: string` | `VisibleSkillFile` | cli, mcp, api |
+| `skills` | `skills.search` | false | false | false |  | `query*: string`<br>`origin: string`<br>`limit: integer` | `SkillSearchResponse` | cli, mcp, api |
 | `snippets` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
 | `snippets` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |

@@ -1,10 +1,10 @@
-// TypeScript wrapper over the lab-bg3e.3 setup dispatch service.
+// TypeScript wrapper over the Labby setup dispatch service.
 //
-// Mirrors crates/lab/src/dispatch/setup/catalog.rs. All actions go through
+// Mirrors crates/labby/src/dispatch/setup/catalog.rs. All actions go through
 // POST /v1/setup with { action, params } shape (same as MCP).
 //
 // Each action returns the typed response directly; transport errors throw
-// SetupApiError with the stable kind tag from docs/ERRORS.md.
+// SetupApiError with the stable kind tag from docs/dev/ERRORS.md.
 
 import { setupActionUrl } from './gateway-config.ts'
 import { performServiceAction, type ServiceActionError } from './service-action-client.ts'

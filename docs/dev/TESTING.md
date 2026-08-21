@@ -1,14 +1,12 @@
 ---
 title: "Testing"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
 # Testing
 
-Last updated: 2026-04-10
-
-This document is the canonical testing contract for `labby`.
+This document is the canonical testing contract for Labby.
 
 It defines:
 
@@ -131,7 +129,7 @@ Rules:
 - at least one successful read-only path
 - at least one failing path with the expected stable `kind`
 - observability evidence for the path
-- generated service/action/feature documentation alignment with the actual implementation
+- docs/coverage alignment with the actual implementation
 
 ## Required Minimums For New Services
 
@@ -197,6 +195,10 @@ Minimum expectation:
 - `just docs-check` when changing registry entries, action catalogs,
   `PluginMeta`, API route metadata, Cargo features, onboarding audit checks, or
   generated docs artifacts
+- `just rustdoc-check` when changing public Rust APIs, Rustdoc, crate/module
+  structure, examples, binaries, or anything referenced by intra-doc links
+- `just rustdoc-audit` when reviewing public API documentation coverage; this
+  reports historical missing-prose debt without blocking the strict correctness gate
 
 Preferred runner:
 
@@ -213,6 +215,8 @@ Common commands:
 ```bash
 just check
 just docs-check
+just rustdoc-check
+just rustdoc-audit
 just test
 just lint
 cargo nextest run --manifest-path crates/labby/Cargo.toml --all-features
@@ -222,9 +226,15 @@ cargo test --manifest-path crates/labby/Cargo.toml
 
 Use narrower commands first when iterating, then broaden before completion.
 
-## Generated Product Docs
+## Coverage And Verification
 
-Code-owned catalogs under `docs/generated/` are part of verification, not a substitute for tests. Run `just docs-generate` after metadata/surface changes and `just docs-check` before handoff. Generated service, action, route, environment, CLI, MCP, and feature projections must remain aligned with code.
+Coverage is established by executable tests, generated contract checks, and explicit live verification where a change crosses a runtime boundary. Historical per-service coverage ledgers are not maintained as a parallel documentation surface because they drifted from the code they were meant to describe.
+
+Rules:
+
+- tests and generated catalogs must reflect the real implementation surface
+- docs must not claim live-tested status unless that testing actually happened
+- implementation counts and file references must stay aligned with code
 
 ## Ownership Summary
 
@@ -237,7 +247,8 @@ Code-owned catalogs under `docs/generated/` are part of verification, not a subs
 
 - [OBSERVABILITY.md](./OBSERVABILITY.md)
 - [ERRORS.md](./ERRORS.md)
-- [SERIALIZATION.md](../design/SERIALIZATION.md)
+- [design/SERIALIZATION.md](../design/SERIALIZATION.md)
 - [DISPATCH.md](./DISPATCH.md)
 - [SERVICE_ONBOARDING.md](./SERVICE_ONBOARDING.md)
+- [RUSTDOC.md](./RUSTDOC.md)
 - [OPERATIONS.md](../OPERATIONS.md)

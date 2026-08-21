@@ -38,7 +38,7 @@ multiple-versions = "warn"
 wildcards = "allow"
 
 # Convention enforcement — codifies rules from /CLAUDE.md and
-# crates/lab-apis/CLAUDE.md that clippy can't enforce on its own.
+# crates/labby-apis/CLAUDE.md that clippy can't enforce on its own.
 # `wrappers` whitelists *direct* dep-graph parents allowed to pull the
 # banned crate in. Any other crate in the workspace doing so fails.
 #
@@ -50,12 +50,12 @@ wildcards = "allow"
 [[bans.deny]]
 name = "clap"
 wrappers = ["labby", "clap_complete"]
-reason = "Binary-only: lab-apis must stay pure. CLI parsing lives in `labby`."
+reason = "Binary-only: labby-apis must stay pure. CLI parsing lives in `labby`."
 
 [[bans.deny]]
 name = "rmcp"
 wrappers = ["labby", "labby-auth", "labby-gateway"]
-reason = "Binary-only: lab-apis must stay pure. MCP server lives in `labby`."
+reason = "Binary-only: labby-apis must stay pure. MCP server lives in `labby`."
 
 [[bans.deny]]
 name = "anyhow"
@@ -66,14 +66,17 @@ wrappers = [
     "labby-gateway",
     "javy",
 ]
-reason = "lab-apis uses `thiserror`. anyhow is for the binary only."
+reason = "labby-apis uses `thiserror`. anyhow is for the binary only."
 
 [[bans.deny]]
 name = "tabled"
-reason = "Binary-only: table formatting happens in `lab/src/output.rs`, not lab-apis."
+reason = "Binary-only: table formatting happens in `crates/labby/src/output/`, not labby-apis."
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# Temporary, exact-source exception for the pinned rmcp decoder fix. The
+# dependency itself is rev-pinned in Cargo.toml/Cargo.lock; remove this entry
+# with the patch as soon as upstream rmcp publishes the equivalent fix.
+allow-git = ["https://github.com/dinglebear-ai/rust-sdk"]

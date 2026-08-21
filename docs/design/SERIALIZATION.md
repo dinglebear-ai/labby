@@ -6,7 +6,7 @@ updated: "2026-08-05"
 
 # Serialization
 
-This document is the canonical serialization contract for `labby`.
+This document is the canonical serialization contract for `lab`.
 
 It defines:
 
@@ -34,7 +34,7 @@ Serialization rules should keep the project consistent across:
 The main boundary is simple:
 
 - `labby-apis` owns typed service data and wire-level serde models
-- `labby` owns product-surface envelopes and presentation formats
+- `lab` owns product-surface envelopes and presentation formats
 
 ## Ownership
 
@@ -55,7 +55,7 @@ The main boundary is simple:
 
 ### `labby`
 
-`labby` owns:
+`lab` owns:
 
 - MCP success and error envelopes
 - HTTP request/response envelope shaping for the product API
@@ -81,8 +81,8 @@ Canonical success shape:
 ```json
 {
   "ok": true,
-  "service": "gateway",
-  "action": "gateway.list",
+  "service": "marketplace",
+  "action": "mcp.list",
   "data": []
 }
 ```
@@ -100,8 +100,8 @@ Canonical error shape:
 ```json
 {
   "ok": false,
-  "service": "gateway",
-  "action": "gateway.get",
+  "service": "setup",
+  "action": "plugin.install",
   "error": {
     "kind": "missing_param",
     "message": "missing parameter: name"
@@ -133,11 +133,11 @@ The CLI supports:
 
 Rules:
 
-- human-readable rendering is built in `labby`, not SDK types
+- human-readable rendering is built in `labby`, not shared SDK types
 - machine-readable output serializes the underlying SDK data or surface envelope shape
 - `labby-apis` types must remain presentation-free
 
-If a command needs special display rows, define them in `labby`, not in the SDK.
+If a command needs special display rows, define them in `labby`, not in a shared SDK crate.
 
 ## Naming Rules
 

@@ -1,4 +1,4 @@
-//! Shared test utilities for the `lab-gateway` crate.
+//! Shared test utilities for the `labby-gateway` crate.
 //!
 //! Only compiled in `#[cfg(test)]` builds. Import via `use crate::test_support::*;`.
 //! Vendored from `lab`'s `crate::test_support` so the moved upstream pool's

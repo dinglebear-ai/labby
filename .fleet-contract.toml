@@ -1,11 +1,5 @@
 [docs]
 frontmatter-exclude = [
-  "docs/code-mode-cloudflare-enhancements.md",
-  "docs/crate-extract/**",
-  "docs/destructive-gate-admin-scope-bug.md",
-  "docs/dev/refactor-plan-mcp-server-split.md",
-  "docs/epic-lab-y08q1-code-mode-cloudflare-parity.md",
+  "docs/archive/**",
   "docs/features/**",
-  "docs/labby-cli-audit-2026-06-04.md",
-  "docs/system-service-audit-2026-05-15.md",
 ]

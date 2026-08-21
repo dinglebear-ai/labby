@@ -5,12 +5,13 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::gateway::{
     GatewayArgs, GatewayClientsCommand, GatewayCommand, GatewayEnrichCommand,
+    GatewayLoadoutCommand, GatewayLoadoutCreateArgs, GatewayLoadoutUpdateArgs,
     GatewayMcpAuthCommand, GatewayMcpCommand, GatewayPendingCommand, GatewayProtectedRouteCommand,
     GatewayProtectedRouteUpdateArgs, GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand,
-    GatewayUpdateArgs, GatewayUsageCommand, LazyGatewayManager,
+    GatewaySkillsCommand, GatewayUpdateArgs, GatewayUsageCommand, LazyGatewayManager,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
-use crate::config::{LabConfig, ProtectedMcpRouteConfig};
+use crate::config::{GatewayLoadoutConfig, LabConfig, ProtectedMcpRouteConfig};
 use crate::dispatch::error::ToolError;
 use crate::output::OutputFormat;
 
@@ -47,22 +48,27 @@ pub(super) async fn dispatch_gateway_action(
 
 fn protected_route_target_from_args(
     gateway_subset: bool,
+    loadout: Option<String>,
     upstreams: Vec<String>,
     services: Vec<String>,
     expose_code_mode: bool,
 ) -> Option<crate::config::ProtectedMcpRouteTarget> {
-    gateway_subset.then_some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
-        crate::config::ProtectedGatewaySubsetTarget {
-            upstreams,
-            services,
-            expose_code_mode,
-        },
-    ))
+    (gateway_subset || loadout.is_some()).then_some(
+        crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+            crate::config::ProtectedGatewaySubsetTarget {
+                loadout,
+                upstreams,
+                services,
+                expose_code_mode,
+            },
+        ),
+    )
 }
 
 fn protected_route_from_args(args: GatewayProtectedRouteUpsertArgs) -> ProtectedMcpRouteConfig {
     let target = protected_route_target_from_args(
         args.gateway_subset,
+        args.loadout,
         args.target_upstream,
         args.target_service,
         args.expose_code_mode,
@@ -94,6 +100,7 @@ fn protected_route_from_update_args(
 ) -> (String, ProtectedMcpRouteConfig) {
     let target = protected_route_target_from_args(
         args.gateway_subset,
+        args.loadout,
         args.target_upstream,
         args.target_service,
         args.expose_code_mode,
@@ -122,6 +129,46 @@ fn protected_route_from_update_args(
     (name, route)
 }
 
+fn loadout_from_create_args(args: GatewayLoadoutCreateArgs) -> GatewayLoadoutConfig {
+    GatewayLoadoutConfig {
+        name: args.name,
+        description: args.description,
+        upstreams: args.upstreams,
+        services: args.services,
+        expose_code_mode: args.code_mode,
+        expose_tools: !args.no_tools,
+        expose_resources: !args.no_resources,
+        expose_prompts: !args.no_prompts,
+        expose_skills: !args.no_skills,
+    }
+}
+
+fn loadout_patch_from_args(args: GatewayLoadoutUpdateArgs) -> Value {
+    let mut patch = Map::new();
+    insert_if_some(&mut patch, "name", args.new_name);
+    if args.clear_description {
+        patch.insert("description".to_string(), Value::Null);
+    } else if let Some(description) = args.description {
+        patch.insert("description".to_string(), Value::String(description));
+    }
+    if args.clear_upstreams {
+        patch.insert("upstreams".to_string(), json!([]));
+    } else if !args.upstreams.is_empty() {
+        patch.insert("upstreams".to_string(), json!(args.upstreams));
+    }
+    if args.clear_services {
+        patch.insert("services".to_string(), json!([]));
+    } else if !args.services.is_empty() {
+        patch.insert("services".to_string(), json!(args.services));
+    }
+    insert_if_some(&mut patch, "expose_tools", args.expose_tools);
+    insert_if_some(&mut patch, "expose_resources", args.expose_resources);
+    insert_if_some(&mut patch, "expose_prompts", args.expose_prompts);
+    insert_if_some(&mut patch, "expose_skills", args.expose_skills);
+    insert_if_some(&mut patch, "expose_code_mode", args.expose_code_mode);
+    Value::Object(patch)
+}
+
 fn update_patch_from_args(args: GatewayUpdateArgs) -> Value {
     let url_was_set = args.url.is_some();
     let command_was_set = args.command.is_some();
@@ -130,6 +177,14 @@ fn update_patch_from_args(args: GatewayUpdateArgs) -> Value {
     insert_if_some(&mut patch, "name", args.new_name);
     insert_if_some(&mut patch, "proxy_resources", args.proxy_resources);
     insert_if_some(&mut patch, "proxy_skills", args.proxy_skills);
+    if args.clear_expose_skills {
+        patch.insert("expose_skills".to_string(), Value::Null);
+    } else if !args.expose_skills.is_empty() {
+        patch.insert(
+            "expose_skills".to_string(),
+            serde_json::to_value(args.expose_skills).unwrap_or(Value::Null),
+        );
+    }
 
     if args.clear_url || command_was_set {
         patch.insert("url".to_string(), Value::Null);
@@ -324,6 +379,7 @@ pub(super) async fn dispatch_command(
                             "bearer_token_env": args.bearer_token_env,
                             "proxy_resources": args.proxy_resources,
                             "proxy_skills": args.proxy_skills,
+                            "expose_skills": if args.expose_skills.is_empty() { None } else { Some(args.expose_skills) },
                         }
                     }),
                 ),
@@ -355,30 +411,79 @@ pub(super) async fn dispatch_command(
                 },
                 GatewayCommand::ProtectedRoute(args) => match args.command {
                     GatewayProtectedRouteCommand::List => {
-                        ("gateway.protected_route.list".to_string(), json!({}))
+                        ("gateway.protected_route.list_state".to_string(), json!({}))
                     }
                     GatewayProtectedRouteCommand::Get(args) => (
                         "gateway.protected_route.get".to_string(),
                         json!({ "name": args.name }),
                     ),
-                    GatewayProtectedRouteCommand::Add(args) => (
-                        "gateway.protected_route.add".to_string(),
-                        json!({ "route": protected_route_from_args(args) }),
-                    ),
+                    GatewayProtectedRouteCommand::Add(args) => {
+                        let stage_for_restart = args.stage_for_restart;
+                        let route = protected_route_from_args(args);
+                        let action = if stage_for_restart || route.is_gateway_subset() {
+                            "gateway.protected_route.stage_add"
+                        } else {
+                            "gateway.protected_route.add"
+                        };
+                        (action.to_string(), json!({ "route": route }))
+                    }
                     GatewayProtectedRouteCommand::Update(args) => {
+                        let stage_for_restart = args.stage_for_restart;
                         let (name, route) = protected_route_from_update_args(args);
-                        (
-                            "gateway.protected_route.update".to_string(),
-                            json!({ "name": name, "route": route }),
-                        )
+                        let action = if stage_for_restart || route.is_gateway_subset() {
+                            "gateway.protected_route.stage_update"
+                        } else {
+                            "gateway.protected_route.update"
+                        };
+                        (action.to_string(), json!({ "name": name, "route": route }))
                     }
                     GatewayProtectedRouteCommand::Remove(args) => (
-                        "gateway.protected_route.remove".to_string(),
+                        if args.stage_for_restart {
+                            "gateway.protected_route.stage_remove"
+                        } else {
+                            "gateway.protected_route.remove"
+                        }
+                        .to_string(),
                         json!({ "name": args.name }),
                     ),
                     GatewayProtectedRouteCommand::Test(args) => (
                         "gateway.protected_route.test".to_string(),
                         json!({ "route": protected_route_from_args(args) }),
+                    ),
+                },
+                GatewayCommand::Loadout(args) => match args.command {
+                    GatewayLoadoutCommand::List => {
+                        ("gateway.loadout.list_state".to_string(), json!({}))
+                    }
+                    GatewayLoadoutCommand::Get(args) => (
+                        "gateway.loadout.get".to_string(),
+                        json!({ "name": args.name }),
+                    ),
+                    GatewayLoadoutCommand::Add(args) => (
+                        "gateway.loadout.add".to_string(),
+                        json!({ "loadout": loadout_from_create_args(args) }),
+                    ),
+                    GatewayLoadoutCommand::Update(args) => {
+                        let name = args.name.clone();
+                        let stage_for_restart = args.stage_for_restart;
+                        (
+                            if stage_for_restart {
+                                "gateway.loadout.stage_patch"
+                            } else {
+                                "gateway.loadout.patch"
+                            }
+                            .to_string(),
+                            json!({ "name": name, "patch": loadout_patch_from_args(args) }),
+                        )
+                    }
+                    GatewayLoadoutCommand::Remove(args) => (
+                        if args.stage_for_restart {
+                            "gateway.loadout.stage_remove"
+                        } else {
+                            "gateway.loadout.remove"
+                        }
+                        .to_string(),
+                        json!({ "name": args.name }),
                     ),
                 },
                 GatewayCommand::Reload => (
@@ -454,6 +559,51 @@ pub(super) async fn dispatch_command(
                         )
                     }
                 },
+                GatewayCommand::Skills(args) => match args.command {
+                    GatewaySkillsCommand::List(args) => (
+                        "gateway.skills.list".to_string(),
+                        json!({ "upstream": args.upstream }),
+                    ),
+                    GatewaySkillsCommand::Trust(args) => {
+                        confirmed = args.yes;
+                        (
+                            "gateway.update".to_string(),
+                            json!({
+                                "name": args.upstream,
+                                "origin": cli_origin,
+                                "owner": cli_owner,
+                                "patch": { "proxy_skills": true },
+                            }),
+                        )
+                    }
+                    GatewaySkillsCommand::Untrust(args) => (
+                        "gateway.update".to_string(),
+                        json!({
+                            "name": args.upstream,
+                            "origin": cli_origin,
+                            "owner": cli_owner,
+                            "patch": { "proxy_skills": false },
+                        }),
+                    ),
+                    GatewaySkillsCommand::Expose(args) => (
+                        "gateway.update".to_string(),
+                        json!({
+                            "name": args.upstream,
+                            "origin": cli_origin,
+                            "owner": cli_owner,
+                            "patch": { "expose_skills": args.patterns },
+                        }),
+                    ),
+                    GatewaySkillsCommand::ExposeAll(args) => (
+                        "gateway.update".to_string(),
+                        json!({
+                            "name": args.upstream,
+                            "origin": cli_origin,
+                            "owner": cli_owner,
+                            "patch": { "expose_skills": Value::Null },
+                        }),
+                    ),
+                },
                 GatewayCommand::Usage(args) => match args.command {
                     GatewayUsageCommand::Metrics(m) => (
                         "gateway.usage.metrics".to_string(),
@@ -461,6 +611,17 @@ pub(super) async fn dispatch_command(
                             "since_unix": m.since_unix,
                             "until_unix": m.until_unix,
                             "upstream": m.upstream,
+                            "tool": m.tool,
+                            "capability": m.capability,
+                            "operation": m.operation,
+                            "subject_scoped": m.subject_scoped,
+                            "actor": m.actor,
+                            "outcome": m.outcome,
+                            "search": m.search,
+                            "bucket_count": m.bucket_count,
+                            "timezone": m.timezone,
+                            "timezone_offset_minutes": m.timezone_offset_minutes,
+                            "include_facets": m.include_facets,
                         }),
                     ),
                     GatewayUsageCommand::Calls(c) => (
@@ -469,6 +630,13 @@ pub(super) async fn dispatch_command(
                             "since_unix": c.since_unix,
                             "until_unix": c.until_unix,
                             "upstream": c.upstream,
+                            "tool": c.tool,
+                            "capability": c.capability,
+                            "operation": c.operation,
+                            "subject_scoped": c.subject_scoped,
+                            "actor": c.actor,
+                            "outcome": c.outcome,
+                            "search": c.search,
                             "limit": c.limit,
                             "cursor": c.cursor,
                             "include_total": c.include_total,
@@ -685,11 +853,29 @@ mod tests {
                 "since_unix": m.since_unix,
                 "until_unix": m.until_unix,
                 "upstream": m.upstream,
+                "tool": m.tool,
+                "capability": m.capability,
+                "operation": m.operation,
+                "subject_scoped": m.subject_scoped,
+                "actor": m.actor,
+                "outcome": m.outcome,
+                "search": m.search,
+                "bucket_count": m.bucket_count,
+                "timezone": m.timezone,
+                "timezone_offset_minutes": m.timezone_offset_minutes,
+                "include_facets": m.include_facets,
             }),
             GatewayUsageCommand::Calls(c) => json!({
                 "since_unix": c.since_unix,
                 "until_unix": c.until_unix,
                 "upstream": c.upstream,
+                "tool": c.tool,
+                "capability": c.capability,
+                "operation": c.operation,
+                "subject_scoped": c.subject_scoped,
+                "actor": c.actor,
+                "outcome": c.outcome,
+                "search": c.search,
                 "limit": c.limit,
                 "cursor": c.cursor,
                 "include_total": c.include_total,
@@ -711,6 +897,27 @@ mod tests {
             "2000",
             "--upstream",
             "github",
+            "--tool",
+            "github::search_repos",
+            "--capability",
+            "resources",
+            "--operation",
+            "resource.read",
+            "--subject-scoped",
+            "true",
+            "--actor",
+            "codex",
+            "--outcome",
+            "failed",
+            "--search",
+            "timeout",
+            "--bucket-count",
+            "24",
+            "--timezone",
+            "America/New_York",
+            "--timezone-offset-minutes",
+            "-240",
+            "--include-facets",
         ]);
 
         assert_eq!(
@@ -719,6 +926,17 @@ mod tests {
                 "since_unix": 1000,
                 "until_unix": 2000,
                 "upstream": "github",
+                "tool": "github::search_repos",
+                "capability": "resources",
+                "operation": "resource.read",
+                "subject_scoped": true,
+                "actor": "codex",
+                "outcome": "failed",
+                "search": "timeout",
+                "bucket_count": 24,
+                "timezone": "America/New_York",
+                "timezone_offset_minutes": -240,
+                "include_facets": true,
             })
         );
     }
@@ -733,6 +951,17 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
+                "bucket_count": null,
+                "timezone": null,
+                "timezone_offset_minutes": null,
+                "include_facets": false,
             })
         );
     }
@@ -749,6 +978,13 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
                 "limit": 50,
                 "cursor": null,
                 "include_total": false,
@@ -767,6 +1003,13 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
                 "limit": null,
                 "cursor": null,
                 "include_total": false,
@@ -793,6 +1036,13 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
                 "limit": null,
                 "cursor": "123:45",
                 "include_total": true,

@@ -25,6 +25,20 @@ pub(crate) const GATEWAY_STATUS_APP_SKYBRIDGE_URI: &str = "ui://lab/gateway/stat
 #[cfg(feature = "gateway")]
 pub(crate) const GATEWAY_STATUS_APP_HTML: &str = include_str!("mcp/assets/gateway_status_app.html");
 
+/// URI namespace reserved for the Labby settings app.
+pub(crate) const SETTINGS_APP_URI: &str = "ui://lab/settings/editor";
+/// OpenAI Apps skybridge variant for ChatGPT / Codex hosts.
+pub(crate) const SETTINGS_APP_SKYBRIDGE_URI: &str = "ui://lab/settings/editor.skybridge";
+pub(crate) const SETTINGS_APP_HTML: &str = include_str!("mcp/assets/settings_app.html");
+
+/// Always-on MCP App manager used to control the other Labby-owned app surfaces.
+#[cfg(feature = "gateway")]
+pub(crate) const MCP_APPS_APP_URI: &str = "ui://lab/apps/manage";
+#[cfg(feature = "gateway")]
+pub(crate) const MCP_APPS_APP_SKYBRIDGE_URI: &str = "ui://lab/apps/manage.skybridge";
+#[cfg(feature = "gateway")]
+pub(crate) const MCP_APPS_APP_HTML: &str = include_str!("mcp/assets/mcp_apps_app.html");
+
 pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   "use strict";
   if (window.LabbyAppHost) return;

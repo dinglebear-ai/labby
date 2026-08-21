@@ -8,11 +8,11 @@
 !apps/palette-tauri/scripts/desktop-smoke.env.example
 # Use /config.toml (root-anchored) so .cargo/config.toml is NOT excluded.
 /config.toml
-# The gateway writes a sibling <config>.lock next to whatever config it opens
-# (see lock_path() in crates/labby-gateway/src/gateway/config.rs). Running
-# labby from the repo root therefore drops /config.toml.lock here; ignoring
-# /config.toml alone let an empty one get committed once already.
+# The gateway writes sibling <config>.lock and <config>.mutation.lock sidecars
+# next to whatever config it opens. Running labby/tests from the repo root can
+# therefore drop both here; neither runtime synchronization file belongs in git.
 /config.toml.lock
+/config.toml.mutation.lock
 .broadcastr
 # ── Runtime artifacts ────────────────────────────────────────────────────────
 /logs/
@@ -20,8 +20,6 @@
 !apps/gateway-admin/app/(admin)/logs/page.tsx
 !apps/gateway-admin/components/logs/
 !apps/gateway-admin/components/logs/*.tsx
-!crates/lab/src/dispatch/logs/
-!crates/lab/src/dispatch/logs/*.rs
 *.runtime.json
 /artifacts/
 backups/
@@ -29,6 +27,10 @@ backups/
 *.pid
 *.bak
 *.bak-*
+*.tmp
+*.temp
+.tmp-*
+*.mutation.lock
 
 # ── Claude Code / AI tooling ────────────────────────────────────────────────
 .claude/*
@@ -47,6 +49,7 @@ backups/
 .beads-credential-key
 .serena/
 .worktrees/
+.worktrees
 .full-review/
 .full-review-archive-*
 .bivvy
@@ -55,7 +58,6 @@ backups/
 .codex
 .gemini
 settings.local.json
-.worktrees/
 storage/
 /bin/
 
@@ -82,9 +84,11 @@ Thumbs.db
 __pycache__/
 *.pyc
 
-# ── Documentation artifacts (session/plan docs, not reference) ───────────────
+# ── Documentation work products ─────────────────────────────────────────────
 .docs/
 .codex-plan-tmp/
+/docs/references/
+/docs/snippets/*-output.md
 Labby Gateway Console.html
 
 
@@ -129,7 +133,6 @@ config.local.toml
 
 # Personal local cheatsheet (never commit)
 CLAUDE.md.local
-.worktrees
 
 # Local binary artifacts
 plugins/bitwarden/bin/

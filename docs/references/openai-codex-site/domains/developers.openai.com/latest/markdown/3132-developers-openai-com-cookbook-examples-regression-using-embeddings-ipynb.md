@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/regression\_using\_embeddings [Redirecting from `/cookbook/examples/regression\_using\_embeddings.ipynb/` to `/cookbook/examples/regression\_using\_embeddings`](/cookbook/examples/regression_using_embeddings)

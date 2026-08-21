@@ -1,8 +1,9 @@
-//! Append-only durable journal of `codemode.step` boundaries. Read/replay-only:
-//! this store never gates or pauses a run (see docs/dev/CODE_MODE.md). Owner-
+//! Append-only audit journal of `codemode.step` boundaries with a read-only
+//! notebook projection. This store never gates or pauses a run (see
+//! docs/dev/CODE_MODE.md). Owner-
 //! identity columns (`actor_key`/`route_scope`/`capability_filter_fingerprint`)
-//! and `replayed_from` are persisted for the v2 replay-auth path (epic
-//! lab-5dtw9) even though v1 never reads them.
+//! and `replayed_from` are reserved for the future v2 replay-auth path (epic
+//! lab-5dtw9); v1 never reads them to resume or replay work.
 
 pub mod notebook;
 pub mod store;

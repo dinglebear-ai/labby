@@ -1,6 +1,6 @@
 # mcp/ — MCP protocol surface
 
-This directory adapts Labby's shared dispatch and extracted runtime crates to the MCP protocol. It owns MCP-specific envelopes, resources, MCP Apps, elicitation, capability negotiation, and protocol routing; it does not own product operation semantics.
+This directory is the translation layer between `labby-apis` (pure SDK) and the MCP protocol. It owns dispatch, envelopes, resources, elicitation, and the shared catalog.
 
 ## Tool descriptors are built twice — keep the two sites identical
 
@@ -50,7 +50,7 @@ produce different service sets. A new service needs a reviewed hint row; a
 `readOnly` claim asserts every action is non-mutating, which is stronger than
 "has no destructive actions" and cannot be derived from `ActionSpec`.
 
-Spec and rationale: `docs/design/tool-annotations/`.
+Current annotation and safety-hint behavior is documented in `docs/surfaces/MCP.md`.
 
 ## One tool per service
 
@@ -69,22 +69,25 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
 
 `mcp/services/` is now an exception layer, not the default adapter surface. Keep a module there only when it owns MCP-specific behavior that cannot live in shared dispatch. Current examples:
 
-- `deploy` sets the MCP elicitation context before calling shared deploy dispatch.
 - `fs` filters `fs.preview` out of MCP discovery and execution.
 - `nodes` owns MCP-only enrollment actions.
 - Code Mode is registered directly in the MCP layer and bypasses both
   `dispatch/` and `mcp/services/`. The public surface is intentionally split:
   `codemode` has no static app descriptor but may return dynamic `_meta.ui`
   when an upstream call launches a nested MCP App. `codemode_ui` shares the
-  same execution backend and owns the Code Mode inspector metadata, while
-  `mcp_app` is the text-only
-  `status|enable|disable` recovery control. App mutations require `lab:admin`,
-  are gateway-scoped, and schedule coalesced `tools/list_changed` plus
-  `resources/list_changed` notifications after the open tool turn drains.
+  same execution backend and owns the Code Mode inspector metadata. `mcp_app`
+  is the always-on root-gateway MCP App manager for the inspector, Gateway
+  Status, Server Logs, and Add Server surfaces; it supports per-app and `all`
+  `status|enable|disable` operations and cannot disable itself. App mutations
+  require `lab:admin`, are gateway-scoped, and schedule coalesced
+  `tools/list_changed` plus `resources/list_changed` notifications after the
+  open tool turn drains. `server_logs` keeps its text/service capability when
+  its UI is hidden; `codemode` likewise remains text-only and executable when
+  only the inspector is disabled.
   Code Mode business logic remains in `dispatch/gateway/code_mode.rs` so the
   native CLI can call the same broker without routing through MCP.
 
-**No product business logic in `mcp/`.** If behavior is shared by another surface, move it into product dispatch or the extracted runtime crate that owns it. Keep only genuinely MCP-specific protocol behavior here.
+**No business logic anywhere in `mcp/`.** If you find yourself calling `reqwest`, parsing JSON beyond param extraction, or retrying, move it to `labby-apis/src/<service>/client.rs`.
 
 ## Structured error envelopes
 
@@ -193,7 +196,7 @@ Every tool automatically supports `help` and `schema` without the service declar
 
 1. The `lab.help` global MCP tool.
 2. The `lab://catalog` MCP resource.
-3. The `labby help` CLI subcommand.
+3. The generated `labby --help` CLI surface.
 
 Never duplicate catalog logic. If you need richer data, extend the builder.
 
@@ -208,7 +211,7 @@ Resources are read-only. Do not use them for mutations.
 
 `read_resource_impl` splits the `ui://` namespace:
 
-- `ui://lab/code-mode/*` — Labby's own Code Mode app resources, served locally
+- `ui://lab/code-mode/*` — Lab's own Code Mode app resources, served locally
   from bundled HTML (`read_code_mode_app_resource_impl`). The app descriptors
   bind only to `codemode_ui`; disabling the app hides that tool and these
   resources from discovery, while direct resource reads remain valid so cards
@@ -216,6 +219,11 @@ Resources are read-only. Do not use them for mutations.
 - `ui://lab/gateway/add-server` — the admin-only Add Server app bound to the
   synthetic `add_server` tool. Its `test` and `create` callbacks delegate to
   `gateway.test` and `gateway.add`; do not duplicate gateway persistence logic.
+- `ui://lab/gateway/status` — the admin-only live gateway connection and
+  capability app bound to the synthetic `gateway_status` tool.
+- `ui://lab/settings/editor` — the admin-only schema-backed settings app bound
+  to the synthetic `settings` tool. Its callbacks delegate to the canonical
+  `setup settings.*` dispatch actions; do not add a second configuration model.
 - any other `ui://<upstream>/…` — an upstream mcp-ui widget resource (referenced
   by a tool result's `_meta.ui.resourceUri`). Routed to the owning upstream peer
   via `pool.read_upstream_ui_resource` (catalog reverse-lookup, native URI

@@ -7,7 +7,7 @@
  * local previews always produce results identical to production behavior.
  *
  * The algorithm is a TypeScript port of the Rust `wildcard_matches` function
- * in `crates/lab/src/dispatch/upstream/types.rs`. When updating either
+ * in `crates/labby-gateway/src/upstream/types.rs`. When updating either
  * implementation, update both.
  *
  * Supported pattern syntax:

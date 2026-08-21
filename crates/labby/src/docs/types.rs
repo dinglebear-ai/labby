@@ -36,8 +36,6 @@ pub struct ServiceDoc {
     pub surfaces: SurfaceAvailability,
     pub default_port: Option<u16>,
     pub docs_url: Option<String>,
-    pub coverage_doc: Option<String>,
-    pub upstream_doc: Option<String>,
     pub supports_multi_instance: bool,
     pub metadata_source: String,
 }

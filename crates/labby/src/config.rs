@@ -47,6 +47,33 @@ use std::{
 // server is operating in Code Mode.
 static PROCESS_CODE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(test)]
+static PROCESS_CODE_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct ProcessCodeModeTestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: bool,
+}
+
+#[cfg(test)]
+impl Drop for ProcessCodeModeTestGuard {
+    fn drop(&mut self) {
+        set_process_code_mode_enabled(self.previous);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn process_code_mode_test_guard() -> ProcessCodeModeTestGuard {
+    let lock = PROCESS_CODE_MODE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ProcessCodeModeTestGuard {
+        _lock: lock,
+        previous: process_code_mode_enabled(),
+    }
+}
+
 pub(crate) fn set_process_code_mode_enabled(enabled: bool) {
     let previous = PROCESS_CODE_MODE_ENABLED.swap(enabled, Ordering::AcqRel);
     if previous != enabled {
@@ -305,6 +332,9 @@ pub struct LabConfig {
     /// Gateway-wide Code Mode exposure and execution settings.
     #[serde(default)]
     pub code_mode: CodeModeConfig,
+    /// Visibility of Labby-owned MCP App surfaces other than Code Mode.
+    #[serde(default)]
+    pub mcp_apps: McpAppsConfig,
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -331,6 +361,9 @@ pub struct LabConfig {
     /// - `"auto"`: auto-import everything not tombstoned (legacy behavior).
     #[serde(default)]
     pub gateway_import_mode: GatewayImportMode,
+    /// Named reusable gateway capability projections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loadouts: Vec<GatewayLoadoutConfig>,
     /// Public HTTP MCP routes protected by Lab OAuth and proxied by Lab.
     ///
     /// These are intentionally separate from `upstream`: upstreams import tools
@@ -432,11 +465,13 @@ impl LabConfig {
     pub fn to_gateway_config(&self) -> GatewayConfig {
         GatewayConfig {
             code_mode: self.code_mode.clone(),
+            mcp_apps: self.mcp_apps,
             upstream_request_timeout_ms: self.upstream_request_timeout_ms,
             upstream_relay_timeout_ms: self.upstream_relay_timeout_ms,
             upstream: self.upstream.clone(),
             upstream_import_tombstones: self.upstream_import_tombstones.clone(),
             upstream_pending: self.upstream_pending.clone(),
+            loadouts: self.loadouts.clone(),
             protected_mcp_routes: self.protected_mcp_routes.clone(),
             virtual_servers: self.virtual_servers.clone(),
             quarantined_virtual_servers: self.quarantined_virtual_servers.clone(),
@@ -449,11 +484,13 @@ impl LabConfig {
     /// the toml_edit render path) untouched.
     pub fn apply_gateway_config(&mut self, gw: &GatewayConfig) {
         self.code_mode = gw.code_mode.clone();
+        self.mcp_apps = gw.mcp_apps;
         self.upstream_request_timeout_ms = gw.upstream_request_timeout_ms;
         self.upstream_relay_timeout_ms = gw.upstream_relay_timeout_ms;
         self.upstream = gw.upstream.clone();
         self.upstream_import_tombstones = gw.upstream_import_tombstones.clone();
         self.upstream_pending = gw.upstream_pending.clone();
+        self.loadouts = gw.loadouts.clone();
         self.protected_mcp_routes = gw.protected_mcp_routes.clone();
         self.virtual_servers = gw.virtual_servers.clone();
         self.quarantined_virtual_servers = gw.quarantined_virtual_servers.clone();
@@ -511,7 +548,7 @@ impl LabConfig {
     /// Distinct from [`Self::upstream_request_timeout`] because the relay path
     /// blocks on a human answering an elicitation forwarded from the upstream;
     /// reusing the 30s request timeout would abort real confirmations. Defaults
-    /// to [`DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS`] (5 minutes) when unset.
+    /// to `DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS` (5 minutes) when unset.
     pub fn upstream_relay_timeout(&self) -> Duration {
         Duration::from_millis(
             self.upstream_relay_timeout_ms
@@ -813,15 +850,16 @@ fn invalid_protected_route(
 // this module and all external callers keep their existing import paths.
 // Serde shape (defaults, renames, skip rules) is preserved exactly there.
 // Some entries are only referenced from tests after the gateway runtime moved to
-// `lab-gateway`; keep them as the public `labby::config` surface and silence the
+// `labby-gateway`; keep them as the public `labby::config` surface and silence the
 // bin-target unused-import lint.
 #[allow(unused_imports)]
 pub use labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX;
 pub use labby_runtime::gateway_config::{
     CodeModeConfig, CodeModeResultShapePolicy, ConfigError, GatewayConfig, GatewayImportMode,
-    GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
-    ProtectedMcpRouteEffectiveTarget, ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig,
-    UpstreamImportTombstone, UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
+    GatewayLoadoutConfig, GatewayPreferences, ImportSource, McpAppsConfig,
+    ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig, ProtectedMcpRouteEffectiveTarget,
+    ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig, UpstreamImportTombstone,
+    UpstreamOauthConfig, UpstreamOauthCredentialSource, UpstreamOauthMode,
     UpstreamOauthRegistration, VirtualServerConfig, VirtualServerMcpPolicyConfig,
     VirtualServerSurfacesConfig, WebPreferences, default_mcp_path, default_true,
     normalize_protected_backend_url,
@@ -1741,6 +1779,7 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "admin.enabled" => serde_json::json!(cfg.admin.enabled),
         "code_mode.trace_params" => serde_json::json!(cfg.code_mode.trace_params),
         "code_mode.timeout_ms" => serde_json::json!(cfg.code_mode.timeout_ms),
+        "code_mode.max_source_bytes" => serde_json::json!(cfg.code_mode.max_source_bytes),
         "code_mode.max_response_bytes" => serde_json::json!(cfg.code_mode.max_response_bytes),
         "code_mode.max_response_tokens" => serde_json::json!(cfg.code_mode.max_response_tokens),
         "code_mode.token_estimate_divisor" => {
@@ -1983,7 +2022,7 @@ impl Serialize for Secret {
 
 /// Value from an instance env var — either plain text or a secret.
 ///
-/// Always constructed programmatically via [`scan_instances_from`]; never
+/// Always constructed programmatically via the private `scan_instances_from` helper; never
 /// deserialized from JSON. `Deserialize` is intentionally omitted — `Secret`
 /// serializes as `"***REDACTED***"` (a plain string), so an `#[serde(untagged)]`
 /// impl would silently pick `Plain` for every value, bypassing redaction.
@@ -3086,6 +3125,7 @@ url = "https://acme.example.com/mcp"
     fn code_mode_is_root_level_config_with_default_limits() {
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
+        assert_eq!(default_cfg.code_mode.max_source_bytes, 128 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
 
@@ -3093,6 +3133,7 @@ url = "https://acme.example.com/mcp"
             r"
 [code_mode]
 timeout_ms = 2500
+max_source_bytes = 65536
 max_response_bytes = 12000
 max_response_tokens = 3000
 ",
@@ -3100,6 +3141,7 @@ max_response_tokens = 3000
         .expect("root code_mode parses");
 
         assert_eq!(cfg.code_mode.timeout_ms, 2500);
+        assert_eq!(cfg.code_mode.max_source_bytes, 65_536);
         assert_eq!(cfg.code_mode.max_response_bytes, 12000);
         assert_eq!(cfg.code_mode.max_response_tokens, 3000);
     }
@@ -3578,7 +3620,7 @@ services = ["removed-service"]
 
     #[test]
     fn process_code_mode_flag_round_trips() {
-        let prev_ts = process_code_mode_enabled();
+        let _guard = process_code_mode_test_guard();
 
         set_process_code_mode_enabled(true);
         assert!(
@@ -3591,9 +3633,6 @@ services = ["removed-service"]
             !process_code_mode_enabled(),
             "code_mode must be false after set_process_code_mode_enabled(false)"
         );
-
-        // Restore
-        set_process_code_mode_enabled(prev_ts);
     }
 
     // ── T3: secret file permission tests (S2) ────────────────────────────────
@@ -3739,6 +3778,7 @@ services = ["removed-service"]
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
                 expose_code_mode: false,
+                loadout: None,
             },
         ));
         let mut cfg = LabConfig {

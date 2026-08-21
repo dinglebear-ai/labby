@@ -7,7 +7,7 @@
 //!
 //! All three operator allowlists — `expose_tools`, `expose_resources`, and
 //! `expose_prompts` — compile through the *same* fail-closed resolver
-//! ([`resolve_named_exposure_policy`]). There is deliberately no second policy
+//! (`resolve_named_exposure_policy`). There is deliberately no second policy
 //! implementation: an unparseable allowlist hides everything for that
 //! capability rather than silently degrading to "expose all".
 
@@ -43,10 +43,17 @@ pub(super) fn lazy_upstream_entry(config: &UpstreamConfig, name: Arc<str>) -> Up
             &config.name,
             config.expose_prompts.clone(),
         ),
+        skill_exposure_policy: resolve_skill_exposure_policy(
+            &config.name,
+            config.expose_skills.clone(),
+        ),
+        proxy_skills: config.proxy_skills,
+        supports_skills: None,
         proxy_resources: config.proxy_resources,
         prompt_count: 0,
         resource_count: 0,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,
@@ -74,10 +81,14 @@ pub(super) fn healthy_in_process_entry(
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: ToolExposurePolicy::All,
+        proxy_skills: false,
+        supports_skills: None,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,
@@ -102,10 +113,14 @@ pub(super) fn failed_in_process_entry(name: Arc<str>, error_message: String) -> 
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: ToolExposurePolicy::All,
+        proxy_skills: false,
+        supports_skills: None,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Unhealthy {
@@ -173,7 +188,7 @@ pub(super) fn resolve_exposure_policy(
     resolve_named_exposure_policy(upstream_name, "expose_tools", "tools", expose_tools)
 }
 
-/// [`resolve_exposure_policy`] for paths that run once per request.
+/// Request-path counterpart to `resolve_exposure_policy`.
 ///
 /// The OAuth subject-scoped paths have no cached `UpstreamEntry::exposure_policy`
 /// to read, so they resolve the allowlist from live config on every `list_tools`,
@@ -188,15 +203,16 @@ pub fn resolve_request_exposure_policy(
     resolve_request_named_exposure_policy(upstream_name, "expose_tools", "tools", expose_tools)
 }
 
-/// All three compiled allowlists for one upstream.
+/// All four compiled allowlists for one upstream.
 ///
 /// Resolved together from a single `UpstreamConfig` so a catalog entry can
 /// never be built with one capability's policy applied and another's dropped —
-/// the exact drift that left `expose_resources`/`expose_prompts` unenforced.
+/// the exact drift that left primitive exposure settings unenforced.
 pub(super) struct UpstreamExposurePolicies {
     pub(super) tools: ToolExposurePolicy,
     pub(super) resources: ToolExposurePolicy,
     pub(super) prompts: ToolExposurePolicy,
+    pub(super) skills: ToolExposurePolicy,
 }
 
 pub(super) fn resolve_upstream_exposure_policies(
@@ -206,6 +222,7 @@ pub(super) fn resolve_upstream_exposure_policies(
         tools: resolve_exposure_policy(&config.name, config.expose_tools.clone()),
         resources: resolve_resource_exposure_policy(&config.name, config.expose_resources.clone()),
         prompts: resolve_prompt_exposure_policy(&config.name, config.expose_prompts.clone()),
+        skills: resolve_skill_exposure_policy(&config.name, config.expose_skills.clone()),
     }
 }
 
@@ -222,7 +239,7 @@ pub(super) fn resolve_resource_exposure_policy(
     )
 }
 
-/// [`resolve_resource_exposure_policy`] for paths that run once per request.
+/// Request-path counterpart to `resolve_resource_exposure_policy`.
 ///
 /// Resource listing, direct reads, MRTR-relayed reads, and completion all
 /// resolve from live config per request, so they need the same WARN-suppression
@@ -247,7 +264,7 @@ pub(super) fn resolve_prompt_exposure_policy(
     resolve_named_exposure_policy(upstream_name, "expose_prompts", "prompts", expose_prompts)
 }
 
-/// [`resolve_prompt_exposure_policy`] for paths that run once per request.
+/// Request-path counterpart to `resolve_prompt_exposure_policy`.
 pub fn resolve_request_prompt_exposure_policy(
     upstream_name: &str,
     expose_prompts: Option<Vec<String>>,

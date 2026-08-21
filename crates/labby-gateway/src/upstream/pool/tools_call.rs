@@ -5,19 +5,24 @@
 use std::time::Instant;
 
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult};
+use rmcp::service::Peer;
+use rmcp::{RoleClient, ServiceError};
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::{
-    CapabilityCallError, timed_capability_call, timed_capability_call_str,
+    CapabilityCallError, bounded_service_error_text, timed_capability_call,
+    timed_capability_call_str,
 };
+use super::catalog_pagination;
 use super::entries::resolve_request_exposure_policy;
 use super::helpers::{
-    estimate_call_tool_response_size, estimate_response_size, upstream_transport,
+    DISCOVERY_TIMEOUT, estimate_call_tool_response_size, estimate_response_size, upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+use super::tools::MAX_UPSTREAM_TOOLS;
 
 /// Fail-closed `expose_tools` check for the OAuth subject-scoped call paths.
 ///
@@ -76,6 +81,149 @@ pub(super) fn hidden_tool_call_error(
     }
 }
 
+/// Whether the server rejected a request before dispatch because its SEP-2243
+/// routing headers were missing or stale. rmcp models this as the dedicated
+/// `HEADER_MISMATCH` code; the human-readable message is intentionally not part
+/// of the contract and may contain only the concrete validation reason.
+pub(super) fn is_tool_header_mismatch(error: &ServiceError) -> bool {
+    matches!(
+        error,
+        ServiceError::McpError(data) if data.code == rmcp::model::ErrorCode::HEADER_MISMATCH
+    )
+}
+
+pub(super) fn record_header_mismatch(pool: &UpstreamPool, upstream_name: &str) {
+    let mismatch_count = pool.record_header_mismatch_detected(upstream_name);
+    tracing::warn!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        action = "tool.header_mismatch",
+        event = "detected",
+        upstream = upstream_name,
+        mismatch_count,
+        "upstream rejected tools/call because SEP-2243 routing headers were stale or missing"
+    );
+}
+
+pub(super) fn record_header_retry<T>(
+    pool: &UpstreamPool,
+    upstream_name: &str,
+    result: &Result<T, ServiceError>,
+) {
+    match result {
+        Ok(_) => {
+            let retry_success_count = pool.record_header_schema_retry_success(upstream_name);
+            tracing::info!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "tool.header_cache.retry",
+                event = "finish",
+                upstream = upstream_name,
+                retry_success_count,
+                "SEP-2243 schema refresh retry completed successfully"
+            );
+        }
+        Err(error) => {
+            let retry_failure_count = pool.record_header_schema_retry_failure(upstream_name);
+            tracing::warn!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "tool.header_cache.retry",
+                event = "error",
+                upstream = upstream_name,
+                retry_failure_count,
+                error = %bounded_service_error_text(error),
+                "SEP-2243 schema refresh retry failed"
+            );
+        }
+    }
+}
+
+/// Refresh rmcp's per-transport tool-schema cache after HeaderMismatch. A
+/// successful tools/list response is consumed by rmcp itself and repopulates
+/// the x-mcp-header annotations used to build Mcp-Param-* on the retry.
+pub(super) async fn refresh_tool_header_cache(
+    pool: &UpstreamPool,
+    peer: &Peer<RoleClient>,
+    upstream_name: &str,
+) -> Result<(), ServiceError> {
+    let schema_refresh_count = pool.record_header_schema_refresh(upstream_name);
+    tracing::info!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        action = "tool.header_cache.refresh",
+        event = "start",
+        upstream = upstream_name,
+        schema_refresh_count,
+        "refreshing upstream tool schemas after SEP-2243 header mismatch"
+    );
+    match catalog_pagination::list_tools(peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await {
+        Ok(tools) => {
+            tracing::info!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "tool.header_cache.refresh",
+                event = "finish",
+                upstream = upstream_name,
+                schema_refresh_count,
+                tool_count = tools.len(),
+                "refreshed upstream tool schemas after SEP-2243 header mismatch"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "tool.header_cache.refresh",
+                event = "error",
+                upstream = upstream_name,
+                schema_refresh_count,
+                kind = error.kind(),
+                error = %error.bounded_text(),
+                "failed to refresh upstream tool schemas after SEP-2243 header mismatch"
+            );
+            Err(error.into_service_error(upstream_name))
+        }
+    }
+}
+
+pub(super) async fn call_tool_once_with_header_recovery(
+    pool: &UpstreamPool,
+    peer: &Peer<RoleClient>,
+    upstream_name: &str,
+    params: CallToolRequestParams,
+) -> Result<CallToolResponse, ServiceError> {
+    match peer.call_tool_once(params.clone()).await {
+        Err(error) if is_tool_header_mismatch(&error) => {
+            record_header_mismatch(pool, upstream_name);
+            refresh_tool_header_cache(pool, peer, upstream_name).await?;
+            let result = peer.call_tool_once(params).await;
+            record_header_retry(pool, upstream_name, &result);
+            result
+        }
+        result => result,
+    }
+}
+
+pub(super) async fn call_tool_with_header_recovery(
+    pool: &UpstreamPool,
+    peer: &Peer<RoleClient>,
+    upstream_name: &str,
+    params: CallToolRequestParams,
+) -> Result<CallToolResult, ServiceError> {
+    match peer.call_tool(params.clone()).await {
+        Err(error) if is_tool_header_mismatch(&error) => {
+            record_header_mismatch(pool, upstream_name);
+            refresh_tool_header_cache(pool, peer, upstream_name).await?;
+            let result = peer.call_tool(params).await;
+            record_header_retry(pool, upstream_name, &result);
+            result
+        }
+        result => result,
+    }
+}
+
 impl UpstreamPool {
     /// Call an OAuth-subject-scoped tool once, preserving MRTR/task outcomes.
     pub async fn subject_scoped_call_tool_once(
@@ -123,7 +271,7 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             start,
-            peer.call_tool_once(params),
+            call_tool_once_with_header_recovery(self, &peer, &config.name, params),
             estimate_call_tool_response_size,
             Some(subject),
             |error| format!("upstream call failed: {error}"),
@@ -162,7 +310,7 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             start,
-            peer.call_tool(params),
+            call_tool_with_header_recovery(self, &peer, &config.name, params),
             estimate_response_size,
             Some(subject),
             |error| format!("upstream call failed: {error}"),
@@ -225,7 +373,7 @@ impl UpstreamPool {
             UpstreamCapability::Tools,
             event,
             start,
-            peer.call_tool(params),
+            call_tool_with_header_recovery(self, &peer, &config.name, params),
             estimate_response_size,
             Some(subject),
             |e| format!("upstream call failed: {e}"),
@@ -283,7 +431,7 @@ impl UpstreamPool {
                 UpstreamCapability::Tools,
                 event,
                 start,
-                peer.call_tool(params),
+                call_tool_with_header_recovery(self, &peer, upstream_name, params),
                 estimate_response_size,
                 None,
                 |e| format!("upstream call failed: {e}"),
@@ -305,7 +453,7 @@ impl UpstreamPool {
     }
 
     /// [`Self::call_tool_once`] while preserving the upstream failure class
-    /// for the MCP proxy (mirrors [`Self::call_tool_classified`]).
+    /// for the MCP proxy (mirrors the private `call_tool_classified` path).
     ///
     /// Health accounting is owned entirely by `timed_capability_call`: a
     /// [`CapabilityCallError::Mcp`] means the pool recorded SUCCESS (a valid
@@ -332,7 +480,7 @@ impl UpstreamPool {
                 UpstreamCapability::Tools,
                 event,
                 start,
-                peer.call_tool_once(params),
+                call_tool_once_with_header_recovery(self, &peer, upstream_name, params),
                 estimate_call_tool_response_size,
                 None,
                 |error| format!("upstream call failed: {error}"),
@@ -351,11 +499,12 @@ impl UpstreamPool {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     use rmcp::model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
+        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
     };
     use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -445,6 +594,132 @@ mod tests {
             ),
             "valid MCP error response must not poison connection health"
         );
+    }
+
+    #[tokio::test]
+    async fn header_mismatch_refreshes_tool_schema_and_retries_once() {
+        struct HeaderMismatchServer {
+            list_calls: Arc<AtomicUsize>,
+            tool_calls: Arc<AtomicUsize>,
+        }
+
+        impl ServerHandler for HeaderMismatchServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                self.list_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "header.tool",
+                        "requires refreshed SEP-2243 parameter metadata",
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                let attempt = self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    return Err(ErrorData::new(
+                        ErrorCode::HEADER_MISMATCH,
+                        "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
+                        None,
+                    ));
+                }
+                Ok(CallToolResult::success(vec![ContentBlock::text("recovered")]).into())
+            }
+        }
+
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let server = HeaderMismatchServer {
+            list_calls: Arc::clone(&list_calls),
+            tool_calls: Arc::clone(&tool_calls),
+        };
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = server
+                .serve(server_transport)
+                .await
+                .expect("header mismatch server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("header mismatch client starts");
+        let peer = client_service.peer().clone();
+
+        let upstream_name = "header-mismatch";
+        let pool = Arc::new(UpstreamPool::new());
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        let response = pool
+            .call_tool_once_classified(upstream_name, CallToolRequestParams::new("header.tool"))
+            .await
+            .expect("upstream is connected")
+            .expect("HeaderMismatch should self-heal after one schema refresh");
+
+        assert!(matches!(response, CallToolResponse::Complete(_)));
+        assert_eq!(
+            list_calls.load(Ordering::SeqCst),
+            1,
+            "recovery must perform exactly one tools/list refresh"
+        );
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            2,
+            "HeaderMismatch must be replayed exactly once"
+        );
+        let metrics = pool.header_recovery_metrics(upstream_name);
+        assert_eq!(metrics.mismatch_detected, 1);
+        assert_eq!(metrics.schema_refreshes, 1);
+        assert_eq!(metrics.retry_successes, 1);
+        assert_eq!(metrics.retry_failures, 0);
+    }
+
+    #[test]
+    fn header_mismatch_detection_uses_the_rmcp_error_code() {
+        let ordinary = rmcp::ServiceError::McpError(ErrorData::invalid_params(
+            "ordinary validation failure",
+            None,
+        ));
+        assert!(!super::is_tool_header_mismatch(&ordinary));
+
+        let sdk_header_mismatch = rmcp::ServiceError::McpError(ErrorData::header_mismatch(
+            "missing Mcp-Param-owner header for `owner`",
+            None,
+        ));
+        assert!(super::is_tool_header_mismatch(&sdk_header_mismatch));
+
+        let same_message_wrong_code = rmcp::ServiceError::McpError(ErrorData::internal_error(
+            "header mismatch: application-level message only",
+            None,
+        ));
+        assert!(!super::is_tool_header_mismatch(&same_message_wrong_code));
     }
 
     #[tokio::test]

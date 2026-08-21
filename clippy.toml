@@ -11,7 +11,7 @@
 # in /Cargo.toml.
 
 disallowed-macros = [
-    { path = "async_trait::async_trait", reason = "Use native `async fn in trait` (Rust 1.75+). See crates/lab-apis/CLAUDE.md." },
+    { path = "async_trait::async_trait", reason = "Use native `async fn in trait` (Rust 1.75+). See crates/labby-apis/CLAUDE.md." },
 ]
 
 # Two independent bans share this list — keep both.

@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/evaluation/use-cases/completion-monitoring [Redirecting from `/cookbook/examples/evaluation/use-cases/completion-monitoring.ipynb/` to `/cookbook/examples/evaluation/use-cases/completion-monitoring`](/cookbook/examples/evaluation/use-cases/completion-monitoring)

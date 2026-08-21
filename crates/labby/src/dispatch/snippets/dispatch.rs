@@ -204,6 +204,7 @@ async fn promote_snippet(
             "surface": match source.surface {
                 CodeModeSurface::Mcp => "mcp",
                 CodeModeSurface::Cli => "cli",
+                CodeModeSurface::Api => "api",
             },
             "route_scope": source.route_scope,
         },

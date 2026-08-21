@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Dispatch
 
-This document is the canonical dispatch-layer contract for `labby`.
+This document is the canonical dispatch-layer contract for `lab`.
 
 It defines:
 
@@ -259,7 +259,7 @@ Surface adapters receive `ToolError` directly and handle it for their transport:
 - MCP: already the native envelope type
 - API: `IntoResponse` impl on `ToolError` maps `kind()` to HTTP status
 
-`ToolError` must not be constructed or pattern-matched inside `labby-apis`. It belongs to the `labby` crate product layer.
+`ToolError` must not be constructed or pattern-matched inside `labby-apis`. It belongs to the `labby` product crate.
 
 The canonical shared error vocabulary remains defined by [ERRORS.md](./ERRORS.md).
 

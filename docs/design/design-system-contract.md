@@ -1,7 +1,7 @@
 ---
 title: "Labby Design System Contract"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
 # Labby Design System Contract
@@ -21,8 +21,8 @@ This contract is implementation-facing. It exists so product pages do not drift 
 
 Related documents:
 
-- [Aurora Dark Theme Spec](../superpowers/specs/2026-04-17-aurora-dark-theme-spec.md)
-- [Design System Page Plan](../superpowers/plans/2026-04-17-design-system-page.md)
+- [Component development](./component-development.md)
+- [Design docs index](./README.md)
 
 ## Theme Modes
 

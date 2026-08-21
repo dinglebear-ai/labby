@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Observability
 
-This document is the canonical observability contract for `labby`.
+This document is the canonical observability contract for `lab`.
 
 It defines:
 
@@ -38,15 +38,15 @@ When a request fails, operators must be able to answer:
 
 ## Ownership
 
-Observability is split across product adapters and reusable runtime/client layers:
+Observability is split across two layers:
 
-- Labby's CLI, MCP, and API adapters own caller context and user-visible dispatch logging
-- reusable clients and runtime crates (including `labby-apis` and `labby-gateway`) own outbound request/proxy logging and transport failure detail
+- `lab` owns caller context and dispatch logging
+- `labby-apis` owns outbound request logging and transport failure detail
 
 That means:
 
 - CLI, MCP, and API must log the user-visible action boundary
-- shared HTTP/MCP client paths must log the outbound request boundary they own
+- `HttpClient` must log every outbound request
 - service modules must not invent custom logging formats
 
 ## Mandatory Instrumentation Points
@@ -118,7 +118,7 @@ product surface, including:
 
 - `/auth/session`
 - `/auth/logout`
-- OAuth authorize/callback/token handlers where Labby itself is the actor
+- OAuth authorize/callback/token handlers where `lab` itself is the actor
 
 Those routes must not silently bypass the normal dispatch schema just because
 they are not mounted under `/v1/{service}`.
@@ -135,7 +135,7 @@ actor key is:
 - intentionally not portable across installations with different secrets
 
 `LABBY_ACTOR_KEY_SECRET` is a secret value stored in `~/.labby/.env`. If absent,
-Labby generates it on first use. Empty or anonymous subjects have no
+`lab` generates it on first use. Empty or anonymous subjects have no
 `actor_key`; `mine_only` style activity queries must exclude those rows rather
 than inventing a sentinel actor.
 
@@ -196,6 +196,16 @@ surrounding caller context, including `request_id` when present. Timeouts must
 be logged as explicit failures rather than disappearing into generic disconnect
 noise.
 
+SEP-2243 tool-header recovery has its own structured sub-events. A typed rmcp
+`HEADER_MISMATCH` emits `action = "tool.header_mismatch"`, `event = "detected"`,
+`upstream`, and `mismatch_count`. The same-peer `tools/list` refresh emits
+`action = "tool.header_cache.refresh"` with `event = "start|finish|error"` and
+`schema_refresh_count`; a replay emits `action = "tool.header_cache.retry"` with
+`event = "finish|error"` and the corresponding retry counter. Gateway runtime
+status exposes these cumulative per-upstream values as `header_recovery`, omitted
+while all counts are zero. Never emit tool arguments or synthesized
+`Mcp-Param-*` values in these events.
+
 Resource catalog fan-out uses `operation = "resources.list"`. Each upstream
 emits `upstream.request.start` followed by `upstream.request.finish` or
 `upstream.request.error`, including `subject_scoped = true` for OAuth resource
@@ -233,13 +243,21 @@ not `logging/setLevel` or `notifications/message`.
 
 Every upstream tool/resource/prompt call outcome recorded by `upstream.request.finish`/`upstream.request.error` (above) is also durably persisted to a small SQLite store at `~/.labby/usage.db`, via `UpstreamPool`'s `timed_capability_call` choke point (`crates/labby-gateway/src/upstream/pool/capability_call.rs`). This is a fire-and-forget write (`tokio::spawn`) — it never adds latency or failure risk to the call it's observing, and a write failure is logged (`usage store record_call failed`) and dropped, never surfaced to the caller.
 
-Query it via the `gateway.usage.metrics` (aggregated totals/top-tools/top-actors) and `gateway.usage.calls` (raw paginated records) actions — both admin-gated, same as `gateway.enrich.*`. CLI: `labby gateway usage metrics` / `labby gateway usage calls`. Both actions enforce the same route-scope restriction as `gateway.enrich.*` — a route-scoped caller only sees usage data for the upstreams visible on their route.
+Query it via `gateway.usage.metrics` and `gateway.usage.calls` — both admin-gated, same as `gateway.enrich.*`. `gateway.usage.metrics` computes complete-window totals, failures, latency percentiles, top/least/slow targets, actors, upstream distribution, throughput, hourly activity, time buckets, and optional stable filter facets from the durable store. Exact aggregation is limited to 250,000 matching rows; broader queries return `invalid_param` and must be narrowed. Optional facets also return `invalid_param` when any facet exceeds 1,000 distinct values rather than silently returning an incomplete inventory. Hourly activity accepts an IANA timezone for DST-correct local-hour buckets, with `timezone_offset_minutes` retained as a fixed-offset compatibility fallback in the inclusive range -1440 to 1440. `gateway.usage.calls` is the bounded keyset-paginated event explorer and supports the same upstream/target/capability/operation/subject-scope/actor/outcome/search filters. Metrics facets enumerate capability, operation, and shared-versus-subject scope alongside targets, actors, upstreams, and outcomes; slowest-target rows preserve that complete dimensional identity. CLI: `labby gateway usage metrics` / `labby gateway usage calls`; the CLI exposes the same filters and aggregate bucket/facet options as the shared action contract. Both actions enforce the same route-scope restriction as `gateway.enrich.*` — a route-scoped caller only sees usage data for the upstreams visible on their route.
 
 Set `LABBY_GATEWAY_USAGE_DISABLED=1` to disable capture entirely (no store is opened at startup). Retained rows are pruned on a 6-hour cycle to a 30-day retention window; `labby serve` starts the loop but the batched deletion logic (`UsageStore::spawn_prune_loop`/`prune_older_than`, deleting up to 5,000 rows per statement so a large backlog never holds SQLite's writer lock for long) lives entirely in `UsageStore`.
 
 In-flight fire-and-forget writes are capped by a semaphore (`WRITE_SEMAPHORE_PERMITS`, 64 permits) — a saturated burst drops the write and logs a warning rather than queuing unboundedly or spawning an unbounded number of tasks. `~/.labby/usage.db` is created with owner-only (`0600`) permissions since `actor` is a stable per-user identifier, even though nothing in the store is a credential.
 
-This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. The recorded schema is intentionally minimal: `ts_unix`, `upstream_name`, `tool_name`, `actor`, `outcome`, `elapsed_ms` (see `crates/labby-gateway/src/usage/types.rs`). See `docs/superpowers/plans/2026-07-09-gateway-usage-telemetry.md` for the original design rationale — note the shipped schema diverges from that plan (the `capability`/`operation`/`subject_scoped`/`error_kind`/`response_bytes` fields proposed there were dropped during review as unused).
+This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. Schema version 2 records `ts_unix`, `upstream_name`, `tool_name`, `capability`, `operation`, `subject_scoped`, `actor`, `outcome`, `elapsed_ms`, and nullable `response_bytes` (see `crates/labby-gateway/src/usage/types.rs`). Existing version-1 databases migrate in place. `response_bytes` is present only when an upstream returned a complete response; queue, connection, upstream-error, and timeout outcomes keep it null.
+
+The operator UI deliberately separates these two retention shapes:
+
+- **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
+- **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes only those correlation identifiers from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
+- **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `chars / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
+
+Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
 
 ### Health Probes
 
@@ -310,10 +328,11 @@ shared by the gateway and MCP crates:
 |---|---|
 | `gateway.reload.selective` | reconcile that kept the live pool and selectively reconciled added upstreams |
 | `gateway.reload.full` | reconcile that rebuilt the upstream pool |
-| `gateway.code_mode.set` | Code Mode contract update that did not rebuild the upstream pool, such as an MCP App UI toggle |
+| `gateway.code_mode.set` | Code Mode contract update that did not rebuild the upstream pool, including the legacy Code Mode inspector switch |
+| `gateway.mcp_apps.set` | Labby-owned MCP App visibility update that did not rebuild the upstream pool |
 | `gateway.enrich.hint_apply` | `gateway.enrich.hint.apply` writing a `code_mode_hint` |
 | `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
-| `mcp.call.mcp_app` | explicit Code Mode MCP App visibility change made through the `mcp_app` control tool |
+| `mcp.call.mcp_app` | Labby-owned MCP App visibility change made through the always-on `mcp_app` manager |
 | `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
 | `upstream.subscription` | scoped list-change signal from one live upstream subscription |
 | `upstream.notification_lag` | bounded authoritative catalog reconciliation after the subscription receiver skipped events |
@@ -400,6 +419,12 @@ descriptors by themselves. Reconcile logs therefore separate namespace
 determinants from suppressed raw-tool churn. Final Code Mode responses are also
 capped at the documented byte budget after trace composition, so truncation is
 deterministic and visible instead of surfacing as a client transport failure.
+Code Mode result-ack reserve activation logs once per execution at DEBUG as
+`action = "codemode.result_ack.reserve"`, `event = "armed"`, with `reserve_ms`
+and monotonic `result_ack_reserve_use_count`. Only a genuine full settlement
+grace expiry logs at WARN as `action = "codemode.settlement"`,
+`event = "watchdog_expired"`, with `settlement_watchdog_expiry_count`; an outer
+execution timeout must not increment or masquerade as that watchdog signal.
 
 - `LABBY_MCP_CATALOG_COALESCE_MS` — settle window (default `250`, clamped 1–10000)
 - `LABBY_MCP_CATALOG_MAX_HOLD_MS` — total deferral bound (default `5000`, clamped 100–120000)
@@ -579,7 +604,7 @@ Additional rules:
 - upstream URL values must have userinfo (username:password) stripped before logging
   (`upstream_target_redacted()` in `dispatch/upstream/pool.rs`).
 
-Shell wrapper boundary: the user-installed `labby` shell wrapper emits CLI-PREFLIGHT output via `printf` to
+Shell wrapper boundary: the user-installed `lab` shell wrapper emits CLI-PREFLIGHT output via `printf` to
 stderr before the Rust binary starts. This output is pre-binary and therefore not processed by
 `init_tracing()` or any redaction rules. Treat it as an unstructured stderr boundary — it must not emit credential-bearing content.
 
@@ -670,26 +695,34 @@ If those conditions are missing, the service is not fully online even if the CLI
 
 ## Example Shapes
 
-Illustrative dispatch success fields:
+Illustrative success fields:
 
 ```json
 {
-  "surface": "api",
-  "service": "gateway",
-  "action": "gateway.list",
+  "surface": "http",
+  "service": "marketplace",
+  "action": "mcp.list",
   "request_id": "req-123",
+  "method": "GET",
+  "path": "/v0.1/servers",
+  "host": "registry.modelcontextprotocol.io",
+  "status": 200,
   "elapsed_ms": 42
 }
 ```
 
-Illustrative dispatch failure fields:
+Illustrative failure fields:
 
 ```json
 {
   "surface": "cli",
-  "service": "gateway",
-  "action": "gateway.list",
+  "service": "marketplace",
+  "action": "mcp.list",
+  "method": "GET",
+  "path": "/v0.1/servers",
+  "host": "registry.modelcontextprotocol.io",
   "kind": "network_error",
+  "message": "registry request failed",
   "elapsed_ms": 311
 }
 ```

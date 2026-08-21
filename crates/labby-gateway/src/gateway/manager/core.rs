@@ -22,7 +22,7 @@ use crate::gateway::config_store::GatewayConfigStore;
 use crate::gateway::protected_routes::ProtectedRouteIndex;
 use crate::gateway::service_registry::{EmptyServiceRegistry, GatewayServiceRegistry};
 use crate::gateway::types::CatalogChangeNotifier;
-use crate::upstream::pool::{InProcessConnector, UpstreamPool};
+use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector, UpstreamPool};
 
 use super::{GatewayManager, GatewayRuntimeHandle};
 
@@ -144,6 +144,7 @@ impl GatewayManager {
             oauth_redirect_uri: None,
             resource_registry: None,
             usage_store: None,
+            header_recovery_metrics_store: HeaderRecoveryMetricsStore::default(),
             step_journal: None,
             step_buffers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             protected_route_index: Arc::new(RwLock::new(ProtectedRouteIndex::default())),
@@ -153,6 +154,9 @@ impl GatewayManager {
             code_mode_refresh_deadline: Arc::new(Mutex::new(None)),
             code_mode_refresh_inflight: Arc::new(Mutex::new(())),
             code_mode_catalog_render_cache: Arc::new(Mutex::new(None)),
+            code_mode_catalog_render_flights: Arc::new(
+                Mutex::new(std::collections::HashMap::new()),
+            ),
             code_mode_embedding_cache: Arc::new(RwLock::new(None)),
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
@@ -395,7 +399,8 @@ impl GatewayManager {
         }
         .with_request_timeout(request_timeout)
         .with_relay_timeout(relay_timeout)
-        .with_usage_store(self.usage_store.clone());
+        .with_usage_store(self.usage_store.clone())
+        .with_header_recovery_metrics_store(self.header_recovery_metrics_store.clone());
         // Propagate the in-process connector so pools built on reload, lazy
         // dispatch, OAuth lifecycle, and ephemeral gateway.test can register
         // builtin service peers. Before this, the field was write-only and

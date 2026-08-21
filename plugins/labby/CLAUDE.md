@@ -1,14 +1,13 @@
-# plugins/labby — Claude Code Plugin Package
+# Labby Plugin Package Instructions
 
-This directory ships Labby skills, plugin metadata, user configuration, and the HTTP MCP connection definition. It does not ship the Labby binary and does not own host provisioning.
+`plugins/labby` is the checked-in Claude/plugin distribution metadata for connecting clients to an already installed Labby host. It does not ship the Labby binary and does not own host bootstrap.
 
 ## Rules
 
-- keep `.claude-plugin/plugin.json`, `.mcp.json`, README, skills, and generated/reference skill content aligned
-- the configured `server_url` is an authoritative remote target; do not silently fall back to unrelated local Labby state
-- plugin-scoped credentials must not inherit an ambient administrator token for another authority
-- do not reintroduce the retired SessionStart/ConfigChange hook bootstrap system
-- setup/repair belongs to the Labby binary
-- keep skills agent-usable: discover exact live tools and schemas rather than teaching guessed upstream calls
+- Keep `.claude-plugin/plugin.json`, `.mcp.json`, skill metadata, and documentation aligned with the current Labby MCP surface.
+- The MCP server key `lab` is intentional compatibility vocabulary; do not rename it just because the product is named Labby.
+- Do not reintroduce the retired automatic Claude Code install/repair hooks. Setup and repair belong to the Labby binary.
+- Skills should teach live discovery and current action names rather than hard-coding stale catalogs.
+- Never commit host tokens, OAuth credentials, or machine-specific secrets.
 
-Run the plugin validation/skill-drift checks after changes.
+See `docs/PLUGINS.md` and the generated action/MCP catalogs for current behavior.

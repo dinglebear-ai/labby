@@ -422,7 +422,7 @@ test('gatewayApi protected route actions use gateway service action payloads', a
 
   await withGatewayFetch(
     {
-      'gateway.protected_route.list': () => [route],
+      'gateway.protected_route.list_state': () => [route],
       'gateway.protected_route.get': () => route,
       'gateway.protected_route.test': () => ({
         ok: true,
@@ -433,6 +433,9 @@ test('gatewayApi protected route actions use gateway service action payloads', a
       'gateway.protected_route.add': () => route,
       'gateway.protected_route.update': () => route,
       'gateway.protected_route.remove': () => route,
+      'gateway.protected_route.stage_add': () => ({ route, restart_required: true, pending_operation: 'add', restart_note: 'restart' }),
+      'gateway.protected_route.stage_update': () => ({ route, restart_required: true, pending_operation: 'update', restart_note: 'restart' }),
+      'gateway.protected_route.stage_remove': () => ({ route, restart_required: true, pending_operation: 'remove', restart_note: 'restart' }),
     },
     async (requests) => {
       assert.deepEqual(await gatewayApi.listProtectedRoutes(), [route])
@@ -441,20 +444,90 @@ test('gatewayApi protected route actions use gateway service action payloads', a
       await gatewayApi.addProtectedRoute(route)
       await gatewayApi.updateProtectedRoute('tools', route)
       await gatewayApi.removeProtectedRoute('tools')
+      assert.equal((await gatewayApi.stageProtectedRouteAdd(route)).restart_required, true)
+      assert.equal((await gatewayApi.stageProtectedRouteUpdate('tools', route)).pending_operation, 'update')
+      assert.equal((await gatewayApi.stageProtectedRouteRemove('tools')).pending_operation, 'remove')
 
       assert.deepEqual(requests.map((request) => request.action), [
-        'gateway.protected_route.list',
+        'gateway.protected_route.list_state',
         'gateway.protected_route.get',
         'gateway.protected_route.test',
         'gateway.protected_route.add',
         'gateway.protected_route.update',
         'gateway.protected_route.remove',
+        'gateway.protected_route.stage_add',
+        'gateway.protected_route.stage_update',
+        'gateway.protected_route.stage_remove',
       ])
       assert.deepEqual(requests[1]?.params, { name: 'tools' })
       assert.deepEqual(requests[2]?.params, { route })
       assert.equal(requests[3]?.params.confirm, true)
       assert.equal(requests[4]?.params.confirm, true)
       assert.equal(requests[5]?.params.confirm, true)
+      assert.equal(requests[6]?.params.confirm, true)
+      assert.equal(requests[7]?.params.confirm, true)
+      assert.equal(requests[8]?.params.confirm, true)
+    },
+  )
+})
+
+test('gatewayApi Loadout actions use shared gateway dispatch payloads', async () => {
+  const loadout = {
+    name: 'operations',
+    description: 'Operations agents',
+    upstreams: ['github'],
+    services: ['device'],
+    expose_tools: false,
+    expose_resources: true,
+    expose_prompts: true,
+    expose_skills: true,
+    expose_code_mode: true,
+  }
+
+  await withGatewayFetch(
+    {
+      'gateway.loadout.list_state': () => [loadout],
+      'gateway.loadout.get': () => loadout,
+      'gateway.loadout.add': () => loadout,
+      'gateway.loadout.update': () => loadout,
+      'gateway.loadout.patch': () => ({ ...loadout, expose_tools: true }),
+      'gateway.loadout.remove': () => loadout,
+      'gateway.loadout.stage_update': () => ({ loadout, restart_required: true, pending_operation: 'update', restart_note: 'restart' }),
+      'gateway.loadout.stage_patch': () => ({ loadout, restart_required: true, pending_operation: 'update', restart_note: 'restart' }),
+      'gateway.loadout.stage_remove': () => ({ loadout, restart_required: true, pending_operation: 'remove', restart_note: 'restart' }),
+    },
+    async (requests) => {
+      assert.deepEqual(await gatewayApi.listLoadouts(), [loadout])
+      assert.deepEqual(await gatewayApi.getLoadout('operations'), loadout)
+      await gatewayApi.addLoadout(loadout)
+      await gatewayApi.updateLoadout('operations', loadout)
+      const patched = await gatewayApi.patchLoadout('operations', { expose_tools: true })
+      assert.equal(patched.expose_tools, true)
+      await gatewayApi.removeLoadout('operations')
+      assert.equal((await gatewayApi.stageLoadoutUpdate('operations', loadout)).restart_required, true)
+      assert.equal((await gatewayApi.stageLoadoutPatch('operations', { expose_tools: true })).pending_operation, 'update')
+      assert.equal((await gatewayApi.stageLoadoutRemove('operations')).pending_operation, 'remove')
+
+      assert.deepEqual(requests.map((request) => request.action), [
+        'gateway.loadout.list_state',
+        'gateway.loadout.get',
+        'gateway.loadout.add',
+        'gateway.loadout.update',
+        'gateway.loadout.patch',
+        'gateway.loadout.remove',
+        'gateway.loadout.stage_update',
+        'gateway.loadout.stage_patch',
+        'gateway.loadout.stage_remove',
+      ])
+      assert.deepEqual(requests[1]?.params, { name: 'operations' })
+      assert.deepEqual(requests[4]?.params.patch, { expose_tools: true })
+      assert.equal(requests[2]?.params.confirm, true)
+      assert.equal(requests[3]?.params.confirm, true)
+      assert.equal(requests[4]?.params.confirm, true)
+      assert.equal(requests[5]?.params.confirm, true)
+      assert.equal(requests[6]?.params.confirm, true)
+      assert.equal(requests[7]?.params.confirm, true)
+      assert.equal(requests[8]?.params.confirm, true)
     },
   )
 })

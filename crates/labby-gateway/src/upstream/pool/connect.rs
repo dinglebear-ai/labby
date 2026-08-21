@@ -9,19 +9,29 @@
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::ffi::OsString;
+use std::future::Future;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt as _;
 #[cfg(unix)]
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Instant;
 
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
-use rmcp::ClientHandler;
-use rmcp::service::ClientServiceExt;
+use rmcp::model::{
+    JsonRpcMessage, ProgressNotificationParam, ServerNotification, TaskStatusNotificationParams,
+};
+use rmcp::service::{ClientServiceExt, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
+use rmcp::transport::{Transport, TransportAdapterIdentity, WorkerTransport};
+use rmcp::{ClientHandler, RoleClient};
 
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
@@ -44,6 +54,195 @@ use super::lifecycle_compat::{
 };
 use super::tools::MAX_UPSTREAM_TOOLS;
 use super::{UpstreamClientService, UpstreamConnection};
+
+#[derive(Clone)]
+pub(super) enum OrderedRelayNotification {
+    Progress(ProgressNotificationParam),
+    TaskStatus(TaskStatusNotificationParams),
+}
+
+pub(super) type RelayNotificationInterceptor =
+    Arc<dyn Fn(OrderedRelayNotification) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+const ORDERED_RELAY_NOTIFICATION_BUFFER: usize = 64;
+
+type RelayNotificationWork = (u64, OrderedRelayNotification);
+
+#[derive(Default)]
+struct RelayNotificationDeliveryState {
+    completed: AtomicU64,
+    notify: tokio::sync::Notify,
+}
+
+impl RelayNotificationDeliveryState {
+    fn mark_completed(&self, sequence: u64) {
+        self.completed.store(sequence, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    fn completed(&self) -> u64 {
+        self.completed.load(Ordering::Acquire)
+    }
+
+    async fn wait_through(&self, sequence: u64) {
+        while self.completed() < sequence {
+            let notified = self.notify.notified();
+            if self.completed() >= sequence {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+pub(super) struct OrderedRelayNotificationTransport<T> {
+    inner: T,
+    notification_tx: Option<tokio::sync::mpsc::Sender<RelayNotificationWork>>,
+    notification_delivery: Option<Arc<RelayNotificationDeliveryState>>,
+    next_notification_sequence: u64,
+    pending_message: Option<RxJsonRpcMessage<RoleClient>>,
+    pending_notification_sequence: u64,
+}
+
+impl<T> OrderedRelayNotificationTransport<T> {
+    pub(super) fn new(
+        inner: T,
+        notification_interceptor: Option<RelayNotificationInterceptor>,
+    ) -> Self {
+        let (notification_tx, notification_delivery) =
+            if let Some(interceptor) = notification_interceptor {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<RelayNotificationWork>(
+                    ORDERED_RELAY_NOTIFICATION_BUFFER,
+                );
+                let delivery = Arc::new(RelayNotificationDeliveryState::default());
+                let worker_delivery = Arc::clone(&delivery);
+                tokio::spawn(async move {
+                    while let Some((sequence, notification)) = rx.recv().await {
+                        interceptor(notification).await;
+                        worker_delivery.mark_completed(sequence);
+                    }
+                });
+                (Some(tx), Some(delivery))
+            } else {
+                (None, None)
+            };
+        Self {
+            inner,
+            notification_tx,
+            notification_delivery,
+            next_notification_sequence: 0,
+            pending_message: None,
+            pending_notification_sequence: 0,
+        }
+    }
+
+    fn intercepted_notification(
+        message: &RxJsonRpcMessage<RoleClient>,
+    ) -> Option<OrderedRelayNotification> {
+        let JsonRpcMessage::Notification(notification) = message else {
+            return None;
+        };
+        match &notification.notification {
+            ServerNotification::ProgressNotification(progress) => {
+                Some(OrderedRelayNotification::Progress(progress.params.clone()))
+            }
+            ServerNotification::TaskStatusNotification(task_status) => Some(
+                OrderedRelayNotification::TaskStatus(task_status.params.clone()),
+            ),
+            _ => None,
+        }
+    }
+
+    async fn wait_for_notifications_through(
+        delivery: Option<Arc<RelayNotificationDeliveryState>>,
+        sequence: u64,
+    ) {
+        if sequence == 0 {
+            return;
+        }
+        if let Some(delivery) = delivery {
+            delivery.wait_through(sequence).await;
+        }
+    }
+
+    fn notifications_completed(&self) -> u64 {
+        self.notification_delivery
+            .as_ref()
+            .map_or(self.next_notification_sequence, |delivery| {
+                delivery.completed()
+            })
+    }
+}
+
+impl<T> Transport<RoleClient> for OrderedRelayNotificationTransport<T>
+where
+    T: Transport<RoleClient>,
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
+        loop {
+            if self.pending_message.is_some() {
+                Self::wait_for_notifications_through(
+                    self.notification_delivery.clone(),
+                    self.pending_notification_sequence,
+                )
+                .await;
+                self.pending_notification_sequence = 0;
+                return self.pending_message.take();
+            }
+
+            let mut permit = match self.notification_tx.clone() {
+                Some(sender) => match sender.reserve_owned().await {
+                    Ok(permit) => Some(permit),
+                    Err(_) => {
+                        self.notification_tx = None;
+                        self.notification_delivery = None;
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            let Some(message) = self.inner.receive().await else {
+                drop(permit);
+                Self::wait_for_notifications_through(
+                    self.notification_delivery.clone(),
+                    self.next_notification_sequence,
+                )
+                .await;
+                return None;
+            };
+
+            if let Some(notification) = Self::intercepted_notification(&message)
+                && let Some(permit) = permit.take()
+            {
+                self.next_notification_sequence = self.next_notification_sequence.saturating_add(1);
+                permit.send((self.next_notification_sequence, notification));
+                continue;
+            }
+
+            drop(permit);
+            if self.notifications_completed() < self.next_notification_sequence {
+                self.pending_notification_sequence = self.next_notification_sequence;
+                self.pending_message = Some(message);
+                continue;
+            }
+            return Some(message);
+        }
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
 /// `reqwest::Client` for HTTP connections (P-M10).
@@ -87,6 +286,29 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    connect_upstream_with_handler_and_notifications(
+        config,
+        subject,
+        oauth_client_cache,
+        runtime_origin,
+        runtime_owner,
+        shared_client,
+        handler,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn connect_upstream_with_handler_and_notifications<H: ClientHandler + Clone>(
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    runtime_origin: Option<&str>,
+    runtime_owner: Option<&UpstreamRuntimeOwner>,
+    shared_client: Option<&reqwest::Client>,
+    handler: H,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let started = Instant::now();
     tracing::debug!(
         surface = "dispatch",
@@ -105,13 +327,14 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} HTTP transport has no url", config.name)
             })?;
-            connect_http_upstream(
+            connect_http_upstream_with_notifications(
                 url,
                 config,
                 subject,
                 oauth_client_cache,
                 shared_client,
                 handler,
+                notification_interceptor.clone(),
             )
             .await
         }
@@ -119,7 +342,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} WebSocket transport has no url", config.name)
             })?;
-            connect_websocket_upstream(url, config, handler).await
+            connect_websocket_upstream(url, config, handler, notification_interceptor.clone()).await
         }
         Some(UpstreamTransport::Stdio) => {
             let command = config.command.as_deref().ok_or_else(|| {
@@ -132,6 +355,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
                 runtime_origin,
                 runtime_owner,
                 handler,
+                notification_interceptor.clone(),
             )
             .await
         }
@@ -139,7 +363,15 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
             let url = config.url.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("upstream {} Unix socket transport has no url", config.name)
             })?;
-            connect_unix_socket_upstream(url, config, subject, oauth_client_cache, handler).await
+            connect_unix_socket_upstream(
+                url,
+                config,
+                subject,
+                oauth_client_cache,
+                handler,
+                notification_interceptor.clone(),
+            )
+            .await
         }
         None => Err(anyhow::anyhow!(
             "upstream {} has neither url nor command",
@@ -221,6 +453,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
     handler: H,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let socket_path = config.socket_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -246,13 +479,14 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
             )
         })?;
 
-    connect_http_upstream(
+    connect_http_upstream_with_notifications(
         url,
         config,
         subject,
         oauth_client_cache,
         Some(&client),
         handler,
+        notification_interceptor,
     )
     .await
 }
@@ -264,6 +498,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     _subject: Option<&str>,
     _oauth_client_cache: Option<&OauthClientCache>,
     _handler: H,
+    _notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     anyhow::bail!(
         "upstream {} uses unix_socket, which is unsupported on this platform",
@@ -275,9 +510,16 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
     handler: H,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    match connect_websocket_upstream_once(url, config, handler.clone(), LifecycleAttempt::Modern)
-        .await
+    match connect_websocket_upstream_once(
+        url,
+        config,
+        handler.clone(),
+        LifecycleAttempt::Modern,
+        notification_interceptor.clone(),
+    )
+    .await
     {
         Ok(connection) => Ok(connection),
         Err(error) => {
@@ -285,7 +527,8 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
                 return Err(error);
             };
             log_fallback(&config.name, "websocket", attempt, &error);
-            connect_websocket_upstream_once(url, config, handler, attempt).await
+            connect_websocket_upstream_once(url, config, handler, attempt, notification_interceptor)
+                .await
         }
     }
 }
@@ -295,6 +538,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     config: &UpstreamConfig,
     handler: H,
     lifecycle: LifecycleAttempt,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -314,15 +558,16 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     let transport = connect_websocket_transport(
         WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
     );
+    let transport = OrderedRelayNotificationTransport::new(transport, notification_interceptor);
     let service = match lifecycle {
         LifecycleAttempt::Modern => UpstreamClientService::Direct(
             handler
-                .serve_with_lifecycle(transport, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(transport, lifecycle.mode())
                 .await?,
         ),
         LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
             VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle(transport, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(transport, lifecycle.mode())
                 .await?,
         ),
     };
@@ -370,6 +615,27 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    connect_http_upstream_with_notifications(
+        url,
+        config,
+        subject,
+        oauth_client_cache,
+        shared_client,
+        handler,
+        None,
+    )
+    .await
+}
+
+async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
+    url: &str,
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    shared_client: Option<&reqwest::Client>,
+    handler: H,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     match connect_http_upstream_once(
         url,
         config,
@@ -378,6 +644,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
         shared_client,
         handler.clone(),
         LifecycleAttempt::Modern,
+        notification_interceptor.clone(),
     )
     .await
     {
@@ -395,6 +662,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
                 shared_client,
                 handler,
                 attempt,
+                notification_interceptor,
             )
             .await
         }
@@ -439,6 +707,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
     lifecycle: LifecycleAttempt,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -487,15 +756,24 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             .map_err(|e| anyhow::anyhow!("oauth_required: {e}"))?;
 
         let worker = StreamableHttpClientWorker::new(auth_client, transport_config);
+        let worker = WorkerTransport::spawn(worker);
+        let worker =
+            OrderedRelayNotificationTransport::new(worker, notification_interceptor.clone());
         let service = match lifecycle {
             LifecycleAttempt::Modern => UpstreamClientService::Direct(
                 handler
-                    .serve_with_lifecycle(worker, lifecycle.mode())
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    )
                     .await?,
             ),
             LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
                 VersionedClientHandler::new(handler, legacy_protocol_version())
-                    .serve_with_lifecycle(worker, lifecycle.mode())
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    )
                     .await?,
             ),
         };
@@ -529,15 +807,17 @@ async fn connect_http_upstream_once<H: ClientHandler>(
 
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
+    let worker = WorkerTransport::spawn(worker);
+    let worker = OrderedRelayNotificationTransport::new(worker, notification_interceptor);
     let service = match lifecycle {
         LifecycleAttempt::Modern => UpstreamClientService::Direct(
             handler
-                .serve_with_lifecycle(worker, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
                 .await?,
         ),
         LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
             VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle(worker, lifecycle.mode())
+                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
                 .await?,
         ),
     };

@@ -408,7 +408,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                     .expect("OAuth mode initializes a resource registry"),
             )
             .await
-            .context("initialize lab-auth oauth state")?,
+            .context("initialize labby-auth OAuth state")?,
         )
     } else {
         None
@@ -802,6 +802,8 @@ async fn run_http(
     unix_listener_config: Option<HostedUnixConfig>,
     peer_auth_enabled: bool,
 ) -> Result<ExitCode> {
+    #[cfg(feature = "gateway")]
+    let code_mode_shutdown = state.gateway_manager.clone();
     // ── Single-master lock ────────────────────────────────────────────────────
     // Only one HTTP master instance may run per device at a time. Exits
     // immediately with a clear error if the lock is already held by another
@@ -912,14 +914,19 @@ async fn run_http(
             }
         }
     };
-    if let Some(registry) = resource_registry {
+    let hosted_result = if let Some(registry) = resource_registry {
         tokio::select! {
-            result = hosted_listener => result?,
+            result = hosted_listener => result,
             never = prune_resource_leases(registry) => match never {},
         }
     } else {
-        hosted_listener.await?;
+        hosted_listener.await
+    };
+    #[cfg(feature = "gateway")]
+    if let Some(manager) = code_mode_shutdown {
+        manager.shutdown_code_mode_runner_pool().await;
     }
+    hosted_result?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1456,7 +1463,7 @@ async fn build_gateway_runtime(
     gateway_manager
         .try_seed_config(config.to_gateway_config())
         .await
-        .expect("loaded gateway config must normalize and validate");
+        .context("loaded gateway config failed validation")?;
     install_gateway_manager(Arc::clone(&gateway_manager));
     if !suppress_upstream_runtime {
         match config.gateway_import_mode {
@@ -1664,18 +1671,26 @@ async fn run_stdio(
         #[cfg(test)]
         code_mode_widget_callbacks_enabled_for_test: false,
     };
-    let running = server.serve(rmcp::transport::stdio()).await?;
-    tracing::info!(
-        surface = "mcp",
-        service = "stdio",
-        action = "server.ready",
-        subsystem = "mcp_server",
-        phase = "ready",
-        transport = "stdio",
-        services = service_count,
-        "stdio mcp server ready"
-    );
-    running.waiting().await?;
+    let running = server.serve(rmcp::transport::stdio()).await;
+    let server_result: Result<()> = match running {
+        Ok(running) => {
+            tracing::info!(
+                surface = "mcp",
+                service = "stdio",
+                action = "server.ready",
+                subsystem = "mcp_server",
+                phase = "ready",
+                transport = "stdio",
+                services = service_count,
+                "stdio mcp server ready"
+            );
+            running.waiting().await.map(|_| ()).map_err(Into::into)
+        }
+        Err(error) => Err(error.into()),
+    };
+    #[cfg(feature = "gateway")]
+    gateway_manager.shutdown_code_mode_runner_pool().await;
+    server_result?;
     tracing::info!(
         surface = "mcp",
         service = "stdio",
@@ -1857,7 +1872,11 @@ fn build_protected_mcp_router(
 
     let mut router = axum::Router::new();
     for route in routes {
-        let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(&route)
+        let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+            &route,
+            &state.config.loadouts,
+        )
+        .map_err(anyhow::Error::msg)?
         else {
             continue;
         };
@@ -2525,6 +2544,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateless_http_fresh_tools_list_observes_code_mode_app_state_changes() {
+        async fn listed_tool_names(app: axum::Router) -> Vec<String> {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp")
+                        .header("host", "localhost")
+                        .header("content-type", "application/json")
+                        .header("accept", "application/json, text/event-stream")
+                        .header("mcp-protocol-version", "2026-07-28")
+                        .header("mcp-method", "tools/list")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "tools/list",
+                                "params": {
+                                    "_meta": {
+                                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                        "io.modelcontextprotocol/clientInfo": {
+                                            "name": "stateless-app-state-test",
+                                            "version": "1.0"
+                                        },
+                                        "io.modelcontextprotocol/clientCapabilities": {}
+                                    }
+                                }
+                            })
+                            .to_string(),
+                        ))
+                        .expect("tools/list request"),
+                )
+                .await
+                .expect("tools/list response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("tools/list response body");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body).expect("tools/list response is JSON-RPC");
+            body["result"]["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .map(|tool| tool["name"].as_str().expect("tool name").to_string())
+                .collect()
+        }
+
+        let _guard = crate::config::process_code_mode_test_guard();
+        crate::config::set_process_code_mode_enabled(true);
+
+        let notifier = PeerNotifier::default();
+        notifier.code_mode_app_state.set_enabled(false);
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            notifier.clone(),
+            true,
+            false,
+        )
+        .expect("router with HTTP MCP");
+
+        let disabled = listed_tool_names(app.clone()).await;
+        assert!(disabled.iter().any(|name| name == "codemode"));
+        assert!(disabled.iter().any(|name| name == "mcp_app"));
+        assert!(!disabled.iter().any(|name| name == "codemode_ui"));
+
+        notifier.code_mode_app_state.set_enabled(true);
+        let enabled = listed_tool_names(app).await;
+        assert!(enabled.iter().any(|name| name == "codemode_ui"));
+    }
+
+    #[tokio::test]
     async fn http_mcp_discovers_all_supported_protocols() {
         let app = build_http_router(
             AppState::new(),
@@ -2723,6 +2818,7 @@ mod tests {
                         upstreams: vec!["gateway-alpha".to_string()],
                         services: vec!["gateway".to_string()],
                         expose_code_mode: false,
+                        loadout: None,
                     },
                 )),
             }],

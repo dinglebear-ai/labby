@@ -33,7 +33,7 @@ use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
 
-use crate::upstream::pool::InProcessConnector;
+use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
@@ -50,6 +50,7 @@ pub(super) struct OauthStatusDiscoverySnapshot {
     pub(super) error: Option<String>,
 }
 
+mod code_mode_discovery;
 mod code_mode_resolve;
 mod code_mode_runtime;
 mod config_ops;
@@ -58,6 +59,7 @@ mod core;
 mod enrichment;
 mod import_matchers;
 mod imports;
+mod loadouts;
 mod oauth_resources;
 mod persist;
 mod pool_lifecycle;
@@ -89,7 +91,7 @@ pub struct GatewayManager {
     /// Owns `config.toml` rendering (with foreign-key preservation), the `.env`
     /// credential file helpers, the process-wide Code Mode flag, and public-URL
     /// resolution — all of which depend on the host's full `LabConfig` and are
-    /// shared with non-gateway Labby code, so they cannot live in `lab-gateway`.
+    /// shared with non-gateway Labby code, so they cannot live in `labby-gateway`.
     pub(super) store: Arc<dyn GatewayConfigStore>,
     pub(super) runtime: GatewayRuntimeHandle,
     pub(super) config: Arc<RwLock<GatewayConfig>>,
@@ -114,6 +116,9 @@ pub struct GatewayManager {
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
     pub(super) resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    /// Process-lifetime SEP-2243 recovery counters shared by every pool
+    /// generation built by this manager.
+    pub(super) header_recovery_metrics_store: HeaderRecoveryMetricsStore,
     /// Durable append-only journal for `codemode.step` boundaries. `None`
     /// disables journaling (pure no-op path). Owned as an `Arc` so every `Clone`
     /// of the manager shares one store.
@@ -150,11 +155,22 @@ pub struct GatewayManager {
     /// the upstream catalog has not changed between calls.
     pub(super) code_mode_catalog_render_cache:
         Arc<Mutex<Option<crate::gateway::code_mode::CatalogRenderCache>>>,
-    /// Cached Code Mode catalog embedding vectors, keyed by the same
-    /// fingerprint as `code_mode_catalog_render_cache`. `RwLock` (not
+    /// Weak keyed build flights prevent duplicate cold render construction.
+    /// Weak values disappear after callers finish, bounding retained state.
+    pub(super) code_mode_catalog_render_flights: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                std::sync::Weak<crate::gateway::code_mode::CatalogRenderFlight>,
+            >,
+        >,
+    >,
+    /// Cached Code Mode catalog embedding vectors, keyed separately by the
+    /// visible `(id, description)` ranking corpus. `RwLock` (not
     /// `Mutex`), matching the `config: Arc<RwLock<GatewayConfig>>` precedent
     /// above — this is a read-heavy cache; writes only happen on a
-    /// fingerprint change or the very first embed.
+    /// ranking-corpus change or the very first embed. Safety/schema-only
+    /// render changes therefore do not force an identical TEI batch.
     ///
     /// `ensure_embeddings_for_fingerprint` holds the write lock across the
     /// full check-then-embed-then-store sequence (not just the store) as a
@@ -239,15 +255,19 @@ impl GatewayManager {
     }
 
     pub(super) async fn persist_config(&self, cfg: GatewayConfig) -> Result<(), ToolError> {
+        let runtime_cfg = {
+            let current = self.config.read().await;
+            config_transaction::runtime_config_for_desired(&current, &cfg)
+        };
         self.write_config_file(&cfg).await?;
         let _publication = self.publication_barrier.write().await;
         self.store
-            .set_process_code_mode_enabled(cfg.code_mode.enabled);
+            .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
-            .set_enabled(cfg.code_mode.mcp_ui_enabled);
+            .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
-            ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-        *self.config.write().await = cfg;
+            ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+        *self.config.write().await = runtime_cfg;
         Ok(())
     }
 }

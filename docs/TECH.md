@@ -167,19 +167,37 @@ just test
 just lint
 just deny
 just docs-check
+just rustdoc-check
 ```
+
+### Rustdoc contract
+
+`just rustdoc` builds the complete workspace HTML documentation with all Cargo
+features enabled, dependencies omitted, private items rendered, and the workspace
+binary/example targets included. `just rustdoc-check` additionally runs all
+workspace doctests.
+Canonical workspace/default-target HTML lives under `target/doc/`; the stdio MCP fixture and Rust examples live under `target/rustdoc-extra/doc/`. The six-line `labby` launcher delegates directly to `labby::run()` and is compile-tested rather than separately published because Cargo cannot emit same-named library/binary Rustdoc without an output collision (Cargo issue #6313).
+
+The workspace denies missing crate-level documentation. The strict Rustdoc gate
+also promotes the configured Rustdoc warning families to errors, covering
+broken/private intra-doc links, invalid code blocks or HTML, bare URLs,
+redundant explicit links, and unescaped backticks. `just rustdoc-audit`
+uses a force-warning pass to inventory missing public API prose without turning
+the product crate's historical coverage debt into a blocker for unrelated
+changes. CI runs the strict Rustdoc correctness build in its own lane and
+uploads both Rustdoc trees as the `rustdoc-html` artifact for inspection.
 
 Useful scoped checks:
 
 ```bash
 cargo test -p labby-apis
 cargo nextest run -p labby --all-features
-cargo doc --workspace --all-features --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc -p labby-runtime --all-features --no-deps --document-private-items
 ```
 
-CI additionally validates generated docs, frontend assets, the web app, package
-artifacts, security policy, release paths, and platform-specific jobs according
-to the changed-path classifier.
+CI additionally validates generated docs, strict Rustdoc/doctests, frontend
+assets, the web app, package artifacts, security policy, release paths, and
+platform-specific jobs according to the changed-path classifier.
 
 ## Release Tooling
 

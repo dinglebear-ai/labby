@@ -6,13 +6,135 @@ use std::time::Instant;
 
 use fd_lock::RwLock;
 use labby_runtime::error::ToolError;
-use labby_runtime::gateway_config::GatewayConfig;
+use labby_runtime::gateway_config::{
+    GatewayConfig, GatewayLoadoutConfig, ProtectedMcpRouteConfig, ProtectedMcpRouteTarget,
+};
 use tokio::sync::oneshot;
 
 use crate::gateway::config::load_gateway_config;
 use crate::upstream::types::UpstreamRuntimeOwner;
 
 use super::{ConfigMutationGuard, GatewayManager};
+
+/// Project durable desired config onto what this running process can honestly
+/// claim is live without a restart.
+///
+/// Protected gateway-subset routes are mounted by the host router at process
+/// startup, and Loadouts referenced by those routes are part of that mounted
+/// projection. Staged mutations intentionally update durable config only. An
+/// unrelated hot-safe mutation must therefore never publish those staged fields
+/// into `self.config` as a side effect.
+///
+/// Every other GatewayConfig field remains hot-publishable and comes from the
+/// desired config. Protected routes are transactional as a collection once any
+/// change crosses a gateway-subset boundary, which keeps staged renames from
+/// half-publishing. Loadouts remain mergeable name-by-name: only values used by
+/// enabled desired or runtime subset routes stay pinned to the runtime version.
+pub(crate) fn runtime_config_for_desired(
+    current: &GatewayConfig,
+    desired: &GatewayConfig,
+) -> GatewayConfig {
+    let mut effective = desired.clone();
+    effective.protected_mcp_routes = runtime_protected_routes(current, desired);
+    effective.loadouts = runtime_loadouts(current, desired);
+    effective
+}
+
+fn runtime_protected_routes(
+    current: &GatewayConfig,
+    desired: &GatewayConfig,
+) -> Vec<ProtectedMcpRouteConfig> {
+    // A staged gateway-subset change is one startup-router transaction. Freeze
+    // the complete route collection until restart rather than trying to merge
+    // entries by name: a rename makes the old runtime route and new desired
+    // route look like unrelated remove/add rows, and a name-by-name merge would
+    // otherwise hot-publish the new half of that staged rename.
+    if protected_routes_have_restart_debt(current, desired) {
+        return current.protected_mcp_routes.clone();
+    }
+    desired.protected_mcp_routes.clone()
+}
+
+pub(crate) fn protected_routes_have_restart_debt(
+    current: &GatewayConfig,
+    desired: &GatewayConfig,
+) -> bool {
+    for runtime_route in &current.protected_mcp_routes {
+        match desired
+            .protected_mcp_routes
+            .iter()
+            .find(|route| route.name == runtime_route.name)
+        {
+            Some(desired_route) => {
+                if desired_route != runtime_route
+                    && (desired_route.is_gateway_subset() || runtime_route.is_gateway_subset())
+                {
+                    return true;
+                }
+            }
+            None if runtime_route.is_gateway_subset() => return true,
+            None => {}
+        }
+    }
+
+    desired.protected_mcp_routes.iter().any(|desired_route| {
+        desired_route.is_gateway_subset()
+            && !current
+                .protected_mcp_routes
+                .iter()
+                .any(|route| route.name == desired_route.name)
+    })
+}
+
+fn runtime_loadouts(current: &GatewayConfig, desired: &GatewayConfig) -> Vec<GatewayLoadoutConfig> {
+    let mut effective = Vec::with_capacity(desired.loadouts.len().max(current.loadouts.len()));
+
+    for desired_loadout in &desired.loadouts {
+        let runtime_loadout = current
+            .loadouts
+            .iter()
+            .find(|loadout| loadout.name == desired_loadout.name);
+        let restart_bound = runtime_loadout != Some(desired_loadout)
+            && (loadout_has_enabled_route(desired, &desired_loadout.name)
+                || loadout_has_enabled_route(current, &desired_loadout.name));
+        if restart_bound {
+            if let Some(runtime_loadout) = runtime_loadout {
+                effective.push(runtime_loadout.clone());
+            }
+        } else {
+            effective.push(desired_loadout.clone());
+        }
+    }
+
+    for runtime_loadout in &current.loadouts {
+        if desired
+            .loadouts
+            .iter()
+            .any(|loadout| loadout.name == runtime_loadout.name)
+        {
+            continue;
+        }
+        if loadout_has_enabled_route(desired, &runtime_loadout.name)
+            || loadout_has_enabled_route(current, &runtime_loadout.name)
+        {
+            effective.push(runtime_loadout.clone());
+        }
+    }
+
+    effective
+}
+
+fn loadout_has_enabled_route(cfg: &GatewayConfig, loadout: &str) -> bool {
+    cfg.protected_mcp_routes.iter().any(|route| {
+        if !route.enabled {
+            return false;
+        }
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = route.target.as_ref() else {
+            return false;
+        };
+        target.loadout.as_deref() == Some(loadout)
+    })
+}
 
 impl GatewayManager {
     /// Cancellation-safe direct persistence for mutations that do not require
@@ -31,6 +153,28 @@ impl GatewayManager {
         .await
         .map_err(|error| {
             ToolError::internal_message(format!("gateway config persist task failed: {error}"))
+        })?
+    }
+
+    /// Cancellation-safe persistence for desired config that must not be
+    /// published into the running process yet. The owned task retains both
+    /// mutation leases until the atomic file write has completed, which keeps
+    /// staged restart mutations serialized even if the request future drops.
+    pub(crate) async fn persist_desired_config_owned(
+        &self,
+        mutation_guard: ConfigMutationGuard,
+        cfg: GatewayConfig,
+    ) -> Result<(), ToolError> {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let _mutation_guard = mutation_guard;
+            manager.write_config_file(&cfg).await
+        })
+        .await
+        .map_err(|error| {
+            ToolError::internal_message(format!(
+                "gateway desired config persist task failed: {error}"
+            ))
         })?
     }
 
@@ -162,7 +306,7 @@ impl GatewayManager {
         self.backup_config_before_commit(&previous_revision).await?;
         self.write_config_file(&candidate).await?;
         match self
-            .reload_with_origin_unlocked(origin.as_deref(), owner.clone())
+            .reload_with_origin_unlocked_transactional(origin.as_deref(), owner.clone())
             .await
         {
             Ok(diff) => {
@@ -208,7 +352,7 @@ impl GatewayManager {
                     )));
                 }
                 if let Err(rollback_error) = self
-                    .reload_with_origin_unlocked(origin.as_deref(), owner)
+                    .reload_with_origin_unlocked_transactional(origin.as_deref(), owner)
                     .await
                 {
                     tracing::error!(

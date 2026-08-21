@@ -37,7 +37,7 @@ mod views;
 mod virtual_servers;
 
 /// Shared test stub registry knowing a single `deploy` service. The host's real
-/// default-registry builder lives in `lab`, not `lab-gateway`; manager tests that
+/// default-registry builder lives in `lab`, not `labby-gateway`; manager tests that
 /// need `deploy` to be a registered/known service (quarantine retention, surface
 /// gating, MCP action-policy enforcement) inject this so the registry seam
 /// resolves `deploy` instead of the default `EmptyServiceRegistry`.
@@ -332,6 +332,32 @@ async fn new_base_pool_carries_the_manager_usage_store() {
     );
 }
 
+#[test]
+fn new_base_pool_shares_header_recovery_metrics_across_generations() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let first = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+    let second = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+
+    assert_eq!(
+        manager
+            .header_recovery_metrics_store
+            .record_mismatch_for_test("fixture"),
+        1
+    );
+    assert_eq!(
+        first.header_recovery_metrics("fixture").mismatch_detected,
+        1
+    );
+    assert_eq!(
+        second.header_recovery_metrics("fixture").mismatch_detected,
+        1
+    );
+}
+
 async fn dummy_auth_client() -> Arc<AuthClient<reqwest::Client>> {
     // See upstream/pool.rs::UpstreamPool::new for why this call is needed
     // under "rustls-no-provider" -- idempotent, safe to ignore Err.
@@ -523,10 +549,14 @@ fn fixture_upstream_entry(upstream: &str, tools: HashMap<String, UpstreamTool>) 
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: ToolExposurePolicy::All,
+        proxy_skills: false,
+        supports_skills: None,
         proxy_resources: true,
         prompt_count: 0,
         resource_count: 0,
         skill_count: 0,
+        skill_names: Vec::new(),
         prompt_names: Vec::new(),
         resource_uris: Vec::new(),
         tool_health: UpstreamHealth::Healthy,

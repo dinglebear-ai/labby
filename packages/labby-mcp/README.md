@@ -311,7 +311,7 @@ severity found.
 > from source, manifests, packaging, and CI — not merely feature-gated.
 > `scripts/check-retired-features.sh` guards against reintroduction, and the
 > historical designs are archived under
-> [docs/references/retired-labby](./docs/references/retired-labby/). Plugin
+> [docs/archive/retired-labby](./docs/archive/retired-labby/). Plugin
 > marketplace assets now live in the separate
 > [dendrite](https://github.com/dinglebear-ai/dendrite) repo.
 

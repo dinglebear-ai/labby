@@ -135,11 +135,14 @@ wiremock = "0.6"
 insta = { version = "1", features = ["json", "yaml"] }
 
 [workspace.lints.rust]
-# Re-enable once public API rustdoc coverage is complete across the workspace.
-# Keep this policy local to the lint table; transient implementation plans are not
-# a durable source of truth.
+# Rustdoc correctness is enforced by the dedicated CI gate. Missing public API
+# prose is audited separately because the product crate still has substantial
+# historical coverage debt; do not make that debt block unrelated builds.
 missing_docs = "allow"
+# The fleet contract still checks the pre-1.97 rust-table spelling. Keep it
+# alongside the canonical rustdoc lint below and silence only its rename notice.
 missing_crate_level_docs = "deny"
+renamed_and_removed_lints = "allow"
 unsafe_op_in_unsafe_fn = "deny"
 unsafe_code = "forbid"
 unreachable_pub = "warn"
@@ -258,6 +261,7 @@ large_futures = "allow"
 redundant_pub_crate = "allow"
 
 [workspace.lints.rustdoc]
+missing_crate_level_docs = "deny"
 broken_intra_doc_links = "deny"
 invalid_codeblock_attributes = "deny"
 invalid_rust_codeblocks = "deny"
@@ -266,6 +270,12 @@ bare_urls = "warn"
 private_intra_doc_links = "warn"
 redundant_explicit_links = "warn"
 unescaped_backticks = "warn"
+
+# Temporary rmcp decoder fix for custom extension results carrying protocol-generic
+# `resultType` / `_meta`. Pinned to one immutable fork commit; remove once the
+# equivalent fix ships in an upstream rmcp release.
+[patch.crates-io]
+rmcp = { git = "https://github.com/dinglebear-ai/rust-sdk", rev = "c9c3e518ce94b8d715519657c88195515978bda4" }
 
 [profile.release]
 lto = "thin"

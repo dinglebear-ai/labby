@@ -562,6 +562,198 @@
         ]
       }
     },
+    "/v1/gateway/codemode/tools/describe": {
+      "post": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "Describe a live Code Mode tool",
+        "description": "Private admin browser projection of the live Code Mode catalog.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeModeToolDescribeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Code Mode tool discovery result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeModeToolDescribeResponseDoc"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin scope required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tool not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Response exceeds the bounded payload limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Catalog discovery failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/gateway/codemode/tools/search": {
+      "post": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "Search live Code Mode tools",
+        "description": "Private admin browser projection of the live Code Mode catalog.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeModeToolSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Code Mode tool discovery result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeModeToolSearchResponseDoc"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin scope required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tool not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Response exceeds the bounded payload limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Catalog discovery failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/lab_admin": {
       "post": {
         "tags": [
@@ -1159,6 +1351,162 @@
         ]
       }
     },
+    "/v1/skills": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Dispatch action to skills",
+        "description": "Execute an action on the skills service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillsActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/snippets": {
       "post": {
         "tags": [
@@ -1487,6 +1835,202 @@
           }
         }
       },
+      "CodeModeToolDescribeRequest": {
+        "type": "object",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CodeModeToolDescribeResponseDoc": {
+        "type": "object",
+        "required": [
+          "path",
+          "id",
+          "namespace",
+          "name",
+          "description",
+          "helper",
+          "signature",
+          "tags"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "helper": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "safety": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CodeModeToolSafetyDoc"
+              }
+            ]
+          },
+          "signature": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "typescript": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "typescript_omitted": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CodeModeToolSafetyDoc": {
+        "type": "object",
+        "properties": {
+          "destructive": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "CodeModeToolSearchHitDoc": {
+        "type": "object",
+        "required": [
+          "path",
+          "id",
+          "kind",
+          "namespace",
+          "name",
+          "description",
+          "signature",
+          "tags",
+          "score"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "safety": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CodeModeToolSafetyDoc"
+              }
+            ]
+          },
+          "score": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "signature": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CodeModeToolSearchRequest": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CodeModeToolSearchResponseDoc": {
+        "type": "object",
+        "required": [
+          "results",
+          "total",
+          "truncated"
+        ],
+        "properties": {
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodeModeToolSearchHitDoc"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
       "DoctorActionRequest": {
         "type": "object",
         "required": [
@@ -1695,11 +2239,25 @@
               "gateway.usage.metrics",
               "gateway.usage.calls",
               "gateway.supported_services",
+              "gateway.loadout.list",
+              "gateway.loadout.list_state",
+              "gateway.loadout.get",
+              "gateway.loadout.add",
+              "gateway.loadout.update",
+              "gateway.loadout.patch",
+              "gateway.loadout.stage_update",
+              "gateway.loadout.stage_patch",
+              "gateway.loadout.stage_remove",
+              "gateway.loadout.remove",
               "gateway.protected_route.list",
+              "gateway.protected_route.list_state",
               "gateway.protected_route.get",
               "gateway.protected_route.add",
               "gateway.protected_route.update",
               "gateway.protected_route.remove",
+              "gateway.protected_route.stage_add",
+              "gateway.protected_route.stage_update",
+              "gateway.protected_route.stage_remove",
               "gateway.protected_route.test",
               "gateway.virtual_server.enable",
               "gateway.virtual_server.disable",
@@ -2009,6 +2567,110 @@
           }
         }
       },
+      "GatewayGatewayLoadoutAddParams": {
+        "type": "object",
+        "required": [
+          "loadout"
+        ],
+        "properties": {
+          "loadout": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutGetParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutPatchParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "patch"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "patch": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutRemoveParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutStage_patchParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "patch"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "patch": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutStage_removeParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutStage_updateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "loadout"
+        ],
+        "properties": {
+          "loadout": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayLoadoutUpdateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "loadout"
+        ],
+        "properties": {
+          "loadout": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "GatewayGatewayMcpCleanupParams": {
         "type": "object",
         "required": [
@@ -2212,6 +2874,43 @@
           }
         }
       },
+      "GatewayGatewayProtected_routeStage_addParams": {
+        "type": "object",
+        "required": [
+          "route"
+        ],
+        "properties": {
+          "route": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayProtected_routeStage_removeParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayProtected_routeStage_updateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "route"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "route": {
+            "type": "string"
+          }
+        }
+      },
       "GatewayGatewayProtected_routeTestParams": {
         "type": "object",
         "required": [
@@ -2356,6 +3055,12 @@
       "GatewayGatewayUsageCallsParams": {
         "type": "object",
         "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "capability": {
+            "type": "string"
+          },
           "cursor": {
             "type": "string"
           },
@@ -2365,8 +3070,23 @@
           "limit": {
             "type": "integer"
           },
+          "operation": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          },
           "since_unix": {
             "type": "integer"
+          },
+          "subject_scoped": {
+            "type": "boolean"
+          },
+          "tool": {
+            "type": "string"
           },
           "until_unix": {
             "type": "integer"
@@ -2379,8 +3099,41 @@
       "GatewayGatewayUsageMetricsParams": {
         "type": "object",
         "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "bucket_count": {
+            "type": "integer"
+          },
+          "capability": {
+            "type": "string"
+          },
+          "include_facets": {
+            "type": "boolean"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          },
           "since_unix": {
             "type": "integer"
+          },
+          "subject_scoped": {
+            "type": "boolean"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "timezone_offset_minutes": {
+            "type": "integer"
+          },
+          "tool": {
+            "type": "string"
           },
           "until_unix": {
             "type": "integer"
@@ -2621,6 +3374,9 @@
           "action": {
             "type": "string"
           },
+          "correlated_only": {
+            "type": "boolean"
+          },
           "file": {
             "type": "string"
           },
@@ -2641,6 +3397,9 @@
           },
           "service": {
             "type": "string"
+          },
+          "stop_after_limit": {
+            "type": "boolean"
           },
           "target": {
             "type": "string"
@@ -3009,6 +3768,89 @@
         ],
         "properties": {
           "service": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "help",
+              "schema",
+              "skills.list",
+              "skills.search",
+              "skills.get",
+              "skills.read"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "SkillsSchemaParams": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsGetParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsListParams": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "origin": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsReadParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsSearchParams": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "query": {
             "type": "string"
           }
         }

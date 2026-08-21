@@ -13,7 +13,7 @@ use tempfile::NamedTempFile;
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{
-    operator_visible_upstream_error, redacted_gateway_target, upstream_summary,
+    operator_visible_upstream_error, redacted_gateway_target, upstream_summary_with_health,
 };
 #[cfg(all(unix, target_os = "linux"))]
 use crate::process::unix::terminate_process_group_sigkill;
@@ -255,7 +255,8 @@ impl GatewayManager {
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
         for upstream in &cfg.upstream {
-            let summary = upstream_summary(pool.as_deref(), &upstream.name).await;
+            let (summary, health) =
+                upstream_summary_with_health(pool.as_deref(), &upstream.name).await;
             let runtime = match pool.as_deref() {
                 Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
                 None => None,
@@ -297,13 +298,10 @@ impl GatewayManager {
                 Some(pool) => pool.upstream_last_error(&upstream.name).await,
                 None => None,
             });
-            let health = match pool.as_deref() {
-                Some(pool) => pool.upstream_tool_health(&upstream.name).await,
-                None => None,
-            };
             let exposing_capabilities = summary.exposed_tool_count > 0
                 || summary.exposed_resource_count > 0
-                || summary.exposed_prompt_count > 0;
+                || summary.exposed_prompt_count > 0
+                || summary.exposed_skill_count > 0;
             let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
             let connected =
                 upstream.enabled && last_error.is_none() && (exposing_capabilities || health_ok);
@@ -317,6 +315,9 @@ impl GatewayManager {
                 exposed_resource_count: summary.exposed_resource_count,
                 discovered_prompt_count: summary.discovered_prompt_count,
                 exposed_prompt_count: summary.exposed_prompt_count,
+                discovered_skill_count: summary.discovered_skill_count,
+                exposed_skill_count: summary.exposed_skill_count,
+                supports_skills: summary.supports_skills,
                 likely_stale_count: stale_count,
                 pid: live_pid.or_else(|| fallback.map(|entry| entry.pid)),
                 pgid: runtime
@@ -421,6 +422,81 @@ impl GatewayManager {
                     upstream = upstream.as_str(),
                     error = %error,
                     "gateway MCP runtime catalog warm failed"
+                );
+            }
+        }
+    }
+
+    pub(super) async fn refresh_mcp_runtime_catalog_bounded(
+        &self,
+        cfg: &GatewayConfig,
+        pool: Option<&UpstreamPool>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+        oauth_subject: Option<&str>,
+        action: &'static str,
+    ) {
+        let timeout = mcp_runtime_warm_timeout(cfg);
+        if tokio::time::timeout(
+            timeout,
+            self.refresh_mcp_runtime_catalog(cfg, pool, allowed_upstreams, oauth_subject),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action,
+                timeout_ms = timeout.as_millis(),
+                "gateway MCP runtime catalog refresh timed out; returning current snapshot"
+            );
+        }
+    }
+
+    async fn refresh_mcp_runtime_catalog(
+        &self,
+        cfg: &GatewayConfig,
+        pool: Option<&UpstreamPool>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+        oauth_subject: Option<&str>,
+    ) {
+        let Some(pool) = pool else {
+            return;
+        };
+
+        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+            cfg.gateway.upstream_discovery_concurrency,
+        );
+        let upstreams: Vec<UpstreamConfig> = cfg
+            .upstream
+            .iter()
+            .filter(|upstream| {
+                upstream.enabled
+                    && allowed_upstreams.is_none_or(|allowed| allowed.contains(&upstream.name))
+                    && (upstream.oauth.is_none() || oauth_subject.is_some())
+            })
+            .cloned()
+            .collect();
+
+        let mut stream = futures::stream::iter(upstreams)
+            .map(|upstream| async move {
+                let name = upstream.name.clone();
+                let result = pool
+                    .reprobe_tools_for_upstream_as(&upstream, oauth_subject, None)
+                    .await;
+                (name, result)
+            })
+            .buffer_unordered(concurrency);
+
+        while let Some((upstream, result)) = stream.next().await {
+            if let Err(error) = result {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.status.refresh",
+                    upstream = upstream.as_str(),
+                    error = %error,
+                    "gateway status tool catalog refresh failed"
                 );
             }
         }

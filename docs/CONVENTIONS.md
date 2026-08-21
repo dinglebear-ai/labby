@@ -144,7 +144,7 @@ Rules:
 - rustdoc warnings must be treated seriously
 - examples on public client methods should be real and compilable when practical
 
-The `labby` binary does not need the same level of public rustdoc coverage.
+Public API prose should be added whenever a public contract is touched. Use `just rustdoc-audit` to expose historical gaps; missing prose is audited separately from the strict Rustdoc correctness gate so existing product-crate debt does not incentivize filler comments.
 
 ## Testing Policy
 

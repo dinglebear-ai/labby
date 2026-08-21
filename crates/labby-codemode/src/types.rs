@@ -89,40 +89,86 @@ pub fn split_namespaced_id(raw: &str) -> Option<(&str, &str)> {
     Some((namespace, tool))
 }
 
+/// Build the canonical `<namespace>::<tool>` identifier used by Code Mode.
 #[must_use]
 pub fn namespaced_tool_id(namespace: &str, tool: &str) -> String {
     format!("{namespace}::{tool}")
 }
 
+/// Search/describe catalog entry for a host tool or reusable snippet.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolDescriptor {
+    /// Catalog entry class.
     pub kind: CodeModeCatalogKind,
+    /// Stable Code Mode identifier.
     pub id: String,
+    /// Unqualified tool or snippet name.
     pub name: String,
+    /// Host namespace, or `snippet` for reusable snippets.
     pub namespace: String,
+    /// Human-readable catalog description.
     pub description: String,
+    /// Advisory intrinsic safety facts from the live descriptor. Dispatch
+    /// remains authoritative; absence means unknown, never `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety: Option<CodeModeToolSafety>,
+    /// JSON Schema for the input payload when one is available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
+    /// JSON Schema for the result payload when one is available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    /// Compact JavaScript/TypeScript call signature shown by discovery.
     pub signature: String,
+    /// TypeScript declaration text emitted by `describe`.
     pub dts: String,
+    /// Optional search/discovery tags.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Declared snippet input entries. Empty for normal tools.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<CodeModeSnippetInputEntry>,
 }
 
+/// Compact, source-neutral safety facts for discovery presentation.
+///
+/// Optional booleans preserve fail-closed semantics: an omitted fact is
+/// unknown. This type deliberately carries no approval/access policy or raw
+/// upstream annotation text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeModeToolSafety {
+    /// Whether the upstream explicitly classifies the tool as read-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    /// Whether the upstream explicitly classifies the tool as destructive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destructive: Option<bool>,
+}
+
+impl CodeModeToolSafety {
+    /// Return `true` when neither safety fact is known.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.read_only.is_none() && self.destructive.is_none()
+    }
+}
+
+/// Kind of object represented by a Code Mode discovery descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeModeCatalogKind {
+    /// Host-provided callable tool.
     Tool,
+    /// Reusable Code Mode snippet.
     Snippet,
 }
 
+/// Named snippet input plus its validation/default specification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeModeSnippetInputEntry {
+    /// Input parameter name.
     pub name: String,
+    /// Input type, requirement, and optional default.
     #[serde(flatten)]
     pub spec: SnippetInputSpec,
 }
@@ -140,6 +186,18 @@ impl ToolDescriptor {
         schema: Option<Value>,
         output_schema: Option<Value>,
     ) -> Self {
+        Self::tool_with_safety(namespace, tool, description, schema, output_schema, None)
+    }
+
+    #[must_use]
+    pub fn tool_with_safety(
+        namespace: &str,
+        tool: &str,
+        description: &str,
+        schema: Option<Value>,
+        output_schema: Option<Value>,
+        safety: Option<CodeModeToolSafety>,
+    ) -> Self {
         let types = super::ts_signatures::generate_tool_types(
             namespace,
             tool,
@@ -153,6 +211,7 @@ impl ToolDescriptor {
             name: tool.to_string(),
             namespace: namespace.to_string(),
             description: description.to_string(),
+            safety,
             schema,
             output_schema,
             signature: types.signature,
@@ -162,6 +221,7 @@ impl ToolDescriptor {
         }
     }
 
+    /// Build a catalog descriptor for a stored or built-in snippet.
     #[must_use]
     pub fn snippet(info: &SnippetInfo) -> Self {
         let description = info
@@ -182,11 +242,12 @@ impl ToolDescriptor {
             name: info.name.clone(),
             namespace: "snippet".to_string(),
             description,
+            safety: None,
             schema: Some(snippet_inputs_schema(&info.inputs)),
             // Deliberate: a snippet returns an arbitrary JavaScript value, so
             // there is no honest output schema to publish. `dts` is likewise
-            // empty, so `describe` renders inputs with no type section. See
-            // docs/plans/complete/210-mcp-output-schema/SPEC.md FR-8 (decision D6).
+            // empty, so `describe` renders inputs with no type section. This is
+            // the current contract in docs/contracts/mcp-tool-output.md.
             output_schema: None,
             signature: format!("codemode.run({:?}, input?)", info.name),
             dts: String::new(),
@@ -247,6 +308,8 @@ pub(crate) struct CodeModeDiscoveryEntry {
     pub(crate) name: String,
     pub(crate) helper: String,
     pub(crate) description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) safety: Option<CodeModeToolSafety>,
     pub(crate) signature: String,
     pub(crate) tags: Vec<String>,
     pub(crate) inputs: Vec<CodeModeSnippetInputEntry>,
@@ -285,6 +348,7 @@ impl CodeModeDiscoveryEntry {
             name: entry.name.clone(),
             helper,
             description: entry.description.clone(),
+            safety: entry.safety,
             signature: entry.signature.clone(),
             tags: entry.tags.clone(),
             inputs: entry.inputs.clone(),
@@ -302,11 +366,14 @@ impl CodeModeDiscoveryEntry {
 /// `execute` response can mirror the widget identically.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UiLink {
+    /// Raw `_meta.ui` object advertised by the tool result.
     pub ui_meta: Value,
 }
 
+/// Serializable result envelope for one Code Mode execution.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CodeModeExecutionResponse {
+    /// Stable execution identifier used for journals, artifacts, and promotion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     /// The final return value of the async function. None when the function
@@ -315,6 +382,7 @@ pub struct CodeModeExecutionResponse {
     /// serializes as `"result": null`; undefined omits the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// Metadata describing any model-facing result shaping that was applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_shaping: Option<CodeModeResultShapeMetadata>,
     /// Captured mcp-ui widget link (last-wins across the run). The MCP boundary
@@ -322,19 +390,24 @@ pub struct CodeModeExecutionResponse {
     /// renders the native widget. `None` when no widget-bearing call ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiLink>,
+    /// Metadata for every host-brokered call attempted during execution.
     pub calls: Vec<CodeModeExecutedCall>,
     /// Captured console.log/warn/error lines from the runner. Sourced from the
     /// javy runner subprocess (drained from its stderr); the current javy path
     /// returns no protocol-carried logs, so this is empty until console capture
     /// is wired through.
     pub logs: Vec<String>,
+    /// Artifacts written by the execution through the brokered artifact API.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<CodeModeArtifactReceipt>,
 }
 
+/// Pair of the unshaped execution response and the model-facing display response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeModeExecutionOutcome {
+    /// Full execution response before final result shaping.
     pub raw_response: CodeModeExecutionResponse,
+    /// Response after configured model-facing result shaping.
     pub display_response: CodeModeExecutionResponse,
 }
 
@@ -344,8 +417,11 @@ pub struct CodeModeExecutionOutcome {
 /// leaking secrets through the truncation preview.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeModeExecutedCall {
+    /// Fully-qualified `<namespace>::<tool>` identifier.
     pub id: String,
+    /// Whether the brokered call completed successfully.
     pub ok: bool,
+    /// Tool-call duration in milliseconds.
     pub elapsed_ms: u128,
     /// Offset from execution start to this call's dispatch, in ms. `None` for
     /// synthetic entries (budget rejections, artifact pseudo-calls) that have
@@ -355,6 +431,7 @@ pub struct CodeModeExecutedCall {
     /// Redacted/capped params captured at the broker boundary. Raw params must
     /// never be stored in this public trace type.
     pub params: Option<Value>,
+    /// Stable error kind when the brokered call failed.
     pub error_kind: Option<String>,
     /// Captured MCP Apps (mcp-ui) widget link for this specific tool call.
     /// Stored as metadata only; the call result payload stays out of the trace.
@@ -392,6 +469,7 @@ pub(crate) fn split_code_mode_call_id(id: &str) -> (&str, &str) {
         .map_or(("", id), |(namespace, tool)| (namespace, tool))
 }
 
+/// Code Mode execution failure plus the bounded call trace accumulated before failure.
 #[derive(Debug, Clone)]
 pub struct CodeModeExecutionError {
     error: CodeModeCallError,
@@ -399,6 +477,7 @@ pub struct CodeModeExecutionError {
 }
 
 impl CodeModeExecutionError {
+    /// Construct an execution error while preserving the completed call trace.
     #[must_use]
     pub fn with_trace(
         error: impl Into<CodeModeCallError>,
@@ -410,21 +489,25 @@ impl CodeModeExecutionError {
         }
     }
 
+    /// Return the stable error kind from the underlying call error.
     #[must_use]
     pub fn kind(&self) -> &str {
         self.error.kind()
     }
 
+    /// Borrow the tool calls completed before the execution failed.
     #[must_use]
     pub fn calls(&self) -> &[CodeModeExecutedCall] {
         &self.calls
     }
 
+    /// Consume the wrapper and return the underlying Code Mode call error.
     #[must_use]
     pub fn into_call_error(self) -> CodeModeCallError {
         self.error
     }
 
+    /// Convert into the surface-neutral tool error representation.
     #[must_use]
     pub fn into_tool_error(self) -> ToolError {
         self.error.into_tool_error()
@@ -460,33 +543,48 @@ impl From<CodeModeCallError> for CodeModeExecutionError {
     }
 }
 
+/// Kind of operation recorded in the bounded Code Mode history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeModeHistoryKind {
+    /// JavaScript execution entry.
     Execute,
 }
 
+/// Bounded observability record for one Code Mode operation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CodeModeHistoryEntry {
+    /// Stable execution identifier, when one was assigned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
+    /// Monotonic sequence number assigned by the in-memory history.
     pub seq: u64,
+    /// Route-scope label under which the operation executed.
     pub route_scope: String,
+    /// History operation class.
     pub kind: CodeModeHistoryKind,
+    /// Whether the operation completed successfully.
     pub ok: bool,
+    /// Operation duration in milliseconds.
     pub elapsed_ms: u128,
+    /// Estimated input token count, when measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<usize>,
+    /// Estimated output token count, when measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<usize>,
+    /// Stable failure kind, when the operation failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+    /// Bounded tool-call trace captured for the operation.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<CodeModeExecutedCall>,
+    /// Search result count for discovery operations that populate this field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub match_count: Option<usize>,
 }
 
+/// In-memory, entry-count- and byte-bounded Code Mode operation history.
 #[derive(Debug, Clone)]
 pub struct CodeModeHistory {
     entries: VecDeque<CodeModeHistoryEntry>,
@@ -510,6 +608,7 @@ impl Default for CodeModeHistory {
 }
 
 impl CodeModeHistory {
+    /// Create a bounded history with minimum-safe entry and byte limits.
     #[must_use]
     pub fn new(max_entries: usize, max_bytes: usize) -> Self {
         Self {
@@ -521,6 +620,7 @@ impl CodeModeHistory {
         }
     }
 
+    /// Append an entry, assign its sequence number, and evict oldest entries as needed.
     pub fn push(&mut self, mut entry: CodeModeHistoryEntry) {
         entry.seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
@@ -530,11 +630,13 @@ impl CodeModeHistory {
         self.trim();
     }
 
+    /// Return the retained history entries in oldest-to-newest order.
     #[must_use]
     pub fn snapshot(&self) -> Vec<CodeModeHistoryEntry> {
         self.entries.iter().cloned().collect()
     }
 
+    /// Return retained history filtered to one route scope, or all entries for `None`.
     #[must_use]
     pub fn snapshot_for_route_scope(&self, route_scope: Option<&str>) -> Vec<CodeModeHistoryEntry> {
         match route_scope {
@@ -594,26 +696,41 @@ impl CodeModeHistory {
     }
 }
 
+/// Ephemeral execution source retained so an administrator can promote it into a snippet.
 #[derive(Debug, Clone)]
 pub struct CodeModeExecutionSource {
+    /// Execution identifier used as the promotion lookup key.
     pub execution_id: String,
+    /// Source creation timestamp in Unix milliseconds.
     pub created_at_ms: i64,
+    /// Redacted/stable actor key that owns this source.
     pub actor_key: Option<String>,
+    /// Whether the original caller had administrative scope.
     pub is_admin: bool,
+    /// Route scope in which the source executed.
     pub route_scope: String,
+    /// Product surface that initiated the execution.
     pub surface: CodeModeSurface,
+    /// Capability-scope fingerprint captured at execution time.
     pub capability_filter_fingerprint: String,
+    /// Original JavaScript source eligible for promotion.
     pub code: String,
 }
 
+/// Authorization/scope context used when resolving an execution source for promotion.
 #[derive(Debug, Clone)]
 pub struct CodeModeSourceLookup {
+    /// Actor key that must own the source.
     pub actor_key: Option<String>,
+    /// Whether the resolving caller has administrative scope.
     pub is_admin: bool,
+    /// Current route scope.
     pub route_scope: String,
+    /// Current capability-scope fingerprint.
     pub capability_filter_fingerprint: String,
 }
 
+/// Bounded in-memory store of ephemeral Code Mode source suitable for snippet promotion.
 #[derive(Debug, Clone)]
 pub struct CodeModeSourceStore {
     entries: VecDeque<CodeModeExecutionSource>,
@@ -629,6 +746,7 @@ impl Default for CodeModeSourceStore {
 }
 
 impl CodeModeSourceStore {
+    /// Create a source store with minimum-safe entry and byte limits.
     #[must_use]
     pub fn new(max_entries: usize, max_bytes: usize) -> Self {
         Self {
@@ -639,6 +757,7 @@ impl CodeModeSourceStore {
         }
     }
 
+    /// Retain a source when it fits the byte budget, evicting oldest entries as needed.
     pub fn push(&mut self, source: CodeModeExecutionSource) {
         let bytes = source.code.len();
         if bytes > self.max_bytes {
@@ -655,6 +774,7 @@ impl CodeModeSourceStore {
         }
     }
 
+    /// Resolve a promotion source after enforcing admin, route, capability, and actor ownership.
     #[must_use]
     pub fn resolve(
         &self,
@@ -763,10 +883,14 @@ fn entry_serialized_size(entry: &CodeModeHistoryEntry) -> usize {
         .unwrap_or(usize::MAX / 2)
 }
 
+/// Caller identity and authorization facts presented to the host-neutral Code Mode kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeModeCaller {
+    /// Trusted local caller that is granted all Code Mode capabilities.
     TrustedLocal,
+    /// Authenticated/scoped caller with host-computed capability booleans.
     Scoped {
+        /// Capabilities granted by the host surface.
         capabilities: CodeModeCallerCapabilities,
         /// JWT `sub` claim for the caller, when available. The host decides how
         /// to map this onto its own credential/identity model when resolving
@@ -782,26 +906,35 @@ pub enum CodeModeCaller {
 /// into the kernel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CodeModeCallerCapabilities {
+    /// Whether read-only Code Mode execution is allowed.
     pub can_read: bool,
+    /// Whether full Code Mode execution is allowed.
     pub can_execute: bool,
+    /// Whether reusable snippets may be listed/resolved/executed.
     pub can_use_snippets: bool,
+    /// Whether the caller carries administrative scope.
     pub is_admin: bool,
 }
 
+/// Product surface that initiated a Code Mode execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeModeSurface {
+    /// Model Context Protocol surface.
     Mcp,
+    /// Local command-line interface.
     Cli,
+    Api,
 }
 
 impl CodeModeSurface {
-    /// Stable lowercase surface tag (`"mcp"` / `"cli"`) used by hosts when
+    /// Stable lowercase surface tag (`"mcp"`, `"cli"`, or `"api"`) used by hosts when
     /// building their own runtime-owner / logging context.
     #[must_use]
     pub fn tag(self) -> &'static str {
         match self {
             CodeModeSurface::Mcp => "mcp",
             CodeModeSurface::Cli => "cli",
+            CodeModeSurface::Api => "api",
         }
     }
 }
@@ -814,11 +947,12 @@ impl CodeModeSurface {
 pub fn destructive_permitted(surface: CodeModeSurface, caller: &CodeModeCaller) -> bool {
     match surface {
         CodeModeSurface::Cli => true,
-        CodeModeSurface::Mcp => caller.can_execute(),
+        CodeModeSurface::Mcp | CodeModeSurface::Api => caller.can_execute(),
     }
 }
 
 impl CodeModeCaller {
+    /// Return whether the caller may use reusable Code Mode snippets.
     #[must_use]
     pub fn can_use_snippets(&self) -> bool {
         match self {
@@ -827,6 +961,7 @@ impl CodeModeCaller {
         }
     }
 
+    /// Return whether the caller may execute full Code Mode workloads.
     #[must_use]
     pub fn can_execute(&self) -> bool {
         match self {
@@ -835,6 +970,7 @@ impl CodeModeCaller {
         }
     }
 
+    /// Return whether the caller may use the read-only Code Mode surface.
     #[must_use]
     pub fn can_read(&self) -> bool {
         match self {
@@ -864,13 +1000,17 @@ impl CodeModeCaller {
     }
 }
 
+/// Access mode applied by a Code Mode tool scope.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CodeModeToolAccess {
+    /// Permit only tools the host independently verifies as read-only.
     ReadOnly,
+    /// Permit normal scoped tool access.
     #[default]
     Full,
 }
 
+/// Namespace/tool allowlist and access mode applied to one Code Mode execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolScope {
     namespaces: Option<BTreeSet<String>>,
@@ -879,11 +1019,13 @@ pub struct ToolScope {
 }
 
 impl ToolScope {
+    /// Create an unscoped-by-default tool scope from optional namespace/tool filters.
     #[must_use]
     pub fn new(namespaces: Vec<String>, tools: Vec<String>) -> Self {
         Self::new_inner(None, namespaces, tools)
     }
 
+    /// Create a scope where an empty namespace list means no namespaces are allowed.
     #[must_use]
     pub fn scoped_namespaces(namespaces: Vec<String>, tools: Vec<String>) -> Self {
         Self::new_inner(Some(BTreeSet::new()), namespaces, tools)
@@ -922,11 +1064,13 @@ impl ToolScope {
         self
     }
 
+    /// Return whether the scope is restricted to verified read-only tools.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
         self.access == CodeModeToolAccess::ReadOnly
     }
 
+    /// Return whether a namespace/tool pair is included by the configured filters.
     #[must_use]
     pub fn allows(&self, namespace: &str, tool: &str) -> bool {
         (self
@@ -938,6 +1082,7 @@ impl ToolScope {
                 || self.tools.contains(&namespaced_tool_id(namespace, tool)))
     }
 
+    /// Return whether any namespace, tool, or read-only restriction is active.
     #[must_use]
     pub fn is_scoped(&self) -> bool {
         self.namespaces.is_some()
@@ -945,11 +1090,13 @@ impl ToolScope {
             || self.access == CodeModeToolAccess::ReadOnly
     }
 
+    /// Borrow the explicit namespace allowlist, if namespace scoping is active.
     #[must_use]
     pub fn allowed_namespaces(&self) -> Option<&BTreeSet<String>> {
         self.namespaces.as_ref()
     }
 
+    /// Return a stable serialized fingerprint of this scope for ownership checks and caches.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         serde_json::json!({

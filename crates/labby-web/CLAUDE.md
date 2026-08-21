@@ -1,7 +1,17 @@
-# labby-web — Static Asset Runtime
+# labby-web Instructions
 
-This crate owns only gateway-admin static asset embedding, filesystem resolution, and content-type/cache metadata.
+`labby-web` embeds and serves the statically exported gateway-admin assets. It is a narrow asset/runtime boundary, not a second HTTP application framework.
 
-It returns surface-neutral asset data. Axum routing, auth policy, node/runtime policy, and product SPA ordering belong in the consuming Labby product code.
+## Rules
 
-Preserve path traversal and symlink-escape protections. File-like missing paths must not silently become SPA fallbacks. Keep cache policy conservative for HTML/install scripts and immutable only where safe.
+- Keep route/auth/business policy in the Labby product host; this crate resolves embedded assets, content types, cache/header metadata, and SPA/static fallbacks.
+- Do not add Axum route composition or operator authorization policy here.
+- Asset lookup must be deterministic and safe for untrusted request paths.
+- Changes that depend on frontend output must be validated against a fresh `apps/gateway-admin/out` export.
+
+## Verification
+
+```bash
+cargo test -p labby-web
+cargo clippy -p labby-web --all-targets -- -D warnings
+```

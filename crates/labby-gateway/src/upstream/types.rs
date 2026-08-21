@@ -328,6 +328,13 @@ pub struct UpstreamEntry {
     /// `{upstream}/{name}` gateway-namespaced form — see
     /// `pool::entries::prompt_exposed`.
     pub prompt_exposure_policy: ToolExposurePolicy,
+    /// Exposure policy for this upstream's Agent Skills (`expose_skills`).
+    pub skill_exposure_policy: ToolExposurePolicy,
+    /// Whether this upstream's Agent Skills are trusted for downstream proxying.
+    pub proxy_skills: bool,
+    /// Whether the most recent MCP initialize handshake advertised the Skills extension.
+    /// `None` means the upstream has not completed a handshake in this pool yet.
+    pub supports_skills: Option<bool>,
     /// Whether this upstream's resources are allowed to be proxied downstream.
     ///
     /// MCP App tools depend on their `ui://` resources being readable through the
@@ -337,8 +344,11 @@ pub struct UpstreamEntry {
     pub prompt_count: usize,
     /// Last successfully discovered upstream resource count.
     pub resource_count: usize,
-    /// Number of skills last enumerated from this upstream (SEP-2640).
+    /// Number of skill candidates observed during the last successful `skills/list` walk,
+    /// before Labby validation or exposure policy is applied.
     pub skill_count: usize,
+    /// Cached validated skill names from the last successful skills/list walk.
+    pub skill_names: Vec<String>,
     /// Cached upstream prompt names from the last successful list operation.
     pub prompt_names: Vec<String>,
     /// Cached upstream resource URIs from the last successful list operation.

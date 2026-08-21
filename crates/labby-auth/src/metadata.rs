@@ -255,7 +255,7 @@ mod tests {
         use crate::config::AuthConfig;
 
         // Synthesize a config that overrides scopes_supported and resource_path,
-        // matching how syslog-mcp will eventually configure lab-auth.
+        // matching how syslog-mcp will eventually configure labby-auth.
         let dir = tempfile::tempdir().unwrap();
         let config = AuthConfig {
             mode: crate::config::AuthMode::OAuth,

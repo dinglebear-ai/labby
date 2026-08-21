@@ -1,13 +1,18 @@
-# @dinglebear/labby — npm Launcher Package
+# labby-mcp npm Package Instructions
 
-This package is a thin distribution launcher for the Labby binary. It is not a JavaScript reimplementation of Labby.
+This package is the npm launcher/distribution wrapper for Labby. The Rust repository root remains the product source of truth.
 
-## Release Contract
+## README Contract
 
-- `README.md` is intentionally synchronized byte-for-byte from the repository root by `scripts/sync-readme.js`; do not edit the package copy independently
-- license files are synchronized from the repo root
-- postinstall downloads a platform release artifact and verifies SHA-256 before use
-- runtime scripts must not depend on files outside the published package
-- `server.json`, package version, npm metadata, and release artifacts must stay aligned
+`scripts/sync-readme.js` intentionally copies the repository root `README.md` into this package before packing, and `scripts/check-package.js` verifies the copies match. Do not independently edit the package README to fix a documentation discrepancy; fix the root README and resync.
 
-Run the package checker/tests after launcher or packaging changes. Keep the published tarball minimal.
+## Rules
+
+- Keep platform/binary selection deterministic and fail with actionable unsupported-platform errors.
+- Do not silently download or execute an unexpected binary.
+- Keep package metadata and `server.json` release expectations synchronized with the Rust release artifacts.
+- Package scripts must remain usable in clean npm pack/install environments.
+
+## Verification
+
+Run the package's existing validation scripts after changes, including README sync/check and package tests.

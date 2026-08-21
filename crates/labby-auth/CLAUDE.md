@@ -1,13 +1,6 @@
 # labby-auth — OAuth 2.1 Authorization Server + JWT/Session Crate
 
-`labby-auth` is `publish = false` — it is not distributed via crates.io.
-`axon` and `cortex` (sibling homelab repos) each carry their own **vendored
-source copy** of this crate rather than a path/git dependency, so a fix
-landing here does **not** propagate to them automatically. If you change
-behavior that those copies would also need — especially anything touching
-the OAuth flows below — leave a note in the PR/commit for whoever next
-touches `axon`'s `vendor/labby-auth` or `cortex`'s pinned `labby-auth` git rev
-(`Cargo.toml`), and consider whether the fix is worth porting there too.
+`labby-auth` is `publish = false`; it is an internal Labby workspace crate rather than a crates.io package. Keep its public contracts reusable, but do not encode assumptions about sibling repositories or their current dependency strategy in this source-of-truth file.
 
 ## Google consent-forcing invariant (`force_consent`)
 
@@ -51,7 +44,7 @@ the full history) — the rules that keep it correct:
   user_version` / `SCHEMA_VERSION`.
 - `token.rs` — `/token` endpoint (authorization_code and refresh_token
   grants).
-- `jwt.rs` — Labby access-token signing/validation (RS256).
+- `jwt.rs` — `lab` access-token signing/validation (RS256).
 - `state.rs` — `AuthState`: shared handle over config, store, signing keys,
   Google provider, and the in-memory allowed-resource-scope map.
 - `upstream/` — outbound OAuth for Labby's own upstream MCP connections

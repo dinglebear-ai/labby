@@ -811,7 +811,7 @@ export function ConsoleSidebar() {
               placeItems: 'center',
             }}
           >
-            <LabbyIcon size={34} />
+            <LabbyIcon size={30} />
           </div>
           {collapsed ? null : (
             <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -866,7 +866,6 @@ export function ConsoleSidebar() {
           {consoleNavSections.map((section) => {
             const isFolded = Boolean(folded[section.id])
             const items = orderedItems(section)
-            const hasActive = items.some((item) => isNavItemActive(item.href, pathname))
 
             return (
               <React.Fragment key={section.id}>
@@ -926,21 +925,6 @@ export function ConsoleSidebar() {
                       paddingLeft: collapsed ? 0 : 8,
                     }}
                   >
-                    {hasActive && !collapsed ? (
-                      <span
-                        aria-hidden
-                        style={{
-                          position: 'absolute',
-                          left: 2,
-                          top: 4,
-                          bottom: 4,
-                          width: 2,
-                          borderRadius: 999,
-                          background:
-                            'color-mix(in srgb, var(--aurora-accent-primary) 75%, transparent)',
-                        }}
-                      />
-                    ) : null}
                     {items.map((item) => (
                       <NavItem
                         key={item.id}

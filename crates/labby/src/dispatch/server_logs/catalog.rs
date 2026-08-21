@@ -83,6 +83,18 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Bounded byte budget scanned across newest retained log files",
             },
+            ParamSpec {
+                name: "stop_after_limit",
+                ty: "boolean",
+                required: false,
+                description: "Stop scanning once the returned entry limit is full instead of counting every match",
+            },
+            ParamSpec {
+                name: "correlated_only",
+                ty: "boolean",
+                required: false,
+                description: "Return only entries carrying a request, trace, or execution correlation identifier",
+            },
         ],
         returns: "ServerLogsQueryResult",
     },

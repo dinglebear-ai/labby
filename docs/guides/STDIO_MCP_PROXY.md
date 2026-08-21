@@ -366,10 +366,7 @@ Proxy exits after startup
 
 ## Related documents
 
-- [Spec](../specs/stdio-mcp-proxy.md)
 - [Stable contract](../contracts/stdio-mcp-proxy.md)
-- [Implementation plan](../superpowers/plans/2026-07-31-stdio-mcp-proxy-implementation.md)
-- [Research report](../reports/2026-07-31-stdio-mcp-proxy-research.md)
 - [OAuth runtime](../runtime/OAUTH.md)
 - [Transport security](../surfaces/TRANSPORT.md)
 - [Generated CLI help](../generated/cli-help.md)

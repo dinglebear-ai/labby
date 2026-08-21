@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::gateway::types::GatewayEnrichmentProvider;
 use crate::upstream::types::UpstreamRuntimeOwner;
 use labby_runtime::gateway_config::{
-    CodeModeConfig, CodeModeResultShapePolicy, ProtectedMcpRouteConfig, UpstreamConfig,
-    UpstreamOauthConfig,
+    CodeModeConfig, CodeModeResultShapePolicy, GatewayLoadoutConfig, ProtectedMcpRouteConfig,
+    UpstreamConfig, UpstreamOauthConfig,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -66,6 +66,51 @@ pub(crate) struct GatewayImportTombstoneParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct GatewayClientConfigParams {
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoadoutNameParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoadoutSpecParams {
+    pub loadout: GatewayLoadoutConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoadoutUpdateParams {
+    pub name: String,
+    pub loadout: GatewayLoadoutConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GatewayLoadoutPatch {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<Option<String>>,
+    #[serde(default)]
+    pub upstreams: Option<Vec<String>>,
+    #[serde(default)]
+    pub services: Option<Vec<String>>,
+    #[serde(default)]
+    pub expose_code_mode: Option<bool>,
+    #[serde(default)]
+    pub expose_tools: Option<bool>,
+    #[serde(default)]
+    pub expose_resources: Option<bool>,
+    #[serde(default)]
+    pub expose_prompts: Option<bool>,
+    #[serde(default)]
+    pub expose_skills: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoadoutPatchParams {
+    pub name: String,
+    pub patch: GatewayLoadoutPatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +206,30 @@ pub struct GatewayUsageMetricsParams {
     pub until_unix: Option<i64>,
     #[serde(default)]
     pub upstream: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub capability: Option<String>,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub subject_scoped: Option<bool>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub bucket_count: Option<usize>,
+    /// IANA zone name used for DST-correct local-hour aggregation.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Minutes east of UTC used as a compatibility fallback when timezone is absent.
+    #[serde(default)]
+    pub timezone_offset_minutes: Option<i32>,
+    #[serde(default)]
+    pub include_facets: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -171,6 +240,20 @@ pub struct GatewayUsageCallsParams {
     pub until_unix: Option<i64>,
     #[serde(default)]
     pub upstream: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub capability: Option<String>,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub subject_scoped: Option<bool>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
     /// Opaque keyset cursor returned by the previous page.

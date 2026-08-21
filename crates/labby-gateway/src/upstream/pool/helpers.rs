@@ -29,6 +29,9 @@ pub struct UpstreamCachedSummary {
     pub exposed_resource_count: usize,
     pub discovered_prompt_count: usize,
     pub exposed_prompt_count: usize,
+    pub discovered_skill_count: usize,
+    pub exposed_skill_count: usize,
+    pub supports_skills: Option<bool>,
 }
 
 /// Per-upstream timeout for initial discovery (`list_tools`).
@@ -290,7 +293,7 @@ pub(crate) fn install_upstream_discovery_concurrency_default(value: Option<usize
 /// from `config.toml`, when it has one handy (preferred — reflects the latest
 /// reload immediately). Callers without one handy pass `None`, falling back to
 /// the seeded process-wide default from the last reload.
-pub(crate) fn upstream_discovery_concurrency(config_value: Option<usize>) -> usize {
+pub fn upstream_discovery_concurrency(config_value: Option<usize>) -> usize {
     std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -441,7 +444,7 @@ pub(super) fn bare_upstream_resource_uri(uri: &str) -> &str {
 /// non-destructive before the gateway will treat it as safe. Missing
 /// annotations, or a block that sets neither hint, both yield `true`.
 ///
-/// This is deliberately public and separate from [`cached_upstream_tool`] so
+/// This is deliberately public and separate from `cached_upstream_tool` so
 /// that callers which advertise their own annotations — notably Labby's own
 /// `PermanentToolRegistry` descriptors in a labby → labby chain — can pin the
 /// next-hop verdict their hints produce without duplicating this predicate.

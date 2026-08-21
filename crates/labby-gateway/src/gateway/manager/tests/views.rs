@@ -419,7 +419,9 @@ async fn lazily_seeded_healthy_upstream_reports_connected_before_first_use() {
     );
     assert!(view.surfaces.mcp.connected);
     assert_eq!(view.discovered_tool_count, 0);
-    assert!(view.warnings.is_empty());
+    assert_eq!(view.warnings.len(), 1);
+    assert_eq!(view.warnings[0].code, "catalog_warming");
+    assert!(view.warnings[0].message.contains("catalog"));
 }
 
 #[tokio::test]

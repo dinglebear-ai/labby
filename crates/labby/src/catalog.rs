@@ -1,6 +1,6 @@
 //! Shared catalog module — single source of truth for service + action
 //! discovery, feeding three surfaces: the `lab.help` MCP meta-tool, the
-//! `lab://catalog` MCP resource, and the `lab help` CLI subcommand.
+//! `lab://catalog` MCP resource, and the `labby help` CLI subcommand.
 
 use serde::{Deserialize, Serialize};
 

@@ -31,7 +31,7 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Dispatch files allowed to reference `crate::mcp`, by `src`-relative path.
 ///
 /// The upstream proxy pool (formerly `dispatch/upstream/**`) moved to the
-/// standalone `lab-gateway` crate, so the previously-allowlisted
+/// standalone `labby-gateway` crate, so the previously-allowlisted
 /// `prompts_list.rs` / `resources_read.rs` fixtures no longer live under
 /// `crate::dispatch` here — the list is empty. In-process peer construction
 /// lives exclusively in `crate::mcp::in_process_peer` and is injected into the
@@ -130,11 +130,11 @@ fn lab_gateway_manifest_does_not_depend_on_product_surfaces() {
             .join("labby-gateway")
             .join("Cargo.toml"),
     )
-    .expect("read lab-gateway manifest");
+    .expect("read labby-gateway manifest");
     for banned in ["axum", "clap", "utoipa", "javy", "wasmtime", "labby"] {
         assert!(
             !manifest_declares_dependency(&manifest, banned),
-            "lab-gateway runtime crate must not depend on {banned}"
+            "labby-gateway runtime crate must not depend on {banned}"
         );
     }
 }
@@ -171,7 +171,7 @@ fn extracted_crates_do_not_depend_on_product_surfaces() {
     }
 }
 
-/// `lab-gateway` receives its registry/service composition by injection through
+/// `labby-gateway` receives its registry/service composition by injection through
 /// the `InProcessServiceRegistry` trait; it must never reach for Labby's default
 /// registry builder.
 #[test]
@@ -182,13 +182,13 @@ fn lab_gateway_does_not_call_labby_default_registry() {
         .into_iter()
         .filter(|path| {
             fs::read_to_string(path)
-                .expect("read lab-gateway source")
+                .expect("read labby-gateway source")
                 .contains("build_default_registry")
         })
         .map(|path| path.display().to_string())
         .collect();
     assert!(
         offenders.is_empty(),
-        "lab-gateway must not call build_default_registry: {offenders:?}"
+        "labby-gateway must not call build_default_registry: {offenders:?}"
     );
 }

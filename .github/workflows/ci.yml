@@ -271,7 +271,7 @@ jobs:
           go version
           echo "actionlint=v1.7.7"
       - name: Test CI policy helpers
-        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py
+        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py
 
   frontend-assets:
     name: Frontend assets
@@ -433,7 +433,7 @@ jobs:
       # cargo fmt never invokes rustc, so skip the full setup-rust-kache
       # composite (apt preflight + cache wiring) and install only rustfmt.
       - name: Install Rust toolchain with rustfmt
-        uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: "1.97.1"
           components: rustfmt
@@ -584,7 +584,20 @@ jobs:
           node-version: "22"
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
-      - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
+      # Warm the large product crate and its native dependencies first, then
+      # complete the all-target pass at normal Cargo concurrency. Compiling the
+      # normal library and lib-test harness cold in one invocation crossed the
+      # ci-pool-rust memory ceiling (SIGKILL) after recent code growth. Keeping
+      # the same Cargo job count across both phases preserves aws-lc-sys build
+      # parallelism and lets the second phase reuse the already-built library.
+      - name: Warm slice compile
+        run: >-
+          cargo check -p labby --no-default-features
+          --features ${{ matrix.slice }} --lib --bins --locked
+      - name: Complete all-target slice compile
+        run: >-
+          cargo check -p labby --no-default-features
+          --features ${{ matrix.slice }} --all-targets --locked
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         if: matrix.slice == 'gateway'
         with:
@@ -653,6 +666,32 @@ jobs:
           install_args: just
       - run: just docs-check
 
+  rustdoc:
+    name: Rustdoc
+    runs-on: ci-pool-rust
+    timeout-minutes: 45
+    needs: changes
+    if: ${{ needs.changes.outputs.rust_compile == 'true' || needs.changes.outputs.workflow == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: just
+      - name: Build and verify Rustdoc
+        run: just rustdoc-check
+      - name: Upload Rustdoc HTML
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rustdoc-html
+          path: |
+            target/doc
+            target/rustdoc-extra/doc
+          if-no-files-found: error
+
   clippy:
     name: Clippy
     runs-on: ci-pool-rust
@@ -671,10 +710,22 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
         with:
           components: clippy
-      # --all-targets so tests/examples/benches are linted too. Without it the
-      # `disallowed_methods` bans (Tool::new, Peer::list_all_*) do not cover
-      # test code, which is exactly where fixtures reach for them.
-      - run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
+      # Keep all-target coverage while avoiding cold normal-library and
+      # lib-test harnesses competing for the runner memory ceiling. Warm the
+      # ordinary `labby` targets first; that also warms normal `labby-gateway`
+      # dependencies. The following all-target passes can then compile test,
+      # example, and bench harnesses without a second large normal target in
+      # flight, while Cargo/native build concurrency remains unchanged.
+      - name: Warm Labby Clippy targets
+        run: cargo clippy -p labby --all-features --lib --bins --locked -- -D warnings
+      - name: Lint extracted workspace targets
+        run: >-
+          cargo clippy --workspace --exclude labby --all-features
+          --all-targets --locked -- -D warnings
+      - name: Lint all Labby targets
+        run: >-
+          cargo clippy -p labby --all-features --all-targets --locked
+          -- -D warnings
 
   mcp-regressions:
     name: MCP focused regressions
@@ -697,6 +748,8 @@ jobs:
           node-version: "22"
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
+      - name: Warm MCP regression targets
+        run: cargo build -p labby --all-features --lib --bins --locked
       - name: MCP route-scope resources/tools and list pagination
         run: |
           cargo test -p labby --all-features --locked mcp::handlers_resources::tests
@@ -765,13 +818,11 @@ jobs:
       # here: Cargo also passes it to every build script as NUM_JOBS, and
       # aws-lc-sys compiles 414 C and 902 assembly sources through the cc
       # crate. kache cannot cache any of that -- it wraps rustc, not cc -- so
-      # the throttle serialized ~1300 uncached source files on every run,
-      # turning ~8-minute builds into 30+ and letting the autoscaling runners
-      # reclaim them mid-link. Measured in a 7 GiB/no-swap cgroup matching the
-      # runner container: a full workspace build linking all 15 test harnesses
-      # peaks at 5.03 GiB, and `nextest run --workspace --all-features` peaks
-      # at 2.44 GiB. The limit was never the binding constraint; the
-      # serialization was.
+      # a job-wide throttle serializes ~1300 uncached native sources. The
+      # current memory failure is different: a cold normal library and its
+      # lib-test harness can overlap with other Rust targets and cross the
+      # runner ceiling. Warm normal Labby/Gateway targets below, then let
+      # nextest compile the remaining harnesses at normal Cargo concurrency.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -796,6 +847,8 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: cargo:cargo-nextest
+      - name: Warm normal Linux test targets
+        run: cargo build -p labby --all-features --lib --bins --locked
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
@@ -834,6 +887,8 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: cargo:cargo-nextest
+      - name: Warm normal Linux test targets
+        run: cargo build -p labby --all-features --lib --bins --locked
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
@@ -868,7 +923,9 @@ jobs:
         with:
           node-version: "22"
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.97.1"
       - name: Neutralize rustc wrapper (native Windows)
         shell: pwsh
         run: |
@@ -1164,7 +1221,9 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: apps/palette-tauri/src-tauri
@@ -1241,6 +1300,7 @@ jobs:
       - feature-slices
       - extracted-crate-slices
       - docs-check
+      - rustdoc
       - clippy
       - test
       - test-fork
@@ -1306,6 +1366,7 @@ jobs:
           require_success_or_skipped feature-slices "${{ needs.feature-slices.result }}"
           require_success_or_skipped extracted-crate-slices "${{ needs.extracted-crate-slices.result }}"
           require_success_or_skipped docs-check "${{ needs.docs-check.result }}"
+          require_success_or_skipped rustdoc "${{ needs.rustdoc.result }}"
           require_success_or_skipped clippy "${{ needs.clippy.result }}"
           require_success_or_skipped test "${{ needs.test.result }}"
           require_success_or_skipped test-fork "${{ needs.test-fork.result }}"

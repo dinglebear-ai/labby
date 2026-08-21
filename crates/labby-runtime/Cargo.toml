@@ -27,6 +27,7 @@ tracing.workspace = true
 # transport-neutral, so neither weakens this crate's no-rmcp/axum/clap rule.
 sha2.workspace = true
 serde_yaml.workspace = true
+atomic-write-file = "0.3.1"
 
 [dev-dependencies]
 tempfile.workspace = true

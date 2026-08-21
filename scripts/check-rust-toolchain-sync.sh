@@ -43,4 +43,49 @@ require_text .github/actions/setup-rust-kache/action.yml "default: \"$expected\"
 require_text .github/workflows/ci.yml "toolchain: \"$expected\""
 require_text .github/workflows/ci.yml "cargo +$expected check --workspace --all-features --all-targets --locked"
 
+rust_toolchain_action_ref="dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4"
+
+require_text .github/actions/setup-rust-kache/action.yml "uses: $rust_toolchain_action_ref"
+require_text .github/workflows/ci.yml "uses: $rust_toolchain_action_ref"
+require_text .github/workflows/release.yml "uses: $rust_toolchain_action_ref"
+require_text .github/workflows/release.yml "toolchain: \"$expected\""
+
+check_direct_rust_action_toolchains() {
+  local file=$1
+  if ! awk -v ref="$rust_toolchain_action_ref" -v expected="$expected" '
+    index($0, "uses: " ref) {
+      if (pending) bad=1
+      pending=1
+      next
+    }
+    pending && index($0, "toolchain: \"" expected "\"") {
+      pending=0
+      next
+    }
+    pending && $0 ~ /^[[:space:]]*-[[:space:]]/ {
+      bad=1
+      pending=0
+    }
+    END { exit((bad || pending) ? 1 : 0) }
+  ' "$file"; then
+    echo "[rust-toolchain-sync] FAIL — $file has a direct Rust action without explicit toolchain \"$expected\"" >&2
+    exit 1
+  fi
+}
+
+check_direct_rust_action_toolchains .github/workflows/ci.yml
+check_direct_rust_action_toolchains .github/workflows/release.yml
+
+unexpected_action_refs=$(
+  grep -RhEo 'dtolnay/rust-toolchain@[0-9a-f]{40}' .github/actions .github/workflows \
+    | sort -u \
+    | grep -Fvx -- "$rust_toolchain_action_ref" \
+    || true
+)
+if [[ -n "$unexpected_action_refs" ]]; then
+  echo "[rust-toolchain-sync] FAIL — unexpected dtolnay/rust-toolchain pin(s):" >&2
+  printf '%s\n' "$unexpected_action_refs" >&2
+  exit 1
+fi
+
 echo "[rust-toolchain-sync] OK — active Rust/MSRV contracts use $expected"

@@ -34,7 +34,7 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
     let mcp_help = build_catalog(&registry);
     let services = registry.services();
     let feature_matrix = build_feature_matrix(repo_root)?;
-    let service_catalog = build_service_catalog(services, &feature_matrix, repo_root);
+    let service_catalog = build_service_catalog(services, &feature_matrix);
     let proxy_config_reference = build_proxy_config_reference();
     let env_reference = build_env_reference(&service_catalog);
     let action_catalog = super::action_catalog::build_action_catalog(services);
@@ -64,11 +64,10 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
 fn build_service_catalog(
     services: &[RegisteredService],
     feature_matrix: &FeatureMatrix,
-    repo_root: &Path,
 ) -> Vec<ServiceDoc> {
     let mut docs = services
         .iter()
-        .map(|service| service_doc(service, feature_matrix, repo_root))
+        .map(|service| service_doc(service, feature_matrix))
         .collect::<Vec<_>>();
 
     for meta in sdk_only_metas() {
@@ -86,8 +85,6 @@ fn build_service_catalog(
             surfaces: SurfaceAvailability::none(),
             default_port: meta.default_port,
             docs_url: non_empty(meta.docs_url),
-            coverage_doc: doc_exists(repo_root, &format!("docs/coverage/{}.md", meta.name)),
-            upstream_doc: doc_exists(repo_root, &format!("docs/upstream-api/{}.md", meta.name)),
             supports_multi_instance: meta.supports_multi_instance,
             metadata_source: "PluginMeta only".to_string(),
         });
@@ -112,8 +109,6 @@ fn build_service_catalog(
             },
             default_port: None,
             docs_url: Some("docs/guides/STDIO_MCP_PROXY.md".to_string()),
-            coverage_doc: None,
-            upstream_doc: None,
             supports_multi_instance: false,
             metadata_source: "CLI runtime + ProxyPreferences".to_string(),
         });
@@ -127,11 +122,7 @@ fn sdk_only_feature(meta: &PluginMeta) -> Option<String> {
     Some(meta.name.to_string())
 }
 
-fn service_doc(
-    service: &RegisteredService,
-    feature_matrix: &FeatureMatrix,
-    repo_root: &Path,
-) -> ServiceDoc {
+fn service_doc(service: &RegisteredService, feature_matrix: &FeatureMatrix) -> ServiceDoc {
     let meta = meta_for(service.name);
     let feature = service_feature(service.name, feature_matrix);
     let exposure = if service.name == "lab_admin" {
@@ -159,8 +150,6 @@ fn service_doc(
         surfaces: service_surfaces(service.name),
         default_port: meta.and_then(|meta| meta.default_port),
         docs_url: meta.and_then(|meta| non_empty(meta.docs_url)),
-        coverage_doc: doc_exists(repo_root, &format!("docs/coverage/{}.md", service.name)),
-        upstream_doc: doc_exists(repo_root, &format!("docs/upstream-api/{}.md", service.name)),
         supports_multi_instance: meta.is_some_and(|meta| meta.supports_multi_instance),
         metadata_source: if meta.is_some() {
             "registry + PluginMeta".to_string()
@@ -769,10 +758,6 @@ impl SurfaceAvailability {
             web_ui: false,
         }
     }
-}
-
-fn doc_exists(repo_root: &Path, rel: &str) -> Option<String> {
-    repo_root.join(rel).exists().then(|| rel.to_string())
 }
 
 fn non_empty(value: &str) -> Option<String> {

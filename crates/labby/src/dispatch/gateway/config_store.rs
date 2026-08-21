@@ -1,6 +1,6 @@
 //! Host-owned [`GatewayConfigStore`] implementation for `lab`.
 //!
-//! `lab-gateway` owns the in-memory [`GatewayConfig`] and all runtime behavior,
+//! `labby-gateway` owns the in-memory [`GatewayConfig`] and all runtime behavior,
 //! but it must not own the host's full [`LabConfig`], the `config.toml` render
 //! path (with its foreign-key-preservation invariant), or the `.env` credential
 //! helpers — those are shared with non-gateway Labby code and stay here.
@@ -255,6 +255,7 @@ mod host_config {
         "upstream",
         "upstream_import_tombstones",
         "upstream_pending",
+        "loadouts",
         "protected_mcp_routes",
         "virtual_servers",
         "quarantined_virtual_servers",

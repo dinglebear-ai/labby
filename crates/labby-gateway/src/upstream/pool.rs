@@ -4,7 +4,12 @@
 //! or stdio (child process), discovers their tools, and caches schemas.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -93,11 +98,10 @@ pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
     UpstreamCachedSummary, in_process_upstream_name, redact_resource_uri_for_logging,
-    upstream_destructive_from_annotations,
+    upstream_destructive_from_annotations, upstream_discovery_concurrency,
 };
 pub(crate) use helpers::{
     install_max_response_bytes_default, install_upstream_discovery_concurrency_default,
-    upstream_discovery_concurrency,
 };
 pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
@@ -125,6 +129,91 @@ pub(super) struct SubjectScopedConnection {
     pub(super) tools: Vec<rmcp::model::Tool>,
     /// Wall-clock instant when this entry was last used.
     pub(super) last_used: Instant,
+}
+
+/// Cumulative SEP-2243 recovery counters for one upstream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct HeaderRecoveryMetrics {
+    pub(crate) mismatch_detected: u64,
+    pub(crate) schema_refreshes: u64,
+    pub(crate) retry_successes: u64,
+    pub(crate) retry_failures: u64,
+}
+
+#[derive(Debug, Default)]
+struct HeaderRecoveryCounters {
+    mismatch_detected: AtomicU64,
+    schema_refreshes: AtomicU64,
+    retry_successes: AtomicU64,
+    retry_failures: AtomicU64,
+}
+
+impl HeaderRecoveryCounters {
+    fn snapshot(&self) -> HeaderRecoveryMetrics {
+        HeaderRecoveryMetrics {
+            mismatch_detected: self.mismatch_detected.load(Ordering::Relaxed),
+            schema_refreshes: self.schema_refreshes.load(Ordering::Relaxed),
+            retry_successes: self.retry_successes.load(Ordering::Relaxed),
+            retry_failures: self.retry_failures.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Shared process-lifetime store for per-upstream SEP-2243 recovery counters.
+///
+/// `GatewayManager` owns one clone and injects it into every replacement pool so
+/// gateway reloads cannot erase recovery history. Standalone/test pools get an
+/// independent store by default.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HeaderRecoveryMetricsStore {
+    counters: Arc<DashMap<String, Arc<HeaderRecoveryCounters>>>,
+}
+
+impl HeaderRecoveryMetricsStore {
+    fn increment_saturating(counter: &AtomicU64) -> u64 {
+        match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_add(1))
+        }) {
+            Ok(previous) | Err(previous) => previous.saturating_add(1),
+        }
+    }
+
+    fn counters_for(&self, upstream_name: &str) -> Arc<HeaderRecoveryCounters> {
+        Arc::clone(
+            self.counters
+                .entry(upstream_name.to_string())
+                .or_insert_with(|| Arc::new(HeaderRecoveryCounters::default()))
+                .value(),
+        )
+    }
+
+    fn record_mismatch(&self, upstream_name: &str) -> u64 {
+        Self::increment_saturating(&self.counters_for(upstream_name).mismatch_detected)
+    }
+
+    fn record_refresh(&self, upstream_name: &str) -> u64 {
+        Self::increment_saturating(&self.counters_for(upstream_name).schema_refreshes)
+    }
+
+    fn record_retry_success(&self, upstream_name: &str) -> u64 {
+        Self::increment_saturating(&self.counters_for(upstream_name).retry_successes)
+    }
+
+    fn record_retry_failure(&self, upstream_name: &str) -> u64 {
+        Self::increment_saturating(&self.counters_for(upstream_name).retry_failures)
+    }
+
+    #[must_use]
+    fn snapshot(&self, upstream_name: &str) -> HeaderRecoveryMetrics {
+        self.counters
+            .get(upstream_name)
+            .map_or_else(HeaderRecoveryMetrics::default, |entry| entry.snapshot())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_mismatch_for_test(&self, upstream_name: &str) -> u64 {
+        self.record_mismatch(upstream_name)
+    }
 }
 
 /// Upstream connection pool — holds live connections and discovered tool catalogs.
@@ -248,6 +337,9 @@ pub struct UpstreamPool {
     /// capture entirely — most tests and any pool built without an explicit
     /// `.with_usage_store(...)` call never touch SQLite.
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    /// Shared per-upstream SEP-2243 recovery metrics. Gateway-managed pools
+    /// inherit one process-lifetime store across pool replacement.
+    header_recovery_metrics_store: HeaderRecoveryMetricsStore,
 }
 
 /// Type-erased-over-lifecycle running client service.
@@ -443,6 +535,7 @@ impl UpstreamPool {
             in_process_ensure_state: Arc::new(Mutex::new(None)),
             shared_http_client,
             usage_store: None,
+            header_recovery_metrics_store: HeaderRecoveryMetricsStore::default(),
         }
     }
 
@@ -549,7 +642,7 @@ impl UpstreamPool {
     }
 
     /// Set the deadline for relayed upstream tool calls (the elicitation-relay
-    /// path). Defaults to [`DEFAULT_RELAY_TIMEOUT`] (5 minutes) so a human has
+    /// path). Defaults to `DEFAULT_RELAY_TIMEOUT` (5 minutes) so a human has
     /// time to answer an elicitation without the call timing out.
     #[must_use]
     pub fn with_relay_timeout(mut self, timeout: Duration) -> Self {
@@ -580,6 +673,43 @@ impl UpstreamPool {
     #[must_use]
     pub fn usage_store_is_wired(&self) -> bool {
         self.usage_store.is_some()
+    }
+
+    /// Reuse an externally owned SEP-2243 metrics store. GatewayManager uses
+    /// this so every pool generation contributes to one process-lifetime view.
+    #[must_use]
+    pub(crate) fn with_header_recovery_metrics_store(
+        mut self,
+        store: HeaderRecoveryMetricsStore,
+    ) -> Self {
+        self.header_recovery_metrics_store = store;
+        self
+    }
+
+    pub(super) fn record_header_mismatch_detected(&self, upstream_name: &str) -> u64 {
+        self.header_recovery_metrics_store
+            .record_mismatch(upstream_name)
+    }
+
+    pub(super) fn record_header_schema_refresh(&self, upstream_name: &str) -> u64 {
+        self.header_recovery_metrics_store
+            .record_refresh(upstream_name)
+    }
+
+    pub(super) fn record_header_schema_retry_success(&self, upstream_name: &str) -> u64 {
+        self.header_recovery_metrics_store
+            .record_retry_success(upstream_name)
+    }
+
+    pub(super) fn record_header_schema_retry_failure(&self, upstream_name: &str) -> u64 {
+        self.header_recovery_metrics_store
+            .record_retry_failure(upstream_name)
+    }
+
+    /// Snapshot cumulative SEP-2243 recovery activity for one upstream.
+    #[must_use]
+    pub(crate) fn header_recovery_metrics(&self, upstream_name: &str) -> HeaderRecoveryMetrics {
+        self.header_recovery_metrics_store.snapshot(upstream_name)
     }
 }
 

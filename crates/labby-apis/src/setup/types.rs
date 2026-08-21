@@ -16,11 +16,20 @@ pub enum SetupState {
     /// `~/.labby/.env` does not exist at all.
     Uninitialized,
     /// `.env` exists but is missing one or more required core env vars.
-    ConfigMissing { envars: Vec<String> },
+    ConfigMissing {
+        /// Required environment-variable names that are still absent.
+        envars: Vec<String>,
+    },
     /// `.env` is partially populated; some service env keys are missing.
-    PartiallyConfigured { missing: Vec<String> },
+    PartiallyConfigured {
+        /// Service environment keys that are still missing.
+        missing: Vec<String>,
+    },
     /// All required keys present; running health probes.
-    HealthChecking { services: Vec<String> },
+    HealthChecking {
+        /// Services currently participating in health verification.
+        services: Vec<String>,
+    },
     /// Probes complete; configuration is committed and healthy.
     Ready,
 }
@@ -30,7 +39,9 @@ pub enum SetupState {
 pub struct SetupSnapshot {
     /// True when no `~/.labby/.env` exists or it lacks required keys.
     pub first_run: bool,
+    /// Path to the active Labby environment file.
     pub env_path: PathBuf,
+    /// Path to the pending draft environment file.
     pub draft_path: PathBuf,
     /// Last completed wizard step (0-indexed). UI uses this to resume.
     pub last_completed_step: u8,
@@ -44,20 +55,25 @@ pub struct SetupSnapshot {
     pub env_mtime_unix_seconds: Option<u64>,
     /// Last modified time for `.env.draft`, as Unix seconds.
     pub draft_mtime_unix_seconds: Option<u64>,
+    /// Current first-run setup state.
     pub state: SetupState,
 }
 
 /// Single key=value entry within a draft mutation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftEntry {
+    /// Environment variable name.
     pub key: String,
+    /// Pending environment variable value.
     pub value: String,
 }
 
 /// Optional grouping wrapper for callers that prefer `{ service, entries }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftSection {
+    /// Service owning the grouped draft entries.
     pub service: String,
+    /// Pending entries for the service.
     pub entries: Vec<DraftEntry>,
 }
 

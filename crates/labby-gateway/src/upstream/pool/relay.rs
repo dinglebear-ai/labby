@@ -34,22 +34,23 @@
 //! the upstream send/response phase; downstream cancellation also interrupts
 //! queueing before any upstream request is issued.
 //!
-//! ## Scope — `call_tool` only
+//! ## Scope
 //!
-//! Only the proxied `call_tool` path is relay-handled. Resource reads
-//! (`read_resource`) and prompt fetches (`get_prompt`) still go through the
-//! pooled `()` connection, so an upstream that raises elicitation/sampling/roots
-//! *during* one of those will have it declined by the unit handler. This is a
-//! deliberate scope boundary: tool calls are where interactive upstreams elicit
-//! in practice. Widening it means routing those paths through a relay handler
-//! too.
+//! Proxied tool calls, prompt fetches, and resource reads can all use the
+//! dedicated relay connection when the downstream request requires request-
+//! scoped client capabilities. Keeping those capability paths on the same
+//! relay machinery preserves downstream metadata, progress/cancellation
+//! routing, OAuth subject isolation, and input-required responses consistently
+//! across the gateway-facing MCP surface.
 
 use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use futures::future::BoxFuture;
 
 #[allow(deprecated)]
 use rmcp::model::LoggingMessageNotificationParam;
@@ -75,7 +76,10 @@ use super::super::types::UpstreamCapability;
 use super::UpstreamConnection;
 use super::UpstreamPool;
 use super::capability_call::{bounded_service_error_text, service_error_affects_connection_health};
-use super::connect::connect_upstream_with_handler;
+use super::connect::{
+    OrderedRelayNotification, RelayNotificationInterceptor,
+    connect_upstream_with_handler_and_notifications,
+};
 use super::entries::{
     prompt_exposed, resolve_request_prompt_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
@@ -98,16 +102,50 @@ use super::relay_cancellation::{
     PendingRelayRequestId, RelayPermitOutcome, RelaySendOutcome, await_relay_permit,
     await_relay_send, dispatch_relay_cancellation, spawn_bounded_handle_cancellation,
 };
+use super::tools_call::{
+    is_tool_header_mismatch, record_header_mismatch, record_header_retry, refresh_tool_header_cache,
+};
 
-const RELAY_ROUTE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-const PROGRESS_NOTIFICATION_DELIVERY_GRACE: std::time::Duration =
-    std::time::Duration::from_millis(500);
+const RELAY_ROUTE_CLEANUP_GRACE: Duration = Duration::from_secs(2);
+const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
+const MAX_PENDING_PROGRESS_ROUTES: usize = 256;
+const MAX_PENDING_PROGRESS_PER_ROUTE: usize = 16;
+const MAX_PENDING_REQUEST_CANCELLATIONS: usize = 256;
 
 #[derive(Clone)]
 struct RelayRequestRoute {
     downstream_request_id: RequestId,
     upstream_progress_token: ProgressToken,
-    downstream_progress_token: Option<ProgressToken>,
+}
+
+#[derive(Default)]
+struct RelayCancellationActivity {
+    started: u64,
+    in_flight: usize,
+}
+
+#[derive(Default)]
+struct RelayRequestRouteState {
+    mappings: HashMap<RequestId, RelayRequestRoute>,
+    pending_cancellations: HashMap<RequestId, CancelledNotificationParam>,
+    cancellation_activity: HashMap<RequestId, RelayCancellationActivity>,
+}
+
+struct RelayRegistrationPending {
+    cancellation: Option<CancelledNotificationParam>,
+}
+
+#[derive(Clone)]
+enum RelayProgressRoute {
+    Disabled,
+    Activating(ProgressToken),
+    Active(ProgressToken),
+}
+
+#[derive(Default)]
+struct RelayProgressRouteState {
+    mappings: HashMap<ProgressToken, RelayProgressRoute>,
+    pending: HashMap<ProgressToken, Vec<ProgressNotificationParam>>,
 }
 
 #[derive(Default)]
@@ -118,11 +156,10 @@ struct RelayTaskRouteState {
 
 #[derive(Default)]
 pub(super) struct RelayRouteState {
-    requests: RwLock<HashMap<RequestId, RelayRequestRoute>>,
-    progress: RwLock<HashMap<ProgressToken, ProgressToken>>,
+    requests: Mutex<RelayRequestRouteState>,
+    progress: Mutex<RelayProgressRouteState>,
     tasks: Mutex<RelayTaskRouteState>,
-    progress_notification_sequence: AtomicU64,
-    progress_notification_notify: Notify,
+    cancellation_notification_notify: Notify,
     task_notification_sequence: AtomicU64,
     task_notification_notify: Notify,
     #[cfg(test)]
@@ -138,31 +175,58 @@ impl RelayRouteState {
         downstream_request_id: RequestId,
         upstream_progress_token: ProgressToken,
         downstream_progress_token: Option<ProgressToken>,
-    ) {
-        if let Some(downstream_progress_token) = downstream_progress_token.clone() {
-            self.progress
-                .write()
-                .await
-                .insert(upstream_progress_token.clone(), downstream_progress_token);
+    ) -> RelayRegistrationPending {
+        {
+            let mut progress = self.progress.lock().await;
+            let route = downstream_progress_token
+                .map_or(RelayProgressRoute::Disabled, RelayProgressRoute::Activating);
+            progress
+                .mappings
+                .insert(upstream_progress_token.clone(), route);
+            if matches!(
+                progress.mappings.get(&upstream_progress_token),
+                Some(RelayProgressRoute::Disabled)
+            ) {
+                progress.pending.remove(&upstream_progress_token);
+            }
         }
-        self.requests.write().await.insert(
-            upstream_request_id,
-            RelayRequestRoute {
-                downstream_request_id,
-                upstream_progress_token,
-                downstream_progress_token,
-            },
-        );
+        let pending_cancellation = {
+            let mut requests = self.requests.lock().await;
+            requests.mappings.insert(
+                upstream_request_id.clone(),
+                RelayRequestRoute {
+                    downstream_request_id: downstream_request_id.clone(),
+                    upstream_progress_token,
+                },
+            );
+            requests
+                .cancellation_activity
+                .entry(upstream_request_id.clone())
+                .or_default();
+            requests
+                .pending_cancellations
+                .remove(&upstream_request_id)
+                .map(|mut params| {
+                    params.request_id = Some(downstream_request_id);
+                    params
+                })
+        };
+        RelayRegistrationPending {
+            cancellation: pending_cancellation,
+        }
     }
 
     async fn unregister_request(&self, upstream_request_id: &RequestId) {
-        if let Some(route) = self.requests.write().await.remove(upstream_request_id)
-            && route.downstream_progress_token.is_some()
-        {
-            self.progress
-                .write()
-                .await
-                .remove(&route.upstream_progress_token);
+        let route = {
+            let mut requests = self.requests.lock().await;
+            requests.pending_cancellations.remove(upstream_request_id);
+            requests.cancellation_activity.remove(upstream_request_id);
+            requests.mappings.remove(upstream_request_id)
+        };
+        if let Some(route) = route {
+            let mut progress = self.progress.lock().await;
+            progress.mappings.remove(&route.upstream_progress_token);
+            progress.pending.remove(&route.upstream_progress_token);
         }
     }
 
@@ -174,49 +238,184 @@ impl RelayRouteState {
         });
     }
 
+    #[cfg(test)]
     async fn downstream_request_id(&self, upstream_request_id: &RequestId) -> Option<RequestId> {
         self.requests
-            .read()
+            .lock()
             .await
+            .mappings
             .get(upstream_request_id)
             .map(|route| route.downstream_request_id.clone())
     }
 
+    async fn translate_or_queue_cancellation(
+        &self,
+        mut params: CancelledNotificationParam,
+    ) -> Option<(RequestId, CancelledNotificationParam)> {
+        let upstream_request_id = params.request_id.clone()?;
+        let mut requests = self.requests.lock().await;
+        if let Some(downstream_request_id) = requests
+            .mappings
+            .get(&upstream_request_id)
+            .map(|route| route.downstream_request_id.clone())
+        {
+            params.request_id = Some(downstream_request_id);
+            let activity = requests
+                .cancellation_activity
+                .entry(upstream_request_id.clone())
+                .or_default();
+            activity.started = activity.started.saturating_add(1);
+            activity.in_flight = activity.in_flight.saturating_add(1);
+            drop(requests);
+            self.cancellation_notification_notify.notify_waiters();
+            return Some((upstream_request_id, params));
+        }
+        if requests.pending_cancellations.len() < MAX_PENDING_REQUEST_CANCELLATIONS {
+            requests
+                .pending_cancellations
+                .entry(upstream_request_id)
+                .or_insert(params);
+        }
+        None
+    }
+
+    async fn begin_cancellation_forward(&self, upstream_request_id: &RequestId) {
+        let mut requests = self.requests.lock().await;
+        let activity = requests
+            .cancellation_activity
+            .entry(upstream_request_id.clone())
+            .or_default();
+        activity.started = activity.started.saturating_add(1);
+        activity.in_flight = activity.in_flight.saturating_add(1);
+        drop(requests);
+        self.cancellation_notification_notify.notify_waiters();
+    }
+
+    async fn finish_cancellation_forward(&self, upstream_request_id: &RequestId) {
+        let mut requests = self.requests.lock().await;
+        if let Some(activity) = requests.cancellation_activity.get_mut(upstream_request_id) {
+            activity.in_flight = activity.in_flight.saturating_sub(1);
+        }
+        drop(requests);
+        self.cancellation_notification_notify.notify_waiters();
+    }
+
+    async fn cancellation_started(&self, upstream_request_id: &RequestId) -> u64 {
+        self.requests
+            .lock()
+            .await
+            .cancellation_activity
+            .get(upstream_request_id)
+            .map_or(0, |activity| activity.started)
+    }
+
+    async fn wait_for_cancellation_handlers_after(
+        &self,
+        upstream_request_id: &RequestId,
+        previous_started: u64,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.cancellation_notification_notify.notified();
+            let (started, in_flight) = {
+                let requests = self.requests.lock().await;
+                requests
+                    .cancellation_activity
+                    .get(upstream_request_id)
+                    .map_or((0, 0), |activity| (activity.started, activity.in_flight))
+            };
+            if started > previous_started && in_flight == 0 {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return false;
+            }
+        }
+    }
+
+    #[cfg(test)]
     async fn downstream_progress_token(
         &self,
         upstream_progress_token: &ProgressToken,
     ) -> Option<ProgressToken> {
-        self.progress
-            .read()
+        match self
+            .progress
+            .lock()
             .await
+            .mappings
             .get(upstream_progress_token)
             .cloned()
+        {
+            Some(RelayProgressRoute::Activating(token) | RelayProgressRoute::Active(token)) => {
+                Some(token)
+            }
+            Some(RelayProgressRoute::Disabled) | None => None,
+        }
     }
 
-    fn progress_notification_sequence(&self) -> u64 {
-        self.progress_notification_sequence.load(Ordering::Acquire)
-    }
-
-    fn record_progress_notification_delivery(&self) {
-        self.progress_notification_sequence
-            .fetch_add(1, Ordering::AcqRel);
-        self.progress_notification_notify.notify_waiters();
-    }
-
-    async fn wait_for_progress_notification_after(
+    async fn translate_or_queue_progress(
         &self,
-        previous: u64,
-        timeout: std::time::Duration,
-    ) -> bool {
-        if self.progress_notification_sequence() > previous {
-            return true;
+        mut params: ProgressNotificationParam,
+    ) -> Option<ProgressNotificationParam> {
+        let upstream_progress_token = params.progress_token.clone();
+        let mut progress = self.progress.lock().await;
+        match progress.mappings.get(&upstream_progress_token).cloned() {
+            Some(RelayProgressRoute::Active(downstream_progress_token)) => {
+                params.progress_token = downstream_progress_token;
+                Some(params)
+            }
+            Some(RelayProgressRoute::Disabled) => None,
+            Some(RelayProgressRoute::Activating(_)) | None => {
+                if let Some(pending) = progress.pending.get_mut(&upstream_progress_token) {
+                    if pending.len() < MAX_PENDING_PROGRESS_PER_ROUTE {
+                        pending.push(params);
+                    }
+                } else if progress.pending.len() < MAX_PENDING_PROGRESS_ROUTES {
+                    progress
+                        .pending
+                        .insert(upstream_progress_token, vec![params]);
+                }
+                None
+            }
         }
-        let notified = self.progress_notification_notify.notified();
-        if self.progress_notification_sequence() > previous {
-            return true;
+    }
+
+    async fn take_pending_progress_batch_or_activate(
+        &self,
+        upstream_progress_token: &ProgressToken,
+    ) -> Option<Vec<ProgressNotificationParam>> {
+        let mut progress = self.progress.lock().await;
+        let downstream_progress_token =
+            match progress.mappings.get(upstream_progress_token).cloned() {
+                Some(RelayProgressRoute::Activating(token)) => token,
+                Some(RelayProgressRoute::Disabled | RelayProgressRoute::Active(_)) | None => {
+                    return None;
+                }
+            };
+        let pending = progress
+            .pending
+            .remove(upstream_progress_token)
+            .unwrap_or_default();
+        if pending.is_empty() {
+            progress.mappings.insert(
+                upstream_progress_token.clone(),
+                RelayProgressRoute::Active(downstream_progress_token),
+            );
+            return None;
         }
-        tokio::time::timeout(timeout, notified).await.is_ok()
-            && self.progress_notification_sequence() > previous
+        Some(
+            pending
+                .into_iter()
+                .map(|mut params| {
+                    params.progress_token = downstream_progress_token.clone();
+                    params
+                })
+                .collect(),
+        )
     }
 
     pub(super) async fn register_task_id(
@@ -276,7 +475,7 @@ impl RelayRouteState {
     pub(super) async fn wait_for_task_notification_after(
         &self,
         previous: u64,
-        timeout: std::time::Duration,
+        timeout: Duration,
     ) -> bool {
         if self.task_notification_sequence() > previous {
             return true;
@@ -381,6 +580,43 @@ impl RelayClientHandler {
         *self.downstream.write().await = downstream;
     }
 
+    async fn forward_progress(&self, params: ProgressNotificationParam) {
+        let upstream_progress_token = params.progress_token.clone();
+        let Some(params) = self.routes.translate_or_queue_progress(params).await else {
+            tracing::debug!(
+                upstream = %self.upstream_name,
+                ?upstream_progress_token,
+                "queued or dropped progress notification without an active downstream progress route"
+            );
+            return;
+        };
+        let downstream = self.downstream().await;
+        if let Err(error) = downstream.notify_progress(params).await {
+            tracing::warn!(
+                upstream = %self.upstream_name,
+                error = %error,
+                "failed to forward progress notification downstream"
+            );
+        }
+    }
+
+    fn notification_interceptor(&self) -> RelayNotificationInterceptor {
+        let handler = self.clone();
+        Arc::new(move |notification| {
+            let handler = handler.clone();
+            Box::pin(async move {
+                match notification {
+                    OrderedRelayNotification::Progress(params) => {
+                        handler.forward_progress(params).await;
+                    }
+                    OrderedRelayNotification::TaskStatus(params) => {
+                        handler.handle_task_status(params).await;
+                    }
+                }
+            })
+        })
+    }
+
     pub(super) async fn forward_task_status(&self, params: TaskStatusNotificationParams) {
         let task_id = params.task.task.task_id.clone();
         let status = params.task.status();
@@ -411,6 +647,26 @@ impl RelayClientHandler {
             }
         }
     }
+
+    async fn handle_task_status(&self, params: TaskStatusNotificationParams) {
+        let native_task_id = params.task.task.task_id.clone();
+        let status = params.task.status();
+        tracing::debug!(
+            upstream = %self.upstream_name,
+            native_task_id,
+            ?status,
+            "received upstream task notification"
+        );
+        let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
+            tracing::debug!(
+                upstream = %self.upstream_name,
+                native_task_id,
+                "queued task notification until gateway task registration"
+            );
+            return;
+        };
+        self.forward_task_status(params).await;
+    }
 }
 
 impl ClientHandler for RelayClientHandler {
@@ -425,47 +681,40 @@ impl ClientHandler for RelayClientHandler {
 
     async fn on_cancelled(
         &self,
-        mut params: CancelledNotificationParam,
+        params: CancelledNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
-        let Some(upstream_request_id) = params.request_id.clone() else {
-            return;
-        };
-        let Some(downstream_request_id) = self
-            .routes
-            .downstream_request_id(&upstream_request_id)
-            .await
+        let upstream_request_id = params.request_id.clone();
+        let Some((upstream_request_id, params)) =
+            self.routes.translate_or_queue_cancellation(params).await
         else {
+            tracing::debug!(
+                upstream = %self.upstream_name,
+                ?upstream_request_id,
+                "queued or dropped cancellation notification without an active downstream request route"
+            );
             return;
         };
-        params.request_id = Some(downstream_request_id);
         let downstream = self.downstream().await;
-        drop(downstream.notify_cancelled(params).await);
-        self.routes.unregister_request(&upstream_request_id).await;
+        if let Err(error) = downstream.notify_cancelled(params).await {
+            tracing::warn!(
+                upstream = %self.upstream_name,
+                error = %error,
+                "failed to forward cancellation notification downstream"
+            );
+        }
+        self.routes
+            .finish_cancellation_forward(&upstream_request_id)
+            .await;
+        self.routes.schedule_unregister_request(upstream_request_id);
     }
 
     async fn on_progress(
         &self,
-        mut params: ProgressNotificationParam,
+        params: ProgressNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
-        let Some(downstream_token) = self
-            .routes
-            .downstream_progress_token(&params.progress_token)
-            .await
-        else {
-            return;
-        };
-        params.progress_token = downstream_token;
-        let downstream = self.downstream().await;
-        match downstream.notify_progress(params).await {
-            Ok(()) => self.routes.record_progress_notification_delivery(),
-            Err(error) => tracing::warn!(
-                upstream = %self.upstream_name,
-                error = %error,
-                "failed to forward progress notification downstream"
-            ),
-        }
+        self.forward_progress(params).await;
     }
 
     #[allow(deprecated)]
@@ -533,23 +782,7 @@ impl ClientHandler for RelayClientHandler {
         params: TaskStatusNotificationParams,
         _context: NotificationContext<RoleClient>,
     ) {
-        let native_task_id = params.task.task.task_id.clone();
-        let status = params.task.status();
-        tracing::debug!(
-            upstream = %self.upstream_name,
-            native_task_id,
-            ?status,
-            "received upstream task notification"
-        );
-        let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
-            tracing::debug!(
-                upstream = %self.upstream_name,
-                native_task_id,
-                "queued task notification until gateway task registration"
-            );
-            return;
-        };
-        self.forward_task_status(params).await;
+        self.handle_task_status(params).await;
     }
 
     async fn on_custom_notification(
@@ -569,12 +802,14 @@ impl ClientHandler for RelayClientHandler {
 async fn send_relay_request(
     peer: &Peer<RoleClient>,
     routes: &Arc<RelayRouteState>,
+    downstream: &Peer<RoleServer>,
+    upstream_name: &str,
     cancellation_sender: Option<&HttpCancellationSender>,
     request: ClientRequest,
     mut request_meta: Option<RequestMetaObject>,
     downstream_request_id: RequestId,
     downstream_cancel: CancellationToken,
-    timeout: std::time::Duration,
+    timeout: Duration,
     deadline: tokio::time::Instant,
 ) -> Result<ServerResult, ServiceError> {
     let cancellation_token = uuid::Uuid::new_v4().to_string();
@@ -594,8 +829,6 @@ async fn send_relay_request(
     let downstream_progress_token = request_meta
         .as_ref()
         .and_then(RequestMetaObject::get_progress_token);
-    let expects_progress = downstream_progress_token.is_some();
-    let progress_sequence = routes.progress_notification_sequence();
     let options = request_meta
         .map(|meta| PeerRequestOptions::no_options().with_meta(meta))
         .unwrap_or_else(PeerRequestOptions::no_options);
@@ -673,7 +906,8 @@ async fn send_relay_request(
         });
     }
 
-    routes
+    let cancellation_started = routes.cancellation_started(&upstream_request_id).await;
+    let pending_notifications = routes
         .register_request(
             upstream_request_id.clone(),
             downstream_request_id,
@@ -681,6 +915,36 @@ async fn send_relay_request(
             downstream_progress_token,
         )
         .await;
+    while let Some(pending_progress) = routes
+        .take_pending_progress_batch_or_activate(&handle.progress_token)
+        .await
+    {
+        for params in pending_progress {
+            if let Err(error) = downstream.notify_progress(params).await {
+                tracing::warn!(
+                    upstream = upstream_name,
+                    error = %error,
+                    "failed to forward queued progress notification downstream"
+                );
+            }
+        }
+    }
+    if let Some(params) = pending_notifications.cancellation {
+        routes
+            .begin_cancellation_forward(&upstream_request_id)
+            .await;
+        if let Err(error) = downstream.notify_cancelled(params).await {
+            tracing::warn!(
+                upstream = upstream_name,
+                error = %error,
+                "failed to forward queued cancellation notification downstream"
+            );
+        }
+        routes
+            .finish_cancellation_forward(&upstream_request_id)
+            .await;
+        routes.schedule_unregister_request(upstream_request_id.clone());
+    }
 
     let result = tokio::select! {
         response = &mut handle.rx => {
@@ -689,11 +953,12 @@ async fn send_relay_request(
             // Its bounded grace still preserves the late downstream-cancel race.
             relay_finished.cancel();
             let response = response.map_err(|_| ServiceError::TransportClosed)?;
-            if expects_progress && response.is_ok() {
+            if matches!(&response, Err(ServiceError::Cancelled { .. })) {
                 routes
-                    .wait_for_progress_notification_after(
-                        progress_sequence,
-                        PROGRESS_NOTIFICATION_DELIVERY_GRACE,
+                    .wait_for_cancellation_handlers_after(
+                        &upstream_request_id,
+                        cancellation_started,
+                        CANCELLATION_NOTIFICATION_DELIVERY_GRACE,
                     )
                     .await;
             }
@@ -741,6 +1006,80 @@ async fn send_relay_request(
     result
 }
 
+type RelayToolRequestFuture<'a> = BoxFuture<'a, Result<ServerResult, ServiceError>>;
+
+fn send_relay_tool_request_with_header_recovery<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    routes: &'a Arc<RelayRouteState>,
+    downstream: &'a Peer<RoleServer>,
+    upstream_name: &'a str,
+    cancellation_sender: Option<&'a HttpCancellationSender>,
+    params: CallToolRequestParams,
+    request_meta: Option<RequestMetaObject>,
+    downstream_request_id: RequestId,
+    downstream_cancel: CancellationToken,
+    timeout: Duration,
+    deadline: tokio::time::Instant,
+) -> RelayToolRequestFuture<'a> {
+    Box::pin(async move {
+        let retry_params = params.clone();
+        let retry_request_meta = request_meta.clone();
+        let retry_downstream_request_id = downstream_request_id.clone();
+        let retry_downstream_cancel = downstream_cancel.clone();
+        let response = send_relay_request(
+            peer,
+            routes,
+            downstream,
+            upstream_name,
+            cancellation_sender,
+            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            request_meta,
+            downstream_request_id,
+            downstream_cancel,
+            timeout,
+            deadline,
+        )
+        .await;
+        if !response
+            .as_ref()
+            .is_err_and(|error| is_tool_header_mismatch(error))
+        {
+            return response;
+        }
+
+        record_header_mismatch(pool, upstream_name);
+        tokio::select! {
+            refreshed = refresh_tool_header_cache(pool, peer, upstream_name) => refreshed?,
+            () = retry_downstream_cancel.cancelled() => {
+                return Err(ServiceError::Cancelled {
+                    reason: Some("downstream request cancelled during header-schema refresh".to_string()),
+                });
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                return Err(ServiceError::Timeout { timeout });
+            }
+        }
+
+        let result = send_relay_request(
+            peer,
+            routes,
+            downstream,
+            upstream_name,
+            cancellation_sender,
+            ClientRequest::CallToolRequest(CallToolRequest::new(retry_params)),
+            retry_request_meta,
+            retry_downstream_request_id,
+            retry_downstream_cancel,
+            timeout,
+            deadline,
+        )
+        .await;
+        record_header_retry(pool, upstream_name, &result);
+        result
+    })
+}
+
 fn downstream_cancelled(reason: &str) -> String {
     ServiceError::Cancelled {
         reason: Some(reason.to_string()),
@@ -753,7 +1092,7 @@ impl UpstreamPool {
     /// that is cached per `(upstream, downstream-session, oauth-subject)`.
     ///
     /// Unlike [`UpstreamPool::call_tool`] (a pooled, multiplexed `()`
-    /// connection), the connection here is served with a [`RelayClientHandler`]
+    /// connection), the connection here is served with a `RelayClientHandler`
     /// bound to `downstream`, so any server→client request the upstream raises
     /// mid-call (elicitation/sampling/roots) is forwarded to that one agent.
     ///
@@ -765,7 +1104,8 @@ impl UpstreamPool {
     /// mapping unambiguous even though the connection is reused across calls
     /// within the session.
     ///
-    /// Reuses the generic `connect_upstream_with_handler` seam, so every
+    /// Reuses the generic relay connection seam, including its sequential,
+    /// cancellation-safe progress/task-status notification transport, so every
     /// transport (HTTP, WebSocket, stdio, OAuth-HTTP) and the stdio
     /// process-reaping guard work unchanged. `subject` is forwarded for
     /// OAuth-scoped upstreams (`None` for the common non-OAuth case).
@@ -826,6 +1166,7 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let downstream_for_request = downstream.clone();
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
@@ -951,11 +1292,19 @@ impl UpstreamPool {
                 return Some(Err(super::CapabilityCallError::QueueSaturated { message }));
             }
         };
-        let response = send_relay_request(
+        // Keep the HeaderMismatch refresh/replay state out of this already-large
+        // relay future. Multi-hop relays nest this future recursively; carrying
+        // the retry branch inline pushed Tokio worker stacks over the edge even
+        // when HeaderMismatch recovery was never exercised. Boxing the focused
+        // request future keeps the normal relay connection path stack-bounded.
+        let response = send_relay_tool_request_with_header_recovery(
+            self,
             &peer,
             &routes,
+            &downstream_for_request,
+            &config.name,
             cancellation_sender.as_ref(),
-            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            params,
             request_meta,
             downstream_request_id,
             downstream_cancel,
@@ -1201,6 +1550,7 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let downstream_for_request = downstream.clone();
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
@@ -1292,6 +1642,8 @@ impl UpstreamPool {
         let response = send_relay_request(
             &peer,
             &routes,
+            &downstream_for_request,
+            &config.name,
             cancellation_sender.as_ref(),
             ClientRequest::GetPromptRequest(GetPromptRequest::new(params)),
             request_meta,
@@ -1450,6 +1802,7 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::resource(&config.name, redacted_uri, subject.is_some())
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
+        let downstream_for_request = downstream.clone();
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
@@ -1541,6 +1894,8 @@ impl UpstreamPool {
         let response = send_relay_request(
             &peer,
             &routes,
+            &downstream_for_request,
+            &config.name,
             cancellation_sender.as_ref(),
             ClientRequest::ReadResourceRequest(ReadResourceRequest::new(params)),
             request_meta,
@@ -1782,7 +2137,8 @@ impl UpstreamPool {
             self.notification_tx.clone(),
             subject.is_none(),
         );
-        let (conn, _tools) = match connect_upstream_with_handler(
+        let notification_interceptor = handler.notification_interceptor();
+        let (conn, _tools) = match connect_upstream_with_handler_and_notifications(
             config,
             subject,
             self.oauth_client_cache.as_ref(),
@@ -1790,6 +2146,7 @@ impl UpstreamPool {
             self.runtime_owner.as_ref(),
             Some(&self.shared_http_client),
             handler,
+            Some(notification_interceptor),
         )
         .await
         {
@@ -1937,12 +2294,14 @@ impl UpstreamPool {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
+    use std::mem::size_of;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotificationParam,
         ClientCapabilities, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
-        ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams,
+        ElicitRequestParams, ElicitationSchema, ErrorCode, ErrorData, GetPromptRequestParams,
         GetPromptResponse, Implementation, InputRequest, InputRequests, InputRequiredResult,
         PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam,
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
@@ -1952,7 +2311,7 @@ mod tests {
     use rmcp::service::ClientLifecycleMode;
     use rmcp::service::{NotificationContext, RequestContext, RunningService};
     use rmcp::{ClientHandler, ClientServiceExt, RoleServer, ServerHandler, ServiceExt};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use crate::upstream::types::UpstreamRuntimeMetadata;
 
@@ -1993,7 +2352,7 @@ mod tests {
             "downstream-progress".into(),
         ));
 
-        routes
+        let pending = routes
             .register_request(
                 upstream_request.clone(),
                 downstream_request.clone(),
@@ -2001,6 +2360,13 @@ mod tests {
                 Some(downstream_progress.clone()),
             )
             .await;
+        assert!(pending.cancellation.is_none());
+        assert!(
+            routes
+                .take_pending_progress_batch_or_activate(&upstream_progress)
+                .await
+                .is_none()
+        );
 
         assert_eq!(
             routes.downstream_request_id(&upstream_request).await,
@@ -2027,6 +2393,207 @@ mod tests {
         assert_eq!(
             routes.downstream_progress_token(&upstream_progress).await,
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn progress_waits_for_request_route_registration() {
+        let routes = RelayRouteState::default();
+        let upstream_request = RequestId::String("upstream-early-request".into());
+        let downstream_request = RequestId::String("downstream-early-request".into());
+        let upstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
+            "upstream-early-progress".into(),
+        ));
+        let downstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
+            "downstream-early-progress".into(),
+        ));
+        let params =
+            ProgressNotificationParam::new(upstream_progress.clone(), 0.25).with_message("early");
+
+        assert!(routes.translate_or_queue_progress(params).await.is_none());
+        let pending = routes
+            .register_request(
+                upstream_request,
+                downstream_request,
+                upstream_progress.clone(),
+                Some(downstream_progress.clone()),
+            )
+            .await;
+        assert!(pending.cancellation.is_none());
+
+        let first = routes
+            .take_pending_progress_batch_or_activate(&upstream_progress)
+            .await
+            .expect("first queued progress batch");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].progress_token, downstream_progress);
+        assert_eq!(first[0].message.as_deref(), Some("early"));
+
+        let later =
+            ProgressNotificationParam::new(upstream_progress.clone(), 0.75).with_message("later");
+        assert!(routes.translate_or_queue_progress(later).await.is_none());
+        let second = routes
+            .take_pending_progress_batch_or_activate(&upstream_progress)
+            .await
+            .expect("second queued progress batch");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].progress_token, downstream_progress);
+        assert_eq!(second[0].message.as_deref(), Some("later"));
+        assert!(
+            routes
+                .take_pending_progress_batch_or_activate(&upstream_progress)
+                .await
+                .is_none()
+        );
+
+        let live =
+            ProgressNotificationParam::new(upstream_progress.clone(), 1.0).with_message("live");
+        let translated = routes
+            .translate_or_queue_progress(live)
+            .await
+            .expect("active progress route");
+        assert_eq!(translated.progress_token, downstream_progress);
+        assert_eq!(translated.message.as_deref(), Some("live"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_waits_for_request_route_registration() {
+        let routes = RelayRouteState::default();
+        let upstream_request = RequestId::String("upstream-early-cancel".into());
+        let downstream_request = RequestId::String("downstream-early-cancel".into());
+        let upstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
+            "upstream-cancel-progress".into(),
+        ));
+        let params = CancelledNotificationParam::new(
+            Some(upstream_request.clone()),
+            Some("early cancel".to_string()),
+        );
+
+        assert!(
+            routes
+                .translate_or_queue_cancellation(params)
+                .await
+                .is_none()
+        );
+        let pending = routes
+            .register_request(
+                upstream_request,
+                downstream_request.clone(),
+                upstream_progress,
+                None,
+            )
+            .await;
+
+        let cancellation = pending.cancellation.expect("queued cancellation");
+        assert_eq!(cancellation.request_id, Some(downstream_request));
+        assert_eq!(cancellation.reason.as_deref(), Some("early cancel"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_handler_wait_tracks_delayed_inflight_forwarding() {
+        let routes = Arc::new(RelayRouteState::default());
+        let upstream_request = RequestId::String("upstream-cancel-wait".into());
+        let downstream_request = RequestId::String("downstream-cancel-wait".into());
+        let upstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
+            "upstream-cancel-wait-progress".into(),
+        ));
+        let previous = routes.cancellation_started(&upstream_request).await;
+        routes
+            .register_request(
+                upstream_request.clone(),
+                downstream_request,
+                upstream_progress,
+                None,
+            )
+            .await;
+
+        let waiting_routes = Arc::clone(&routes);
+        let waiting_request = upstream_request.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_routes
+                .wait_for_cancellation_handlers_after(
+                    &waiting_request,
+                    previous,
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        let translated = routes
+            .translate_or_queue_cancellation(CancelledNotificationParam::new(
+                Some(upstream_request.clone()),
+                Some("cancelled upstream".to_string()),
+            ))
+            .await
+            .expect("active cancellation route");
+        assert_eq!(translated.0, upstream_request);
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        routes.finish_cancellation_forward(&translated.0).await;
+        assert!(waiter.await.expect("cancellation waiter"));
+    }
+
+    #[tokio::test]
+    async fn pending_progress_queue_is_bounded_before_route_registration() {
+        let routes = RelayRouteState::default();
+        let upstream_progress = ProgressToken(rmcp::model::NumberOrString::String(
+            "bounded-progress".into(),
+        ));
+
+        for _ in 0..(MAX_PENDING_PROGRESS_PER_ROUTE + 2) {
+            let params = ProgressNotificationParam::new(upstream_progress.clone(), 0.5);
+            assert!(routes.translate_or_queue_progress(params).await.is_none());
+        }
+        assert_eq!(
+            routes
+                .progress
+                .lock()
+                .await
+                .pending
+                .get(&upstream_progress)
+                .map(Vec::len),
+            Some(MAX_PENDING_PROGRESS_PER_ROUTE)
+        );
+
+        let distinct_routes = RelayRouteState::default();
+        for index in 0..(MAX_PENDING_PROGRESS_ROUTES + 2) {
+            let token = ProgressToken(rmcp::model::NumberOrString::String(
+                format!("bounded-route-{index}").into(),
+            ));
+            let params = ProgressNotificationParam::new(token, 0.5);
+            assert!(
+                distinct_routes
+                    .translate_or_queue_progress(params)
+                    .await
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            distinct_routes.progress.lock().await.pending.len(),
+            MAX_PENDING_PROGRESS_ROUTES
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_cancellation_queue_is_bounded_before_route_registration() {
+        let routes = RelayRouteState::default();
+        for index in 0..(MAX_PENDING_REQUEST_CANCELLATIONS + 2) {
+            let request_id = RequestId::String(format!("bounded-cancel-{index}").into());
+            let params =
+                CancelledNotificationParam::new(Some(request_id), Some("early cancel".to_string()));
+            assert!(
+                routes
+                    .translate_or_queue_cancellation(params)
+                    .await
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            routes.requests.lock().await.pending_cancellations.len(),
+            MAX_PENDING_REQUEST_CANCELLATIONS
         );
     }
 
@@ -2208,13 +2775,189 @@ mod tests {
         (pool, config, downstream_server)
     }
 
+    #[test]
+    fn relay_header_recovery_future_stays_structurally_boxed() {
+        let bytes = size_of::<RelayToolRequestFuture<'static>>();
+        let max_boxed_future_bytes = 2 * size_of::<usize>();
+        assert!(
+            bytes <= max_boxed_future_bytes,
+            "relay HeaderMismatch recovery future must remain a boxed trait-object pointer; got {bytes} bytes (expected at most {max_boxed_future_bytes})"
+        );
+    }
+
+    #[tokio::test]
+    async fn relayed_header_mismatch_refreshes_schema_and_retries_once() {
+        #[derive(Clone)]
+        struct HeaderMismatchUpstream {
+            list_calls: Arc<AtomicUsize>,
+            tool_calls: Arc<AtomicUsize>,
+        }
+
+        impl ServerHandler for HeaderMismatchUpstream {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+                self.list_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "header.tool",
+                        "relay header recovery fixture",
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                let attempt = self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    return Err(ErrorData::new(
+                        ErrorCode::HEADER_MISMATCH,
+                        "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
+                        None,
+                    ));
+                }
+                Ok(CallToolResult::success(vec![ContentBlock::text("recovered")]).into())
+            }
+        }
+
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let upstream = HeaderMismatchUpstream {
+            list_calls: Arc::clone(&list_calls),
+            tool_calls: Arc::clone(&tool_calls),
+        };
+        let capabilities = relay_test_capabilities();
+        let (pool, config, downstream_server) =
+            cached_relay_pool(upstream, CapableAgent, capabilities.clone()).await;
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("header.tool"),
+                downstream_server.peer().clone(),
+                RequestId::String("header-recovery".into()),
+                CancellationToken::new(),
+                1,
+                capabilities,
+                None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
+            )
+            .await
+            .expect("cached relay exists")
+            .expect("relay HeaderMismatch should self-heal");
+
+        assert!(matches!(result, CallToolResponse::Complete(_)));
+        assert_eq!(list_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 2);
+        let metrics = pool.header_recovery_metrics(&config.name);
+        assert_eq!(metrics.mismatch_detected, 1);
+        assert_eq!(metrics.schema_refreshes, 1);
+        assert_eq!(metrics.retry_successes, 1);
+        assert_eq!(metrics.retry_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn relayed_header_refresh_never_extends_original_deadline() {
+        #[derive(Clone)]
+        struct SlowHeaderRefreshUpstream {
+            list_calls: Arc<AtomicUsize>,
+            tool_calls: Arc<AtomicUsize>,
+        }
+
+        impl ServerHandler for SlowHeaderRefreshUpstream {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+                self.list_calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(rmcp::model::ListToolsResult::with_all_items(vec![]))
+            }
+
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                Err(ErrorData::new(
+                    ErrorCode::HEADER_MISMATCH,
+                    "header mismatch: missing Mcp-Param-owner header for parameter \"owner\"",
+                    None,
+                ))
+            }
+        }
+
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let upstream = SlowHeaderRefreshUpstream {
+            list_calls: Arc::clone(&list_calls),
+            tool_calls: Arc::clone(&tool_calls),
+        };
+        let capabilities = relay_test_capabilities();
+        let (pool, config, downstream_server) =
+            cached_relay_pool(upstream, CapableAgent, capabilities.clone()).await;
+        let pool = pool.with_relay_timeout(Duration::from_millis(80));
+        let started = Instant::now();
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("header.tool"),
+                downstream_server.peer().clone(),
+                RequestId::String("header-refresh-deadline".into()),
+                CancellationToken::new(),
+                1,
+                capabilities,
+                None,
+                crate::upstream::pool::TaskRouteAuthorization::root(),
+            )
+            .await
+            .expect("cached relay exists")
+            .expect_err("slow schema refresh must obey the original relay deadline");
+
+        assert!(matches!(
+            result,
+            super::super::CapabilityCallError::Timeout { .. }
+        ));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(list_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            1,
+            "deadline expiry must prevent a second tools/call"
+        );
+        let metrics = pool.header_recovery_metrics(&config.name);
+        assert_eq!(metrics.mismatch_detected, 1);
+        assert_eq!(metrics.schema_refreshes, 1);
+        assert_eq!(metrics.retry_successes, 0);
+        assert_eq!(metrics.retry_failures, 0);
+    }
+
     async fn wait_for_recorded_count<T>(values: &Mutex<Vec<T>>, expected: usize) {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if values.lock().await.len() >= expected {
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -2273,7 +3016,7 @@ mod tests {
                 ))
                 .await
                 .expect("upstream sends cancellation");
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(CallToolResult::success(Vec::new()).into())
         }
     }
@@ -2322,7 +3065,7 @@ mod tests {
             const NATIVE_TASK_ID: &str = "native-notification-task";
             let peer = context.peer.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let task = DetailedTask::new(
                     Task::new(
                         NATIVE_TASK_ID,
@@ -2402,7 +3145,7 @@ mod tests {
             "upstream cancellation should terminate the relayed request: {result:?}"
         );
         tokio::time::timeout(
-            RELAY_ROUTE_CLEANUP_GRACE + std::time::Duration::from_secs(1),
+            RELAY_ROUTE_CLEANUP_GRACE + Duration::from_secs(1),
             routes.wait_for_relay_watcher_finish_after(watcher_sequence),
         )
         .await
@@ -2448,9 +3191,9 @@ mod tests {
                 .await
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             while !upstream.started.load(Ordering::SeqCst) {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -2460,9 +3203,9 @@ mod tests {
         assert!(
             matches!(result, Err(ref error) if error.to_string().contains("downstream request cancelled"))
         );
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             while !upstream.cancelled.load(Ordering::SeqCst) {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -2538,7 +3281,7 @@ mod tests {
         );
 
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(500),
+            started.elapsed() < Duration::from_millis(500),
             "relay-token cancellation must be dispatched before waiting for the upstream request id"
         );
     }
@@ -2936,7 +3679,7 @@ mod tests {
         outcome: &str,
         expected_count: i64,
     ) -> i64 {
-        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let expected = outcome.to_string();
             let count = store
@@ -2953,7 +3696,7 @@ mod tests {
             if count >= expected_count || Instant::now() >= deadline {
                 return count;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -2992,7 +3735,7 @@ mod tests {
         );
         let pool = UpstreamPool::new()
             .with_usage_store(Some(Arc::clone(&store)))
-            .with_relay_timeout(std::time::Duration::from_secs(30));
+            .with_relay_timeout(Duration::from_secs(30));
         let config = super::super::testsupport::test_upstream_config();
         let capabilities = relay_test_capabilities();
         let key = relay_cache_key(&config.name, 41, None);
@@ -3006,7 +3749,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let cancel = cancellation.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
             cancel.cancel();
         });
 
@@ -3031,7 +3774,7 @@ mod tests {
             result,
             super::super::capability_call::CapabilityCallError::Cancelled { .. }
         ));
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(
             wait_for_usage_outcome(&store, "connect_cancelled", 1).await,
             1
@@ -3047,7 +3790,7 @@ mod tests {
             .build()
             .expect("test runtime");
         runtime.block_on(async {
-            let timeout = std::time::Duration::from_millis(40);
+            let timeout = Duration::from_millis(40);
             let dir = tempfile::tempdir().expect("usage tempdir");
             let store = Arc::new(
                 crate::usage::UsageStore::open(dir.path().join("usage.db"))
@@ -3090,7 +3833,7 @@ mod tests {
                 super::super::capability_call::CapabilityCallError::Timeout { .. }
             ));
             assert!(
-                started.elapsed() < timeout + std::time::Duration::from_secs(1),
+                started.elapsed() < timeout + Duration::from_secs(1),
                 "cold connect exceeded the absolute relay budget"
             );
             assert_eq!(
@@ -3191,7 +3934,7 @@ mod tests {
             let session_id = 100 + index as u64;
             let pool = UpstreamPool::new()
                 .with_usage_store(Some(Arc::clone(&store)))
-                .with_relay_timeout(std::time::Duration::from_secs(30));
+                .with_relay_timeout(Duration::from_secs(30));
             let key = relay_cache_key(&config.name, session_id, None);
             let connect_lock = Arc::new(Mutex::new(()));
             pool.relay_connect_locks
@@ -3202,7 +3945,7 @@ mod tests {
             let cancellation = CancellationToken::new();
             let cancel = cancellation.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
                 cancel.cancel();
             });
             invoke_cold_relay_path(
@@ -3233,7 +3976,7 @@ mod tests {
             let session_id = 200 + index as u64;
             let pool = UpstreamPool::new()
                 .with_usage_store(Some(Arc::clone(&store)))
-                .with_relay_timeout(std::time::Duration::from_millis(20));
+                .with_relay_timeout(Duration::from_millis(20));
             let key = relay_cache_key(&config.name, session_id, None);
             let connect_lock = Arc::new(Mutex::new(()));
             pool.relay_connect_locks
@@ -3429,7 +4172,7 @@ mod tests {
         let shared_pool = pool.clone();
         let shared_upstreams = ["first".to_string()];
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+        tokio::time::timeout(Duration::from_secs(1), async move {
             tokio::join!(
                 subject_pool.invalidate_oauth_subject_sessions(
                     "first",
@@ -3483,7 +4226,7 @@ mod tests {
     /// the human-aware-deadline fix; `call_tool_relayed` reads `self.relay_timeout`.
     #[test]
     fn relay_timeout_defaults_to_five_minutes_and_is_configurable() {
-        use std::time::Duration;
+        use Duration;
         let pool = UpstreamPool::new();
         assert_eq!(
             pool.relay_timeout,

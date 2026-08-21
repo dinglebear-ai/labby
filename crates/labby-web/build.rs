@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut code = String::with_capacity(files.len() * 96 + 64);
+    code.push_str("/// Gateway-admin files embedded into the binary at build time.\n");
     code.push_str("pub static EMBEDDED_WEB_FILES: &[(&str, &[u8])] = &[\n");
     for (rel, abs) in &files {
         code.push_str(&format!(

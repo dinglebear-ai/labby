@@ -1,18 +1,33 @@
-# gateway-admin — Operator Web UI
+# Labby Gateway Admin Instructions
 
-This Next.js/React application is Labby's operator web UI. It talks to the Rust backend over supported HTTP endpoints and is exported as static assets for embedding/serving by Labby.
+This directory is the Next.js operator UI embedded by Labby. The app currently uses Next.js 16, React 19, Tailwind CSS 4, pnpm 9, and a static export consumed by the Rust host.
 
-## UI Rules
+## Boundaries
 
-- reuse Aurora design tokens, components, spacing, typography, and page patterns
-- reuse existing components before inventing parallel primitives
-- keep browser data flows aligned with backend redaction and auth contracts
-- do not embed administrator bearer secrets in browser bundles
-- same-origin hosted mode uses Rust-owned browser session/CSRF behavior
-- keep mock data explicitly development-only
+- Keep backend semantics in Labby dispatch/runtime code. The UI should call typed API helpers and render server truth rather than reimplementing action policy.
+- Reuse `lib/api/`, `lib/http/`, `lib/auth/`, and existing hooks before adding transport wrappers.
+- Product pages live under `app/(admin)/`; reusable feature components live in `components/<feature>/`.
+- The embedded export must keep working without a standalone Node server.
+- Do not add direct arbitrary host filesystem, shell, or MCP access from browser code.
 
-## Engineering Rules
+## Design System
 
-The app's module/test contract is documented in README.md and guarded by tests. Use existing npm/pnpm scripts rather than inventing a second toolchain. Browser-only behavior needs browser tests; pure data/component logic should stay testable in the normal unit path.
+Aurora is the source of truth for styling. Read `components/ui/CLAUDE.md`, `docs/design/design-system-contract.md`, and `docs/design/component-development.md` before UI work. Reuse existing tokens and primitives; do not introduce duplicate buttons, dialogs, inputs, tables, badges, spacing scales, or raw theme colors.
 
-Read `components/ui/CLAUDE.md` before modifying shadcn primitives. Product design contracts live in `docs/design/`.
+## Safety And Errors
+
+Mutations must preserve backend authorization, destructive-action, CSRF/session, and redaction contracts. Surface structured backend errors with actionable recovery instead of replacing them with generic strings. Never log authorization headers, OAuth material, setup secrets, or raw secret-valued form fields.
+
+## Verification
+
+Run the checks that match the change:
+
+```bash
+cd apps/gateway-admin
+pnpm lint
+pnpm test
+pnpm test:browser
+pnpm build
+```
+
+A production UI change is not complete until the static export succeeds and the relevant route/component tests pass.

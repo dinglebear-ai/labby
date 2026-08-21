@@ -39,6 +39,12 @@ details there and keep this file focused on rules for editing `.github/`.
   `changes` job's `outputs:` block come from the merge ref and are
   branch-controlled. Do not describe it as preventing a branch from rerouting
   its own CI.
+- `.github/workflows/protected-docs.yml` is intentionally different: it uses
+  `pull_request_target`, checks out only `github.event.pull_request.base.sha`,
+  never executes pull-request code, and receives only read permissions. Keep
+  `Protected docs guard` as a separate required branch-protection context.
+  Changes below `docs/sessions/` or `docs/superpowers/` require the
+  maintainer-applied `protected-docs-approved` label.
 - Preserve the MSRV command exactly:
   `cargo +1.97.1 check --workspace --all-features --all-targets --locked`.
 
@@ -100,7 +106,7 @@ other architectures, emulation, cross-platform image matrices, or QEMU setup.
 - `ci-gate` must aggregate every non-advisory job in both its `needs:` list and
   its `require_*` assertions; a job in one but not the other cannot fail the
   build.
-- Update `scripts/ci/test_windows_ci_policy.py`,
+- Update the focused CI policy tests under `scripts/ci/`,
   `crates/labby/tests/ci_changed_paths.rs`, and `docs/runtime/CICD.md` when a
   workflow contract changes.
 - Run Actionlint, focused workflow contract tests, the central fleet policy and

@@ -70,7 +70,7 @@ impl PublicRelayRegistryStore {
     /// Count `<path>.bak.*` sidecar files currently on disk for this store's
     /// registry path.
     ///
-    /// Backups are capped at [`MAX_REGISTRY_BACKUPS`] by design
+    /// Backups are capped at `MAX_REGISTRY_BACKUPS` by design
     /// (`prune_old_backups` runs after every save), so a count exceeding
     /// that cap can only mean pruning has been persistently failing —
     /// `labby doctor oauth-relay` uses this to surface that otherwise

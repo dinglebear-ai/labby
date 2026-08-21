@@ -72,6 +72,7 @@ fn canonical_json(value: &Value) -> String {
     out
 }
 
+/// Validate Code Mode tool parameters against an optional JSON Schema.
 pub fn validate_code_mode_params_against_schema(
     params: &Value,
     schema: Option<&Value>,

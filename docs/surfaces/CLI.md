@@ -1,7 +1,7 @@
 ---
 title: "CLI Surface"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-08-18"
 ---
 
 # CLI Surface
@@ -21,6 +21,7 @@ authoritative when this summary and the binary disagree.
   service operations.
 - `labby doctor` audits supported configuration and runtime health.
 - `labby snippets` manages executable Code Mode snippets.
+- `labby skills` lists, searches, gets, and reads Agent Skills through the same canonical registry used by native Skills-over-MCP. With the gateway build it includes route-root proxied skills; a Skills-only build remains first-party-only.
 - `labby docs` generates and verifies code-owned documentation artifacts.
 - `labby health` performs a quick local health check.
 - `labby oauth` runs local OAuth callback-relay helpers.
@@ -66,4 +67,4 @@ shared source of truth.
 The current CLI does not include ACP sessions, Registry browsing/installing,
 Marketplace product commands, Fleet/node enrollment, Deploy-product commands, or
 Stash workspaces. Historical command contracts are archived under
-[../references/retired-labby](../references/retired-labby/).
+[../archive/retired-labby](../archive/retired-labby/).

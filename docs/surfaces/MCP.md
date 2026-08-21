@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-08-08"
+updated: "2026-08-17"
 ---
 
 # MCP Surface
@@ -51,7 +51,7 @@ Every builtin service tool returns the dispatch envelope as
 { "ok": true, "service": "gateway", "action": "gateway.list", "data": {} }
 ```
 
-Builtin service tools — plus the `add_server` and `gateway_status` admin app
+Builtin service tools — plus the `add_server`, `gateway_status`, and `settings` admin app
 tools — advertise this envelope as their MCP `outputSchema`. The normative
 contract is [mcp-tool-output.md](../contracts/mcp-tool-output.md) and the
 published schema is
@@ -99,7 +99,7 @@ provides two text entry points:
   `destructiveHint: true`. Missing or ambiguous annotations fail closed.
 - `codemode` is the full execution surface for `lab` and `lab:admin`. The
   optional `codemode_ui` tool has the same execution authority and adds the
-  Labby-owned trace inspector.
+  Lab-owned trace inspector.
 
 The full-execution tools are annotated as write-capable and potentially
 destructive. Their annotations describe the approval boundary; upstream tool
@@ -111,20 +111,43 @@ determinants change, but remain stable across runtime health and discovered-tool
 churn. Call `codemode.search(...)` and `codemode.describe(...)` inside a run to
 inspect the current route-scoped tool catalog.
 
-Synthetic Code Mode advertises only the fixed Labby-owned UI action surface. It
+### Labby MCP App manager
+
+The root gateway also advertises `mcp_app`, an always-on MCP App switchboard
+for Labby's own UI surfaces. It manages `codemode`, `gateway_status`,
+`server_logs`, `add_server`, `settings`, or `all`. The default target remains `codemode` for
+backward compatibility with the original inspector-only control contract.
+
+Reading status or opening the manager requires `lab` or `lab:admin`; changing
+visibility requires `lab:admin`. The manager is intentionally unavailable on
+protected subset routes because these switches mutate gateway-global state, and
+the manager itself cannot be disabled. Changes are persisted and publish both
+`tools/list_changed` and `resources/list_changed` without rebuilding the
+upstream pool.
+
+Disabling a surface removes its app tool/metadata and owned `ui://` resources,
+and direct reads of a disabled owned resource fail as unknown. It does not tear
+down the underlying text/service capability where one exists: disabling the
+Code Mode inspector leaves `codemode` available, disabling the Server Logs
+app leaves the `server_logs` service tool available without app metadata, and
+disabling Settings leaves the underlying `setup` service contract intact. The
+Code Mode inspector retains the existing `code_mode.mcp_ui_enabled` setting;
+the other switches live under `[mcp_apps]`.
+
+Synthetic Code Mode advertises only the fixed Lab-owned UI action surface. It
 does not add or remove raw upstream MCP App tools as upstream health changes.
 An upstream widget returned by a Code Mode call may still render through its
 resource URI, but its raw callback tools are not added to the approval-facing
 `tools/list` contract.
 
-Code Mode may call exposed upstream MCP tools only. Labby actions are not callable
+Code Mode may call exposed upstream MCP tools only. Lab actions are not callable
 from inside its sandbox. Large upstream results must be projected or sliced
 inside the sandbox before return.
 
 ## Authentication And Routes
 
 The root administrative MCP endpoint uses the configured bearer or OAuth mode.
-Public protected routes validate route-scoped Labby OAuth JWTs and their configured
+Public protected routes validate route-scoped Lab OAuth JWTs and their configured
 resource/scope contract. A static operator bearer token is not a public resource
 credential.
 
@@ -161,9 +184,8 @@ is treated as destructive unless its annotations explicitly say otherwise. That
 value never reaches the wire.
 
 Annotations on Labby's **own** tools are implemented by the shared
-`PermanentToolRegistry` descriptor builders and specified in
-[../design/tool-annotations/](../design/tool-annotations/). Two properties from
-that spec matter to clients: a Labby tool fronts
+`PermanentToolRegistry` descriptor builders. Two properties of that
+current contract matter to clients: a Labby tool fronts
 a whole service, so a tool-level hint is the least-safe **union** of that
 service's actions and must not be read as a claim about a specific `action`; and
 in a labby → labby chain these hints feed the next hop's own gate, so they are
@@ -172,7 +194,7 @@ advisory to clients but not inert.
 Per-action truth (`destructive`, `requires_admin`) is available for the seven
 registered service tools via `{"action": "help"}` or the `lab://<service>/actions`
 resource. It is **not** available for `codemode`, `codemode_ui`, `mcp_app`,
-`add_server`, or `gateway_status`, which are not registry services.
+`add_server`, `gateway_status`, or `settings`, which are not registry services.
 
 Note that tool visibility and `lab://<service>/actions` are scoped by
 `route_scope`, **not** by the caller's admin scope: action metadata crosses that
@@ -191,6 +213,14 @@ at an unsafe offset. A session's notification baseline advances only after it
 receives the final page of a complete listing. Subscribing before that point
 keeps the baseline unpublished so the next relevant catalog trigger emits
 `notifications/tools/list_changed`.
+
+`resources/list`, `resources/templates/list`, and `prompts/list` can require
+live upstream fan-out. Their first page therefore retains the complete result
+set in route-shared memory and binds the continuation cursor to that snapshot.
+Later pages read the retained, authorization-audience-isolated snapshot rather
+than repeating upstream discovery. Snapshots are bounded and process-local; an
+expired, evicted, or pre-restart cursor fails with `invalid_cursor` and callers
+must restart from the first page.
 
 ## Resource Subscriptions
 
@@ -227,7 +257,7 @@ one.
 
 The MCP server does not expose ACP, Marketplace, Registry-browser, Fleet/node,
 Deploy-product, or Stash tools. Historical contracts are preserved only under
-[../references/retired-labby](../references/retired-labby/).
+[../archive/retired-labby](../archive/retired-labby/).
 
 ## Agent Skills (SEP-2640)
 
@@ -248,6 +278,14 @@ and a client must not call `resources/directory/read` against it.
 | `skills/list` | First-party skills plus every enabled, skills-proxying upstream the caller's route can reach |
 | `skills/get` | One entry by URI. `-32602` means the URI is not a skill this server serves |
 | `resources/read` | Serves `skill://` files. Skill URIs do **not** appear in `resources/list`; the manifest is the discovery surface |
+
+### Compatibility tool
+
+When the `skills` feature is enabled, Labby also registers exactly one ordinary MCP service/tool named `skills`. It exposes `skills.list`, `skills.search`, `skills.get`, and `skills.read` through the same caller-scoped registry used by the native extension. Adding more skills never adds more MCP tools.
+
+`skills.search` ranks only already-discovered metadata; it does not load `SKILL.md` bodies. Direct MCP calls preserve protected-route upstream allowlists and OAuth subject isolation. Code Mode carries the outer caller authorization and namespace scope across Labby's private in-process peer so the same fixed tool can safely discover proxied skills without enabling raw upstream tools. Missing propagation fails closed to first-party-only visibility.
+
+The authenticated HTTP API projects the same actions at `POST /v1/skills`; the route is not mounted when API authentication is disabled. The CLI projects them as `labby skills list|search|get|read`.
 
 ### Authorization
 

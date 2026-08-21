@@ -226,6 +226,9 @@ pub(crate) async fn run_sync(args: IncusSyncArgs, format: OutputFormat) -> Resul
         if let Some(hash) = outcome.remote_sha256 {
             println!("sha256: {hash}");
         }
+        if let Some(hash) = outcome.served_web_index_sha256 {
+            println!("web index sha256: {hash}");
+        }
         if outcome.fallback_restart_used {
             println!("fallback: incus force restart used");
         }

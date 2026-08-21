@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/parse\_pdf\_docs\_for\_rag [Redirecting from `/cookbook/examples/parse\_pdf\_docs\_for\_rag.ipynb/` to `/cookbook/examples/parse\_pdf\_docs\_for\_rag`](/cookbook/examples/parse_pdf_docs_for_rag)

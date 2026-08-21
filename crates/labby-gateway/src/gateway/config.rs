@@ -8,8 +8,8 @@ use tempfile::NamedTempFile;
 use crate::upstream::spawn_guard;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{
-    GatewayConfig, GatewayPreferences, ProtectedMcpRouteConfig, ProtectedMcpRouteTarget,
-    UpstreamConfig, UpstreamImportTombstone,
+    GatewayConfig, GatewayLoadoutConfig, GatewayPreferences, IN_PROCESS_UPSTREAM_PREFIX,
+    ProtectedMcpRouteConfig, ProtectedMcpRouteTarget, UpstreamConfig, UpstreamImportTombstone,
 };
 
 use super::params::GatewayUpdatePatch;
@@ -38,7 +38,7 @@ pub fn load_gateway_config(path: &Path) -> Result<GatewayConfig, ToolError> {
     }
 }
 
-// Gateway-owned top-level keys. This is the lab-gateway FS-store render path
+// Gateway-owned top-level keys. This is the labby-gateway FS-store render path
 // used by tests and any caller that persists a bare `GatewayConfig`. It strips
 // and rewrites ONLY the gateway-owned sections, preserving every other key
 // (including all non-gateway `LabConfig` sections) byte-for-byte.
@@ -290,10 +290,11 @@ pub(crate) fn update_upstream(
         };
     }
     if let Some(expose_skills) = patch.expose_skills {
-        cfg.upstream[index].expose_skills = match expose_skills {
-            Some(ref v) if v.is_empty() => None,
-            other => other,
-        };
+        // Skills keep a real tri-state: null = expose all, [] = expose none,
+        // values = allowlist. Unlike the legacy primitive fields, collapsing an
+        // empty list to None would invert an operator's explicit hide-all
+        // decision and is unsafe for agent instructions.
+        cfg.upstream[index].expose_skills = expose_skills;
     }
     if let Some(oauth) = patch.oauth {
         cfg.upstream[index].oauth = oauth;
@@ -435,6 +436,103 @@ fn tombstone_transport_matches_upstream(
         .is_none_or(|fingerprint| fingerprint == tombstone_fingerprint)
 }
 
+pub fn insert_loadout(
+    cfg: &mut GatewayConfig,
+    mut loadout: GatewayLoadoutConfig,
+) -> Result<GatewayLoadoutConfig, ToolError> {
+    normalize_loadout(&mut loadout)?;
+    if cfg
+        .loadouts
+        .iter()
+        .any(|existing| existing.name == loadout.name)
+    {
+        return Err(ToolError::Conflict {
+            message: format!("loadout `{}` already exists", loadout.name),
+            existing_id: loadout.name.clone(),
+        });
+    }
+    cfg.loadouts.push(loadout.clone());
+    validate_loadouts(cfg)?;
+    Ok(loadout)
+}
+
+pub fn update_loadout(
+    cfg: &mut GatewayConfig,
+    name: &str,
+    mut loadout: GatewayLoadoutConfig,
+) -> Result<GatewayLoadoutConfig, ToolError> {
+    let index = cfg
+        .loadouts
+        .iter()
+        .position(|existing| existing.name == name)
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!(
+                "loadout `{name}` not found; run `gateway.loadout.list` or `labby gateway loadout list` to discover valid names"
+            ),
+        })?;
+    normalize_loadout(&mut loadout)?;
+    if loadout.name != name
+        && cfg
+            .loadouts
+            .iter()
+            .any(|existing| existing.name == loadout.name)
+    {
+        return Err(ToolError::Conflict {
+            message: format!("loadout `{}` already exists", loadout.name),
+            existing_id: loadout.name.clone(),
+        });
+    }
+    cfg.loadouts[index] = loadout.clone();
+    if loadout.name != name {
+        for route in &mut cfg.protected_mcp_routes {
+            let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target else {
+                continue;
+            };
+            if target.loadout.as_deref() == Some(name) {
+                target.loadout = Some(loadout.name.clone());
+            }
+        }
+    }
+    validate_loadouts(cfg)?;
+    validate_protected_route_loadout_references(cfg)?;
+    Ok(loadout)
+}
+
+pub fn remove_loadout(
+    cfg: &mut GatewayConfig,
+    name: &str,
+) -> Result<GatewayLoadoutConfig, ToolError> {
+    let index = cfg
+        .loadouts
+        .iter()
+        .position(|existing| existing.name == name)
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!(
+                "loadout `{name}` not found; run `gateway.loadout.list` or `labby gateway loadout list` to discover valid names"
+            ),
+        })?;
+    let referenced_by = cfg
+        .protected_mcp_routes
+        .iter()
+        .filter_map(|route| {
+            let ProtectedMcpRouteTarget::GatewaySubset(target) = route.target.as_ref()?;
+            (target.loadout.as_deref() == Some(name)).then_some(route.name.clone())
+        })
+        .collect::<Vec<_>>();
+    if !referenced_by.is_empty() {
+        return Err(ToolError::Conflict {
+            message: format!(
+                "loadout `{name}` is still referenced by protected MCP route(s) {}; update or remove those routes first",
+                referenced_by.join(", ")
+            ),
+            existing_id: name.to_string(),
+        });
+    }
+    Ok(cfg.loadouts.remove(index))
+}
+
 pub fn insert_protected_mcp_route(
     cfg: &mut GatewayConfig,
     mut route: ProtectedMcpRouteConfig,
@@ -487,6 +585,7 @@ pub fn insert_protected_mcp_route(
         });
     }
     cfg.protected_mcp_routes.push(route.clone());
+    validate_protected_route_loadout_references(cfg)?;
     Ok(route)
 }
 
@@ -560,6 +659,7 @@ pub fn update_protected_mcp_route(
         });
     }
     cfg.protected_mcp_routes[index] = route.clone();
+    validate_protected_route_loadout_references(cfg)?;
     Ok(route)
 }
 
@@ -626,12 +726,122 @@ pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Resu
 pub(crate) fn validate_config(cfg: &GatewayConfig) -> Result<(), ToolError> {
     validate_code_mode(&cfg.code_mode)?;
     validate_upstreams(&cfg.upstream, &cfg.gateway)?;
-    validate_protected_mcp_routes(&cfg.protected_mcp_routes)
+    validate_loadouts(cfg)?;
+    validate_protected_mcp_routes(&cfg.protected_mcp_routes)?;
+    validate_protected_route_loadout_references(cfg)
 }
 
 pub(crate) fn normalize_config(cfg: &mut GatewayConfig) -> Result<(), ToolError> {
+    for loadout in &mut cfg.loadouts {
+        normalize_loadout(loadout)?;
+    }
     for route in &mut cfg.protected_mcp_routes {
         normalize_protected_mcp_route(route)?;
+    }
+    Ok(())
+}
+
+fn normalize_loadout(loadout: &mut GatewayLoadoutConfig) -> Result<(), ToolError> {
+    loadout.name = loadout.name.trim().to_string();
+    loadout.description = loadout
+        .description
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    loadout.upstreams = normalize_name_list(std::mem::take(&mut loadout.upstreams), "upstreams")?;
+    loadout.services = normalize_name_list(std::mem::take(&mut loadout.services), "services")?;
+    Ok(())
+}
+
+fn validate_loadouts(cfg: &GatewayConfig) -> Result<(), ToolError> {
+    let upstream_names = cfg
+        .upstream
+        .iter()
+        .map(|upstream| upstream.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut names = std::collections::HashSet::new();
+    for loadout in &cfg.loadouts {
+        if loadout.name.is_empty() {
+            return Err(ToolError::InvalidParam {
+                message: "loadout name must not be empty".to_string(),
+                param: "name".to_string(),
+            });
+        }
+        if !names.insert(loadout.name.as_str()) {
+            return Err(ToolError::InvalidParam {
+                message: format!("loadout `{}` appears more than once", loadout.name),
+                param: "name".to_string(),
+            });
+        }
+        if loadout.expose_skills && !loadout.expose_resources {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "loadout `{}` exposes Agent Skills but disables Resources; Skills-over-MCP skill files are read through MCP resources, so enable resources or disable skills",
+                    loadout.name
+                ),
+                param: "expose_resources".to_string(),
+            });
+        }
+        if !(loadout.expose_tools
+            || loadout.expose_resources
+            || loadout.expose_prompts
+            || loadout.expose_skills
+            || loadout.expose_code_mode)
+        {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "loadout `{}` exposes no MCP capability categories; enable at least one of tools, resources, prompts, skills, or Code Mode",
+                    loadout.name
+                ),
+                param: "loadout".to_string(),
+            });
+        }
+        for upstream in &loadout.upstreams {
+            if upstream.starts_with(IN_PROCESS_UPSTREAM_PREFIX) {
+                return Err(ToolError::InvalidParam {
+                    message: format!(
+                        "loadout `{}` upstream `{upstream}` uses reserved prefix `{IN_PROCESS_UPSTREAM_PREFIX}`; put built-in services in `services` instead",
+                        loadout.name
+                    ),
+                    param: "upstreams".to_string(),
+                });
+            }
+            if !upstream_names.contains(upstream.as_str()) {
+                return Err(ToolError::InvalidParam {
+                    message: format!(
+                        "loadout `{}` references unknown upstream `{upstream}`; add the upstream first or remove it from the loadout",
+                        loadout.name
+                    ),
+                    param: "upstreams".to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_protected_route_loadout_references(cfg: &GatewayConfig) -> Result<(), ToolError> {
+    let loadout_names = cfg
+        .loadouts
+        .iter()
+        .map(|loadout| loadout.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for route in &cfg.protected_mcp_routes {
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &route.target else {
+            continue;
+        };
+        let Some(loadout) = target.loadout.as_deref() else {
+            continue;
+        };
+        if !loadout_names.contains(loadout) {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "protected MCP route `{}` references unknown loadout `{loadout}`; create the loadout or update the route",
+                    route.name
+                ),
+                param: "target.loadout".to_string(),
+            });
+        }
     }
     Ok(())
 }
@@ -712,6 +922,11 @@ fn normalize_protected_mcp_route(route: &mut ProtectedMcpRouteConfig) -> Result<
     route.backend_mcp_path = default_backend_mcp_path();
     route.scopes = normalize_scopes(&route.scopes)?;
     if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+        target.loadout = target
+            .loadout
+            .take()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty());
         target.upstreams =
             normalize_name_list(std::mem::take(&mut target.upstreams), "target.upstreams")?;
         target.services =
@@ -745,10 +960,22 @@ fn validate_protected_mcp_route(route: &ProtectedMcpRouteConfig) -> Result<(), T
     }
 
     if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &route.target {
+        if target.loadout.is_some() {
+            if !target.upstreams.is_empty()
+                || !target.services.is_empty()
+                || target.expose_code_mode
+            {
+                return Err(ToolError::InvalidParam {
+                    message: "gateway_subset target with `loadout` cannot also set inline upstreams, services, or expose_code_mode; edit the loadout instead".to_string(),
+                    param: "target.loadout".to_string(),
+                });
+            }
+            return Ok(());
+        }
         if target.upstreams.is_empty() && target.services.is_empty() && !target.expose_code_mode {
             return Err(ToolError::InvalidParam {
                 message:
-                    "gateway_subset target must expose at least one upstream, service, or Code Mode"
+                    "gateway_subset target must set a loadout or expose at least one upstream, service, or Code Mode"
                         .to_string(),
                 param: "target".to_string(),
             });

@@ -282,7 +282,7 @@ impl StateStore for SqliteStateStore {
 // Verify that the `SqliteStateStore` adapter correctly rejects unknown,
 // replayed (already-consumed), and expired state tokens.  These paths were
 // previously un-asserted at the adapter layer; the underlying `SqliteStore`
-// primitive is tested in `lab-auth/src/sqlite.rs` but those tests exercise the
+// primitive is tested in `labby-auth/src/sqlite.rs` but those tests exercise the
 // raw SQL, not the rmcp `StateStore` adapter behaviour.
 
 #[cfg(test)]

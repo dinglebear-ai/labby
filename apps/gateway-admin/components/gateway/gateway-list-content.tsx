@@ -7,9 +7,8 @@ import {
   ArrowLeft,
   Cable,
   Download,
-  LayoutList,
   Plus,
-  Rows3,
+  RefreshCw,
   Search,
   SlidersHorizontal,
   TriangleAlert,
@@ -56,6 +55,7 @@ import { CodeModeHeaderToggle } from './code-mode-toggle'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
+const BULK_RELOAD_CONCURRENCY = 4
 const GatewayFormDialog = dynamic(
   () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
   { ssr: false },
@@ -99,6 +99,8 @@ interface GatewaySummary {
   exposedPrompts: number
   discoveredResources: number
   exposedResources: number
+  discoveredSkills: number
+  exposedSkills: number
   totalServers: number
   serverStates: Array<{ id: string; name: string; color: string; state: string }>
 }
@@ -123,7 +125,6 @@ export interface GatewayListViewProps {
   onPrimaryLensChange: (lens: GatewayPrimaryLens | 'tools') => void
   onBackToGateways: () => void
   onMobileSheetOpenChange: (open: boolean) => void
-  onDensityChange: (density: 'comfortable' | 'condensed') => void
   onSearchChange: (value: string) => void
   onGatewayFilterToggle: (group: 'status' | 'source' | 'transport', value: string) => void
   onToolFilterToggle: (group: 'gatewayIds' | 'source' | 'transport', value: string) => void
@@ -136,6 +137,8 @@ export interface GatewayListViewProps {
   onEdit: (gateway: Gateway) => void
   onTest: (gateway: Gateway) => void
   onReload: (gateway: Gateway) => void
+  onReloadVisible: (gateways: Gateway[]) => void
+  isReloadingVisible: boolean
   cleanupSummaryByGatewayId?: Record<
     string,
     { preview?: { label: string; occurredAt: string }; cleanup?: { label: string; occurredAt: string } }
@@ -156,7 +159,7 @@ export function GatewayListContent() {
     buildDefaultGatewayFilters(DEFAULT_GATEWAY_LENS),
   )
   const [toolFilters, setToolFilters] = useState<ToolFilterState>(DEFAULT_TOOL_FILTERS)
-  const [density, setDensity] = useState<'comfortable' | 'condensed'>(DEFAULT_DENSITY)
+  const density: 'comfortable' | 'condensed' = DEFAULT_DENSITY
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
   const deferredGatewayFilters = useDeferredValue(lastGatewayFilters)
   const deferredToolFilters = useDeferredValue(toolFilters)
@@ -166,6 +169,7 @@ export function GatewayListContent() {
   const [discoveredConfigs, setDiscoveredConfigs] = useState<DiscoveredMcpServer[] | null>(null)
   const [isDiscoveringConfigs, setIsDiscoveringConfigs] = useState(false)
   const [isImportingConfigs, setIsImportingConfigs] = useState(false)
+  const [isReloadingVisible, setIsReloadingVisible] = useState(false)
   const [testResult, setTestResult] = useState<{
     gateway: Gateway
     result: Awaited<ReturnType<typeof testGateway>>
@@ -217,6 +221,8 @@ export function GatewayListContent() {
       exposedPrompts: sum((gateway) => gateway.status.exposed_prompt_count),
       discoveredResources: sum((gateway) => gateway.status.discovered_resource_count),
       exposedResources: sum((gateway) => gateway.status.exposed_resource_count),
+      discoveredSkills: sum((gateway) => gateway.status.discovered_skill_count ?? 0),
+      exposedSkills: sum((gateway) => gateway.status.exposed_skill_count ?? 0),
       serverStates,
     }
   }, [items])
@@ -418,6 +424,32 @@ export function GatewayListContent() {
     }
   }
 
+  const handleReloadVisible = async (gatewaysToReload: Gateway[]) => {
+    if (isReloadingVisible || gatewaysToReload.length === 0) return
+    setIsReloadingVisible(true)
+    let reloaded = 0
+    let failed = 0
+    try {
+      for (let index = 0; index < gatewaysToReload.length; index += BULK_RELOAD_CONCURRENCY) {
+        const chunk = gatewaysToReload.slice(index, index + BULK_RELOAD_CONCURRENCY)
+        const results = await Promise.allSettled(chunk.map(async (gateway) => {
+          const result = await reloadGateway(gateway.id)
+          if (!result.success) throw new Error(result.message)
+          return result
+        }))
+        reloaded += results.filter((result) => result.status === 'fulfilled').length
+        failed += results.filter((result) => result.status === 'rejected').length
+      }
+      if (failed === 0) {
+        toast.success(`Reloaded ${reloaded} visible server${reloaded === 1 ? '' : 's'}.`)
+      } else {
+        toast.warning(`Reloaded ${reloaded} visible servers; ${failed} failed.`)
+      }
+    } finally {
+      setIsReloadingVisible(false)
+    }
+  }
+
   const handleDelete = async (gateway: Gateway) => {
     try {
       if (gateway.source === 'in_process') {
@@ -558,7 +590,6 @@ export function GatewayListContent() {
         onPrimaryLensChange={handlePrimaryLens}
         onBackToGateways={handleBackToGateways}
         onMobileSheetOpenChange={setMobileSheetOpen}
-        onDensityChange={setDensity}
         onSearchChange={handleSearchChange}
         onGatewayFilterToggle={handleGatewayFilterToggle}
         onToolFilterToggle={handleToolFilterToggle}
@@ -571,6 +602,8 @@ export function GatewayListContent() {
         onEdit={handleEdit}
         onTest={handleTest}
         onReload={handleReload}
+        onReloadVisible={(visible) => void handleReloadVisible(visible)}
+        isReloadingVisible={isReloadingVisible}
         onCleanup={handleCleanup}
         onClearCleanupHistory={handleClearCleanupHistory}
         onToggleEnabled={handleToggleEnabled}
@@ -612,7 +645,6 @@ export function GatewayListView({
   onPrimaryLensChange,
   onBackToGateways,
   onMobileSheetOpenChange,
-  onDensityChange,
   onSearchChange,
   onGatewayFilterToggle,
   onToolFilterToggle,
@@ -626,6 +658,8 @@ export function GatewayListView({
   onEdit,
   onTest,
   onReload,
+  onReloadVisible,
+  isReloadingVisible,
   onCleanup,
   onClearCleanupHistory,
   onToggleEnabled,
@@ -637,6 +671,7 @@ export function GatewayListView({
         breadcrumbs={[{ label: 'Gateway' }]}
         actions={
           <div className="flex items-center gap-2">
+            {!showToolsView ? <CodeModeHeaderToggle /> : null}
             {showToolsView ? (
               <Button
                 variant="outline"
@@ -652,58 +687,18 @@ export function GatewayListView({
               </Button>
             ) : null}
             {!showToolsView ? (
-              <>
-                <CodeModeHeaderToggle />
-                <McpConfigHeaderActions
-                  discoveredConfigs={discoveredConfigs}
-                  isDiscovering={isDiscoveringConfigs}
-                  isImporting={isImportingConfigs}
-                  onDiscover={onDiscoverConfigs}
-                  onImport={onImportConfigs}
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => onPrimaryLensChange('tools')}
-                  className={cn(
-                    gatewayActionTone(),
-                    'size-9 lg:hidden hover:bg-aurora-hover-bg hover:text-aurora-text-primary',
-                  )}
-                  aria-label="Switch to tools view"
-                >
-                  <SlidersHorizontal className="size-3.5" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => onDensityChange('comfortable')}
-                  className={cn(
-                    gatewayActionTone(),
-                    'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary lg:inline-flex',
-                    density === 'comfortable' && 'border-aurora-accent-primary/45 text-aurora-accent-strong',
-                  )}
-                  aria-label="Comfortable density"
-                  aria-pressed={density === 'comfortable'}
-                  title="Comfortable density"
-                >
-                  <LayoutList className="size-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => onDensityChange('condensed')}
-                  className={cn(
-                    gatewayActionTone(),
-                    'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary lg:inline-flex',
-                    density === 'condensed' && 'border-aurora-accent-primary/45 text-aurora-accent-strong',
-                  )}
-                  aria-label="Condensed density"
-                  aria-pressed={density === 'condensed'}
-                  title="Condensed density"
-                >
-                  <Rows3 className="size-4" />
-                </Button>
-              </>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => onPrimaryLensChange('tools')}
+                className={cn(
+                  gatewayActionTone(),
+                  'size-9 lg:hidden hover:bg-aurora-hover-bg hover:text-aurora-text-primary',
+                )}
+                aria-label="Switch to tools view"
+              >
+                <SlidersHorizontal className="size-3.5" />
+              </Button>
             ) : null}
             <Button
               onClick={onCreate}
@@ -737,10 +732,6 @@ export function GatewayListView({
           AURORA_PAGE_SHELL,
         )}
       >
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.32] [background-image:linear-gradient(rgba(41,182,246,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(41,182,246,0.035)_1px,transparent_1px)] [background-size:28px_28px]"
-          aria-hidden="true"
-        />
         <div className={cn(AURORA_PAGE_FRAME, 'relative z-10 gap-4')}>
           <section className={cn(AURORA_MEDIUM_PANEL, 'p-1.5 lg:hidden')}>
             <div className="grid grid-cols-4 gap-1">
@@ -790,15 +781,59 @@ export function GatewayListView({
               exposedPrompts={summary.exposedPrompts}
               discoveredResources={summary.discoveredResources}
               exposedResources={summary.exposedResources}
+              discoveredSkills={summary.discoveredSkills}
+              exposedSkills={summary.exposedSkills}
               serverStates={summary.serverStates}
               activeLens={gatewayFilters.primaryLens}
               toolsViewActive={showToolsView}
               onLensChange={onPrimaryLensChange}
+              actions={
+                <>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    title="Reload visible servers"
+                    aria-label="Reload visible servers"
+                    disabled={isReloadingVisible || filteredGateways.length === 0}
+                    onClick={() => onReloadVisible(filteredGateways)}
+                  >
+                    <RefreshCw className={cn('size-3.5', isReloadingVisible && 'animate-spin')} />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    title="Scan MCP configs"
+                    aria-label="Scan MCP configs"
+                    disabled={isDiscoveringConfigs || isImportingConfigs}
+                    onClick={onDiscoverConfigs}
+                  >
+                    <Search className={cn('size-3.5', isDiscoveringConfigs && 'animate-pulse')} />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    title="Download gateway diagnostics snapshot"
+                    aria-label="Download gateway diagnostics snapshot"
+                    onClick={() => {
+                      const blob = new Blob([JSON.stringify(filteredGateways, null, 2)], { type: 'application/json' })
+                      const href = URL.createObjectURL(blob)
+                      const anchor = document.createElement('a')
+                      anchor.href = href
+                      anchor.download = 'labby-gateway-snapshot.json'
+                      anchor.click()
+                      URL.revokeObjectURL(href)
+                    }}
+                  >
+                    <Download className="size-3.5" />
+                  </Button>
+                </>
+              }
             />
           </div>
 
           <div className="grid gap-4">
-            <GatewayFilters
+            <div data-gateway-filters="all-viewports">
+              <GatewayFilters
               mode={showToolsView ? 'tools' : 'gateways'}
               search={activeSearch}
               gatewayFilters={{
@@ -815,7 +850,8 @@ export function GatewayListView({
               onToolFilterToggle={onToolFilterToggle}
               onExposureChange={onExposureChange}
               onClearFilters={onClearFilters}
-            />
+              />
+            </div>
 
             {/* min-w-0: without it this grid item's min-content contribution is
                 the table's 1010px min-width, which inflates the track past the
@@ -885,50 +921,6 @@ export function GatewayListView({
           </div>
         </div>
       </div>
-    </>
-  )
-}
-
-function McpConfigHeaderActions({
-  discoveredConfigs,
-  isDiscovering,
-  isImporting,
-  onDiscover,
-  onImport,
-}: {
-  discoveredConfigs: DiscoveredMcpServer[] | null
-  isDiscovering: boolean
-  isImporting: boolean
-  onDiscover: () => void
-  onImport: (names?: string[]) => void
-}) {
-  const importable = discoveredConfigs?.filter((server) => !server.already_configured && !server.tombstoned) ?? []
-  const disabled = isDiscovering || isImporting
-
-  return (
-    <>
-      <Button
-        variant="outline"
-        size="icon"
-        onClick={onDiscover}
-        disabled={disabled}
-        className={cn(gatewayActionTone(), 'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex')}
-        aria-label="Scan MCP configs"
-        title="Scan MCP configs"
-      >
-        <Search className={cn('size-4', isDiscovering && 'animate-pulse')} />
-      </Button>
-      <Button
-        variant="outline"
-        size="icon"
-        onClick={() => onImport()}
-        disabled={disabled || importable.length === 0}
-        className={cn(gatewayActionTone('accent'), 'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex')}
-        aria-label="Import all MCP configs"
-        title="Import all MCP configs"
-      >
-        <Download className={cn('size-4', isImporting && 'animate-pulse')} />
-      </Button>
     </>
   )
 }

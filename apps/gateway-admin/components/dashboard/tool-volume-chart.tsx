@@ -1,6 +1,6 @@
 'use client'
 
-import { Area, AreaChart, CartesianGrid, Line, XAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts'
 import {
   ChartContainer,
   ChartTooltip,
@@ -9,8 +9,14 @@ import {
 } from '@/components/ui/chart'
 import type { MetricsBucket, MetricsWindow } from '@/lib/types/metrics'
 
+const WINDOW_MS: Record<MetricsWindow, number> = {
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+}
+
 const CONFIG: ChartConfig = {
-  calls: { label: 'Tool calls', color: 'var(--aurora-accent-primary)' },
+  succeeded: { label: 'Succeeded', color: 'var(--aurora-accent-primary)' },
   failed: { label: 'Failed', color: 'var(--aurora-error)' },
 }
 
@@ -25,25 +31,35 @@ function bucketLabel(ts: number, window: MetricsWindow): string {
 export function ToolVolumeChart({
   data,
   window,
+  onSelectBucket,
 }: {
   data: MetricsBucket[]
   window: MetricsWindow
+  onSelectBucket?: (sinceMs: number, untilMs: number) => void
 }) {
   const rows = data.map((bucket) => ({
+    ts: bucket.ts,
     label: bucketLabel(bucket.ts, window),
-    calls: bucket.calls,
+    succeeded: Math.max(0, bucket.calls - bucket.failed),
     failed: bucket.failed,
   }))
+  const selectRow = (entry: unknown) => {
+    if (!onSelectBucket) return
+    const event = entry as { ts?: unknown; payload?: { ts?: unknown } }
+    const ts = typeof event.ts === 'number' ? event.ts : event.payload?.ts
+    if (typeof ts !== 'number') return
+    const index = rows.findIndex((row) => row.ts === ts)
+    if (index < 0) return
+    const width = rows.length > 0 ? WINDOW_MS[window] / rows.length : WINDOW_MS[window]
+    const nextTs = rows[index + 1]?.ts ?? ts + width
+    // Backend until bounds are inclusive. Stop one persisted second before the
+    // next bucket so a boundary call belongs to exactly one drill-down slice.
+    onSelectBucket(ts, Math.max(ts, nextTs - 1000))
+  }
 
   return (
     <ChartContainer config={CONFIG} className="aspect-auto h-[200px] w-full">
-      <AreaChart data={rows} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
-        <defs>
-          <linearGradient id="fill-calls" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--color-calls)" stopOpacity={0.35} />
-            <stop offset="100%" stopColor="var(--color-calls)" stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
+      <BarChart data={rows} margin={{ left: 4, right: 4, top: 8, bottom: 0 }} barCategoryGap="8%">
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
         <XAxis
           dataKey="label"
@@ -53,23 +69,25 @@ export function ToolVolumeChart({
           minTickGap={24}
         />
         <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-        <Area
-          dataKey="calls"
-          type="natural"
-          stroke="var(--color-calls)"
-          strokeWidth={2}
-          fill="url(#fill-calls)"
+        <Bar
+          dataKey="succeeded"
+          stackId="calls"
+          fill="var(--color-succeeded)"
+          radius={[2, 2, 0, 0]}
           isAnimationActive={false}
+          onClick={selectRow}
+          cursor={onSelectBucket ? 'pointer' : undefined}
         />
-        <Line
+        <Bar
           dataKey="failed"
-          type="natural"
-          stroke="var(--color-failed)"
-          strokeWidth={1.5}
-          dot={false}
+          stackId="calls"
+          fill="var(--color-failed)"
+          radius={[2, 2, 0, 0]}
           isAnimationActive={false}
+          onClick={selectRow}
+          cursor={onSelectBucket ? 'pointer' : undefined}
         />
-      </AreaChart>
+      </BarChart>
     </ChartContainer>
   )
 }

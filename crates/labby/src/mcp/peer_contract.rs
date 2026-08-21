@@ -29,7 +29,7 @@ use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 
 // ── FR-2a (issue #210, lab-41e7m.5): single audience-free authorization gates ──
@@ -48,6 +48,16 @@ use crate::mcp::catalog::{
 //   `self.peer_contract()` — constructing a `PeerContract` clones a deep
 //   `McpRouteScope` on every builtin dispatch.
 
+/// Route-local capability gate shared by live and stored MCP catalogs.
+///
+/// A loadout can allow the `skills` service name while independently turning
+/// off the Skills capability. Treat that capability flag as part of service
+/// visibility so the fixed compatibility tool cannot bypass native
+/// `skills/list|get` and `resources/read` gating.
+pub(crate) fn route_allows_mcp_service(route_scope: &McpRouteScope, service: &str) -> bool {
+    route_scope.allows_service(service) && (service != "skills" || route_scope.exposes_skills())
+}
+
 /// Whether `service` is exposed on the MCP surface for this route scope.
 #[cfg(feature = "gateway")]
 pub(crate) async fn mcp_service_visible(
@@ -55,7 +65,7 @@ pub(crate) async fn mcp_service_visible(
     gateway_manager: Option<&GatewayManager>,
     service: &str,
 ) -> bool {
-    if !route_scope.allows_service(service) {
+    if !route_allows_mcp_service(route_scope, service) {
         return false;
     }
     match gateway_manager {
@@ -81,6 +91,17 @@ pub(crate) async fn mcp_action_allowed(
     }
 }
 
+/// Current gateway-wide visibility for Labby-owned MCP Apps other than Code Mode.
+#[cfg(feature = "gateway")]
+pub(crate) async fn mcp_apps_config(
+    gateway_manager: Option<&GatewayManager>,
+) -> labby_runtime::gateway_config::McpAppsConfig {
+    match gateway_manager {
+        Some(manager) => manager.mcp_apps_config().await,
+        None => labby_runtime::gateway_config::McpAppsConfig::default(),
+    }
+}
+
 /// Whether the current route can safely advertise and execute Add Server.
 #[cfg(feature = "gateway")]
 pub(crate) async fn add_server_app_available(
@@ -88,6 +109,9 @@ pub(crate) async fn add_server_app_available(
     gateway_manager: Option<&GatewayManager>,
     registry: &ToolRegistry,
 ) -> bool {
+    if !mcp_apps_config(gateway_manager).await.add_server {
+        return false;
+    }
     admin_gateway_app_available(
         route_scope,
         gateway_manager,
@@ -104,6 +128,9 @@ pub(crate) async fn gateway_status_app_available(
     gateway_manager: Option<&GatewayManager>,
     registry: &ToolRegistry,
 ) -> bool {
+    if !mcp_apps_config(gateway_manager).await.gateway_status {
+        return false;
+    }
     admin_gateway_app_available(route_scope, gateway_manager, registry, &["gateway.list"]).await
 }
 
@@ -159,7 +186,8 @@ pub(crate) struct PeerContract {
     pub(crate) gateway_manager: Option<Arc<GatewayManager>>,
     pub(crate) route_scope: McpRouteScope,
     /// Whether the optional `codemode_ui` MCP App surface is advertised. The
-    /// text-only `codemode` and the `mcp_app` control tool never depend on it.
+    /// text-only `codemode` executor and always-on `mcp_app` manager never
+    /// depend on the inspector switch.
     pub(crate) code_mode_app_state: CodeModeAppState,
     pub(crate) audience: PeerCatalogAudience,
 }
@@ -195,6 +223,71 @@ impl PeerContract {
         }
     }
 
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn mcp_apps_config(&self) -> labby_runtime::gateway_config::McpAppsConfig {
+        mcp_apps_config(self.gateway_manager.as_deref()).await
+    }
+
+    /// Resolve the finite non-OAuth upstream set named by a protected route
+    /// before building that route's raw tool contract.
+    ///
+    /// Root peers intentionally remain cache-only: their unbounded upstream set
+    /// can contain slow or unhealthy servers, and Code Mode must stay available
+    /// while those servers are cold. A protected subset is different: its
+    /// allowlist is the complete advertised product surface, so returning an
+    /// empty first catalog would make the route unusable until some unrelated
+    /// operation happened to warm the same upstream.
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn ensure_protected_subset_tools(&self) {
+        let Some(allowed_upstreams) = self.route_scope.allowed_upstreams() else {
+            return;
+        };
+        let Some(manager) = &self.gateway_manager else {
+            return;
+        };
+        let Some(pool) = manager.current_pool().await else {
+            return;
+        };
+        let config = manager.current_config().await;
+        let upstreams = config
+            .upstream
+            .into_iter()
+            .filter(|upstream| {
+                upstream.enabled
+                    && upstream.oauth.is_none()
+                    && allowed_upstreams.contains(&upstream.name)
+            })
+            .collect::<Vec<_>>();
+        let concurrency = crate::dispatch::upstream::pool::upstream_discovery_concurrency(
+            config.gateway.upstream_discovery_concurrency,
+        );
+        let route_scope = self.route_scope.label();
+        use futures::StreamExt as _;
+        let mut discoveries = futures::stream::iter(upstreams)
+            .map(|upstream| {
+                let pool = Arc::clone(&pool);
+                async move {
+                    let name = upstream.name.clone();
+                    let result = pool.ensure_tools_for_upstream(&upstream, None, None).await;
+                    (name, result)
+                }
+            })
+            .buffer_unordered(concurrency);
+        while let Some((upstream, result)) = discoveries.next().await {
+            if let Err(error) = result {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_tools",
+                    route_scope,
+                    upstream,
+                    error = %error,
+                    "protected route upstream discovery failed"
+                );
+            }
+        }
+    }
+
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
         #[cfg(feature = "gateway")]
         {
@@ -202,7 +295,7 @@ impl PeerContract {
         }
         #[cfg(not(feature = "gateway"))]
         {
-            self.route_scope.allows_service(service)
+            route_allows_mcp_service(&self.route_scope, service)
         }
     }
 
@@ -272,9 +365,23 @@ impl PeerContract {
     pub(crate) async fn visible_tool_descriptors(&self) -> Vec<Tool> {
         let visibility = self.code_mode_visibility().await;
         let hide_raw_tools = visibility.hides_raw_tools();
+        #[cfg(feature = "gateway")]
+        if !hide_raw_tools {
+            self.ensure_protected_subset_tools().await;
+        }
         let mut descriptors = Vec::new();
         let mut builtin_names = HashSet::new();
         let mut advertised_names = HashSet::new();
+        let server_logs_app_visible = {
+            #[cfg(feature = "gateway")]
+            {
+                self.audience.admin_apps_visible && self.mcp_apps_config().await.server_logs
+            }
+            #[cfg(not(feature = "gateway"))]
+            {
+                self.audience.admin_apps_visible
+            }
+        };
 
         for service in self.registry.services() {
             if self.service_visible_on_mcp(service.name).await {
@@ -286,7 +393,7 @@ impl PeerContract {
                 descriptors.push(
                     self.registry
                         .permanent_tools()
-                        .builtin_service_tool(service, self.audience.admin_apps_visible),
+                        .builtin_service_tool(service, server_logs_app_visible),
                 );
             }
         }
@@ -324,13 +431,14 @@ impl PeerContract {
                     advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
                     descriptors.push(tool);
                 }
-
-                // Always advertised alongside codemode: the control tool is how a
-                // disabled app surface gets restored.
-                let tool = self.registry.permanent_tools().mcp_app_tool();
-                advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
-                descriptors.push(tool);
             }
+        }
+
+        #[cfg(feature = "gateway")]
+        if self.route_scope.is_root() && self.audience.code_mode_execute_allowed {
+            let tool = self.registry.permanent_tools().mcp_app_tool();
+            advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
+            descriptors.push(tool);
         }
 
         #[cfg(feature = "gateway")]
@@ -344,6 +452,17 @@ impl PeerContract {
         if self.audience.admin_apps_visible && self.gateway_status_app_available().await {
             let tool = self.registry.permanent_tools().gateway_status_tool();
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
+            descriptors.push(tool);
+        }
+
+        #[cfg(feature = "gateway")]
+        if self.audience.admin_apps_visible
+            && self.mcp_apps_config().await.settings
+            && self.route_scope.allows_service("setup")
+            && self.service_visible_on_mcp("setup").await
+        {
+            let tool = self.registry.permanent_tools().settings_tool();
+            advertised_names.insert(SETTINGS_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
 

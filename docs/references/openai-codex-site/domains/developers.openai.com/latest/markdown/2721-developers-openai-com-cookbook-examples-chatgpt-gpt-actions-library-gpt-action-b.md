@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_bigquery [Redirecting from `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_bigquery.ipynb/` to `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_bigquery`](/cookbook/examples/chatgpt/gpt_actions_library/gpt_action_bigquery)

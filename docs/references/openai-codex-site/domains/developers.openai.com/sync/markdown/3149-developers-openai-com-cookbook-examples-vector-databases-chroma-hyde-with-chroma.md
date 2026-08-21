@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/vector\_databases/chroma/hyde-with-chroma-and-openai [Redirecting from `/cookbook/examples/vector\_databases/chroma/hyde-with-chroma-and-openai.ipynb/` to `/cookbook/examples/vector\_databases/chroma/hyde-with-chroma-and-openai`](/cookbook/examples/vector_databases/chroma/hyde-with-chroma-and-openai)

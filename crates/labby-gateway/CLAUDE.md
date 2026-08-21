@@ -1,15 +1,25 @@
-# labby-gateway — Surface-Neutral Gateway Runtime
+# labby-gateway Instructions
 
-This crate owns Labby's reusable upstream MCP gateway runtime. It is not a CLI, HTTP API, or web application.
+`labby-gateway` is the surface-neutral upstream MCP gateway runtime. It owns upstream transports, bounded discovery, routing, relays, Code Mode host integration, capability health, annotations, OAuth-aware connection state, and gateway-level error semantics.
 
-## Ownership
+## Boundary Rules
 
-- `src/upstream/`: connection pool, transports, discovery, bounded listing, relay/callback routing, resource/prompt/tool proxying, health, tasks/skills
-- `src/gateway/`: gateway manager, config mutation, virtual servers, protected routes, OAuth lifecycle, Code Mode host integration, view models
-- `src/security/`: spawn and SSRF guards
-- `src/usage/`: gateway usage records/querying
-- `src/codemode_journal/`: Code Mode journal persistence helpers
+- Do not depend on `clap`, the product MCP server, the web UI, or product-specific HTTP handlers.
+- Keep shared gateway behavior here and adapt it from `crates/labby` surface code.
+- Upstream implementations live under `src/upstream/`; gateway orchestration lives under `src/gateway/`.
+- Read the nested `src/upstream/CLAUDE.md` and `src/gateway/CLAUDE.md` before editing those areas.
+- Never use unbounded rmcp `Peer::list_all_*` helpers. Preserve page/item/byte/deadline bounds and repeated-cursor protection.
+- Do not guess upstream tool/resource/prompt schemas. Discovery state is authoritative.
 
-Keep this crate surface-neutral. Do not add clap/axum product adapters or reach into `crates/labby` product registry builders.
+## Security
 
-Read the more specific `src/gateway/CLAUDE.md` or `src/upstream/CLAUDE.md` before changing those trees. Preserve bounded upstream enumeration and typed/recovery-aware errors.
+Stdio commands are trusted operator configuration but still pass through the spawn guard. Preserve SSRF, response-size, timeout, OAuth-subject, exposure-policy, admin/destructive metadata, and secret-redaction boundaries. Upstream error mapping must retain stable machine-readable kinds and recovery information.
+
+## Testing
+
+Use focused tests for the changed subsystem, then at minimum:
+
+```bash
+cargo test -p labby-gateway
+cargo clippy -p labby-gateway --all-features --all-targets -- -D warnings
+```

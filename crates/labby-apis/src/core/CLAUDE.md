@@ -1,6 +1,6 @@
 # core/ — Cross-cutting primitives
 
-This directory is the foundation every service module depends on. Changes here ripple across all service clients — be conservative and align with `docs/ARCH.md`, `docs/CONVENTIONS.md`, `docs/dev/OBSERVABILITY.md`, `docs/dev/ERRORS.md`, and `docs/SERIALIZATION.md` before editing.
+This directory is the foundation every service module depends on. Changes here ripple across all service clients — be conservative and align with `docs/ARCH.md`, `docs/CONVENTIONS.md`, `docs/dev/OBSERVABILITY.md`, `docs/dev/ERRORS.md`, and `docs/design/SERIALIZATION.md` before editing.
 
 ## Files
 
@@ -33,7 +33,7 @@ These strings appear verbatim in MCP and HTTP error surfaces. Adding a new kind 
 | `Decode(_)` | `"decode_error"` |
 | `Internal(_)` | `"internal_error"` |
 
-Product dispatchers in `crates/labby/src/dispatch/` layer additional kinds on top: `unknown_action`, `unknown_subaction`, `missing_param`, `invalid_param`, `unknown_instance`. See `docs/dev/ERRORS.md` for the canonical vocabulary and envelope rules.
+Dispatchers in `crates/labby/src/dispatch/` layer additional kinds on top: `unknown_action`, `unknown_subaction`, `missing_param`, `invalid_param`, `unknown_instance`. See `docs/dev/ERRORS.md` for the canonical vocabulary and envelope rules.
 
 ## Invariants
 
