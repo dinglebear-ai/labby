@@ -76,6 +76,12 @@ Inside the sandbox:
   inside the same sandbox runtime.
 - `await codemode.github.list_pull_requests(params)` calls the generated helper.
 - `await callTool("github::list_pull_requests", params)` calls the raw bridge.
+- `await codemode.readResource("lab://upstream/<name>/<uri>")` reads an
+  upstream MCP resource and returns its normal `ReadResourceResult` object.
+
+Resource reads use the same route and caller scoping as Code Mode tool calls.
+Native `ui://` widget resources are also supported when the owning upstream is
+visible to the current run.
 
 ### Local State And Git Providers
 
@@ -483,6 +489,7 @@ their JSON MCP representation.
 
 Defaults:
 
+- `max_source_bytes = 131072`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
 
@@ -724,7 +731,13 @@ run, so isolation holds by construction.
   overall execution deadline. Only expiry of the full dedicated grace is reported
   as a runner settlement timeout; an earlier outer deadline remains an ordinary
   Code Mode timeout. Very short executions that cannot fit the reserve keep their
-  original tool deadline.
+  original tool deadline. Reserve activation is logged once per execution at
+  `DEBUG` with `action = "codemode.result_ack.reserve"`, `event = "armed"`, and
+  the monotonic `result_ack_reserve_use_count`. A genuine full-grace watchdog
+  expiry is logged at `WARN` with `action = "codemode.settlement"`,
+  `event = "watchdog_expired"`, and `settlement_watchdog_expiry_count`. These
+  process-wide counters remain local observability data and are not returned to
+  Code Mode callers.
 - **Configuration / kill switch** (environment, read at startup):
   - `LABBY_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
     `16`). **`LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back
@@ -733,6 +746,61 @@ run, so isolation holds by construction.
     (default `100`).
   - `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
     runners (default `8`).
+
+### Microsandbox runner isolation (opt in)
+
+Linux hosts with KVM may place each pooled runner process inside a Microsandbox
+microVM while retaining the same Javy/QuickJS engine and JSON-lines broker
+protocol:
+
+```bash
+LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox
+LABBY_CODE_MODE_MICROSANDBOX_EXE=/absolute/path/to/msb
+LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
+```
+
+All three variables are required to opt in. The image must be an immutable
+`name@sha256:<64 hex>` OCI digest reference and must already be cached; URLs,
+userinfo, queries, and tag-only references are rejected. The runner uses
+`--pull never` and never performs an implicit registry fetch.
+Labby creates one restricted microVM per runner process with one CPU, 256 MiB
+memory and no network. A process-wide admission gate defaults to four concurrent
+guests and is capped at 16, independently of the generic process-pool limits.
+Its lifecycle is tied to the pooled runner rather than a
+short VM idle timer, so a parked warm runner cannot expire between ordinary
+requests. A 24-hour hard lifetime bounds orphaned guests after ungraceful host
+death; a live pool recycles its runner before reaching that backstop.
+The validated Labby runner executable is the only host file mounted,
+read-only at `/opt/labby/labby`. The parent attaches with `msb exec --stream`,
+which preserves the existing byte-faithful stdio protocol. Dropping or evicting
+the runner attempts a bounded force-removal; failure is logged and triggers a
+separately bounded best-effort fallback.
+Each guest carries the `labby.owner=codemode` label. Startup removes stale
+labeled guests before admitting work, and graceful service shutdown awaits pool
+drainage. An unconfirmed cleanup opens a fail-closed creation circuit. Before a
+later creation is refused, Labby rechecks every failed cleanup for that `msb`
+executable against the live labeled guest inventory. Proven-absent guests clear
+the ledger and repair active-runner accounting; still-live guests get a bounded
+force-removal retry. If inventory or removal cannot be proven, creation remains
+fail closed. This prevents transient cleanup failures from poisoning the process
+for the rest of its lifetime without weakening the cleanup boundary.
+
+This changes only the execution boundary. Tool discovery, authorization,
+exposure filters, OAuth subjects, secrets, upstream dispatch, result caps, and
+telemetry remain in the Labby host process. No gateway credential is injected
+into the guest. `process` remains the default backend and the immediate rollback
+value for `LABBY_CODE_MODE_RUNNER_BACKEND`.
+
+Before enabling the backend, verify `msb doctor`, read/write `/dev/kvm` access,
+the pinned cached image, and dynamic-library compatibility between the host
+runner binary and the guest image. Host-service install/restart performs an
+additional pre-stop image preflight: legacy mutable aliases are resolved from
+the service user's existing cache, registered under the canonical immutable OCI
+reference, persisted, and re-verified before systemd is allowed to restart the
+service. A hardened Incus deployment must explicitly pass `/dev/kvm` into the
+guest and install `msb`/`libkrunfw`; Labby does not weaken the container or
+install runtime dependencies at request time.
 
   The conservative default (`size = 2`) keeps idle memory bounded while absorbing
   typical `codemode` bursts. The security invariants (`env_clear`,
@@ -744,7 +812,11 @@ engine**, with no Boa fallback and no `code_mode_wasm` feature. `codemode` runs
 in the Javy/QuickJS child runner over stdio. The Javy toolchain is pulled in by
 the `gateway` feature.
 
-The runner starts with an empty environment in a temporary directory. It does not
+The direct-process runner starts with an empty environment in a temporary
+directory. With the Microsandbox backend, `env_clear()` applies to the host
+`msb` transport; no Labby host environment or gateway credentials are forwarded,
+while the guest may retain image/runtime defaults. The Javy runner additionally
+executes inside the no-network guest. It does not
 provide Node, Deno, Bun, `fetch`, `connect`, `XMLHttpRequest`, `require`, or host
 module `import()` access. `callTool` is the only host bridge exposed to user code.
 

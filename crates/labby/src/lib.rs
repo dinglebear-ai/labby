@@ -54,6 +54,8 @@ pub mod process;
 pub mod proxy;
 #[allow(unreachable_pub)]
 pub mod registry;
+#[cfg(feature = "skills")]
+pub(crate) mod skills;
 #[cfg(test)]
 pub mod test_support;
 #[cfg(unix)]

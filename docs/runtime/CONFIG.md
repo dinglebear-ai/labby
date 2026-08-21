@@ -134,5 +134,5 @@ host or use it as a substitute for reverse-proxy authentication.
 Current Labby does not accept MCP Registry browser settings, ACP providers or
 sessions, Marketplace sources, Fleet/node roles, Deploy-product policies, or
 Stash workspace configuration. Historical schemas are preserved under
-[../references/retired-labby](../references/retired-labby/) and must not be
+[../archive/retired-labby](../archive/retired-labby/) and must not be
 reintroduced as compatibility aliases.

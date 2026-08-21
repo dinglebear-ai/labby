@@ -1,8 +1,7 @@
 //! `ServiceStatus` — uniform health-check result shape.
 //!
 //! Returned by [`crate::core::traits::ServiceClient::health`]. Consumed by
-//! `labby health`, `labby doctor`, the TUI, and the `system.status` MCP action
-//! on every service.
+//! shared health and doctor consumers that need a surface-neutral probe result.
 //!
 //! Rules:
 //! - `reachable = false` ⇒ `auth_ok = false` and `version = None`

@@ -11,7 +11,10 @@
 
 use axum::http::request::Parts;
 use labby_auth::auth_context::AuthContext;
-use labby_runtime::caller_auth::{CALLER_AUTH_META_KEY, PropagatedCallerAuth};
+use labby_runtime::caller_auth::{
+    CALLER_AUTH_META_KEY, CALLER_UPSTREAM_SCOPE_META_KEY, PropagatedCallerAuth,
+    PropagatedCallerUpstreamScope,
+};
 use rmcp::RoleServer;
 use rmcp::service::RequestContext;
 use sha2::{Digest, Sha256};
@@ -114,6 +117,22 @@ pub(crate) fn forwardable_client_capabilities(
     )
 }
 
+/// Whether an upstream may be opened on a dedicated capability-relay
+/// connection.
+///
+/// Most stdio servers are safe to spawn once per downstream capability set.
+/// Singleton servers that own a fixed listener or other process-global state
+/// can opt into the pooled connection with `MCP_UPSTREAM_RELAY_MODE=pooled`.
+/// The operator is then responsible for ensuring the pooled upstream can serve
+/// clients whose capabilities are not mirrored into its handshake.
+#[cfg(feature = "gateway")]
+pub(crate) fn upstream_uses_capability_relay(config: &crate::config::UpstreamConfig) -> bool {
+    !config
+        .env
+        .get("MCP_UPSTREAM_RELAY_MODE")
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("pooled"))
+}
+
 pub(crate) fn subject_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {
     auth_context_from_extensions(extensions).map(|auth| auth.sub.as_str())
 }
@@ -170,7 +189,7 @@ pub(crate) enum AbsentAuth {
     ///
     /// This is the *fallback* for that transport, not its normal path: the
     /// gateway propagates the real caller's authorization in `_meta`, and
-    /// [`AbsentAuth::Propagated`] carries it. Reaching `Untrusted` means the
+    /// [`CallerAuthorization::Propagated`] carries it. Reaching `Untrusted` means the
     /// propagation was missing, so the request fails closed.
     Untrusted,
 }
@@ -178,7 +197,7 @@ pub(crate) enum AbsentAuth {
 /// How a request's authorization was established, once transport is accounted
 /// for.
 ///
-/// Built by [`LabMcpServer::caller_authorization`] so every gate sees the same
+/// Built by [`resolve_caller_authorization`] so every gate sees the same
 /// resolution rather than each re-deriving it.
 #[derive(Debug, Clone)]
 pub(crate) enum CallerAuthorization<'a> {
@@ -194,6 +213,26 @@ pub(crate) enum CallerAuthorization<'a> {
 }
 
 impl CallerAuthorization<'_> {
+    /// Whether this caller satisfies a read-scoped action.
+    #[must_use]
+    pub(crate) fn can_read(&self) -> bool {
+        match self {
+            Self::Direct(auth) => auth
+                .scopes
+                .iter()
+                .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin")),
+            Self::TrustedLocal => true,
+            Self::Propagated(auth) => {
+                auth.trusted_local
+                    || auth
+                        .scopes
+                        .iter()
+                        .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin"))
+            }
+            Self::Unknown => false,
+        }
+    }
+
     /// Whether this caller satisfies an admin-gated action.
     #[must_use]
     pub(crate) fn is_admin(&self) -> bool {
@@ -227,6 +266,15 @@ pub(crate) fn propagated_caller_auth(
     meta: Option<&rmcp::model::RequestMetaObject>,
 ) -> Option<PropagatedCallerAuth> {
     let value = meta?.get(CALLER_AUTH_META_KEY)?;
+    serde_json::from_value(value.clone()).ok()
+}
+
+/// Read the caller-visible upstream namespace scope propagated across the
+/// private in-process peer hop. Never honor this metadata on network transports.
+pub(crate) fn propagated_caller_upstream_scope(
+    meta: Option<&rmcp::model::RequestMetaObject>,
+) -> Option<PropagatedCallerUpstreamScope> {
+    let value = meta?.get(CALLER_UPSTREAM_SCOPE_META_KEY)?;
     serde_json::from_value(value.clone()).ok()
 }
 

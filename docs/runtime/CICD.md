@@ -1,14 +1,14 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-08-05"
+updated: "2026-08-19"
 ---
 
 # CI/CD
 
-Last updated: 2026-08-05
+Last updated: 2026-08-19
 
-This document is the authoritative contract for CI, release, and artifact delivery in `lab`. All pipeline implementations must conform to this spec.
+This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
 ## CI Path Routing
 
@@ -98,31 +98,25 @@ fallback classifier used when the base commit predates that script emits no
 keys at all and lets reconciliation force every gated key to `true`, so it is
 not a second copy of the list.
 
-`ci-gate` is the aggregate that branch protection on `main` *should* require.
-As of 2026-08-05 it does not: the only required context is
-`Repository Contract`, so every Rust job — `Format`, `Clippy`, `Test`, `MSRV`,
-the feature slices — is advisory in practice. That is how #347 merged with
-`Format`, `Clippy`, and `ci-gate` all red, landing a rustfmt violation and a
-check script that failed against its own action.
+Branch protection on `main` requires both `Repository Contract` and `ci-gate`.
+The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
+may skip when their category is false, while failed or cancelled dependencies
+fail the aggregate. Native Windows workspace and Palette jobs remain advisory.
 
-Requiring `ci-gate` was attempted on 2026-08-05 and reverted the same day. It
-is correct in principle but only viable when the shared `ci-pool-rust` farm can
-actually finish a run. While that pool is saturated by sibling repos, labby's
-Rust jobs never get a runner and the run is cancelled, so a required `ci-gate`
-can never turn green and *every* pull request becomes unmergeable. Re-enable it
-once pool capacity is reliable:
+Protected historical work products are enforced separately by
+`.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
+out only the trusted base revision, and queries the pull request file list
+through the read-only GitHub token. Any change below `docs/sessions/` or
+`docs/superpowers/` fails `Protected docs guard` unless a maintainer explicitly
+applies the `protected-docs-approved` label. Label and unlabel events rerun the
+guard. The guard is a separate required branch-protection context because it
+must remain anchored to the base workflow rather than the pull request's
+branch-controlled `ci.yml`.
 
-```bash
-gh api -X PATCH repos/dinglebear-ai/labby/branches/main/protection/required_status_checks \
-  -f 'checks[][context]=Repository Contract' -f 'checks[][context]=ci-gate'
-```
-
-If you add a job that must block merges, wire it into `ci-gate` rather than
-adding another required context. The
-heavy jobs below may be skipped when their category is false; `ci-gate` treats
-`success` and intentionally `skipped` jobs as acceptable, and fails on failed or
-cancelled dependencies. Native Windows workspace and Palette jobs are advisory:
-they stay visible on pull requests and main but do not block `ci-gate`.
+If you add another normal CI job that must block merges, wire it into `ci-gate`
+rather than adding another required context. Separate required contexts are
+reserved for controls, like the protected-docs guard and repository contract,
+that intentionally execute from a trusted workflow boundary.
 
 ## CI Checks
 
@@ -132,29 +126,30 @@ jobs when their changed-path category is enabled:
 | Check | Category | Command |
 |-------|----------|---------|
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
+| Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
-| Feature slices | `rust_compile` | `cargo check -p labby --no-default-features --features <slice>` |
+| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` at the same concurrency so the heavy normal library is reused; gateway and fs retain their focused runtime tests |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
-| Lint | `rust_compile` | `cargo clippy --workspace --all-features -- -D warnings` |
+| Lint | `rust_compile` | warm `labby` lib/bins first (which warms normal gateway dependencies), lint extracted workspace all-targets, then run `cargo clippy -p labby --all-features --all-targets --locked -- -D warnings` at unchanged Cargo concurrency |
 | Deny | `security` | `cargo deny check` |
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
 | Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | LCOV trend artifact with project and critical auth/gateway/dispatch/config floors |
-| Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
-| Tests (Linux fork PR fallback) | `rust_test` | same nextest run on the Rust runner-farm pool without repository secrets |
+| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
+| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on the Rust runner-farm pool without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke plus the pinned rmcp `3.1.0` fixture's dated `2026-07-28` server/client suites, with separate strict dated and extension baselines |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
 | Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
 
-Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer.
+Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 
 The frontend build is required because the Rust binary embeds the exported
 Labby assets. It is a production build gate, not a TypeScript strictness gate:
@@ -245,7 +240,7 @@ partially published release.
 
 **Tag format:** `vX.Y.Z` — no other formats are accepted.
 
-**Version policy:** single version across the entire workspace. `lab` and `lab-apis` always share the same version number.
+**Version policy:** single version across the entire workspace. `lab` and `labby-apis` always share the same version number.
 
 ## Artifact Distribution
 

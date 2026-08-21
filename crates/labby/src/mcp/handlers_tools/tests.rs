@@ -17,18 +17,20 @@ use crate::dispatch::upstream::types::{
 use crate::mcp::catalog::ToolCatalogSnapshot;
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
     CODE_MODE_APP_URI, CODE_MODE_APP_URI_PREFIX, GATEWAY_STATUS_APP_SKYBRIDGE_URI,
     GATEWAY_STATUS_APP_URI, MCP_APPS_APP_SKYBRIDGE_URI, MCP_APPS_APP_URI,
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
+    SETTINGS_APP_SKYBRIDGE_URI, SETTINGS_APP_URI,
 };
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
     code_mode_trace_output_schema, gateway_status_tool_meta, gateway_status_tool_schema,
-    mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta, strip_resource_backed_ui_meta,
+    mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta, settings_tool_meta,
+    settings_tool_schema, strip_resource_backed_ui_meta,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -39,6 +41,9 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ClientCapabilities, ElicitationCapability,
     FormElicitationCapability, Implementation, MetaObject, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, RequestMetaObject, Tool,
+};
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -978,6 +983,7 @@ fn mcp_app_schema_and_meta_cover_managed_apps() {
             "gateway_status",
             "server_logs",
             "add_server",
+            "settings",
             "all"
         ])
     );
@@ -1080,7 +1086,33 @@ fn gateway_status_tool_meta_and_schema_bind_the_status_app() {
         schema["properties"]["action"]["enum"],
         serde_json::json!(["open", "refresh"])
     );
+    assert!(
+        schema["properties"]["action"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("reprobe"))
+    );
     assert_eq!(schema["additionalProperties"], false);
+}
+
+#[test]
+fn settings_tool_meta_and_schema_bind_the_settings_app() {
+    let meta = settings_tool_meta(SETTINGS_TOOL_NAME);
+    assert!(
+        meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| { uri.starts_with(SETTINGS_APP_URI) && uri.contains("?v=") })
+    );
+    assert!(
+        meta.0["openai/outputTemplate"].as_str().is_some_and(|uri| {
+            uri.starts_with(SETTINGS_APP_SKYBRIDGE_URI) && uri.contains("?v=")
+        })
+    );
+    let schema = settings_tool_schema();
+    let actions = schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("Settings actions");
+    assert!(actions.contains(&serde_json::json!("state")));
+    assert!(actions.contains(&serde_json::json!("config.update")));
 }
 
 #[test]
@@ -1515,6 +1547,7 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
     assert!(cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
     assert!(cfg.mcp_apps.add_server);
+    assert!(cfg.mcp_apps.settings);
     assert!(running.service().code_mode_app_state.is_enabled());
 
     let tools = running
@@ -1559,6 +1592,7 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
         CODE_MODE_APP_URI_PREFIX,
         GATEWAY_STATUS_APP_URI,
         ADD_SERVER_APP_URI,
+        SETTINGS_APP_URI,
     ] {
         assert!(
             resources
@@ -1669,7 +1703,13 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert_eq!(structured["target"], "all");
     assert_eq!(structured["enabled"], false);
     assert_eq!(structured["changed"], true);
-    for target in ["codemode", "gateway_status", "server_logs", "add_server"] {
+    for target in [
+        "codemode",
+        "gateway_status",
+        "server_logs",
+        "add_server",
+        "settings",
+    ] {
         assert_eq!(structured["apps"][target]["enabled"], false, "{target}");
     }
 
@@ -1678,6 +1718,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert!(!cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
     assert!(!cfg.mcp_apps.add_server);
+    assert!(!cfg.mcp_apps.settings);
     assert!(!running.service().code_mode_app_state.is_enabled());
 
     let tools = running
@@ -1695,6 +1736,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
     assert!(!names.contains(&GATEWAY_STATUS_TOOL_NAME));
     assert!(!names.contains(&ADD_SERVER_TOOL_NAME));
+    assert!(!names.contains(&SETTINGS_TOOL_NAME));
     let logs = tools
         .tools
         .iter()
@@ -1722,6 +1764,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         GATEWAY_STATUS_APP_URI,
         SERVER_LOGS_APP_URI,
         ADD_SERVER_APP_URI,
+        SETTINGS_APP_URI,
     ] {
         assert!(
             resources
@@ -1736,6 +1779,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         GATEWAY_STATUS_APP_URI,
         SERVER_LOGS_APP_URI,
         ADD_SERVER_APP_URI,
+        SETTINGS_APP_URI,
     ] {
         let stale = running
             .service()
@@ -1776,6 +1820,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert!(cfg.mcp_apps.gateway_status);
     assert!(cfg.mcp_apps.server_logs);
     assert!(cfg.mcp_apps.add_server);
+    assert!(cfg.mcp_apps.settings);
     assert!(running.service().code_mode_app_state.is_enabled());
 }
 
@@ -2132,6 +2177,93 @@ async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
     );
 }
 
+#[cfg(feature = "skills")]
+#[tokio::test]
+async fn skills_disabled_loadout_hides_and_denies_fixed_compat_tool() {
+    let loadout = GatewayLoadoutConfig {
+        name: "no-skills".to_string(),
+        services: vec!["skills".to_string()],
+        expose_tools: true,
+        expose_resources: true,
+        expose_prompts: true,
+        expose_skills: false,
+        expose_code_mode: false,
+        ..GatewayLoadoutConfig::default()
+    };
+    let route = ProtectedMcpRouteConfig {
+        name: "no-skills".to_string(),
+        enabled: true,
+        public_host: "mcp.example.com".to_string(),
+        public_path: "/no-skills".to_string(),
+        upstream: None,
+        backend_url: String::new(),
+        backend_mcp_path: "/mcp".to_string(),
+        scopes: vec![],
+        health_path: None,
+        target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                loadout: Some(loadout.name.clone()),
+                ..Default::default()
+            },
+        )),
+    };
+    let scope = crate::mcp::route_scope::McpRouteScope::from_protected_route(
+        &route,
+        std::slice::from_ref(&loadout),
+    )
+    .expect("loadout scope resolves")
+    .expect("gateway subset scope");
+    assert!(
+        scope.allows_service("skills"),
+        "service allowlist includes skills"
+    );
+    assert!(!scope.exposes_skills(), "capability gate disables Skills");
+
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        scope,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:read"]);
+
+    let listed = running
+        .service()
+        .list_tools_impl(None, context.clone())
+        .await
+        .expect("list tools for Skills-disabled loadout");
+    assert!(
+        listed
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "skills"),
+        "the fixed Skills compatibility tool must honor expose_skills=false"
+    );
+
+    let denied = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("skills").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("skills.list".to_string()),
+            ),
+            ("params".to_string(), serde_json::json!({})),
+        ])),
+        context,
+    ))
+    .await
+    .expect("forged Skills call result");
+    assert!(denied.is_error.unwrap_or(false));
+    let text = denied.content[0].as_text().expect("text").text.as_str();
+    assert!(
+        text.contains("not_found") && text.contains("not enabled on the mcp surface"),
+        "forged call must fail through the same visibility gate: {text}"
+    );
+}
+
 #[tokio::test]
 async fn resource_disabled_loadout_hides_unreadable_mcp_app_bindings() {
     let loadout = GatewayLoadoutConfig {
@@ -2378,6 +2510,90 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
         pool.upstream_tool_last_error("cold-apps").await.is_none(),
         "skipping cold discovery should not mark the upstream failed"
     );
+}
+
+#[derive(Clone)]
+struct ColdSubsetUpstream;
+
+impl ServerHandler for ColdSubsetUpstream {
+    fn get_info(&self) -> rmcp::model::ServerInfo {
+        rmcp::model::ServerInfo::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+        )
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+            Tool::new(
+                "cold_subset_tool",
+                "Discovered on the first scoped listing",
+                Arc::new(serde_json::Map::new()),
+            ),
+        ]))
+    }
+}
+
+#[tokio::test]
+async fn protected_subset_first_list_tools_discovers_its_allowed_upstream() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let service = StreamableHttpService::new(
+        || Ok(ColdSubsetUpstream),
+        Arc::new(NeverSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_allowed_hosts(vec![address.to_string()])
+            .with_json_response(true),
+    );
+    let upstream_task = tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
+            .await
+            .expect("upstream server");
+    });
+
+    let mut upstream = fixture_upstream_config("cold-subset");
+    upstream.url = Some(format!("http://{address}/mcp"));
+    upstream.proxy_resources = false;
+    let pool = Arc::new(UpstreamPool::new());
+    let manager = code_mode_manager_with_pool(false, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "connexin",
+            ["cold-subset"],
+            std::iter::empty::<&str>(),
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["mcp:read"]))
+        .await
+        .expect("list tools");
+
+    assert_eq!(
+        result
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["cold_subset_tool"]
+    );
+    upstream_task.abort();
 }
 
 #[tokio::test]
@@ -3857,9 +4073,10 @@ async fn list_tools_paginates_large_builtin_catalog() {
         )
         .await
         .expect("third page");
-    assert_eq!(third.tools.len(), 51);
+    assert_eq!(third.tools.len(), 52);
     assert_eq!(third.tools[0].name.as_ref(), "service_199");
     assert_eq!(third.tools[50].name.as_ref(), "service_249");
+    assert_eq!(third.tools[51].name.as_ref(), SETTINGS_TOOL_NAME);
     assert!(third.next_cursor.is_none());
     assert!(
         running
@@ -3915,8 +4132,9 @@ async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
     let rebuilt = collect_names(reverse_large_test_registry(250)).await;
 
     assert_eq!(ascending, rebuilt);
-    assert_eq!(ascending.len(), 251);
+    assert_eq!(ascending.len(), 252);
     assert_eq!(ascending[0], MCP_APP_TOOL_NAME);
+    assert_eq!(ascending[251], SETTINGS_TOOL_NAME);
     assert!(ascending.is_sorted());
 }
 
@@ -5544,5 +5762,43 @@ async fn call_tool_add_server_denies_non_admin_scope_at_dispatch() {
     assert_eq!(
         structured["service"],
         Value::String(ADD_SERVER_TOOL_NAME.into())
+    );
+}
+
+#[tokio::test]
+async fn settings_mutations_use_the_setup_destructive_policy() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+
+    for action in ["config.update", "env.update"] {
+        let request = CallToolRequestParams::new(SETTINGS_TOOL_NAME).with_arguments(
+            serde_json::Map::from_iter([("action".to_string(), Value::String(action.to_string()))]),
+        );
+        assert!(
+            running
+                .service()
+                .tool_request_is_destructive(&request, &context)
+                .await,
+            "Settings mutation `{action}` must inherit the destructive setup action policy"
+        );
+    }
+
+    let read = CallToolRequestParams::new(SETTINGS_TOOL_NAME).with_arguments(
+        serde_json::Map::from_iter([("action".to_string(), Value::String("state".to_string()))]),
+    );
+    assert!(
+        !running
+            .service()
+            .tool_request_is_destructive(&read, &context)
+            .await
     );
 }

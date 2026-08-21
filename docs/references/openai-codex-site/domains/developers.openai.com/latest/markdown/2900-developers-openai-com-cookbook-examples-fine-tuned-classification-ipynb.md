@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/fine-tuned\_classification [Redirecting from `/cookbook/examples/fine-tuned\_classification.ipynb/` to `/cookbook/examples/fine-tuned\_classification`](/cookbook/examples/fine-tuned_classification)

@@ -344,7 +344,8 @@ pub struct UpstreamEntry {
     pub prompt_count: usize,
     /// Last successfully discovered upstream resource count.
     pub resource_count: usize,
-    /// Number of validated skills last enumerated from this upstream (SEP-2640).
+    /// Number of skill candidates observed during the last successful `skills/list` walk,
+    /// before Labby validation or exposure policy is applied.
     pub skill_count: usize,
     /// Cached validated skill names from the last successful skills/list walk.
     pub skill_names: Vec<String>,

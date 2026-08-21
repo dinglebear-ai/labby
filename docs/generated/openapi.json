@@ -1351,6 +1351,162 @@
         ]
       }
     },
+    "/v1/skills": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Dispatch action to skills",
+        "description": "Execute an action on the skills service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillsActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/snippets": {
       "post": {
         "tags": [
@@ -2899,6 +3055,9 @@
       "GatewayGatewayUsageCallsParams": {
         "type": "object",
         "properties": {
+          "actor": {
+            "type": "string"
+          },
           "cursor": {
             "type": "string"
           },
@@ -2908,8 +3067,17 @@
           "limit": {
             "type": "integer"
           },
+          "outcome": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          },
           "since_unix": {
             "type": "integer"
+          },
+          "tool": {
+            "type": "string"
           },
           "until_unix": {
             "type": "integer"
@@ -2922,8 +3090,32 @@
       "GatewayGatewayUsageMetricsParams": {
         "type": "object",
         "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "bucket_count": {
+            "type": "integer"
+          },
+          "include_facets": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          },
           "since_unix": {
             "type": "integer"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "timezone_offset_minutes": {
+            "type": "integer"
+          },
+          "tool": {
+            "type": "string"
           },
           "until_unix": {
             "type": "integer"
@@ -3558,6 +3750,89 @@
         ],
         "properties": {
           "service": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "help",
+              "schema",
+              "skills.list",
+              "skills.search",
+              "skills.get",
+              "skills.read"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "SkillsSchemaParams": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsGetParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsListParams": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "origin": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsReadParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSkillsSearchParams": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "query": {
             "type": "string"
           }
         }

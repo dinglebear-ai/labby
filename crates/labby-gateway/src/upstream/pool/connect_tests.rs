@@ -747,7 +747,9 @@ async fn http_header_mismatch_refreshes_rmcp_schema_cache_and_mcp_param_header()
         "owner".to_string(),
         Value::String("dinglebear-ai".to_string()),
     )]));
+    let pool = UpstreamPool::new();
     let response = super::tools_call::call_tool_once_with_header_recovery(
+        &pool,
         &connection.peer,
         &config.name,
         params,

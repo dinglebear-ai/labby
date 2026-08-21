@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/reasoning\_function\_calls [Redirecting from `/cookbook/examples/reasoning\_function\_calls.ipynb/` to `/cookbook/examples/reasoning\_function\_calls`](/cookbook/examples/reasoning_function_calls)

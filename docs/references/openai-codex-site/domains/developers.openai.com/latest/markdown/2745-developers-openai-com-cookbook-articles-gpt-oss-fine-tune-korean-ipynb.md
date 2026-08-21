@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/articles/gpt-oss/fine-tune-korean [Redirecting from `/cookbook/articles/gpt-oss/fine-tune-korean.ipynb/` to `/cookbook/articles/gpt-oss/fine-tune-korean`](/cookbook/articles/gpt-oss/fine-tune-korean)

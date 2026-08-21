@@ -23,85 +23,128 @@ const MAX_SNIPPET_CODE_BYTES: usize = 20 * 1024;
 /// pathological inputs before they are read fully into memory and parsed.
 const MAX_SNIPPET_FILE_BYTES: usize = 256 * 1024;
 
+/// Origin of a reusable Code Mode snippet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SnippetSource {
+    /// Snippet shipped with Labby.
     Builtin,
+    /// Operator-created snippet stored under the Labby home directory.
     User,
 }
 
+/// Discovery metadata for a built-in or user Code Mode snippet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnippetInfo {
+    /// Stable snippet name.
     pub name: String,
+    /// Optional human-readable description.
     pub description: Option<String>,
+    /// Search/discovery tags.
     pub tags: Vec<String>,
+    /// Named input specifications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Snippet origin.
     pub source: SnippetSource,
+    /// Source file path.
     pub path: PathBuf,
+    /// Whether this entry is shadowed by a user snippet with the same name.
     pub shadowed: bool,
 }
 
+/// Fully resolved snippet including its source body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedSnippet {
+    /// Stable snippet name.
     pub name: String,
+    /// Optional human-readable description.
     pub description: Option<String>,
+    /// Search/discovery tags.
     pub tags: Vec<String>,
+    /// Named input specifications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Snippet origin.
     pub source: SnippetSource,
+    /// Source file path.
     pub path: PathBuf,
+    /// Complete snippet file contents.
     pub body: String,
 }
 
+/// Parsed YAML frontmatter from a Markdown snippet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetFrontmatter {
+    /// Declared snippet name.
     pub name: String,
+    /// Declared human-readable description.
     pub description: String,
+    /// Declared discovery tags.
     pub tags: Vec<String>,
+    /// Declared named inputs.
     pub inputs: BTreeMap<String, SnippetInputSpec>,
 }
 
+/// Validation/default specification for one snippet input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SnippetInputSpec {
+    /// Expected input value type.
     pub ty: SnippetInputType,
+    /// Whether callers must provide the input when no default exists.
     #[serde(default)]
     pub required: bool,
+    /// Optional JSON default value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
+    /// Optional human-readable input description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
+/// Supported validation types for declared snippet inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SnippetInputType {
+    /// JSON string.
     String,
+    /// Integer-valued JSON number.
     Integer,
+    /// Any JSON number.
     Number,
+    /// JSON boolean.
     Boolean,
+    /// JSON object.
     Object,
+    /// JSON array.
     Array,
+    /// Any JSON value.
     Json,
 }
 
+/// Result returned after removing a user snippet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnippetRemoveResult {
+    /// Snippet name requested for removal.
     pub name: String,
+    /// Whether a user snippet file was removed.
     pub removed: bool,
 }
 
+/// Return the per-user snippet directory under the Labby home.
 #[must_use]
 pub fn user_snippet_dir(lab_home: &Path) -> PathBuf {
     lab_home.join("snippets")
 }
 
+/// Return the checked-in built-in snippet directory.
 #[must_use]
 pub fn builtin_snippet_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/snippets")
 }
 
+/// Validate a stable lowercase snippet identifier.
 pub fn validate_snippet_name(name: &str) -> Result<(), ToolError> {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -125,6 +168,7 @@ fn invalid_name(name: &str) -> Result<(), ToolError> {
     })
 }
 
+/// Extract the first fenced JavaScript block from a Markdown snippet.
 pub fn extract_javascript_block(source: &str) -> Result<String, ToolError> {
     let mut in_fence = false;
     let mut wanted = false;
@@ -161,6 +205,7 @@ pub fn extract_javascript_block(source: &str) -> Result<String, ToolError> {
     })
 }
 
+/// Resolve and validate the executable JavaScript source for a snippet.
 pub fn code_for_snippet(snippet: &ResolvedSnippet) -> Result<String, ToolError> {
     let code = if snippet
         .path
@@ -178,6 +223,7 @@ pub fn code_for_snippet(snippet: &ResolvedSnippet) -> Result<String, ToolError> 
     Ok(code)
 }
 
+/// Validate and atomically create or replace a user Markdown snippet.
 pub fn create_user_snippet(
     lab_home: &Path,
     name: &str,
@@ -214,6 +260,7 @@ pub fn create_user_snippet(
     })
 }
 
+/// Create a user snippet from promoted execution source, enforcing built-in shadowing policy.
 pub fn create_promoted_user_snippet(
     lab_home: &Path,
     builtin_dir: &Path,
@@ -241,6 +288,7 @@ pub fn create_promoted_user_snippet(
     })
 }
 
+/// List user and built-in snippets, marking built-ins shadowed by user overrides.
 pub fn list_snippets(lab_home: &Path, builtin_dir: &Path) -> Result<Vec<SnippetInfo>, ToolError> {
     let mut snippets = Vec::new();
     let user_dir = user_snippet_dir(lab_home);
@@ -259,6 +307,7 @@ pub fn list_snippets(lab_home: &Path, builtin_dir: &Path) -> Result<Vec<SnippetI
     Ok(snippets)
 }
 
+/// Resolve a snippet by name, preferring a user override over the built-in copy.
 pub fn resolve_snippet(
     lab_home: &Path,
     builtin_dir: &Path,
@@ -278,6 +327,7 @@ pub fn resolve_snippet(
     })
 }
 
+/// Remove a user snippet while refusing deletion of built-in snippets.
 pub fn remove_user_snippet(
     lab_home: &Path,
     builtin_dir: &Path,
@@ -411,6 +461,7 @@ fn snippet_metadata_fields(
         .unwrap_or_default()
 }
 
+/// Validate snippet source size, syntax envelope, and frontmatter/name consistency.
 pub fn validate_snippet_body(name: &str, body: &str) -> Result<(), ToolError> {
     if body.len() > MAX_SNIPPET_FILE_BYTES {
         return Err(ToolError::InvalidParam {
@@ -443,6 +494,7 @@ pub fn validate_snippet_body(name: &str, body: &str) -> Result<(), ToolError> {
     validate_snippet_code(&code)
 }
 
+/// Validate executable snippet JavaScript against the Code Mode source-size contract.
 pub fn validate_snippet_code(code: &str) -> Result<(), ToolError> {
     let code = code.trim();
     if code.is_empty() {
@@ -471,6 +523,7 @@ fn strip_frontmatter_open(body: &str) -> Option<&str> {
         .or_else(|| body.strip_prefix("---\r\n"))
 }
 
+/// Parse optional YAML snippet frontmatter from a Markdown snippet body.
 pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> {
     let Some(rest) = strip_frontmatter_open(body) else {
         return Ok(None);
@@ -650,6 +703,7 @@ fn atomic_write_snippet(path: &Path, body: &str, force: bool) -> Result<(), Tool
     Ok(())
 }
 
+/// Merge caller-supplied snippet inputs with declared defaults and validate types/required fields.
 pub fn merge_snippet_input(snippet: &ResolvedSnippet, caller: Value) -> Result<Value, ToolError> {
     let caller = match caller {
         Value::Null => Value::Object(Map::new()),

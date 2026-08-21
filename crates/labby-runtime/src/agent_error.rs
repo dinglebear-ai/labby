@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+/// Version number embedded in every structured agent-error envelope.
 pub const AGENT_ERROR_CONTRACT_VERSION: u32 = 1;
 
 // The sanitize/secret helpers moved to `crate::redact` (the charter home for
@@ -25,17 +26,22 @@ pub use crate::redact::{
 /// aliases of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSafetyHints {
+    /// Upstream claim that invoking the tool does not mutate state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_only_hint: Option<bool>,
+    /// Upstream claim that the tool may perform destructive operations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destructive_hint: Option<bool>,
+    /// Upstream claim that repeating the same call is idempotent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotent_hint: Option<bool>,
+    /// Upstream claim that the tool interacts with an open-ended external world.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_world_hint: Option<bool>,
 }
 
 impl ToolSafetyHints {
+    /// Return `true` when the upstream supplied no safety annotations.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.read_only_hint.is_none()
@@ -44,6 +50,7 @@ impl ToolSafetyHints {
             && self.open_world_hint.is_none()
     }
 
+    /// Return whether the upstream hints make an exact retry plausibly safe.
     #[must_use]
     pub fn exact_retry_is_hint_safe(&self) -> bool {
         self.read_only_hint == Some(true) || self.idempotent_hint == Some(true)
@@ -71,6 +78,7 @@ pub struct ToolErrorEvidence {
 }
 
 impl ToolErrorEvidence {
+    /// Return `true` when no sanitized upstream evidence was retained.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
@@ -110,95 +118,147 @@ pub fn tool_execution_message(
     message
 }
 
+/// Subsystem family in which an agent-facing error originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentErrorOrigin {
+    /// Generic Labby runtime failure.
     Runtime,
+    /// Code Mode execution or sandbox failure.
     CodeMode,
+    /// Upstream tool completed but reported a tool-level failure.
     ToolExecution,
+    /// Network or protocol transport failure talking to an upstream.
     UpstreamTransport,
+    /// Caller input or validation failure.
     Validation,
+    /// Authorization, confirmation, or policy rejection.
     Policy,
+    /// Bounded resource, quota, or size limit failure.
     Budget,
+    /// Lookup or identifier discovery failure.
     Discovery,
+    /// Inter-layer bridge or relay failure.
     Bridge,
 }
 
+/// High-level recovery action recommended to an agent caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRecoveryAction {
+    /// Change the request, then retry.
     ReviseAndRetry,
+    /// Wait for a transient condition to clear before retrying.
     RetryLater,
+    /// Repair or refresh authentication before retrying.
     Reauthenticate,
+    /// Obtain explicit user confirmation before retrying.
     Confirm,
+    /// Refresh discovery/catalog state and choose a valid target.
     Rediscover,
+    /// Reduce payload size, fan-out, or resource consumption.
     ReduceWork,
+    /// Start or repair a required dependency.
     StartDependency,
+    /// Inspect evidence and escalate instead of blindly retrying.
     InspectAndEscalate,
+    /// Do not retry this operation.
     DoNotRetry,
 }
 
+/// Safety classification for repeating the exact same request arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSameArgumentsRetry {
+    /// Exact retry is expected to be safe.
     Safe,
+    /// Exact retry is safe only after a stated condition changes.
     Conditional,
+    /// Prefer revising or inspecting before an exact retry.
     Discouraged,
+    /// Never repeat the same request unchanged.
     Never,
 }
 
+/// Whether a failed operation may already have produced side effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSideEffectRisk {
+    /// No side effects are expected to have committed.
     NoneExpected,
+    /// Some side effects may have committed before the failure.
     Possible,
+    /// The subsystem cannot determine whether side effects occurred.
     Unknown,
 }
 
+/// Structured recovery guidance attached to an agent-facing error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRecoveryAdvice {
+    /// Recommended high-level recovery action.
     pub action: AgentRecoveryAction,
+    /// Whether the exact same arguments may be retried.
     pub same_arguments: AgentSameArgumentsRetry,
+    /// Human-readable recovery guidance for an agent or operator.
     pub guidance: String,
+    /// Optional minimum retry delay in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
 }
 
+/// Stable metadata derived from an error kind before request context is added.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentErrorMetadata {
+    /// Agent-error contract version.
     pub contract_version: u32,
+    /// Subsystem family that produced the error.
     pub origin: AgentErrorOrigin,
+    /// Recommended recovery behavior.
     pub recovery: AgentRecoveryAdvice,
+    /// Estimated side-effect risk for the failed operation.
     pub side_effects: AgentSideEffectRisk,
 }
 
+/// Optional request and subsystem context merged into an agent-error envelope.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentErrorContext {
+    /// Built-in service associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    /// Service action associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// MCP or Code Mode tool identifier associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Upstream gateway name associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
+    /// Sanitized command identifier associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Prompt identifier associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Resource URI associated with the failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
+    /// Sanitized underlying cause text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
+    /// Explicit origin override supplied by the producing subsystem.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<AgentErrorOrigin>,
+    /// Explicit recovery override supplied by the producing subsystem.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<AgentRecoveryAdvice>,
+    /// Explicit side-effect-risk override supplied by the producing subsystem.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side_effects: Option<AgentSideEffectRisk>,
 }
 
 impl AgentErrorContext {
+    /// Construct context identifying a built-in service action.
     #[must_use]
     pub fn for_service_action(service: impl Into<String>, action: impl Into<String>) -> Self {
         Self {
@@ -209,11 +269,13 @@ impl AgentErrorContext {
     }
 }
 
+/// Derive canonical agent metadata from a stable error kind.
 #[must_use]
 pub fn metadata_for_kind(kind: &str, retry_after_ms: Option<u64>) -> AgentErrorMetadata {
     metadata_for_kind_with_retry_safety(kind, retry_after_ms, false)
 }
 
+/// Derive agent metadata while incorporating trusted exact-retry safety context.
 #[must_use]
 pub fn metadata_for_kind_with_retry_safety(
     kind: &str,
@@ -228,6 +290,7 @@ pub fn metadata_for_kind_with_retry_safety(
     }
 }
 
+/// Build the additive JSON error envelope shared by CLI, HTTP, MCP, and Code Mode.
 #[must_use]
 pub fn build_agent_error_value(
     kind: &str,
@@ -292,6 +355,7 @@ pub fn retry_after_ms_from_object(object: &Map<String, Value>) -> Option<u64> {
         .and_then(Value::as_u64)
 }
 
+/// Classify a stable error kind into its canonical subsystem origin.
 #[must_use]
 pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
     match kind {
@@ -369,6 +433,7 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
     }
 }
 
+/// Estimate side-effect risk from the canonical origin of an error kind.
 #[must_use]
 pub fn side_effects_for_kind(kind: &str) -> AgentSideEffectRisk {
     match origin_for_kind(kind) {
@@ -385,6 +450,7 @@ pub fn side_effects_for_kind(kind: &str) -> AgentSideEffectRisk {
     }
 }
 
+/// Derive canonical recovery guidance for a stable error kind.
 #[must_use]
 pub fn recovery_for_kind(
     kind: &str,

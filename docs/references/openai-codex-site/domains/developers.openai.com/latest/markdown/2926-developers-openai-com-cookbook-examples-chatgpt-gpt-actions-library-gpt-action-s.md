@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_sharepoint\_text [Redirecting from `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_sharepoint\_text.ipynb/` to `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_sharepoint\_text`](/cookbook/examples/chatgpt/gpt_actions_library/gpt_action_sharepoint_text)

@@ -1,68 +1,44 @@
-# lab — Binary Crate
+# labby — Product Binary Crate
 
-The `lab` binary crate (binary name: `labby`). Depends on `lab-apis` (pure SDK). Provides three surfaces:
-CLI (`clap`), MCP server (`rmcp`), HTTP API (`axum`).
+This crate owns the Labby product binary/library and the product-specific adapters around reusable workspace crates.
 
-Sub-docs for each surface:
-- [`src/CLAUDE.md`](src/CLAUDE.md) — layer contract and ownership rules
-- [`src/mcp/CLAUDE.md`](src/mcp/CLAUDE.md) — dispatch, envelopes, elicitation
-- [`src/cli/CLAUDE.md`](src/cli/CLAUDE.md) — thin-shim pattern, destructive flags
-- [`src/api/CLAUDE.md`](src/api/CLAUDE.md) — router, middleware, status mapping
+## Current Feature Contract
 
-## Feature Flags
+Use `Cargo.toml` as the source of truth:
 
-Feature flags are service passthroughs to `lab-apis`; count can drift as services are added. Use `Cargo.toml` as the source of truth. Default: `all` (every service enabled). The `all` feature is delegated entirely to `lab-apis/all`.
+- `default = ["gateway-host"]`
+- `gateway-host = ["gateway"]`
+- `all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills"]`
+- `proxy-testkit` is test support only.
 
-All surface code (axum, rmcp, ratatui, clap) is compiled unconditionally — feature flags gate service-specific code only, not the surface infrastructure.
+Retired ACP/Marketplace/Stash/Fleet/Deploy surfaces are deleted rather than feature-gated.
 
-## Entry Point
+## Ownership
 
-`main.rs`: `init_tracing()` → `config::load()` (non-fatal; warns and continues) → `cli::dispatch()`. ANSI colors are stderr-TTY-gated here. JSON logs via `LABBY_LOG_FORMAT=json`.
+- `src/dispatch/` — shared product semantics and local product services
+- `src/cli/` — clap adapters
+- `src/mcp/` — MCP protocol adapters/resources/apps
+- `src/api/` — axum HTTP adapters and middleware
+- `src/output/` + `src/cli/style.rs` — Aurora human CLI renderer and clap styling
+- `src/config.rs` — product configuration loading
+- `src/registry.rs` — product service registration
 
-## Config Loading
+Reusable gateway, Code Mode, auth, web-asset, and shared runtime behavior belongs in the extracted `labby-*` crates rather than being duplicated here.
 
-Two files loaded in order: `~/.labby/.env` (secrets, `dotenvy`) then `config.toml` (preferences, searched CWD → `~/.labby/` → `~/.config/labby/`, first found wins). A CWD `.env` is also loaded (errors silently discarded). Failures in `config::load()` are non-fatal by design.
+## Surface Rule
 
-`scan_instances(prefix)` parses multi-instance env vars as `{PREFIX}_{LABEL}_{SUFFIX}`. Recognized suffixes: `URL`, `API_KEY`, `TOKEN`, `USERNAME`, `PASSWORD`. Any other suffix is silently ignored.
+CLI, MCP, and API are peers over shared dispatch. Keep handlers thin and do not reimplement operation semantics at the surface.
 
-## MCP/Catalog Registration
+See nested instructions in `src/CLAUDE.md`, `src/cli/CLAUDE.md`, `src/mcp/CLAUDE.md`, `src/api/CLAUDE.md`, and `src/dispatch/CLAUDE.md`.
 
-Normal services register through `crates/lab/src/registry.rs` using `crate::dispatch::<service>::ACTIONS` and `crate::dispatch::<service>::dispatch`. Add `mcp/services/<service>.rs` only for MCP-specific exceptions that cannot live in shared dispatch.
+## ToolError
 
-Full new-service onboarding (CLI, API, TUI, dispatch layer) is covered in the root `CLAUDE.md` "Adding a New Service" checklist.
+`ToolError` is the shared product error type. Its serialization is intentional and recovery-aware. Do not replace its manual serialization with a derived shape or stringify it before the surface boundary. See `docs/dev/ERRORS.md` and `docs/contracts/agent-error-contract.md`.
 
-`build_catalog()` in `catalog.rs` is registry-driven: it iterates `registry.services()` and reads `svc.actions` directly. There is no `actions_for()` match arm and no separate catalog step — registering the service in `registry.rs` is sufficient for catalog coverage.
+## Output
 
-## Shared Dispatch Layer
+Human CLI output is implemented by the Aurora renderer under `src/output/`; JSON output is compact, unstyled machine data. Do not add command-local color palettes or ad hoc table systems.
 
-`src/dispatch/` is the home for surface-neutral dispatch. Services should live there with the required directory layout (catalog.rs, client.rs, params.rs, dispatch.rs). `mcp/services/<service>.rs` is an exception layer for MCP-specific behavior, not the default bridge.
+## Verification
 
-When adding new services, use the full `dispatch/<service>/` directory layout from the start — see `crates/lab/src/dispatch/CLAUDE.md` for templates.
-
-`api/services/helpers.rs::handle_action()` is the shared dispatch wrapper (unknown-action gate, destructive confirmation, param stripping, timed dispatch, structured logging). All migrated API handlers call this.
-
-## CLI: Two Implementation Tiers
-
-CLI commands are thin adapters over shared dispatch. Service-specific parsing
-belongs in `cli/<service>.rs`; operation semantics stay in
-`dispatch/<service>/`.
-
-## ToolError Invariants (Critical)
-
-`ToolError` (`dispatch/error.rs`) is the error type for all three surfaces (MCP, CLI, HTTP). `mcp/envelope.rs` re-exports it for older import paths.
-
-- **Never add `#[derive(Serialize)]` to `ToolError`.** Serialization is hand-written. The `Sdk { sdk_kind }` variant promotes `sdk_kind` to the top-level `kind` field; a derived impl would emit `{"kind":"sdk"}` instead.
-- **`Display` on `ToolError` is always JSON**, not a human string. Don't use it for human messages.
-- **`IntoResponse` on `ToolError` is shared by MCP and HTTP.** Status code mapping changes affect both transports simultaneously.
-- `DispatchError` is a separate type that survives `anyhow::Error` chains and can be downcast at the serve boundary. It is not the same as `ToolError`.
-
-## Known Gaps (Not Yet Implemented)
-
-These are facts about the current state, not the spec:
-
-- **Human table rendering** in `output.rs`: `print()` falls back to `serde_json::to_string_pretty` for both `Human` and `Json` formats.
-
-Recently closed (kept here briefly to prevent re-flagging):
-
-- **`surface` field** in HTTP handler log events: now emitted as `surface = "api"` on the API dispatch path (`api/services/helpers.rs`), per `OBSERVABILITY.md`.
-- **`/ready` probe**: now implements real readiness predicates in `api/health.rs::ready` — returns `503` with a `pending` list (e.g. empty service registry, gateway pool not yet initialised) until all predicates pass, then `200`.
+For product-crate changes run focused tests plus the relevant workspace gates. Changes to service metadata or CLI/MCP/API discovery also require `just docs-generate` and `just docs-check`.

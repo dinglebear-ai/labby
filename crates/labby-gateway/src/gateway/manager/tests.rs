@@ -37,7 +37,7 @@ mod views;
 mod virtual_servers;
 
 /// Shared test stub registry knowing a single `deploy` service. The host's real
-/// default-registry builder lives in `lab`, not `lab-gateway`; manager tests that
+/// default-registry builder lives in `lab`, not `labby-gateway`; manager tests that
 /// need `deploy` to be a registered/known service (quarantine retention, surface
 /// gating, MCP action-policy enforcement) inject this so the registry seam
 /// resolves `deploy` instead of the default `EmptyServiceRegistry`.
@@ -329,6 +329,32 @@ async fn new_base_pool_carries_the_manager_usage_store() {
     assert!(
         pool.usage_store_is_wired(),
         "pools built by a manager with a usage store must inherit it"
+    );
+}
+
+#[test]
+fn new_base_pool_shares_header_recovery_metrics_across_generations() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let first = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+    let second = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+
+    assert_eq!(
+        manager
+            .header_recovery_metrics_store
+            .record_mismatch_for_test("fixture"),
+        1
+    );
+    assert_eq!(
+        first.header_recovery_metrics("fixture").mismatch_detected,
+        1
+    );
+    assert_eq!(
+        second.header_recovery_metrics("fixture").mismatch_detected,
+        1
     );
 }
 

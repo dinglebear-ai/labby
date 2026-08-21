@@ -14,10 +14,14 @@
 //! `labby-auth` and `labby-codemode`, which never touch them.
 
 pub mod agent_error;
+/// Surface-neutral Artifact domain and local runtime implementation.
+pub mod artifacts;
+/// Shared retry backoff and deterministic jitter helpers.
 pub mod backoff;
 pub mod caller_auth;
 pub mod catalog_notify;
 pub mod client_registry;
+/// Shared runtime state for the optional Code Mode MCP App surface.
 pub mod code_mode_app;
 pub mod error;
 pub mod gateway_config;

@@ -7,7 +7,7 @@
 //! catalog and table renderers.
 //!
 //! Note: clap only emits these escapes when its `color` feature is enabled AND
-//! the resolved `clap::ColorChoice` is not `Never`. `crates/lab/src/main.rs`
+//! the resolved `clap::ColorChoice` is not `Never`. `crates/labby/src/main.rs`
 //! maps the resolved `ColorPolicy` onto `ColorChoice`, so `--color plain` /
 //! `NO_COLOR` strip the styling. `render_long_help().to_string()` (used by the
 //! docs generator) stays plain regardless, keeping `cli-help.md` ANSI-free.

@@ -1,7 +1,7 @@
 ---
 title: Skills extension contract
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-18
 ---
 
 # Skills Extension Contract (SEP-2640)
@@ -16,7 +16,7 @@ updated: 2026-08-12
 | What | Value |
 |------|-------|
 | Mirror repo | `modelcontextprotocol/experimental-ext-skills` |
-| **Pinned commit** | **`d29bd05222b4732d7b665b552abee532a8c200fa`** (2026-08-11) |
+| **Pinned commit** | **`9f55cd349932ba00fc18402873c9eb2d2c2e78cb`** (2026-08-04) |
 | Pinned file | `docs/sep-draft-skills-extension.md` |
 | Upstream provenance | PR #2640 head on branch `sep/skills-extension` |
 | Upstream PR | [#2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) — open |
@@ -29,10 +29,13 @@ that carries that exact text is `9f55cd3`, whose message is literally
 `docs: sync SEP copy with upstream commit 0eb05fe (#119)`. Pin `9f55cd3`; it is
 the revision whose bytes this implementation was written against.
 
-**Drift as of 2026-08-12.** One commit has landed on the mirror since the pin:
-`967120e7` (2026-08-11) adds `docs/rationale.md` and one README line. The SEP
-draft text and threat model are byte-unchanged, so everything below holds
-against current `main`.
+**Drift check as of 2026-08-18.** The mirror's current `main` snapshot is
+`f1f66fa7f8c75d6094dff1fd4a5e83f058ec8692`. GitHub reports the
+`docs/sep-draft-skills-extension.md` blob as
+`6b535330430f55170bab488dde661f8909fb947b` at both that snapshot and the
+pinned mirror commit `9f55cd349932ba00fc18402873c9eb2d2c2e78cb`. The normative SEP draft
+bytes are therefore unchanged from Labby's pin. PR #2640 remains open; repeat
+this comparison before changing native wire behavior.
 
 ## Resolved questions
 

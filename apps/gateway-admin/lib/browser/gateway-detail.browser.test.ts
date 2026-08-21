@@ -231,6 +231,123 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   assert.equal(hasHorizontalOverflow, false)
 })
 
+test('overview metrics and volume bars drill into exact Usage slices', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+
+  const bars = page.locator('.recharts-bar-rectangle .recharts-rectangle')
+  await page.waitForFunction(() =>
+    Array.from(document.querySelectorAll('.recharts-bar-rectangle .recharts-rectangle')).some((node) => {
+      const box = node.getBoundingClientRect()
+      return box.width > 1 && box.height > 1
+    }),
+  )
+  let clicked = false
+  for (let index = 0; index < await bars.count(); index += 1) {
+    const bar = bars.nth(index)
+    const box = await bar.boundingBox()
+    if (box && box.width > 1 && box.height > 1) {
+      await bar.click()
+      clicked = true
+      break
+    }
+  }
+  assert.equal(clicked, true, 'expected at least one clickable volume bar')
+  await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.has('from') && url.searchParams.has('to'))
+  const sliceUrl = new URL(page.url())
+  const from = Number(sliceUrl.searchParams.get('from'))
+  const to = Number(sliceUrl.searchParams.get('to'))
+  assert.equal(to - from, 3_599_000, '24h buckets should stop one stored second before the next inclusive bucket')
+
+  await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  await page.getByTitle('Upstream calls — open details').click()
+  await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.get('window') === '24h')
+})
+
+test('clicking a server name from the gateway list loads its detail page', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+  await page.evaluate(() => window.localStorage.clear())
+  await page.reload({ waitUntil: 'networkidle' })
+
+  const githubRow = page.locator('[data-gwrow="1"]').filter({ hasText: 'github-server' }).first()
+  await githubRow.getByRole('link', { name: 'github-server', exact: true }).click()
+  await page.waitForURL((url) => url.pathname === '/gateway/' && url.searchParams.get('id') === 'gw-2')
+  await assert.doesNotReject(() => page.getByText('12/12').first().waitFor())
+  await assert.doesNotReject(() => page.getByRole('button', { name: 'Tools', exact: true }).waitFor())
+})
+
+test('mobile gateway cards are touch-sized, overflow-free, and open server detail', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+  await page.evaluate(() => window.localStorage.clear())
+  await page.reload({ waitUntil: 'networkidle' })
+
+  const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+  assert.equal(hasHorizontalOverflow, false)
+
+  const open = page.getByRole('link', { name: 'Open', exact: true }).first()
+  await assert.doesNotReject(() => open.waitFor())
+  const box = await open.boundingBox()
+  assert.ok(box && box.height >= 40, `expected mobile Open target >=40px, got ${box?.height ?? 0}`)
+
+  await open.click()
+  await page.waitForURL((url) => url.pathname === '/gateway/' && Boolean(url.searchParams.get('id')))
+  await assert.doesNotReject(() => page.getByRole('button', { name: 'Tools', exact: true }).waitFor())
+
+  const detailOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+  assert.equal(detailOverflow, false)
+})
+
+test('overview, gateways, detail, and usage stay overflow-free on phone and tablet', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  for (const viewport of [
+    { width: 390, height: 844, label: 'phone' },
+    { width: 768, height: 1024, label: 'tablet' },
+  ]) {
+    const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } })
+    for (const route of [
+      '/',
+      '/gateways/',
+      '/gateway/?id=gw-2',
+      '/usage/?focus=latency&percentile=p95&outcome=failed',
+    ]) {
+      await page.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle' })
+      const overflow = await page.evaluate(() => ({
+        document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        body: document.body.scrollWidth - document.body.clientWidth,
+      }))
+      assert.ok(overflow.document <= 1 && overflow.body <= 1, `${viewport.label} ${route} overflowed horizontally: ${JSON.stringify(overflow)}`)
+    }
+    await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    await assert.doesNotReject(() => page.getByRole('link', { name: 'Open', exact: true }).first().waitFor())
+    await page.goto(`${baseUrl}/usage/?focus=latency&percentile=p95&outcome=failed`, { waitUntil: 'networkidle' })
+    await assert.doesNotReject(() => page.getByText(/Metric drill-down:/).waitFor())
+    assert.equal(new URL(page.url()).searchParams.get('focus'), 'latency')
+    assert.equal(new URL(page.url()).searchParams.get('outcome'), 'failed')
+    await page.close()
+  }
+})
+
 test('gateway detail disable flow shows confirmation, persists disabled state, and can be re-enabled', { concurrency: false }, async (t) => {
   await startPreviewServer()
 

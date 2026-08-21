@@ -18,6 +18,14 @@ use std::time::Duration;
 /// Maximum skills retained from one upstream's `skills/list`, across all pages.
 pub const MAX_SKILLS_PER_UPSTREAM: usize = 256;
 
+/// Maximum skill candidates validated from one upstream's `skills/list`, across all pages.
+///
+/// This is deliberately higher than [`MAX_SKILLS_PER_UPSTREAM`]: malformed or
+/// policy-rejected entries still consume validation work and rejection memory,
+/// so an invalid-skill flood needs its own bound instead of relying on the
+/// retained-valid-skill ceiling.
+pub const MAX_SKILL_CANDIDATES_PER_UPSTREAM: usize = 1024;
+
 /// Maximum entries in a single skill's `resources` manifest.
 pub const MAX_RESOURCES_PER_SKILL: usize = 64;
 

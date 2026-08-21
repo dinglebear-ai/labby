@@ -85,8 +85,8 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin |  | `SupportedServiceView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.update` | false | false | true | lab:admin | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string` | `GatewayUsageMetricsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `id*: string` | `VirtualServerMcpPolicyView` | cli, mcp, api, web |
@@ -135,6 +135,12 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `setup` | `settings.update` | false | true | true | lab:admin | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | cli, mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin |  | `SetupSnapshot` | cli, mcp, api, web |
 | `setup` | `uninstall_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
+| `skills` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
+| `skills` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
+| `skills` | `skills.get` | false | false | false |  | `uri*: string` | `SkillGetResponse` | cli, mcp, api |
+| `skills` | `skills.list` | false | false | false |  | `origin: string`<br>`limit: integer` | `SkillListResponse` | cli, mcp, api |
+| `skills` | `skills.read` | false | false | false |  | `uri*: string` | `VisibleSkillFile` | cli, mcp, api |
+| `skills` | `skills.search` | false | false | false |  | `query*: string`<br>`origin: string`<br>`limit: integer` | `SkillSearchResponse` | cli, mcp, api |
 | `snippets` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
 | `snippets` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |

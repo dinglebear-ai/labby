@@ -2,14 +2,15 @@ use std::collections::HashMap;
 
 use crate::gateway::service_registry::GatewayServiceRegistry;
 use crate::gateway::types::{
-    DependencyHintView, GatewayConfigView, GatewayRuntimeView, ServiceConfigFieldView,
-    ServiceConfigView,
+    DependencyHintView, GatewayConfigView, GatewayHeaderRecoveryMetricsView, GatewayRuntimeView,
+    ServiceConfigFieldView, ServiceConfigView,
 };
 use crate::gateway::view_models::{
     ServerConfigSummaryView, ServerView, SurfaceStateView, SurfaceStatesView,
 };
 use crate::gateway::virtual_servers::{VirtualServerRecord, VirtualServerSource};
 use crate::upstream::pool::{UpstreamCachedSummary, UpstreamPool};
+use crate::upstream::types::UpstreamHealth;
 use labby_runtime::gateway_config::{CodeModeConfig, UpstreamConfig, normalize_code_mode_hint};
 use labby_runtime::redact::{
     redact_secret_like_segments, redact_stdio_args, redact_stdio_value, redact_url,
@@ -422,20 +423,70 @@ pub(super) async fn upstream_summary(
         .unwrap_or_else(empty_upstream_summary)
 }
 
+fn summary_has_capabilities(summary: &UpstreamCachedSummary) -> bool {
+    summary.discovered_tool_count > 0
+        || summary.discovered_resource_count > 0
+        || summary.discovered_prompt_count > 0
+        || summary.discovered_skill_count > 0
+}
+
+fn settle_summary_after_health(
+    first: UpstreamCachedSummary,
+    health: Option<UpstreamHealth>,
+    refreshed: Option<UpstreamCachedSummary>,
+) -> UpstreamCachedSummary {
+    if summary_has_capabilities(&first) || !health.is_some_and(UpstreamHealth::is_routable) {
+        return first;
+    }
+    refreshed.unwrap_or(first)
+}
+
+fn catalog_is_warming(
+    summary: &UpstreamCachedSummary,
+    health: Option<UpstreamHealth>,
+    runtime_present: bool,
+    last_error_present: bool,
+) -> bool {
+    !summary_has_capabilities(summary)
+        && health.is_some_and(UpstreamHealth::is_routable)
+        && !runtime_present
+        && !last_error_present
+}
+
+pub(super) async fn upstream_summary_with_health(
+    pool: Option<&UpstreamPool>,
+    upstream_name: &str,
+) -> (UpstreamCachedSummary, Option<UpstreamHealth>) {
+    let first = upstream_summary(pool, upstream_name).await;
+    let health = match pool {
+        Some(pool) => pool.upstream_tool_health(upstream_name).await,
+        None => None,
+    };
+    let refreshed =
+        if !summary_has_capabilities(&first) && health.is_some_and(UpstreamHealth::is_routable) {
+            match pool {
+                Some(pool) => pool.cached_upstream_summary(upstream_name).await,
+                None => None,
+            }
+        } else {
+            None
+        };
+    (
+        settle_summary_after_health(first, health, refreshed),
+        health,
+    )
+}
+
 pub(super) async fn server_view_from_upstream(
     pool: Option<&UpstreamPool>,
     upstream: &UpstreamConfig,
 ) -> ServerView {
-    let summary = upstream_summary(pool, &upstream.name).await;
+    let (summary, health) = upstream_summary_with_health(pool, &upstream.name).await;
     let last_error = operator_visible_upstream_error(match pool {
         Some(pool) => pool.upstream_last_error(&upstream.name).await,
         None => None,
     });
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
-    let health = match pool {
-        Some(pool) => pool.upstream_tool_health(&upstream.name).await,
-        None => None,
-    };
     // Health-aware connectivity (mirrors `server_view_from_virtual_server`): an
     // upstream counts as connected when it has no recorded error and is either
     // actively exposing capabilities or healthy. The health term keeps lazily
@@ -449,13 +500,38 @@ pub(super) async fn server_view_from_upstream(
     let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
     let connected = last_error.is_none() && (exposing_capabilities || health_ok);
     let enabled = upstream.enabled;
-    let pid = match pool {
-        Some(pool) => pool
-            .upstream_runtime_metadata(&upstream.name)
-            .await
-            .and_then(|meta| meta.pid),
+    let runtime = match pool {
+        Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
         None => None,
     };
+    let pid = runtime.as_ref().and_then(|meta| meta.pid);
+    let catalog_warming =
+        catalog_is_warming(&summary, health, runtime.is_some(), last_error.is_some());
+    let mut warnings = match (&last_error, &dependency_hint) {
+        (Some(message), Some(hint)) => {
+            vec![super::view_models::ServerWarningView {
+                code: hint.code.clone(),
+                message: hint
+                    .install_command
+                    .as_ref()
+                    .map(|cmd| format!("missing dependency; suggested fix: {cmd}"))
+                    .unwrap_or_else(|| message.clone()),
+            }]
+        }
+        (Some(message), None) => {
+            vec![super::view_models::ServerWarningView {
+                code: upstream_warning_code(message).to_string(),
+                message: message.clone(),
+            }]
+        }
+        _ => Vec::new(),
+    };
+    if catalog_warming {
+        warnings.push(super::view_models::ServerWarningView {
+            code: "catalog_warming".to_string(),
+            message: "upstream is healthy but its capability catalog has not been materialized yet; counts are provisional until discovery or refresh completes".to_string(),
+        });
+    }
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
@@ -481,25 +557,7 @@ pub(super) async fn server_view_from_upstream(
             },
             ..SurfaceStatesView::default()
         },
-        warnings: match (&last_error, &dependency_hint) {
-            (Some(message), Some(hint)) => {
-                vec![super::view_models::ServerWarningView {
-                    code: hint.code.clone(),
-                    message: hint
-                        .install_command
-                        .as_ref()
-                        .map(|cmd| format!("missing dependency; suggested fix: {cmd}"))
-                        .unwrap_or_else(|| message.clone()),
-                }]
-            }
-            (Some(message), None) => {
-                vec![super::view_models::ServerWarningView {
-                    code: upstream_warning_code(message).to_string(),
-                    message: message.clone(),
-                }]
-            }
-            _ => Vec::new(),
-        },
+        warnings,
         config_summary: ServerConfigSummaryView {
             transport: Some(if upstream.command.is_some() {
                 "stdio".to_string()
@@ -686,6 +744,7 @@ pub(super) async fn runtime_view(
 
     let last_error = operator_visible_upstream_error(pool.upstream_last_error(name).await);
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
+    let header_recovery = pool.header_recovery_metrics(name);
     let tool_health = pool.upstream_tool_health(name).await;
     let connected = last_error.is_none()
         && tool_health
@@ -706,12 +765,45 @@ pub(super) async fn runtime_view(
         supports_skills: summary.supports_skills,
         last_error,
         dependency_hint,
+        header_recovery: GatewayHeaderRecoveryMetricsView {
+            mismatch_detected: header_recovery.mismatch_detected,
+            schema_refreshes: header_recovery.schema_refreshes,
+            retry_successes: header_recovery.retry_successes,
+            retry_failures: header_recovery.retry_failures,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn runtime_view_projects_header_recovery_metrics() {
+        let store = crate::upstream::pool::HeaderRecoveryMetricsStore::default();
+        assert_eq!(store.record_mismatch_for_test("fixture"), 1);
+        let pool = UpstreamPool::new().with_header_recovery_metrics_store(store);
+
+        let view = runtime_view(Some(&pool), "fixture", None).await;
+        assert_eq!(view.header_recovery.mismatch_detected, 1);
+        let serialized = serde_json::to_value(&view).expect("runtime view serializes");
+        assert_eq!(
+            serialized["header_recovery"]["mismatch_detected"],
+            serde_json::json!(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_view_omits_zero_header_recovery_metrics() {
+        let pool = UpstreamPool::new();
+        let view = runtime_view(Some(&pool), "fixture", None).await;
+        let serialized = serde_json::to_value(&view).expect("runtime view serializes");
+
+        assert!(
+            serialized.get("header_recovery").is_none(),
+            "zero-valued recovery metrics should not add status noise"
+        );
+    }
 
     // ── Stdio command projection ──────────────────────────────────────────────
 
@@ -743,6 +835,85 @@ mod tests {
 
     fn stdio_upstream(command: &str, args: &[&str]) -> UpstreamConfig {
         upstream_fixture(Some(command), args, None)
+    }
+
+    #[test]
+    fn healthy_catalog_race_prefers_materialized_second_summary() {
+        let first = UpstreamCachedSummary::default();
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            exposed_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
+
+        let settled =
+            settle_summary_after_health(first, Some(UpstreamHealth::Healthy), Some(refreshed));
+
+        assert_eq!(settled.discovered_tool_count, 30);
+        assert_eq!(settled.exposed_tool_count, 30);
+    }
+
+    #[test]
+    fn genuinely_empty_healthy_catalog_remains_empty() {
+        let settled = settle_summary_after_health(
+            UpstreamCachedSummary::default(),
+            Some(UpstreamHealth::Healthy),
+            Some(UpstreamCachedSummary::default()),
+        );
+
+        assert_eq!(settled, UpstreamCachedSummary::default());
+    }
+
+    #[test]
+    fn unhealthy_catalog_does_not_adopt_concurrent_summary() {
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
+        let settled = settle_summary_after_health(
+            UpstreamCachedSummary::default(),
+            Some(UpstreamHealth::Unhealthy {
+                consecutive_failures: u32::MAX,
+            }),
+            Some(refreshed),
+        );
+
+        assert_eq!(settled, UpstreamCachedSummary::default());
+    }
+
+    #[test]
+    fn lazy_healthy_empty_catalog_is_explicitly_warming() {
+        let summary = UpstreamCachedSummary::default();
+
+        assert!(catalog_is_warming(
+            &summary,
+            Some(UpstreamHealth::Healthy),
+            false,
+            false,
+        ));
+        assert!(
+            !catalog_is_warming(&summary, Some(UpstreamHealth::Healthy), true, false),
+            "a live runtime makes an empty catalog authoritative"
+        );
+        assert!(
+            !catalog_is_warming(&summary, Some(UpstreamHealth::Healthy), false, true),
+            "an error must be surfaced as an error rather than warmup"
+        );
+    }
+
+    #[test]
+    fn materialized_catalog_is_never_reported_as_warming() {
+        let summary = UpstreamCachedSummary {
+            discovered_tool_count: 1,
+            ..UpstreamCachedSummary::default()
+        };
+
+        assert!(!catalog_is_warming(
+            &summary,
+            Some(UpstreamHealth::Healthy),
+            false,
+            false,
+        ));
     }
 
     #[test]

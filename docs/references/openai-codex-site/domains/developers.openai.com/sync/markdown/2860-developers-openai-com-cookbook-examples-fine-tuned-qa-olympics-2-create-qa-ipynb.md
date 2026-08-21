@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/fine-tuned\_qa/olympics-2-create-qa [Redirecting from `/cookbook/examples/fine-tuned\_qa/olympics-2-create-qa.ipynb/` to `/cookbook/examples/fine-tuned\_qa/olympics-2-create-qa`](/cookbook/examples/fine-tuned_qa/olympics-2-create-qa)

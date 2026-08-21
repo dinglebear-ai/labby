@@ -1,6 +1,6 @@
 //! Host-owned persistence and environment seam for `GatewayManager`.
 //!
-//! `lab-gateway` owns the gateway's in-memory [`GatewayConfig`] and all runtime
+//! `labby-gateway` owns the gateway's in-memory [`GatewayConfig`] and all runtime
 //! behavior, but it must NOT own the host's full `LabConfig`, the `config.toml`
 //! render path (with its foreign-key preservation invariant), or the `.env`
 //! credential file helpers — those are shared with non-gateway Labby code and

@@ -1,16 +1,14 @@
 //! Upstream MCP server proxy — shared types and connection pool.
 //!
-//! This is the runtime home of `UpstreamPool`. It is re-exported from `lab`'s
-//! `crate::dispatch::upstream` as a compatibility shim so every existing surface
+//! This is the runtime home of `UpstreamPool`. It is re-exported from Labby's
+//! `crate::dispatch::upstream` compatibility shim so every existing surface
 //! (CLI, MCP, HTTP API) keeps the same import path. The pool is surface-neutral:
 //! both the MCP and API surfaces need access to it, and the layer contract
 //! forbids `api -> mcp` dependencies, so it cannot live under either surface.
 //
-// Many items in pool and types are not yet called from outside the module
-// (discovery, resource proxying, circuit breaker probing). They are exercised
-// by tests and will be fully wired when `labby serve` gains `[[upstream]]` config
-// support. The blanket allow prevents false-positive warnings on partially
-// wired public APIs.
+// Some public gateway primitives are exercised only by specific surfaces or tests.
+// Keep the scoped dead-code allows on those modules rather than inventing product
+// dependencies solely to satisfy the compiler.
 #[allow(dead_code)]
 pub mod auth;
 pub mod direct_stdio;

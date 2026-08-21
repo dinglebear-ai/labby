@@ -1,5 +1,5 @@
-//! MCP transport layer — the translation between `lab-apis` clients and
-//! the Model Context Protocol. See `crates/lab/src/mcp/CLAUDE.md` for
+//! MCP transport layer — the translation between `labby-apis` clients and
+//! the Model Context Protocol. See `crates/labby/src/mcp/CLAUDE.md` for
 //! the full rulebook on dispatch, envelopes, and the shared catalog.
 
 pub(crate) mod agent_error;

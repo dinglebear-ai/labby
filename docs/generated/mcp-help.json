@@ -242,7 +242,7 @@
         },
         {
           "name": "gateway.usage.metrics",
-          "description": "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
+          "description": "Aggregate exact gateway usage analytics; rejects queries above 250000 matching rows, and facet requests whose unfiltered time window exceeds 250000 rows",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
@@ -266,6 +266,54 @@
               "ty": "string",
               "required": false,
               "description": "Restrict to one upstream name"
+            },
+            {
+              "name": "tool",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one qualified upstream::tool target"
+            },
+            {
+              "name": "actor",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one actor subject"
+            },
+            {
+              "name": "outcome",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one outcome; failed matches every non-ok outcome"
+            },
+            {
+              "name": "search",
+              "ty": "string",
+              "required": false,
+              "description": "Case-insensitive search across target, capability, operation, actor, and outcome"
+            },
+            {
+              "name": "bucket_count",
+              "ty": "integer",
+              "required": false,
+              "description": "Return this many complete-window time buckets, capped at 168"
+            },
+            {
+              "name": "timezone",
+              "ty": "string",
+              "required": false,
+              "description": "IANA zone name for DST-correct local-hour aggregation"
+            },
+            {
+              "name": "timezone_offset_minutes",
+              "ty": "integer",
+              "required": false,
+              "description": "Minutes east of UTC fallback when timezone is omitted (-1440 to 1440)"
+            },
+            {
+              "name": "include_facets",
+              "ty": "boolean",
+              "required": false,
+              "description": "Include stable window-wide filter facets; returns invalid_param if any facet exceeds 1000 distinct values"
             }
           ],
           "returns": "GatewayUsageMetricsView"
@@ -296,6 +344,30 @@
               "ty": "string",
               "required": false,
               "description": "Restrict to one upstream name"
+            },
+            {
+              "name": "tool",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one qualified upstream::tool target"
+            },
+            {
+              "name": "actor",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one actor subject"
+            },
+            {
+              "name": "outcome",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one outcome; failed matches every non-ok outcome"
+            },
+            {
+              "name": "search",
+              "ty": "string",
+              "required": false,
+              "description": "Case-insensitive search across target, capability, operation, actor, and outcome"
             },
             {
               "name": "limit",
@@ -2273,6 +2345,122 @@
             }
           ],
           "returns": "CommitOutcome"
+        }
+      ]
+    },
+    {
+      "name": "skills",
+      "description": "Discover and read Agent Skills through a universal compatibility surface",
+      "category": "bootstrap",
+      "status": "available",
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "help",
+          "description": "Show this action catalog",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "Catalog"
+        },
+        {
+          "name": "schema",
+          "description": "Return the parameter schema for a named action",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "action",
+              "ty": "string",
+              "required": true,
+              "description": "Action name to describe"
+            }
+          ],
+          "returns": "Schema"
+        },
+        {
+          "name": "skills.list",
+          "description": "List compact metadata for caller-visible Agent Skills",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "origin",
+              "ty": "string",
+              "required": false,
+              "description": "Optional visible origin label to restrict results"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum results, default 100 and maximum 500"
+            }
+          ],
+          "returns": "SkillListResponse"
+        },
+        {
+          "name": "skills.search",
+          "description": "Search caller-visible Agent Skills by metadata without loading bodies",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "query",
+              "ty": "string",
+              "required": true,
+              "description": "Non-empty metadata search query"
+            },
+            {
+              "name": "origin",
+              "ty": "string",
+              "required": false,
+              "description": "Optional visible origin label to restrict results"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum matches, default 20 and maximum 100"
+            }
+          ],
+          "returns": "SkillSearchResponse"
+        },
+        {
+          "name": "skills.get",
+          "description": "Resolve one caller-visible skill entry by published URI",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Published skill or skill-file URI"
+            }
+          ],
+          "returns": "SkillGetResponse"
+        },
+        {
+          "name": "skills.read",
+          "description": "Read one manifest-bound verified text file from a caller-visible skill",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Published skill or skill-file URI"
+            }
+          ],
+          "returns": "VisibleSkillFile"
         }
       ]
     },

@@ -158,6 +158,41 @@ no daemon.
 
 ## Service Environment Variables
 
+### Code Mode runner isolation
+
+Code Mode uses the direct process backend by default. Linux/KVM deployments may
+opt into Microsandbox runner isolation with all three variables:
+
+```env
+LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox
+LABBY_CODE_MODE_MICROSANDBOX_EXE=/absolute/root-or-service-owned/path/to/msb
+LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
+```
+
+- `LABBY_CODE_MODE_RUNNER_BACKEND` accepts `process` (default) or
+  `microsandbox` (Linux only).
+- `LABBY_CODE_MODE_MICROSANDBOX_EXE` is required for `microsandbox` and must be
+  an absolute executable path owned by root or the service user and not writable
+  by group/other.
+- `LABBY_CODE_MODE_MICROSANDBOX_IMAGE` is required for `microsandbox`, must be
+  an immutable OCI digest reference (`name@sha256:<64 hex>`), and must already
+  be cached. URLs, userinfo, queries, and tag-only references are rejected.
+  Runtime pulls are disabled with `--pull never`. Before `labby setup
+  host-service install` or `restart` stops the healthy service, Labby preflights
+  this setting. A legacy mutable alias or short pinned reference is migrated only
+  when its exact digest can be proven from the `labby` service user's existing
+  Microsandbox cache: Labby registers the canonical registry+digest reference,
+  atomically rewrites the persistent `.env` or systemd drop-in, reloads systemd
+  when needed, and verifies the effective value. Missing cache state, an unsafe
+  alias, or an untraceable persistent source fails the preflight before restart.
+- `LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS` optionally bounds concurrent
+  microVMs process-wide (default `4`, hard maximum `16`) independently of the
+  generic runner-pool size and overflow settings.
+
+The host must separately provide working KVM access plus compatible `msb` and
+`libkrunfw` installations. See [CODE_MODE.md](../dev/CODE_MODE.md#microsandbox-runner-isolation-opt-in).
+
 Supported environment variables are generated from current product metadata.
 Gateway upstream secrets are referenced indirectly by environment-variable name;
 for example, a persisted upstream may point at

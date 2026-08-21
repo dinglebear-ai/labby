@@ -15,6 +15,7 @@ use super::protocol::{
 };
 use super::wrapper::{CODE_MODE_VALUE_CODEC_JS, code_mode_main_invoker};
 
+/// Run the long-lived Code Mode runner protocol loop over process stdio.
 pub fn run_code_mode_runner_stdio() -> ExitCode {
     // Security: prevent /proc/<pid>/environ readback of the runner process.
     // Must be the very first act — do this before any state is initialized.

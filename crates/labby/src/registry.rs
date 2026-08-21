@@ -210,9 +210,9 @@ impl ToolRegistry {
     }
 }
 
-// === lab-gateway in-process peer seam ===
+// === labby-gateway in-process peer seam ===
 //
-// The standalone `lab-gateway` upstream pool registers built-in lab services as
+// The standalone `labby-gateway` upstream pool registers built-in lab services as
 // in-process upstream peers without depending on this crate's registry types.
 // It does that through the `InProcessService` / `InProcessServiceRegistry`
 // traits; we implement them here for `RegisteredService` / `ToolRegistry` so the
@@ -249,7 +249,7 @@ impl labby_gateway::registry::InProcessServiceRegistry for ToolRegistry {
     }
 }
 
-// === lab-gateway service-registry seam ===
+// === labby-gateway service-registry seam ===
 //
 // The gateway manager needs read-only access to the host registry: the set of
 // registered service names, each service's actions, and the `&'static PluginMeta`
@@ -444,6 +444,15 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         });
     }
 
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::bootstrap_operator(
+        "skills",
+        crate::dispatch::skills::META.description,
+        "bootstrap",
+        crate::dispatch::skills::ACTIONS,
+        dispatch_fn!(crate::dispatch::skills::dispatch),
+    ));
+
     #[cfg(feature = "gateway")]
     reg.register(RegisteredService::bootstrap_operator(
         "snippets",
@@ -480,7 +489,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     }
 
     // fs — workspace filesystem browser. Registered unconditionally when the
-    // `fs` feature is enabled so the catalog and `lab help` stay discoverable;
+    // `fs` feature is enabled so the catalog and `labby help` stay discoverable;
     // runtime dispatch returns `workspace_not_configured` per-request when
     // the configured `workspace.root` cannot be resolved. `cli::serve` logs
     // invalid configuration as a warning once at boot.
@@ -489,14 +498,14 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     // `LABBY_WEB_UI_AUTH_DISABLED=true`), MCP `fs` registration has no
     // env-driven refusal. MCP transport auth (`LABBY_MCP_HTTP_TOKEN` /
     // OAuth, or stdio reachability) is the sole gate. See
-    // `crates/lab/src/mcp/CLAUDE.md` § "Transport auth for fs".
+    // `crates/labby/src/mcp/CLAUDE.md` § "Transport auth for fs".
     //
     // NOTE: fs has TWO action surfaces. The canonical slice is
     // `dispatch::fs::catalog::ACTIONS` (includes `fs.preview`); the MCP-filtered
     // slice `mcp::services::fs::ACTIONS` omits `fs.preview` because preview
     // streams raw bytes and is HTTP-only for prompt-injection reasons. The
     // registry uses the MCP slice because all current catalog consumers (MCP
-    // `lab.help`, `lab://catalog`, CLI `lab help`) correctly treat preview as
+    // `lab.help`, `lab://catalog`, CLI `labby help`) correctly treat preview as
     // hidden — MCP must not expose it, and CLI cannot invoke it (no
     // byte-streaming through clap). A future HTTP `/v1/<service>/actions`
     // resource should read `dispatch::fs::catalog::ACTIONS` directly, not via
@@ -710,6 +719,8 @@ mod tests {
             s.insert("gateway");
             #[cfg(feature = "gateway")]
             s.insert("snippets");
+            #[cfg(feature = "skills")]
+            s.insert("skills");
             s.insert(crate::dispatch::doctor::META.name); // always-on
             s.insert(crate::dispatch::server_logs::META.name); // always-on
             s.insert(crate::dispatch::setup::META.name); // always-on

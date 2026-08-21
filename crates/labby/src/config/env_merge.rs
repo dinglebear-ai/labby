@@ -631,7 +631,7 @@ fn quote_value(value: &str) -> String {
 }
 
 /// Strip enclosing double quotes from a serialized `.env` value and undo
-/// the `\"` / `\\` escapes applied by [`quote_value`]. Pub so the dispatch
+/// the `\"` / `\\` escapes applied by the private `quote_value` helper. Pub so the dispatch
 /// layer can use the same parser when reading `.env.draft` directly
 /// (no second copy of the same logic in `dispatch/setup/draft.rs`).
 #[must_use]

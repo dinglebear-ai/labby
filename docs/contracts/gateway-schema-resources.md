@@ -6,15 +6,14 @@ updated: "2026-07-30"
 
 # Contract: Gateway Schema Resources
 
-Status: draft
+Status: implemented
 Surfaces: MCP, HTTP API
-Related: [spec](../specs/gateway-schema-resources.md), `docs/dev/ERRORS.md`,
-`docs/design/SERIALIZATION.md`
+Related: `docs/dev/ERRORS.md`, `docs/design/SERIALIZATION.md`
 
 This contract pins the wire shape of the synthetic `lab://gateway/*`
 resources and their HTTP mirror. Any change to field names, field
 presence, or status mapping is a contract change and must be reflected
-here, in the spec, and in surface code in the same PR.
+here and in surface code in the same PR.
 
 ## URI scheme
 

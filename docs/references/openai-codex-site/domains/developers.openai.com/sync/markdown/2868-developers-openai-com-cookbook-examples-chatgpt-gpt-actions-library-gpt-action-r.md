@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_redshift [Redirecting from `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_redshift.ipynb/` to `/cookbook/examples/chatgpt/gpt\_actions\_library/gpt\_action\_redshift`](/cookbook/examples/chatgpt/gpt_actions_library/gpt_action_redshift)

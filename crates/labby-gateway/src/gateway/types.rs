@@ -197,6 +197,21 @@ pub struct PendingImportView {
     pub enrichment_suggestion_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayHeaderRecoveryMetricsView {
+    pub mismatch_detected: u64,
+    pub schema_refreshes: u64,
+    pub retry_successes: u64,
+    pub retry_failures: u64,
+}
+
+impl GatewayHeaderRecoveryMetricsView {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayRuntimeView {
     pub name: String,
@@ -228,6 +243,13 @@ pub struct GatewayRuntimeView {
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependency_hint: Option<DependencyHintView>,
+    /// Cumulative SEP-2243 header-schema self-healing activity for this
+    /// upstream. Omitted while all counters are zero.
+    #[serde(
+        default,
+        skip_serializing_if = "GatewayHeaderRecoveryMetricsView::is_empty"
+    )]
+    pub header_recovery: GatewayHeaderRecoveryMetricsView,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,6 +337,7 @@ pub struct GatewayUsageToolCount {
     pub operation: String,
     pub subject_scoped: bool,
     pub calls: i64,
+    pub failed: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -324,12 +347,73 @@ pub struct GatewayUsageActorCount {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageErrorCount {
+    pub kind: String,
+    pub calls: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageUpstreamCount {
+    pub upstream: String,
+    pub calls: i64,
+    pub failed: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageLatencyStat {
+    pub upstream: String,
+    pub tool: String,
+    pub avg_elapsed_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageTimeBucket {
+    pub ts_unix: i64,
+    pub calls: i64,
+    pub failed: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayUsageHourCount {
+    pub hour: u8,
+    pub calls: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayUsageToolFacet {
+    pub upstream: String,
+    pub tool: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayUsageFacets {
+    pub tools: Vec<GatewayUsageToolFacet>,
+    pub actors: Vec<String>,
+    pub upstreams: Vec<String>,
+    pub outcomes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GatewayUsageMetricsView {
+    pub window_total_calls: i64,
     pub total_calls: i64,
     pub error_calls: i64,
     pub avg_elapsed_ms: f64,
+    pub p50_elapsed_ms: i64,
+    pub p95_elapsed_ms: i64,
+    pub p99_elapsed_ms: i64,
+    pub distinct_tools: i64,
+    pub distinct_actors: i64,
+    pub peak_per_min: i64,
     pub top_tools: Vec<GatewayUsageToolCount>,
+    pub least_tools: Vec<GatewayUsageToolCount>,
     pub top_actors: Vec<GatewayUsageActorCount>,
+    pub slowest_tools: Vec<GatewayUsageLatencyStat>,
+    pub errors: Vec<GatewayUsageErrorCount>,
+    pub upstreams: Vec<GatewayUsageUpstreamCount>,
+    pub hourly: Vec<GatewayUsageHourCount>,
+    pub timeseries: Vec<GatewayUsageTimeBucket>,
+    pub facets: GatewayUsageFacets,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

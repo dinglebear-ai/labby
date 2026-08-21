@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+/// Return the capped exponential delay used between gateway reprobe attempts.
 #[must_use]
 pub fn reprobe_backoff(attempt: u32) -> Duration {
     let seconds = match attempt {
@@ -14,6 +15,7 @@ pub fn reprobe_backoff(attempt: u32) -> Duration {
     Duration::from_secs(seconds)
 }
 
+/// Return the inclusive ±20% jitter window around `delay`.
 pub fn jitter_window(delay: Duration) -> (Duration, Duration) {
     let millis = delay.as_millis() as u64;
     let spread = millis / 5;
@@ -22,6 +24,7 @@ pub fn jitter_window(delay: Duration) -> (Duration, Duration) {
     (Duration::from_millis(min), Duration::from_millis(max))
 }
 
+/// Deterministically choose a delay inside [`jitter_window`] using `seed`.
 pub fn jitter_delay(delay: Duration, seed: u64) -> Duration {
     let (min, max) = jitter_window(delay);
     let min_ms = min.as_millis() as u64;

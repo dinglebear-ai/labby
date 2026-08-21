@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/user\_and\_product\_embeddings [Redirecting from `/cookbook/examples/user\_and\_product\_embeddings.ipynb/` to `/cookbook/examples/user\_and\_product\_embeddings`](/cookbook/examples/user_and_product_embeddings)

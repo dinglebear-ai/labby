@@ -42,6 +42,9 @@ const LAB_INTERNAL_NAMESPACE: &str = "__lab_internal";
 /// pattern (FAIL-OPEN invariant).
 const MAX_SEMANTIC_QUERY_BYTES: usize = 8 * 1024;
 
+/// Maximum URI size accepted by the reserved resource-read bridge.
+const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
+
 /// Reserve time for the host to serialize and return the final MCP result.
 ///
 /// Downstream MCP clients commonly use a timeout close to Code Mode's
@@ -63,6 +66,7 @@ fn execution_timeout(timeout_ms: u64) -> Duration {
 }
 
 impl<H: CodeModeHost> CodeModeBroker<'_, H> {
+    /// Execute Code Mode and return the configured model-facing response.
     pub async fn execute(
         &self,
         code: &str,
@@ -78,6 +82,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .display_response)
     }
 
+    /// Execute Code Mode and retain both raw and model-shaped responses.
     pub async fn execute_with_raw_response(
         &self,
         code: &str,
@@ -447,6 +452,26 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             });
         };
         match tool {
+            "read_resource" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.trim().is_empty())
+                    .ok_or_else(|| ToolError::MissingParam {
+                        message: "read_resource requires a non-empty `uri`".to_string(),
+                        param: "uri".to_string(),
+                    })?;
+                if uri.len() > MAX_RESOURCE_URI_BYTES {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "invalid_param".to_string(),
+                        message: format!(
+                            "resource URI exceeds max length {MAX_RESOURCE_URI_BYTES} bytes"
+                        ),
+                    });
+                }
+                host.read_resource(uri.to_string(), caller, surface, scope)
+                    .await
+            }
             "semantic_rank" => {
                 let query = clamp_semantic_query(
                     params
@@ -1022,6 +1047,16 @@ mod tests {
             .into())
         }
 
+        async fn read_resource(
+            &self,
+            uri: String,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Value, ToolError> {
+            Ok(json!({ "contents": [{ "uri": uri }] }))
+        }
+
         async fn resolve_snippet(
             &self,
             _name: &str,
@@ -1059,6 +1094,29 @@ mod tests {
         fn openapi_http_client(&self) -> reqwest::Client {
             labby_openapi::http::build_dispatch_client().expect("test dispatch client")
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_read_resource_forwards_uri() {
+        let host = FixtureHost::new(Vec::new());
+        let broker = CodeModeBroker::new(Some(&host));
+
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::read_resource",
+                json!({ "uri": "lab://upstream/qa-vm-service/qa-vm-service://skill" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("read_resource must reach the host");
+
+        assert_eq!(
+            result["contents"][0]["uri"],
+            "lab://upstream/qa-vm-service/qa-vm-service://skill"
+        );
     }
 
     #[tokio::test]

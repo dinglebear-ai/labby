@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/articles/gpt-oss/build-your-own-fact-checker-cerebras [Redirecting from `/cookbook/articles/gpt-oss/build-your-own-fact-checker-cerebras.ipynb/` to `/cookbook/articles/gpt-oss/build-your-own-fact-checker-cerebras`](/cookbook/articles/gpt-oss/build-your-own-fact-checker-cerebras)

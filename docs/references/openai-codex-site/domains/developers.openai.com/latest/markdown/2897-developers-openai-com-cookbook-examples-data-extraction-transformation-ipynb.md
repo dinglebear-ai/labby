@@ -1,1 +1,0 @@
-Redirecting to: /cookbook/examples/data\_extraction\_transformation [Redirecting from `/cookbook/examples/data\_extraction\_transformation.ipynb/` to `/cookbook/examples/data\_extraction\_transformation`](/cookbook/examples/data_extraction_transformation)

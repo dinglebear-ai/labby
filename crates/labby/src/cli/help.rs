@@ -1,4 +1,4 @@
-//! `lab help` — print the shared service + action catalog.
+//! `labby help` — print the shared service + action catalog.
 
 use std::process::ExitCode;
 

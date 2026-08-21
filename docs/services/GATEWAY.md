@@ -252,6 +252,23 @@ missing, compare the running `labby --version` and binary with the build that
 introduced `gateway_status`; updating a source checkout does not replace an
 already-running service binary.
 
+### Settings MCP App
+
+Admin-capable MCP Apps hosts receive a synthetic `settings` tool bound to
+`ui://lab/settings/editor`. The responsive app reads Labby's canonical settings
+schema and presents section-scoped controls for Code Mode, proxying, surfaces,
+features, and other safe scalar settings. Read-only and advanced values remain
+redacted; restart requirements and effective value sources stay visible.
+
+The callbacks delegate to the existing `setup` service's `settings.schema`,
+`settings.state`, `settings.config.update`, and `settings.env.update` actions.
+The tool and resource require `lab:admin` and are omitted when the active route
+does not expose `setup`. Writes retain the setup dispatcher's backup-first,
+atomic-write, validation, and MRTR elicitation behavior. `config.update` and
+`env.update` inherit the destructive policy of their canonical `setup` actions;
+the app does not send a payload-level confirmation flag or bypass the host's
+native confirmation UI.
+
 `code_mode.result_shape_policy` defaults to `"off"`. When set to `"truncate"`,
 Labby shapes only successful completed final `result` values after the `__ui`
 unwrap and before envelope truncation. Sandbox-visible `callTool()` and
@@ -510,6 +527,20 @@ When `upstream` is set, the protected route does not need `backend_url`. Lab
 resolves the target URL and auth mode from the named `[[upstream]]` entry. For
 OAuth upstreams, Lab uses the upstream OAuth credential stored for the shared
 Gateway subject `gateway`.
+
+On the first `tools/list` for a protected route, Labby resolves the route's
+finite allowlist of enabled, non-OAuth upstreams before building the raw tool
+contract. This prevents a cold protected route from advertising an empty
+catalog while keeping the root route cache-only. Discovery is bounded by the
+configured upstream request timeout and discovery concurrency; individual
+upstream failures are logged and do not discard tools from healthy peers.
+
+Stdio upstreams normally use a dedicated connection when downstream client
+capabilities must be relayed. A singleton upstream that cannot safely spawn a
+second process may set `MCP_UPSTREAM_RELAY_MODE=pooled` in its `[[upstream]].env`
+table. That opt-out reuses the ordinary pooled connection, so the operator is
+responsible for ensuring the upstream does not require the downstream
+capabilities in its initial handshake.
 
 Fields:
 

@@ -32,7 +32,7 @@ use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
-    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+    GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_coalesce::schedule_catalog_notification;
@@ -101,25 +101,70 @@ fn retain_route_visible_gateway_status_rows(
     });
 }
 
-/// Attach the authenticated MCP subject to gateway mutations without replacing caller values.
-fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
+/// Attach authoritative authenticated MCP provenance to gateway mutations.
+#[cfg(feature = "gateway")]
+fn inject_gateway_origin_param(action: &str, params: Value, subject: Option<&str>) -> Value {
+    if !crate::dispatch::gateway::shared::action_accepts_runtime_owner(action) {
+        return params;
+    }
     let raw = subject
         .map(|value| format!("mcp:{value}"))
         .unwrap_or_else(|| "mcp:anonymous".to_string());
     let Some(mut object) = params.as_object().cloned() else {
         return params;
     };
-    object.entry("owner".to_string()).or_insert_with(|| {
+    object.insert(
+        "owner".to_string(),
         serde_json::json!({
             "surface": "mcp",
             "subject": subject,
             "raw": raw,
-        })
-    });
-    object
-        .entry("origin".to_string())
-        .or_insert_with(|| Value::String(raw));
+        }),
+    );
+    object.insert("origin".to_string(), Value::String(raw));
     Value::Object(object)
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod gateway_origin_tests {
+    use serde_json::json;
+
+    use super::inject_gateway_origin_param;
+
+    #[test]
+    fn strict_read_only_gateway_actions_do_not_receive_runtime_owner_params() {
+        let params = json!({"upstream": "fixture"});
+        assert_eq!(
+            inject_gateway_origin_param("gateway.skills.list", params.clone(), Some("alice")),
+            params
+        );
+    }
+
+    #[test]
+    fn gateway_mutations_keep_mcp_runtime_owner_provenance() {
+        let enriched =
+            inject_gateway_origin_param("gateway.add", json!({"spec": {}}), Some("alice"));
+        assert_eq!(enriched["owner"]["surface"], "mcp");
+        assert_eq!(enriched["owner"]["subject"], "alice");
+        assert_eq!(enriched["origin"], "mcp:alice");
+    }
+
+    #[test]
+    fn gateway_mutations_overwrite_forged_mcp_runtime_provenance() {
+        let enriched = inject_gateway_origin_param(
+            "gateway.update",
+            json!({
+                "name": "fixture",
+                "patch": {},
+                "owner": {"surface": "forged", "subject": "mallory"},
+                "origin": "forged-origin"
+            }),
+            Some("alice"),
+        );
+        assert_eq!(enriched["owner"]["surface"], "mcp");
+        assert_eq!(enriched["owner"]["subject"], "alice");
+        assert_eq!(enriched["origin"], "mcp:alice");
+    }
 }
 
 impl LabMcpServer {
@@ -344,7 +389,12 @@ impl LabMcpServer {
                     .unwrap_or("codemode");
                 if !matches!(
                     target,
-                    "codemode" | "gateway_status" | "server_logs" | "add_server" | "all"
+                    "codemode"
+                        | "gateway_status"
+                        | "server_logs"
+                        | "add_server"
+                        | "settings"
+                        | "all"
                 ) {
                     let envelope = build_error_extra(
                         &service,
@@ -352,7 +402,7 @@ impl LabMcpServer {
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
                         &serde_json::json!({
-                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "all"]
+                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
                         }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
@@ -451,11 +501,13 @@ impl LabMcpServer {
                     "gateway_status" => enabled_apps.gateway_status,
                     "server_logs" => enabled_apps.server_logs,
                     "add_server" => enabled_apps.add_server,
+                    "settings" => enabled_apps.settings,
                     "all" => {
                         enabled_code_mode
                             && enabled_apps.gateway_status
                             && enabled_apps.server_logs
                             && enabled_apps.add_server
+                            && enabled_apps.settings
                     }
                     _ => unreachable!("target validated above"),
                 };
@@ -467,6 +519,7 @@ impl LabMcpServer {
                         }
                         "server_logs" => previous_apps.server_logs != enabled_apps.server_logs,
                         "add_server" => previous_apps.add_server != enabled_apps.add_server,
+                        "settings" => previous_apps.settings != enabled_apps.settings,
                         "all" => {
                             previous_code_mode != enabled_code_mode || previous_apps != enabled_apps
                         }
@@ -511,6 +564,10 @@ impl LabMcpServer {
                         "add_server": {
                             "enabled": enabled_apps.add_server,
                             "tool": ADD_SERVER_TOOL_NAME,
+                        },
+                        "settings": {
+                            "enabled": enabled_apps.settings,
+                            "tool": SETTINGS_TOOL_NAME,
                         },
                     },
                     "notification_scheduled": notification_scheduled,
@@ -672,8 +729,11 @@ impl LabMcpServer {
                             );
                             return Ok(error_result_from_envelope(envelope).into());
                         }
-                        let params =
-                            inject_gateway_origin_param(params, self.request_subject(&context));
+                        let params = inject_gateway_origin_param(
+                            gateway_action,
+                            params,
+                            self.request_subject(&context),
+                        );
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                             oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
@@ -743,6 +803,11 @@ impl LabMcpServer {
                             )
                             .map(|subject| subject.into_owned()),
                         };
+                        if synthetic_action == "refresh" {
+                            manager
+                                .refresh_gateway_status_catalog(&enrichment_scope)
+                                .await;
+                        }
                         crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
                             "gateway.list",
@@ -760,6 +825,60 @@ impl LabMcpServer {
                         valid: vec!["open".to_string(), "refresh".to_string()],
                         hint: None,
                     }),
+                };
+                let result =
+                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let elapsed_ms = start.elapsed().as_millis();
+                let input_tokens = estimate_tokens_args(&args);
+                let (result, outcome) = format_dispatch_result(
+                    result,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    &self.request_subject_log_tag(&context),
+                    self.request_actor_key(&context),
+                    input_tokens,
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    outcome,
+                )
+                .await;
+                return Ok(result.into());
+            }
+
+            let handles_settings = service == SETTINGS_TOOL_NAME
+                && self.mcp_apps_config().await.settings
+                && admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
+                && self.route_scope.allows_service("setup")
+                && self.service_visible_on_mcp("setup").await;
+            if handles_settings {
+                let synthetic_action = if action.is_empty() {
+                    "open"
+                } else {
+                    action.as_str()
+                };
+                let setup_action = match synthetic_action {
+                    "open" | "schema" => Some("settings.schema"),
+                    "state" => Some("settings.state"),
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                let result = if let Some(setup_action) = setup_action {
+                    crate::dispatch::setup::dispatch(setup_action, params).await
+                } else {
+                    Err(ToolError::UnknownAction {
+                        message: format!("unknown Settings action `{synthetic_action}`"),
+                        valid: vec!["open", "schema", "state", "config.update", "env.update"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                        hint: None,
+                    })
                 };
                 let result =
                     result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
@@ -915,6 +1034,27 @@ impl LabMcpServer {
             }
         }
 
+        if service == "skills"
+            && !matches!(action.as_str(), "help" | "schema")
+            && !resolve_caller_authorization(
+                auth_context_from_extensions(&context.extensions),
+                self.absent_auth_trust(),
+                propagated_caller_auth(request.meta.as_ref()),
+            )
+            .can_read()
+        {
+            let envelope = build_error_extra(
+                &service,
+                &action,
+                "forbidden",
+                "skills require one of scopes: lab:read, lab, lab:admin",
+                &serde_json::json!({
+                    "required_scopes": ["lab:read", "lab", "lab:admin"]
+                }),
+            );
+            return Ok(error_result_from_envelope(envelope).into());
+        }
+
         if let Some(entry) = svc
             && !tool_execute_builtin_action_allowed(
                 entry,
@@ -990,7 +1130,22 @@ impl LabMcpServer {
                     .await
                     .map(Into::into);
             }
-            let result = if service == "gateway" {
+            let result = if service == "skills" {
+                #[cfg(feature = "skills")]
+                {
+                    self.dispatch_compat_tool_boxed(
+                        &context,
+                        request.meta.as_ref(),
+                        &action,
+                        params,
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "skills"))]
+                {
+                    (entry.dispatch)(action.clone(), params).await
+                }
+            } else if service == "gateway" {
                 #[cfg(feature = "gateway")]
                 {
                     let Some(manager) = &self.gateway_manager else {
@@ -1002,8 +1157,11 @@ impl LabMcpServer {
                         );
                         return Ok(error_result_from_envelope(envelope).into());
                     };
-                    let params =
-                        inject_gateway_origin_param(params, self.request_subject(&context));
+                    let params = inject_gateway_origin_param(
+                        &action,
+                        params,
+                        self.request_subject(&context),
+                    );
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                         oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
@@ -1215,6 +1373,25 @@ impl LabMcpServer {
                         .is_some_and(|entry| {
                             entry.actions.iter().any(|candidate| {
                                 candidate.name == gateway_action && candidate.destructive
+                            })
+                        })
+                });
+            }
+
+            if service == SETTINGS_TOOL_NAME {
+                let setup_action = match action {
+                    "config.update" => Some("settings.config.update"),
+                    "env.update" => Some("settings.env.update"),
+                    _ => None,
+                };
+                return setup_action.is_some_and(|setup_action| {
+                    self.registry
+                        .services()
+                        .iter()
+                        .find(|entry| entry.name == "setup")
+                        .is_some_and(|entry| {
+                            entry.actions.iter().any(|candidate| {
+                                candidate.name == setup_action && candidate.destructive
                             })
                         })
                 });

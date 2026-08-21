@@ -52,7 +52,9 @@ fn is_false(value: &bool) -> bool {
 /// One `{uri, digest}` pair from a skill entry's `resources` manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillResource {
+    /// Resource URI relative to the skill protocol namespace.
     pub uri: String,
+    /// Content digest advertised for integrity verification.
     pub digest: String,
 }
 
@@ -90,6 +92,7 @@ impl SkillEntry {
 /// `skills/list` request parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsListParams {
+    /// Opaque pagination cursor returned by the previous list response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
@@ -101,6 +104,7 @@ pub struct SkillsListParams {
 /// as proof that a server has no skills.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsListResult {
+    /// Skill entries returned on this page.
     #[serde(default)]
     pub skills: Vec<SkillEntry>,
     #[serde(
@@ -108,6 +112,7 @@ pub struct SkillsListResult {
         default,
         skip_serializing_if = "Option::is_none"
     )]
+    /// Opaque cursor for the next page, or `None` when pagination is complete.
     pub next_cursor: Option<String>,
     /// Freshness hint for the listing, per the base protocol's list-caching
     /// attributes. A hint only — never an integrity property.
@@ -189,6 +194,7 @@ impl SkillsListResult {
 /// `skills/get` request parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsGetParams {
+    /// Full URI of the skill entry to retrieve.
     pub uri: String,
 }
 
@@ -197,6 +203,7 @@ pub struct SkillsGetParams {
 /// The entry is nested under a `skill` key rather than returned flat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsGetResult {
+    /// Retrieved skill entry.
     pub skill: SkillEntry,
 }
 

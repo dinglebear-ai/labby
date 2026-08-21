@@ -41,7 +41,7 @@ When a request fails, operators must be able to answer:
 Observability is split across two layers:
 
 - `lab` owns caller context and dispatch logging
-- `lab-apis` owns outbound request logging and transport failure detail
+- `labby-apis` owns outbound request logging and transport failure detail
 
 That means:
 
@@ -150,7 +150,7 @@ authorization or filtering.
 
 ### Shared Outbound Requests
 
-`lab-apis::core::HttpClient` must emit:
+`labby-apis::core::HttpClient` must emit:
 
 - one `request.start` event before every outbound call
 - one `request.finish` event on success
@@ -196,6 +196,16 @@ surrounding caller context, including `request_id` when present. Timeouts must
 be logged as explicit failures rather than disappearing into generic disconnect
 noise.
 
+SEP-2243 tool-header recovery has its own structured sub-events. A typed rmcp
+`HEADER_MISMATCH` emits `action = "tool.header_mismatch"`, `event = "detected"`,
+`upstream`, and `mismatch_count`. The same-peer `tools/list` refresh emits
+`action = "tool.header_cache.refresh"` with `event = "start|finish|error"` and
+`schema_refresh_count`; a replay emits `action = "tool.header_cache.retry"` with
+`event = "finish|error"` and the corresponding retry counter. Gateway runtime
+status exposes these cumulative per-upstream values as `header_recovery`, omitted
+while all counts are zero. Never emit tool arguments or synthesized
+`Mcp-Param-*` values in these events.
+
 Resource catalog fan-out uses `operation = "resources.list"`. Each upstream
 emits `upstream.request.start` followed by `upstream.request.finish` or
 `upstream.request.error`, including `subject_scoped = true` for OAuth resource
@@ -233,7 +243,7 @@ not `logging/setLevel` or `notifications/message`.
 
 Every upstream tool/resource/prompt call outcome recorded by `upstream.request.finish`/`upstream.request.error` (above) is also durably persisted to a small SQLite store at `~/.labby/usage.db`, via `UpstreamPool`'s `timed_capability_call` choke point (`crates/labby-gateway/src/upstream/pool/capability_call.rs`). This is a fire-and-forget write (`tokio::spawn`) — it never adds latency or failure risk to the call it's observing, and a write failure is logged (`usage store record_call failed`) and dropped, never surfaced to the caller.
 
-Query it via the `gateway.usage.metrics` (aggregated totals/top-tools/top-actors) and `gateway.usage.calls` (raw paginated records) actions — both admin-gated, same as `gateway.enrich.*`. CLI: `labby gateway usage metrics` / `labby gateway usage calls`. Both actions enforce the same route-scope restriction as `gateway.enrich.*` — a route-scoped caller only sees usage data for the upstreams visible on their route.
+Query it via `gateway.usage.metrics` and `gateway.usage.calls` — both admin-gated, same as `gateway.enrich.*`. `gateway.usage.metrics` computes complete-window totals, failures, latency percentiles, top/least/slow targets, actors, upstream distribution, throughput, hourly activity, time buckets, and optional stable filter facets from the durable store. Exact aggregation is limited to 250,000 matching rows; broader queries return `invalid_param` and must be narrowed. Optional facets also return `invalid_param` when any facet exceeds 1,000 distinct values rather than silently returning an incomplete inventory. Hourly activity accepts an IANA timezone for DST-correct local-hour buckets, with `timezone_offset_minutes` retained as a fixed-offset compatibility fallback in the inclusive range -1440 to 1440. `gateway.usage.calls` is the bounded keyset-paginated event explorer and supports the same upstream/target/actor/outcome/search filters. CLI: `labby gateway usage metrics` / `labby gateway usage calls`; the CLI exposes the same filters and aggregate bucket/facet options as the shared action contract. Both actions enforce the same route-scope restriction as `gateway.enrich.*` — a route-scoped caller only sees usage data for the upstreams visible on their route.
 
 Set `LABBY_GATEWAY_USAGE_DISABLED=1` to disable capture entirely (no store is opened at startup). Retained rows are pruned on a 6-hour cycle to a 30-day retention window; `labby serve` starts the loop but the batched deletion logic (`UsageStore::spawn_prune_loop`/`prune_older_than`, deleting up to 5,000 rows per statement so a large backlog never holds SQLite's writer lock for long) lives entirely in `UsageStore`.
 
@@ -409,6 +419,12 @@ descriptors by themselves. Reconcile logs therefore separate namespace
 determinants from suppressed raw-tool churn. Final Code Mode responses are also
 capped at the documented byte budget after trace composition, so truncation is
 deterministic and visible instead of surfacing as a client transport failure.
+Code Mode result-ack reserve activation logs once per execution at DEBUG as
+`action = "codemode.result_ack.reserve"`, `event = "armed"`, with `reserve_ms`
+and monotonic `result_ack_reserve_use_count`. Only a genuine full settlement
+grace expiry logs at WARN as `action = "codemode.settlement"`,
+`event = "watchdog_expired"`, with `settlement_watchdog_expiry_count`; an outer
+execution timeout must not increment or masquerade as that watchdog signal.
 
 - `LABBY_MCP_CATALOG_COALESCE_MS` — settle window (default `250`, clamped 1–10000)
 - `LABBY_MCP_CATALOG_MAX_HOLD_MS` — total deferral bound (default `5000`, clamped 100–120000)

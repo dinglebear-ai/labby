@@ -16,9 +16,21 @@ use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct DashboardCatalogResponder {
     discover_requests: std::sync::Arc<AtomicUsize>,
+    list_requests: std::sync::Arc<AtomicUsize>,
+    tool_count: std::sync::Arc<AtomicUsize>,
+}
+
+impl Default for DashboardCatalogResponder {
+    fn default() -> Self {
+        Self {
+            discover_requests: std::sync::Arc::new(AtomicUsize::new(0)),
+            list_requests: std::sync::Arc::new(AtomicUsize::new(0)),
+            tool_count: std::sync::Arc::new(AtomicUsize::new(1)),
+        }
+    }
 }
 
 impl Respond for DashboardCatalogResponder {
@@ -46,17 +58,28 @@ impl Respond for DashboardCatalogResponder {
                     }
                 }))
             }
-            "tools/list" => ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "tools": [{
-                        "name": "dashboard_echo",
-                        "description": "dashboard discovery proof",
-                        "inputSchema": {"type": "object"}
-                    }]
-                }
-            })),
+            "tools/list" => {
+                self.list_requests.fetch_add(1, Ordering::SeqCst);
+                let count = self.tool_count.load(Ordering::SeqCst);
+                let tools: Vec<Value> = (0..count)
+                    .map(|index| {
+                        json!({
+                            "name": if index == 0 {
+                                "dashboard_echo".to_string()
+                            } else {
+                                format!("dashboard_echo_{index}")
+                            },
+                            "description": "dashboard discovery proof",
+                            "inputSchema": {"type": "object"}
+                        })
+                    })
+                    .collect();
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"tools": tools}
+                }))
+            }
             other => ResponseTemplate::new(500)
                 .set_body_string(format!("unexpected MCP method: {other}")),
         }
@@ -434,8 +457,94 @@ async fn gateway_usage_metrics_returns_zeroed_view_with_no_calls() {
     let result = dispatch_with_manager(&manager, "gateway.usage.metrics", json!({}))
         .await
         .expect("dispatch succeeds");
+    assert_eq!(result["window_total_calls"], 0);
     assert_eq!(result["total_calls"], 0);
     assert_eq!(result["error_calls"], 0);
+    assert_eq!(result["p95_elapsed_ms"], 0);
+    assert_eq!(result["distinct_tools"], 0);
+    assert_eq!(result["distinct_actors"], 0);
+    assert_eq!(result["timeseries"], json!([]));
+    assert_eq!(result["facets"]["tools"], json!([]));
+}
+
+#[tokio::test]
+async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+    let usage_store = std::sync::Arc::new(
+        crate::usage::UsageStore::open(tempfile::tempdir().unwrap().path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    for (ts_unix, actor, outcome) in [(1_000, "alice", "ok"), (1_100, "bob", "timeout")] {
+        usage_store
+            .record_call(crate::usage::UpstreamCallRecord {
+                ts_unix,
+                upstream_name: "github".to_string(),
+                tool_name: "search_repos".to_string(),
+                capability: "tools".to_string(),
+                operation: "tool.call".to_string(),
+                subject_scoped: false,
+                actor: actor.to_string(),
+                outcome: outcome.to_string(),
+                elapsed_ms: if outcome == "ok" { 10 } else { 50 },
+                response_bytes: Some(128),
+            })
+            .await
+            .unwrap();
+    }
+    let manager = manager.with_usage_store(usage_store);
+
+    let metrics = dispatch_with_manager(
+        &manager,
+        "gateway.usage.metrics",
+        json!({
+            "since_unix": 0,
+            "until_unix": 1200,
+            "tool": "github::search_repos",
+            "actor": "bob",
+            "outcome": "failed",
+            "search": "timeout",
+            "bucket_count": 2,
+            "timezone_offset_minutes": -240,
+            "include_facets": true
+        }),
+    )
+    .await
+    .expect("filtered metrics dispatch succeeds");
+
+    assert_eq!(metrics["window_total_calls"], 2);
+    assert_eq!(metrics["total_calls"], 1);
+    assert_eq!(metrics["error_calls"], 1);
+    assert_eq!(metrics["p50_elapsed_ms"], 50);
+    assert_eq!(metrics["p95_elapsed_ms"], 50);
+    assert_eq!(metrics["timeseries"].as_array().map(Vec::len), Some(2));
+    assert_eq!(metrics["facets"]["actors"], json!(["alice", "bob"]));
+    assert_eq!(metrics["facets"]["upstreams"], json!(["github"]));
+
+    let calls = dispatch_with_manager(
+        &manager,
+        "gateway.usage.calls",
+        json!({
+            "tool": "github::search_repos",
+            "actor": "bob",
+            "outcome": "failed",
+            "search": "timeout",
+            "limit": 50,
+            "include_total": true
+        }),
+    )
+    .await
+    .expect("filtered calls dispatch succeeds");
+    assert_eq!(calls["total_matching"], 1);
+    assert_eq!(calls["calls"].as_array().map(Vec::len), Some(1));
+    assert_eq!(calls["calls"][0]["outcome"], "timeout");
 }
 
 #[tokio::test]
@@ -610,7 +719,7 @@ fn gateway_actions_include_servers_and_schema() {
 
 /// Test stub registry that knows a single `deploy` service with a small action
 /// catalog. The host's real default-registry builder lives in `lab`, not
-/// `lab-gateway`; gateway dispatch tests that exercise service-aware behavior
+/// `labby-gateway`; gateway dispatch tests that exercise service-aware behavior
 /// (`gateway.service_actions`, virtual-server enable/policy validation) inject
 /// this so `service_meta`/`service_actions`/`contains_service` resolve `deploy`.
 struct DeployTestRegistry;
@@ -1849,6 +1958,104 @@ async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
 }
 
 #[tokio::test]
+async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() {
+    let server = MockServer::start().await;
+    let responder = DashboardCatalogResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![UpstreamConfig {
+            enabled: true,
+            name: "dashboard-http".to_string(),
+            url: Some(format!("{}/mcp", server.uri())),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }])
+        .await;
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    let first = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("first list");
+    let first_row = first
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(first_row["discovered_tool_count"], 1);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    responder.tool_count.store(3, Ordering::SeqCst);
+    let stale = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("cached list");
+    let stale_row = stale
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(stale_row["discovered_tool_count"], 1);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "different-upstream".to_string()
+            ])),
+            oauth_subject: None,
+        })
+        .await;
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .await;
+
+    let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("refreshed list");
+    let refreshed_row = refreshed
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(refreshed_row["discovered_tool_count"], 3);
+    assert_eq!(refreshed_row["exposed_tool_count"], 3);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
@@ -2012,7 +2219,7 @@ async fn supported_services_payload_is_an_array() {
 #[ignore = "filter_built_in_upstream_apis is a no-op post-pivot (no BuiltInUpstreamApi services left); deploy/setup are never omitted — prod change required"]
 async fn supported_services_omits_upstreams_when_policy_disabled() {
     // NOTE: the default-registry builder + upstream-API filter live in the `lab`
-    // binary, not `lab-gateway`. This test is permanently `#[ignore]`d (the filter
+    // binary, not `labby-gateway`. This test is permanently `#[ignore]`d (the filter
     // is a no-op post-pivot), so an `EmptyServiceRegistry` keeps it compiling here.
     let registry = std::sync::Arc::new(crate::gateway::service_registry::EmptyServiceRegistry);
     let manager = test_manager().with_builtin_service_registry(registry);
@@ -2395,7 +2602,7 @@ async fn gateway_get_rejects_missing_name() {
 
 /// `gateway.test` with a `spec` whose `command` field names a stdio upstream
 /// **executes that command as a real child process**.  This test uses `echo` so
-/// the subprocess exits cleanly on all platforms.  See docs/UPSTREAM.md §"Testing
+/// the subprocess exits cleanly on all platforms.  See docs/services/UPSTREAM.md §"Testing
 /// with Stdio Upstreams" and the SECURITY NOTE in the `gateway.test` handler.
 #[tokio::test]
 async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {

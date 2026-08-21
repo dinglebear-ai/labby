@@ -1,5 +1,5 @@
 //! Env-file persistence: canonical `.env` path resolution and gateway
-//! bearer-token writes, both delegated to the host-owned [`GatewayConfigStore`].
+//! bearer-token writes, both delegated to the host-owned `GatewayConfigStore`.
 //!
 //! The manager owns only the gateway-specific policy (token normalization and
 //! env-name validation); the actual `.env` backup/atomic-write and any cached

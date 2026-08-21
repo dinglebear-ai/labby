@@ -39,6 +39,8 @@ pub(crate) const SERVER_LOGS_TOOL_NAME: &str = "server_logs";
 pub(crate) const ADD_SERVER_TOOL_NAME: &str = "add_server";
 /// Lab-owned MCP App entry point for live gateway upstream status.
 pub(crate) const GATEWAY_STATUS_TOOL_NAME: &str = "gateway_status";
+/// Lab-owned MCP App entry point for schema-backed runtime settings.
+pub(crate) const SETTINGS_TOOL_NAME: &str = "settings";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodeModeVisibility {
@@ -240,7 +242,7 @@ impl LabMcpServer {
         }
         #[cfg(not(feature = "gateway"))]
         {
-            self.route_scope.allows_service(service)
+            crate::mcp::peer_contract::route_allows_mcp_service(&self.route_scope, service)
         }
     }
 

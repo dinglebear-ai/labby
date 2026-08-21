@@ -2,7 +2,7 @@
 //!
 //! `setup` is a synthetic Bootstrap service: no remote API, no
 //! `ServiceClient` impl, no required env. The real work (fs I/O, draft
-//! merge, audit orchestration) lives in `crates/lab/src/dispatch/setup/`.
+//! merge, audit orchestration) lives in `crates/labby/src/dispatch/setup/`.
 //! This module exposes only:
 //!
 //! - `META` — `PluginMeta` for registry discovery.

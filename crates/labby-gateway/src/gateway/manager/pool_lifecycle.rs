@@ -229,6 +229,29 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayCatalogDiff, ToolError> {
+        self.reload_with_origin_unlocked_mode(origin, owner, false)
+            .await
+    }
+
+    /// Transaction-owned reload path. Config transactions already execute in
+    /// an owned task, so per-upstream changes may reconcile the published pool
+    /// in place without inheriting caller-cancellation risk. Direct/manual
+    /// reloads keep the private replacement-pool path below.
+    pub(super) async fn reload_with_origin_unlocked_transactional(
+        &self,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+    ) -> Result<GatewayCatalogDiff, ToolError> {
+        self.reload_with_origin_unlocked_mode(origin, owner, true)
+            .await
+    }
+
+    async fn reload_with_origin_unlocked_mode(
+        &self,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        allow_in_place_selective: bool,
+    ) -> Result<GatewayCatalogDiff, ToolError> {
         let started = Instant::now();
         tracing::info!(
             surface = "dispatch",
@@ -318,10 +341,11 @@ impl GatewayManager {
         let new_mcp_ui_enabled = runtime_cfg.code_mode.mcp_ui_enabled;
         let new_ns_tokens = code_mode_namespace_tokens(&runtime_cfg);
 
-        let (pool_settings_unchanged, changed_upstreams) = {
+        let (previous_cfg, pool_settings_unchanged, changed_upstreams) = {
             let current = self.config.read().await;
             let changed_upstreams = upstream_changed_names(&current, &cfg);
             (
+                current.clone(),
                 pool_settings_fingerprint(&current) == pool_settings_fingerprint(&cfg),
                 changed_upstreams,
             )
@@ -358,6 +382,159 @@ impl GatewayManager {
             );
             return Ok(diff);
         }
+
+        if allow_in_place_selective
+            && pool_settings_unchanged
+            && !changed_upstreams.is_empty()
+            && let Some(pool) = existing_pool.as_ref()
+        {
+            let before = snapshot_from_pool(
+                Some(Arc::clone(pool)),
+                old_code_mode_enabled,
+                old_mcp_ui_enabled,
+                &old_ns_tokens,
+            )
+            .await;
+            // Publish the new config and perform only the in-memory changed-name
+            // eviction/seed while holding the publication writer. Never wait on
+            // upstream I/O under this lock: several MCP readers retain the live
+            // pool Arc directly, so a network probe here would stretch a tiny
+            // config/runtime convergence window into the full upstream timeout.
+            {
+                let _publication = self.publication_barrier.write().await;
+                self.store
+                    .set_process_code_mode_enabled(cfg.code_mode.enabled);
+                self.code_mode_app_state
+                    .set_enabled(cfg.code_mode.mcp_ui_enabled);
+                *self.protected_route_index.write().await =
+                    ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
+                *self.config.write().await = cfg.clone();
+                pool.reconcile_lazy_upstreams(
+                    &cfg.upstream,
+                    &changed_upstreams,
+                    "gateway.reload.transactional_selective",
+                )
+                .await;
+            }
+
+            // Only the changed upstreams are cold-probed, after the candidate
+            // revision is published. During this wait the pool/config pair is a
+            // valid lazy-runtime state rather than a private candidate leaking
+            // behind the old config revision.
+            probe_reload_upstreams(
+                Arc::clone(pool),
+                &cfg,
+                Some(&changed_upstreams),
+                owner.as_ref(),
+            )
+            .await;
+            let after = snapshot_from_pool(
+                Some(Arc::clone(pool)),
+                new_code_mode_enabled,
+                new_mcp_ui_enabled,
+                &new_ns_tokens,
+            )
+            .await;
+
+            // Runtime-state persistence is the only fallible step after the
+            // in-place reconcile. If it fails, restore both the published config
+            // and the changed pool entries before surfacing the error; otherwise
+            // the outer disk rollback would see the old config already live and
+            // incorrectly treat the candidate-mutated pool as a no-op reload.
+            if let Err(error) = self
+                .reconcile_runtime_state(&cfg, Some(pool.as_ref()))
+                .await
+            {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.reload",
+                    event = "selective.rollback.start",
+                    phase = "runtime_state",
+                    error = %error,
+                    changed_upstream_count = changed_upstreams.len(),
+                    "transactional selective reconcile failed; restoring prior live revision"
+                );
+                {
+                    let _publication = self.publication_barrier.write().await;
+                    self.store
+                        .set_process_code_mode_enabled(previous_cfg.code_mode.enabled);
+                    self.code_mode_app_state
+                        .set_enabled(previous_cfg.code_mode.mcp_ui_enabled);
+                    *self.protected_route_index.write().await =
+                        ProtectedRouteIndex::from_routes(&previous_cfg.protected_mcp_routes);
+                    *self.config.write().await = previous_cfg.clone();
+                    pool.reconcile_lazy_upstreams(
+                        &previous_cfg.upstream,
+                        &changed_upstreams,
+                        "gateway.reload.transactional_selective.rollback",
+                    )
+                    .await;
+                }
+                // Leave restored upstreams lazy. Rollback must not depend on
+                // network availability; the next real request can reconnect the
+                // previous runtime on demand.
+                if let Err(rollback_error) = self
+                    .reconcile_runtime_state(&previous_cfg, Some(pool.as_ref()))
+                    .await
+                {
+                    tracing::error!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.reload",
+                        event = "selective.rollback.runtime_state_error",
+                        error = %rollback_error,
+                        "prior live revision restored but runtime-state persistence still failed"
+                    );
+                }
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.reload",
+                    event = "selective.rollback.finish",
+                    changed_upstream_count = changed_upstreams.len(),
+                    "transactional selective live revision restored"
+                );
+                return Err(error);
+            }
+
+            let observed = ReconcileCatalogObservation::observe(
+                &before,
+                &after,
+                new_code_mode_enabled,
+                lab_owned_surface_changed,
+            );
+            let diff = observed.diff.clone();
+            self.notify_catalog_changes(&diff, SOURCE_GATEWAY_RELOAD_SELECTIVE);
+            tracing::info!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.reload",
+                event = "catalog.refresh.finish",
+                phase = "finish",
+                source = SOURCE_GATEWAY_RELOAD_SELECTIVE,
+                pool_rebuild_skipped = true,
+                transactional_selective = true,
+                changed_upstream_count = changed_upstreams.len(),
+                lab_owned_surface_changed,
+                projection = observed.projection,
+                tools_changed = diff.tools_changed,
+                resources_changed = diff.resources_changed,
+                prompts_changed = diff.prompts_changed,
+                tools_added = ?observed.delta.added,
+                tools_removed = ?observed.delta.removed,
+                namespaces_added = ?observed.delta.namespaces_added,
+                namespaces_removed = ?observed.delta.namespaces_removed,
+                delta_truncated_count = observed.delta.truncated,
+                raw_tools_changed = observed.raw_tools_changed,
+                suppressed_raw_churn = observed.suppressed_raw_churn,
+                suppressed_raw_churn_total = observed.suppressed_raw_churn_total,
+                elapsed_ms = started.elapsed().as_millis(),
+                "gateway reconcile (transactional per-upstream selective)"
+            );
+            return Ok(diff);
+        }
+
         let old_pool = existing_pool;
         let before = snapshot_from_pool(
             old_pool.clone(),
@@ -399,63 +576,12 @@ impl GatewayManager {
             "gateway reconcile"
         );
 
-        // Eagerly probe all upstreams so the after-snapshot reflects real tool
-        // counts. seed_lazy_upstreams() only creates skeleton entries with empty
-        // tool maps; without this the diff always reports tools_changed: ✗ even
-        // when new upstreams were added, because both before and after snapshots
-        // are empty (discovery is lazy and only triggered on the first list_tools
-        // call). Bounded by LABBY_UPSTREAM_DISCOVERY_CONCURRENCY (default 3) to
-        // match the refresh path in code_mode_runtime.rs.
+        // Full/manual reloads retain the private replacement-pool semantics,
+        // including eager discovery of every enabled upstream so raw-mode
+        // catalog diffs remain exact. Transactional mutations take the
+        // selective branch above and probe only changed upstreams.
         if let Some(ref pool) = fresh_pool {
-            let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
-                cfg.gateway.upstream_discovery_concurrency,
-            );
-            let pool_arc = Arc::clone(pool);
-            let enabled: Vec<_> = cfg.upstream.iter().filter(|u| u.enabled).cloned().collect();
-            // Step 1: connect all upstreams and discover tools.
-            futures::stream::iter(enabled)
-                .map(|upstream| {
-                    let pool = Arc::clone(&pool_arc);
-                    async move {
-                        let name = upstream.name.clone();
-                        match pool.ensure_tools_for_upstream(&upstream, None, None).await {
-                            Ok(true) => tracing::info!(
-                                surface = "dispatch",
-                                service = "gateway",
-                                action = "gateway.reload",
-                                event = "upstream.probe.connected",
-                                upstream = %name,
-                                "upstream probed and connected on reload"
-                            ),
-                            Ok(false) => tracing::debug!(
-                                surface = "dispatch",
-                                service = "gateway",
-                                action = "gateway.reload",
-                                event = "upstream.probe.cached",
-                                upstream = %name,
-                                "upstream already healthy; probe skipped"
-                            ),
-                            Err(e) => tracing::warn!(
-                                surface = "dispatch",
-                                service = "gateway",
-                                action = "gateway.reload",
-                                event = "upstream.probe.error",
-                                upstream = %name,
-                                error = %e,
-                                "upstream probe failed on reload"
-                            ),
-                        }
-                    }
-                })
-                .buffer_unordered(concurrency)
-                .collect::<Vec<_>>()
-                .await;
-            // Step 2: list resources for proxy_resources upstreams. This populates
-            // entry.resource_uris so read_upstream_ui_resource can reverse-lookup
-            // the owner of ui:// URIs (e.g. youtube_search_ui's MCP App widget).
-            // Must run after tool discovery since list_upstream_resources only
-            // contacts already-connected peers.
-            pool_arc.list_upstream_resources().await;
+            probe_reload_upstreams(Arc::clone(pool), &cfg, None, None).await;
         }
 
         let after = snapshot_from_pool(
@@ -578,6 +704,84 @@ impl GatewayManager {
 
         if let Some(notifier) = &self.notifier {
             notifier.notify_catalog_changes(diff, source);
+        }
+    }
+}
+
+async fn probe_reload_upstreams(
+    pool: Arc<UpstreamPool>,
+    cfg: &GatewayConfig,
+    allowed_names: Option<&HashSet<String>>,
+    runtime_owner: Option<&UpstreamRuntimeOwner>,
+) {
+    let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+        cfg.gateway.upstream_discovery_concurrency,
+    );
+    let enabled = cfg
+        .upstream
+        .iter()
+        .filter(|upstream| upstream.enabled)
+        .filter(|upstream| allowed_names.is_none_or(|names| names.contains(upstream.name.as_str())))
+        .cloned()
+        .collect::<Vec<_>>();
+    let resource_names = enabled
+        .iter()
+        .filter(|upstream| upstream.proxy_resources)
+        .map(|upstream| upstream.name.clone())
+        .collect::<BTreeSet<_>>();
+
+    futures::stream::iter(enabled)
+        .map(|upstream| {
+            let pool = Arc::clone(&pool);
+            async move {
+                let name = upstream.name.clone();
+                match pool
+                    .ensure_tools_for_upstream(&upstream, None, runtime_owner)
+                    .await
+                {
+                    Ok(true) => tracing::info!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.reload",
+                        event = "upstream.probe.connected",
+                        upstream = %name,
+                        "upstream probed and connected on reload"
+                    ),
+                    Ok(false) => tracing::debug!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.reload",
+                        event = "upstream.probe.cached",
+                        upstream = %name,
+                        "upstream already healthy; probe skipped"
+                    ),
+                    Err(error) => tracing::warn!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.reload",
+                        event = "upstream.probe.error",
+                        upstream = %name,
+                        error = %error,
+                        "upstream probe failed on reload"
+                    ),
+                }
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+    // Resource ownership must be populated after tool discovery because only
+    // connected peers can answer resources/list. A transactional selective
+    // reconcile limits that fan-out to the upstreams that actually changed.
+    match allowed_names {
+        Some(_) if !resource_names.is_empty() => {
+            pool.list_upstream_resources_allowed(Some(&resource_names))
+                .await;
+        }
+        Some(_) => {}
+        None => {
+            pool.list_upstream_resources().await;
         }
     }
 }

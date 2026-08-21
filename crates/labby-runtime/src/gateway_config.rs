@@ -26,8 +26,11 @@ use serde::{Deserialize, Serialize};
 /// exclude. Both are rejected at load (bead lab-eyeuv).
 pub const IN_PROCESS_UPSTREAM_PREFIX: &str = "__in_process__";
 
+/// Maximum characters retained from a Code Mode discovery hint.
 pub const CODE_MODE_HINT_MAX_CHARS: usize = 240;
+/// Maximum words retained from a Code Mode discovery hint.
 pub const CODE_MODE_HINT_MAX_WORDS: usize = 24;
+/// Version tag for the Code Mode hint sanitization contract.
 pub const CODE_MODE_HINT_SANITIZER_VERSION: &str = "code_mode_hint_v1";
 
 // ─── serde default helpers ───────────────────────────────────────────────────
@@ -43,6 +46,10 @@ fn default_code_mode_trace_params() -> bool {
 
 fn default_code_mode_timeout_ms() -> u64 {
     30_000
+}
+
+fn default_code_mode_max_source_bytes() -> usize {
+    128 * 1024
 }
 
 fn default_code_mode_max_response_bytes() -> usize {
@@ -102,6 +109,9 @@ pub struct McpAppsConfig {
     /// Advertise the synthetic Gateway Status app tool and its UI resources.
     #[serde(default = "default_true")]
     pub gateway_status: bool,
+    /// Advertise the schema-backed Settings app tool and its UI resources.
+    #[serde(default = "default_true")]
+    pub settings: bool,
 }
 
 impl Default for McpAppsConfig {
@@ -110,17 +120,21 @@ impl Default for McpAppsConfig {
             add_server: true,
             server_logs: true,
             gateway_status: true,
+            settings: true,
         }
     }
 }
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────
 
+/// Model-facing policy applied to oversized final Code Mode results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeModeResultShapePolicy {
+    /// Return the normal result envelope without additional shaping.
     #[default]
     Off,
+    /// Truncate oversized model-facing results to the configured limits.
     Truncate,
 }
 
@@ -165,6 +179,7 @@ impl SemanticSearchConfig {
 }
 
 // `Eq` intentionally omitted: `SemanticSearchConfig.blend_weight` is an `f32`.
+/// Runtime limits, visibility, trust, and result-shaping settings for Code Mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
@@ -192,6 +207,9 @@ pub struct CodeModeConfig {
     /// Maximum wall-clock time for one Code Mode execution.
     #[serde(default = "default_code_mode_timeout_ms")]
     pub timeout_ms: u64,
+    /// Maximum accepted Code Mode source size in bytes.
+    #[serde(default = "default_code_mode_max_source_bytes")]
+    pub max_source_bytes: usize,
     /// Maximum serialized response envelope size returned by codemode.
     #[serde(default = "default_code_mode_max_response_bytes")]
     pub max_response_bytes: usize,
@@ -251,6 +269,7 @@ impl Default for CodeModeConfig {
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
+            max_source_bytes: default_code_mode_max_source_bytes(),
             max_response_bytes: default_code_mode_max_response_bytes(),
             max_response_tokens: default_code_mode_max_response_tokens(),
             token_estimate_divisor: default_token_estimate_divisor(),
@@ -281,10 +300,16 @@ impl CodeModeConfig {
         })
     }
 
+    /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(1..=60_000).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
+            });
+        }
+        if !(1024..=1024 * 1024).contains(&self.max_source_bytes) {
+            return Err(ConfigError::InvalidCodeModeMaxSourceBytes {
+                value: self.max_source_bytes,
             });
         }
         if !(1024..=1024 * 1024).contains(&self.max_response_bytes) {
@@ -358,6 +383,7 @@ pub struct ImportSource {
 }
 
 impl ImportSource {
+    /// Construct an import provenance record from client, path, and timestamp.
     pub fn new(
         client: impl Into<String>,
         path: impl Into<String>,
@@ -372,12 +398,14 @@ impl ImportSource {
         }
     }
 
+    /// Attach the normalized discovered server name to this provenance record.
     #[must_use]
     pub fn with_server_name(mut self, server_name: impl Into<String>) -> Self {
         self.server_name = Some(server_name.into());
         self
     }
 
+    /// Attach the stable discovered transport fingerprint.
     #[must_use]
     pub fn with_transport_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
         self.transport_fingerprint = Some(fingerprint.into());
@@ -397,6 +425,7 @@ pub struct UpstreamImportTombstone {
 }
 
 impl UpstreamImportTombstone {
+    /// Create a tombstone stamped with the current time.
     pub fn now(name: impl Into<String>, imported_from: ImportSource) -> Self {
         Self {
             name: name.into(),
@@ -427,9 +456,13 @@ pub enum GatewayImportMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamTransport {
+    /// Streamable HTTP transport over TCP/TLS.
     Http,
+    /// WebSocket MCP transport.
     Websocket,
+    /// Child-process stdio MCP transport.
     Stdio,
+    /// HTTP MCP transport carried over a Unix-domain socket.
     UnixSocket,
 }
 
@@ -1073,30 +1106,46 @@ impl Default for GatewayLoadoutConfig {
     }
 }
 
+/// Explicit target kind for an OAuth-protected public MCP route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProtectedMcpRouteTarget {
+    /// Publish a filtered subset of Labby gateway upstreams and built-in services.
     GatewaySubset(ProtectedGatewaySubsetTarget),
 }
 
+/// Gateway subset exposed by a protected MCP route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProtectedGatewaySubsetTarget {
     /// Optional named loadout. When set, inline subset fields must stay empty
     /// so the effective policy has one authoritative source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loadout: Option<String>,
+    /// Named upstream MCP servers visible on the route.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstreams: Vec<String>,
+    /// Built-in Labby services visible on the route.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<String>,
+    /// Whether the route exposes the Code Mode surface over its filtered catalog.
     #[serde(default)]
     pub expose_code_mode: bool,
 }
 
+/// Resolved runtime target after legacy protected-route fields are normalized.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtectedMcpRouteEffectiveTarget {
-    BackendUrl { url: String },
-    Upstream { name: String },
+    /// Proxy directly to a backend MCP URL.
+    BackendUrl {
+        /// Canonical backend MCP URL.
+        url: String,
+    },
+    /// Publish one named configured upstream.
+    Upstream {
+        /// Configured upstream name.
+        name: String,
+    },
+    /// Publish a filtered subset of the Labby gateway.
     GatewaySubset(ProtectedGatewaySubsetTarget),
 }
 
@@ -1141,11 +1190,13 @@ pub struct ProtectedMcpRouteConfig {
 }
 
 impl ProtectedMcpRouteConfig {
+    /// Return the canonical public OAuth resource URL for this route.
     #[must_use]
     pub fn public_resource(&self) -> String {
         format!("https://{}{}", self.public_host, self.public_path)
     }
 
+    /// Resolve the configured route target, including legacy upstream/backend fields.
     #[must_use]
     pub fn effective_target(&self) -> ProtectedMcpRouteEffectiveTarget {
         if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &self.target {
@@ -1159,11 +1210,13 @@ impl ProtectedMcpRouteConfig {
         }
     }
 
+    /// Return whether this route explicitly targets a gateway subset.
     #[must_use]
     pub fn is_gateway_subset(&self) -> bool {
         matches!(self.target, Some(ProtectedMcpRouteTarget::GatewaySubset(_)))
     }
 
+    /// Borrow the explicit gateway-subset target when configured.
     #[must_use]
     pub fn gateway_subset_target(&self) -> Option<&ProtectedGatewaySubsetTarget> {
         match &self.target {
@@ -1216,71 +1269,189 @@ fn normalize_mcp_route_path(raw: &str) -> String {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("upstream '{name}' has invalid name: {reason}")]
-    InvalidName { name: String, reason: String },
+    /// An upstream name violates gateway naming rules.
+    InvalidName {
+        /// Invalid upstream name.
+        name: String,
+        /// Explanation of the naming violation.
+        reason: String,
+    },
     #[error("upstream '{name}' has both bearer_token_env and oauth configured — pick one")]
-    ConflictingAuth { name: String },
+    /// Bearer-token and OAuth authentication were configured together.
+    ConflictingAuth {
+        /// Upstream with conflicting authentication configuration.
+        name: String,
+    },
     #[error("upstream '{name}' has invalid url: {url}")]
-    InvalidUrl { name: String, url: String },
+    /// An upstream URL is malformed or unsupported.
+    InvalidUrl {
+        /// Upstream name.
+        name: String,
+        /// Rejected URL.
+        url: String,
+    },
     #[error("upstream '{name}' has oauth configured but no url — oauth requires an HTTP url")]
-    MissingOauthUrl { name: String },
+    /// OAuth was configured for an upstream without an HTTP URL.
+    MissingOauthUrl {
+        /// Upstream missing the required URL.
+        name: String,
+    },
     #[error("upstream '{name}' has invalid oauth configuration: {reason}")]
-    InvalidOauth { name: String, reason: String },
+    /// Outbound OAuth settings failed validation.
+    InvalidOauth {
+        /// Upstream name.
+        name: String,
+        /// Explanation of the OAuth validation failure.
+        reason: String,
+    },
     #[error("upstream '{name}' has invalid transport configuration: {reason}")]
-    InvalidTransport { name: String, reason: String },
+    /// Upstream transport fields failed cross-field validation.
+    InvalidTransport {
+        /// Upstream name.
+        name: String,
+        /// Explanation of the transport validation failure.
+        reason: String,
+    },
     #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
-    InvalidCodeModeTimeout { value: u64 },
+    /// Code Mode timeout falls outside the supported range.
+    InvalidCodeModeTimeout {
+        /// Rejected timeout in milliseconds.
+        value: u64,
+    },
+    #[error("gateway code_mode.max_source_bytes={value} is invalid — expected 1024..=1048576")]
+    /// Code Mode source byte cap falls outside the supported range.
+    InvalidCodeModeMaxSourceBytes {
+        /// Rejected byte limit.
+        value: usize,
+    },
     #[error("gateway code_mode.max_response_bytes={value} is invalid — expected 1024..=1048576")]
-    InvalidCodeModeMaxResponseBytes { value: usize },
+    /// Code Mode response byte cap falls outside the supported range.
+    InvalidCodeModeMaxResponseBytes {
+        /// Rejected byte limit.
+        value: usize,
+    },
     #[error("gateway code_mode.max_response_tokens={value} is invalid — expected 256..=256000")]
-    InvalidCodeModeMaxResponseTokens { value: usize },
+    /// Code Mode response token cap falls outside the supported range.
+    InvalidCodeModeMaxResponseTokens {
+        /// Rejected approximate token limit.
+        value: usize,
+    },
     #[error("gateway code_mode.token_estimate_divisor={value} is invalid — expected 1..=64")]
-    InvalidCodeModeTokenEstimateDivisor { value: u32 },
+    /// Code Mode token-estimation divisor falls outside the supported range.
+    InvalidCodeModeTokenEstimateDivisor {
+        /// Rejected bytes-per-token divisor.
+        value: u32,
+    },
     #[error("gateway code_mode.max_log_entries={value} is invalid — expected 1..=100000")]
-    InvalidCodeModeMaxLogEntries { value: usize },
+    /// Code Mode log-entry cap falls outside the supported range.
+    InvalidCodeModeMaxLogEntries {
+        /// Rejected log-entry limit.
+        value: usize,
+    },
     #[error("gateway code_mode.max_log_bytes={value} is invalid — expected 1..=104857600")]
-    InvalidCodeModeMaxLogBytes { value: usize },
+    /// Code Mode log-byte cap falls outside the supported range.
+    InvalidCodeModeMaxLogBytes {
+        /// Rejected log-byte limit.
+        value: usize,
+    },
     #[error(
         "gateway code_mode.semantic_search.blend_weight={value} is invalid — expected 0.0..=1.0"
     )]
-    InvalidSemanticSearchBlendWeight { value: f32 },
+    /// Semantic-search blend weight is outside the inclusive 0.0–1.0 range.
+    InvalidSemanticSearchBlendWeight {
+        /// Rejected semantic blend weight.
+        value: f32,
+    },
     #[error(
         "gateway code_mode.semantic_search.tei_url={value:?} is invalid — expected a well-formed http:// or https:// URL"
     )]
-    InvalidSemanticSearchTeiUrl { value: String },
+    /// Semantic-search TEI endpoint is not a valid HTTP(S) URL.
+    InvalidSemanticSearchTeiUrl {
+        /// Rejected TEI URL.
+        value: String,
+    },
     #[error("gateway upstream_request_timeout_ms={value} is invalid — expected 1..=300000")]
-    InvalidUpstreamRequestTimeout { value: u64 },
+    /// Upstream request timeout falls outside the supported range.
+    InvalidUpstreamRequestTimeout {
+        /// Rejected request timeout in milliseconds.
+        value: u64,
+    },
     #[error("gateway upstream_relay_timeout_ms={value} is invalid — expected 1..=1800000")]
-    InvalidUpstreamRelayTimeout { value: u64 },
+    /// Upstream relay timeout falls outside the supported range.
+    InvalidUpstreamRelayTimeout {
+        /// Rejected relay timeout in milliseconds.
+        value: u64,
+    },
     #[error("gateway mcp.catalog_notification_timeout_ms={value} is invalid — expected 1..=60000")]
-    InvalidCatalogNotificationTimeout { value: u64 },
+    /// Catalog-notification timeout falls outside the supported range.
+    InvalidCatalogNotificationTimeout {
+        /// Rejected notification timeout in milliseconds.
+        value: u64,
+    },
     #[error("invalid proxy configuration: {reason}")]
-    InvalidProxyConfig { reason: String },
+    /// Proxy preferences failed cross-field validation.
+    InvalidProxyConfig {
+        /// Explanation of the proxy validation failure.
+        reason: String,
+    },
     #[error("protected MCP route '{name}' has invalid {field}: {value}")]
+    /// A protected MCP route contains an invalid field value.
     InvalidProtectedRoute {
+        /// Route name.
         name: String,
+        /// Invalid field name.
         field: &'static str,
+        /// Rejected field value.
         value: String,
     },
     #[error(
         "openapi spec label '{label}' is reserved — pick another (reserved: state, git, openapi)"
     )]
-    ReservedLabel { label: String },
+    /// An OpenAPI provider label uses a reserved Labby namespace.
+    ReservedLabel {
+        /// Rejected reserved label.
+        label: String,
+    },
     #[error(
         "openapi spec label '{label}' is invalid — labels must be non-empty and use only \
          ASCII letters, digits, '_' or '-' (no '.', ':', or whitespace, which would break \
          the openapi::<label>.<operationId> dispatch key)"
     )]
-    InvalidLabel { label: String },
+    /// An OpenAPI provider label violates identifier rules.
+    InvalidLabel {
+        /// Rejected provider label.
+        label: String,
+    },
     #[error("openapi spec label '{label}' is configured more than once")]
-    DuplicateLabel { label: String },
+    /// An OpenAPI provider label is configured more than once.
+    DuplicateLabel {
+        /// Duplicate provider label.
+        label: String,
+    },
     #[error("openapi spec '{label}' is missing the mandatory base_url")]
-    MissingBaseUrl { label: String },
+    /// An OpenAPI provider is missing its mandatory base URL.
+    MissingBaseUrl {
+        /// Provider label missing the base URL.
+        label: String,
+    },
     #[error("openapi spec '{label}' has an invalid base_url")]
-    InvalidBaseUrl { label: String },
+    /// An OpenAPI provider base URL is invalid.
+    InvalidBaseUrl {
+        /// Provider label with the invalid base URL.
+        label: String,
+    },
     #[error("openapi spec '{label}' has an invalid spec_url")]
-    InvalidSpecUrl { label: String },
+    /// An OpenAPI provider spec URL is invalid.
+    InvalidSpecUrl {
+        /// Provider label with the invalid spec URL.
+        label: String,
+    },
     #[error("openapi spec '{label}' must set exactly one of spec_url or spec_path")]
-    SpecSourceAmbiguous { label: String },
+    /// An OpenAPI provider sets zero or multiple spec sources.
+    SpecSourceAmbiguous {
+        /// Provider label with ambiguous spec source configuration.
+        label: String,
+    },
 }
 
 // ─── Outbound OAuth ──────────────────────────────────────────────────────────
@@ -1289,8 +1460,11 @@ pub enum ConfigError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpstreamOauthConfig {
+    /// OAuth authorization flow used by this upstream.
     pub mode: UpstreamOauthMode,
+    /// Client registration strategy used for the upstream authorization server.
     pub registration: UpstreamOauthRegistration,
+    /// Optional OAuth scopes requested during authorization.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
     /// Selects where OAuth credentials for this upstream are persisted.
@@ -1318,6 +1492,7 @@ pub struct UpstreamOauthConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamOauthMode {
+    /// OAuth authorization-code flow with PKCE.
     AuthorizationCodePkce,
 }
 
@@ -1334,6 +1509,7 @@ pub enum UpstreamOauthCredentialSource {
     /// omitted, resolution succeeds only when exactly one provider credential
     /// exists.
     GoogleProvider {
+        /// Optional Google subject or verified email used to select a shared credential.
         #[serde(default)]
         account: Option<String>,
     },
@@ -1352,11 +1528,13 @@ impl std::fmt::Debug for UpstreamOauthCredentialSource {
 }
 
 impl UpstreamOauthCredentialSource {
+    /// Return whether this upstream reuses the central Google provider credential.
     #[must_use]
     pub const fn is_google_provider(&self) -> bool {
         matches!(self, Self::GoogleProvider { .. })
     }
 
+    /// Return the configured Google account selector, when present.
     #[must_use]
     pub fn account(&self) -> Option<&str> {
         match self {
@@ -1370,28 +1548,39 @@ impl UpstreamOauthCredentialSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "strategy", rename_all = "snake_case")]
 pub enum UpstreamOauthRegistration {
+    /// Use a Client ID Metadata Document published at a fixed URL.
     ClientMetadataDocument {
+        /// URL of the client metadata document.
         url: String,
     },
+    /// Use operator-provided client credentials registered out of band.
     Preregistered {
+        /// OAuth client identifier.
         client_id: String,
+        /// Optional environment variable containing the client secret.
         #[serde(default)]
         client_secret_env: Option<String>,
     },
+    /// Register a client dynamically with the upstream authorization server.
     Dynamic,
 }
 
 // ─── Virtual servers ─────────────────────────────────────────────────────────
 
-/// Persisted state for a Lab-backed virtual server shown in the gateway.
+/// Persisted state for a Labby-backed virtual server shown in the gateway.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VirtualServerConfig {
+    /// Stable virtual-server identifier.
     pub id: String,
+    /// Built-in Labby service projected by this virtual server.
     pub service: String,
+    /// Whether the virtual server is enabled.
     #[serde(default)]
     pub enabled: bool,
+    /// Product surfaces on which the virtual server is exposed.
     #[serde(default)]
     pub surfaces: VirtualServerSurfacesConfig,
+    /// Optional action-level MCP allowlist policy.
     #[serde(default)]
     pub mcp_policy: Option<VirtualServerMcpPolicyConfig>,
 }
@@ -1399,19 +1588,24 @@ pub struct VirtualServerConfig {
 /// Per-surface exposure flags for a virtual server.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VirtualServerSurfacesConfig {
+    /// Expose the service through the CLI.
     #[serde(default)]
     pub cli: bool,
+    /// Expose the service through the HTTP API.
     #[serde(default)]
     pub api: bool,
+    /// Expose the service through MCP.
     #[serde(default)]
     pub mcp: bool,
+    /// Expose the service through the operator web UI.
     #[serde(default)]
     pub webui: bool,
 }
 
-/// Action-level policy for Lab-backed single-tool MCP services.
+/// Action-level policy for Labby-backed single-tool MCP services.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VirtualServerMcpPolicyConfig {
+    /// Service actions exposed by the virtual server's MCP tool.
     #[serde(default)]
     pub allowed_actions: Vec<String>,
 }
@@ -1498,7 +1692,7 @@ pub const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
 /// This is the gateway-relevant slice of the host's full `LabConfig`. It is the
 /// **in-memory** model only: persistence (TOML render with foreign-key
 /// preservation, atomic write, env-credential side effects) is owned by the
-/// host through the `GatewayConfigStore` seam in `lab-gateway`. There is
+/// host through the `GatewayConfigStore` seam in `labby-gateway`. There is
 /// intentionally **no** `#[serde(flatten)]` bag here — preservation of unrelated
 /// `config.toml` keys stays the host's job, because the host keeps `LabConfig`.
 ///
@@ -1685,6 +1879,30 @@ fn validate_gateway_subset_paths_are_unique(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_mode_max_source_bytes_validation_is_bounded() {
+        let mut config = CodeModeConfig {
+            max_source_bytes: 1023,
+            ..CodeModeConfig::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidCodeModeMaxSourceBytes { value: 1023 })
+        ));
+
+        config.max_source_bytes = 1024;
+        config.validate().expect("minimum source budget validates");
+
+        config.max_source_bytes = 1024 * 1024;
+        config.validate().expect("hard source ceiling validates");
+
+        config.max_source_bytes = 1024 * 1024 + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidCodeModeMaxSourceBytes { value }) if value == 1024 * 1024 + 1
+        ));
+    }
+
     use super::*;
 
     #[test]
@@ -2008,16 +2226,19 @@ client_secret_env = "SECRET"
         assert!(cfg.add_server);
         assert!(cfg.server_logs);
         assert!(cfg.gateway_status);
+        assert!(cfg.settings);
     }
 
     #[test]
     fn mcp_apps_config_supports_independent_visibility_switches() {
-        let cfg: McpAppsConfig =
-            toml::from_str("add_server = false\nserver_logs = true\ngateway_status = false\n")
-                .unwrap();
+        let cfg: McpAppsConfig = toml::from_str(
+            "add_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
+        )
+        .unwrap();
         assert!(!cfg.add_server);
         assert!(cfg.server_logs);
         assert!(!cfg.gateway_status);
+        assert!(!cfg.settings);
     }
 
     #[test]
