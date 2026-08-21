@@ -43,3 +43,10 @@ Make Labby usage analytics window-complete, scalable, and drillable. No dashboar
 ## Non-goals
 
 Token, source-IP, surface, and Code Mode fan-out analytics are not fabricated when the durable usage store does not record those dimensions.
+
+## Delivery status
+
+The core contract shipped in PR #459. `PROGRESS.md` records the exact boundary
+between that implementation and the follow-up dimensional-filter milestone;
+this specification remains the target contract rather than a claim that every
+item is already available.

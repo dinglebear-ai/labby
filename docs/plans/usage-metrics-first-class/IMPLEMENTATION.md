@@ -1,15 +1,23 @@
 # Implementation Plan
 
-1. Extend usage query/result structs with exact analytics and bounded bucket configuration.
-2. Extend SQLite aggregation with grouped series/distributions/percentiles/throughput and tests.
-3. Extend usage calls filtering and exact server-side counts; preserve keyset pagination.
-4. Thread new fields through gateway manager/types/catalog and generated docs.
-5. Replace dashboard row-derived analytics with backend aggregates.
-6. Rework Usage Explorer to use server-side filters and cursor pagination.
-7. Make dashboard/hero/chart/panels drillable with preserved window and filters.
-8. Fix tool/agent detail fetchers to use exact filtered backend data.
-9. Add frontend unit/browser coverage for full-window analytics and deep links.
-10. Benchmark representative 24h/7d queries against a copy of the live usage DB; verify indexes/query plans.
-11. Run full Rust/frontend/docs gates, adversarial review, create PR.
+PR #459 completed the core milestone independently while this plan was in
+progress. The remaining implementation sequence is now:
+
+1. Add capability, operation, and subject-scoped filters to both usage query
+   structs and the shared SQLite predicate builder.
+2. Thread those filters through gateway params, manager mapping, catalog, CLI,
+   generated action/OpenAPI/help contracts, and the web client.
+3. Expand facets with capability and operation values and expose the subject
+   scope as a bounded enumerated filter.
+4. Extend slowest-target result shapes to include capability, operation, and
+   subject-scoped identity, matching top/least target identity.
+5. Add store, manager/dispatch, client, adapter, and browser tests covering the
+   new filters individually and in combination with route scope and cursors.
+6. Benchmark representative 24h/7d queries against a copy of a
+   production-shaped usage database and inspect query plans for each dimension.
+7. Decide and document the long-window safety policy for exact queries above
+   the current 250,000-row ceiling.
+8. Run full Rust/frontend/docs gates and adversarial review before the follow-up
+   implementation PR.
 
 No production deployment is part of this work.
