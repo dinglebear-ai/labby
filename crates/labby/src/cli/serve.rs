@@ -2593,7 +2593,7 @@ mod tests {
         }
 
         let _guard = crate::config::process_code_mode_test_guard();
-        crate::config::set_process_code_mode_enabled(true);
+        crate::config::set_process_code_mode_enabled_for_test(true);
 
         let notifier = PeerNotifier::default();
         notifier.code_mode_app_state.set_enabled(false);
