@@ -20,7 +20,7 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 // actual writers regardless of connection count, so this does not buy write
 // parallelism, only concurrent readers alongside a writer.
 const SQLITE_POOL_SIZE: usize = 4;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 /// Max rows deleted per `DELETE` statement in `prune_older_than`'s batching
 /// loop, so a large prune backlog doesn't hold the writer lock in one shot.
 const PRUNE_BATCH_SIZE: i64 = 5_000;
@@ -251,7 +251,12 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_page ON upstream_calls(ts_unix DESC, id DESC);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_upstream ON upstream_calls(upstream_name, ts_unix);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_tool ON upstream_calls(upstream_name, tool_name);
-        CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor ON upstream_calls(actor);",
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor ON upstream_calls(actor);
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor_ts ON upstream_calls(actor, ts_unix DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_outcome_ts ON upstream_calls(outcome, ts_unix DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_dimension_ts ON upstream_calls(
+            upstream_name, tool_name, capability, operation, subject_scoped, ts_unix DESC, id DESC
+        );",
     )
     .map_err(sqlite_error)?;
     migrate_v2(&conn)?;
