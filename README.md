@@ -543,8 +543,8 @@ provider tools. It does not install ACP adapters or mount ACP-specific state.
 
 Release Please maintains the version/changelog pull request and creates the
 stable tag plus draft GitHub release when that pull request merges. Publishing
-the release triggers the heavy GitHub-hosted x86_64 workflows. They build Linux
-and Windows archives with checksums, build and scan the GHCR image, build and
+the release triggers the heavy GitHub-hosted workflows. They build Linux,
+macOS, and Windows archives with checksums, build and scan the GHCR image, build and
 smoke the Incus image, publish the npm launcher, and publish Labby's
 `server.json` metadata to the official MCP Registry.
 

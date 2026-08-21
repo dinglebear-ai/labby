@@ -181,7 +181,7 @@ land the required code/tests and the baseline update together.
   - Required fast jobs run only when their category is enabled; `ci-gate` is the stable required check for branch protection
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; they report portability regressions without blocking `ci-gate`
   - Heavy release work starts only from a published stable GitHub release
-  - Release Linux jobs use GitHub-hosted x86_64 runners; native Windows artifacts use GitHub-hosted Windows
+  - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS and Windows artifacts use GitHub-hosted runners
 
 The pinned fleet policy and repository contract set `allow-arm64: true` for
 Labby. This removes the former fleet-wide ARM64 token rejection while keeping
@@ -203,11 +203,13 @@ documented in [Actions runner setup](./ACTIONS_RUNNER.md).
 | Platform | Target |
 |----------|--------|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| macOS arm64 | `aarch64-apple-darwin` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` |
 
-Windows is a supported platform. Official Windows release artifacts are built
-on native GitHub-hosted Windows runners using the MSVC target. Linux-to-Windows
-GNU cross-compilation may be useful experimentally, but it is not the release
+macOS and Windows are supported platforms. Official macOS artifacts are built
+on a native GitHub-hosted Apple Silicon runner. Official Windows artifacts are
+built on native GitHub-hosted Windows runners using the MSVC target.
+Cross-compilation may be useful experimentally, but it is not the release
 support contract.
 
 ## Integration Tests
@@ -252,7 +254,7 @@ partially published release.
 
 - **Surface:** GitHub Releases
 - **Container surface:** GitHub Container Registry (`ghcr.io/dinglebear-ai/labby`)
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64 and Windows x86_64)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64, macOS arm64, and Windows x86_64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **Package registries:** the `@dinglebear/labby` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
 

@@ -1240,6 +1240,15 @@ fn draft_releases_are_surfaced_without_being_auto_published() {
 fn release_tool_downloads_are_version_and_digest_pinned() {
     let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");
+    for target in [
+        "target: x86_64-unknown-linux-gnu",
+        "target: aarch64-apple-darwin",
+        "target: x86_64-pc-windows-msvc",
+    ] {
+        assert!(release.contains(target), "release matrix missing {target}");
+    }
+    assert!(release.contains("runner: '\"macos-15\"'"));
+    assert!(!release.contains("x86_64-apple-darwin"));
     assert!(!release.contains("/latest/download/"));
     assert!(!release.contains("mcp-publisher"));
     assert!(!release.contains("registry.modelcontextprotocol.io"));
