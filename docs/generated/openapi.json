@@ -3058,6 +3058,9 @@
           "actor": {
             "type": "string"
           },
+          "capability": {
+            "type": "string"
+          },
           "cursor": {
             "type": "string"
           },
@@ -3067,6 +3070,9 @@
           "limit": {
             "type": "integer"
           },
+          "operation": {
+            "type": "string"
+          },
           "outcome": {
             "type": "string"
           },
@@ -3075,6 +3081,9 @@
           },
           "since_unix": {
             "type": "integer"
+          },
+          "subject_scoped": {
+            "type": "boolean"
           },
           "tool": {
             "type": "string"
@@ -3096,8 +3105,14 @@
           "bucket_count": {
             "type": "integer"
           },
+          "capability": {
+            "type": "string"
+          },
           "include_facets": {
             "type": "boolean"
+          },
+          "operation": {
+            "type": "string"
           },
           "outcome": {
             "type": "string"
@@ -3107,6 +3122,9 @@
           },
           "since_unix": {
             "type": "integer"
+          },
+          "subject_scoped": {
+            "type": "boolean"
           },
           "timezone": {
             "type": "string"

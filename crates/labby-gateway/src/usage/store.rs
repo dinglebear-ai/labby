@@ -5,7 +5,7 @@
 //! per-user OAuth subject identifier, which is privacy-sensitive even though
 //! it is not a secret.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -257,6 +257,12 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
     )
     .map_err(sqlite_error)?;
     migrate_v2(&conn)?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_upstream_calls_capability_ts ON upstream_calls(capability, ts_unix);
+         CREATE INDEX IF NOT EXISTS idx_upstream_calls_operation_ts ON upstream_calls(operation, ts_unix);
+         CREATE INDEX IF NOT EXISTS idx_upstream_calls_subject_scoped_ts ON upstream_calls(subject_scoped, ts_unix);",
+    )
+    .map_err(sqlite_error)?;
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .map_err(sqlite_error)?;
     for suffix in ["-wal", "-shm"] {
@@ -305,14 +311,18 @@ impl UsageStore {
             let conn = &*tx;
             let (where_clause, bind) = usage_where_clause(
                 &query.since_unix, &query.until_unix, &query.upstream, &query.tool,
+                &query.capability, &query.operation, &query.subject_scoped,
                 &query.actor, &query.outcome, &query.search, &query.allowed_upstreams,
             );
             let (window_where_clause, window_bind) = usage_where_clause(
                 &query.since_unix, &query.until_unix, &None, &None,
-                &None, &None, &None, &query.allowed_upstreams,
+                &None, &None, &None, &None, &None, &None, &query.allowed_upstreams,
             );
             let has_detail_filters = query.upstream.is_some()
                 || query.tool.is_some()
+                || query.capability.is_some()
+                || query.operation.is_some()
+                || query.subject_scoped.is_some()
                 || query.actor.is_some()
                 || query.outcome.is_some()
                 || query
@@ -506,21 +516,20 @@ impl UsageStore {
             });
             least_tools.truncate(super::query::TOP_N);
 
-            let mut stable_targets: BTreeMap<(String, String), (f64, f64)> = BTreeMap::new();
-            for (tool, calls_real, elapsed_total) in &target_rollups {
-                let entry = stable_targets
-                    .entry((tool.upstream.clone(), tool.tool.clone()))
-                    .or_default();
-                entry.0 += *calls_real;
-                entry.1 += *elapsed_total;
+            let mut stable_targets = BTreeSet::new();
+            for (tool, _, _) in &target_rollups {
+                stable_targets.insert((tool.upstream.clone(), tool.tool.clone()));
             }
             let distinct_tools = i64::try_from(stable_targets.len()).unwrap_or(i64::MAX);
-            let mut slowest_tools = stable_targets
+            let mut slowest_tools = target_rollups
                 .iter()
-                .map(|((upstream, tool), (calls, elapsed_total))| {
+                .map(|(target, calls, elapsed_total)| {
                     super::query::UsageLatencyStat {
-                        upstream: upstream.clone(),
-                        tool: tool.clone(),
+                        upstream: target.upstream.clone(),
+                        tool: target.tool.clone(),
+                        capability: target.capability.clone(),
+                        operation: target.operation.clone(),
+                        subject_scoped: target.subject_scoped,
                         avg_elapsed_ms: elapsed_total / calls,
                     }
                 })
@@ -531,6 +540,9 @@ impl UsageStore {
                     .total_cmp(&left.avg_elapsed_ms)
                     .then_with(|| left.upstream.cmp(&right.upstream))
                     .then_with(|| left.tool.cmp(&right.tool))
+                    .then_with(|| left.capability.cmp(&right.capability))
+                    .then_with(|| left.operation.cmp(&right.operation))
+                    .then_with(|| left.subject_scoped.cmp(&right.subject_scoped))
             });
             slowest_tools.truncate(super::query::TOP_N);
 
@@ -587,6 +599,12 @@ impl UsageStore {
                 let limit = super::query::MAX_METRICS_FACETS + 1;
                 let mut tools_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name, tool_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC, tool_name ASC LIMIT {limit}")).map_err(sqlite_error)?;
                 let tools = tools_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| Ok(super::query::UsageToolFacet { upstream: row.get(0)?, tool: row.get(1)? })).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
+                let mut capabilities_stmt = conn.prepare(&format!("SELECT DISTINCT capability FROM upstream_calls {window_where_clause} ORDER BY capability ASC LIMIT {limit}")).map_err(sqlite_error)?;
+                let capabilities = capabilities_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
+                let mut operations_stmt = conn.prepare(&format!("SELECT DISTINCT operation FROM upstream_calls {window_where_clause} ORDER BY operation ASC LIMIT {limit}")).map_err(sqlite_error)?;
+                let operations = operations_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
+                let mut subject_scopes_stmt = conn.prepare(&format!("SELECT DISTINCT subject_scoped FROM upstream_calls {window_where_clause} ORDER BY subject_scoped ASC LIMIT 3")).map_err(sqlite_error)?;
+                let subject_scopes = subject_scopes_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<bool>>>().map_err(sqlite_error)?;
                 let mut actors_stmt = conn.prepare(&format!("SELECT DISTINCT actor FROM upstream_calls {window_where_clause} ORDER BY actor ASC LIMIT {limit}")).map_err(sqlite_error)?;
                 let actors = actors_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
                 let mut upstreams_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC LIMIT {limit}")).map_err(sqlite_error)?;
@@ -594,10 +612,12 @@ impl UsageStore {
                 let mut outcomes_stmt = conn.prepare(&format!("SELECT DISTINCT outcome FROM upstream_calls {window_where_clause} ORDER BY outcome ASC LIMIT {limit}")).map_err(sqlite_error)?;
                 let outcomes = outcomes_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
                 ensure_facet_limit("tools", tools.len())?;
+                ensure_facet_limit("capabilities", capabilities.len())?;
+                ensure_facet_limit("operations", operations.len())?;
                 ensure_facet_limit("actors", actors.len())?;
                 ensure_facet_limit("upstreams", upstreams.len())?;
                 ensure_facet_limit("outcomes", outcomes.len())?;
-                super::query::UsageFacets { tools, actors, upstreams, outcomes }
+                super::query::UsageFacets { tools, capabilities, operations, subject_scopes, actors, upstreams, outcomes }
             } else { super::query::UsageFacets::default() };
 
             Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, facets })
@@ -632,6 +652,9 @@ impl UsageStore {
                 &query.until_unix,
                 &query.upstream,
                 &query.tool,
+                &query.capability,
+                &query.operation,
+                &query.subject_scoped,
                 &query.actor,
                 &query.outcome,
                 &query.search,
@@ -802,6 +825,9 @@ fn usage_where_clause(
     until_unix: &Option<i64>,
     upstream: &Option<String>,
     tool: &Option<String>,
+    capability: &Option<String>,
+    operation: &Option<String>,
+    subject_scoped: &Option<bool>,
     actor: &Option<String>,
     outcome: &Option<String>,
     search: &Option<String>,
@@ -827,6 +853,18 @@ fn usage_where_clause(
             bind.len() + 1
         ));
         bind.push(rusqlite::types::Value::Text(tool.clone()));
+    }
+    if let Some(capability) = capability {
+        clauses.push(format!("capability = ?{}", bind.len() + 1));
+        bind.push(rusqlite::types::Value::Text(capability.clone()));
+    }
+    if let Some(operation) = operation {
+        clauses.push(format!("operation = ?{}", bind.len() + 1));
+        bind.push(rusqlite::types::Value::Text(operation.clone()));
+    }
+    if let Some(subject_scoped) = subject_scoped {
+        clauses.push(format!("subject_scoped = ?{}", bind.len() + 1));
+        bind.push(rusqlite::types::Value::Integer(i64::from(*subject_scoped)));
     }
     if let Some(actor) = actor {
         clauses.push(format!("actor = ?{}", bind.len() + 1));
@@ -1143,7 +1181,64 @@ mod tests {
         assert_eq!(metrics.errors[0].kind, "timeout");
         assert_eq!(metrics.errors[0].calls, 100);
         assert_eq!(metrics.facets.tools.len(), 1);
+        assert_eq!(metrics.facets.capabilities, vec!["tools"]);
+        assert_eq!(metrics.facets.operations, vec!["tool.call"]);
+        assert_eq!(metrics.facets.subject_scopes, vec![false]);
         assert_eq!(metrics.facets.actors, vec!["agent"]);
+    }
+
+    #[tokio::test]
+    async fn dimensional_filters_facets_and_slowest_identity_are_exact() {
+        use super::super::query::{UsageCallsQuery, UsageMetricsQuery};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        let mut shared = sample_record(1_000);
+        shared.elapsed_ms = 10;
+        store.record_call(shared).await.unwrap();
+        let mut subject = sample_record(1_001);
+        subject.capability = "resources".to_string();
+        subject.operation = "resource.read".to_string();
+        subject.subject_scoped = true;
+        subject.elapsed_ms = 80;
+        store.record_call(subject).await.unwrap();
+
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                capability: Some("resources".to_string()),
+                operation: Some("resource.read".to_string()),
+                subject_scoped: Some(true),
+                include_facets: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(metrics.window_total_calls, 2);
+        assert_eq!(metrics.total_calls, 1);
+        assert_eq!(metrics.facets.capabilities, vec!["resources", "tools"]);
+        assert_eq!(
+            metrics.facets.operations,
+            vec!["resource.read", "tool.call"]
+        );
+        assert_eq!(metrics.facets.subject_scopes, vec![false, true]);
+        assert_eq!(metrics.slowest_tools[0].capability, "resources");
+        assert_eq!(metrics.slowest_tools[0].operation, "resource.read");
+        assert!(metrics.slowest_tools[0].subject_scoped);
+
+        let (calls, total, _) = store
+            .list_calls(UsageCallsQuery {
+                capability: Some("resources".to_string()),
+                operation: Some("resource.read".to_string()),
+                subject_scoped: Some(true),
+                include_total: true,
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(total, Some(1));
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].subject_scoped);
     }
 
     #[tokio::test]
@@ -1326,9 +1421,97 @@ mod tests {
             &None,
             &None,
             &None,
+            &None,
+            &None,
+            &None,
         );
         assert_eq!(clause, "WHERE (upstream_name || '::' || tool_name) = ?1");
         assert_eq!(bind.len(), 1);
+    }
+
+    /// Opt-in production-shaped evidence harness. It stays ignored in ordinary
+    /// CI because seeding 240k rows is intentionally larger than a unit test.
+    #[tokio::test]
+    #[ignore = "run explicitly to capture production-shaped usage query evidence"]
+    async fn benchmark_production_shaped_dimensional_queries() {
+        use super::super::query::UsageMetricsQuery;
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        store
+            .with_conn(|conn| {
+                let tx = conn.unchecked_transaction().map_err(super::sqlite_error)?;
+                {
+                    let mut insert = tx
+                        .prepare("INSERT INTO upstream_calls (ts_unix, upstream_name, tool_name, capability, operation, subject_scoped, actor, outcome, elapsed_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
+                        .map_err(super::sqlite_error)?;
+                    for index in 0..240_000_i64 {
+                        let capability = if index % 5 == 0 { "resources" } else { "tools" };
+                        let operation = if index % 5 == 0 { "resource.read" } else { "tool.call" };
+                        insert
+                            .execute(rusqlite::params![
+                                2_000_000_000_i64 - (index % 604_800),
+                                format!("upstream-{}", index % 12),
+                                format!("target-{}", index % 80),
+                                capability,
+                                operation,
+                                index % 7 == 0,
+                                format!("actor-{}", index % 30),
+                                if index % 19 == 0 { "timeout" } else { "ok" },
+                                5 + index % 500,
+                            ])
+                            .map_err(super::sqlite_error)?;
+                    }
+                }
+                tx.commit().map_err(super::sqlite_error)
+            })
+            .await
+            .unwrap();
+
+        for (label, query) in [
+            (
+                "24h capability",
+                UsageMetricsQuery {
+                    since_unix: Some(1_999_913_600),
+                    capability: Some("resources".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "7d operation+subject",
+                UsageMetricsQuery {
+                    since_unix: Some(1_999_395_200),
+                    operation: Some("tool.call".into()),
+                    subject_scoped: Some(true),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let started = Instant::now();
+            let metrics = store.metrics(query).await.unwrap();
+            eprintln!(
+                "{label}: {:?}, {} rows",
+                started.elapsed(),
+                metrics.total_calls
+            );
+        }
+
+        store
+            .with_conn(|conn| {
+                for (sql, expected_index) in [
+                    ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM upstream_calls WHERE capability = 'resources' AND ts_unix >= 1999913600", "idx_upstream_calls_capability_ts"),
+                    ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM upstream_calls WHERE operation = 'tool.call' AND ts_unix >= 1999395200", "idx_upstream_calls_operation_ts"),
+                    ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM upstream_calls WHERE subject_scoped = 1 AND ts_unix >= 1999395200", "idx_upstream_calls_subject_scoped_ts"),
+                ] {
+                    let detail: String = conn.query_row(sql, [], |row| row.get(3)).map_err(super::sqlite_error)?;
+                    eprintln!("plan: {detail}");
+                    assert!(detail.contains(expected_index), "{detail}");
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 
     #[test]

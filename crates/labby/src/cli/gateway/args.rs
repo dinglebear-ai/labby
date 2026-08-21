@@ -228,6 +228,15 @@ pub struct GatewayUsageMetricsArgs {
     /// Restrict to one qualified upstream::tool target.
     #[arg(long)]
     pub tool: Option<String>,
+    /// Restrict to one capability family.
+    #[arg(long)]
+    pub capability: Option<String>,
+    /// Restrict to one operation name.
+    #[arg(long)]
+    pub operation: Option<String>,
+    /// Restrict by OAuth subject scoping (`true` or `false`).
+    #[arg(long)]
+    pub subject_scoped: Option<bool>,
     /// Restrict to one actor subject.
     #[arg(long)]
     pub actor: Option<String>,
@@ -262,6 +271,15 @@ pub struct GatewayUsageCallsArgs {
     /// Restrict to one qualified upstream::tool target.
     #[arg(long)]
     pub tool: Option<String>,
+    /// Restrict to one capability family.
+    #[arg(long)]
+    pub capability: Option<String>,
+    /// Restrict to one operation name.
+    #[arg(long)]
+    pub operation: Option<String>,
+    /// Restrict by OAuth subject scoping (`true` or `false`).
+    #[arg(long)]
+    pub subject_scoped: Option<bool>,
     /// Restrict to one actor subject.
     #[arg(long)]
     pub actor: Option<String>,

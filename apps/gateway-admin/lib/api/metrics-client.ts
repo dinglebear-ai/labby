@@ -491,6 +491,9 @@ function usageFilterParams(window: MetricsWindow, now: number, query?: ToolCallQ
     ...usageTimeBounds(window, now, query),
     upstream: query?.upstream,
     tool: query?.tool,
+    capability: query?.capability,
+    operation: query?.operation,
+    subject_scoped: query?.subject_scoped,
     actor: query?.agent,
     outcome: query?.error_kind ?? query?.outcome,
     search: query?.search?.trim() || undefined,
@@ -537,6 +540,7 @@ function persistedCallRecords(rows: GatewayUsageCalls): ToolCallRecord[] {
     ts: call.ts_unix * 1000,
     tool: `${call.upstream}::${call.tool}`,
     action: call.operation ?? null,
+    capability: call.capability,
     agent_id: call.actor,
     agent_label: call.actor,
     agent_kind: 'agent',
@@ -721,6 +725,9 @@ export async function fetchToolCalls(
     const filtered = stream.filter((record) => {
       if (query.upstream && !record.tool.startsWith(`${query.upstream}::`)) return false
       if (query.tool && record.tool !== query.tool) return false
+      if (query.capability && query.capability !== 'tools') return false
+      if (query.operation && record.action !== query.operation) return false
+      if (query.subject_scoped !== undefined && (record.subject_scoped ?? false) !== query.subject_scoped) return false
       if (query.agent && record.agent_id !== query.agent) return false
       if (query.ip && record.ip !== query.ip) return false
       if (query.error_kind && record.error_kind !== query.error_kind) return false
@@ -768,6 +775,9 @@ export async function fetchToolCalls(
       facets: {
         upstreams: [...new Set(stream.map((record) => record.tool.split('::', 1)[0]))].sort(),
         tools: [...new Set(stream.map((record) => record.tool))].sort(),
+        capabilities: ['tools'],
+        operations: [...new Set(stream.map((record) => record.action).filter((value): value is string => Boolean(value)))].sort(),
+        subject_scopes: [...new Set(stream.map((record) => record.subject_scoped ?? false))].sort(),
         agents: [...agentMap.entries()]
           .map(([actorId, label]) => ({ id: actorId, label }))
           .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
@@ -809,6 +819,9 @@ export async function fetchToolCalls(
     facets: {
       upstreams: summary.facets.upstreams,
       tools: summary.facets.tools.map((target) => `${target.upstream}::${target.tool}`),
+      capabilities: summary.facets.capabilities ?? [],
+      operations: summary.facets.operations ?? [],
+      subject_scopes: summary.facets.subject_scopes ?? [],
       agents: summary.facets.actors.map((actor) => ({ id: actor, label: actor })),
       outcomes: summary.facets.outcomes,
       ips: [],
