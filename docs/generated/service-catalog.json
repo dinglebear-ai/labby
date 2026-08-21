@@ -157,8 +157,8 @@
     "description": "Manage executable Code Mode snippets",
     "category": "bootstrap",
     "status": "available",
-    "feature": null,
-    "exposure": "always_on",
+    "feature": "gateway",
+    "exposure": "feature_gated",
     "surfaces": {
       "cli": true,
       "mcp": true,

@@ -31,7 +31,7 @@ auto-repaired at session start.
 Labby no longer generates or publishes an in-product plugin marketplace. The marketplace
 moved to a dedicated repo, [dendrite](https://github.com/dinglebear-ai/dendrite), so it
 is decoupled from this Rust workspace. Dendrite catalogs `plugins/labby` (via a
-`git-subdir` source pointing at this repo) alongside the other Lab/Labby plugins
+`git-subdir` source pointing at this repo) alongside the other Labby/Labby plugins
 and third-party entries.
 
 Install `labby` with `scripts/install.sh` (above). Plugin marketplace discovery and distribution now belong to Dendrite; Labby does not expose a `marketplace` dispatch service or marketplace web surface.

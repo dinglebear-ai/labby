@@ -1,6 +1,6 @@
 # Gateway Admin UI
 
-Static-exportable Next.js admin UI for the `gateway` surface, vendored into the `lab` repo at `apps/gateway-admin`.
+Static-exportable Next.js admin UI for the `gateway` surface, vendored into the `labby` repo at `apps/gateway-admin`.
 
 The app is designed to be served as static assets while talking directly to the Rust gateway backend over HTTP. It can still be run in standalone frontend mode during development.
 
@@ -38,12 +38,12 @@ In hosted mode, the UI expects Rust-owned browser session auth:
 For local binary-served UI work, keep the same-origin `/v1` path and start `labby serve` with web auth disabled for the browser surface only:
 
 ```bash
-LAB_WEB_UI_AUTH_DISABLED=true \
-LAB_MCP_HTTP_TOKEN=your-local-dev-token \
+LABBY_WEB_UI_AUTH_DISABLED=true \
+LABBY_MCP_HTTP_TOKEN=your-local-dev-token \
 cargo run --bin labby -- serve --host 0.0.0.0 --port 8765
 ```
 
-That mode keeps the MCP/backend token in place while making `/auth/session` and `/v1/*` immediately usable from the exported UI on the same origin. Hosted deployments should leave `LAB_WEB_UI_AUTH_DISABLED` unset so browser OAuth remains active. `LAB_WEB_UI_DISABLE_AUTH` is accepted as a legacy alias.
+That mode keeps the MCP/backend token in place while making `/auth/session` and `/v1/*` immediately usable from the exported UI on the same origin. Hosted deployments should leave `LABBY_WEB_UI_AUTH_DISABLED` unset so browser OAuth remains active. `LABBY_WEB_UI_DISABLE_AUTH` is accepted as a legacy alias.
 
 There is also a repo shortcut for that local no-auth mode:
 
@@ -51,13 +51,13 @@ There is also a repo shortcut for that local no-auth mode:
 just chat-local
 ```
 
-Browser-facing bearer mode is intentionally disabled in the current UI. The gateway screens always use the Rust-owned browser session flow plus CSRF headers when talking to `/v1/*`. If you need a local-only backend bypass, use `LAB_WEB_UI_AUTH_DISABLED=true` on the Rust side rather than embedding a public browser token.
+Browser-facing bearer mode is intentionally disabled in the current UI. The gateway screens always use the Rust-owned browser session flow plus CSRF headers when talking to `/v1/*`. If you need a local-only backend bypass, use `LABBY_WEB_UI_AUTH_DISABLED=true` on the Rust side rather than embedding a public browser token.
 
 When the frontend and Rust backend run on different origins during local development, the backend must allow the frontend origin through CORS:
 
 ```bash
-LAB_MCP_HTTP_TOKEN=your-local-dev-token \
-LAB_CORS_ORIGINS=http://127.0.0.1:3101 \
+LABBY_MCP_HTTP_TOKEN=your-local-dev-token \
+LABBY_CORS_ORIGINS=http://127.0.0.1:3101 \
 cargo run --bin labby -- serve --host 0.0.0.0 --port 8765
 ```
 

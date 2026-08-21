@@ -34,7 +34,7 @@ test('settings schema carries risk source and write policy metadata', () => {
 })
 
 test('env schema marks token secret and not editable', () => {
-  const token = MOCK_ENV_SCHEMA.find((item) => item.key === 'LAB_MCP_HTTP_TOKEN')
+  const token = MOCK_ENV_SCHEMA.find((item) => item.key === 'LABBY_MCP_HTTP_TOKEN')
   assert.equal(token?.secret, true)
   assert.equal(token?.editable, false)
 })
@@ -45,8 +45,8 @@ test('settings state contract is section scoped', () => {
     config_path: '~/.config/labby/config.toml',
     env_path: '~/.labby/.env',
     section: 'core',
-    values: { LAB_LOG: 'labby=info' },
-    sources: { LAB_LOG: { source: 'env', overridden_by_env: null } },
+    values: { LABBY_LOG: 'labby=info' },
+    sources: { LABBY_LOG: { source: 'env', overridden_by_env: null } },
   }
   assert.equal(isSettingsState(state), true)
   assert.equal(state.section, 'core')
@@ -103,7 +103,7 @@ test('settingsEnvUpdate sends confirm and entries through setup action transport
   }) as typeof fetch
 
   try {
-    const entries: SettingsUpdateEntry[] = [{ key: 'LAB_LOG', value: 'labby=debug', previous: 'labby=info' }]
+    const entries: SettingsUpdateEntry[] = [{ key: 'LABBY_LOG', value: 'labby=debug', previous: 'labby=info' }]
     await setupApi.settingsEnvUpdate('core', entries, true)
     assert.deepEqual(requestBody, {
       action: 'settings.env.update',

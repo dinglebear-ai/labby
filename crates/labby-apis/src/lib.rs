@@ -1,4 +1,4 @@
-//! Core Rust library for the `lab` MCP gateway.
+//! Pure SDK contracts used by the Labby MCP gateway.
 //!
 //! Provides the cross-cutting SDK primitives and the supported doctor and setup
 //! contracts used by the Labby gateway product.

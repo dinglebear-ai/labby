@@ -21,6 +21,7 @@ docs-generate:
 docs-check:
     cargo run --package labby --bin labby --all-features -- docs check
     python3 scripts/check-doc-links.py
+    python3 scripts/check-product-docs.py
 
 # Build strict Rustdoc for the complete workspace target surface.
 rustdoc:

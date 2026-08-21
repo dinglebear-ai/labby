@@ -715,12 +715,20 @@ fn exception_reason(classification: FeatureClass) -> Option<&'static str> {
 }
 
 fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
+    let feature_name = match service {
+        // Snippets are a built-in product service, but their execution/runtime
+        // dependency is the `gateway` product slice rather than a same-named
+        // Cargo feature. Keep generated service docs aligned with registration.
+        "snippets" => "gateway",
+        other => other,
+    };
+
     matrix
         .features
         .iter()
         .find(|feature| {
             feature.crate_name == "labby"
-                && feature.feature == service
+                && feature.feature == feature_name
                 && matches!(
                     feature.classification,
                     FeatureClass::ServicePassthrough

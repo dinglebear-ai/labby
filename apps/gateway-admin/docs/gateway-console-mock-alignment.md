@@ -1,11 +1,8 @@
-# Gateway Console — mock alignment spec
+# Gateway Console — Implementation Alignment Reference
 
-Working notes for aligning `apps/gateway-admin` to the Claude Design mock
-`Gateway Console.dc.html` (project `d80fe050-1bc9-44b0-aa68-6e873344c619`).
+This is the implementation reference for the measured Gateway Console layout used by `apps/gateway-admin`. The original approved mock is `Gateway Console.dc.html` (project `d80fe050-1bc9-44b0-aa68-6e873344c619`).
 
-**Ground rule: measure before editing.** Every value below was read off the
-mock's live DOM via `agent-browser eval`, not inferred from screenshots or
-source. Re-measure rather than trusting this file if the mock has moved.
+**Ground rule: measure before editing.** Values below were measured from the approved mock's live DOM rather than inferred from screenshots. The runtime UI and Aurora design-system contract remain authoritative; re-measure before changing these values if the approved mock has moved.
 
 Two traps that cost real time:
 
