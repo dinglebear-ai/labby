@@ -107,7 +107,7 @@ test('fetchToolCalls sends exact filters and cursor to the backend', async () =>
     requests.push(body)
     const payload = body.action === 'gateway.usage.metrics'
       ? metrics({ window_total_calls: 5_000, total_calls: 73, error_calls: 73 })
-      : { calls: [{ ts_unix: 1_800_000_001, upstream: 'github', tool: 'create', actor: 'codex', outcome: 'timeout', elapsed_ms: 5 }], total_matching: 73, next_cursor: 'next-cursor' }
+      : { calls: [{ ts_unix: 1_800_000_001, upstream: 'github', tool: 'create', capability: 'resources', operation: 'resource.read', subject_scoped: true, actor: 'codex', outcome: 'timeout', elapsed_ms: 5 }], total_matching: 73, next_cursor: 'next-cursor' }
     return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
   }
 
@@ -134,6 +134,9 @@ test('fetchToolCalls sends exact filters and cursor to the backend', async () =>
     assert.equal(page.filtered, 73)
     assert.equal(page.next_cursor, 'next-cursor')
     assert.equal(page.calls[0].error_kind, 'timeout')
+    assert.equal(page.calls[0].capability, 'resources')
+    assert.equal(page.calls[0].action, 'resource.read')
+    assert.equal(page.calls[0].subject_scoped, true)
     assert.equal(page.analytics.failed, 73)
   } finally {
     globalThis.fetch = originalFetch

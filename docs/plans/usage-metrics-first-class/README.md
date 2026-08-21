@@ -14,5 +14,6 @@ kept separate from claims about what is available today.
 - [Specification](SPEC.md): target product and analytics contract.
 - [Implementation plan](IMPLEMENTATION.md): ordered follow-up work.
 - [Progress](PROGRESS.md): shipped boundary and explicit remaining items.
+- [Benchmarks](BENCHMARKS.md): reproducible production-shaped query evidence.
 
 No production deployment is part of this planning milestone.

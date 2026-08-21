@@ -222,6 +222,8 @@ export interface ToolCallRecord {
   ts: number
   tool: string
   action: string | null
+  /** Gateway capability family for the target, when durably collected. */
+  capability?: string
   agent_id: string
   agent_label: string
   agent_kind: 'agent' | 'device'

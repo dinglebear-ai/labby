@@ -56,7 +56,11 @@ export function UsageCallCards({
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate font-mono text-[12px] font-semibold text-aurora-text-primary">{call.tool}</p>
-              {call.action ? <p className="truncate font-mono text-[11px] text-aurora-text-muted">{call.action}</p> : null}
+              {call.action || (call.capability && call.capability !== 'tools') ? (
+                <p className="truncate font-mono text-[11px] text-aurora-text-muted">
+                  {[call.capability && call.capability !== 'tools' ? call.capability : null, call.action].filter(Boolean).join(' · ')}
+                </p>
+              ) : null}
             </div>
             <span className="shrink-0 text-[11px] text-aurora-text-muted">{formatRelativeTime(call.ts)}</span>
           </div>

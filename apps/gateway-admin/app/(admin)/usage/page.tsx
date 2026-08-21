@@ -419,6 +419,9 @@ function UsageExplorer() {
                         {call.action ? (
                           <span className="font-mono text-[12px] text-aurora-text-muted">.{call.action}</span>
                         ) : null}
+                        {call.capability && call.capability !== 'tools' ? (
+                          <span className="ml-2 text-[11px] text-aurora-text-muted">{call.capability}</span>
+                        ) : null}
                       </TableCell>
                       <TableCell>
                         <div className="text-aurora-text-primary">
