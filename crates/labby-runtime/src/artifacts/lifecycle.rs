@@ -97,11 +97,55 @@ impl ArtifactRevisionDiff {
             }
         }
 
-        Ok(Self {
+        let diff = Self {
             from_revision_id: from.id.clone(),
             to_revision_id: to.id.clone(),
             changes,
-        })
+        };
+        diff.validate()?;
+        Ok(diff)
+    }
+
+    /// Validate a serialized diff independently of the revisions that produced it.
+    pub fn validate(&self) -> Result<(), ArtifactError> {
+        validation::validate_reference_id(&self.from_revision_id, "from_revision_id")?;
+        validation::validate_reference_id(&self.to_revision_id, "to_revision_id")?;
+        if self.changes.len() > validation::MAX_COMPONENTS.saturating_mul(2) {
+            return Err(invalid("changes", "too_many"));
+        }
+
+        let mut previous_path: Option<&str> = None;
+        for change in &self.changes {
+            validation::validate_relative_path(&change.path)?;
+            if previous_path.is_some_and(|previous| previous >= change.path.as_str()) {
+                return Err(invalid("changes", "not_strictly_path_ordered"));
+            }
+            previous_path = Some(&change.path);
+
+            let component_matches_path = |component: &ArtifactComponent| {
+                validation::validate_component(component)?;
+                if component.path != change.path {
+                    return Err(invalid("changes", "component_path_mismatch"));
+                }
+                Ok(())
+            };
+
+            match (change.kind, &change.before, &change.after) {
+                (ArtifactChangeKind::Added, None, Some(after)) => component_matches_path(after)?,
+                (ArtifactChangeKind::Removed, Some(before), None) => {
+                    component_matches_path(before)?;
+                }
+                (ArtifactChangeKind::Modified, Some(before), Some(after)) => {
+                    component_matches_path(before)?;
+                    component_matches_path(after)?;
+                    if before == after {
+                        return Err(invalid("changes", "unchanged_component"));
+                    }
+                }
+                _ => return Err(invalid("changes", "kind_payload_mismatch")),
+            }
+        }
+        Ok(())
     }
 
     /// Whether the two revisions have identical component contracts.
@@ -188,6 +232,7 @@ impl ArtifactUpdatePlan {
         if self.diff.to_revision_id != self.source_revision_id {
             return Err(invalid("diff", "source_revision_mismatch"));
         }
+        self.diff.validate()?;
         Ok(())
     }
 }
@@ -244,5 +289,30 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn serialized_diff_validation_rejects_invalid_shape_and_order() {
+        let from = revision(&[("a.txt", b"old")]);
+        let to = revision(&[("a.txt", b"new"), ("b.txt", b"added")]);
+        let mut diff = ArtifactRevisionDiff::between(&from, &to).unwrap();
+        diff.changes.reverse();
+        assert!(matches!(
+            diff.validate(),
+            Err(ArtifactError::InvalidField {
+                field: "changes",
+                reason: "not_strictly_path_ordered"
+            })
+        ));
+
+        let mut diff = ArtifactRevisionDiff::between(&from, &to).unwrap();
+        diff.changes[0].before = None;
+        assert!(matches!(
+            diff.validate(),
+            Err(ArtifactError::InvalidField {
+                field: "changes",
+                reason: "kind_payload_mismatch"
+            })
+        ));
     }
 }
