@@ -149,15 +149,15 @@ impl PooledRunner {
     }
 
     pub(crate) async fn shutdown(mut self) {
+        #[cfg(unix)]
         if let Some(pid) = self.child_pid {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::Signal;
-                use nix::unistd::Pid;
-                let _ = nix::sys::signal::killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
-            }
-            #[cfg(windows)]
-            let _ = self.child.start_kill();
+            use nix::sys::signal::Signal;
+            use nix::unistd::Pid;
+            let _ = nix::sys::signal::killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        }
+        #[cfg(windows)]
+        if self.child_pid.is_some() {
+            drop(self.child.start_kill());
         }
         drop(tokio::time::timeout(std::time::Duration::from_secs(1), self.child.wait()).await);
         if let Some(mut sandbox) = self.microsandbox.take() {
@@ -443,7 +443,9 @@ fn spawn_stderr_drain(
 
 #[cfg(test)]
 mod tests {
-    use super::{PooledRunner, StderrBuffer};
+    #[cfg(target_os = "linux")]
+    use super::PooledRunner;
+    use super::StderrBuffer;
 
     #[tokio::test]
     async fn stderr_buffer_take_since_and_clear_releases_retained_lines() {

@@ -60,14 +60,14 @@ static LOCAL_PROVIDER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static RESULT_ACK_RESERVE_USES: AtomicU64 = AtomicU64::new(0);
 static SETTLEMENT_WATCHDOG_EXPIRIES: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CodeModeRuntimeCounters {
     pub result_ack_reserve_uses: u64,
     pub settlement_watchdog_expiries: u64,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 #[must_use]
 pub(crate) fn code_mode_runtime_counters() -> CodeModeRuntimeCounters {
     CodeModeRuntimeCounters {
@@ -1454,6 +1454,7 @@ mod tests {
     #![allow(clippy::panic)]
     use super::*;
     use crate::host::NoopHost;
+    #[cfg(not(windows))]
     use crate::pool::RunnerSpawn;
 
     fn test_config(timeout: Duration) -> RunnerConfig {
@@ -1474,11 +1475,13 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     struct DelayedToolHost {
         inner: NoopHost,
         delay: Duration,
     }
 
+    #[cfg(not(windows))]
     impl CodeModeHost for DelayedToolHost {
         async fn list_tools(
             &self,
