@@ -242,7 +242,7 @@
         },
         {
           "name": "gateway.usage.metrics",
-          "description": "Aggregate complete-window gateway usage analytics: totals, latency, errors, targets, actors, throughput, and time buckets",
+          "description": "Aggregate gateway usage analytics over at most 250000 matching rows: totals, latency, errors, targets, actors, throughput, and time buckets",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
@@ -307,13 +307,13 @@
               "name": "timezone_offset_minutes",
               "ty": "integer",
               "required": false,
-              "description": "Minutes east of UTC fallback when timezone is omitted"
+              "description": "Minutes east of UTC fallback when timezone is omitted (-1440 to 1440)"
             },
             {
               "name": "include_facets",
               "ty": "boolean",
               "required": false,
-              "description": "Include stable window-wide target, actor, upstream, and outcome filter facets"
+              "description": "Include up to 1000 stable window-wide values per target, actor, upstream, and outcome facet"
             }
           ],
           "returns": "GatewayUsageMetricsView"

@@ -95,7 +95,15 @@ async fn effective_service_environment()
         "--no-pager",
     ])
     .await?;
-    let env_file = std::fs::read_to_string(SERVICE_ENV_PATH).ok();
+    let env_file = match std::fs::read_to_string(SERVICE_ENV_PATH) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(preflight_error(format!(
+                "cannot read service EnvironmentFile {SERVICE_ENV_PATH}: {error}"
+            )));
+        }
+    };
     Ok(merge_environment_sources(
         env_file.as_deref(),
         &output.stdout,
@@ -123,6 +131,7 @@ fn parse_env_file(text: &str) -> std::collections::BTreeMap<String, String> {
             if line.is_empty() || line.starts_with('#') {
                 return None;
             }
+            let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
             let (key, value) = line.split_once('=')?;
             Some((
                 key.trim().to_string(),
@@ -137,16 +146,45 @@ fn parse_env_file(text: &str) -> std::collections::BTreeMap<String, String> {
 }
 
 fn parse_environment_property(text: &str) -> std::collections::BTreeMap<String, String> {
-    text.split_whitespace()
+    split_systemd_words(text)
+        .into_iter()
         .filter_map(|token| {
-            let token = token.trim_matches('"').trim_matches('\'');
             let (key, value) = token.split_once('=')?;
-            Some((
-                key.to_string(),
-                value.trim_matches('"').trim_matches('\'').to_string(),
-            ))
+            Some((key.to_string(), value.to_string()))
         })
         .collect()
+}
+
+fn split_systemd_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in text.chars() {
+        if escaped {
+            word.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if quote == Some(ch) {
+            quote = None;
+        } else if quote.is_none() && matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+        } else if quote.is_none() && ch.is_whitespace() {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(ch);
+        }
+    }
+    if escaped {
+        word.push('\\');
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
 }
 
 fn immutable_parts(image: &str) -> Option<(&str, &str)> {
@@ -341,9 +379,31 @@ fn rewrite_systemd_environment(text: &str, key: &str, value: &str) -> Result<Str
     for line in text.split_inclusive('\n') {
         let had_newline = line.ends_with('\n');
         let body = line.strip_suffix('\n').unwrap_or(line);
-        if systemd_environment_value(body, key).is_some() {
+        if let Some(assignments) = systemd_environment_assignments(body)
+            && assignments
+                .iter()
+                .any(|assignment| assignment.starts_with(&format!("{key}=")))
+        {
             found = true;
-            out.push_str(&format!("Environment={key}={value}"));
+            out.push_str("Environment=");
+            for (index, assignment) in assignments.iter().enumerate() {
+                if index > 0 {
+                    out.push(' ');
+                }
+                let assignment = if assignment.starts_with(&format!("{key}=")) {
+                    format!("{key}={value}")
+                } else {
+                    assignment.clone()
+                };
+                out.push('"');
+                for ch in assignment.chars() {
+                    if matches!(ch, '\\' | '"') {
+                        out.push('\\');
+                    }
+                    out.push(ch);
+                }
+                out.push('"');
+            }
             if had_newline {
                 out.push('\n');
             }
@@ -366,19 +426,28 @@ fn env_assignment_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
             if line.is_empty() || line.starts_with('#') {
                 return None;
             }
+            let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
             let (name, value) = line.split_once('=')?;
             (name.trim() == key).then(|| value.trim().trim_matches('"').trim_matches('\''))
         })
         .next_back()
 }
 
-fn systemd_environment_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+fn systemd_environment_assignments(text: &str) -> Option<Vec<String>> {
+    text.lines().find_map(|line| {
+        let raw = line.trim().strip_prefix("Environment=")?.trim();
+        Some(split_systemd_words(raw))
+    })
+}
+
+fn systemd_environment_value(text: &str, key: &str) -> Option<String> {
     text.lines()
         .filter_map(|line| {
-            let raw = line.trim().strip_prefix("Environment=")?.trim();
-            let raw = raw.trim_matches('"').trim_matches('\'');
-            let (name, value) = raw.split_once('=')?;
-            (name == key).then(|| value.trim_matches('"').trim_matches('\''))
+            let assignments = systemd_environment_assignments(line)?;
+            assignments.into_iter().find_map(|assignment| {
+                let (name, value) = assignment.split_once('=')?;
+                (name == key).then(|| value.to_string())
+            })
         })
         .next_back()
 }
@@ -498,7 +567,7 @@ mod tests {
 
     #[test]
     fn environment_file_values_override_systemd_environment_assignments() {
-        let env_file = format!("{BACKEND_ENV}=microsandbox\n{MSB_IMAGE_ENV}=debian\n");
+        let env_file = format!("export {BACKEND_ENV}=microsandbox\n{MSB_IMAGE_ENV}=debian\n");
         let systemd = format!("{BACKEND_ENV}=process");
         let merged = merge_environment_sources(Some(&env_file), &systemd);
 
@@ -518,8 +587,18 @@ mod tests {
         let pinned = format!("docker.io/library/debian@{DIGEST}");
         let output = rewrite_systemd_environment(input, MSB_IMAGE_ENV, &pinned).unwrap();
         assert!(output.contains("Environment=LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox"));
-        assert!(output.contains(&format!("Environment={MSB_IMAGE_ENV}={pinned}")));
+        assert!(output.contains(&format!("Environment=\"{MSB_IMAGE_ENV}={pinned}\"")));
         assert!(!output.contains("MICROSANDBOX_IMAGE=debian\n"));
+    }
+
+    #[test]
+    fn rewrites_target_inside_multi_assignment_without_losing_siblings() {
+        let input =
+            format!("[Service]\nEnvironment=KEEP=hello\\ world \"{MSB_IMAGE_ENV}=debian\"\n");
+        let pinned = format!("docker.io/library/debian@{DIGEST}");
+        let output = rewrite_systemd_environment(&input, MSB_IMAGE_ENV, &pinned).unwrap();
+        assert!(output.contains("\"KEEP=hello world\""));
+        assert!(output.contains(&format!("\"{MSB_IMAGE_ENV}={pinned}\"")));
     }
 
     #[test]
