@@ -363,6 +363,9 @@ pub struct GatewayUsageUpstreamCount {
 pub struct GatewayUsageLatencyStat {
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub avg_elapsed_ms: f64,
 }
 
@@ -388,6 +391,9 @@ pub struct GatewayUsageToolFacet {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GatewayUsageFacets {
     pub tools: Vec<GatewayUsageToolFacet>,
+    pub capabilities: Vec<String>,
+    pub operations: Vec<String>,
+    pub subject_scopes: Vec<bool>,
     pub actors: Vec<String>,
     pub upstreams: Vec<String>,
     pub outcomes: Vec<String>,

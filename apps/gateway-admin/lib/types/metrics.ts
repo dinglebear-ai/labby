@@ -277,6 +277,9 @@ export interface ToolCallQuery {
   until_ms?: number
   upstream?: string
   tool?: string
+  capability?: string
+  operation?: string
+  subject_scoped?: boolean
   agent?: string
   ip?: string
   outcome?: CallOutcome
@@ -318,6 +321,9 @@ export interface ToolCallPage {
 export interface ToolCallFacets {
   upstreams: string[]
   tools: string[]
+  capabilities: string[]
+  operations: string[]
+  subject_scopes: boolean[]
   agents: ToolCallAgentFacet[]
   outcomes: string[]
   ips: string[]

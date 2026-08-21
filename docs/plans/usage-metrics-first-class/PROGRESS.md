@@ -13,12 +13,13 @@
 - [x] Frontend exact analytics adapter and bounded bucket series.
 - [x] Dashboard and Usage Explorer drill-down UX with window/filter context.
 - [x] Backend, frontend unit, and browser coverage shipped with PR #459.
-- [ ] Add first-class capability, operation, and subject-scoped filters across
+- [x] Add first-class capability, operation, and subject-scoped filters across
   params, store queries, facets, CLI/catalog contracts, generated docs, and UI.
-- [ ] Preserve the full dimensional target identity in slowest-target results;
-  the current latency result exposes only upstream and tool.
-- [ ] Capture representative 24h/7d query plans and timings against a copied
+- [x] Preserve the full dimensional target identity in slowest-target results.
+- [x] Capture representative 24h/7d query plans and timings against a
   production-shaped database; no live database is required for ordinary CI.
 - [ ] Decide whether the explicit 250,000-row exact-query ceiling should remain
   fixed, become configurable, or be replaced by a different bounded strategy.
+  This remains an explicit policy decision: the current milestone preserves the
+  fixed fail-closed ceiling and adds no configuration surface.
 - [ ] Run an adversarial review of the remaining milestone when implemented.

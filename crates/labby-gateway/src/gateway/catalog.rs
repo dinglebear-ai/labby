@@ -294,6 +294,24 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Restrict to one qualified upstream::tool target",
             },
             ParamSpec {
+                name: "capability",
+                ty: "string",
+                required: false,
+                description: "Restrict to one capability family",
+            },
+            ParamSpec {
+                name: "operation",
+                ty: "string",
+                required: false,
+                description: "Restrict to one operation name",
+            },
+            ParamSpec {
+                name: "subject_scoped",
+                ty: "boolean",
+                required: false,
+                description: "Restrict by OAuth subject scoping",
+            },
+            ParamSpec {
                 name: "actor",
                 ty: "string",
                 required: false,
@@ -367,6 +385,24 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: false,
                 description: "Restrict to one qualified upstream::tool target",
+            },
+            ParamSpec {
+                name: "capability",
+                ty: "string",
+                required: false,
+                description: "Restrict to one capability family",
+            },
+            ParamSpec {
+                name: "operation",
+                ty: "string",
+                required: false,
+                description: "Restrict to one operation name",
+            },
+            ParamSpec {
+                name: "subject_scoped",
+                ty: "boolean",
+                required: false,
+                description: "Restrict by OAuth subject scoping",
             },
             ParamSpec {
                 name: "actor",

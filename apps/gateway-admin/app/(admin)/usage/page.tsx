@@ -106,6 +106,9 @@ function UsageExplorer() {
   const [window, setWindow] = useState<MetricsWindow>(initialWindow)
   const [upstream, setUpstream] = useState<string>(params.get('upstream') ?? ALL)
   const [tool, setTool] = useState<string>(params.get('tool') ?? ALL)
+  const [capability, setCapability] = useState<string>(params.get('capability') ?? ALL)
+  const [operation, setOperation] = useState<string>(params.get('operation') ?? ALL)
+  const [subjectScope, setSubjectScope] = useState<string>(params.get('subject') ?? ALL)
   const [agent, setAgent] = useState<string>(params.get('agent') ?? ALL)
   const [ip, setIp] = useState<string>(params.get('ip') ?? ALL)
   const [outcome, setOutcome] = useState<string>(params.get('outcome') ?? ALL)
@@ -124,6 +127,9 @@ function UsageExplorer() {
     if (window !== '24h') next.set('window', window)
     if (upstream !== ALL) next.set('upstream', upstream)
     if (tool !== ALL) next.set('tool', tool)
+    if (capability !== ALL) next.set('capability', capability)
+    if (operation !== ALL) next.set('operation', operation)
+    if (subjectScope !== ALL) next.set('subject', subjectScope)
     if (agent !== ALL) next.set('agent', agent)
     if (ip !== ALL) next.set('ip', ip)
     if (outcome !== ALL) next.set('outcome', outcome)
@@ -137,7 +143,7 @@ function UsageExplorer() {
     if (focusHour) next.set('hour', focusHour)
     const query = next.toString()
     router.replace(query ? `/usage/?${query}` : '/usage/', { scroll: false })
-  }, [agent, debouncedSearch, errorKind, focus, focusHour, focusMetric, focusPercentile, ip, outcome, router, sinceMs, tool, untilMs, upstream, window])
+  }, [agent, capability, debouncedSearch, errorKind, focus, focusHour, focusMetric, focusPercentile, ip, operation, outcome, router, sinceMs, subjectScope, tool, untilMs, upstream, window])
 
   const { data, isLoading, error, mutate } = useToolCalls({
     window,
@@ -145,6 +151,9 @@ function UsageExplorer() {
     until_ms: untilMs,
     upstream: upstream === ALL ? undefined : upstream,
     tool: tool === ALL ? undefined : tool,
+    capability: capability === ALL ? undefined : capability,
+    operation: operation === ALL ? undefined : operation,
+    subject_scoped: subjectScope === ALL ? undefined : subjectScope === 'subject',
     agent: agent === ALL ? undefined : agent,
     ip: ip === ALL ? undefined : ip,
     outcome: outcome === ALL ? undefined : (outcome as CallOutcome),
@@ -155,6 +164,8 @@ function UsageExplorer() {
   })
   const upstreamOptions = data?.facets.upstreams ?? []
   const toolOptions = data?.facets.tools ?? []
+  const capabilityOptions = data?.facets.capabilities ?? []
+  const operationOptions = data?.facets.operations ?? []
   const agentOptions = useMemo(
     () => (data?.facets.agents ?? []).map((entry) => [entry.id, entry.label] as const),
     [data],
@@ -307,7 +318,7 @@ function UsageExplorer() {
                 </button>
               </div>
             ) : null}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_repeat(5,minmax(130px,auto))]">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
               <div className="relative min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
                 <Input value={search} onChange={(event) => { setSearch(event.target.value); resetPaging() }} placeholder="Search target, operation, agent, error…" className="h-10 pl-9" />
@@ -319,6 +330,18 @@ function UsageExplorer() {
               <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}>
                 <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={capability} onValueChange={(value) => { setCapability(value); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Capability" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All capabilities</SelectItem>{capabilityOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={operation} onValueChange={(value) => { setOperation(value); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Operation" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All operations</SelectItem>{operationOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={subjectScope} onValueChange={(value) => { setSubjectScope(value); resetPaging() }}>
+                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Scope" /></SelectTrigger>
+                <SelectContent><SelectItem value={ALL}>All scopes</SelectItem><SelectItem value="shared">Shared</SelectItem><SelectItem value="subject">OAuth subject</SelectItem></SelectContent>
               </Select>
               <Select value={agent} onValueChange={(value) => { setAgent(value); resetPaging() }}>
                 <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Agent" /></SelectTrigger>

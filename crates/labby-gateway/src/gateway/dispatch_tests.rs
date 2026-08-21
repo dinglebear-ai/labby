@@ -508,6 +508,9 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
             "since_unix": 0,
             "until_unix": 1200,
             "tool": "github::search_repos",
+            "capability": "tools",
+            "operation": "tool.call",
+            "subject_scoped": false,
             "actor": "bob",
             "outcome": "failed",
             "search": "timeout",
@@ -527,12 +530,21 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
     assert_eq!(metrics["timeseries"].as_array().map(Vec::len), Some(2));
     assert_eq!(metrics["facets"]["actors"], json!(["alice", "bob"]));
     assert_eq!(metrics["facets"]["upstreams"], json!(["github"]));
+    assert_eq!(metrics["facets"]["capabilities"], json!(["tools"]));
+    assert_eq!(metrics["facets"]["operations"], json!(["tool.call"]));
+    assert_eq!(metrics["facets"]["subject_scopes"], json!([false]));
+    assert_eq!(metrics["slowest_tools"][0]["capability"], "tools");
+    assert_eq!(metrics["slowest_tools"][0]["operation"], "tool.call");
+    assert_eq!(metrics["slowest_tools"][0]["subject_scoped"], false);
 
     let calls = dispatch_with_manager(
         &manager,
         "gateway.usage.calls",
         json!({
             "tool": "github::search_repos",
+            "capability": "tools",
+            "operation": "tool.call",
+            "subject_scoped": false,
             "actor": "bob",
             "outcome": "failed",
             "search": "timeout",

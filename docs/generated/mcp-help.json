@@ -274,6 +274,24 @@
               "description": "Restrict to one qualified upstream::tool target"
             },
             {
+              "name": "capability",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one capability family"
+            },
+            {
+              "name": "operation",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one operation name"
+            },
+            {
+              "name": "subject_scoped",
+              "ty": "boolean",
+              "required": false,
+              "description": "Restrict by OAuth subject scoping"
+            },
+            {
               "name": "actor",
               "ty": "string",
               "required": false,
@@ -350,6 +368,24 @@
               "ty": "string",
               "required": false,
               "description": "Restrict to one qualified upstream::tool target"
+            },
+            {
+              "name": "capability",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one capability family"
+            },
+            {
+              "name": "operation",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one operation name"
+            },
+            {
+              "name": "subject_scoped",
+              "ty": "boolean",
+              "required": false,
+              "description": "Restrict by OAuth subject scoping"
             },
             {
               "name": "actor",

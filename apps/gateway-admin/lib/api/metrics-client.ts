@@ -491,6 +491,9 @@ function usageFilterParams(window: MetricsWindow, now: number, query?: ToolCallQ
     ...usageTimeBounds(window, now, query),
     upstream: query?.upstream,
     tool: query?.tool,
+    capability: query?.capability,
+    operation: query?.operation,
+    subject_scoped: query?.subject_scoped,
     actor: query?.agent,
     outcome: query?.error_kind ?? query?.outcome,
     search: query?.search?.trim() || undefined,
@@ -768,6 +771,9 @@ export async function fetchToolCalls(
       facets: {
         upstreams: [...new Set(stream.map((record) => record.tool.split('::', 1)[0]))].sort(),
         tools: [...new Set(stream.map((record) => record.tool))].sort(),
+        capabilities: ['tools'],
+        operations: [...new Set(stream.map((record) => record.action).filter((value): value is string => Boolean(value)))].sort(),
+        subject_scopes: [...new Set(stream.map((record) => record.subject_scoped ?? false))].sort(),
         agents: [...agentMap.entries()]
           .map(([actorId, label]) => ({ id: actorId, label }))
           .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
@@ -809,6 +815,9 @@ export async function fetchToolCalls(
     facets: {
       upstreams: summary.facets.upstreams,
       tools: summary.facets.tools.map((target) => `${target.upstream}::${target.tool}`),
+      capabilities: summary.facets.capabilities ?? [],
+      operations: summary.facets.operations ?? [],
+      subject_scopes: summary.facets.subject_scopes ?? [],
       agents: summary.facets.actors.map((actor) => ({ id: actor, label: actor })),
       outcomes: summary.facets.outcomes,
       ips: [],

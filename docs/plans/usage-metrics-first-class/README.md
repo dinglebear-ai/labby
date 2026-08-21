@@ -1,6 +1,6 @@
 # First-class usage metrics
 
-Status: core shipped; follow-up milestone planned
+Status: dimensional follow-up implemented; long-window policy decision deferred
 
 ## Purpose
 

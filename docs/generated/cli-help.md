@@ -3631,6 +3631,17 @@ Options:
       --tool <TOOL>
           Restrict to one qualified upstream::tool target
 
+      --capability <CAPABILITY>
+          Restrict to one capability family
+
+      --operation <OPERATION>
+          Restrict to one operation name
+
+      --subject-scoped <SUBJECT_SCOPED>
+          Restrict by OAuth subject scoping (`true` or `false`)
+
+          [possible values: true, false]
+
       --actor <ACTOR>
           Restrict to one actor subject
 
@@ -3684,6 +3695,17 @@ Options:
 
       --tool <TOOL>
           Restrict to one qualified upstream::tool target
+
+      --capability <CAPABILITY>
+          Restrict to one capability family
+
+      --operation <OPERATION>
+          Restrict to one operation name
+
+      --subject-scoped <SUBJECT_SCOPED>
+          Restrict by OAuth subject scoping (`true` or `false`)
+
+          [possible values: true, false]
 
       --actor <ACTOR>
           Restrict to one actor subject
