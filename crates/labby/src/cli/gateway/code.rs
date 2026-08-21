@@ -1,7 +1,6 @@
 use std::process::ExitCode;
 
 use anyhow::Result;
-use labby_codemode::MAX_SOURCE_BYTES;
 use serde_json::json;
 
 use crate::cli::gateway::{
@@ -71,7 +70,10 @@ pub(super) async fn run_gateway_code(
             crate::output::print(&value, format)?;
         }
         GatewayCodeCommand::Exec { code, file } => {
-            let code = read_code_mode_source(code, file, MAX_SOURCE_BYTES as u64)?;
+            // The selected daemon owns its configured source limit. The CLI only
+            // applies the shared allocation ceiling before target resolution;
+            // local and remote execution paths enforce their own lower limit.
+            let code = read_code_mode_source(code, file, labby_codemode::MAX_SOURCE_BYTES as u64)?;
             let response = execute_code_mode(manager, config, &code).await?;
             crate::output::print(&response, format)?;
         }
@@ -166,11 +168,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cli_source_limit_is_shared_const_boundary() {
-        let at_limit = "a".repeat(MAX_SOURCE_BYTES);
-        assert!(read_code_mode_source(Some(at_limit), None, MAX_SOURCE_BYTES as u64).is_ok());
+    fn cli_source_read_uses_shared_hard_ceiling() {
+        let max_source_bytes = labby_codemode::MAX_SOURCE_BYTES;
+        let above_default =
+            "a".repeat(crate::config::CodeModeConfig::default().max_source_bytes + 1);
+        assert!(read_code_mode_source(Some(above_default), None, max_source_bytes as u64).is_ok());
+        let at_limit = "a".repeat(max_source_bytes);
+        assert!(read_code_mode_source(Some(at_limit), None, max_source_bytes as u64).is_ok());
 
-        let over_limit = "a".repeat(MAX_SOURCE_BYTES + 1);
-        assert!(read_code_mode_source(Some(over_limit), None, MAX_SOURCE_BYTES as u64).is_err());
+        let over_limit = "a".repeat(max_source_bytes + 1);
+        assert!(read_code_mode_source(Some(over_limit), None, max_source_bytes as u64).is_err());
     }
 }

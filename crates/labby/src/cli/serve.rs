@@ -2592,7 +2592,7 @@ mod tests {
                 .collect()
         }
 
-        let previous_code_mode = crate::config::process_code_mode_enabled();
+        let _guard = crate::config::process_code_mode_test_guard();
         crate::config::set_process_code_mode_enabled(true);
 
         let notifier = PeerNotifier::default();
@@ -2617,8 +2617,6 @@ mod tests {
         notifier.code_mode_app_state.set_enabled(true);
         let enabled = listed_tool_names(app).await;
         assert!(enabled.iter().any(|name| name == "codemode_ui"));
-
-        crate::config::set_process_code_mode_enabled(previous_code_mode);
     }
 
     #[tokio::test]

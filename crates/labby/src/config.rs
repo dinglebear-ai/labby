@@ -47,6 +47,33 @@ use std::{
 // server is operating in Code Mode.
 static PROCESS_CODE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(test)]
+static PROCESS_CODE_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct ProcessCodeModeTestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: bool,
+}
+
+#[cfg(test)]
+impl Drop for ProcessCodeModeTestGuard {
+    fn drop(&mut self) {
+        set_process_code_mode_enabled(self.previous);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn process_code_mode_test_guard() -> ProcessCodeModeTestGuard {
+    let lock = PROCESS_CODE_MODE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ProcessCodeModeTestGuard {
+        _lock: lock,
+        previous: process_code_mode_enabled(),
+    }
+}
+
 pub(crate) fn set_process_code_mode_enabled(enabled: bool) {
     let previous = PROCESS_CODE_MODE_ENABLED.swap(enabled, Ordering::AcqRel);
     if previous != enabled {
@@ -1752,6 +1779,7 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "admin.enabled" => serde_json::json!(cfg.admin.enabled),
         "code_mode.trace_params" => serde_json::json!(cfg.code_mode.trace_params),
         "code_mode.timeout_ms" => serde_json::json!(cfg.code_mode.timeout_ms),
+        "code_mode.max_source_bytes" => serde_json::json!(cfg.code_mode.max_source_bytes),
         "code_mode.max_response_bytes" => serde_json::json!(cfg.code_mode.max_response_bytes),
         "code_mode.max_response_tokens" => serde_json::json!(cfg.code_mode.max_response_tokens),
         "code_mode.token_estimate_divisor" => {
@@ -3097,6 +3125,7 @@ url = "https://acme.example.com/mcp"
     fn code_mode_is_root_level_config_with_default_limits() {
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
+        assert_eq!(default_cfg.code_mode.max_source_bytes, 128 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
 
@@ -3104,6 +3133,7 @@ url = "https://acme.example.com/mcp"
             r"
 [code_mode]
 timeout_ms = 2500
+max_source_bytes = 65536
 max_response_bytes = 12000
 max_response_tokens = 3000
 ",
@@ -3111,6 +3141,7 @@ max_response_tokens = 3000
         .expect("root code_mode parses");
 
         assert_eq!(cfg.code_mode.timeout_ms, 2500);
+        assert_eq!(cfg.code_mode.max_source_bytes, 65_536);
         assert_eq!(cfg.code_mode.max_response_bytes, 12000);
         assert_eq!(cfg.code_mode.max_response_tokens, 3000);
     }
@@ -3589,7 +3620,7 @@ services = ["removed-service"]
 
     #[test]
     fn process_code_mode_flag_round_trips() {
-        let prev_ts = process_code_mode_enabled();
+        let _guard = process_code_mode_test_guard();
 
         set_process_code_mode_enabled(true);
         assert!(
@@ -3602,9 +3633,6 @@ services = ["removed-service"]
             !process_code_mode_enabled(),
             "code_mode must be false after set_process_code_mode_enabled(false)"
         );
-
-        // Restore
-        set_process_code_mode_enabled(prev_ts);
     }
 
     // ── T3: secret file permission tests (S2) ────────────────────────────────

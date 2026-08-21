@@ -727,6 +727,16 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         number_editable(
             "advanced",
+            "code_mode.max_source_bytes",
+            "Code Mode max source bytes",
+            "Maximum accepted JavaScript source size for one Code Mode execution.",
+            SettingsApplyMode::Partial,
+            1024,
+            1_048_576,
+            Some("131072"),
+        ),
+        number_editable(
+            "advanced",
             "code_mode.max_response_bytes",
             "Code Mode max response bytes",
             "Maximum serialized response envelope size.",
@@ -1608,6 +1618,20 @@ mod tests {
         for field in settings_fields() {
             assert!(seen.insert(field.key), "duplicate field {}", field.key);
         }
+    }
+
+    #[test]
+    fn code_mode_source_limit_is_editable_and_bounded() {
+        let fields = settings_fields();
+        let field = fields
+            .iter()
+            .find(|field| field.key == "code_mode.max_source_bytes")
+            .expect("source limit setting");
+        assert_eq!(field.write_policy, SettingsWritePolicy::Editable);
+        assert_eq!(field.apply_mode, SettingsApplyMode::Partial);
+        assert_eq!(field.min, Some(1024));
+        assert_eq!(field.max, Some(1_048_576));
+        assert_eq!(field.example, Some("131072"));
     }
 
     #[test]

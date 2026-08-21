@@ -243,10 +243,10 @@ pub struct GatewayUsageMetricsArgs {
     /// IANA zone name for DST-correct local-hour aggregation.
     #[arg(long)]
     pub timezone: Option<String>,
-    /// Minutes east of UTC fallback when --timezone is omitted.
+    /// Minutes east of UTC fallback when --timezone is omitted (-1440 to 1440).
     #[arg(long, allow_hyphen_values = true)]
     pub timezone_offset_minutes: Option<i32>,
-    /// Include stable window-wide filter facets.
+    /// Include stable facets; errors if any facet exceeds 1000 values.
     #[arg(long)]
     pub include_facets: bool,
 }

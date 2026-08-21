@@ -489,6 +489,7 @@ their JSON MCP representation.
 
 Defaults:
 
+- `max_source_bytes = 131072`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
 
@@ -777,7 +778,13 @@ the runner attempts a bounded force-removal; failure is logged and triggers a
 separately bounded best-effort fallback.
 Each guest carries the `labby.owner=codemode` label. Startup removes stale
 labeled guests before admitting work, and graceful service shutdown awaits pool
-drainage. An unconfirmed cleanup opens a fail-closed creation circuit.
+drainage. An unconfirmed cleanup opens a fail-closed creation circuit. Before a
+later creation is refused, Labby rechecks every failed cleanup for that `msb`
+executable against the live labeled guest inventory. Proven-absent guests clear
+the ledger and repair active-runner accounting; still-live guests get a bounded
+force-removal retry. If inventory or removal cannot be proven, creation remains
+fail closed. This prevents transient cleanup failures from poisoning the process
+for the rest of its lifetime without weakening the cleanup boundary.
 
 This changes only the execution boundary. Tool discovery, authorization,
 exposure filters, OAuth subjects, secrets, upstream dispatch, result caps, and
@@ -787,9 +794,13 @@ value for `LABBY_CODE_MODE_RUNNER_BACKEND`.
 
 Before enabling the backend, verify `msb doctor`, read/write `/dev/kvm` access,
 the pinned cached image, and dynamic-library compatibility between the host
-runner binary and the guest image. A hardened Incus deployment must explicitly
-pass `/dev/kvm` into the guest and install `msb`/`libkrunfw`; Labby does not
-weaken the container or install runtime dependencies at request time.
+runner binary and the guest image. Host-service install/restart performs an
+additional pre-stop image preflight: legacy mutable aliases are resolved from
+the service user's existing cache, registered under the canonical immutable OCI
+reference, persisted, and re-verified before systemd is allowed to restart the
+service. A hardened Incus deployment must explicitly pass `/dev/kvm` into the
+guest and install `msb`/`libkrunfw`; Labby does not weaken the container or
+install runtime dependencies at request time.
 
   The conservative default (`size = 2`) keeps idle memory bounded while absorbing
   typical `codemode` bursts. The security invariants (`env_clear`,
