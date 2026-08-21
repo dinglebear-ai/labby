@@ -1,6 +1,6 @@
 # labby — Claude Code plugin
 
-Skills and MCP configuration for the Lab homelab control plane.
+Skills and MCP configuration for the Labby homelab control plane.
 
 This plugin does **not** bundle the `labby` binary and does not auto-install
 or auto-repair anything. It ships:

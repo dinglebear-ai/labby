@@ -84,10 +84,6 @@ dotenvy = "0.15"
 toml = "1.1"
 serde_yaml = "0.9"
 
-# tui
-ratatui = "0.30.0"
-crossterm = "0.29"
-
 # mcp
 rmcp = { version = "=3.1.0", features = [
   "server",
@@ -139,8 +135,9 @@ wiremock = "0.6"
 insta = { version = "1", features = ["json", "yaml"] }
 
 [workspace.lints.rust]
-# TODO(docs-pass): re-enable once every service has real types + docstrings.
-# Tracked in docs/superpowers/plans/ (follow-up after all 21 services land).
+# Re-enable once public API rustdoc coverage is complete across the workspace.
+# Keep this policy local to the lint table; transient implementation plans are not
+# a durable source of truth.
 missing_docs = "allow"
 missing_crate_level_docs = "deny"
 unsafe_op_in_unsafe_fn = "deny"

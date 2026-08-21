@@ -1,24 +1,14 @@
-//! Workspace filesystem browser service.
+//! Jailed read-only workspace filesystem service.
 //!
-//! # Purpose
+//! The service resolves the configured `[workspace].root`, exposes bounded
+//! `fs.list` discovery through MCP/API/web, and serves bounded `fs.preview`
+//! content through HTTP/web. Requested paths stay beneath the configured root;
+//! missing configuration returns the structured `workspace_not_configured`
+//! error.
 //!
-//! Exposes a jailed read-only view of the user-configured workspace
-//! directory so the admin chat UI can attach files by path (not by blob
-//! upload) and the server-side ACP agent can read them directly.
-//!
-//! # Phase 1 scope (lab-f1t2.1)
-//!
-//! - Workspace-root resolution from `config.toml` `[workspace].root`.
-//! - Structured `workspace_not_configured` error for callers.
-//!
-//! Phases 2 and 3 add `fs.list` (MCP + HTTP) and `fs.preview` (HTTP only)
-//! on top of this scaffold.
-//!
-//! # Not in lab-apis
-//!
-//! This service is intentionally local-only with no `lab-apis` counterpart,
-//! matching the `lab_admin` precedent. See `crates/lab/Cargo.toml` for the
-//! feature flag.
+//! This is a Labby-local product service with no `labby-apis` counterpart. It
+//! is compiled by the `fs` feature in `crates/labby/Cargo.toml` and intentionally
+//! exposes no general-purpose write/delete/rename surface.
 
 pub mod catalog;
 pub mod client;

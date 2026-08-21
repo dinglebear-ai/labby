@@ -33,12 +33,12 @@ These strings appear verbatim in MCP and HTTP error surfaces. Adding a new kind 
 | `Decode(_)` | `"decode_error"` |
 | `Internal(_)` | `"internal_error"` |
 
-Dispatchers in `lab/src/dispatch/` layer additional kinds on top: `unknown_action`, `unknown_subaction`, `missing_param`, `invalid_param`, `unknown_instance`. See `docs/dev/ERRORS.md` for the canonical vocabulary and envelope rules.
+Product dispatchers in `crates/labby/src/dispatch/` layer additional kinds on top: `unknown_action`, `unknown_subaction`, `missing_param`, `invalid_param`, `unknown_instance`. See `docs/dev/ERRORS.md` for the canonical vocabulary and envelope rules.
 
 ## Invariants
 
 - **No `clap`, `rmcp`, `tabled`, `anyhow`** in this directory — ever.
-- **No file or env I/O.** `Auth::from_env()` helpers are allowed to *accept* env values, but the binary calls them. `lab-apis` never reads `std::env` on its own.
+- **No file or env I/O.** `Auth::from_env()` helpers are allowed to *accept* env values, but the binary calls them. `labby-apis` never reads `std::env` on its own.
 - **Debug impls for anything holding secrets must redact.** Test this.
 - **Keep `ParamSpec.ty` as `&'static str`** (e.g., `"string"`, `"integer"`, `"bool"`). Do not reintroduce a `ParamType` enum — the topic docs standardize on string labels.
 - **`ActionSpec.destructive` is the single source of truth** for elicitation + CLI confirm flows. Never hide destructive ops behind a non-destructive action.

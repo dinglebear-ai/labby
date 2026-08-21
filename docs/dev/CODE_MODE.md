@@ -11,9 +11,9 @@ Code Mode is the JavaScript execution surface behind the MCP `codemode` and
 compact docs, and run one async JavaScript function in a sandbox that can call
 the tools allowed by that entry point.
 
-Lab actions are intentionally not exposed through Code Mode. Call Lab built-in
+Labby actions are intentionally not exposed through Code Mode. Call Labby built-in
 service tools directly when raw tools are visible, or use the native gateway
-management/API surfaces for Lab actions.
+management/API surfaces for Labby actions.
 
 ## Surface
 
@@ -228,7 +228,7 @@ async () => {
 calls. A failed `callTool` rejects only that promise; catch locally when partial
 success is useful.
 
-Synthetic Code Mode exposes the fixed Lab-owned entry points instead of raw
+Synthetic Code Mode exposes the fixed Labby-owned entry points instead of raw
 upstream tools. Discovery, schema inspection, tool calls, and intermediate
 values stay inside one sandbox execution.
 
@@ -533,7 +533,7 @@ Semantics:
 - **Native URIs.** The widget's `ui://<upstream>/...` URI is preserved verbatim.
   The gateway routes a `resources/read` of that URI to the owning upstream peer
   via catalog reverse-lookup (it is **not** rewritten to `lab://upstream/...`).
-  `ui://lab/code-mode/*` remains reserved for Lab's own Code Mode app resources.
+  `ui://lab/code-mode/*` remains reserved for Labby's own Code Mode app resources.
 - **Identical mirroring.** The execute `CallToolResult` carries the upstream's
   `_meta.ui` object verbatim, so the host renders the widget identically to a
   direct connector. The widget itself is driven by the `ui://` resource read, not
@@ -546,18 +546,18 @@ Semantics:
 While synthetic Code Mode is active, raw upstream tools stay hidden from
 `tools/list`, including tools that carry `_meta.ui.resourceUri`. Upstream health
 therefore cannot add or remove approval-facing callback actions. The advertised
-MCP App actions are the fixed Lab-owned surface (`codemode_ui`, `mcp_app`, and
-the configured Lab-owned admin apps), not raw upstream callbacks.
+MCP App actions are the fixed Labby-owned surface (`codemode_ui`, `mcp_app`, and
+the configured Labby-owned admin apps), not raw upstream callbacks.
 
 An upstream widget returned by a Code Mode execution can still render through
 the native resource URI mirrored in the result. Rendering that resource does
 not advertise its server's callback tools.
 
 A rendered MCP App can call back to its server only through host
-`callServerTool` / `tools/call`. Lab allows those callback calls through Code
+`callServerTool` / `tools/call`. Labby allows those callback calls through Code
 Mode's raw-tool gate only when all of these are true:
 
-- the requested tool is an exposed upstream tool, not a Lab built-in service;
+- the requested tool is an exposed upstream tool, not a Labby built-in service;
 - the upstream is routable and allowed by the current protected route scope;
 - the same upstream exposes at least one MCP App UI tool;
 - the requested tool is not destructive.

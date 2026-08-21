@@ -433,4 +433,3 @@ A snippet is ready to reuse when:
 - [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, Lumen semantic search, Octocode local search, and GitHub issue/file lookups for repo orientation.
 - [`repo-status-gh-pulse.md`](./repo-status-gh-pulse.md) collects the GitHub PR/CI side of a repo-status evidence sweep and returns equivalent `gh` commands for shell parity.
 - [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Gotify, Synapse, and time for a read-only homelab status pulse.
-- [`cross-server-smoke-tests.md`](./cross-server-smoke-tests.md) records the live catalog count and the tool/action smoke-test results used to choose the snippets.

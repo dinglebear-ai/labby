@@ -1,6 +1,6 @@
 # dispatch/ — shared dispatch layer
 
-This directory is the shared semantic layer between the product adapters and `lab-apis`.
+This directory is the shared product-semantic layer below CLI, MCP, API, and web adapters. It composes the extracted `labby-*` runtime crates plus the small pure contracts that remain in `labby-apis`.
 
 ## Core Rule
 
@@ -14,11 +14,11 @@ Every migrated service must be directory-first from day one.
 
 Required shape:
 
-- `crates/lab/src/dispatch/<service>.rs`
-- `crates/lab/src/dispatch/<service>/catalog.rs`
-- `crates/lab/src/dispatch/<service>/client.rs`
-- `crates/lab/src/dispatch/<service>/params.rs`
-- `crates/lab/src/dispatch/<service>/dispatch.rs`
+- `crates/labby/src/dispatch/<service>.rs`
+- `crates/labby/src/dispatch/<service>/catalog.rs`
+- `crates/labby/src/dispatch/<service>/client.rs`
+- `crates/labby/src/dispatch/<service>/params.rs`
+- `crates/labby/src/dispatch/<service>/dispatch.rs`
 
 Optional:
 
@@ -43,7 +43,7 @@ are **shared subsystems, not services — they are exempt from the 4-file layout
 `node`, `security`, `upstream`, and `gateway/code_mode` (a submodule of
 `gateway`). They are the common runtime substrate other services build on, not
 peers with their own MCP tool. The architecture test
-(`crates/lab/tests/architecture_orchestrator.rs`) classifies them in
+(`crates/labby/tests/architecture_orchestrator.rs`) classifies them in
 `SHARED_NON_SERVICES` and always permits imports of them.
 
 `snippets` is a **sanctioned exception** to the required layout: it has no
@@ -70,7 +70,7 @@ upstream API.
 - MCP registration or envelopes
 - API routing or status mapping
 - output formatting
-- upstream request/response parsing that belongs in `lab-apis`
+- upstream MCP/runtime internals that belong in `labby-gateway` or another extracted runtime crate
 
 ## Error Rule
 
@@ -221,7 +221,7 @@ adds indirection without value.
 
 `fs` registers unconditionally when the `fs` feature is enabled; runtime
 resolution returns `workspace_not_configured` when `[workspace].root` in
-`config.toml` is invalid. The catalog and `lab help` stay discoverable
+`config.toml` is invalid. The catalog and `labby help` stay discoverable
 regardless of workspace state, and `cli::serve` emits a single WARN at startup
 when the configured root cannot be resolved.
 
@@ -260,7 +260,7 @@ another service from a surface module, move the orchestration into
 `dispatch/` instead.
 
 The one-way direction is enforced by
-`crates/lab/tests/architecture_orchestrator.rs`. That test now enforces a
+`crates/labby/tests/architecture_orchestrator.rs`. That test now enforces a
 **general cross-service import allowlist** (`ALLOWED_EDGES`): every edge
 `dispatch::<a> → dispatch::<b>` must be listed with a rationale, and no
 `* → setup` edge is allowed. The `setup → doctor` orchestrator edge and the

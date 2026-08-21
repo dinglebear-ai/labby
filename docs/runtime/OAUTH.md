@@ -6,12 +6,12 @@ updated: "2026-08-08"
 
 # HTTP Auth Modes
 
-Lab supports two HTTP auth modes:
+Labby supports two HTTP auth modes:
 
 - `LABBY_AUTH_MODE=bearer`
   Preserve the existing static bearer-token flow with `LABBY_MCP_HTTP_TOKEN`.
 - `LABBY_AUTH_MODE=oauth`
-  Run an internal Google-backed OAuth authorization server that issues `lab` JWT access tokens and exposes JWKS plus RFC 9728 metadata.
+  Run an internal Google-backed OAuth authorization server that issues Labby JWT access tokens and exposes JWKS plus RFC 9728 metadata.
 
 This document covers mode selection, startup behavior, registration and token flow, JWT validation, and operator-facing constraints.
 For the complete generated route/auth matrix, see
@@ -127,11 +127,11 @@ Flow summary:
 
 1. A client registers a loopback redirect URI, a native-app URI, a product-default callback URI, or one that matches the configured allowlist.
 2. The client sends the user to `/authorize` with `response_type=code`.
-3. `lab` stores the request state, generates PKCE data, and redirects to Google.
+3. Labby stores the request state, generates PKCE data, and redirects to Google.
 4. Google redirects back to `/auth/google/callback`.
-5. `lab` enforces the email allowlist (currently `LABBY_AUTH_ADMIN_EMAIL`; expanding to a SQLite-backed user list managed via the web UI). The id_token's `email_verified` claim is required — unverified accounts are rejected even when the address matches. Browser-login callers receive a 401; OAuth-client callers receive an RFC 6749 §4.1.2.1 redirect with `error=access_denied`.
-6. `lab` exchanges the Google code server-side, stores a local authorization code, and redirects the client back to its registered redirect URI with the local code.
-7. The client exchanges that local code at `/token` for a `lab` access token and, when Google granted offline access, a `lab` refresh token.
+5. Labby enforces the email allowlist (currently `LABBY_AUTH_ADMIN_EMAIL`; expanding to a SQLite-backed user list managed via the web UI). The id_token's `email_verified` claim is required — unverified accounts are rejected even when the address matches. Browser-login callers receive a 401; OAuth-client callers receive an RFC 6749 §4.1.2.1 redirect with `error=access_denied`.
+6. Labby exchanges the Google code server-side, stores a local authorization code, and redirects the client back to its registered redirect URI with the local code.
+7. The client exchanges that local code at `/token` for a Labby access token and, when Google granted offline access, a Labby refresh token.
 
 Google access and refresh tokens remain server-side only.
 
@@ -166,14 +166,14 @@ automatically. Old and new clients remain safe during a rolling upgrade.
 
 Google-specific notes:
 
-- `lab` sends `access_type=offline` when redirecting to Google so the provider can issue a refresh token
-- `lab` also sends `prompt=consent` so a fresh Google consent flow can return a new refresh token after the app was previously authorized without offline access
-- if Google still does not return an upstream refresh token, `lab` omits `refresh_token` from its token response and later refresh grants fail closed
-- `lab` validates the Google `id_token` cryptographically against Google JWKS and rejects tokens with the wrong issuer, audience, or expiry before minting any local identity
+- Labby sends `access_type=offline` when redirecting to Google so the provider can issue a refresh token
+- Labby also sends `prompt=consent` so a fresh Google consent flow can return a new refresh token after the app was previously authorized without offline access
+- if Google still does not return an upstream refresh token, Labby omits `refresh_token` from its token response and later refresh grants fail closed
+- Labby validates the Google `id_token` cryptographically against Google JWKS and rejects tokens with the wrong issuer, audience, or expiry before minting any local identity
 
 ## Browser-Local Callback Forwarding
 
-`lab` also ships a local OAuth callback forwarder for browser-side machines:
+Labby also ships a local OAuth callback forwarder for browser-side machines:
 
 ```bash
 labby oauth relay-local --machine node-a --port 38935
@@ -313,7 +313,7 @@ clients where the platform credential store works.
 
 ### Using non-loopback redirect URIs
 
-Loopback redirect URIs are always accepted by `lab-auth`. Native-app private-use
+Loopback redirect URIs are always accepted by `labby-auth`. Native-app private-use
 URI schemes such as `cursor://...`, `warp://...`, `vscode://...`, and
 `com.raycast:/...` are also accepted without per-client allowlist entries.
 
@@ -376,12 +376,12 @@ Validation steps:
 
 ### Supported Algorithms
 
-- Lab-issued access tokens: EdDSA (Ed25519)
+- Labby-issued access tokens: EdDSA (Ed25519)
 - Google ID tokens: RS256 verification only
 
 ### Scopes
 
-Current `lab` tokens use the standard space-delimited `scope` claim.
+Current Labby tokens use the standard space-delimited `scope` claim.
 
 ### AuthContext
 
@@ -445,7 +445,7 @@ oversized CIMD responses; successful documents are cached according to
 
 ### Auth Failure Semantics
 
-`lab` distinguishes unauthenticated callers from internal auth outages.
+Labby distinguishes unauthenticated callers from internal auth outages.
 
 Rules:
 
@@ -523,7 +523,7 @@ Documented auth-specific exception:
 
 ## RFC 9728 Protected Resource Metadata
 
-Lab exposes a metadata endpoint so MCP clients can discover which authorization server to use:
+Labby exposes a metadata endpoint so MCP clients can discover which authorization server to use:
 
 ```http
 GET /.well-known/oauth-protected-resource
@@ -592,7 +592,7 @@ not appear in public metadata, public challenges, or public error bodies.
 
 Static bearer compatibility does not make a public protected MCP route an OAuth
 resource credential. `LABBY_MCP_HTTP_TOKEN` is an operator/admin shortcut for
-Lab admin/API surfaces; Gateway-managed public MCP routes validate Lab OAuth
+Labby admin/API surfaces; Gateway-managed public MCP routes validate Labby OAuth
 JWTs whose audience is the route resource.
 
 Disabled or unknown protected routes must not advertise protected-resource
@@ -834,7 +834,7 @@ initializing HTTP MCP session handler ... route_scope=protected:<route-name>
 tool list ok
 ```
 
-In Code Mode visibility, ChatGPT sees the small Lab-owned synthetic surface
+In Code Mode visibility, ChatGPT sees the small Labby-owned synthetic surface
 instead of one action per upstream tool. `codemode_read` accepts `lab:read`,
 `lab`, or `lab:admin` and can invoke only tools whose live descriptor explicitly
 sets `readOnlyHint: true` without a contradictory `destructiveHint: true`.
@@ -852,7 +852,7 @@ not the OAuth connector's Tool JSON or action set.
 When both static bearer and OAuth are configured, auth is checked in this order:
 
 1. **Static bearer token** — constant-time comparison via `LABBY_MCP_HTTP_TOKEN`. If it matches, the request is authenticated with implicit `lab:read` and `lab:admin` scopes.
-2. **OAuth JWT** — if the static bearer check fails (or no static token is configured), the token is validated as a JWT against the cached JWKS. Tokens for Lab's own `/mcp` resource use the configured Lab scope; Gateway-managed protected MCP routes may advertise and enforce route-specific scopes such as `mcp:read mcp:write`.
+2. **OAuth JWT** — if the static bearer check fails (or no static token is configured), the token is validated as a JWT against the cached JWKS. Tokens for Labby's own `/mcp` resource use the configured Labby scope; Gateway-managed protected MCP routes may advertise and enforce route-specific scopes such as `mcp:read mcp:write`.
 3. **401** — if both checks fail (or neither auth method is configured for the token presented).
 
 Static bearer tokens bypass all JWT validation. This allows operators to use a simple token for automation while also supporting OAuth for interactive or multi-tenant use.
@@ -861,7 +861,7 @@ For node runtime background traffic, the supported auth path in this implementat
 
 ## Safety Gate
 
-Lab refuses to bind on a non-localhost address without any auth configured:
+Labby refuses to bind on a non-localhost address without any auth configured:
 
 ```text
 refusing to bind HTTP on 0.0.0.0:8765 without authentication.
@@ -896,7 +896,7 @@ Verify the metadata endpoint:
 curl https://lab.example.com/.well-known/oauth-protected-resource
 ```
 
-Call a protected endpoint with a `lab` access token:
+Call a protected endpoint with a Labby access token:
 
 ```bash
 curl -H "Authorization: Bearer eyJhbG..." \
@@ -958,54 +958,27 @@ There is currently no supported online key-rotation command. Never rotate by
 editing only `LABBY_TOKEN_ENCRYPTION_KEY`; that makes existing ciphertext
 undecryptable and OAuth startup/use will fail closed.
 
-Two complementary verification surfaces exist:
+Current verification is owned by Labby's built-in health/doctor surfaces and focused integration tests; there is no checked-in `scripts/check-oauth.sh` product contract.
 
-### External probe — `scripts/check-oauth.sh`
+### Pre-flight — `labby doctor auth`
 
-An operator shell script that tests a **running server** from outside, using only `curl`. Useful after deploy, in CI pipelines, or from a remote machine.
+Use `labby doctor auth` to inspect auth/OAuth environment, persisted files, permissions, and configuration before or alongside a running server. Use `labby doctor proxy` for caller-visible public proxy checks and `labby doctor oauth-relay` for callback-relay registry/target checks.
 
-```bash
-# Auto-loads ~/.labby/.env; defaults to http://localhost:8080
-./scripts/check-oauth.sh
+### Running-server checks
 
-# Point at a specific server
-./scripts/check-oauth.sh https://lab.example.com
+A deployed server should be verified through its real public surface:
 
-# Or via env var
-LABBY_BASE_URL=https://lab.example.com ./scripts/check-oauth.sh
-```
+- `/health` and `/ready` reachability/readiness
+- static bearer or OAuth authorization on protected `/v1/*` and `/mcp` routes
+- OAuth authorization-server/protected-resource metadata and JWKS when OAuth mode is enabled
+- issuer/resource audiences derived from the configured public URLs
+- upstream OAuth callback/relay behavior when those features are configured
 
-The script covers:
-
-- Config presence (`LABBY_MCP_HTTP_TOKEN`, `LABBY_PUBLIC_URL`, Google credentials, `LABBY_WEB_UI_AUTH_DISABLED`)
-- Health probes reachable without auth (`/health`, `/ready`)
-- Protected endpoints return `401 {kind:auth_failed}` when unauthenticated (`/v1/*`, `/mcp`, `/v0.1/servers`)
-- Static bearer token accepted and wrong tokens rejected
-- MCP endpoint is bearer-only (session cookies rejected)
-- OAuth discovery endpoints are public and structurally valid (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/jwks`)
-- Issuer in `/.well-known/oauth-authorization-server` matches `LABBY_PUBLIC_URL`
-- `WWW-Authenticate: Bearer resource_metadata=...` header present on 401 (RFC 9728)
-- Dev marketplace endpoint is unauthenticated for reads, blocked for mutations
-- Node self-registration endpoints are public
-- Upstream OAuth browser callback is not behind bearer auth
-
-Exit codes: `0` = all pass, `1` = one or more failures.
-
-### Internal pre-flight — `labby doctor`
-
-`labby doctor` is the in-process health audit. It checks config validity, file permissions on `auth.db` and `auth-jwt.pem`, service reachability, and auth configuration before you have a running server to probe. Use the shell script for post-deploy black-box verification; use `labby doctor` for pre-flight and service-level health.
-
-Auth-specific items `labby doctor` covers (or should cover):
-
-- `LABBY_PUBLIC_URL` is set when OAuth mode is active
-- Google credentials present
-- `auth.db` and `auth-jwt.pem` exist and have restrictive permissions (`0600`)
-- SQLite store is openable (WAL mode, non-zero busy timeout)
-- Signing key is loadable
+Use focused integration tests for exact protocol/status/header assertions; do not copy historical Marketplace, Fleet/node, or Registry-browser endpoint checks into current deployment runbooks.
 
 ## Related Docs
 
 - [CONFIG.md](./CONFIG.md) — config loading and env var conventions
-- [TRANSPORT.md](./TRANSPORT.md) — HTTP transport setup and middleware
+- [TRANSPORT.md](../surfaces/TRANSPORT.md) — HTTP transport setup and middleware
 - [ERRORS.md](../dev/ERRORS.md) — `auth_failed` error kind
 - [RMCP.md](../surfaces/RMCP.md) — RMCP auth ownership contract

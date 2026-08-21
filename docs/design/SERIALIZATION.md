@@ -6,7 +6,7 @@ updated: "2026-08-05"
 
 # Serialization
 
-This document is the canonical serialization contract for `lab`.
+This document is the canonical serialization contract for `labby`.
 
 It defines:
 
@@ -33,20 +33,20 @@ Serialization rules should keep the project consistent across:
 
 The main boundary is simple:
 
-- `lab-apis` owns typed service data and wire-level serde models
-- `lab` owns product-surface envelopes and presentation formats
+- `labby-apis` owns typed service data and wire-level serde models
+- `labby` owns product-surface envelopes and presentation formats
 
 ## Ownership
 
-### `lab-apis`
+### `labby-apis`
 
-`lab-apis` owns:
+`labby-apis` owns:
 
 - request and response structs used against upstream services
 - serde derives and field mappings needed to talk to those services
 - typed SDK data returned to the binary
 
-`lab-apis` does not own:
+`labby-apis` does not own:
 
 - table rendering
 - CLI presentation wrappers
@@ -55,7 +55,7 @@ The main boundary is simple:
 
 ### `labby`
 
-`lab` owns:
+`labby` owns:
 
 - MCP success and error envelopes
 - HTTP request/response envelope shaping for the product API
@@ -63,7 +63,7 @@ The main boundary is simple:
 
 ## SDK Type Rules
 
-For SDK types in `lab-apis`:
+For SDK types in `labby-apis`:
 
 - use `serde` derives on wire-facing types
 - model the upstream API as faithfully as practical
@@ -81,8 +81,8 @@ Canonical success shape:
 ```json
 {
   "ok": true,
-  "service": "marketplace",
-  "action": "mcp.list",
+  "service": "gateway",
+  "action": "gateway.list",
   "data": []
 }
 ```
@@ -100,8 +100,8 @@ Canonical error shape:
 ```json
 {
   "ok": false,
-  "service": "marketplace",
-  "action": "mcp.install",
+  "service": "gateway",
+  "action": "gateway.get",
   "error": {
     "kind": "missing_param",
     "message": "missing parameter: name"
@@ -109,7 +109,7 @@ Canonical error shape:
 }
 ```
 
-The error payload follows [ERRORS.md](../ERRORS.md).
+The error payload follows [ERRORS.md](../dev/ERRORS.md).
 
 ### HTTP Product API
 
@@ -133,11 +133,11 @@ The CLI supports:
 
 Rules:
 
-- human-readable rendering is built in `lab`, not SDK types
+- human-readable rendering is built in `labby`, not SDK types
 - machine-readable output serializes the underlying SDK data or surface envelope shape
-- `lab-apis` types must remain presentation-free
+- `labby-apis` types must remain presentation-free
 
-If a command needs special display rows, define them in `lab`, not in the SDK.
+If a command needs special display rows, define them in `labby`, not in the SDK.
 
 ## Naming Rules
 
@@ -184,7 +184,7 @@ Serialization must respect the security rules:
 - do not serialize secret env values into prompts or doctor output
 - do not accidentally expose auth headers, cookies, or tokens in debug output
 
-Observability-specific logging rules live in [OBSERVABILITY.md](../OBSERVABILITY.md).
+Observability-specific logging rules live in [OBSERVABILITY.md](../dev/OBSERVABILITY.md).
 
 ## Verification Requirements
 
@@ -197,8 +197,8 @@ At minimum, verify:
 
 ## Related Docs
 
-- [ERRORS.md](../ERRORS.md)
-- [OBSERVABILITY.md](../OBSERVABILITY.md)
-- [MCP.md](../MCP.md)
-- [CLI.md](../CLI.md)
+- [ERRORS.md](../dev/ERRORS.md)
+- [OBSERVABILITY.md](../dev/OBSERVABILITY.md)
+- [MCP.md](../surfaces/MCP.md)
+- [CLI.md](../surfaces/CLI.md)
 - [CONVENTIONS.md](../CONVENTIONS.md)

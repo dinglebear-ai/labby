@@ -33,30 +33,30 @@
 
 [log]
 # Tracing filter directive.
-# Override with LAB_LOG env var.
+# Override with LABBY_LOG env var.
 # filter = "lab=info,lab_apis=warn"       # default: "lab=info,lab_apis=warn"
 
 # Log output format: "text" or "json".
-# Override with LAB_LOG_FORMAT env var.
+# Override with LABBY_LOG_FORMAT env var.
 # format = "text"                         # default: "text"
 
 # ── MCP Server ───────────────────────────────────────────────────────────────
 
 [mcp]
 # Default transport: "stdio" or "http".
-# Override with --transport or LAB_MCP_TRANSPORT.
+# Override with --transport or LABBY_MCP_TRANSPORT.
 # transport = "stdio"                     # default: "stdio"
 
 # Bind address for the HTTP transport.
-# Override with --host or LAB_MCP_HTTP_HOST.
+# Override with --host or LABBY_MCP_HTTP_HOST.
 # host = "127.0.0.1"                      # default: "127.0.0.1"
 
 # Port for the HTTP transport.
-# Override with --port or LAB_MCP_HTTP_PORT.
+# Override with --port or LABBY_MCP_HTTP_PORT.
 # port = 8765                             # default: 8765
 
 # Additional allowed hosts for DNS rebinding protection.
-# Override with LAB_MCP_ALLOWED_HOSTS env var (comma-separated).
+# Override with LABBY_MCP_ALLOWED_HOSTS env var (comma-separated).
 # allowed_hosts = []                      # default: []
 
 # ── Direct stdio MCP proxy ──────────────────────────────────────────────────
@@ -85,7 +85,7 @@
 [api]
 # Additional CORS origins beyond the built-in loopback defaults.
 # Loopback origins (localhost, 127.0.0.1, [::1]) are always included.
-# Override with LAB_CORS_ORIGINS env var (comma-separated).
+# Override with LABBY_CORS_ORIGINS env var (comma-separated).
 # cors_origins = []                       # default: [] (loopback only)
 
 # Example:
@@ -98,12 +98,12 @@
 
 [web]
 # Path to the exported Labby assets directory served by `labby serve --transport http`.
-# Override with LAB_WEB_ASSETS_DIR.
+# Override with LABBY_WEB_ASSETS_DIR.
 # If unset, `labby serve` auto-detects the repo-local fallback at apps/gateway-admin/out.
 # assets_dir = "/srv/labby/out"
 
 # Disable /v1/* auth for the hosted web UI. Only for trusted reverse-proxy setups.
-# Override with LAB_WEB_UI_AUTH_DISABLED=true.
+# Override with LABBY_WEB_UI_AUTH_DISABLED=true.
 # disable_auth = false                    # default: false
 
 # ── Workspace ────────────────────────────────────────────────────────────────
@@ -131,19 +131,19 @@
 # ── Local Log Store ───────────────────────────────────────────────────────────
 
 [local_logs]
-# Override with LAB_LOCAL_LOGS_STORE_PATH env var.
+# Override with LABBY_LOCAL_LOGS_STORE_PATH env var.
 # store_path = "~/.labby/logs.db"
 
-# Override with LAB_LOCAL_LOGS_RETENTION_DAYS env var.
+# Override with LABBY_LOCAL_LOGS_RETENTION_DAYS env var.
 # retention_days = 7                     # default: 7
 
-# Override with LAB_LOCAL_LOGS_MAX_BYTES env var.
+# Override with LABBY_LOCAL_LOGS_MAX_BYTES env var.
 # max_bytes = 268435456                  # default: 256 MiB
 
-# Override with LAB_LOCAL_LOGS_QUEUE_CAPACITY env var.
+# Override with LABBY_LOCAL_LOGS_QUEUE_CAPACITY env var.
 # queue_capacity = 1024                  # default: 1024
 
-# Override with LAB_LOCAL_LOGS_SUBSCRIBER_CAPACITY env var.
+# Override with LABBY_LOCAL_LOGS_SUBSCRIBER_CAPACITY env var.
 # subscriber_capacity = 256              # default: 256
 
 # ── Gateway Code Mode ──────────────────────────────────────────────────────
@@ -230,40 +230,40 @@
 
 [auth]
 # HTTP auth mode: "bearer" or "oauth".
-# Override with LAB_AUTH_MODE.
+# Override with LABBY_AUTH_MODE.
 # mode = "bearer"                         # default: "bearer"
 
 # Public URL used for OAuth metadata, callbacks, and JWT issuer/audience.
 # Often kept in ~/.labby/.env alongside other URLs.
-# Override with LAB_PUBLIC_URL.
+# Override with LABBY_PUBLIC_URL.
 # public_url = "https://lab.example.com"
 
 # Optional path override for the auth SQLite database.
-# Override with LAB_AUTH_SQLITE_PATH.
+# Override with LABBY_AUTH_SQLITE_PATH.
 # sqlite_path = "/var/lib/labby/auth.db"    # default: ~/.labby/auth.db
 
 # Optional path override for the JWT signing key.
-# Override with LAB_AUTH_KEY_PATH.
+# Override with LABBY_AUTH_KEY_PATH.
 # key_path = "/var/lib/labby/auth-jwt.pem"  # default: ~/.labby/auth-jwt.pem
 
 # Google credentials are usually kept in ~/.labby/.env:
-#   LAB_GOOGLE_CLIENT_ID
-#   LAB_GOOGLE_CLIENT_SECRET
+#   LABBY_GOOGLE_CLIENT_ID
+#   LABBY_GOOGLE_CLIENT_SECRET
 
 # Optional Google callback path override.
-# Override with LAB_GOOGLE_CALLBACK_PATH.
+# Override with LABBY_GOOGLE_CALLBACK_PATH.
 # google_callback_path = "/auth/google/callback"
 
 # Optional redirect URI patterns for non-loopback MCP OAuth callbacks.
-# Override with LAB_AUTH_ALLOWED_REDIRECT_URIS.
+# Override with LABBY_AUTH_ALLOWED_REDIRECT_URIS.
 # allowed_client_redirect_uris = ["https://callback.example.com/callback/*"]
 
 # Optional Google scopes override.
-# Override with LAB_GOOGLE_SCOPES.
+# Override with LABBY_GOOGLE_SCOPES.
 # google_scopes = ["openid", "email", "profile"]
 
 # Optional token/code lifetime overrides (seconds).
-# Override with LAB_AUTH_ACCESS_TOKEN_TTL_SECS / LAB_AUTH_REFRESH_TOKEN_TTL_SECS / LAB_AUTH_CODE_TTL_SECS.
+# Override with LABBY_AUTH_ACCESS_TOKEN_TTL_SECS / LABBY_AUTH_REFRESH_TOKEN_TTL_SECS / LABBY_AUTH_CODE_TTL_SECS.
 # access_token_ttl_secs = 3600
 # refresh_token_ttl_secs = 2592000
 # auth_code_ttl_secs = 300
@@ -272,7 +272,7 @@
 
 [admin]
 # Enable the lab_admin MCP tool (onboarding audit).
-# Override with LAB_ADMIN_ENABLED=1 env var.
+# Override with LABBY_ADMIN_ENABLED=1 env var.
 # enabled = false                         # default: false
 
 # ── Per-Service Preferences ──────────────────────────────────────────────────
@@ -300,7 +300,7 @@
 #
 # These MUST be set via environment variables (in ~/.labby/.env), not here:
 #
-#   LAB_MCP_HTTP_TOKEN — bearer token for HTTP transport (required in bearer mode)
+#   LABBY_MCP_HTTP_TOKEN — bearer token for HTTP transport (required in bearer mode)
 #   *_URL              — service base URLs
 #   *_API_KEY          — service API keys
 #   *_TOKEN            — service auth tokens

@@ -1,6 +1,6 @@
 # mcp/ — MCP protocol surface
 
-This directory is the translation layer between `lab-apis` (pure SDK) and the MCP protocol. It owns dispatch, envelopes, resources, elicitation, and the shared catalog.
+This directory adapts Labby's shared dispatch and extracted runtime crates to the MCP protocol. It owns MCP-specific envelopes, resources, MCP Apps, elicitation, capability negotiation, and protocol routing; it does not own product operation semantics.
 
 ## Tool descriptors are built twice — keep the two sites identical
 
@@ -54,7 +54,7 @@ Spec and rationale: `docs/design/tool-annotations/`.
 
 ## One tool per service
 
-Each enabled service registers exactly one MCP tool in `crates/lab/src/registry.rs` (not `mcp/registry.rs`, which is a thin re-export). The tool name matches the service name. Normal services register directly from the shared dispatch layer:
+Each enabled service registers exactly one MCP tool in `crates/labby/src/registry.rs` (not `mcp/registry.rs`, which is a thin re-export). The tool name matches the service name. Normal services register directly from the shared dispatch layer:
 
 ```rust
 #[cfg(feature = "gateway")]
@@ -65,7 +65,7 @@ The default macro path reads `crate::dispatch::<service>::ACTIONS` and calls `cr
 
 ## Dispatch pattern
 
-For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catalog, param validation, and client resolution. See `crates/lab/src/dispatch/CLAUDE.md` for the required layout and templates.
+For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catalog, param validation, and client resolution. See `crates/labby/src/dispatch/CLAUDE.md` for the required layout and templates.
 
 `mcp/services/` is now an exception layer, not the default adapter surface. Keep a module there only when it owns MCP-specific behavior that cannot live in shared dispatch. Current examples:
 
@@ -84,7 +84,7 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   Code Mode business logic remains in `dispatch/gateway/code_mode.rs` so the
   native CLI can call the same broker without routing through MCP.
 
-**No business logic anywhere in `mcp/`.** If you find yourself calling `reqwest`, parsing JSON beyond param extraction, or retrying, move it to `lab-apis/src/<service>/client.rs`.
+**No product business logic in `mcp/`.** If behavior is shared by another surface, move it into product dispatch or the extracted runtime crate that owns it. Keep only genuinely MCP-specific protocol behavior here.
 
 ## Structured error envelopes
 
@@ -189,11 +189,11 @@ Every tool automatically supports `help` and `schema` without the service declar
 
 ## Shared catalog — one builder, three surfaces
 
-`build_catalog()` (in `crates/lab/src/catalog.rs`) is the **single source** feeding:
+`build_catalog()` (in `crates/labby/src/catalog.rs`) is the **single source** feeding:
 
 1. The `lab.help` global MCP tool.
 2. The `lab://catalog` MCP resource.
-3. The `lab help` CLI subcommand.
+3. The `labby help` CLI subcommand.
 
 Never duplicate catalog logic. If you need richer data, extend the builder.
 
@@ -208,7 +208,7 @@ Resources are read-only. Do not use them for mutations.
 
 `read_resource_impl` splits the `ui://` namespace:
 
-- `ui://lab/code-mode/*` — Lab's own Code Mode app resources, served locally
+- `ui://lab/code-mode/*` — Labby's own Code Mode app resources, served locally
   from bundled HTML (`read_code_mode_app_resource_impl`). The app descriptors
   bind only to `codemode_ui`; disabling the app hides that tool and these
   resources from discovery, while direct resource reads remain valid so cards

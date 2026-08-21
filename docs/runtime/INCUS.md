@@ -267,11 +267,11 @@ The plan is explicit about privilege. Root actions are limited to:
 - apt install of the bounded floor derived from `config/incus/labby-image.yaml`,
   including core CLI/runtime packages plus `rsync`, `ffmpeg`, `adb`, and Android
   SDK command-line tooling
-- `lab` user creation
+- `labby` user creation
 - writing `/etc/systemd/system/labby.service`
 - enabling and restarting `labby.service`
 
-User-space actions run as `lab` and install:
+User-space actions run as `labby` and install:
 
 - Node, including `node`, `npm`, and `npx`
 - `uv`, `uvx`, and a managed Python exposed as `python` and `python3`
@@ -316,7 +316,7 @@ WantedBy=multi-user.target
 
 It also applies hardening such as `ProtectSystem=strict`,
 `NoNewPrivileges=true`, `PrivateTmp=true`, restricted address families, and
-explicit `ReadWritePaths` for the `lab` user's runtime state.
+explicit `ReadWritePaths` for the `labby` user's runtime state.
 
 Readiness requires both an active `labby.service` unit and a successful loopback
 `/ready` response. This prevents stale processes from masking failed service
@@ -347,9 +347,9 @@ incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 
 That is an operator cutover step, not bootstrap behavior. If copied config
 contains host-only paths such as `/home/jmagar/...`, update them once to
-container-local paths or reinstall those MCP servers inside the `lab` account.
+container-local paths or reinstall those MCP servers inside the `labby` account.
 
-Run interactive agent setup inside that `lab` shell:
+Run interactive agent setup inside that `labby` shell:
 
 ```bash
 claude login
@@ -375,7 +375,7 @@ sudo systemctl status labby --no-pager
 curl -fsS http://127.0.0.1:8765/ready
 ```
 
-Use the same manual `lab` user agent logins and the same dependency diagnostic
+Use the same manual `labby` user agent logins and the same dependency diagnostic
 model. Do not use the older `systemd --user`, linger, or `XDG_RUNTIME_DIR`
 runtime as the recommended self-host path.
 

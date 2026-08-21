@@ -1,10 +1,10 @@
 ---
-title: "Lab Plugins"
+title: "Labby Plugins"
 created: "2026-07-30"
 updated: "2026-07-30"
 ---
 
-# Lab Plugins
+# Labby Plugins
 
 The checked-in `plugins/labby` tree ships **no binary**. Hosts install `labby`
 explicitly and the binary owns the setup flow from there:
@@ -32,15 +32,13 @@ auto-repaired at session start.
 
 ## Marketplace distribution
 
-Lab no longer generates or publishes its own plugin marketplace. The marketplace
+Labby no longer generates or publishes an in-product plugin marketplace. The marketplace
 moved to a dedicated repo, [dendrite](https://github.com/dinglebear-ai/dendrite), so it
 is decoupled from this Rust workspace. Dendrite catalogs `plugins/labby` (via a
-`git-subdir` source pointing at this repo) alongside the other Lab/Labby plugins
+`git-subdir` source pointing at this repo) alongside the other Labby/Labby plugins
 and third-party entries.
 
-Install `labby` with `scripts/install.sh` (above); browse and install
-marketplace plugins through the `marketplace` dispatch service or the Labby web
-UI.
+Install `labby` with `scripts/install.sh` (above). Plugin marketplace discovery and distribution now belong to Dendrite; Labby does not expose a `marketplace` dispatch service or marketplace web surface.
 
 Setup plugin lifecycle actions live in the `setup` dispatch service. The
 canonical names follow the dotted `<resource>.<verb>` convention; the legacy

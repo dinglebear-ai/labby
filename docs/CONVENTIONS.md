@@ -52,7 +52,7 @@ It owns:
 
 Service modules must not re-implement those concerns.
 
-The mandatory observability contract for dispatch logging, request logging, correlation, redaction, and verification lives in [OBSERVABILITY.md](./OBSERVABILITY.md).
+The mandatory observability contract for dispatch logging, request logging, correlation, redaction, and verification lives in [OBSERVABILITY.md](./dev/OBSERVABILITY.md).
 
 Additional rules:
 
@@ -66,7 +66,7 @@ Use the canonical `ApiError` taxonomy for shared transport-layer failures.
 
 Service-specific errors may wrap that taxonomy, but they must not fork it.
 
-The canonical error contract for stable kinds, envelopes, and mapping rules lives in [ERRORS.md](./ERRORS.md).
+The canonical error contract for stable kinds, envelopes, and mapping rules lives in [ERRORS.md](./dev/ERRORS.md).
 
 ## Action Metadata
 
@@ -84,7 +84,7 @@ Do not maintain separate hand-written copies of action metadata.
 Action names are dotted `<resource>.<verb>` (lowercase, dot-separated) — this is
 the **canonical** form (e.g. `deploy.plan`, `setup.bootstrap`,
 `marketplace.mcp.install`). The dotted form is enforced by a catalog lint:
-`catalog_action_names_are_dotted` in `crates/lab/tests/architecture_orchestrator.rs`
+`catalog_action_names_are_dotted` in `crates/labby/tests/architecture_orchestrator.rs`
 fails CI for any catalog action that does not match `^[a-z0-9_]+(\.[a-z0-9_]+)+$`.
 
 Some services historically shipped **bare/flat** action names (e.g. `deploy`'s
@@ -126,7 +126,7 @@ MCP calls must remain progress-free.
 
 ## Public API Surface
 
-At the `lab-apis` crate root:
+At the `labby-apis` crate root:
 
 - re-export client types
 - re-export core primitives
@@ -135,7 +135,7 @@ At the `lab-apis` crate root:
 
 ## Documentation Policy
 
-`lab-apis` is a real SDK and must behave like one.
+`labby-apis` is a real SDK and must behave like one.
 
 Rules:
 
@@ -144,7 +144,7 @@ Rules:
 - rustdoc warnings must be treated seriously
 - examples on public client methods should be real and compilable when practical
 
-The `lab` binary does not need the same level of public rustdoc coverage.
+The `labby` binary does not need the same level of public rustdoc coverage.
 
 ## Testing Policy
 
@@ -158,20 +158,20 @@ Rules:
 
 - CI must not require real services
 - live integration tests must be opt-in
-- shared client logic must be tested in `lab-apis`
+- shared client logic must be tested in `labby-apis`
 - snapshot tests are appropriate for wire-shape stability
 
 ## Output Rules
 
 - formatting belongs in the output layer
-- `lab-apis` types stay free of presentation concerns
+- `labby-apis` types stay free of presentation concerns
 - avoid ad-hoc `println!`-driven UX logic
 
 The canonical serialization and output-boundary contract lives in [design/SERIALIZATION.md](./design/SERIALIZATION.md).
 
 ## Catalog Visibility
 
-`lab help`, `lab.help`, and `lab://catalog` hide services whose required `PluginMeta` env vars are not present. Bootstrap/operator services remain visible. Use `LABBY_SHOW_ALL=1` or `lab help --all` when you need the full compiled catalog.
+`labby help`, `lab.help`, and `lab://catalog` hide services whose required `PluginMeta` env vars are not present. Bootstrap/operator services remain visible. Use `LABBY_SHOW_ALL=1` or `labby help --all` when you need the full compiled catalog.
 
 ## Security and Privacy
 
@@ -181,4 +181,4 @@ The canonical serialization and output-boundary contract lives in [design/SERIAL
 - no secret echo in prompts or doctor output
 - no surprise persistence for convenience features
 
-Observability must preserve those privacy rules. If a proposed log shape conflicts with [OBSERVABILITY.md](./OBSERVABILITY.md) redaction requirements, the log shape is wrong.
+Observability must preserve those privacy rules. If a proposed log shape conflicts with [OBSERVABILITY.md](./dev/OBSERVABILITY.md) redaction requirements, the log shape is wrong.

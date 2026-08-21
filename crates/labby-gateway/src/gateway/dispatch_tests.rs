@@ -1888,7 +1888,7 @@ async fn gateway_get_rejects_missing_name() {
 
 /// `gateway.test` with a `spec` whose `command` field names a stdio upstream
 /// **executes that command as a real child process**.  This test uses `echo` so
-/// the subprocess exits cleanly on all platforms.  See docs/UPSTREAM.md §"Testing
+/// the subprocess exits cleanly on all platforms.  See docs/services/UPSTREAM.md §"Testing
 /// with Stdio Upstreams" and the SECURITY NOTE in the `gateway.test` handler.
 #[tokio::test]
 async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {

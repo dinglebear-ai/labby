@@ -6,7 +6,7 @@ source copy** of this crate rather than a path/git dependency, so a fix
 landing here does **not** propagate to them automatically. If you change
 behavior that those copies would also need — especially anything touching
 the OAuth flows below — leave a note in the PR/commit for whoever next
-touches `axon`'s `vendor/lab-auth` or `cortex`'s pinned `lab-auth` git rev
+touches `axon`'s `vendor/labby-auth` or `cortex`'s pinned `labby-auth` git rev
 (`Cargo.toml`), and consider whether the fix is worth porting there too.
 
 ## Google consent-forcing invariant (`force_consent`)
@@ -51,7 +51,7 @@ the full history) — the rules that keep it correct:
   user_version` / `SCHEMA_VERSION`.
 - `token.rs` — `/token` endpoint (authorization_code and refresh_token
   grants).
-- `jwt.rs` — `lab` access-token signing/validation (RS256).
+- `jwt.rs` — Labby access-token signing/validation (RS256).
 - `state.rs` — `AuthState`: shared handle over config, store, signing keys,
   Google provider, and the in-memory allowed-resource-scope map.
 - `upstream/` — outbound OAuth for Labby's own upstream MCP connections

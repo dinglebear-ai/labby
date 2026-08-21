@@ -4,9 +4,9 @@
 //! Every outbound call (spec fetch and operation dispatch) resolves the target
 //! host, validates every resolved IP against `labby_primitives::ssrf`, pins ONE
 //! validated address via `resolve_to_addrs`, and re-checks the connected peer IP
-//! after the response — the workspace-canonical pattern from
-//! `labby-apis::acp_registry::installer`. Redirects are OFF and `https_only` is
-//! ON so a 3xx can never bounce the request to an internal address.
+//! after the response using the shared `labby_primitives::ssrf` checks. Redirects
+//! are OFF and `https_only` is ON so a 3xx can never bounce the request to an
+//! internal address.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;

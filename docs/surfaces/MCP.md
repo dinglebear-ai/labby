@@ -99,7 +99,7 @@ provides two text entry points:
   `destructiveHint: true`. Missing or ambiguous annotations fail closed.
 - `codemode` is the full execution surface for `lab` and `lab:admin`. The
   optional `codemode_ui` tool has the same execution authority and adds the
-  Lab-owned trace inspector.
+  Labby-owned trace inspector.
 
 The full-execution tools are annotated as write-capable and potentially
 destructive. Their annotations describe the approval boundary; upstream tool
@@ -111,20 +111,20 @@ determinants change, but remain stable across runtime health and discovered-tool
 churn. Call `codemode.search(...)` and `codemode.describe(...)` inside a run to
 inspect the current route-scoped tool catalog.
 
-Synthetic Code Mode advertises only the fixed Lab-owned UI action surface. It
+Synthetic Code Mode advertises only the fixed Labby-owned UI action surface. It
 does not add or remove raw upstream MCP App tools as upstream health changes.
 An upstream widget returned by a Code Mode call may still render through its
 resource URI, but its raw callback tools are not added to the approval-facing
 `tools/list` contract.
 
-Code Mode may call exposed upstream MCP tools only. Lab actions are not callable
+Code Mode may call exposed upstream MCP tools only. Labby actions are not callable
 from inside its sandbox. Large upstream results must be projected or sliced
 inside the sandbox before return.
 
 ## Authentication And Routes
 
 The root administrative MCP endpoint uses the configured bearer or OAuth mode.
-Public protected routes validate route-scoped Lab OAuth JWTs and their configured
+Public protected routes validate route-scoped Labby OAuth JWTs and their configured
 resource/scope contract. A static operator bearer token is not a public resource
 credential.
 

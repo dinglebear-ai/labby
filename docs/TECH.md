@@ -1,60 +1,157 @@
 ---
-title: "Technology"
+title: "Technology and Rust Build"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
-# Technology
+# Technology and Rust Build
 
-This document captures the locked stack and tooling choices for `lab`.
+This document is the canonical technology and Rust build reference for Labby.
+For operational deployment details, see [OPERATIONS.md](./OPERATIONS.md).
 
-## Language and Packaging
+## Workspace Baseline
 
-- Rust 2024 edition
-- single workspace version
-- dual MIT / Apache-2.0 license
-- targets: Linux x86_64 and Windows x86_64
-- workspace resolver 3
+The workspace metadata in the root `Cargo.toml` is authoritative:
+
+- Rust edition 2024
+- pinned build toolchain and MSRV: Rust 1.97.1
+- Cargo resolver 3
+- workspace version shared by the Rust crates
+- AGPL-3.0-only license
+- release targets: Linux x86_64 GNU and Windows x86_64 MSVC
+
+`rust-toolchain.toml` pins the toolchain used locally and in CI. The matching
+`rust-version` in `Cargo.toml` is the minimum version Cargo will accept.
 
 ## Core Runtime
 
-| Concern | Choice |
-|---|---|
+| Concern | Current choice |
+| --- | --- |
 | async runtime | `tokio` |
 | concurrency helpers | `futures` |
 | HTTP client | `reqwest` with rustls |
+| TLS provider | `rustls` with `ring` |
 | URL handling | `url::Url` |
-| serialization | `serde`, `serde_json` |
+| serialization | `serde`, `serde_json`, `serde_yaml`, `toml` |
 | library errors | `thiserror` |
-| binary errors | `anyhow` |
+| application errors | `anyhow` |
 | time | `jiff` |
 | logging | `tracing`, `tracing-subscriber` |
+| embedded state | `rusqlite` |
 
-`url::Url` is the canonical URL type. Service code should not pass base URLs around as unvalidated strings once a client is constructed.
+`url::Url` is the canonical URL type once an endpoint has been parsed and
+validated. Do not carry validated service endpoints as raw strings.
 
 ## Product Surfaces
 
-| Concern | Choice |
-|---|---|
+| Concern | Current choice |
+| --- | --- |
 | CLI | `clap` |
-| MCP server | `rmcp` |
-| color | `owo-colors` |
+| MCP | `rmcp 3.1.0` |
+| HTTP/WebSocket | `axum`, `tower`, `tower-http`, `tokio-tungstenite` |
+| OpenAPI | `utoipa` |
+| CLI color | `owo-colors` |
 | TTY detection | `is-terminal` |
-| progress bars | `indicatif` |
+| progress | `indicatif` |
+| web app | Next.js 16, React 19, Tailwind CSS 4 |
+| desktop palette | Tauri 2 + React |
 
-## Config and Bootstrap
+Labby does **not** currently ship a Ratatui TUI. Historical plugin-manager TUI
+references are retired rather than treated as a supported surface.
 
-| Concern | Choice |
-|---|---|
-| `.env` loading | `dotenvy` |
-| TOML config | `toml` |
-| config loading | `dotenvy`, `toml` |
-| auth storage | `rusqlite` |
+## Workspace Crate Boundaries
+
+The current Rust workspace is composed of:
+
+- `labby` — product binary and surface composition
+- `labby-apis` — small shared API/core contracts for doctor and setup
+- `labby-auth` — inbound and upstream OAuth/authentication primitives
+- `labby-codemode` — Code Mode runtime contracts and snippet support
+- `labby-gateway` — surface-neutral gateway, upstream MCP, relay, and discovery runtime
+- `labby-openapi` — reusable OpenAPI helpers
+- `labby-primitives` — leaf metadata and security primitives
+- `labby-runtime` — reusable runtime/config/skills contracts
+- `labby-web` — embedded static web assets and resolution helpers
+- `labby-winjob` — Windows job/process support
+- `xtask` — repository automation
+
+The binary should compose these crates; leaf/shared crates should not reach back
+into product surface code.
+
+## Feature Gating
+
+`labby` owns product feature slices. `labby-apis` has no product feature matrix
+and keeps only empty compatibility aggregates plus test utilities.
+
+Current `labby` rules:
+
+- `default = ["gateway-host"]`
+- `all` enables `lab-admin`, `api-docs`, `gateway-host`, `fs`, `systemd`, and `skills`
+- `gateway-host` composes gateway support with the embedded web UI
+- `skills` enables Agent Skills over MCP support where the gateway is present
+- `doctor`, `server_logs`, `setup`, and `snippets` are always-on services
+- retired ACP, Registry-browser, Marketplace, Fleet, Deploy-product, and Stash
+  feature names are not compatibility aliases
+
+The generated [feature matrix](./generated/feature-matrix.md) is authoritative
+for the exact current Cargo feature projection.
+
+## Build Prerequisites
+
+Required locally:
+
+- the toolchain from `rust-toolchain.toml`
+- a C/C++ linker toolchain appropriate to the host
+- `just` for the repository task runner when using Justfile workflows
+
+Managed development hosts may provide additional compiler/linker acceleration.
+The repository itself does not install a compiler wrapper during a build.
+
+## Repository Cargo Configuration
+
+`.cargo/config.toml` intentionally disables incremental compilation:
+
+```toml
+[build]
+incremental = false
+```
+
+This keeps compiler-cache inputs deterministic across managed and unmanaged
+hosts. The host configuration owns any `rustc-wrapper` such as Kache.
+
+Changing source code never refreshes an installed Labby binary as a side effect.
+Use explicit install/sync tasks such as `just build-release`, `just install`, or
+`just host-sync` when the installed binary should change.
+
+## Kache Troubleshooting
+
+On managed hosts, Kache may be configured as the Cargo `rustc-wrapper`. A cache
+failure can degrade performance without failing a build, so a green build is not
+evidence that the cache is healthy.
+
+Useful diagnostics:
+
+```bash
+kache doctor
+kache doctor --verify --repair
+kache why-miss <crate>
+kache stats
+```
+
+For a one-off verification that bypasses the configured cache:
+
+```bash
+KACHE_DISABLED=1 cargo build --workspace --all-features
+RUSTC_WRAPPER="" cargo build --workspace --all-features
+```
+
+Reach for a cache wipe only after diagnostics and repair fail. Cache corruption
+and stale source are different problems; preserve evidence before deleting it.
 
 ## Testing and Quality
 
-| Concern | Choice |
-|---|---|
+| Concern | Current choice |
+| --- | --- |
 | unit HTTP mocking | `wiremock` |
 | snapshots | `insta` |
 | test runner | `cargo-nextest` |
@@ -62,86 +159,36 @@ This document captures the locked stack and tooling choices for `lab`.
 | task runner | `just` |
 | CI | GitHub Actions |
 
-## Workspace Rules
-
-- dependency versions live at the workspace root
-- lints live at the workspace root
-- feature flags are mirrored from `labby-apis` into `labby` only for real SDK
-  passthroughs; product-local slices are declared in `labby`
-- release profile is optimized and stripped
-- dev profile keeps faster local iteration
-- release-debug profile exists for profiling and diagnostics
-- `unsafe` is forbidden at the workspace lint layer
-
-## Feature Gating
-
-`labby` owns the remaining product feature slices. `labby-apis` keeps an empty
-`all` compatibility aggregate but has no optional product SDK modules.
-
-The practical rules are:
-
-- `labby/default` enables `gateway-host`
-- `labby/all` enables every supported host capability: `lab-admin`, `api-docs`,
-  `gateway-host`, `fs`, and `systemd`
-- supported standalone product slices are `gateway` and `fs`
-- `web-ui`, `api-docs`, `lab-admin`, and `systemd` are helper/runtime features,
-  not retired product aliases
-- `doctor`, `server_logs`, `setup`, and `snippets` are always-on services
-- retired ACP, Registry-browser, Marketplace, Fleet, Deploy-product, and Stash
-  feature names must not return as compatibility aliases
-
-## Build and Verify
-
-Primary commands:
+Primary repository checks:
 
 ```bash
 just check
 just test
 just lint
 just deny
-just build
+just docs-check
 ```
 
-Scoped commands:
+Useful scoped checks:
 
 ```bash
 cargo test -p labby-apis
-cargo test --manifest-path crates/labby/Cargo.toml
+cargo nextest run -p labby --all-features
+cargo doc --workspace --all-features --no-deps
 ```
 
-Documentation verification target:
-
-```bash
-cargo doc --no-deps --all-features
-```
-
-## CI Model
-
-CI is intended to cover:
-
-- `cargo check --workspace --all-features`
-- `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-features -- -D warnings`
-- `cargo deny check`
-- `cargo nextest run --workspace --all-features`
-- docs without rustdoc warnings where enabled
-
-Rustdoc should also stay warning-free when enabled.
-
-More operational detail lives in [OPERATIONS.md](./OPERATIONS.md).
+CI additionally validates generated docs, frontend assets, the web app, package
+artifacts, security policy, release paths, and platform-specific jobs according
+to the changed-path classifier.
 
 ## Release Tooling
 
-- `cargo-release` for versioning and tagging
-- GitHub-generated release notes
-- GitHub Actions for release builds
-- GitHub Releases for artifacts
-- no automatic update checks at startup
+GitHub Actions builds release artifacts for the supported targets and publishes
+GitHub Releases. Release automation and packaging are described in
+[runtime/CICD.md](./runtime/CICD.md).
 
-## Non-Goals
+## Product Rule
 
-- no telemetry
-- no background analytics
-- no analytics or telemetry phone-home to third-party services
-
-That is a product rule, not just a tooling preference.
+Labby does not add analytics or telemetry phone-home behavior. Operational
+tracing and local usage records are observability features, not third-party
+analytics.

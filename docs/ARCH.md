@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Architecture
 
-`lab` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, the direct stdio MCP proxy, setup, doctor, server logs, snippets, and the optional filesystem browser.
+`labby` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, the direct stdio MCP proxy, setup, doctor, server logs, snippets, and the optional filesystem browser.
 
 ## Core Shape
 
@@ -231,7 +231,7 @@ The canonical ownership and dependency rules between `labby-apis`, extracted run
 
 Observability is a mandatory shared contract, not a per-service convention.
 
-The canonical source of truth is [OBSERVABILITY.md](./OBSERVABILITY.md).
+The canonical source of truth is [OBSERVABILITY.md](./dev/OBSERVABILITY.md).
 
 High-level ownership is:
 
@@ -245,7 +245,7 @@ Required boundary rules:
 - health probes must be distinguishable from normal actions
 - destructive actions must log intent and outcome
 
-Field-level requirements, redaction rules, and verification gates live in [OBSERVABILITY.md](./OBSERVABILITY.md). Do not redefine them piecemeal in service modules.
+Field-level requirements, redaction rules, and verification gates live in [OBSERVABILITY.md](./dev/OBSERVABILITY.md). Do not redefine them piecemeal in service modules.
 
 ## Data Flow
 

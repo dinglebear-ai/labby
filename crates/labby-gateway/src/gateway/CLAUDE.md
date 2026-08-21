@@ -1,6 +1,6 @@
 # dispatch/gateway/ — Gateway Dispatch Layer
 
-The `gateway` service is the largest and most security-sensitive dispatch tree in `lab`.
+The `gateway` service is the largest and most security-sensitive runtime tree in Labby.
 It owns upstream MCP server management, Code Mode execution, OAuth lifecycle, protected
 routes, and virtual-server projection. Read this file before editing anything under this
 directory.

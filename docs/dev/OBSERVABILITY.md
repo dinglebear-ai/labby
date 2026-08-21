@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Observability
 
-This document is the canonical observability contract for `lab`.
+This document is the canonical observability contract for `labby`.
 
 It defines:
 
@@ -38,15 +38,15 @@ When a request fails, operators must be able to answer:
 
 ## Ownership
 
-Observability is split across two layers:
+Observability is split across product adapters and reusable runtime/client layers:
 
-- `lab` owns caller context and dispatch logging
-- `lab-apis` owns outbound request logging and transport failure detail
+- Labby's CLI, MCP, and API adapters own caller context and user-visible dispatch logging
+- reusable clients and runtime crates (including `labby-apis` and `labby-gateway`) own outbound request/proxy logging and transport failure detail
 
 That means:
 
 - CLI, MCP, and API must log the user-visible action boundary
-- `HttpClient` must log every outbound request
+- shared HTTP/MCP client paths must log the outbound request boundary they own
 - service modules must not invent custom logging formats
 
 ## Mandatory Instrumentation Points
@@ -118,7 +118,7 @@ product surface, including:
 
 - `/auth/session`
 - `/auth/logout`
-- OAuth authorize/callback/token handlers where `lab` itself is the actor
+- OAuth authorize/callback/token handlers where Labby itself is the actor
 
 Those routes must not silently bypass the normal dispatch schema just because
 they are not mounted under `/v1/{service}`.
@@ -135,7 +135,7 @@ actor key is:
 - intentionally not portable across installations with different secrets
 
 `LABBY_ACTOR_KEY_SECRET` is a secret value stored in `~/.labby/.env`. If absent,
-`lab` generates it on first use. Empty or anonymous subjects have no
+Labby generates it on first use. Empty or anonymous subjects have no
 `actor_key`; `mine_only` style activity queries must exclude those rows rather
 than inventing a sentinel actor.
 
@@ -150,7 +150,7 @@ authorization or filtering.
 
 ### Shared Outbound Requests
 
-`lab-apis::core::HttpClient` must emit:
+`labby-apis::core::HttpClient` must emit:
 
 - one `request.start` event before every outbound call
 - one `request.finish` event on success
@@ -579,7 +579,7 @@ Additional rules:
 - upstream URL values must have userinfo (username:password) stripped before logging
   (`upstream_target_redacted()` in `dispatch/upstream/pool.rs`).
 
-Shell wrapper boundary: the user-installed `lab` shell wrapper emits CLI-PREFLIGHT output via `printf` to
+Shell wrapper boundary: the user-installed `labby` shell wrapper emits CLI-PREFLIGHT output via `printf` to
 stderr before the Rust binary starts. This output is pre-binary and therefore not processed by
 `init_tracing()` or any redaction rules. Treat it as an unstructured stderr boundary — it must not emit credential-bearing content.
 
@@ -670,34 +670,26 @@ If those conditions are missing, the service is not fully online even if the CLI
 
 ## Example Shapes
 
-Illustrative success fields:
+Illustrative dispatch success fields:
 
 ```json
 {
-  "surface": "http",
-  "service": "marketplace",
-  "action": "mcp.list",
+  "surface": "api",
+  "service": "gateway",
+  "action": "gateway.list",
   "request_id": "req-123",
-  "method": "GET",
-  "path": "/v0.1/servers",
-  "host": "registry.modelcontextprotocol.io",
-  "status": 200,
   "elapsed_ms": 42
 }
 ```
 
-Illustrative failure fields:
+Illustrative dispatch failure fields:
 
 ```json
 {
   "surface": "cli",
-  "service": "marketplace",
-  "action": "mcp.list",
-  "method": "GET",
-  "path": "/v0.1/servers",
-  "host": "registry.modelcontextprotocol.io",
+  "service": "gateway",
+  "action": "gateway.list",
   "kind": "network_error",
-  "message": "registry request failed",
   "elapsed_ms": 311
 }
 ```

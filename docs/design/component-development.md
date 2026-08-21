@@ -109,7 +109,7 @@ Real Next.js pages at this tier appear in `pnpm build` output and must follow th
 | `/dev/{name}` (HTML mockup phase) | axum `dev_mockup_named` handler | reads `~/.superpowers/brainstorm/content/{name}.html` |
 | `/dev/{name}` (React phase) | Next.js static fallback | after `app/(admin)/dev/{name}/page.tsx` exists |
 
-The `dev_mockup_named` handler and its supporting functions live in `crates/lab/src/api/router.rs` alongside `dev_marketplace_readonly`. **Do not move them to `web.rs`** — the other Claude session strips `web.rs` of dev-tooling code that it deems unrelated to production serving. Do not make those handlers delegate to `serve_web_request`, which serves the Next.js SPA rather than mockup files.
+The `dev_mockup_named` handler and its supporting functions live in `crates/labby/src/api/router.rs` alongside `dev_marketplace_readonly`. **Do not move them to `web.rs`** — the other Claude session strips `web.rs` of dev-tooling code that it deems unrelated to production serving. Do not make those handlers delegate to `serve_web_request`, which serves the Next.js SPA rather than mockup files.
 
 ### 6. Iterate And Revise The Render
 
@@ -146,7 +146,7 @@ When adding new `/dev/*` layouts that include components beyond `AppSidebar`, ve
 
 ## `/dev/*` Read-Only Contract
 
-`/dev/*` routes are authenticated whenever bearer or OAuth auth is configured. They are only open when Lab is intentionally running with no auth configured for local development. Read-only enforcement is still mandatory because component previews bypass the normal product workflow boundaries and must remain safe in both authenticated and local no-auth dev runs.
+`/dev/*` routes are authenticated whenever bearer or OAuth auth is configured. They are only open when Labby is intentionally running with no auth configured for local development. Read-only enforcement is still mandatory because component previews bypass the normal product workflow boundaries and must remain safe in both authenticated and local no-auth dev runs.
 
 Read-only protection must be implemented in two layers.
 
@@ -177,7 +177,7 @@ Dev preview endpoints must:
 
 The normal `/v1/*` API remains protected by OAuth or bearer/session auth. `/dev/api/*` exists only for safe read-only preview data.
 
-**Implementation location.** This is a Rust axum backend, not a Next.js route handler. The backend guard for marketplace lives in `crates/lab/src/api/router.rs` as the `dev_marketplace_readonly` handler, mounted unconditionally outside the v1 auth middleware at the bottom of `build_router()`. New dev preview services must add a handler following that pattern and register it with `router.route("/dev/api/<service>", post(...))`.
+**Implementation location.** This is a Rust axum backend, not a Next.js route handler. The backend guard for marketplace lives in `crates/labby/src/api/router.rs` as the `dev_marketplace_readonly` handler, mounted unconditionally outside the v1 auth middleware at the bottom of `build_router()`. New dev preview services must add a handler following that pattern and register it with `router.route("/dev/api/<service>", post(...))`.
 
 **Whitelist synchronization.** The frontend `READ_ONLY_ACTIONS` set in `apps/gateway-admin/lib/dev/preview-mode.ts` and the backend `DEV_MARKETPLACE_READ_ACTIONS` constant in `router.rs` must be kept in sync. Drift between them is a silent breakage class: frontend lets the action through, backend returns `dev_preview_read_only`, the dev preview appears broken with no obvious cause. When adding a new read action to either list, add it to both.
 

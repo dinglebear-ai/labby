@@ -6,11 +6,11 @@ updated: "2026-07-30"
 
 # Dispatch
 
-This document is the canonical dispatch-layer contract for `lab`.
+This document is the canonical dispatch-layer contract for `labby`.
 
 It defines:
 
-- the layer model between product surfaces and `lab-apis`
+- the layer model between product surfaces and `labby-apis`
 - which layer owns operation metadata and execution
 - the shared operation schema used across CLI, MCP, and API
 - allowed dependency direction
@@ -38,15 +38,15 @@ This prevents:
 
 The stack is:
 
-- `lab-apis`
-- `crates/lab/src/dispatch`
-- `crates/lab/src/cli`
-- `crates/lab/src/mcp`
-- `crates/lab/src/api`
+- `labby-apis`
+- `crates/labby/src/dispatch`
+- `crates/labby/src/cli`
+- `crates/labby/src/mcp`
+- `crates/labby/src/api`
 
-### `lab-apis`
+### `labby-apis`
 
-`lab-apis` owns:
+`labby-apis` owns:
 
 - upstream API clients
 - upstream request and response types
@@ -55,7 +55,7 @@ The stack is:
 
 It does not own product-surface dispatch.
 
-### `crates/lab/src/dispatch`
+### `crates/labby/src/dispatch`
 
 `dispatch` is the shared product dispatch layer.
 
@@ -138,9 +138,9 @@ API must use the shared operation schema for validation. When API documentation 
 
 Allowed:
 
-- `cli -> dispatch -> lab-apis`
-- `mcp -> dispatch -> lab-apis`
-- `api -> dispatch -> lab-apis`
+- `cli -> dispatch -> labby-apis`
+- `mcp -> dispatch -> labby-apis`
+- `api -> dispatch -> labby-apis`
 
 Forbidden:
 
@@ -243,7 +243,7 @@ They must not redefine it independently.
 
 `dispatch` returns `Result<Value, ToolError>` directly.
 
-**Design decision (2026-04-09):** A separate `DispatchError` type was considered and rejected. Both `dispatch/` and the surface adapters live in the same `lab` crate — there is no structural enforcement benefit to a parallel error vocabulary. A `DispatchError → ToolError` mapping layer adds a catch-all arm trap (any unmatched variant silently becomes `internal_error`) with no architectural gain. `ToolError` already has the correct vocabulary: `UnknownAction`, `MissingParam`, `InvalidParam`, `UnknownInstance`, `Sdk`. Using it directly keeps the error path exhaustively checked by the compiler at every call site.
+**Design decision (2026-04-09):** A separate `DispatchError` type was considered and rejected. Both `dispatch/` and the surface adapters live in the same `labby` crate — there is no structural enforcement benefit to a parallel error vocabulary. A `DispatchError → ToolError` mapping layer adds a catch-all arm trap (any unmatched variant silently becomes `internal_error`) with no architectural gain. `ToolError` already has the correct vocabulary: `UnknownAction`, `MissingParam`, `InvalidParam`, `UnknownInstance`, `Sdk`. Using it directly keeps the error path exhaustively checked by the compiler at every call site.
 
 Those errors may represent:
 
@@ -259,7 +259,7 @@ Surface adapters receive `ToolError` directly and handle it for their transport:
 - MCP: already the native envelope type
 - API: `IntoResponse` impl on `ToolError` maps `kind()` to HTTP status
 
-`ToolError` must not be constructed or pattern-matched inside `lab-apis`. It belongs to the `lab` crate product layer.
+`ToolError` must not be constructed or pattern-matched inside `labby-apis`. It belongs to the `labby` crate product layer.
 
 The canonical shared error vocabulary remains defined by [ERRORS.md](./ERRORS.md).
 

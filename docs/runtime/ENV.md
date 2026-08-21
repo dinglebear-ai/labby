@@ -6,7 +6,7 @@ updated: "2026-08-01"
 
 # Environment Variables
 
-This document lists the `lab` environment variables that matter for transport
+This document lists the `labby` environment variables that matter for transport
 and auth setup. The complete per-service env inventory is generated from
 `PluginMeta` and lives in
 [generated/env-reference.md](../generated/env-reference.md) and

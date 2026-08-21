@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Gateway Management
 
-`lab` exposes a first-class `gateway` management surface for the upstream MCP proxy defined in [UPSTREAM.md](./UPSTREAM.md).
+Labby exposes a first-class `gateway` management surface for the upstream MCP proxy defined in [UPSTREAM.md](./UPSTREAM.md).
 
 The `gateway` service owns upstream MCP configuration and runtime reconciliation. It does not own unrelated host identity or orchestration concerns.
 
@@ -34,7 +34,7 @@ The complete gateway action inventory is generated from `ActionSpec`:
 - [generated action catalog](../generated/action-catalog.md)
 - [generated action catalog JSON](../generated/action-catalog.json)
 
-Lab uses `destructive` only for actions that can permanently lose data that
+Labby uses `destructive` only for actions that can permanently lose data that
 cannot be quickly and easily regenerated with minimal effort. Reversible gateway
 lifecycle work is still admin-gated, but it is not destructive under that
 definition. In particular, clearing OAuth tokens, enabling/disabling an
@@ -43,7 +43,7 @@ confirmation.
 
 ### Stdio Gateways
 
-Stdio upstreams run a configured command on the local host running `lab` when
+Stdio upstreams run a configured command on the local host running Labby when
 they are tested or reconciled. This is an admin-gated execution path, but it is
 not marked destructive unless the action risks permanent, hard-to-recreate data
 loss.
@@ -71,7 +71,7 @@ config reference.
 ## Tool, Resource, and Prompt Exposure
 
 Gateway config can optionally restrict which discovered upstream primitives are
-republished by `lab`, via `expose_tools`, `expose_resources`, and
+republished by Labby, via `expose_tools`, `expose_resources`, and
 `expose_prompts`.
 
 - when an allowlist is unset, everything discovered for that capability remains exposed
@@ -112,7 +112,7 @@ Typical patch payloads:
 
 ## Gateway Code Mode
 
-When enabled, Lab hides raw proxied upstream tools from MCP `list_tools()` and exposes
+When enabled, Labby hides raw proxied upstream tools from MCP `list_tools()` and exposes
 the single synthetic `codemode` gateway tool:
 
 | Tool | Purpose | Status |
@@ -164,7 +164,7 @@ MCP `codemode` call shape:
 
 Execution runs in a short-lived child process with an embedded JavaScript engine.
 The child gets an empty environment, a temporary working directory, no Node/Deno
-host APIs, and no direct access to the Lab runtime. The only host capability is
+host APIs, and no direct access to the Labby runtime. The only host capability is
 the injected `codemode.<upstream>.<tool>()` typed helpers and the escape-hatch
 `callTool(id, params)` function, which sends each requested call back to the
 parent gateway for normal visibility, scope, destructive-action, and upstream
@@ -180,7 +180,7 @@ read-only MCP App inspector through `_meta.ui.resourceUri`.
 
 The inspector is passive observability only. It renders tool-result
 `structuredContent` and recent server-injected history snapshots; it does not
-initiate tool calls, call Lab HTTP APIs, or execute app-originated operations in
+initiate tool calls, call Labby HTTP APIs, or execute app-originated operations in
 v1. The `ui://` resource body is self-contained HTML so MCP hosts do not need to
 resolve exported Next.js chunk assets from the resource body. The Next route in
 `apps/gateway-admin/app/mcp/code-mode/` remains available for browser/static
@@ -240,7 +240,7 @@ same shaped response. This does not retain the raw result for audit; use
 `writeArtifact()` for large detailed payloads. The truncate policy is an output
 bound, not redaction, and must not be used to sanitize secrets.
 
-Code Mode execution handles upstream MCP tools only. Lab actions are not callable
+Code Mode execution handles upstream MCP tools only. Labby actions are not callable
 from inside the Code Mode sandbox. Upstream ids use
 `<upstream-name>::<tool-name>`.
 
@@ -249,7 +249,7 @@ Advertised tools per active mode:
 | Mode | Advertised MCP tools |
 |------|---------------------|
 | `[code_mode].enabled = true` | `codemode` |
-| Neither | raw Lab service tools + healthy upstream tools |
+| Neither | raw Labby service tools + healthy upstream tools |
 
 Use `codemode` for gateway Code Mode. Discovery happens inside the sandbox with
 `codemode.search()` and `codemode.describe()`.
@@ -265,7 +265,7 @@ Rules:
 - `code_mode.max_log_bytes` is validated in the range `1..=104857600`
 - `codemode` requires a non-empty `code` string
 - `codemode` requires `lab` or `lab:admin` and broker calls through the gateway visibility checks
-- Lab actions are not supported inside Code Mode `callTool`
+- Labby actions are not supported inside Code Mode `callTool`
 - gateway action provenance fields (`origin` and `owner`) are reserved in Code Mode and are overwritten by the broker
 - `codemode` enforces `timeout_ms` by killing the child process; tool calls are bounded by the run deadline and host-side tool policy, not by a per-run call-count cap
 - invalid Code Mode ids return `invalid_code_mode_id`
@@ -279,7 +279,7 @@ Tool-search observability:
   `manager_code_mode_enabled`, `process_code_mode_enabled`,
   `suppressed_builtin_tool_count`, the returned `page_tool_count`, and
   `has_next_cursor`
-- in-process Lab service peer discovery logs `in_process.list_tools.start` and
+- in-process Labby service peer discovery logs `in_process.list_tools.start` and
   `in_process.list_tools.finish` with `process_code_mode_enabled` and
   `tool_count`; when root code mode is enabled, built-in peers should report
   `tool_count=0`
@@ -295,7 +295,7 @@ Tool-search observability:
 - stdio gateways are allowed. Proposed or persisted enabled stdio specs can
   execute local commands during `gateway.test`, `gateway.add`, and
   `gateway.update`; these paths require admin scope but are not marked
-  destructive under Lab's permanent-data-loss definition.
+  destructive under Labby's permanent-data-loss definition.
 
 `gateway.oauth.probe` is intentionally stricter than general gateway URL
 validation: its `url` must use HTTPS and must not contain userinfo, a query, or
@@ -435,15 +435,15 @@ clear the old one with `null`:
 
 ## Gateway-Managed Protected MCP Routes
 
-Gateway-managed protected MCP routes let Lab publish an arbitrary MCP backend at
-a public host/path while Lab owns the OAuth protected-resource metadata,
+Gateway-managed protected MCP routes let Labby publish an arbitrary MCP backend at
+a public host/path while Labby owns the OAuth protected-resource metadata,
 challenge, token validation, and public error contract. The edge proxy points
-the public MCP URL at Lab; Lab then proxies accepted Streamable HTTP MCP traffic
+the public MCP URL at Labby; Labby then proxies accepted Streamable HTTP MCP traffic
 either to a raw backend MCP endpoint URL or to an existing named Gateway
 upstream.
 
 Use this for inline MCP services that should look like their own public OAuth
-protected resources instead of appearing only as tools merged into Lab's `/mcp`
+protected resources instead of appearing only as tools merged into Labby's `/mcp`
 catalog.
 
 Example public route:
@@ -485,9 +485,9 @@ upstream = "axon"
 scopes = ["mcp:read", "mcp:write"]
 ```
 
-When `upstream` is set, the protected route does not need `backend_url`. Lab
+When `upstream` is set, the protected route does not need `backend_url`. Labby
 resolves the target URL and auth mode from the named `[[upstream]]` entry. For
-OAuth upstreams, Lab uses the upstream OAuth credential stored for the shared
+OAuth upstreams, Labby uses the upstream OAuth credential stored for the shared
 Gateway subject `gateway`.
 
 Fields:
@@ -497,8 +497,8 @@ Fields:
 | `name` | Stable operator-facing route id. |
 | `enabled` | Whether the route participates in metadata, challenge, auth, and proxy resolution. Defaults to `true`. |
 | `public_host` | Bare public host only. Do not include scheme, port, or path. |
-| `public_path` | Public MCP path prefix. Must include a service segment and cannot use Lab-reserved paths like `/.well-known/*` or `/v1/*`. |
-| `upstream` | Optional named Gateway upstream to publish at this path. If the upstream uses OAuth, Lab uses the shared Gateway upstream OAuth credential when proxying. Mutually exclusive with `backend_url`; when set, `backend_url` is intentionally empty. |
+| `public_path` | Public MCP path prefix. Must include a service segment and cannot use Labby-reserved paths like `/.well-known/*` or `/v1/*`. |
+| `upstream` | Optional named Gateway upstream to publish at this path. If the upstream uses OAuth, Labby uses the shared Gateway upstream OAuth credential when proxying. Mutually exclusive with `backend_url`; when set, `backend_url` is intentionally empty. |
 | `backend_url` | Full backend Streamable HTTP MCP endpoint URL, for example `http://node.internal.example:3100/mcp`. Origin-only URLs are accepted as legacy input and default to `/mcp`. Mutually exclusive with `upstream`. |
 | `backend_mcp_path` | Deprecated compatibility field for older configs. New routes should put the path in `backend_url`. |
 | `scopes` | OAuth scopes advertised and enforced for this route. Defaults to `mcp:read` and `mcp:write`. |
@@ -557,20 +557,20 @@ labby gateway protected-route remove syslog
 Route testing has two layers:
 
 - `labby gateway protected-route test ...` validates the route config and
-  backend health path before saving or updating the Lab config.
+  backend health path before saving or updating the Labby config.
 - `just protected-mcp-smoke -- --app-url https://lab.example.com --mcp-url
   https://mcp.example.com --route /syslog` verifies the deployed public flow:
-  Lab app health, route-specific protected-resource metadata, and the
+  Labby app health, route-specific protected-resource metadata, and the
   unauthenticated OAuth bearer challenge through the reverse proxy.
 
-The Gateway UI exposes the same split: **Test** validates the Lab route config,
+The Gateway UI exposes the same split: **Test** validates the Labby route config,
 and **Smoke** runs the public proxy check using the current browser origin as
-the Lab app URL and the route's public host/path as the MCP URL.
+the Labby app URL and the route's public host/path as the MCP URL.
 
 Operational timeout:
 
 - `LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` controls the connect timeout for
-  Lab's protected MCP upstream proxy HTTP client. The default is `10` seconds.
+  Labby's protected MCP upstream proxy HTTP client. The default is `10` seconds.
   Set this higher only when upstream TCP/TLS connection setup is expected to be
   slow; long-lived MCP streams are not bounded by this connect timeout.
 
@@ -606,13 +606,13 @@ labby gateway protected-route add \
   --backend-url http://node.internal.example:3100/mcp
 ```
 
-The same fields are exposed in the Lab Gateway UI. Prefer the UI/CLI fields over
+The same fields are exposed in the Labby Gateway UI. Prefer the UI/CLI fields over
 ad hoc env parsing so route validation, duplicate detection, OAuth metadata,
 and public error redaction all use the same source of truth.
 
 ### Edge Proxy Requirements
 
-The edge proxy must preserve the request authority and scheme Lab uses to match
+The edge proxy must preserve the request authority and scheme Labby uses to match
 the configured public resource:
 
 - preserve `Host`
@@ -622,11 +622,11 @@ the configured public resource:
 - disable request/response buffering for the MCP proxy path
 - avoid response compression on the MCP proxy path
 - use long read/write/idle timeouts suitable for Streamable HTTP and SSE
-- do not rewrite the public path before Lab sees it
+- do not rewrite the public path before Labby sees it
 
-Public route OAuth is not the same as Lab's static bearer compatibility path.
+Public route OAuth is not the same as Labby's static bearer compatibility path.
 `Authorization: Bearer $LABBY_MCP_HTTP_TOKEN` remains an operator/admin shortcut
-for Lab's admin/API routes, but public Gateway-managed MCP routes validate Lab
+for Labby's admin/API routes, but public Gateway-managed MCP routes validate Labby
 OAuth JWTs for the route resource, for example
 `https://mcp.example.com/syslog`. Do not use the static bearer token as the
 public MCP client credential for these routes.
@@ -638,7 +638,7 @@ public route and public error kind.
 
 ### SWAG / nginx
 
-For SWAG or plain nginx, route the MCP host/path to Lab and keep streaming
+For SWAG or plain nginx, route the MCP host/path to Labby and keep streaming
 behavior unbuffered:
 
 ```nginx
@@ -669,12 +669,12 @@ location /.well-known/oauth-protected-resource/syslog {
 
 If your SWAG include stack has a shared OAuth discovery location, make sure it
 does not swallow path-suffixed metadata such as
-`/.well-known/oauth-protected-resource/syslog`. Those requests must reach Lab.
+`/.well-known/oauth-protected-resource/syslog`. Those requests must reach Labby.
 
 ### Traefik
 
 With Traefik, match both the public MCP path and the route-specific protected
-resource metadata path, and forward to the Lab service:
+resource metadata path, and forward to the Labby service:
 
 ```yaml
 http:
@@ -698,8 +698,8 @@ timeouts high enough for long-lived SSE reads.
 ### Generic Tunnels
 
 For Cloudflare Tunnel, Tailscale Funnel, Pangolin, or another generic tunnel,
-publish the public host to Lab's HTTP listener and keep the path intact. The
-tunnel or local reverse proxy in front of Lab must pass the original `Host` and
+publish the public host to Labby's HTTP listener and keep the path intact. The
+tunnel or local reverse proxy in front of Labby must pass the original `Host` and
 scheme-equivalent `X-Forwarded-Proto` headers. Avoid tunnel features that buffer
 large request bodies, compress event streams, or enforce short idle timeouts on
 SSE connections.
@@ -724,7 +724,7 @@ Expected:
 
 - `200`
 - JSON `resource` is `https://mcp.example.com/syslog`
-- `authorization_servers` points at the Lab issuer/public URL
+- `authorization_servers` points at the Labby issuer/public URL
 - `scopes_supported` includes the route scopes
 - no backend URL appears in headers or body
 
@@ -755,10 +755,10 @@ Use the advertised authorization server to request a token for resource
 `https://mcp.example.com/syslog` and the configured scopes. The resulting access
 token must be presented to the public route, not to the backend.
 
-If the protected route publishes a named upstream that also uses OAuth, Lab
+If the protected route publishes a named upstream that also uses OAuth, Labby
 performs a second, separate auth step behind the route: it uses the upstream
 OAuth credential stored for the shared Gateway subject when proxying to the
-private upstream MCP server. The public Lab token is never passed through to the
+private upstream MCP server. The public Labby token is never passed through to the
 upstream authorization server.
 
 Stateless server discovery:

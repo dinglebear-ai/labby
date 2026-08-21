@@ -1,31 +1,16 @@
-# Design Docs
+# Product Design Docs
 
-This directory contains active design-system contracts and supporting design
-artifacts.
+These documents describe design contracts that are implemented by, or intentionally constrain, the current Labby product.
 
-## Active Contracts
+## Canonical Design Contracts
 
-- [GOOGLE_CREDENTIAL_BROKER.md](./GOOGLE_CREDENTIAL_BROKER.md) — central Google
-  provider credential architecture, security model, schema v8, OAuth scope
-  lifecycle, product contracts, rollout, and verification.
-- [SERIALIZATION.md](./SERIALIZATION.md) — serde ownership, MCP/HTTP envelope
-  rules, and CLI output boundaries.
-- [REMOTE_GATEWAY_TARGET.md](./REMOTE_GATEWAY_TARGET.md) — authoritative remote
-  daemon selection, validation, fallback, and credential-boundary rules.
-- [CLI_DESIGN_SYSTEM.md](./CLI_DESIGN_SYSTEM.md) — human-readable CLI visual
-  language and color policy.
-- [component-development.md](./component-development.md) — Labby component
-  development workflow.
-- [design-system-contract.md](./design-system-contract.md) — Labby web UI
-  design-system contract.
+- [design-system-contract.md](./design-system-contract.md) — Aurora web UI tokens, component patterns, accessibility, and layout rules.
+- [component-development.md](./component-development.md) — workflow for building and reviewing Labby UI components.
+- [CLI_DESIGN_SYSTEM.md](./CLI_DESIGN_SYSTEM.md) — current human-readable CLI design contract. The implementation lives in `crates/labby/src/output/` and `crates/labby/src/cli/style.rs`.
+- [CLAUDE_CODE_AURORA_THEME.md](./CLAUDE_CODE_AURORA_THEME.md) — Aurora theme mapping for Claude Code.
+- [SERIALIZATION.md](./SERIALIZATION.md) — serialization and output-boundary contract across product surfaces.
+- [GOOGLE_CREDENTIAL_BROKER.md](./GOOGLE_CREDENTIAL_BROKER.md) — current Google credential ownership and broker design.
+- [REMOTE_GATEWAY_TARGET.md](./REMOTE_GATEWAY_TARGET.md) — explicit versus opportunistic remote gateway target behavior.
+- [tool-annotations/README.md](./tool-annotations/README.md) — MCP tool annotation and safety-hint contract.
 
-- [tool-annotations/](./tool-annotations/) — MCP `ToolAnnotations` on Labby's own
-  tools plus upstream passthrough: spec, wire contract, schemas, models, types,
-  implementation plan, review findings, and progress tracker.
-
-## Proposals And Artifacts
-
-- [CLI_OUTPUT_THEME_API.md](./CLI_OUTPUT_THEME_API.md)
-- [CLAUDE_CODE_AURORA_THEME.md](./CLAUDE_CODE_AURORA_THEME.md)
-- [cli-output.md](./cli-output.md)
-- [cli-output-mockup.html](./cli-output-mockup.html)
+Historical proposals and superseded implementation sketches are not indexed here as product documentation.

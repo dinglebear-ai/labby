@@ -7,12 +7,12 @@ updated: "2026-07-30"
 # CLI Design System Contract
 
 **Status:** Active
-**Scope:** `lab` CLI human-readable output only
+**Scope:** `labby` CLI human-readable output only
 **Mode:** Dark-first, truecolor-first with ANSI-256 fallback
 
 ## Purpose
 
-This document is the source of truth for the `lab` CLI visual language.
+This document is the source of truth for the `labby` CLI visual language.
 
 It defines how human-readable terminal output should communicate hierarchy, status, and interaction without drifting into per-command styling. The CLI should feel like the terminal sibling of Labby's Aurora system: calm, dense, operator-friendly, and restrained.
 
@@ -20,9 +20,9 @@ This contract applies to human-readable output only. JSON output remains machine
 
 Related documents:
 
-- [CLI](../CLI.md)
+- [CLI](../surfaces/CLI.md)
 - [SERIALIZATION](./SERIALIZATION.md)
-- [CLI Output Theme API Proposal](./CLI_OUTPUT_THEME_API.md)
+- Implementation: `crates/labby/src/output/` and `crates/labby/src/cli/style.rs`
 - [Labby Design System Contract](./design-system-contract.md)
 
 ## Product Direction

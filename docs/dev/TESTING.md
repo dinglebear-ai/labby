@@ -8,7 +8,7 @@ updated: "2026-07-30"
 
 Last updated: 2026-04-10
 
-This document is the canonical testing contract for `lab`.
+This document is the canonical testing contract for `labby`.
 
 It defines:
 
@@ -54,7 +54,7 @@ There are four testing layers.
 
 ### 1. SDK Tests
 
-Owned by `lab-apis`.
+Owned by `labby-apis`.
 
 Purpose:
 
@@ -67,11 +67,11 @@ Rules:
 
 - use mock HTTP where practical
 - do not depend on real external services in CI-safe tests
-- test shared HTTP behavior in `lab-apis`
+- test shared HTTP behavior in `labby-apis`
 
 ### 2. Shared Dispatch-Layer Tests
 
-Owned by `crates/lab/src/dispatch`.
+Owned by `crates/labby/src/dispatch`.
 
 Purpose:
 
@@ -88,7 +88,7 @@ Rules:
 
 ### 3. Surface Adapter Tests
 
-Owned by `crates/lab/src/cli`, `crates/lab/src/mcp`, and `crates/lab/src/api`.
+Owned by `crates/labby/src/cli`, `crates/labby/src/mcp`, and `crates/labby/src/api`.
 
 Purpose:
 
@@ -131,7 +131,7 @@ Rules:
 - at least one successful read-only path
 - at least one failing path with the expected stable `kind`
 - observability evidence for the path
-- docs/coverage alignment with the actual implementation
+- generated service/action/feature documentation alignment with the actual implementation
 
 ## Required Minimums For New Services
 
@@ -202,7 +202,7 @@ Preferred runner:
 
 - use `cargo nextest run` for crate-level verification
 - use `cargo test` only when nextest is unavailable or you need a narrow one-off command that nextest does not cover cleanly
-- for this repo, `cargo nextest run --manifest-path crates/lab/Cargo.toml --all-features` is the standard full-crate verification command
+- for this repo, `cargo nextest run --manifest-path crates/labby/Cargo.toml --all-features` is the standard full-crate verification command
 
 If tests were not run, say so explicitly.
 
@@ -215,27 +215,21 @@ just check
 just docs-check
 just test
 just lint
-cargo nextest run --manifest-path crates/lab/Cargo.toml --all-features
-cargo test -p lab-apis
-cargo test --manifest-path crates/lab/Cargo.toml
+cargo nextest run --manifest-path crates/labby/Cargo.toml --all-features
+cargo test -p labby-apis
+cargo test --manifest-path crates/labby/Cargo.toml
 ```
 
 Use narrower commands first when iterating, then broaden before completion.
 
-## Coverage Docs
+## Generated Product Docs
 
-Coverage docs in `docs/coverage/` are part of verification, not a substitute for tests.
-
-Rules:
-
-- coverage docs must reflect the real implementation surface
-- coverage docs must not claim live-tested status unless that testing actually happened
-- implementation counts and file references must stay aligned with code
+Code-owned catalogs under `docs/generated/` are part of verification, not a substitute for tests. Run `just docs-generate` after metadata/surface changes and `just docs-check` before handoff. Generated service, action, route, environment, CLI, MCP, and feature projections must remain aligned with code.
 
 ## Ownership Summary
 
-- `lab-apis` owns SDK tests
-- `crates/lab/src/dispatch` owns shared dispatch tests
+- `labby-apis` owns SDK tests
+- `crates/labby/src/dispatch` owns shared dispatch tests
 - `cli`, `mcp`, and `api` own adapter tests
 - implementation tasks own live verification
 
@@ -243,7 +237,7 @@ Rules:
 
 - [OBSERVABILITY.md](./OBSERVABILITY.md)
 - [ERRORS.md](./ERRORS.md)
-- [design/SERIALIZATION.md](./design/SERIALIZATION.md)
+- [SERIALIZATION.md](../design/SERIALIZATION.md)
 - [DISPATCH.md](./DISPATCH.md)
 - [SERVICE_ONBOARDING.md](./SERVICE_ONBOARDING.md)
-- [OPERATIONS.md](./OPERATIONS.md)
+- [OPERATIONS.md](../OPERATIONS.md)

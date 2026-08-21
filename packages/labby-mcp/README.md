@@ -176,7 +176,7 @@ Bootstrap writes these required `setup` keys if no env exists yet:
 - `LABBY_MCP_HTTP_PORT=8765`
 - `LABBY_AUTH_MODE=bearer`
 
-It also enforces secure file creation via Lab's `env_merge` path (`0600` perms on
+It also enforces secure file creation via Labby's `env_merge` path (`0600` perms on
 Unix) and then skips creating anything else until the web wizard runs.
 
 For explicit setup:
@@ -284,7 +284,7 @@ labby snippets test my-snippet
 ```
 
 Snippets are stored per-user under `$LABBY_HOME` and executed through the
-gateway Code Mode runner, so they can reach exposed upstream tools but not Lab
+gateway Code Mode runner, so they can reach exposed upstream tools but not Labby
 actions. The `snippets` service is gateway-gated: it is unavailable in builds
 without the `gateway` feature.
 
@@ -396,8 +396,8 @@ Useful environment variables:
 | `LABBY_ACTOR_KEY_SECRET` | Stable secret for redacted actor correlation in logs. |
 | `LABBY_ADMIN_ENABLED` | Runtime opt-in for the `lab_admin` tool. |
 
-Bearer auth is an operator/admin shortcut for Lab routes. Public protected MCP
-routes validate route-scoped Lab OAuth JWTs; do not treat `LABBY_MCP_HTTP_TOKEN` as
+Bearer auth is an operator/admin shortcut for Labby routes. Public protected MCP
+routes validate route-scoped Labby OAuth JWTs; do not treat `LABBY_MCP_HTTP_TOKEN` as
 a public resource credential.
 
 When driving the web UI with automation while OAuth is enabled, pass the bearer

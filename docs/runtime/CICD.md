@@ -8,7 +8,7 @@ updated: "2026-08-05"
 
 Last updated: 2026-08-05
 
-This document is the authoritative contract for CI, release, and artifact delivery in `lab`. All pipeline implementations must conform to this spec.
+This document is the authoritative contract for CI, release, and artifact delivery in `labby`. All pipeline implementations must conform to this spec.
 
 ## CI Path Routing
 
@@ -245,7 +245,7 @@ partially published release.
 
 **Tag format:** `vX.Y.Z` — no other formats are accepted.
 
-**Version policy:** single version across the entire workspace. `lab` and `lab-apis` always share the same version number.
+**Version policy:** single version across the entire workspace. `labby` and `labby-apis` always share the same version number.
 
 ## Artifact Distribution
 
@@ -300,16 +300,16 @@ Binary size is tracked but not hard-gated in CI unless repo tooling enforces a m
 The shared `build-gateway-admin` action installs dependencies, verifies the
 synced installer, runs `pnpm run test:unit`, runs `pnpm exec tsc --noEmit`, and
 then runs `pnpm build`. This is the CI gate for the embedded gateway-admin
-assets that are compiled into the `lab` binary. Keep TypeScript explicit here:
+assets that are compiled into the `labby` binary. Keep TypeScript explicit here:
 `next.config.mjs` intentionally ignores build-time TypeScript errors so asset
-builds are not the type-safety boundary.
+builds are not the type-safety boundary. The main CI workflow runs the separate
+`test:browser` suite where browser behavior is required.
 
 ```bash
 cd apps/gateway-admin
 pnpm run test:unit
 pnpm exec tsc --noEmit
-pnpm test
-pnpm test:acp
+pnpm build
 pnpm test:browser
 ```
 

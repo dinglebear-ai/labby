@@ -1,0 +1,52 @@
+---
+title: "Setup Service"
+updated: "2026-08-18"
+---
+
+# Setup Service
+
+The `setup` service owns Labby's first-run, configuration, repair, plugin-lifecycle, proxy-configuration, and host-provisioning workflows. It is always compiled and is exposed through CLI, MCP, HTTP API, and the web UI.
+
+The generated [action catalog](../generated/action-catalog.md) is authoritative for exact action names, parameters, destructive flags, scopes, and surface availability.
+
+## Responsibilities
+
+- bootstrap a new Labby home and supported host runtime
+- inspect setup state and service status
+- stage, commit, and discard configuration drafts
+- expose schema-driven settings state and mutations
+- configure the direct stdio MCP proxy
+- install, uninstall, inspect, and synchronize the checked-in Claude plugin integration
+- repair supported setup state
+
+## Safety Model
+
+Read-only discovery actions such as `check`, `help`, `schema`, and `schema.get` do not require destructive confirmation. Mutating setup actions are classified as destructive and require `lab:admin` where the action catalog says so.
+
+Plugin lifecycle and other local host mutations are additionally constrained by the product's local-action policy. Surface adapters must use the shared setup dispatcher rather than reimplementing setup behavior.
+
+## Main Action Families
+
+| Family | Examples |
+| --- | --- |
+| Bootstrap and repair | `bootstrap`, `check`, `repair`, `finalize` |
+| Draft configuration | `draft.get`, `draft.set`, `draft.commit`, `draft.discard` |
+| Settings | `settings.state`, `settings.schema`, `settings.env_schema`, `settings.update`, `settings.env.update`, `settings.config.update` |
+| Plugin lifecycle | `plugin.install`, `plugin.uninstall`, `plugins.installed`, `plugin_hook`, `plugin_sync`, `plugin_export` |
+| Proxy | `proxy.configure` |
+| Service inspection | `services.status`, `state` |
+
+Legacy snake-case plugin action aliases remain in the action catalog for compatibility; new integrations should use the dotted canonical action names.
+
+## CLI
+
+`labby setup` is the supported operator entrypoint. Use `labby setup --help` and the generated [CLI help](../generated/cli-help.md) for the exact current command grammar.
+
+## Related Docs
+
+- [Configuration](../runtime/CONFIG.md)
+- [Environment](../runtime/ENV.md)
+- [Host gateway runtime](../runtime/HOST_GATEWAY.md)
+- [Incus runtime](../runtime/INCUS.md)
+- [Plugins](../PLUGINS.md)
+- [Service model](../dev/SERVICES.md)

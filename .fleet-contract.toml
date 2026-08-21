@@ -7,8 +7,5 @@ frontmatter-exclude = [
   "docs/epic-lab-y08q1-code-mode-cloudflare-parity.md",
   "docs/features/**",
   "docs/labby-cli-audit-2026-06-04.md",
-  "docs/snippets/*-output.md",
-  "docs/snippets/axon-research-brief-latest.md",
-  "docs/snippets/cross-server-smoke-tests.md",
   "docs/system-service-audit-2026-05-15.md",
 ]
