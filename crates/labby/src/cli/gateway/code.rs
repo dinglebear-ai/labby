@@ -170,6 +170,9 @@ mod tests {
     #[test]
     fn cli_source_read_uses_shared_hard_ceiling() {
         let max_source_bytes = labby_codemode::MAX_SOURCE_BYTES;
+        let above_default =
+            "a".repeat(crate::config::CodeModeConfig::default().max_source_bytes + 1);
+        assert!(read_code_mode_source(Some(above_default), None, max_source_bytes as u64).is_ok());
         let at_limit = "a".repeat(max_source_bytes);
         assert!(read_code_mode_source(Some(at_limit), None, max_source_bytes as u64).is_ok());
 

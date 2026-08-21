@@ -264,7 +264,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.usage.metrics",
-        description: "Aggregate gateway usage analytics over at most 250000 matching rows: totals, latency, errors, targets, actors, throughput, and time buckets",
+        description: "Aggregate exact gateway usage analytics; rejects queries above 250000 matching rows, and facet requests whose unfiltered time window exceeds 250000 rows",
         destructive: false,
         requires_admin: true,
         returns: "GatewayUsageMetricsView",
@@ -333,7 +333,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "include_facets",
                 ty: "boolean",
                 required: false,
-                description: "Include up to 1000 stable window-wide values per target, actor, upstream, and outcome facet",
+                description: "Include stable window-wide filter facets; returns invalid_param if any facet exceeds 1000 distinct values",
             },
         ],
     },
