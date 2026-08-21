@@ -223,7 +223,13 @@ labby mcp
 `labby serve` starts the hosted HTTP runtime: `/v1` product APIs, `/mcp`
 streamable HTTP MCP, auth routes, OAuth relay endpoints, and static Labby web
 assets when an export is available. `labby mcp` is the stdio MCP entrypoint for
-local MCP clients.
+local MCP clients. A client configured to launch `labby mcp` does not need an
+HTTP URL: when a `labby serve` daemon is reachable, the stdio process becomes a
+transparent bridge to that daemon and uses its gateway configuration, upstream
+connections, and OAuth state. If no daemon is found and no explicit target is
+set, it starts a standalone local gateway instead. See the
+[local bridge guide](./docs/surfaces/TRANSPORT.md#local-bridge-to-the-running-daemon)
+for client configuration and `LABBY_SERVER_URL` fail-closed behavior.
 
 ### Manage Upstream MCP Gateways
 
