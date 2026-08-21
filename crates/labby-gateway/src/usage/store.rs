@@ -252,6 +252,7 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_page ON upstream_calls(ts_unix DESC, id DESC);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_upstream ON upstream_calls(upstream_name, ts_unix);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_tool ON upstream_calls(upstream_name, tool_name);
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_qualified_tool ON upstream_calls((upstream_name || '::' || tool_name));
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor ON upstream_calls(actor);",
     )
     .map_err(sqlite_error)?;
@@ -299,6 +300,9 @@ impl UsageStore {
         query: super::query::UsageMetricsQuery,
     ) -> Result<super::query::UsageMetrics, ToolError> {
         self.with_conn(move |conn| {
+            let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
+            let result = (|| {
+            let conn = &*tx;
             let (where_clause, bind) = usage_where_clause(
                 &query.since_unix, &query.until_unix, &query.upstream, &query.tool,
                 &query.actor, &query.outcome, &query.search, &query.allowed_upstreams,
@@ -316,6 +320,9 @@ impl UsageStore {
                     .as_deref()
                     .is_some_and(|search| !search.trim().is_empty());
 
+            let bounded_total = bounded_matching_count(conn, &where_clause, &bind)?;
+            ensure_metrics_row_limit("usage metrics query", bounded_total)?;
+
             let (total_calls, error_calls, avg_elapsed_ms): (i64, i64, f64) = conn
                 .query_row(
                     &format!(
@@ -332,6 +339,11 @@ impl UsageStore {
                 )
                 .map_err(sqlite_error)?;
 
+            if query.include_facets && has_detail_filters {
+                let bounded_window_total =
+                    bounded_matching_count(conn, &window_where_clause, &window_bind)?;
+                ensure_metrics_row_limit("usage facet window", bounded_window_total)?;
+            }
             let window_total_calls = if has_detail_filters {
                 conn.query_row(
                     &format!("SELECT COUNT(*) FROM upstream_calls {window_where_clause}"),
@@ -342,6 +354,9 @@ impl UsageStore {
             } else {
                 total_calls
             };
+            if query.include_facets && !has_detail_filters {
+                ensure_metrics_row_limit("usage facet window", window_total_calls)?;
+            }
 
             let time_zone = query
                 .timezone
@@ -363,12 +378,9 @@ impl UsageStore {
                 .transpose()?;
             let offset_seconds = i64::from(query.timezone_offset_minutes) * 60;
 
-            // SQLite's ROW_NUMBER()/COUNT() window formulation is exact, but
-            // it is disproportionately expensive on longer windows. Sorting the
-            // scalar latency column once and selecting nearest-rank values in
-            // Rust stays exact while avoiding the extra window-function state.
-            // The timestamp rides along so local-hour aggregation costs no
-            // extra store scan and honors DST when an IANA zone is supplied.
+            // Stream the ordered rows instead of materializing two full vectors.
+            // The exact aggregate row ceiling above bounds the SQLite sort and
+            // the iterator keeps host heap use constant.
             let mut latency_stmt = conn
                 .prepare(&format!(
                     "SELECT elapsed_ms, ts_unix FROM upstream_calls {where_clause} ORDER BY elapsed_ms ASC"
@@ -378,13 +390,25 @@ impl UsageStore {
                 .query_map(rusqlite::params_from_iter(bind.iter()), |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
                 })
-                .map_err(sqlite_error)?
-                .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(sqlite_error)?;
-            let mut elapsed_values = Vec::with_capacity(latency_rows.len());
             let mut hourly_counts = [0_i64; 24];
-            for (elapsed_ms, ts_unix) in latency_rows {
-                elapsed_values.push(elapsed_ms);
+            let rank = |percentile: i64| {
+                total_calls
+                    .saturating_mul(percentile)
+                    .saturating_add(99)
+                    .div_euclid(100)
+                    .saturating_sub(1)
+            };
+            let (p50_rank, p95_rank, p99_rank) = (rank(50), rank(95), rank(99));
+            let mut p50_elapsed_ms = 0;
+            let mut p95_elapsed_ms = 0;
+            let mut p99_elapsed_ms = 0;
+            for (index, row) in latency_rows.enumerate() {
+                let (elapsed_ms, ts_unix) = row.map_err(sqlite_error)?;
+                let index = i64::try_from(index).unwrap_or(i64::MAX);
+                if index == p50_rank { p50_elapsed_ms = elapsed_ms; }
+                if index == p95_rank { p95_elapsed_ms = elapsed_ms; }
+                if index == p99_rank { p99_elapsed_ms = elapsed_ms; }
                 let hour = if let Some(time_zone) = &time_zone {
                     let timestamp = jiff::Timestamp::from_second(ts_unix).map_err(|error| {
                         ToolError::internal_message(format!(
@@ -412,9 +436,6 @@ impl UsageStore {
                     calls,
                 })
                 .collect::<Vec<_>>();
-            let p50_elapsed_ms = nearest_rank(&elapsed_values, 50);
-            let p95_elapsed_ms = nearest_rank(&elapsed_values, 95);
-            let p99_elapsed_ms = nearest_rank(&elapsed_values, 99);
 
             let peak_per_min = conn
                 .query_row(
@@ -563,18 +584,31 @@ impl UsageStore {
             } else { Vec::new() };
 
             let facets = if query.include_facets {
-                let mut tools_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name, tool_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC, tool_name ASC")).map_err(sqlite_error)?;
+                let limit = super::query::MAX_METRICS_FACETS + 1;
+                let mut tools_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name, tool_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC, tool_name ASC LIMIT {limit}")).map_err(sqlite_error)?;
                 let tools = tools_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| Ok(super::query::UsageToolFacet { upstream: row.get(0)?, tool: row.get(1)? })).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
-                let mut actors_stmt = conn.prepare(&format!("SELECT DISTINCT actor FROM upstream_calls {window_where_clause} ORDER BY actor ASC")).map_err(sqlite_error)?;
+                let mut actors_stmt = conn.prepare(&format!("SELECT DISTINCT actor FROM upstream_calls {window_where_clause} ORDER BY actor ASC LIMIT {limit}")).map_err(sqlite_error)?;
                 let actors = actors_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
-                let mut upstreams_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC")).map_err(sqlite_error)?;
+                let mut upstreams_stmt = conn.prepare(&format!("SELECT DISTINCT upstream_name FROM upstream_calls {window_where_clause} ORDER BY upstream_name ASC LIMIT {limit}")).map_err(sqlite_error)?;
                 let upstreams = upstreams_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
-                let mut outcomes_stmt = conn.prepare(&format!("SELECT DISTINCT outcome FROM upstream_calls {window_where_clause} ORDER BY outcome ASC")).map_err(sqlite_error)?;
+                let mut outcomes_stmt = conn.prepare(&format!("SELECT DISTINCT outcome FROM upstream_calls {window_where_clause} ORDER BY outcome ASC LIMIT {limit}")).map_err(sqlite_error)?;
                 let outcomes = outcomes_stmt.query_map(rusqlite::params_from_iter(window_bind.iter()), |row| row.get(0)).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<String>>>().map_err(sqlite_error)?;
+                ensure_facet_limit("tools", tools.len())?;
+                ensure_facet_limit("actors", actors.len())?;
+                ensure_facet_limit("upstreams", upstreams.len())?;
+                ensure_facet_limit("outcomes", outcomes.len())?;
                 super::query::UsageFacets { tools, actors, upstreams, outcomes }
             } else { super::query::UsageFacets::default() };
 
             Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, facets })
+            })();
+            match result {
+                Ok(metrics) => {
+                    tx.commit().map_err(sqlite_error)?;
+                    Ok(metrics)
+                }
+                Err(error) => Err(error),
+            }
         }).await
     }
 
@@ -591,6 +625,8 @@ impl UsageStore {
         ToolError,
     > {
         self.with_conn(move |conn| {
+            let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
+            let conn = &*tx;
             let (where_clause, mut bind) = usage_where_clause(
                 &query.since_unix,
                 &query.until_unix,
@@ -679,7 +715,10 @@ impl UsageStore {
                 }
             });
 
-            Ok((rows, total, next_cursor))
+            let result = (rows, total, next_cursor);
+            drop(stmt);
+            tx.commit().map_err(sqlite_error)?;
+            Ok(result)
         })
         .await
     }
@@ -697,12 +736,52 @@ fn append_usage_predicate(where_clause: &str, predicate: &str) -> String {
     }
 }
 
-fn nearest_rank(sorted: &[i64], percentile: usize) -> i64 {
-    if sorted.is_empty() {
-        return 0;
+fn ensure_facet_limit(name: &str, count: usize) -> Result<(), ToolError> {
+    if count <= super::query::MAX_METRICS_FACETS as usize {
+        Ok(())
+    } else {
+        Err(ToolError::InvalidParam {
+            message: format!(
+                "usage {name} facet exceeds {} distinct values; narrow the time window",
+                super::query::MAX_METRICS_FACETS
+            ),
+            param: "include_facets".to_string(),
+        })
     }
-    let rank = sorted.len().saturating_mul(percentile).div_ceil(100);
-    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
+fn ensure_metrics_row_limit(name: &str, count: i64) -> Result<(), ToolError> {
+    if count <= super::query::MAX_METRICS_MATCHING_ROWS {
+        Ok(())
+    } else {
+        Err(ToolError::InvalidParam {
+            message: format!(
+                "{name} matches {count} rows; narrow the time window or filters to at most {} rows",
+                super::query::MAX_METRICS_MATCHING_ROWS
+            ),
+            param: "since_unix".to_string(),
+        })
+    }
+}
+
+fn bounded_matching_count(
+    conn: &Connection,
+    where_clause: &str,
+    bind: &[rusqlite::types::Value],
+) -> Result<i64, ToolError> {
+    let mut bounded_bind = bind.to_vec();
+    bounded_bind.push(rusqlite::types::Value::Integer(
+        super::query::MAX_METRICS_MATCHING_ROWS.saturating_add(1),
+    ));
+    conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM upstream_calls {where_clause} LIMIT ?{})",
+            bounded_bind.len()
+        ),
+        rusqlite::params_from_iter(bounded_bind.iter()),
+        |row| row.get(0),
+    )
+    .map_err(sqlite_error)
 }
 
 fn escape_like_pattern(value: &str) -> String {
@@ -1104,6 +1183,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metrics_rejects_incomplete_facet_inventory() {
+        use super::super::query::UsageMetricsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch(&format!(
+                    "WITH RECURSIVE seq(value) AS (
+                        VALUES(0)
+                        UNION ALL SELECT value + 1 FROM seq
+                        WHERE value < {}
+                     )
+                     INSERT INTO upstream_calls (
+                        ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms
+                     )
+                     SELECT 1000, 'github', 'search', printf('actor-%04d', value), 'ok', 1
+                     FROM seq;",
+                    super::super::query::MAX_METRICS_FACETS
+                ))
+                .map_err(super::sqlite_error)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let error = store
+            .metrics(UsageMetricsQuery {
+                include_facets: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "invalid_param");
+        assert!(error.to_string().contains("actors facet exceeds"));
+    }
+
+    #[tokio::test]
     async fn metrics_and_calls_apply_exact_server_side_filters() {
         use super::super::query::{UsageCallsQuery, UsageMetricsQuery};
 
@@ -1199,12 +1316,48 @@ mod tests {
     }
 
     #[test]
-    fn nearest_rank_matches_sql_ceiling_rank_semantics() {
-        assert_eq!(super::nearest_rank(&[], 95), 0);
-        assert_eq!(super::nearest_rank(&[10], 50), 10);
-        assert_eq!(super::nearest_rank(&[10, 20, 30, 40], 50), 20);
-        assert_eq!(super::nearest_rank(&[10, 20, 30, 40], 95), 40);
-        assert_eq!(super::nearest_rank(&[10, 20, 30, 40], 99), 40);
+    fn tool_filter_preserves_delimiter_bearing_upstream_names() {
+        let (clause, bind) = super::usage_where_clause(
+            &None,
+            &None,
+            &None,
+            &Some("labby::github-chat::search_repos".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+        );
+        assert_eq!(clause, "WHERE (upstream_name || '::' || tool_name) = ?1");
+        assert_eq!(bind.len(), 1);
+    }
+
+    #[test]
+    fn aggregate_limits_accept_boundary_and_reject_overflow() {
+        assert!(
+            super::ensure_metrics_row_limit(
+                "query",
+                super::super::query::MAX_METRICS_MATCHING_ROWS
+            )
+            .is_ok()
+        );
+        assert!(
+            super::ensure_metrics_row_limit(
+                "query",
+                super::super::query::MAX_METRICS_MATCHING_ROWS + 1
+            )
+            .is_err()
+        );
+        assert!(
+            super::ensure_facet_limit("actors", super::super::query::MAX_METRICS_FACETS as usize)
+                .is_ok()
+        );
+        assert!(
+            super::ensure_facet_limit(
+                "actors",
+                super::super::query::MAX_METRICS_FACETS as usize + 1
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

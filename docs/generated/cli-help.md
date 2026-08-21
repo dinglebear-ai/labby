@@ -3647,10 +3647,10 @@ Options:
           IANA zone name for DST-correct local-hour aggregation
 
       --timezone-offset-minutes <TIMEZONE_OFFSET_MINUTES>
-          Minutes east of UTC fallback when --timezone is omitted
+          Minutes east of UTC fallback when --timezone is omitted (-1440 to 1440)
 
       --include-facets
-          Include stable window-wide filter facets
+          Include stable facets; errors if any facet exceeds 1000 values
 
   -h, --help
           Print help

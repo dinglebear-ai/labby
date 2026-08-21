@@ -11,6 +11,11 @@ pub const DEFAULT_CALLS_LIMIT: usize = 100;
 pub const MAX_CALLS_LIMIT: usize = 1000;
 /// Max buckets returned by one aggregate metrics query.
 pub const MAX_METRICS_BUCKETS: usize = 168;
+/// Maximum rows an exact aggregate request may inspect. Callers can narrow the
+/// time window or add filters when a deployment retains more telemetry.
+pub const MAX_METRICS_MATCHING_ROWS: i64 = 250_000;
+/// Maximum values returned for each optional filter facet.
+pub const MAX_METRICS_FACETS: i64 = 1_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct UsageMetricsQuery {

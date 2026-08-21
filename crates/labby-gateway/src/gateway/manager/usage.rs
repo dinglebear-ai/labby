@@ -42,6 +42,8 @@ impl GatewayManager {
             });
         };
         let allowed_upstreams = scoped_allowed_upstreams(&scope, params.upstream.as_deref())?;
+        let timezone_offset_minutes =
+            validate_timezone_offset(params.timezone_offset_minutes.unwrap_or(0))?;
         let metrics = store
             .metrics(UsageMetricsQuery {
                 since_unix: params.since_unix,
@@ -53,10 +55,7 @@ impl GatewayManager {
                 search: params.search,
                 bucket_count: params.bucket_count.unwrap_or(0).min(MAX_METRICS_BUCKETS),
                 timezone: params.timezone,
-                timezone_offset_minutes: params
-                    .timezone_offset_minutes
-                    .unwrap_or(0)
-                    .clamp(-1440, 1440),
+                timezone_offset_minutes,
                 include_facets: params.include_facets.unwrap_or(false),
                 allowed_upstreams,
             })
@@ -224,6 +223,17 @@ impl GatewayManager {
     }
 }
 
+fn validate_timezone_offset(value: i32) -> Result<i32, ToolError> {
+    if (-1440..=1440).contains(&value) {
+        Ok(value)
+    } else {
+        Err(ToolError::InvalidParam {
+            message: "timezone_offset_minutes must be between -1440 and 1440".to_string(),
+            param: "timezone_offset_minutes".to_string(),
+        })
+    }
+}
+
 fn parse_usage_cursor(cursor: &str) -> Result<UsageCursor, ToolError> {
     let (ts, id) = cursor
         .split_once(':')
@@ -264,4 +274,17 @@ fn scoped_allowed_upstreams(
         scope.ensure_visible(upstream)?;
     }
     Ok(scope.allowlist())
+}
+
+#[cfg(test)]
+mod timezone_tests {
+    use super::validate_timezone_offset;
+
+    #[test]
+    fn timezone_offset_rejects_values_instead_of_clamping_them() {
+        assert_eq!(validate_timezone_offset(-1440).unwrap(), -1440);
+        assert_eq!(validate_timezone_offset(1440).unwrap(), 1440);
+        assert!(validate_timezone_offset(-1441).is_err());
+        assert!(validate_timezone_offset(1441).is_err());
+    }
 }
