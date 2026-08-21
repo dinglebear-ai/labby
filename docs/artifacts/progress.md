@@ -7,14 +7,14 @@ updated: 2026-08-21
 # W19 Artifact Gateway Progress
 
 Last updated: 2026-08-21
-Status: Phase 2 lifecycle/provider slice integrated through PR base `c17e6f50b`; repository main has advanced to `90d3f29bd`; PR #464 review fixes, main re-integration, and CI revalidation are in progress
+Status: Phase 2 lifecycle/provider slice integrated with current main `c17e6f50b`; PR #464 review fixes are pushed and CI revalidation is in progress
 
 ## Lane identity
 
 - Worktree: `/home/jmagar/workspace/labby-w19-artifact-gateway`
 - Branch: `codex/w19-artifact-lifecycle-20260819`
 - Initial implementation baseline: `origin/main` `0e21d0474`
-- Phase 2 implementation baseline: `origin/main` `52061b650`; current PR integration baseline: `origin/main` `c17e6f50b` merged into the branch without history rewriting; repository `origin/main` has since advanced to `90d3f29bd` through #466 and must be integrated before #464 lands
+- Phase 2 implementation baseline: `origin/main` `52061b650`; current PR integration baseline: `origin/main` `c17e6f50b` merged into the branch without history rewriting
 - Product: Labby AGPLv3 open personal Artifact + MCP/runtime Gateway
 - Hosted registry/publication authority: Depot/Bazaar
 - Crawl/enrichment authority: Axon
@@ -184,4 +184,4 @@ Adversarial review caught and fixed a content-reversion parent-cycle bug before 
 
 Final verification: focused hardened Artifact tests passed 27/27; the full `labby-runtime` all-features suite passed; Clippy passed with `-D warnings`; `RUSTFLAGS=-D warnings` all-target check passed; `cargo deny check` passed advisories, bans, licenses, and sources; the stale-head compare-and-swap regression passed; `labby docs check` reported 17 generated docs fresh; the documentation link checker verified 347 local links; rustfmt and `git diff --check` passed. The detached post-doc verifier exited `0` with `FINAL_OK`. After #463 advanced `main` to `bb30616f4`, Phase 2 rebased cleanly with zero file overlap. The post-rebase verifier then passed full `labby-runtime` tests (169 unit + 1 schema + 2 ArtifactInterchange + 11 SEP-2640 + 8 Skills contract), Clippy `-D warnings`, `RUSTFLAGS=-D warnings` all-target check, `cargo deny check`, 17 fresh generated docs, 347 local links, rustfmt, and `git diff --check`, ending with `POSTREBASE_OK`. After #459 advanced `main` again to `52061b650`, Phase 2 performed a second clean zero-overlap rebase. The second-rebase code verifier passed the same full `labby-runtime` suite, Clippy `-D warnings`, `RUSTFLAGS=-D warnings` all-target check, rustfmt, `git diff --check`, and `cargo deny check`, ending with `SECOND_REBASE_CODE_OK`.
 
-Phase 2 PR: #464, `feat(artifacts): add lifecycle planning and provider seam`. The branch integrated `main` `c17e6f50b` on 2026-08-21 without rebasing or force-pushing; repository main later advanced to `90d3f29bd` through #466, so one more main integration is required before landing. The remote PR remains open and mergeable at `3b6f3c8f14eb855276026b3540a3d94ea6c2327c`. The mandatory PR review additionally found that a deserialized `ArtifactRevisionDiff` could represent invalid ordering or kind/payload combinations even though locally generated diffs were canonical. Diff validation now bounds the change count, validates revision IDs, paths and components, requires strict path order, and enforces added/removed/modified payload invariants; focused tests and Clippy pass after the fix.
+Phase 2 PR: #464, `feat(artifacts): add lifecycle planning and provider seam`. The branch integrated current `main` `c17e6f50b` on 2026-08-21 without rebasing or force-pushing. The mandatory PR review additionally found that a deserialized `ArtifactRevisionDiff` could represent invalid ordering or kind/payload combinations even though locally generated diffs were canonical. Diff validation now bounds the change count, validates revision IDs, paths and components, requires strict path order, and enforces added/removed/modified payload invariants. The review fix is pushed at `08ded3643`; focused tests, full `labby-runtime`, Clippy, Cargo Deny, generated docs, link checks, rustfmt, and diff hygiene pass after the fix, while remote CI revalidation is in progress.
