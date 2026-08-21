@@ -106,7 +106,7 @@ def is_canonical(path: Path) -> bool:
 
 def canonical_docs() -> list[Path]:
     paths = [p for p in ROOT.rglob("*") if p.is_file() and is_canonical(p)]
-    return sorted(p for p in paths if rel(p) != "packages/labby-mcp/README.md")
+    return sorted(paths)
 
 
 def strip_link_target(raw: str) -> str:
