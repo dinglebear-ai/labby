@@ -92,3 +92,17 @@ test('fetchToolCalls honors tool, ip, and outcome filters', async () => {
   const failed = await fetchToolCalls({ window: '24h', outcome: 'failed', limit: 5000 })
   assert.ok(failed.calls.every((c) => c.outcome === 'failed'))
 })
+
+test('fetchToolCalls mock honors capability operation and subject scope filters', async () => {
+  const { fetchToolCalls } = await import('./metrics-client.ts')
+  const page = await fetchToolCalls({
+    window: '24h',
+    capability: 'tools',
+    operation: 'call_tool',
+    subject_scoped: false,
+  })
+
+  assert.ok(page.calls.every((call) => call.action === 'call_tool' && !call.subject_scoped))
+  const unsupported = await fetchToolCalls({ window: '24h', capability: 'resources' })
+  assert.equal(unsupported.filtered, 0)
+})

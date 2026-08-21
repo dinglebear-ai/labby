@@ -724,6 +724,9 @@ export async function fetchToolCalls(
     const filtered = stream.filter((record) => {
       if (query.upstream && !record.tool.startsWith(`${query.upstream}::`)) return false
       if (query.tool && record.tool !== query.tool) return false
+      if (query.capability && query.capability !== 'tools') return false
+      if (query.operation && record.action !== query.operation) return false
+      if (query.subject_scoped !== undefined && (record.subject_scoped ?? false) !== query.subject_scoped) return false
       if (query.agent && record.agent_id !== query.agent) return false
       if (query.ip && record.ip !== query.ip) return false
       if (query.error_kind && record.error_kind !== query.error_kind) return false
