@@ -1,12 +1,11 @@
 //! Local filesystem mechanics for the Artifact store.
 
+use atomic_write_file::AtomicWriteFile;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 use crate::path_safety::{
     canonicalize_and_reject_read_path, canonicalize_and_reject_write_path,
@@ -22,8 +21,6 @@ use super::validation::{
     validate_relative_path,
 };
 use super::{ArtifactError, invalid};
-
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotFile {
@@ -342,34 +339,22 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
     std::fs::create_dir_all(parent)?;
     reject_existing_symlink_ancestors(parent, path)
         .map_err(|_| ArtifactError::UnsafePath("symlink"))?;
-    let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| invalid("store_path", "non_utf8"))?;
-    let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
+    if path.exists() {
+        reject_symlink(path).map_err(|_| ArtifactError::UnsafePath("symlink"))?;
+    }
+
+    let mut output = AtomicWriteFile::open(path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt as _;
+        output
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    let mut output = options.open(&temporary)?;
     output.write_all(bytes)?;
     output.sync_all()?;
-    drop(output);
-    match std::fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(_error) if path.exists() => {
-            std::fs::remove_file(path)?;
-            std::fs::rename(&temporary, path).map_err(ArtifactError::from)
-        }
-        Err(error) => {
-            drop(std::fs::remove_file(&temporary));
-            Err(ArtifactError::Io(error))
-        }
-    }
+    output.commit()?;
+    Ok(())
 }
 
 fn apply_safe_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), ArtifactError> {

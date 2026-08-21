@@ -1,20 +1,20 @@
 ---
 title: W19 Artifact Gateway Progress
 created: 2026-08-19
-updated: 2026-08-19
+updated: 2026-08-21
 ---
 
 # W19 Artifact Gateway Progress
 
-Last updated: 2026-08-19
-Status: Phase 1 Artifact slice implemented and verified; PR #462 open; CI runner-memory stabilization under final verification
+Last updated: 2026-08-21
+Status: Phase 2 lifecycle/provider slice integrated with current main `c17e6f50b`; PR #464 review fixes are pushed and CI revalidation is in progress
 
 ## Lane identity
 
 - Worktree: `/home/jmagar/workspace/labby-w19-artifact-gateway`
-- Branch: `codex/w19-artifact-gateway-20260819`
+- Branch: `codex/w19-artifact-lifecycle-20260819`
 - Initial implementation baseline: `origin/main` `0e21d0474`
-- Current rebased baseline: `origin/main` `ea07f3609` (shared Skills compatibility facade #456 included)
+- Phase 2 implementation baseline: `origin/main` `52061b650`; current PR integration baseline: `origin/main` `c17e6f50b` merged into the branch without history rewriting
 - Product: Labby AGPLv3 open personal Artifact + MCP/runtime Gateway
 - Hosted registry/publication authority: Depot/Bazaar
 - Crawl/enrichment authority: Axon
@@ -136,7 +136,7 @@ Compilation findings already fixed:
 - warnings lint for discarded cleanup result;
 - frozen schema constant re-export for conformance tests.
 
-Phase 1 implementation is complete and PR #462 is open against `main`. The first remote repository-contract run exposed missing required frontmatter on the four new durable Artifact docs; that failure was reproduced with the exact pinned validator and fixed. After the branch rebased across the shared Skills compatibility facade (#456), remote CI exposed runner-memory SIGKILLs in Clippy, feature slices, Linux Test, and focused MCP regressions. Current `main` reproduces the same Test/MCP/gateway SIGKILL class. W19 now phase-separates ordinary `labby` target warm-up from all-target/test-harness fan-out without setting `CARGO_BUILD_JOBS` or command-local `-j 1`. The pinned fleet policy/contract, forbidden-architecture scan, Actionlint, workflow-contract assertions, format, and diff hygiene pass locally. The exact staged Clippy workflow passed status 0 with phases completing in 32.56s, 16.37s, and 1m30s. The gateway feature slice passed warm compile (1m05s), all-target compile (1m00s), and 1,272/1,272 tests with 3 skipped; the fs slice completed its warm/all-target phases and the focused proxy preflight passed 6/6 tests. No SIGKILL occurred in the staged verification.
+Phase 1 implementation is complete and merged as PR #462 at `87239104c`. The first remote repository-contract run exposed missing required frontmatter on the four new durable Artifact docs; that failure was reproduced with the exact pinned validator and fixed. After the branch rebased across the shared Skills compatibility facade (#456), remote CI exposed runner-memory SIGKILLs in Clippy, feature slices, Linux Test, and focused MCP regressions. Current `main` reproduces the same Test/MCP/gateway SIGKILL class. W19 now phase-separates ordinary `labby` target warm-up from all-target/test-harness fan-out without setting `CARGO_BUILD_JOBS` or command-local `-j 1`. The pinned fleet policy/contract, forbidden-architecture scan, Actionlint, workflow-contract assertions, format, and diff hygiene pass locally. The exact staged Clippy workflow passed status 0 with phases completing in 32.56s, 16.37s, and 1m30s. The gateway feature slice passed warm compile (1m05s), all-target compile (1m00s), and 1,272/1,272 tests with 3 skipped; the fs slice completed its warm/all-target phases and the focused proxy preflight passed 6/6 tests. No SIGKILL occurred in the staged verification.
 
 ## Adversarial review findings addressed
 
@@ -163,3 +163,25 @@ Current rebased W19 checkpoints:
 - `2e4068479` — `docs(artifacts): satisfy fleet frontmatter contract`.
 
 W19 PR: #462, `feat(artifacts): add open personal Artifact core and v1 interchange`.
+
+
+## Phase 2 lifecycle/provider checkpoint
+
+Phase 1 merged as PR #462 at `87239104c84874694748ed7135919e11a8d76d4b`. Phase 2 continues in the same W19 worktree on `codex/w19-artifact-lifecycle-20260819`, rooted directly at that merged commit.
+
+Implemented in the Phase 2 slice:
+
+- deterministic path-ordered revision diffs;
+- editable-workspace snapshots into immutable revisions;
+- exact historical revision reuse for repeated/reverted content;
+- expected-base compare-and-swap protection for mutable head transitions;
+- transport-neutral `ArtifactProvider` / `ArtifactAcquisition` contracts and a verified local-store provider;
+- provider file/package byte budgets plus exact path/size/SHA-256 verification;
+- explicit read-only update plans that retain local base, source Artifact/revision, source provenance, and the component diff without applying bytes;
+- safe cross-platform atomic JSON replacement using `atomic-write-file`, replacing the previous Windows delete-then-rename fallback while preserving Labby's symlink checks and private Unix file mode.
+
+Adversarial review caught and fixed a content-reversion parent-cycle bug before checkpointing. A snapshot now derives content identity before adding parent linkage, so returning to old content selects the exact prior immutable revision. Provider payloads were also hardened to the same local file/package budgets as imports, and mutable-head replacement no longer has a Windows visibility gap.
+
+Final verification: focused hardened Artifact tests passed 27/27; the full `labby-runtime` all-features suite passed; Clippy passed with `-D warnings`; `RUSTFLAGS=-D warnings` all-target check passed; `cargo deny check` passed advisories, bans, licenses, and sources; the stale-head compare-and-swap regression passed; `labby docs check` reported 17 generated docs fresh; the documentation link checker verified 347 local links; rustfmt and `git diff --check` passed. The detached post-doc verifier exited `0` with `FINAL_OK`. After #463 advanced `main` to `bb30616f4`, Phase 2 rebased cleanly with zero file overlap. The post-rebase verifier then passed full `labby-runtime` tests (169 unit + 1 schema + 2 ArtifactInterchange + 11 SEP-2640 + 8 Skills contract), Clippy `-D warnings`, `RUSTFLAGS=-D warnings` all-target check, `cargo deny check`, 17 fresh generated docs, 347 local links, rustfmt, and `git diff --check`, ending with `POSTREBASE_OK`. After #459 advanced `main` again to `52061b650`, Phase 2 performed a second clean zero-overlap rebase. The second-rebase code verifier passed the same full `labby-runtime` suite, Clippy `-D warnings`, `RUSTFLAGS=-D warnings` all-target check, rustfmt, `git diff --check`, and `cargo deny check`, ending with `SECOND_REBASE_CODE_OK`.
+
+Phase 2 PR: #464, `feat(artifacts): add lifecycle planning and provider seam`. The branch integrated current `main` `c17e6f50b` on 2026-08-21 without rebasing or force-pushing. The mandatory PR review additionally found that a deserialized `ArtifactRevisionDiff` could represent invalid ordering or kind/payload combinations even though locally generated diffs were canonical. Diff validation now bounds the change count, validates revision IDs, paths and components, requires strict path order, and enforces added/removed/modified payload invariants. The review fix is pushed at `08ded3643`; focused tests, full `labby-runtime`, Clippy, Cargo Deny, generated docs, link checks, rustfmt, and diff hygiene pass after the fix, while remote CI revalidation is in progress.

@@ -131,3 +131,13 @@ Artifact support therefore unifies persistence and lifecycle without weakening t
 The modern design mines mechanics without restoring product aliases. Relevant historical Labby commits include `c39bbf451` for the canonical store and advisory locking, `76adeb9f9` for import/workspace mechanics, `f33fbcfda` for SHA-256 revisions, `1564665d1` for safe export and mode handling, `f5134580a` for provider abstraction, and later deployment orchestration work for target/stage/verification/rollback concepts.
 
 Phoenix's current Artifact work contributes additional migration evidence: explicit path validation, bounded writes, content SHA-256, atomic replacement, and versioned local state. Labby extends those proven mechanics to the multi-file package domain required here.
+
+
+## Local lifecycle and provider semantics
+
+- The editable workspace is mutable working state. Snapshotting it is an explicit mutation that runs under the per-Artifact lock and selects an immutable revision.
+- Snapshot content identity is derived before parent linkage. Identical current content is a no-op; content that matches an older revision moves the head back to that exact immutable revision rather than rewriting it. Consequently, a repeated-content snapshot cannot replace the stored message, timestamp, or metadata of an existing revision.
+- Revision diffs are deterministic and path ordered, classifying each path as added, removed, or modified.
+- Artifact providers acquire exact portable metadata plus revision bytes but do not mutate the personal store or make policy decisions. Acquired files must match the portable component inventory, Labby's local file/package byte budgets, and every declared size and SHA-256 digest.
+- Update planning is read-only. A plan records the local target and base revision, exact source Artifact/revision, source provenance, and deterministic diff. Planning never changes bytes, lineage, workspace, or the local head.
+- Mutable head transitions compare the expected base revision while the Artifact lock is held. Internal JSON state is published with same-directory atomic replacement rather than a delete-then-rename fallback, and existing symlink targets remain rejected.
