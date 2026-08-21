@@ -30,6 +30,8 @@ pub use paths::{
 };
 pub use secret_files::heal_env_file_permissions;
 
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::{
@@ -49,6 +51,8 @@ static PROCESS_CODE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 static PROCESS_CODE_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static PROCESS_CODE_MODE_TEST_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 #[cfg(test)]
 pub(crate) struct ProcessCodeModeTestGuard {
@@ -60,6 +64,7 @@ pub(crate) struct ProcessCodeModeTestGuard {
 impl Drop for ProcessCodeModeTestGuard {
     fn drop(&mut self) {
         set_process_code_mode_enabled(self.previous);
+        PROCESS_CODE_MODE_TEST_OVERRIDE.store(0, Ordering::Release);
     }
 }
 
@@ -68,9 +73,11 @@ pub(crate) fn process_code_mode_test_guard() -> ProcessCodeModeTestGuard {
     let lock = PROCESS_CODE_MODE_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let previous = PROCESS_CODE_MODE_ENABLED.load(Ordering::Acquire);
+    PROCESS_CODE_MODE_TEST_OVERRIDE.store(u8::from(previous) + 1, Ordering::Release);
     ProcessCodeModeTestGuard {
         _lock: lock,
-        previous: process_code_mode_enabled(),
+        previous,
     }
 }
 
@@ -88,7 +95,21 @@ pub(crate) fn set_process_code_mode_enabled(enabled: bool) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn set_process_code_mode_enabled_for_test(enabled: bool) {
+    set_process_code_mode_enabled(enabled);
+    PROCESS_CODE_MODE_TEST_OVERRIDE.store(u8::from(enabled) + 1, Ordering::Release);
+}
+
 pub(crate) fn process_code_mode_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = match PROCESS_CODE_MODE_TEST_OVERRIDE.load(Ordering::Acquire) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    } {
+        return enabled;
+    }
     PROCESS_CODE_MODE_ENABLED.load(Ordering::Acquire)
 }
 
@@ -3675,13 +3696,13 @@ services = ["removed-service"]
     fn process_code_mode_flag_round_trips() {
         let _guard = process_code_mode_test_guard();
 
-        set_process_code_mode_enabled(true);
+        set_process_code_mode_enabled_for_test(true);
         assert!(
             process_code_mode_enabled(),
             "code_mode must be true after set_process_code_mode_enabled(true)"
         );
 
-        set_process_code_mode_enabled(false);
+        set_process_code_mode_enabled_for_test(false);
         assert!(
             !process_code_mode_enabled(),
             "code_mode must be false after set_process_code_mode_enabled(false)"
