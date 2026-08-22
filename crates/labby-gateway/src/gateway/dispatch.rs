@@ -969,7 +969,10 @@ async fn handle_mcp_actions(
                     .await?,
             )
         }
-        "gateway.mcp.list" => to_json(manager.mcp_runtime_list().await?),
+        "gateway.mcp.list" => {
+            let params: GatewayStatusParams = parse_params(params_value)?;
+            to_json(manager.mcp_runtime_list(params.name.as_deref()).await?)
+        }
         "gateway.clients.list" => to_json(manager.clients().await?),
         "gateway.mcp.disable" => {
             let params: GatewayMcpToggleParams = parse_params(params_value)?;

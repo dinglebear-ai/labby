@@ -457,7 +457,7 @@ export const gatewayApi = {
 
     const [view, runtimeRows] = await Promise.all([
       gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
-      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
+      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: id }, signal),
     ])
     return normalizeGatewaySnapshotView(
       view,

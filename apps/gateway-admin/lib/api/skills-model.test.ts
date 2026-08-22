@@ -19,7 +19,7 @@ function row(partial: Partial<UpstreamSkillsRow> & Pick<UpstreamSkillsRow, 'upst
     upstream: partial.upstream,
     enabled: partial.enabled ?? true,
     trusted: partial.trusted ?? true,
-    supports_skills: partial.supports_skills ?? true,
+    supports_skills: Object.hasOwn(partial, 'supports_skills') ? partial.supports_skills! : true,
     exposure_patterns: partial.exposure_patterns ?? null,
     skills,
     discovered_count: partial.discovered_count ?? skills.length,
@@ -31,6 +31,12 @@ function row(partial: Partial<UpstreamSkillsRow> & Pick<UpstreamSkillsRow, 'upst
     error: partial.error ?? null,
   }
 }
+
+test('a cold untrusted upstream stays out of the actionable skills queue', () => {
+  const cold = row({ upstream: 'cold', trusted: false, supports_skills: null })
+  assert.equal(filterSkillsRows([cold], '', 'attention').length, 0)
+  assert.equal(filterSkillsRows([cold], '', 'not-participating').length, 1)
+})
 
 const skill = { name: 'refunds', uri: 'skill://gh/refunds/SKILL.md', description: 'd', resource_count: 2, exposed: true }
 

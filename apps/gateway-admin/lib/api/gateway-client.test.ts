@@ -1035,6 +1035,10 @@ test('gatewayApi.get preserves side-effect-free runtime diagnostics without test
       assert.equal(gateway.status.reconciled_at, '2026-08-22T05:00:00Z')
       assert.equal(gateway.status.likely_stale_count, 1)
       assert.deepEqual(
+        requests.find((request) => request.action === 'gateway.mcp.list')?.params,
+        { name: 'Asana' },
+      )
+      assert.deepEqual(
         requests.map((request) => request.action),
         [
           'gateway.server.get',

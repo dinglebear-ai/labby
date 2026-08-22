@@ -57,6 +57,13 @@ const NAME_PARAM: ParamSpec = ParamSpec {
     description: "Gateway name",
 };
 
+const OPTIONAL_NAME_PARAM: ParamSpec = ParamSpec {
+    name: "name",
+    ty: "string",
+    required: false,
+    description: "Optional gateway name filter",
+};
+
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "help",
@@ -1352,7 +1359,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "GatewayMcpRuntimeView[]",
-        params: &[],
+        params: &[OPTIONAL_NAME_PARAM],
     },
     ActionSpec {
         name: "gateway.clients.list",
