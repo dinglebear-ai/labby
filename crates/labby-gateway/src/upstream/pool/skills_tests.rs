@@ -430,6 +430,10 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
         .collect();
     assert!(reasons.contains(&SkillRejection::ManifestMissingSkillMd));
     assert!(reasons.contains(&SkillRejection::MissingManifest));
+    assert!(skills.excluded.iter().any(|excluded| {
+        excluded.reason == SkillRejection::ManifestMissingSkillMd
+            && excluded.detail == "manifest does not include the skill's own SKILL.md"
+    }));
 }
 
 #[tokio::test]
