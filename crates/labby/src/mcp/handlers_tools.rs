@@ -19,7 +19,7 @@ use rmcp::service::RequestContext;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
-use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
+use crate::dispatch::upstream::pool::{MAX_UPSTREAM_TOOLS, mcp_tool_is_mcp_app_host_visible};
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
@@ -246,7 +246,11 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         if self.route_scope.is_root() && tool_execute_scope_allowed(auth) {
-            descriptors.push(self.registry.permanent_tools().mcp_app_tool());
+            descriptors.push(
+                self.registry
+                    .permanent_tools()
+                    .mcp_app_tool(mcp_apps_config.manager),
+            );
             advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
@@ -287,8 +291,15 @@ impl LabMcpServer {
                 .iter()
                 .filter(|(_, health)| health.is_open())
                 .count();
-            let upstream_tools = if hide_raw_tools || !self.route_scope.exposes_tools() {
+            let upstream_tools = if !self.route_scope.exposes_tools() {
                 Vec::new()
+            } else if hide_raw_tools {
+                if self.route_scope.exposes_resources() {
+                    pool.healthy_ui_tools_allowed(self.route_scope.allowed_upstreams())
+                        .await
+                } else {
+                    Vec::new()
+                }
             } else {
                 pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
                     .await
@@ -312,11 +323,17 @@ impl LabMcpServer {
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            if !hide_raw_tools
-                && self.route_scope.exposes_tools()
+            if self.route_scope.exposes_tools()
                 && let Some(oauth_subject) = oauth_subject.as_ref()
             {
-                let configs = self.route_scoped_oauth_upstream_configs().await;
+                let mut configs = self.route_scoped_oauth_upstream_configs().await;
+                if hide_raw_tools {
+                    if !self.route_scope.exposes_resources() {
+                        configs.clear();
+                    } else {
+                        configs.retain(|config| config.proxy_resources);
+                    }
+                }
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, upstream_tools) in pool
                     .cached_subject_scoped_tools_bounded(
@@ -327,6 +344,9 @@ impl LabMcpServer {
                     .await
                 {
                     for ut in upstream_tools {
+                        if hide_raw_tools && !mcp_tool_is_mcp_app_host_visible(&ut) {
+                            continue;
+                        }
                         let tool_name = ut.name.as_ref();
                         if builtin_names.contains(tool_name)
                             || !advertised_names.insert(tool_name.to_string())
@@ -511,10 +531,10 @@ pub(crate) fn code_mode_ui_description(upstreams: &[CodeModeUpstreamDescription]
     )
 }
 
-/// Description for the always-on `mcp_app` manager.
+/// Description for the always-available `mcp_app` control tool.
 #[cfg(feature = "gateway")]
 pub(crate) const fn mcp_app_tool_description() -> &'static str {
-    "Open the Labby MCP Apps manager or enable, disable, and inspect Labby-owned app surfaces. Targets include the Code Mode inspector, gateway status, server logs, Add Server, Settings, or all managed apps. The manager itself cannot be disabled."
+    "Enable, disable, and inspect Labby-owned MCP App surfaces. The control tool remains available even when its own manager UI is disabled. Targets include the manager UI, Code Mode inspector, gateway status, server logs, Add Server, Settings, or all managed apps."
 }
 
 #[cfg(feature = "gateway")]
@@ -531,7 +551,7 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                 },
                 "target": {
                     "type": "string",
-                    "enum": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"],
+                    "enum": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"],
                     "default": "codemode",
                     "description": "Legacy direct target shape. Use all for the switchboard snapshot or a bulk change."
                 },
@@ -540,7 +560,7 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                     "properties": {
                         "target": {
                             "type": "string",
-                            "enum": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"],
+                            "enum": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"],
                             "default": "codemode",
                             "description": "Labby-owned MCP App target used by the shared app host."
                         }
@@ -558,7 +578,7 @@ pub(crate) fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
 }
 
 #[cfg(feature = "gateway")]
-/// Build MCP Apps metadata for the always-on MCP App manager.
+/// Build MCP Apps metadata for the opt-in MCP App manager UI.
 pub(crate) fn mcp_app_tool_meta(tool_name: &str) -> MetaObject {
     let resource_uri = mcp_apps_app_resource_uri_for_tool(tool_name)
         .expect("MCP App manager must have an associated UI resource");

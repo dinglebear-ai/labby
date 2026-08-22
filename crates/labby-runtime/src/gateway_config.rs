@@ -95,34 +95,32 @@ fn default_mcp_scopes() -> Vec<String> {
 
 // ─── Lab-owned MCP Apps ──────────────────────────────────────────────────────
 
-/// Visibility switches for Labby-owned MCP App surfaces other than the
-/// always-on `mcp_app` manager. Code Mode keeps its existing
-/// `CodeModeConfig::mcp_ui_enabled` field for backward-compatible config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Visibility switches for Labby-owned MCP App UI surfaces. The `mcp_app`
+/// control tool stays available when its manager UI is disabled. Code Mode keeps
+/// its existing `CodeModeConfig::mcp_ui_enabled` field for backward-compatible
+/// config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct McpAppsConfig {
+    /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
+    /// The control tool itself remains available when this is false.
+    #[serde(default)]
+    pub manager: bool,
     /// Advertise the synthetic Add Server app tool and its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub add_server: bool,
     /// Attach the Server Logs app metadata and advertise its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub server_logs: bool,
     /// Advertise the synthetic Gateway Status app tool and its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub gateway_status: bool,
     /// Advertise the schema-backed Settings app tool and its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub settings: bool,
-}
-
-impl Default for McpAppsConfig {
-    fn default() -> Self {
-        Self {
-            add_server: true,
-            server_logs: true,
-            gateway_status: true,
-            settings: true,
-        }
-    }
 }
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────
@@ -195,7 +193,8 @@ pub struct CodeModeConfig {
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
     /// The text-only `codemode` executor remains available when this is false.
-    #[serde(default = "default_true")]
+    /// Labby-owned MCP Apps are opt-in, so this defaults to false.
+    #[serde(default)]
     pub mcp_ui_enabled: bool,
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
@@ -265,7 +264,7 @@ impl Default for CodeModeConfig {
         Self {
             enabled: false,
             trusted_read_only_tools: Vec::new(),
-            mcp_ui_enabled: true,
+            mcp_ui_enabled: false,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
@@ -2190,7 +2189,7 @@ client_secret_env = "SECRET"
         assert_eq!(cfg, expected);
         assert!(!cfg.enabled);
         assert!(cfg.trusted_read_only_tools.is_empty());
-        assert!(cfg.mcp_ui_enabled);
+        assert!(!cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
@@ -2209,32 +2208,34 @@ client_secret_env = "SECRET"
     }
 
     #[test]
-    fn code_mode_mcp_ui_can_be_disabled_in_toml() {
+    fn code_mode_mcp_ui_can_be_enabled_in_toml() {
         let cfg: CodeModeConfig = toml::from_str(
-            "mcp_ui_enabled = false
+            "mcp_ui_enabled = true
 ",
         )
         .unwrap();
-        assert!(!cfg.mcp_ui_enabled);
+        assert!(cfg.mcp_ui_enabled);
         assert!(!cfg.enabled);
     }
 
     #[test]
-    fn mcp_apps_config_defaults_all_managed_apps_enabled() {
+    fn mcp_apps_config_defaults_all_managed_apps_disabled() {
         let cfg: McpAppsConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, McpAppsConfig::default());
-        assert!(cfg.add_server);
-        assert!(cfg.server_logs);
-        assert!(cfg.gateway_status);
-        assert!(cfg.settings);
+        assert!(!cfg.manager);
+        assert!(!cfg.add_server);
+        assert!(!cfg.server_logs);
+        assert!(!cfg.gateway_status);
+        assert!(!cfg.settings);
     }
 
     #[test]
     fn mcp_apps_config_supports_independent_visibility_switches() {
         let cfg: McpAppsConfig = toml::from_str(
-            "add_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
+            "manager = true\nadd_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
         )
         .unwrap();
+        assert!(cfg.manager);
         assert!(!cfg.add_server);
         assert!(cfg.server_logs);
         assert!(!cfg.gateway_status);

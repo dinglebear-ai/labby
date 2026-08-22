@@ -645,7 +645,11 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if !resources.finished() && self.route_scope.is_root() && tool_execute_scope_allowed(auth) {
+        if !resources.finished()
+            && mcp_apps_config.manager
+            && self.route_scope.is_root()
+            && tool_execute_scope_allowed(auth)
+        {
             for resource in mcp_apps_app_resources() {
                 resources.accept(resource);
                 if resources.finished() {
@@ -1107,10 +1111,13 @@ impl LabMcpServer {
         // Branch 0: MCP Apps UI resources. This must precede all lab://
         // fallbacks so ui:// has its own exact lookup semantics.
         //
-        // The MCP App manager is always locally owned and must remain readable
-        // even when every managed app surface is disabled.
+        // The `mcp_app` control tool is always locally available, but its own
+        // Labby-owned UI is opt-in like every other Labby-owned MCP App.
         #[cfg(feature = "gateway")]
         if uri.starts_with(MCP_APPS_APP_URI) {
+            if !self.mcp_apps_config().await.manager {
+                return Err(unknown_resource_error(&uri, true));
+            }
             return self
                 .read_mcp_apps_app_resource_impl(&uri, &subject, start, &context)
                 .await
@@ -2047,7 +2054,7 @@ fn gateway_status_app_resources() -> Vec<Resource> {
 }
 
 #[cfg(feature = "gateway")]
-/// Build the discoverable always-on MCP App manager resource.
+/// Build the discoverable opt-in MCP App manager UI resources.
 fn mcp_apps_app_resources() -> Vec<Resource> {
     mcp_apps_app().listed_resources()
 }
@@ -2745,7 +2752,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
     }
 
     #[tokio::test]
-    async fn code_mode_keeps_upstream_ui_resources_without_advertising_callback_tools() {
+    async fn code_mode_passes_through_upstream_mcp_app_tool_and_resource() {
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
             code_mode_server_with_upstream_ui_resource().await,
@@ -2760,25 +2767,19 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             .list_tools_impl(None, tool_context)
             .await
             .expect("list tools");
-        let codemode_tool = tools
-            .tools
-            .iter()
-            .find(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
-            .expect("Code Mode UI tool should be listed");
         assert!(
-            codemode_tool
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.0["ui"]["resourceUri"].as_str())
-                .is_some_and(|uri| uri.starts_with(CODE_MODE_APP_URI_PREFIX)),
-            "Code Mode tool must keep its local UI resource: {codemode_tool:?}"
+            tools
+                .tools
+                .iter()
+                .all(|tool| tool.name.as_ref() != CODE_MODE_UI_TOOL_NAME),
+            "Labby-owned Code Mode UI must stay opt-in by default"
         );
         assert!(
             tools
                 .tools
                 .iter()
-                .all(|tool| tool.name.as_ref() != UPSTREAM_UI_TOOL_NAME),
-            "upstream callback tools must not churn the synthetic Code Mode contract"
+                .any(|tool| tool.name.as_ref() == UPSTREAM_UI_TOOL_NAME),
+            "upstream MCP App tools must pass through synthetic Code Mode"
         );
 
         let resources = running
@@ -2793,8 +2794,8 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             .collect::<Vec<_>>();
         assert!(
             uris.iter()
-                .any(|uri| strip_app_version(uri) == CODE_MODE_APP_URI),
-            "Code Mode app resource should be listed alongside upstream UI resources: {uris:?}"
+                .all(|uri| strip_app_version(uri) != CODE_MODE_APP_URI),
+            "Labby-owned Code Mode app resource must stay hidden by default: {uris:?}"
         );
         assert!(
             uris.contains(&UPSTREAM_UI_URI),
@@ -2831,24 +2832,14 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             .expect("complete upstream resource template");
         assert_eq!(completion.completion.values, vec!["sys-completion"]);
 
-        let code_mode_read = complete_resource(
-            running
-                .service()
-                .read_resource_impl(
-                    ReadResourceRequestParams::new(CODE_MODE_APP_URI),
-                    resource_context.clone(),
-                )
-                .await
-                .expect("read Code Mode UI resource"),
-        );
-        let ResourceContents::TextResourceContents {
-            text: code_mode_html,
-            ..
-        } = &code_mode_read.contents[0]
-        else {
-            panic!("expected Code Mode text resource");
-        };
-        assert!(code_mode_html.contains("Lab Code Mode Inspector"));
+        running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(CODE_MODE_APP_URI),
+                resource_context.clone(),
+            )
+            .await
+            .expect_err("disabled Labby-owned Code Mode UI resource must not be readable");
 
         let upstream_read = complete_resource(
             running
@@ -3179,6 +3170,7 @@ if (!probe.connected || !probe.healthy || !probe.empty) {{
 
         for expected in [
             "MCP Apps",
+            "id:\"manager\"",
             "Enable all",
             "Disable all",
             "role='switch'",

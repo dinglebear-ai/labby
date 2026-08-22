@@ -107,7 +107,10 @@ pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
-pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
+pub use tools::{
+    MAX_UPSTREAM_TOOLS, mcp_tool_is_mcp_app_host_visible, tool_has_mcp_app_ui_resource,
+    tool_is_mcp_app_host_visible,
+};
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
 

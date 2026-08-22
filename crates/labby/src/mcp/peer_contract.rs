@@ -21,9 +21,9 @@ use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
 #[cfg(feature = "gateway")]
-use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
-#[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::UpstreamPool;
+#[cfg(feature = "gateway")]
+use crate::dispatch::upstream::pool::{MAX_UPSTREAM_TOOLS, mcp_tool_is_mcp_app_host_visible};
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
@@ -186,8 +186,8 @@ pub(crate) struct PeerContract {
     pub(crate) gateway_manager: Option<Arc<GatewayManager>>,
     pub(crate) route_scope: McpRouteScope,
     /// Whether the optional `codemode_ui` MCP App surface is advertised. The
-    /// text-only `codemode` executor and always-on `mcp_app` manager never
-    /// depend on the inspector switch.
+    /// text-only `codemode` executor and always-available `mcp_app` control tool
+    /// never depend on the inspector switch.
     pub(crate) code_mode_app_state: CodeModeAppState,
     pub(crate) audience: PeerCatalogAudience,
 }
@@ -436,7 +436,8 @@ impl PeerContract {
 
         #[cfg(feature = "gateway")]
         if self.route_scope.is_root() && self.audience.code_mode_execute_allowed {
-            let tool = self.registry.permanent_tools().mcp_app_tool();
+            let app_visible = self.mcp_apps_config().await.manager;
+            let tool = self.registry.permanent_tools().mcp_app_tool(app_visible);
             advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
@@ -467,11 +468,21 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if !hide_raw_tools && let Some(pool) = self.current_upstream_pool().await {
+        if self.route_scope.exposes_tools()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
             let mut upstream_tool_count = 0usize;
-            let upstream_tools = pool
-                .healthy_tools_allowed(self.route_scope.allowed_upstreams())
-                .await;
+            let upstream_tools = if hide_raw_tools {
+                if self.route_scope.exposes_resources() {
+                    pool.healthy_ui_tools_allowed(self.route_scope.allowed_upstreams())
+                        .await
+                } else {
+                    Vec::new()
+                }
+            } else {
+                pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
+                    .await
+            };
             for upstream_tool in upstream_tools {
                 let name = upstream_tool.tool.name.as_ref();
                 if builtin_names.contains(name) || !advertised_names.insert(name.to_string()) {
@@ -482,13 +493,23 @@ impl PeerContract {
             }
 
             if let Some(subject) = self.audience.oauth_subject.as_deref() {
-                let configs = self.route_scoped_oauth_upstream_configs().await;
+                let mut configs = self.route_scoped_oauth_upstream_configs().await;
+                if hide_raw_tools {
+                    if !self.route_scope.exposes_resources() {
+                        configs.clear();
+                    } else {
+                        configs.retain(|config| config.proxy_resources);
+                    }
+                }
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, tools) in pool
                     .cached_subject_scoped_tools_bounded(&configs, subject, subject_tool_limit)
                     .await
                 {
                     for tool in tools {
+                        if hide_raw_tools && !mcp_tool_is_mcp_app_host_visible(&tool) {
+                            continue;
+                        }
                         let name = tool.name.as_ref();
                         if builtin_names.contains(name)
                             || !advertised_names.insert(name.to_string())

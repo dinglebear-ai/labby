@@ -389,7 +389,8 @@ impl LabMcpServer {
                     .unwrap_or("codemode");
                 if !matches!(
                     target,
-                    "codemode"
+                    "manager"
+                        | "codemode"
                         | "gateway_status"
                         | "server_logs"
                         | "add_server"
@@ -402,7 +403,7 @@ impl LabMcpServer {
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
                         &serde_json::json!({
-                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
+                            "valid": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
                         }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
@@ -497,13 +498,15 @@ impl LabMcpServer {
                     .as_ref()
                     .map_or(previous_apps, |cfg| cfg.mcp_apps);
                 let enabled = match target {
+                    "manager" => enabled_apps.manager,
                     "codemode" => enabled_code_mode,
                     "gateway_status" => enabled_apps.gateway_status,
                     "server_logs" => enabled_apps.server_logs,
                     "add_server" => enabled_apps.add_server,
                     "settings" => enabled_apps.settings,
                     "all" => {
-                        enabled_code_mode
+                        enabled_apps.manager
+                            && enabled_code_mode
                             && enabled_apps.gateway_status
                             && enabled_apps.server_logs
                             && enabled_apps.add_server
@@ -513,6 +516,7 @@ impl LabMcpServer {
                 };
                 let changed = desired.is_some()
                     && match target {
+                        "manager" => previous_apps.manager != enabled_apps.manager,
                         "codemode" => previous_code_mode != enabled_code_mode,
                         "gateway_status" => {
                             previous_apps.gateway_status != enabled_apps.gateway_status
@@ -548,6 +552,10 @@ impl LabMcpServer {
                     "text_tool": CODE_MODE_TOOL_NAME,
                     "ui_tool": CODE_MODE_UI_TOOL_NAME,
                     "apps": {
+                        "manager": {
+                            "enabled": enabled_apps.manager,
+                            "tool": MCP_APP_TOOL_NAME,
+                        },
                         "codemode": {
                             "enabled": enabled_code_mode,
                             "tool": CODE_MODE_UI_TOOL_NAME,

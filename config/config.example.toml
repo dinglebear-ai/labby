@@ -153,7 +153,7 @@
 # These are product knobs, not secrets/URLs/runtime-discovery values, so keep
 # them here rather than in .env.
 # enabled = false                         # default: false; advertises `codemode`
-# mcp_ui_enabled = true                   # default: true; advertises `codemode_ui` and its app resources
+# mcp_ui_enabled = false                  # default: false; opt in to `codemode_ui` and its app resources
 # trace_params = true                     # default: true; stores only redacted/capped call params in traces/history
 # `codemode` runs a JS async arrow function in the Javy/QuickJS sandbox with
 # in-sandbox discovery (`codemode.search()` / `codemode.describe()`), raw
@@ -171,13 +171,15 @@
 
 [mcp_apps]
 # Gateway-wide visibility switches for Labby-owned app surfaces other than the
-# always-on `mcp_app` manager. Disabling a surface removes its app advertisement
-# and UI resources; the underlying text/service capability remains available
-# where one exists. The Code Mode inspector keeps its legacy switch above.
-# add_server = true                         # default: true
-# server_logs = true                        # default: true
-# gateway_status = true                     # default: true
-# settings = true                           # default: true
+# always-available `mcp_app` control tool. Disabling a surface removes its app
+# advertisement and UI resources; the underlying text/service capability remains
+# available where one exists. The control tool remains text-only when its own UI
+# is disabled. The Code Mode inspector keeps its legacy switch above.
+# manager = false                           # default: false; opt in to the switchboard UI
+# add_server = false                        # default: false; opt in when the app is ready for your deployment
+# server_logs = false                       # default: false; underlying service tool remains available
+# gateway_status = false                    # default: false
+# settings = false                          # default: false
 
 # ── Code Mode `openapi` provider ─────────────────────────────────────────────
 #

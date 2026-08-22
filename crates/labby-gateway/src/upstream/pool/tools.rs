@@ -838,11 +838,18 @@ pub fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
     tool_mcp_app_ui_resource_uri(tool).is_some()
 }
 
-pub fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
-    if tool_has_mcp_app_ui_resource(tool) {
+pub fn mcp_tool_is_mcp_app_host_visible(tool: &rmcp::model::Tool) -> bool {
+    let owns_ui_resource = tool
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.0.get("ui"))
+        .and_then(|ui| ui.get("resourceUri"))
+        .and_then(Value::as_str)
+        .is_some_and(|uri| uri.starts_with("ui://"));
+    if owns_ui_resource {
         return true;
     }
-    let Some(meta) = tool.tool.meta.as_ref() else {
+    let Some(meta) = tool.meta.as_ref() else {
         return false;
     };
     let app_visible = meta
@@ -857,6 +864,10 @@ pub fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
         .and_then(Value::as_bool)
         == Some(true);
     app_visible || openai_widget_callback
+}
+
+pub fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
+    mcp_tool_is_mcp_app_host_visible(&tool.tool)
 }
 
 #[cfg(test)]

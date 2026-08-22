@@ -839,16 +839,19 @@ instead of one action per upstream tool. `codemode_read` accepts `lab:read`,
 `lab`, or `lab:admin` and can invoke only tools whose live descriptor explicitly
 sets `readOnlyHint: true` without a contradictory `destructiveHint: true`.
 `codemode` and the optional `codemode_ui` require `lab` or `lab:admin` and retain
-full execution authority. On the root gateway, the always-on `mcp_app` manager
-uses the same read/open scopes, while changing Labby-owned app visibility
-requires `lab:admin`. The manager is omitted from protected subset routes so a
-subset-scoped token cannot mutate gateway-global UI visibility.
+full execution authority. On the root gateway, the always-available `mcp_app`
+control tool uses the same read/open scopes, while changing Labby-owned app
+visibility requires `lab:admin`. Its own manager UI is opt-in like every other
+Labby-owned app surface. The control tool is omitted from protected subset routes
+so a subset-scoped token cannot mutate gateway-global UI visibility.
 
-Those approval-facing descriptors do not embed current upstream names, health,
-hints, or counts. Raw upstream MCP App callback descriptors are not advertised
-while synthetic Code Mode is active. Upstream churn therefore changes the live
-catalog discovered inside `codemode.search(...)` / `codemode.describe(...)`,
-not the OAuth connector's Tool JSON or action set.
+Synthetic Code Mode keeps ordinary raw upstream tools out of the approval-facing
+catalog, but upstream MCP App host-visible tools and callbacks pass through
+automatically when their upstream is allowed and its resources are proxied.
+Their `_meta.ui` bindings therefore remain usable without turning the whole raw
+upstream catalog back on. Other upstream churn remains discoverable inside
+`codemode.search(...)` / `codemode.describe(...)` without expanding the host
+Tool JSON.
 
 ## Auth Precedence
 

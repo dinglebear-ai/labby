@@ -261,14 +261,18 @@ impl PermanentToolRegistry {
     /// client-side error in strict SDKs.
     #[cfg(feature = "gateway")]
     #[must_use]
-    pub(crate) fn mcp_app_tool(&self) -> Tool {
-        Tool::new(
+    pub(crate) fn mcp_app_tool(&self, app_visible: bool) -> Tool {
+        let tool = Tool::new(
             MCP_APP_TOOL_NAME,
             mcp_app_tool_description(),
             mcp_app_tool_schema(),
         )
-        .with_annotations(mcp_app_annotations())
-        .with_meta(mcp_app_tool_meta(MCP_APP_TOOL_NAME))
+        .with_annotations(mcp_app_annotations());
+        if app_visible {
+            tool.with_meta(mcp_app_tool_meta(MCP_APP_TOOL_NAME))
+        } else {
+            tool
+        }
     }
 
     /// Descriptor for the Add Server admin app tool.
@@ -592,14 +596,14 @@ mod tests {
         // mcp_app returns `{"kind": "mcp_app_control", …}`, not the dispatch
         // envelope — advertising the envelope schema would be a lie strict
         // clients enforce.
-        assert!(registry.mcp_app_tool().output_schema.is_none());
+        assert!(registry.mcp_app_tool(true).output_schema.is_none());
         // codemode_ui carries the trace schema, not the envelope schema.
         let ui_schema = registry.code_mode_ui_tool(&[]).output_schema;
         assert!(ui_schema.is_some());
         assert_ne!(ui_schema, registry.add_server_tool().output_schema);
 
         let cases = [
-            (registry.mcp_app_tool(), false, false, true, false),
+            (registry.mcp_app_tool(true), false, false, true, false),
             (registry.add_server_tool(), false, true, false, true),
             (registry.gateway_status_tool(), true, false, true, false),
             (registry.code_mode_ui_tool(&[]), false, true, false, true),
@@ -654,7 +658,7 @@ mod tests {
             .map(|service| permanent.builtin_service_tool(service, true))
             .collect();
         descriptors.extend([
-            permanent.mcp_app_tool(),
+            permanent.mcp_app_tool(true),
             permanent.add_server_tool(),
             permanent.gateway_status_tool(),
             permanent.code_mode_descriptor(&[]),

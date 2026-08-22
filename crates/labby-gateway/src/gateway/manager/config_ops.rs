@@ -530,12 +530,14 @@ impl GatewayManager {
         let durable_previous = self.load_config_for_mutation().await?;
         let mut cfg = durable_previous.clone();
         match target {
+            "manager" => cfg.mcp_apps.manager = enabled,
             "codemode" => cfg.code_mode.mcp_ui_enabled = enabled,
             "gateway_status" => cfg.mcp_apps.gateway_status = enabled,
             "server_logs" => cfg.mcp_apps.server_logs = enabled,
             "add_server" => cfg.mcp_apps.add_server = enabled,
             "settings" => cfg.mcp_apps.settings = enabled,
             "all" => {
+                cfg.mcp_apps.manager = enabled;
                 cfg.code_mode.mcp_ui_enabled = enabled;
                 cfg.mcp_apps.gateway_status = enabled;
                 cfg.mcp_apps.server_logs = enabled;
@@ -577,6 +579,7 @@ impl GatewayManager {
             action = "gateway.mcp_apps.set",
             target,
             enabled,
+            manager = current.mcp_apps.manager,
             code_mode = current.code_mode.mcp_ui_enabled,
             add_server = current.mcp_apps.add_server,
             server_logs = current.mcp_apps.server_logs,

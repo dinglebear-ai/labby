@@ -113,17 +113,21 @@ inspect the current route-scoped tool catalog.
 
 ### Labby MCP App manager
 
-The root gateway also advertises `mcp_app`, an always-on MCP App switchboard
-for Labby's own UI surfaces. It manages `codemode`, `gateway_status`,
-`server_logs`, `add_server`, `settings`, or `all`. The default target remains `codemode` for
-backward compatibility with the original inspector-only control contract.
+The root gateway always advertises the `mcp_app` control tool, but its own MCP
+App UI is opt-in. The tool manages `manager`, `codemode`, `gateway_status`,
+`server_logs`, `add_server`, `settings`, or `all`. Every Labby-owned app surface
+is opt-in and defaults off; the text-only control tool remains available so an
+administrator can enable exactly the surfaces they want, including the manager UI
+itself. The default target remains `codemode` for backward compatibility with the
+original inspector-only control contract.
 
 Reading status or opening the manager requires `lab` or `lab:admin`; changing
-visibility requires `lab:admin`. The manager is intentionally unavailable on
-protected subset routes because these switches mutate gateway-global state, and
-the manager itself cannot be disabled. Changes are persisted and publish both
-`tools/list_changed` and `resources/list_changed` without rebuilding the
-upstream pool.
+visibility requires `lab:admin`. The `mcp_app` control tool is intentionally
+unavailable on protected subset routes because these switches mutate
+gateway-global state, and the control tool itself cannot be disabled. Its UI metadata and `ui://` resource
+can be disabled independently like the other Labby-owned app surfaces. Changes
+are persisted and publish both `tools/list_changed` and
+`resources/list_changed` without rebuilding the upstream pool.
 
 Disabling a surface removes its app tool/metadata and owned `ui://` resources,
 and direct reads of a disabled owned resource fail as unknown. It does not tear
@@ -134,11 +138,12 @@ disabling Settings leaves the underlying `setup` service contract intact. The
 Code Mode inspector retains the existing `code_mode.mcp_ui_enabled` setting;
 the other switches live under `[mcp_apps]`.
 
-Synthetic Code Mode advertises only the fixed Lab-owned UI action surface. It
-does not add or remove raw upstream MCP App tools as upstream health changes.
-An upstream widget returned by a Code Mode call may still render through its
-resource URI, but its raw callback tools are not added to the approval-facing
-`tools/list` contract.
+Synthetic Code Mode keeps ordinary raw upstream tools hidden, but upstream MCP
+Apps pass through automatically. When an allowed upstream proxies resources,
+Labby preserves its MCP-App host-visible tools and callbacks in `tools/list`,
+keeps their `_meta.ui` metadata intact, and proxies their native `ui://`
+resources. This passthrough is independent of the Labby-owned app toggles; route
+allowlists and `proxy_resources = false` still fail closed.
 
 Code Mode may call exposed upstream MCP tools only. Lab actions are not callable
 from inside its sandbox. Large upstream results must be projected or sliced

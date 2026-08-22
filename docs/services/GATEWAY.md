@@ -210,15 +210,21 @@ Root-gateway clients with `lab` or `lab:admin` also receive the always-on
 `mcp_app` tool bound to `ui://lab/apps/manage`. Its UI is the recovery
 switchboard for Labby's own app surfaces: Code Mode Inspector, Gateway Status,
 Server Logs, and Add Server. Status reads require `lab` or `lab:admin`;
-enable/disable mutations require `lab:admin`. The manager is intentionally not
-advertised on protected subset routes and cannot disable itself.
+enable/disable mutations require `lab:admin`. The `mcp_app` control tool is
+intentionally omitted from protected subset routes. Its own manager UI can be
+disabled, but the text-only control tool remains available on the root gateway.
 
 The Code Mode Inspector keeps its compatibility switch at
 `code_mode.mcp_ui_enabled`. The other visibility switches are
-`mcp_apps.gateway_status`, `mcp_apps.server_logs`, and
-`mcp_apps.add_server`, all defaulting to `true`. App-only mutations persist
-without rebuilding the upstream pool and publish both tool and resource
-list-changed notifications.
+`mcp_apps.manager`, `mcp_apps.gateway_status`, `mcp_apps.server_logs`,
+`mcp_apps.add_server`, and `mcp_apps.settings`. Every Labby-owned app surface
+defaults to `false` and must be explicitly enabled. The `mcp_app` control tool
+remains available without UI metadata so an administrator can inspect or restore
+any app, including its own manager UI. App-only mutations persist without
+rebuilding the upstream pool and publish both tool and resource list-changed
+notifications. Upstream MCP Apps are not governed by these switches: allowed
+upstream MCP-App tools/callbacks, `_meta.ui` metadata, and `ui://` resources pass
+through automatically when that upstream proxies resources.
 
 ### Add Server MCP App
 

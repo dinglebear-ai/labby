@@ -13,7 +13,7 @@ pub struct CodeModeAppState {
 
 impl Default for CodeModeAppState {
     fn default() -> Self {
-        Self::new(true)
+        Self::new(false)
     }
 }
 
@@ -41,6 +41,11 @@ impl CodeModeAppState {
 #[cfg(test)]
 mod tests {
     use super::CodeModeAppState;
+
+    #[test]
+    fn default_state_is_opt_in() {
+        assert!(!CodeModeAppState::default().is_enabled());
+    }
 
     #[test]
     fn cloned_handles_share_state() {
