@@ -805,7 +805,7 @@ impl LabMcpServer {
                         };
                         if synthetic_action == "refresh" {
                             manager
-                                .refresh_gateway_status_catalog(&enrichment_scope)
+                                .refresh_gateway_status_catalog(&enrichment_scope, None)
                                 .await;
                         }
                         crate::dispatch::gateway::dispatch_with_manager_scoped(

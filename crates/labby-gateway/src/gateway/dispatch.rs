@@ -1,6 +1,9 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+#[cfg(feature = "skills")]
+use futures::{StreamExt, stream};
+
 use crate::dispatch_helpers::{action_schema, handle_builtin, help_payload, require_str, to_json};
 #[cfg(feature = "skills")]
 use crate::upstream::pool::OperatorSkills;
@@ -762,6 +765,9 @@ async fn handle_gateway_actions(
         }
         "gateway.status" => {
             let params: GatewayStatusParams = parse_params(params_value)?;
+            manager
+                .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
+                .await;
             to_json(manager.status(params.name.as_deref()).await?)
         }
         "gateway.client_config.get" => {
@@ -1109,28 +1115,35 @@ async fn handle_skills_list(
             message: "gateway runtime is unavailable; start or reconnect `labby serve`, then retry `gateway.skills.list`".to_string(),
         });
     };
-    let mut rows = Vec::new();
-    for config in cfg.upstream {
-        if let Some(filter) = params.upstream.as_deref()
-            && config.name != filter
-        {
-            continue;
-        }
-
-        let fallback_support = pool
-            .cached_upstream_summary(&config.name)
-            .await
-            .and_then(|summary| summary.supports_skills);
-        let (supports_skills, projection, truncated, age_secs, error) =
-            match pool.upstream_skills_operator(&config).await {
+    let configs = cfg
+        .upstream
+        .into_iter()
+        .filter(|config| {
+            params
+                .upstream
+                .as_ref()
+                .is_none_or(|filter| config.name == *filter)
+        })
+        .collect::<Vec<_>>();
+    let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+        cfg.gateway.upstream_discovery_concurrency,
+    );
+    let mut inspections = stream::iter(configs.into_iter().map(|config| {
+        let pool = pool.clone();
+        async move {
+            let fallback_support = pool
+                .cached_upstream_summary(&config.name)
+                .await
+                .and_then(|summary| summary.supports_skills);
+            let inspection = match pool.upstream_skills_operator(&config).await {
                 Ok(operator) => {
-                    let projection = project_operator_skills(&operator);
+                    let refresh_error = pool.upstream_skills_last_error(&config.name).await;
                     (
                         operator.supports_skills.or(fallback_support),
-                        projection,
+                        project_operator_skills(&operator),
                         operator.truncated,
                         operator.age_secs,
-                        None,
+                        refresh_error,
                     )
                 }
                 Err(error) => (
@@ -1141,7 +1154,15 @@ async fn handle_skills_list(
                     Some(error),
                 ),
             };
+            (config, inspection)
+        }
+    }))
+    .buffered(concurrency);
 
+    let mut rows = Vec::new();
+    while let Some((config, (supports_skills, projection, truncated, age_secs, error))) =
+        inspections.next().await
+    {
         if let Some(error) = error.as_deref() {
             tracing::warn!(
                 surface = "dispatch",

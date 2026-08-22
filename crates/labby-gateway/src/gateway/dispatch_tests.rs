@@ -1935,7 +1935,7 @@ async fn gateway_server_get_returns_custom_gateway_row() {
 }
 
 #[tokio::test]
-async fn gateway_list_is_snapshot_only_until_status_refresh() {
+async fn gateway_list_and_mcp_runtime_are_snapshot_only_until_status_refresh() {
     let server = MockServer::start().await;
     let responder = DashboardCatalogResponder::default();
     Mock::given(wiremock::matchers::method("POST"))
@@ -1992,8 +1992,21 @@ async fn gateway_list_is_snapshot_only_until_status_refresh() {
     assert_eq!(row["exposed_tool_count"], 0);
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 0);
 
+    let runtime_value = dispatch_with_manager(&manager, "gateway.mcp.list", json!({}))
+        .await
+        .expect("runtime snapshot");
+    let runtime_row = runtime_value
+        .as_array()
+        .expect("runtime array")
+        .iter()
+        .find(|item| item["name"] == "dashboard-http")
+        .expect("runtime row");
+    assert_eq!(runtime_row["discovered_tool_count"], 0);
+    assert_eq!(runtime_row["exposed_tool_count"], 0);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 0);
+
     manager
-        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
         .await;
     let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))
         .await
@@ -2006,6 +2019,19 @@ async fn gateway_list_is_snapshot_only_until_status_refresh() {
         .expect("dashboard row");
     assert_eq!(refreshed_row["discovered_tool_count"], 1);
     assert_eq!(refreshed_row["exposed_tool_count"], 1);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+
+    let refreshed_runtime = dispatch_with_manager(&manager, "gateway.mcp.list", json!({}))
+        .await
+        .expect("refreshed runtime snapshot");
+    let refreshed_runtime_row = refreshed_runtime
+        .as_array()
+        .expect("runtime array")
+        .iter()
+        .find(|item| item["name"] == "dashboard-http")
+        .expect("runtime row");
+    assert_eq!(refreshed_runtime_row["discovered_tool_count"], 1);
+    assert_eq!(refreshed_runtime_row["exposed_tool_count"], 1);
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
 }
 
@@ -2066,7 +2092,7 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 0);
 
     manager
-        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
         .await;
     let initial = dispatch_with_manager(&manager, "gateway.list", json!({}))
         .await
@@ -2094,17 +2120,28 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     manager
-        .refresh_gateway_status_catalog(&GatewayEnrichmentScope {
-            route_visible_upstreams: Some(std::collections::BTreeSet::from([
-                "different-upstream".to_string()
-            ])),
-            oauth_subject: None,
-        })
+        .refresh_gateway_status_catalog(
+            &GatewayEnrichmentScope::default(),
+            Some("different-upstream"),
+        )
         .await;
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     manager
-        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .refresh_gateway_status_catalog(
+            &GatewayEnrichmentScope {
+                route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                    "different-upstream".to_string(),
+                ])),
+                oauth_subject: None,
+            },
+            None,
+        )
+        .await;
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
         .await;
 
     let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))

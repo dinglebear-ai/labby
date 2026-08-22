@@ -31,7 +31,11 @@ export function LoadoutsPageContent() {
     error: gatewaysError,
   } = useGatewaySnapshots(formOpen)
   const { data: services = [] } = useSupportedServices()
-  const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
+  const {
+    data: protectedRoutes = [],
+    isLoading: protectedRoutesLoading,
+    error: protectedRoutesError,
+  } = useProtectedMcpRoutes()
   const { addLoadout, patchLoadout, removeLoadout, stageLoadoutUpdate, stageLoadoutRemove } = useGatewayMutations()
 
   const gatewayOptions = useMemo(() => gateways.filter(g => g.source !== 'in_process' && g.transport !== 'in_process').map(g => ({ value: g.name, label: g.name, meta: g.config.url ?? g.config.command ?? g.transport })), [gateways])
@@ -57,6 +61,7 @@ export function LoadoutsPageContent() {
     <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={AURORA_PAGE_FRAME}>
       <ConsoleHero eyebrow="Control Plane" pulse={loadouts.length ? { color: 'var(--aurora-success)', label: loadouts.length + ' configured' } : undefined} title="Loadouts" stats={stats} actions={<Button size="sm" onClick={() => { setEditing(null); setFormOpen(true) }}><Plus className="size-4" />Add Loadout</Button>} />
       <DashboardPanel title="Reusable capability projections" icon={<ShieldCheck className="size-4" />} action={<Button variant="outline" size="sm" asChild><Link href="/gateway">Mount on a route</Link></Button>}><p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Loadouts define reusable projections; they do not create an endpoint by themselves. Mount one on an enabled protected MCP route to make it callable. Per-upstream exposure policies remain enforced underneath.</p></DashboardPanel>
+      {protectedRoutesError && <div role="alert" className="rounded-lg border border-destructive/35 bg-destructive/10 px-3 py-2 text-sm text-aurora-text-primary">Could not verify protected route mounts. Editing and removal are disabled to prevent applying the wrong update mode. {getErrorMessage(protectedRoutesError, 'Protected routes failed to load')}</div>}
       {pendingRestartCount > 0 && <div className="rounded-lg border border-aurora-warning/35 bg-aurora-warning/10 px-3 py-2 text-sm text-aurora-text-primary">{pendingRestartCount} Loadout change{pendingRestartCount === 1 ? ' is' : 's are'} saved for restart. Running protected routes still use their startup projections.</div>}
       {isLoading ? <DashboardPanel title="Loadouts" icon={<Loader2 className="size-4 animate-spin" />}><span className={AURORA_MUTED_LABEL}>Loading Loadouts…</span></DashboardPanel>
       : error ? <DashboardPanel title="Loadouts" icon={<ShieldCheck className="size-4 text-destructive" />}><span className={AURORA_CARD_TITLE}>Could not load Loadouts</span><p className={AURORA_DENSE_META}>{getErrorMessage(error, 'Gateway Loadout request failed')}</p></DashboardPanel>
@@ -64,7 +69,8 @@ export function LoadoutsPageContent() {
       : <div className="grid gap-3 xl:grid-cols-2">{loadouts.map(loadout => {
         const mounts = mountedBy.get(loadout.name) ?? []
         const caps = LOADOUT_CAPABILITIES.filter(([key]) => loadout[key])
-        return <DashboardPanel key={loadout.name} title={loadout.name} icon={<Boxes className="size-4" />} meta={loadout.restart_required ? 'restart required' : mounts.length ? mounts.length + ' route' + (mounts.length === 1 ? '' : 's') : 'unmounted'} action={<div className="flex gap-1"><Button variant="ghost" size="icon-sm" aria-label={'Edit ' + loadout.name} disabled={loadout.pending_operation === 'remove'} onClick={() => { setEditing(loadout); setFormOpen(true) }}><Pencil className="size-3.5" /></Button><Button variant="ghost" size="icon-sm" aria-label={'Remove ' + loadout.name} disabled={loadout.pending_operation === 'remove'} onClick={() => setDeleting(loadout)}><Trash2 className="size-3.5" /></Button></div>}>
+        const routeStateUnavailable = protectedRoutesLoading || Boolean(protectedRoutesError)
+        return <DashboardPanel key={loadout.name} title={loadout.name} icon={<Boxes className="size-4" />} meta={loadout.restart_required ? 'restart required' : mounts.length ? mounts.length + ' route' + (mounts.length === 1 ? '' : 's') : protectedRoutesLoading ? 'checking mounts' : 'unmounted'} action={<div className="flex gap-1"><Button variant="ghost" size="icon-sm" aria-label={'Edit ' + loadout.name} disabled={routeStateUnavailable || loadout.pending_operation === 'remove'} onClick={() => { setEditing(loadout); setFormOpen(true) }}><Pencil className="size-3.5" /></Button><Button variant="ghost" size="icon-sm" aria-label={'Remove ' + loadout.name} disabled={routeStateUnavailable || loadout.pending_operation === 'remove'} onClick={() => setDeleting(loadout)}><Trash2 className="size-3.5" /></Button></div>}>
           {loadout.description && <p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{loadout.description}</p>}
           <div className="flex flex-wrap gap-2">{loadout.restart_required && <Badge variant="outline" className="border-aurora-warning/50 text-aurora-warning">Restart · {loadout.pending_operation ?? 'update'}</Badge>}{caps.map(([key, label, , Icon]) => <Badge key={key} variant="secondary" className="gap-1"><Icon className="size-3" />{label}</Badge>)}</div>
           <div className="grid gap-3 sm:grid-cols-2"><div><p className={AURORA_MUTED_LABEL}>Upstreams</p><div className="mt-1 flex flex-wrap gap-1.5">{loadout.upstreams.length ? loadout.upstreams.map(name => <Badge key={name} variant="outline">{name}</Badge>) : <span className={AURORA_DENSE_META}>None</span>}</div></div><div><p className={AURORA_MUTED_LABEL}>Lab services</p><div className="mt-1 flex flex-wrap gap-1.5">{loadout.services.length ? loadout.services.map(name => <Badge key={name} variant="outline">{name}</Badge>) : <span className={AURORA_DENSE_META}>None</span>}</div></div></div>

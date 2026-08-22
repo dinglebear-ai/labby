@@ -138,11 +138,12 @@ async function normalizeGatewaySnapshotView(
   view: BackendGatewayView,
   includeDiscovery: boolean,
   signal?: AbortSignal,
+  runtime?: BackendGatewayMcpRuntimeView,
 ): Promise<Gateway> {
   const discovery = includeDiscovery
     ? await fetchDiscovery(view.config.name, signal)
     : { tools: [], resources: [], prompts: [] }
-  return normalizeGateway(view, probeStatusFromRuntime(view.runtime), discovery, undefined)
+  return normalizeGateway(view, probeStatusFromRuntime(view.runtime), discovery, runtime)
 }
 
 async function findServerView(id: string, signal?: AbortSignal): Promise<BackendServerView> {
@@ -454,8 +455,16 @@ export const gatewayApi = {
       return normalizeLabServiceServer(serverView, signal)
     }
 
-    const view = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    return normalizeGatewaySnapshotView(view, true, signal)
+    const [view, runtimeRows] = await Promise.all([
+      gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
+      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
+    ])
+    return normalizeGatewaySnapshotView(
+      view,
+      true,
+      signal,
+      runtimeRows.find((runtime) => runtime.name === id),
+    )
   },
 
   async create(input: CreateGatewayInput, signal?: AbortSignal): Promise<Gateway> {

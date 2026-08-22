@@ -140,3 +140,22 @@ test('rejections are grouped into plain-language remediation buckets', () => {
   assert.match(groups[0]?.guidance ?? '', /SEP-2640/)
   assert.equal(groups[1]?.label, 'Invalid skill URI')
 })
+
+test('every backend rejection code has specific remediation guidance', () => {
+  const reasons = [
+    'invalid_skill_uri',
+    'invalid_frontmatter',
+    'missing_manifest',
+    'invalid_digest',
+    'manifest_uri_out_of_namespace',
+    'manifest_missing_skill_md',
+    'manifest_duplicate_uri',
+    'manifest_too_large',
+  ]
+  for (const reason of reasons) {
+    const [group] = groupSkillRejections([{ reason, uri: 'skill://fixture/SKILL.md' }])
+    assert.ok(group)
+    assert.notEqual(group.label, reason.replaceAll('_', ' '))
+    assert.notEqual(group.guidance, 'Review the validation detail and correct the upstream manifest before refreshing.')
+  }
+})

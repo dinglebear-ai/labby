@@ -73,8 +73,6 @@ test('gatewayApi.create sends confirm=true with destructive gateway adds', async
   await withGatewayFetch(
     {
       'gateway.add': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -92,6 +90,12 @@ test('gatewayApi.create sends confirm=true with destructive gateway adds', async
         requests.find((request) => request.action === 'gateway.add')?.params.confirm,
         true,
       )
+      assert.deepEqual(requests.map((request) => request.action), [
+        'gateway.add',
+        'gateway.discovered_tools',
+        'gateway.discovered_resources',
+        'gateway.discovered_prompts',
+      ])
     },
   )
 })
@@ -143,8 +147,6 @@ test('gatewayApi.create adds a stdio gateway without any ack flag', async () => 
           proxy_resources: false,
         },
       }),
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -172,8 +174,6 @@ test('gatewayApi.create sends pasted bearer tokens as a separate payload field',
   await withGatewayFetch(
     {
       'gateway.add': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -216,8 +216,6 @@ test('gatewayApi.update sends confirm=true with destructive gateway updates', as
   await withGatewayFetch(
     {
       'gateway.update': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -238,6 +236,12 @@ test('gatewayApi.update sends confirm=true with destructive gateway updates', as
         requests.find((request) => request.action === 'gateway.update')?.params.confirm,
         true,
       )
+      assert.deepEqual(requests.map((request) => request.action), [
+        'gateway.update',
+        'gateway.discovered_tools',
+        'gateway.discovered_resources',
+        'gateway.discovered_prompts',
+      ])
     },
   )
 })
@@ -254,8 +258,6 @@ test('gatewayApi.update updates a stdio gateway without any ack flag', async () 
           proxy_resources: false,
         },
       }),
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -286,8 +288,6 @@ test('gatewayApi.update sends pasted bearer tokens as a separate payload field',
   await withGatewayFetch(
     {
       'gateway.update': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -753,7 +753,7 @@ test('gatewayApi.hydrateRuntime treats gateway.mcp.list as authoritative runtime
         },
       ],
     },
-    async () => {
+    async (requests) => {
       const [gateway] = await gatewayApi.hydrateRuntime([
         {
           id: 'google-drive',
@@ -790,6 +790,7 @@ test('gatewayApi.hydrateRuntime treats gateway.mcp.list as authoritative runtime
       assert.equal(gateway?.status.discovered_tool_count, 0)
       assert.equal(gateway?.status.exposed_tool_count, 0)
       assert.equal(gateway?.status.runtime_state_path, '/home/labby/.labby/config.runtime.json')
+      assert.deepEqual(requests.map((request) => request.action), ['gateway.mcp.list'])
     },
   )
 })
@@ -985,7 +986,7 @@ test('gatewayApi.get applies virtual-server MCP policy to in-process tool exposu
   )
 })
 
-test('gatewayApi.get uses targeted cached state without testing or hydrating the fleet', async () => {
+test('gatewayApi.get preserves side-effect-free runtime diagnostics without testing the gateway', async () => {
   await withGatewayFetch(
     {
       'gateway.server.get': () => ({
@@ -1011,17 +1012,34 @@ test('gatewayApi.get uses targeted cached state without testing or hydrating the
       'gateway.discovered_tools': () => [],
       'gateway.discovered_resources': () => [],
       'gateway.discovered_prompts': () => [],
+      'gateway.mcp.list': () => [{
+        name: 'Asana',
+        connected: false,
+        pid: 4242,
+        pgid: 4240,
+        age_seconds: 90,
+        origin: 'gateway_pool',
+        runtime_state_path: '/tmp/gateway.runtime.json',
+        reconciled_at: '2026-08-22T05:00:00Z',
+        likely_stale_count: 1,
+      }],
     },
     async (requests) => {
       const gateway = await gatewayApi.get('Asana')
 
       assert.equal(gateway.name, 'Asana')
       assert.equal(gateway.status.connected, false)
+      assert.equal(gateway.status.pid, 4242)
+      assert.equal(gateway.status.pgid, 4240)
+      assert.equal(gateway.status.runtime_state_path, '/tmp/gateway.runtime.json')
+      assert.equal(gateway.status.reconciled_at, '2026-08-22T05:00:00Z')
+      assert.equal(gateway.status.likely_stale_count, 1)
       assert.deepEqual(
         requests.map((request) => request.action),
         [
           'gateway.server.get',
           'gateway.get',
+          'gateway.mcp.list',
           'gateway.discovered_tools',
           'gateway.discovered_resources',
           'gateway.discovered_prompts',
