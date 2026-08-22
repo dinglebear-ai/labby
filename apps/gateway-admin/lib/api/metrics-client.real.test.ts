@@ -47,7 +47,10 @@ test('fetchDashboardMetrics uses complete-window aggregate analytics without raw
       ? metrics({ window_total_calls: 48_649, total_calls: 48_649, error_calls: 12, timeseries: Array.from({ length: 24 }, (_, index) => ({ ts_unix: 1_800_000_000 + index * 3600, calls: index === 0 ? 4_000 : index === 23 ? 1_000 : 0, failed: 0 })) })
       : {
           kind: 'server_logs',
-          entries: [{ timestamp: new Date(Date.now() - 1000).toISOString(), level: 'INFO', target: 'labby', message: 'dispatch ok', service: 'gateway', action: 'gateway.list', kind: null, file: 'labby.jsonl', fields: { surface: 'api', input_tokens: 10, output_tokens: 20 } }],
+          // Keep the fixture comfortably inside the 24-hour window. A one-second
+          // offset can cross the fetcher's captured `now` under a heavily loaded
+          // CI runner, causing a valid entry to be discarded as future-dated.
+          entries: [{ timestamp: new Date(Date.now() - 60_000).toISOString(), level: 'INFO', target: 'labby', message: 'dispatch ok', service: 'gateway', action: 'gateway.list', kind: null, file: 'labby.jsonl', fields: { surface: 'api', input_tokens: 10, output_tokens: 20 } }],
           matched: 1, scanned_lines: 1, malformed_lines: 0, scanned_bytes: 100, max_scan_bytes: 1000, truncated: false,
         }
     return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
