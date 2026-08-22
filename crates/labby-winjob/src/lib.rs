@@ -56,7 +56,7 @@
 //!
 //! ## Handle representation
 //!
-//! [`JobObject`] is an opaque, non-cloneable RAII owner. Internally it stores
+//! `JobObject` is an opaque, non-cloneable RAII owner. Internally it stores
 //! the raw `HANDLE` value as `NonZeroIsize`, which remains `Send + Sync` without
 //! exposing a copyable handle or requiring unsafe trait implementations.
 //!
