@@ -14,7 +14,7 @@ details there and keep this file focused on rules for editing `.github/`.
   credentials fail open to bare Cargo.
 - Release builds, container images, Incus images, publishing, signing, and
   attestations run only from `release.published` events on GitHub-hosted
-  x86_64 runners.
+  runners.
 - Native Windows CI is GitHub-hosted and advisory to the stable `ci-gate`.
 - External actions and reusable workflows are pinned to full commit SHAs.
 - Fleet contract callers must pass the same exact workflows commit as
@@ -78,8 +78,10 @@ so publication stays a human decision. Do not make any workflow publish a draft
 release; `release.yml` asserts it was invoked from an already-published release.
 `release-publish-reminder.yml` only surfaces pending drafts as an issue.
 
-The supported artifacts are Linux x86_64 and Windows x86_64 only. Do not add
-other architectures, emulation, cross-platform image matrices, or QEMU setup.
+ARM64 workflow, installer, and package contracts are explicitly enabled for
+Labby through the pinned fleet policy and repository contract. Keep that opt-in
+visible when adding ARM64 jobs or artifacts; QEMU and cross-platform emulation
+still require a deliberate implementation and verification plan.
 
 ## Editing rules
 
@@ -110,7 +112,7 @@ other architectures, emulation, cross-platform image matrices, or QEMU setup.
   `crates/labby/tests/ci_changed_paths.rs`, and `docs/runtime/CICD.md` when a
   workflow contract changes.
 - Run Actionlint, focused workflow contract tests, the central fleet policy and
-  fleet contract, the forbidden-architecture scan, and `git diff --check`
+  fleet contract, the architecture-policy scan, and `git diff --check`
   before committing.
 
 `AGENTS.md` and `GEMINI.md` in this directory must remain symlinks to this file.
