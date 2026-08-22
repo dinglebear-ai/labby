@@ -1,9 +1,12 @@
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 /** @type {import('next').NextConfig} */
 const allowedDevOrigins = ['127.0.0.1', 'localhost']
 const dirname = path.dirname(fileURLToPath(import.meta.url))
+const deploymentId = process.env.NEXT_DEPLOYMENT_ID
+  ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dirname, encoding: 'utf8' }).trim()
 
 if (process.env.LAB_ALLOWED_DEV_ORIGINS) {
   for (const origin of process.env.LAB_ALLOWED_DEV_ORIGINS.split(',')) {
@@ -16,6 +19,7 @@ if (process.env.LAB_ALLOWED_DEV_ORIGINS) {
 
 const nextConfig = {
   output: 'export',
+  deploymentId,
   turbopack: {
     root: dirname,
   },
