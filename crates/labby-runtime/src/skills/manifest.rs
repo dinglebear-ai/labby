@@ -55,6 +55,13 @@ pub enum SkillRejection {
     ManifestTooLarge,
 }
 
+/// Operator-safe detail for one rejected skill candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRejectionDetail {
+    pub reason: SkillRejection,
+    pub detail: String,
+}
+
 impl SkillRejection {
     /// Short, stable, log-safe reason code.
     #[must_use]
@@ -89,64 +96,105 @@ pub struct ValidatedSkill {
 /// must never sink the whole upstream, so callers exclude the skill, count the
 /// cause, and carry on.
 pub fn validate_skill_entry(entry: &SkillEntry) -> Result<ValidatedSkill, SkillRejection> {
-    let uri = parse_skill_resource_uri(&entry.uri).map_err(|_| SkillRejection::InvalidSkillUri)?;
-    // Take an owned name so the borrow of `uri` ends before it is moved into
-    // the returned `ValidatedSkill`.
-    let name = {
-        let (_, name) = uri
-            .skill_md_parts()
-            .ok_or(SkillRejection::InvalidSkillUri)?;
-        name.to_string()
-    };
+    validate_skill_entry_detailed(entry).map_err(|rejection| rejection.reason)
+}
 
-    validate_frontmatter(&entry.frontmatter, Some(&name))
-        .map_err(|_| SkillRejection::InvalidFrontmatter)?;
+/// Validate one skill while retaining the exact schema rule that failed.
+pub fn validate_skill_entry_detailed(
+    entry: &SkillEntry,
+) -> Result<ValidatedSkill, SkillRejectionDetail> {
+    let reject = |reason, detail: String| SkillRejectionDetail { reason, detail };
+    let uri = parse_skill_resource_uri(&entry.uri).map_err(|_| {
+        reject(
+            SkillRejection::InvalidSkillUri,
+            "skill URI does not satisfy the required structure".into(),
+        )
+    })?;
+    let (skill_path, name) = uri.skill_md_parts().ok_or_else(|| {
+        reject(
+            SkillRejection::InvalidSkillUri,
+            "URI must identify a SKILL.md file".into(),
+        )
+    })?;
+    let skill_path = skill_path.to_string();
+    let name = name.to_string();
 
-    let resources = entry
-        .resources
-        .as_ref()
-        .ok_or(SkillRejection::MissingManifest)?;
+    validate_frontmatter(&entry.frontmatter, Some(&name)).map_err(|error| {
+        let detail = match error {
+            ToolError::Sdk { message, .. } => message,
+            other => other.to_string(),
+        };
+        reject(SkillRejection::InvalidFrontmatter, detail)
+    })?;
+
+    let resources = entry.resources.as_ref().ok_or_else(|| {
+        reject(
+            SkillRejection::MissingManifest,
+            "resources manifest is missing".into(),
+        )
+    })?;
     if resources.len() > MAX_RESOURCES_PER_SKILL {
-        return Err(SkillRejection::ManifestTooLarge);
+        return Err(reject(
+            SkillRejection::ManifestTooLarge,
+            format!("resources manifest exceeds {MAX_RESOURCES_PER_SKILL} entries"),
+        ));
     }
 
     // Everything in the manifest must sit under the skill's own directory, which
     // is the entry URI with the trailing `/SKILL.md` removed.
-    let (skill_path, _) = uri
-        .skill_md_parts()
-        .ok_or(SkillRejection::InvalidSkillUri)?;
     let skill_root = format!("{skill_path}/");
     let canonical_entry_uri = uri.to_uri();
 
     let mut seen = BTreeSet::new();
     let mut has_skill_md = false;
     for resource in resources {
-        parse_digest(&resource.digest).map_err(|_| SkillRejection::InvalidDigest)?;
+        parse_digest(&resource.digest).map_err(|_| {
+            reject(
+                SkillRejection::InvalidDigest,
+                "manifest resource digest must be canonical sha256".into(),
+            )
+        })?;
 
         // Reject before the prefix test so a malformed URI cannot slip through
         // on a lucky string match.
-        let resource_uri = parse_skill_resource_uri(&resource.uri)
-            .map_err(|_| SkillRejection::ManifestUriOutOfNamespace)?;
+        let resource_uri = parse_skill_resource_uri(&resource.uri).map_err(|_| {
+            reject(
+                SkillRejection::ManifestUriOutOfNamespace,
+                "manifest resource URI does not satisfy the required structure".into(),
+            )
+        })?;
         // Now that any scheme is accepted, a manifest could otherwise name a
         // file under a *different* scheme and still satisfy the prefix test on
         // some other axis. Every file of a skill lives in that skill's
         // directory, which means one scheme per skill.
         if resource_uri.scheme() != uri.scheme() {
-            return Err(SkillRejection::ManifestUriOutOfNamespace);
+            return Err(reject(
+                SkillRejection::ManifestUriOutOfNamespace,
+                "manifest resource uses a different URI scheme".into(),
+            ));
         }
         if !resource_uri.full_path().starts_with(&skill_root) {
-            return Err(SkillRejection::ManifestUriOutOfNamespace);
+            return Err(reject(
+                SkillRejection::ManifestUriOutOfNamespace,
+                "manifest resource is outside the skill directory".into(),
+            ));
         }
         let canonical_resource_uri = resource_uri.to_uri();
         if !seen.insert(canonical_resource_uri.clone()) {
-            return Err(SkillRejection::ManifestDuplicateUri);
+            return Err(reject(
+                SkillRejection::ManifestDuplicateUri,
+                "manifest contains a duplicate resource URI".into(),
+            ));
         }
         if canonical_resource_uri == canonical_entry_uri {
             has_skill_md = true;
         }
     }
     if !has_skill_md {
-        return Err(SkillRejection::ManifestMissingSkillMd);
+        return Err(reject(
+            SkillRejection::ManifestMissingSkillMd,
+            "manifest does not include the skill's own SKILL.md".into(),
+        ));
     }
 
     Ok(ValidatedSkill {
@@ -389,6 +437,41 @@ mod tests {
             validate_skill_entry(&entry),
             Err(SkillRejection::InvalidFrontmatter)
         );
+    }
+
+    #[test]
+    fn detailed_rejection_preserves_the_frontmatter_schema_violation() {
+        let mut entry = valid_entry();
+        entry.frontmatter.insert(
+            "allowed-tools".to_string(),
+            serde_json::json!(["Read", "Write"]),
+        );
+
+        let rejection = validate_skill_entry_detailed(&entry).unwrap_err();
+
+        assert_eq!(rejection.reason, SkillRejection::InvalidFrontmatter);
+        assert_eq!(
+            rejection.detail,
+            "frontmatter `allowed-tools` must be a space-separated string"
+        );
+    }
+
+    #[test]
+    fn detailed_rejection_does_not_echo_hostile_uri_or_digest_input() {
+        let secret_uri = "skill://labby/secret-token?credential=hunter2";
+        let mut entry = valid_entry();
+        entry.uri = secret_uri.to_string();
+
+        let rejection = validate_skill_entry_detailed(&entry).unwrap_err();
+        assert_eq!(rejection.reason, SkillRejection::InvalidSkillUri);
+        assert!(!rejection.detail.contains(secret_uri));
+        assert!(!rejection.detail.contains("hunter2"));
+
+        let mut entry = valid_entry();
+        entry.resources.as_mut().unwrap()[0].digest = "secret-algorithm:hunter2".into();
+        let rejection = validate_skill_entry_detailed(&entry).unwrap_err();
+        assert_eq!(rejection.reason, SkillRejection::InvalidDigest);
+        assert!(!rejection.detail.contains("hunter2"));
     }
 
     #[test]

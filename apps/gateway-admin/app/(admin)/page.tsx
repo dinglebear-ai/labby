@@ -139,7 +139,7 @@ export default function OverviewPage() {
             data-mobile-stack="1"
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+              gridTemplateColumns: 'minmax(0, 1fr)',
               gap: 12,
               minWidth: 0,
               alignItems: 'start',

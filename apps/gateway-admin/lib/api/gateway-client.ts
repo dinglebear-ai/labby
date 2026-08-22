@@ -444,13 +444,10 @@ export const gatewayApi = {
     }
 
     const view = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
-      view,
-      true,
-      runtimeRows.find((row) => row.name === view.config.name),
-      signal,
-    )
+    // The detail page already performs a targeted probe and discovery below.
+    // Do not hydrate the fleet-wide runtime catalog here: gateway.mcp.list can
+    // cold-connect every configured upstream just to render one server.
+    return normalizeGatewayView(view, true, undefined, signal)
   },
 
   async create(input: CreateGatewayInput, signal?: AbortSignal): Promise<Gateway> {

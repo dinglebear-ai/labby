@@ -19,6 +19,7 @@ export interface UpstreamSkill {
 export interface UpstreamSkillRejection {
   uri: string
   reason: string
+  detail?: string
 }
 
 export interface UpstreamSkillsRow {

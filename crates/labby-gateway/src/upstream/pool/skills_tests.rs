@@ -423,7 +423,11 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
     assert_eq!(skills.skills.len(), 1);
     assert_eq!(skills.skills[0].name, "alpha");
     assert_eq!(skills.excluded_count(), 2);
-    let reasons: Vec<SkillRejection> = skills.excluded.iter().map(|(r, _)| *r).collect();
+    let reasons: Vec<SkillRejection> = skills
+        .excluded
+        .iter()
+        .map(|excluded| excluded.reason)
+        .collect();
     assert!(reasons.contains(&SkillRejection::ManifestMissingSkillMd));
     assert!(reasons.contains(&SkillRejection::MissingManifest));
 }

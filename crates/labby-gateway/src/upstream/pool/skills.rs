@@ -61,6 +61,7 @@ pub struct OperatorSkill {
 pub struct OperatorSkillRejection {
     pub reason: String,
     pub uri: String,
+    pub detail: String,
 }
 
 /// Operator-only skills snapshot. Unlike the downstream view, this retains
@@ -68,6 +69,7 @@ pub struct OperatorSkillRejection {
 #[derive(Debug, Clone, Default)]
 pub struct OperatorSkills {
     pub supports_skills: Option<bool>,
+    pub discovered_count: usize,
     pub skills: Vec<OperatorSkill>,
     pub rejected: Vec<OperatorSkillRejection>,
     pub truncated: bool,
@@ -145,9 +147,10 @@ impl UpstreamPool {
             .catalog
             .excluded
             .iter()
-            .map(|(reason, uri)| OperatorSkillRejection {
-                reason: reason.as_str().to_string(),
-                uri: uri.clone(),
+            .map(|excluded| OperatorSkillRejection {
+                reason: excluded.reason.as_str().to_string(),
+                uri: excluded.uri.clone(),
+                detail: excluded.detail.clone(),
             })
             .collect();
 
@@ -156,6 +159,7 @@ impl UpstreamPool {
                 .cached_upstream_summary(&config.name)
                 .await
                 .and_then(|summary| summary.supports_skills),
+            discovered_count: exposed.catalog.discovered_count,
             skills,
             rejected,
             truncated: exposed.truncated,
@@ -253,11 +257,11 @@ impl UpstreamPool {
                         catalog_entry.skill_names = skill_names;
                     }
                 }
-                for (reason, uri) in &excluded {
+                for excluded in &excluded {
                     tracing::warn!(
                         upstream = %config.name,
-                        reason = reason.as_str(),
-                        skill = %super::helpers::redact_resource_uri_for_logging(uri),
+                        reason = excluded.reason.as_str(),
+                        skill = %super::helpers::redact_resource_uri_for_logging(&excluded.uri),
                         "excluded an upstream skill at ingest"
                     );
                 }

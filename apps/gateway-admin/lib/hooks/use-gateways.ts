@@ -360,14 +360,18 @@ export const CODE_MODE_CONFIG_KEY = '/gateway-code-mode-config'
 export const LOADOUTS_KEY = '/gateway-loadouts'
 export const PROTECTED_MCP_ROUTES_KEY = '/gateway-protected-mcp-routes'
 
+export function gatewaysRequestKey(enabled: boolean): string | null {
+  return enabled ? GATEWAYS_KEY : null
+}
+
 async function refreshGatewayCache(id?: string, extraKeys: string[] = []) {
   const keys = [GATEWAYS_KEY, ...(id ? [gatewayKey(id)] : []), ...extraKeys]
   await Promise.all(keys.map((key) => mutate(key)))
 }
 
 // Hooks
-export function useGateways() {
-  const configured = useSWR<Gateway[]>(GATEWAYS_KEY, fetchGateways, {
+export function useGateways(enabled = true) {
+  const configured = useSWR<Gateway[]>(gatewaysRequestKey(enabled), fetchGateways, {
     revalidateOnFocus: false,
     fallbackData: USE_MOCK_DATA ? getMockGatewaysFallback() : undefined,
     revalidateOnMount: !USE_MOCK_DATA,

@@ -73,6 +73,10 @@ mod resources_exposure_tests;
 mod resources_list;
 mod resources_read;
 mod skills;
+#[cfg(all(test, feature = "skills"))]
+pub(crate) use skills::OperatorSkillRejection;
+#[cfg(feature = "skills")]
+pub(crate) use skills::OperatorSkills;
 mod skills_cache;
 mod skills_list;
 mod skills_tests;

@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import { BookOpen, Boxes, Cable, Loader2, Pencil, Plus, ShieldCheck, Trash2, Wrench } from 'lucide-react'
 import { toast } from 'sonner'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
@@ -16,15 +17,18 @@ import { cn, getErrorMessage } from '@/lib/utils'
 import { LOADOUT_CAPABILITIES, LoadoutFormDialog } from './loadout-form-dialog'
 
 export function LoadoutsPageContent() {
-  const { data: loadouts = [], isLoading, error } = useLoadouts()
-  const { data: gateways = [] } = useGateways()
-  const { data: services = [] } = useSupportedServices()
-  const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
-  const { addLoadout, patchLoadout, removeLoadout, stageLoadoutUpdate, stageLoadoutRemove } = useGatewayMutations()
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<GatewayLoadout | null>(null)
   const [deleting, setDeleting] = useState<GatewayLoadout | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const { data: loadouts = [], isLoading, error } = useLoadouts()
+  // Gateway configuration is only needed to populate the add/edit dialog. A full
+  // gateway list can cold-connect many stdio upstreams, so do not hydrate the
+  // fleet merely to render the Loadouts overview.
+  const { data: gateways = [] } = useGateways(formOpen)
+  const { data: services = [] } = useSupportedServices()
+  const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
+  const { addLoadout, patchLoadout, removeLoadout, stageLoadoutUpdate, stageLoadoutRemove } = useGatewayMutations()
 
   const gatewayOptions = useMemo(() => gateways.filter(g => g.source !== 'in_process' && g.transport !== 'in_process').map(g => ({ value: g.name, label: g.name, meta: g.config.url ?? g.config.command ?? g.transport })), [gateways])
   const serviceOptions = useMemo(() => services.map(s => ({ value: s.key, label: s.display_name, meta: s.description })), [services])
@@ -48,7 +52,7 @@ export function LoadoutsPageContent() {
     <AppHeader breadcrumbs={[{ label: 'Loadouts' }]} />
     <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={AURORA_PAGE_FRAME}>
       <ConsoleHero eyebrow="Control Plane" pulse={loadouts.length ? { color: 'var(--aurora-success)', label: loadouts.length + ' configured' } : undefined} title="Loadouts" stats={stats} actions={<Button size="sm" onClick={() => { setEditing(null); setFormOpen(true) }}><Plus className="size-4" />Add Loadout</Button>} />
-      <DashboardPanel title="Reusable capability projections" icon={<ShieldCheck className="size-4" />}><p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Loadouts narrow which upstreams and Lab services are visible and gate Tools, Resources, Prompts, Agent Skills, and Code Mode. Per-upstream exposure policies remain enforced underneath.</p></DashboardPanel>
+      <DashboardPanel title="Reusable capability projections" icon={<ShieldCheck className="size-4" />} action={<Button variant="outline" size="sm" asChild><Link href="/gateway">Mount on a route</Link></Button>}><p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Loadouts define reusable projections; they do not create an endpoint by themselves. Mount one on an enabled protected MCP route to make it callable. Per-upstream exposure policies remain enforced underneath.</p></DashboardPanel>
       {pendingRestartCount > 0 && <div className="rounded-lg border border-aurora-warning/35 bg-aurora-warning/10 px-3 py-2 text-sm text-aurora-text-primary">{pendingRestartCount} Loadout change{pendingRestartCount === 1 ? ' is' : 's are'} saved for restart. Running protected routes still use their startup projections.</div>}
       {isLoading ? <DashboardPanel title="Loadouts" icon={<Loader2 className="size-4 animate-spin" />}><span className={AURORA_MUTED_LABEL}>Loading Loadouts…</span></DashboardPanel>
       : error ? <DashboardPanel title="Loadouts" icon={<ShieldCheck className="size-4 text-destructive" />}><span className={AURORA_CARD_TITLE}>Could not load Loadouts</span><p className={AURORA_DENSE_META}>{getErrorMessage(error, 'Gateway Loadout request failed')}</p></DashboardPanel>

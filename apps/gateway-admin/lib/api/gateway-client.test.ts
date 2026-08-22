@@ -984,3 +984,57 @@ test('gatewayApi.get applies virtual-server MCP policy to in-process tool exposu
     },
   )
 })
+
+test('gatewayApi.get loads one custom server without hydrating the fleet runtime catalog', async () => {
+  await withGatewayFetch(
+    {
+      'gateway.server.get': () => ({
+        id: 'Asana',
+        name: 'Asana',
+        source: 'custom_gateway',
+      }),
+      'gateway.get': () => ({
+        config: {
+          name: 'Asana',
+          url: 'https://mcp.asana.com/v2/mcp',
+          enabled: true,
+        },
+        runtime: {
+          tool_count: 0,
+          resource_count: 0,
+          prompt_count: 0,
+          exposed_tool_count: 0,
+          exposed_resource_count: 0,
+          exposed_prompt_count: 0,
+        },
+      }),
+      'gateway.test': () => ({
+        name: 'Asana',
+        connected: false,
+        healthy: false,
+        last_error: 'OAuth reauthorization required',
+      }),
+      'gateway.discovered_tools': () => [],
+      'gateway.discovered_resources': () => [],
+      'gateway.discovered_prompts': () => [],
+    },
+    async (requests) => {
+      const gateway = await gatewayApi.get('Asana')
+
+      assert.equal(gateway.name, 'Asana')
+      assert.equal(gateway.status.connected, false)
+      assert.deepEqual(
+        requests.map((request) => request.action),
+        [
+          'gateway.server.get',
+          'gateway.get',
+          'gateway.test',
+          'gateway.discovered_tools',
+          'gateway.discovered_resources',
+          'gateway.discovered_prompts',
+        ],
+      )
+      assert.equal(requests.some((request) => request.action === 'gateway.mcp.list'), false)
+    },
+  )
+})

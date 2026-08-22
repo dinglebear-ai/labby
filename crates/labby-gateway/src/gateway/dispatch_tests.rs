@@ -16,6 +16,30 @@ use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
+#[cfg(feature = "skills")]
+#[test]
+fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
+    let operator = OperatorSkills {
+        discovered_count: 2,
+        rejected: vec![crate::upstream::pool::OperatorSkillRejection {
+            uri: "skill://labby/rejected/SKILL.md".into(),
+            reason: "invalid_frontmatter".into(),
+            detail: "frontmatter `allowed-tools` must be a space-separated string".into(),
+        }],
+        ..OperatorSkills::default()
+    };
+
+    let projection = project_operator_skills(&operator);
+
+    assert_eq!(projection.discovered_count, 2);
+    assert!(projection.skills.is_empty());
+    assert_eq!(projection.rejected[0]["reason"], "invalid_frontmatter");
+    assert_eq!(
+        projection.rejected[0]["detail"],
+        "frontmatter `allowed-tools` must be a space-separated string"
+    );
+}
+
 #[derive(Clone)]
 struct DashboardCatalogResponder {
     discover_requests: std::sync::Arc<AtomicUsize>,

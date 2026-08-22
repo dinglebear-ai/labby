@@ -50,6 +50,29 @@ type LoadState =
   | { kind: 'unavailable'; detail: string }
   | { kind: 'error'; detail: string }
 
+export function RejectedSkillsList({ rejected }: { rejected: UpstreamSkillsRow['rejected'] }) {
+  if (rejected.length === 0) return null
+  return (
+    <DashboardPanel
+      title="Rejected Skills"
+      icon={<AlertTriangle className="size-4 text-amber-500" />}
+      meta={`${rejected.length}`}
+    >
+      <ul className="flex flex-col gap-2">
+        {rejected.map((item) => (
+          <li key={`${item.reason}:${item.uri}`} className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">{item.reason}</Badge>
+              <code className={AURORA_DENSE_META}>{item.uri}</code>
+            </div>
+            {item.detail ? <span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{item.detail}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </DashboardPanel>
+  )
+}
+
 /** Icon and tone per row status, so severity reads before the text does. */
 function statusPresentation(status: SkillsRowStatus) {
   switch (status) {
@@ -211,6 +234,9 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
               Labby records whether an upstream advertises the Agent Skills extension without trusting
               its instructions. Only upstreams with <code>proxy_skills</code> enabled are enumerated, and
               <code>expose_skills</code> controls which validated skills are republished downstream.
+              Validation follows the pinned SEP-2640 Agent Skills contract: <code>allowed-tools</code> is a
+              space-separated string, metadata values are strings, descriptions are capped at 1,024 characters,
+              and a skill manifest is capped at 64 resources.
             </p>
           </DashboardPanel>
 
@@ -344,24 +370,7 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
                 </DashboardPanel>
               )}
 
-              {selectedRow.rejected.length > 0 && (
-                <DashboardPanel
-                  title="Rejected Skills"
-                  icon={<AlertTriangle className="size-4 text-amber-500" />}
-                  meta={`${selectedRow.rejected.length}`}
-                >
-                  <ul className="flex flex-col gap-2">
-                    {selectedRow.rejected.map((item) => (
-                      <li key={`${item.reason}:${item.uri}`} className="flex flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
-                          <Badge variant="outline">{item.reason}</Badge>
-                          <code className={AURORA_DENSE_META}>{item.uri}</code>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </DashboardPanel>
-              )}
+              <RejectedSkillsList rejected={selectedRow.rejected} />
             </>
           )}
 
