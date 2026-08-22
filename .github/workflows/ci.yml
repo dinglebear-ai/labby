@@ -29,9 +29,10 @@ env:
 jobs:
   fleet-policy:
     name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@218eba19f15cc13554d26fa131309cfa8141fd67
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@b2813662ca27ca8868752fb353d9dd568f2f97f9
     with:
       release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
+      allow-arm64: true
 
   # The fleet repository contract runs once, from repository-contract.yml (the
   # required "Repository Contract" gate with `secrets: inherit`). Do not add a

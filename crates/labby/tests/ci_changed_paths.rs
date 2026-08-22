@@ -1195,7 +1195,7 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(!release.contains("registry.modelcontextprotocol.io"));
     let registry = fs::read_to_string(repo_root().join(".github/workflows/mcp-registry.yml"))
         .expect("read MCP Registry workflow");
-    assert!(registry.contains("mcp-registry-publish.yml@218eba19f15cc13554d26fa131309cfa8141fd67"));
+    assert!(registry.contains("mcp-registry-publish.yml@b2813662ca27ca8868752fb353d9dd568f2f97f9"));
     assert!(!registry.contains("auth-method:"));
     assert!(registry.contains("manifest-path: server.json"));
     assert!(registry.contains("MCP_PRIVATE_KEY"));

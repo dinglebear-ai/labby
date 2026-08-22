@@ -183,6 +183,12 @@ land the required code/tests and the baseline update together.
   - Heavy release work starts only from a published stable GitHub release
   - Release Linux jobs use GitHub-hosted x86_64 runners; native Windows artifacts use GitHub-hosted Windows
 
+The pinned fleet policy and repository contract set `allow-arm64: true` for
+Labby. This removes the former fleet-wide ARM64 token rejection while keeping
+the shared workflows' default x86_64-only for callers that do not opt in. The
+current release matrix remains the support matrix below until ARM64 jobs and
+artifacts are added and verified.
+
 ## Linux runner farm
 
 All fast Linux jobs run on the self-hosted farm. Rust jobs select
