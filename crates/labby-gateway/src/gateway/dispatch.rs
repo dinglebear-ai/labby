@@ -1109,10 +1109,6 @@ async fn handle_skills_list(
             message: "gateway runtime is unavailable; start or reconnect `labby serve`, then retry `gateway.skills.list`".to_string(),
         });
     };
-    manager
-        .warm_mcp_runtime_catalog_bounded(&cfg, Some(pool.as_ref()), "gateway.skills.list")
-        .await;
-
     let mut rows = Vec::new();
     for config in cfg.upstream {
         if let Some(filter) = params.upstream.as_deref()

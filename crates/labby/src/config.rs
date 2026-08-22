@@ -629,7 +629,6 @@ impl LabConfig {
             }
             route.backend_mcp_path = default_mcp_path();
         }
-        validate_gateway_subset_paths_are_unique(&self.protected_mcp_routes)?;
         Ok(())
     }
 }
@@ -652,28 +651,6 @@ fn normalize_string_list(
     Ok(())
 }
 
-fn validate_gateway_subset_paths_are_unique(
-    routes: &[ProtectedMcpRouteConfig],
-) -> Result<(), ConfigError> {
-    let mut paths = std::collections::HashSet::new();
-    for route in routes
-        .iter()
-        .filter(|route| route.enabled && route.is_gateway_subset())
-    {
-        if !paths.insert(route.public_path.clone()) {
-            return Err(ConfigError::InvalidProtectedRoute {
-                name: route.name.clone(),
-                field: "public_path",
-                value: format!(
-                    "gateway_subset routes must use unique public_path values; `{}` is already mounted",
-                    route.public_path
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 fn validate_protected_mcp_routes_for_startup(cfg: &LabConfig) -> Result<(), ConfigError> {
     let mut names = std::collections::HashSet::new();
     let mut enabled_keys = std::collections::HashSet::new();
@@ -689,7 +666,6 @@ fn validate_protected_mcp_routes_for_startup(cfg: &LabConfig) -> Result<(), Conf
         .map(|service| service.name)
         .collect();
 
-    validate_gateway_subset_paths_are_unique(&cfg.protected_mcp_routes)?;
     for route in &cfg.protected_mcp_routes {
         validate_protected_mcp_route_for_startup(route, &upstream_names, &service_names)?;
         if !names.insert(route.name.trim().to_string()) {
@@ -3443,7 +3419,7 @@ upstreams = ["gateway-alpha", " "]
     }
 
     #[test]
-    fn protected_route_rejects_duplicate_gateway_subset_public_paths() {
+    fn protected_route_allows_same_gateway_subset_path_on_different_hosts() {
         let toml = r#"
 [[protected_mcp_routes]]
 name = "media-a"
@@ -3465,12 +3441,10 @@ upstreams = ["gateway-alpha"]
 "#;
 
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
-        let err = cfg
-            .normalize_protected_mcp_routes()
-            .expect_err("duplicate gateway_subset public_path must fail");
-
-        assert!(err.to_string().contains("public_path"));
-        assert!(err.to_string().contains("gateway_subset"));
+        cfg.normalize_protected_mcp_routes()
+            .expect("host and path together identify a protected route");
+        cfg.validate()
+            .expect("same subset path on distinct hosts is valid");
     }
 
     #[test]

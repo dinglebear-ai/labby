@@ -1935,7 +1935,7 @@ async fn gateway_server_get_returns_custom_gateway_row() {
 }
 
 #[tokio::test]
-async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
+async fn gateway_list_is_snapshot_only_until_status_refresh() {
     let server = MockServer::start().await;
     let responder = DashboardCatalogResponder::default();
     Mock::given(wiremock::matchers::method("POST"))
@@ -1988,8 +1988,24 @@ async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
         .find(|item| item["id"] == "dashboard-http")
         .expect("dashboard row");
 
-    assert_eq!(row["discovered_tool_count"], 1);
-    assert_eq!(row["exposed_tool_count"], 1);
+    assert_eq!(row["discovered_tool_count"], 0);
+    assert_eq!(row["exposed_tool_count"], 0);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 0);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .await;
+    let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("refreshed list");
+    let refreshed_row = refreshed
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(refreshed_row["discovered_tool_count"], 1);
+    assert_eq!(refreshed_row["exposed_tool_count"], 1);
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
 }
 
@@ -2046,7 +2062,22 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
         .iter()
         .find(|item| item["id"] == "dashboard-http")
         .expect("dashboard row");
-    assert_eq!(first_row["discovered_tool_count"], 1);
+    assert_eq!(first_row["discovered_tool_count"], 0);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 0);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .await;
+    let initial = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("initial refreshed list");
+    let initial_row = initial
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(initial_row["discovered_tool_count"], 1);
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     responder.tool_count.store(3, Ordering::SeqCst);

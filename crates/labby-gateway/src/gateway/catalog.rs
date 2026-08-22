@@ -81,7 +81,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.list",
-        description: "List configured gateways",
+        description: "List configured gateways using the current cached runtime snapshot without connecting upstreams",
         destructive: false,
         requires_admin: true,
         returns: "ServerView[]",
@@ -1348,7 +1348,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.mcp.list",
-        description: "List upstream MCP runtime state, discovery counts, and likely stale process counts",
+        description: "List the current upstream MCP runtime snapshot, discovery counts, and likely stale process counts without connecting upstreams",
         destructive: false,
         requires_admin: true,
         returns: "GatewayMcpRuntimeView[]",

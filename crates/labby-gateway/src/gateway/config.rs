@@ -568,22 +568,6 @@ pub fn insert_protected_mcp_route(
             existing_id: route.name.clone(),
         });
     }
-    if route.enabled
-        && route.is_gateway_subset()
-        && cfg.protected_mcp_routes.iter().any(|existing| {
-            existing.enabled
-                && existing.is_gateway_subset()
-                && existing.public_path == route.public_path
-        })
-    {
-        return Err(ToolError::Conflict {
-            message: format!(
-                "gateway_subset protected MCP route for {} already exists",
-                route.public_path
-            ),
-            existing_id: route.name.clone(),
-        });
-    }
     cfg.protected_mcp_routes.push(route.clone());
     validate_protected_route_loadout_references(cfg)?;
     Ok(route)
@@ -637,27 +621,6 @@ pub fn update_protected_mcp_route(
             existing_id: route.name.clone(),
         });
     }
-    if route.enabled
-        && route.is_gateway_subset()
-        && cfg
-            .protected_mcp_routes
-            .iter()
-            .enumerate()
-            .any(|(existing_index, existing)| {
-                existing_index != index
-                    && existing.enabled
-                    && existing.is_gateway_subset()
-                    && existing.public_path == route.public_path
-            })
-    {
-        return Err(ToolError::Conflict {
-            message: format!(
-                "gateway_subset protected MCP route for {} already exists",
-                route.public_path
-            ),
-            existing_id: route.name.clone(),
-        });
-    }
     cfg.protected_mcp_routes[index] = route.clone();
     validate_protected_route_loadout_references(cfg)?;
     Ok(route)
@@ -681,7 +644,6 @@ pub fn remove_protected_mcp_route(
 pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Result<(), ToolError> {
     let mut names = std::collections::HashSet::new();
     let mut enabled_keys = std::collections::HashSet::new();
-    let mut enabled_gateway_subset_paths = std::collections::HashSet::new();
     for route in routes {
         validate_protected_mcp_route(route)?;
         if !names.insert(route.name.clone()) {
@@ -703,17 +665,6 @@ pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Resu
                     message: format!(
                         "duplicate enabled protected MCP route for {}{}",
                         route.public_host, route.public_path
-                    ),
-                    param: "public_path".to_string(),
-                });
-            }
-            if route.is_gateway_subset()
-                && !enabled_gateway_subset_paths.insert(route.public_path.clone())
-            {
-                return Err(ToolError::InvalidParam {
-                    message: format!(
-                        "duplicate enabled gateway_subset protected MCP route for {}",
-                        route.public_path
                     ),
                     param: "public_path".to_string(),
                 });

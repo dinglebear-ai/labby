@@ -906,7 +906,7 @@ fn insert_protected_route_rejects_duplicate_enabled_host_path() {
 }
 
 #[test]
-fn insert_protected_route_rejects_duplicate_gateway_subset_path_across_hosts() {
+fn insert_protected_route_allows_duplicate_gateway_subset_path_across_hosts() {
     let mut cfg = GatewayConfig::default();
     insert_protected_mcp_route(
         &mut cfg,
@@ -914,28 +914,22 @@ fn insert_protected_route_rejects_duplicate_gateway_subset_path_across_hosts() {
     )
     .expect("first");
 
-    let err = insert_protected_mcp_route(
+    insert_protected_mcp_route(
         &mut cfg,
         sample_gateway_subset_route("media-b", "/ops", "mcp-b.example.com"),
     )
-    .expect_err("scoped MCP router is mounted by path, so duplicate subset paths fail");
-
-    assert_eq!(err.kind(), "conflict");
-    assert!(err.to_string().contains("gateway_subset"));
+    .expect("host and path together identify the protected route");
 }
 
 #[test]
-fn validate_protected_route_rejects_duplicate_gateway_subset_path_across_hosts() {
+fn validate_protected_route_allows_duplicate_gateway_subset_path_across_hosts() {
     let routes = vec![
         sample_gateway_subset_route("media-a", "/ops", "mcp-a.example.com"),
         sample_gateway_subset_route("media-b", "/ops", "mcp-b.example.com"),
     ];
 
-    let err = validate_protected_mcp_routes(&routes)
-        .expect_err("static scoped MCP router cannot mount duplicate subset paths");
-
-    assert_eq!(err.kind(), "invalid_param");
-    assert!(err.to_string().contains("gateway_subset"));
+    validate_protected_mcp_routes(&routes)
+        .expect("host and path together identify the protected route");
 }
 
 #[test]

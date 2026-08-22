@@ -11,7 +11,7 @@ import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AURORA_CARD_TITLE, AURORA_DENSE_META, AURORA_MUTED_LABEL, AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
-import { useGateways, useGatewayMutations, useLoadouts, useProtectedMcpRoutes, useSupportedServices } from '@/lib/hooks/use-gateways'
+import { useGatewaySnapshots, useGatewayMutations, useLoadouts, useProtectedMcpRoutes, useSupportedServices } from '@/lib/hooks/use-gateways'
 import type { GatewayLoadout } from '@/lib/types/gateway'
 import { cn, getErrorMessage } from '@/lib/utils'
 import { LOADOUT_CAPABILITIES, LoadoutFormDialog } from './loadout-form-dialog'
@@ -25,7 +25,11 @@ export function LoadoutsPageContent() {
   // Gateway configuration is only needed to populate the add/edit dialog. A full
   // gateway list can cold-connect many stdio upstreams, so do not hydrate the
   // fleet merely to render the Loadouts overview.
-  const { data: gateways = [] } = useGateways(formOpen)
+  const {
+    data: gateways = [],
+    isLoading: gatewaysLoading,
+    error: gatewaysError,
+  } = useGatewaySnapshots(formOpen)
   const { data: services = [] } = useSupportedServices()
   const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
   const { addLoadout, patchLoadout, removeLoadout, stageLoadoutUpdate, stageLoadoutRemove } = useGatewayMutations()
@@ -68,7 +72,7 @@ export function LoadoutsPageContent() {
         </DashboardPanel>
       })}</div>}
     </div></div>
-    <LoadoutFormDialog open={formOpen} loadout={editing} gatewayOptions={gatewayOptions} serviceOptions={serviceOptions} onOpenChange={setFormOpen} onSave={async (original, draft) => { if (original) { const current = loadouts.find((loadout) => loadout.name === original); const mounted = (mountedBy.get(original)?.length ?? 0) > 0; if (mounted || current?.restart_required) { await stageLoadoutUpdate(original, draft); toast.success('Loadout ' + draft.name + ' saved. Restart Labby to apply it to mounted routes.') } else { await patchLoadout(original, draft); toast.success('Loadout ' + draft.name + ' updated.') } } else { await addLoadout(draft); toast.success('Loadout ' + draft.name + ' added.') } }} />
+    <LoadoutFormDialog open={formOpen} loadout={editing} gatewayOptions={gatewayOptions} gatewayOptionsLoading={gatewaysLoading} gatewayOptionsError={gatewaysError ? getErrorMessage(gatewaysError, 'Gateway options failed to load') : null} serviceOptions={serviceOptions} onOpenChange={setFormOpen} onSave={async (original, draft) => { if (original) { const current = loadouts.find((loadout) => loadout.name === original); const mounted = (mountedBy.get(original)?.length ?? 0) > 0; if (mounted || current?.restart_required) { await stageLoadoutUpdate(original, draft); toast.success('Loadout ' + draft.name + ' saved. Restart Labby to apply it to mounted routes.') } else { await patchLoadout(original, draft); toast.success('Loadout ' + draft.name + ' updated.') } } else { await addLoadout(draft); toast.success('Loadout ' + draft.name + ' added.') } }} />
     <ActionConfirmationDialog open={deleting !== null} title="Remove Loadout?" description={deleting ? 'Remove ' + deleting.name + '? If a running protected route still uses it, first stage that route away from this Loadout; the Loadout removal can then be staged for the same restart.' : ''} confirmLabel="Remove Loadout" busy={deleteBusy} onOpenChange={open => !open && setDeleting(null)} onConfirm={async () => { if (!deleting) return; setDeleteBusy(true); try { const mounted = (mountedBy.get(deleting.name)?.length ?? 0) > 0; if (mounted || deleting.restart_required) { await stageLoadoutRemove(deleting.name); toast.success('Loadout removal saved. Restart Labby to apply it.') } else { await removeLoadout(deleting.name); toast.success('Loadout ' + deleting.name + ' removed.') } setDeleting(null) } catch (e) { toast.error(getErrorMessage(e, 'Failed to remove Loadout')) } finally { setDeleteBusy(false) } }} />
   </>
 }

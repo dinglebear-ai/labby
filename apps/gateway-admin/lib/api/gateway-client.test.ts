@@ -985,7 +985,7 @@ test('gatewayApi.get applies virtual-server MCP policy to in-process tool exposu
   )
 })
 
-test('gatewayApi.get loads one custom server without hydrating the fleet runtime catalog', async () => {
+test('gatewayApi.get uses targeted cached state without testing or hydrating the fleet', async () => {
   await withGatewayFetch(
     {
       'gateway.server.get': () => ({
@@ -1008,12 +1008,6 @@ test('gatewayApi.get loads one custom server without hydrating the fleet runtime
           exposed_prompt_count: 0,
         },
       }),
-      'gateway.test': () => ({
-        name: 'Asana',
-        connected: false,
-        healthy: false,
-        last_error: 'OAuth reauthorization required',
-      }),
       'gateway.discovered_tools': () => [],
       'gateway.discovered_resources': () => [],
       'gateway.discovered_prompts': () => [],
@@ -1028,13 +1022,11 @@ test('gatewayApi.get loads one custom server without hydrating the fleet runtime
         [
           'gateway.server.get',
           'gateway.get',
-          'gateway.test',
           'gateway.discovered_tools',
           'gateway.discovered_resources',
           'gateway.discovered_prompts',
         ],
       )
-      assert.equal(requests.some((request) => request.action === 'gateway.mcp.list'), false)
     },
   )
 })

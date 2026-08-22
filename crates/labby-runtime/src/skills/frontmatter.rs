@@ -83,16 +83,16 @@ pub fn validate_frontmatter(
         .ok_or_else(|| invalid("frontmatter `name` must be a string"))?;
     if !is_valid_skill_name(name) {
         return Err(invalid(format!(
-            "frontmatter `name` `{name}` must be at most {MAX_NAME_CHARS} lowercase alphanumeric \
+            "frontmatter `name` must be at most {MAX_NAME_CHARS} lowercase alphanumeric \
              or hyphen characters, with no leading, trailing, or consecutive hyphens"
         )));
     }
     if let Some(expected) = expected_name
         && name != expected
     {
-        return Err(invalid(format!(
-            "frontmatter `name` `{name}` must equal the final skill-path segment `{expected}`"
-        )));
+        return Err(invalid(
+            "frontmatter `name` must equal the final skill-path segment",
+        ));
     }
 
     let description = frontmatter
@@ -139,11 +139,9 @@ pub fn validate_frontmatter(
         let metadata = metadata
             .as_object()
             .ok_or_else(|| invalid("frontmatter `metadata` must be an object"))?;
-        for (key, value) in metadata {
+        for value in metadata.values() {
             if !value.is_string() {
-                return Err(invalid(format!(
-                    "frontmatter `metadata.{key}` must be a string value"
-                )));
+                return Err(invalid("frontmatter metadata values must be strings"));
             }
         }
     }

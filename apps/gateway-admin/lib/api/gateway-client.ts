@@ -134,6 +134,17 @@ async function normalizeGatewayView(
   return normalizeGateway(view, probe, discovery, runtime)
 }
 
+async function normalizeGatewaySnapshotView(
+  view: BackendGatewayView,
+  includeDiscovery: boolean,
+  signal?: AbortSignal,
+): Promise<Gateway> {
+  const discovery = includeDiscovery
+    ? await fetchDiscovery(view.config.name, signal)
+    : { tools: [], resources: [], prompts: [] }
+  return normalizeGateway(view, probeStatusFromRuntime(view.runtime), discovery, undefined)
+}
+
 async function findServerView(id: string, signal?: AbortSignal): Promise<BackendServerView> {
   return gatewayAction<BackendServerView>('gateway.server.get', { id }, signal)
 }
@@ -444,10 +455,7 @@ export const gatewayApi = {
     }
 
     const view = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    // The detail page already performs a targeted probe and discovery below.
-    // Do not hydrate the fleet-wide runtime catalog here: gateway.mcp.list can
-    // cold-connect every configured upstream just to render one server.
-    return normalizeGatewayView(view, true, undefined, signal)
+    return normalizeGatewaySnapshotView(view, true, signal)
   },
 
   async create(input: CreateGatewayInput, signal?: AbortSignal): Promise<Gateway> {
@@ -456,13 +464,7 @@ export const gatewayApi = {
       confirmGatewayParams(buildGatewayCreatePayload(input)),
       signal,
     )
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
-      view,
-      true,
-      runtimeRows.find((row) => row.name === view.config.name),
-      signal,
-    )
+    return normalizeGatewaySnapshotView(view, true, signal)
   },
 
   async update(id: string, input: UpdateGatewayInput, signal?: AbortSignal): Promise<Gateway> {
@@ -471,13 +473,7 @@ export const gatewayApi = {
       confirmGatewayParams(buildGatewayUpdatePayload(id, input)),
       signal,
     )
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
-      view,
-      true,
-      runtimeRows.find((row) => row.name === view.config.name),
-      signal,
-    )
+    return normalizeGatewaySnapshotView(view, true, signal)
   },
 
   async remove(id: string, signal?: AbortSignal): Promise<void> {

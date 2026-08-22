@@ -472,6 +472,23 @@ mod tests {
         let rejection = validate_skill_entry_detailed(&entry).unwrap_err();
         assert_eq!(rejection.reason, SkillRejection::InvalidDigest);
         assert!(!rejection.detail.contains("hunter2"));
+
+        let mut entry = valid_entry();
+        entry
+            .frontmatter
+            .insert("name".into(), serde_json::json!("hunter2!"));
+        let rejection = validate_skill_entry_detailed(&entry).unwrap_err();
+        assert_eq!(rejection.reason, SkillRejection::InvalidFrontmatter);
+        assert!(!rejection.detail.contains("hunter2"));
+
+        let mut entry = valid_entry();
+        entry.frontmatter.insert(
+            "metadata".into(),
+            serde_json::json!({"hunter2": ["not", "a", "string"]}),
+        );
+        let rejection = validate_skill_entry_detailed(&entry).unwrap_err();
+        assert_eq!(rejection.reason, SkillRejection::InvalidFrontmatter);
+        assert!(!rejection.detail.contains("hunter2"));
     }
 
     #[test]
