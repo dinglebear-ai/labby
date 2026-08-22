@@ -220,11 +220,15 @@ fn test_server(
     route_scope: crate::mcp::route_scope::McpRouteScope,
     logging_level: crate::mcp::logging::LoggingLevel,
 ) -> LabMcpServer {
+    let code_mode_app_state = gateway_manager
+        .as_ref()
+        .map(|manager| manager.code_mode_app_state())
+        .unwrap_or_default();
     LabMcpServer {
         registry: Arc::new(registry),
         gateway_manager,
         peers: Default::default(),
-        code_mode_app_state: Default::default(),
+        code_mode_app_state,
         last_listed_tool_contract: Default::default(),
         route_runtime: Default::default(),
         client_registry: Default::default(),
@@ -3170,7 +3174,7 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
 }
 
 #[tokio::test]
-async fn app_visible_callbacks_are_hidden_but_directly_callable_with_read_scope() {
+async fn app_visible_callbacks_are_advertised_and_directly_callable_with_read_scope() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut standard = fixture_upstream_tool(&upstream_name, "standard_app_callback", None);
     standard.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
@@ -3213,11 +3217,11 @@ async fn app_visible_callbacks_are_hidden_but_directly_callable_with_read_scope(
         .expect("read-scope tools");
     for name in ["standard_app_callback", "openai_app_callback"] {
         assert!(
-            !advertised
+            advertised
                 .tools
                 .iter()
                 .any(|tool| tool.name.as_ref() == name),
-            "{name} should stay out of the synthetic Code Mode tools/list contract"
+            "{name} should pass through the synthetic Code Mode tools/list contract"
         );
 
         let result = Box::pin(running.service().call_tool_impl(
@@ -3230,7 +3234,7 @@ async fn app_visible_callbacks_are_hidden_but_directly_callable_with_read_scope(
         let text = result.content[0].as_text().expect("text").text.as_str();
         assert!(
             !text.contains("\"kind\":\"forbidden\""),
-            "hidden MCP App callback {name} should pass the direct read-scope bridge gate, got {text}"
+            "advertised MCP App callback {name} should pass the direct read-scope bridge gate, got {text}"
         );
         assert!(
             text.contains("upstream_error"),
@@ -5491,7 +5495,10 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
     assert!(code_mode_contract.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(code_mode_contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
     assert!(code_mode_contract.tools.contains(MCP_APP_TOOL_NAME));
-    assert!(!code_mode_contract.tools.contains("youtube_search_ui"));
+    assert!(
+        code_mode_contract.tools.contains("youtube_search_ui"),
+        "upstream MCP App tools pass through under Code Mode"
+    );
     assert!(
         !code_mode_contract.tools.contains("youtube_probe"),
         "raw upstream tools stay hidden under Code Mode"

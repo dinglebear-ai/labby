@@ -2390,18 +2390,27 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
                 crate::config::LabConfig {
                     code_mode: crate::config::CodeModeConfig {
                         enabled: true,
+                        mcp_ui_enabled: true,
                         ..crate::config::CodeModeConfig::default()
+                    },
+                    mcp_apps: crate::config::McpAppsConfig {
+                        manager: true,
+                        add_server: true,
+                        server_logs: true,
+                        gateway_status: true,
+                        settings: true,
                     },
                     ..crate::config::LabConfig::default()
                 }
                 .to_gateway_config(),
             )
             .await;
+        let code_mode_app_state = manager.code_mode_app_state();
         LabMcpServer {
             registry: Arc::new(crate::registry::ToolRegistry::new()),
             gateway_manager: Some(manager),
             peers: Default::default(),
-            code_mode_app_state: Default::default(),
+            code_mode_app_state,
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),
             client_registry: Default::default(),
