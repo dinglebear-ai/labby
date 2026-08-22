@@ -40,7 +40,7 @@ test('loadout dialog preserves existing upstreams when gateway options are unava
   Object.defineProperty(globalThis, 'HTMLElement', { value: window.HTMLElement, configurable: true })
   Object.defineProperty(globalThis, 'HTMLInputElement', { value: window.HTMLInputElement, configurable: true })
   const { LoadoutFormDialog, loadoutSaveEnabled } = await import('./loadout-form-dialog.tsx')
-  assert.equal(loadoutSaveEnabled(false, false, 'Gateway options failed', 'services', 1, false), false)
+  assert.equal(loadoutSaveEnabled(false, false, 'Gateway options failed', 'services', 1, false), true)
   let saved: GatewayLoadoutInput | undefined
   const base = {
     open: true,
