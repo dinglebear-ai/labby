@@ -74,8 +74,8 @@ impl<H: rmcp::ClientHandler> std::fmt::Debug for UpstreamConnection<H> {
 /// discovery timeouts, cancelled `buffer_unordered` futures, pool drops,
 /// `insert()` overwrites, etc.
 ///
-/// The async `shutdown()` graceful path zeroes `self.runtime.pgid` (Unix)
-/// or resets `self.runtime.job_handle` to `0` (Windows) and takes
+/// The async `shutdown()` graceful path takes `self.runtime.pgid` (Unix)
+/// or `self.runtime.job` (Windows) and takes
 /// `_server_task` before its first `.await` so this Drop no-ops on the
 /// graceful path.
 ///
@@ -114,14 +114,7 @@ impl<H: rmcp::ClientHandler> Drop for UpstreamConnection<H> {
         }
         #[cfg(windows)]
         {
-            let pid = self.runtime.pid.unwrap_or(0);
-            let job = self.runtime.job_handle;
-            // Reset to the `0` sentinel so a second close is a no-op (defensive:
-            // shutdown consumes self, but Drop must be idempotent).
-            self.runtime.job_handle = 0;
-            // `labby_winjob::close_job` is a SAFE wrapper that no-ops on the `0`
-            // sentinel; the `CloseHandle` FFI lives in `lab-winjob`.
-            labby_winjob::close_job(job, pid);
+            drop(self.runtime.job.take());
         }
         if let Some(handle) = self._server_task.take() {
             handle.abort();
@@ -131,19 +124,15 @@ impl<H: rmcp::ClientHandler> Drop for UpstreamConnection<H> {
 
 impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
     pub(crate) async fn shutdown(mut self, upstream_name: &str, reason: &'static str) {
-        // Clone runtime BEFORE taking pgid / job_handle so subsequent log
+        // Clone runtime BEFORE taking pgid / job so subsequent log
         // lines still surface the original values.
         let runtime = self.runtime.clone();
-        // INVARIANT: take pgid (Unix) / job_handle (Windows) BEFORE any
+        // INVARIANT: take pgid (Unix) / job (Windows) BEFORE any
         // `.await` so the consuming Drop no-ops on the graceful path.
         #[cfg(unix)]
         let runtime_pgid = self.runtime.pgid.take();
         #[cfg(windows)]
-        let runtime_job = {
-            let j = self.runtime.job_handle;
-            self.runtime.job_handle = 0;
-            j
-        };
+        let runtime_job = self.runtime.job.take();
         let started = Instant::now();
         let result = self
             ._client_service
@@ -153,14 +142,23 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
             server_task.abort();
         }
 
+        let mut termination_failures = Vec::new();
+
         #[cfg(unix)]
         if let (Some(pid), Some(pgid)) = (runtime.pid, runtime_pgid)
             && pid_is_alive(pid)
         {
-            let _ = terminate_process_group_sigterm(pgid);
+            if let Err(error) = terminate_process_group_sigterm(pgid)
+                && error != nix::errno::Errno::ESRCH
+            {
+                termination_failures.push(format!("SIGTERM process group {pgid}: {error}"));
+            }
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            if pid_is_alive(pid) {
-                let _ = terminate_process_group_sigkill(pgid);
+            if pid_is_alive(pid)
+                && let Err(error) = terminate_process_group_sigkill(pgid)
+                && error != nix::errno::Errno::ESRCH
+            {
+                termination_failures.push(format!("SIGKILL process group {pgid}: {error}"));
             }
         }
 
@@ -169,15 +167,17 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
         // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE at creation time. No async
         // sleep needed — the kernel handles tree termination synchronously.
         #[cfg(windows)]
+        if let Some(job) = runtime_job
+            && let Err(error) = job.close()
         {
-            let pid = runtime.pid.unwrap_or(0);
-            // `labby_winjob::close_job` is a SAFE wrapper that no-ops on the `0`
-            // sentinel; the `CloseHandle` FFI lives in `lab-winjob`.
-            labby_winjob::close_job(runtime_job, pid);
+            termination_failures.push(format!(
+                "{} failed with Win32 error {}",
+                error.operation, error.code
+            ));
         }
 
-        match result {
-            Ok(Some(_)) => tracing::debug!(
+        match (result, termination_failures.is_empty()) {
+            (Ok(Some(_)), true) => tracing::debug!(
                 surface = "dispatch",
                 service = "upstream.pool",
                 action = "upstream.connection.shutdown",
@@ -190,7 +190,21 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
                 elapsed_ms = started.elapsed().as_millis(),
                 "upstream connection shutdown finished"
             ),
-            Ok(None) => tracing::warn!(
+            (Ok(Some(_)), false) => tracing::warn!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "upstream.connection.shutdown",
+                event = "error",
+                operation = "process_tree.terminate",
+                upstream = upstream_name,
+                reason,
+                pid = ?runtime.pid,
+                pgid = ?runtime.pgid,
+                errors = ?termination_failures,
+                elapsed_ms = started.elapsed().as_millis(),
+                "upstream MCP connection closed but process-tree termination failed"
+            ),
+            (Ok(None), _) => tracing::warn!(
                 surface = "dispatch",
                 service = "upstream.pool",
                 action = "upstream.connection.shutdown",
@@ -200,11 +214,12 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
                 reason,
                 pid = ?runtime.pid,
                 pgid = ?runtime.pgid,
+                termination_errors = ?termination_failures,
                 timeout_ms = STDIO_SHUTDOWN_TIMEOUT.as_millis(),
                 elapsed_ms = started.elapsed().as_millis(),
                 "upstream connection shutdown timed out"
             ),
-            Err(error) => tracing::warn!(
+            (Err(error), _) => tracing::warn!(
                 surface = "dispatch",
                 service = "upstream.pool",
                 action = "upstream.connection.shutdown",
@@ -215,6 +230,7 @@ impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
                 pid = ?runtime.pid,
                 pgid = ?runtime.pgid,
                 error = %error,
+                termination_errors = ?termination_failures,
                 elapsed_ms = started.elapsed().as_millis(),
                 "upstream connection shutdown failed"
             ),
