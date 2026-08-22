@@ -248,18 +248,24 @@ impl GatewayManager {
     pub async fn mcp_runtime_list(
         &self,
         name: Option<&str>,
+        scope: &crate::gateway::params::GatewayEnrichmentScope,
     ) -> Result<Vec<super::types::GatewayMcpRuntimeView>, ToolError> {
+        if let Some(name) = name {
+            scope.ensure_visible(name)?;
+        }
         let cfg = self.config.read().await.clone();
         let pool = self.runtime.current_pool().await;
         // Runtime inspection reports the current snapshot. It must not start or
         // connect upstreams; refresh/test/reload own active discovery.
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
-        for upstream in cfg
-            .upstream
-            .iter()
-            .filter(|upstream| name.is_none_or(|name| upstream.name == name))
-        {
+        for upstream in cfg.upstream.iter().filter(|upstream| {
+            name.is_none_or(|name| upstream.name == name)
+                && scope
+                    .route_visible_upstreams
+                    .as_ref()
+                    .is_none_or(|visible| visible.contains(&upstream.name))
+        }) {
             let (summary, health) =
                 upstream_summary_with_health(pool.as_deref(), &upstream.name).await;
             let runtime = match pool.as_deref() {

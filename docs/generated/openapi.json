@@ -2716,6 +2716,14 @@
           }
         }
       },
+      "GatewayGatewayMcpListParams": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "GatewayGatewayOauthClearParams": {
         "type": "object",
         "required": [

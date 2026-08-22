@@ -175,7 +175,7 @@ pub async fn dispatch_with_manager_scoped(
             handle_oauth_actions(manager, action, params_value).await
         }
         action if action.starts_with("gateway.mcp.") => {
-            handle_mcp_actions(manager, action, params_value).await
+            handle_mcp_actions(manager, action, params_value, enrichment_scope).await
         }
         unknown => unknown_action(unknown),
     }
@@ -950,6 +950,7 @@ async fn handle_mcp_actions(
     manager: &GatewayManager,
     action: &str,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
         "gateway.mcp.enable" => {
@@ -971,7 +972,11 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.list" => {
             let params: GatewayStatusParams = parse_params(params_value)?;
-            to_json(manager.mcp_runtime_list(params.name.as_deref()).await?)
+            to_json(
+                manager
+                    .mcp_runtime_list(params.name.as_deref(), &enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.clients.list" => to_json(manager.clients().await?),
         "gateway.mcp.disable" => {

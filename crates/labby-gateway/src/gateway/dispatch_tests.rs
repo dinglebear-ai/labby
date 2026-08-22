@@ -763,6 +763,69 @@ async fn gateway_mcp_list_can_return_one_targeted_snapshot() {
 }
 
 #[tokio::test]
+async fn gateway_mcp_list_rejects_route_hidden_explicit_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.mcp.list",
+        json!({"name": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_mcp_list_aggregate_only_returns_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.mcp.list",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect("scoped runtime list succeeds");
+
+    let rows = result.as_array().expect("runtime rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], json!("github"));
+}
+
+#[tokio::test]
 async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams() {
     let manager = test_manager();
     manager
