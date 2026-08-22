@@ -911,7 +911,26 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
     padding-right: calc(10px + env(safe-area-inset-right)) !important;
   }
   aside[data-console-sidebar] {
+    width: 64px !important;
+    overflow: hidden !important;
     padding-bottom: env(safe-area-inset-bottom);
+  }
+  aside[data-console-sidebar] nav {
+    padding-inline: 8px !important;
+  }
+  aside[data-console-sidebar] nav > button,
+  aside[data-console-sidebar] [data-anim='navlabel'],
+  aside[data-console-sidebar] [data-pinbtn='1'],
+  aside[data-console-sidebar] [data-kbd='1'],
+  aside[data-console-sidebar] [data-tip='Settings'] span,
+  aside[data-console-sidebar] > div > a:first-of-type > div:nth-child(2) {
+    display: none !important;
+  }
+  aside[data-console-sidebar] nav > div {
+    padding-left: 0 !important;
+  }
+  [data-sidebar-toggle='1'] {
+    display: none !important;
   }
   [data-searchbar] {
     position: static !important;
