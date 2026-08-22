@@ -768,7 +768,11 @@ async fn handle_gateway_actions(
             manager
                 .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
                 .await;
-            to_json(manager.status(params.name.as_deref()).await?)
+            to_json(
+                manager
+                    .status_scoped(params.name.as_deref(), &enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.client_config.get" => {
             let params: GatewayClientConfigParams = parse_params(params_value)?;

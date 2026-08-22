@@ -35,8 +35,6 @@ function uniq(values: string[]) { return [...new Set(values)].sort((a, b) => a.l
 
 export function loadoutSaveEnabled(
   saving: boolean,
-  _gatewayOptionsLoading: boolean,
-  _gatewayOptionsError: string | null,
   name: string,
   enabledCount: number,
   skillsNeedResources: boolean,
@@ -81,7 +79,7 @@ export function LoadoutFormDialog({ open, loadout, gatewayOptions, gatewayOption
   useEffect(() => { if (open) { setDraft(loadout ? { ...loadout, upstreams: [...loadout.upstreams], services: [...loadout.services] } : emptyLoadout()); setError(null) } }, [loadout, open])
   const skillsNeedResources = draft.expose_skills && !draft.expose_resources
   const enabledCount = LOADOUT_CAPABILITIES.filter(([key]) => draft[key]).length
-  const canSave = loadoutSaveEnabled(saving, gatewayOptionsLoading, gatewayOptionsError, draft.name, enabledCount, skillsNeedResources)
+  const canSave = loadoutSaveEnabled(saving, draft.name, enabledCount, skillsNeedResources)
   const cap = (key: CapabilityKey, value: boolean) => setDraft(current => ({ ...current, [key]: value }))
 
   return <Dialog open={open} onOpenChange={next => !saving && onOpenChange(next)}>

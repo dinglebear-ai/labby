@@ -218,11 +218,29 @@ impl GatewayManager {
     }
 
     pub async fn status(&self, name: Option<&str>) -> Result<Vec<GatewayRuntimeView>, ToolError> {
+        self.status_scoped(name, &GatewayEnrichmentScope::default())
+            .await
+    }
+
+    pub async fn status_scoped(
+        &self,
+        name: Option<&str>,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<GatewayRuntimeView>, ToolError> {
+        if let Some(name) = name {
+            scope.ensure_visible(name)?;
+        }
         let (cfg, pool) = self.published_config_and_pool().await;
         let upstreams: Vec<UpstreamConfig> = cfg
             .upstream
             .iter()
-            .filter(|u| name.is_none_or(|needle| needle == u.name))
+            .filter(|upstream| {
+                name.is_none_or(|needle| needle == upstream.name)
+                    && scope
+                        .route_visible_upstreams
+                        .as_ref()
+                        .is_none_or(|visible| visible.contains(&upstream.name))
+            })
             .cloned()
             .collect();
         // P-M8: use the cached prompt-ownership snapshot instead of a live
