@@ -49,12 +49,28 @@ impl GatewayManager {
             .collect())
     }
 
-    pub async fn refresh_gateway_status_catalog(&self, scope: &GatewayEnrichmentScope) {
+    pub async fn refresh_gateway_status_catalog(
+        &self,
+        scope: &GatewayEnrichmentScope,
+        name: Option<&str>,
+    ) {
         let (cfg, pool) = self.published_config_and_pool().await;
+        let allowed_upstreams = match (scope.route_visible_upstreams.as_ref(), name) {
+            (Some(allowed), Some(name)) => Some(
+                allowed
+                    .iter()
+                    .filter(|upstream| upstream.as_str() == name)
+                    .cloned()
+                    .collect(),
+            ),
+            (Some(allowed), None) => Some(allowed.clone()),
+            (None, Some(name)) => Some(std::iter::once(name.to_owned()).collect()),
+            (None, None) => None,
+        };
         self.refresh_mcp_runtime_catalog_bounded(
             &cfg,
             pool.as_deref(),
-            scope.route_visible_upstreams.as_ref(),
+            allowed_upstreams.as_ref(),
             scope.oauth_subject.as_deref(),
             "gateway.status.refresh",
         )

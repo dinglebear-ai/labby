@@ -117,6 +117,15 @@ impl UpstreamPool {
             .map(ToOwned::to_owned)
     }
 
+    /// Return the last Agent Skills capability error for an upstream, if any.
+    pub async fn upstream_skills_last_error(&self, upstream_name: &str) -> Option<String> {
+        let catalog = self.catalog.read().await;
+        let entry = catalog.get(upstream_name)?;
+        entry
+            .last_error_for(UpstreamCapability::Skills)
+            .map(ToOwned::to_owned)
+    }
+
     #[cfg(any(test, feature = "testkit"))]
     pub async fn insert_entry_for_tests(&self, name: &str, entry: UpstreamEntry) {
         self.catalog.write().await.insert(name.to_string(), entry);

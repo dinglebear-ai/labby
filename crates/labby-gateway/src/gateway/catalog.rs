@@ -1112,7 +1112,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.status",
-        description: "Get current runtime gateway status",
+        description: "Refresh and return runtime gateway status",
         destructive: false,
         requires_admin: true,
         returns: "GatewayRuntimeView[]",

@@ -35,14 +35,13 @@ function uniq(values: string[]) { return [...new Set(values)].sort((a, b) => a.l
 
 export function loadoutSaveEnabled(
   saving: boolean,
-  gatewayOptionsLoading: boolean,
-  gatewayOptionsError: string | null,
+  _gatewayOptionsLoading: boolean,
+  _gatewayOptionsError: string | null,
   name: string,
   enabledCount: number,
   skillsNeedResources: boolean,
 ) {
-  return !saving && !gatewayOptionsLoading && !gatewayOptionsError
-    && name.trim().length > 0 && enabledCount > 0 && !skillsNeedResources
+  return !saving && name.trim().length > 0 && enabledCount > 0 && !skillsNeedResources
 }
 
 function SelectionGroup({ title, description, options, selected, onChange }: {

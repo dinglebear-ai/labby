@@ -184,9 +184,25 @@ const REJECTION_HELP: Record<string, { label: string; guidance: string }> = {
     label: 'Manifest missing',
     guidance: 'Publish a readable SKILL.md resource for the advertised skill URI.',
   },
-  resource_limit: {
-    label: 'Resource limit exceeded',
-    guidance: 'Reduce the skill package to at most 64 resources.',
+  invalid_digest: {
+    label: 'Invalid resource digest',
+    guidance: 'Publish a supported content digest for every manifest resource.',
+  },
+  manifest_uri_out_of_namespace: {
+    label: 'Resource outside skill namespace',
+    guidance: 'Keep every manifest URI within the advertised skill directory and origin.',
+  },
+  manifest_missing_skill_md: {
+    label: 'SKILL.md missing from manifest',
+    guidance: 'Include the skill URI itself in the manifest with the digest of SKILL.md.',
+  },
+  manifest_duplicate_uri: {
+    label: 'Duplicate manifest resource',
+    guidance: 'List every resource URI exactly once in the skill manifest.',
+  },
+  manifest_too_large: {
+    label: 'Manifest resource limit exceeded',
+    guidance: 'Reduce the skill package to at most 64 manifest resources.',
   },
 }
 
